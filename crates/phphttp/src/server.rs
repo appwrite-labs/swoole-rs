@@ -28,7 +28,7 @@ use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
     HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
     swr_zend_http_uploads_rshutdown, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
-    zend_string, zval, zval_ptr_dtor,
+    zend_string, zval,
 };
 use swoole_rs_zend::{Class, ZStr, ZString, bailout, string, value};
 
@@ -329,7 +329,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
             }
             call(ctx, facts.coroutine)?;
         }
-        release_objects(ctx);
+        context::release_objects(ctx);
         Ok(())
     });
     bailout::raise(result);
@@ -441,7 +441,7 @@ unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
     let ctx = ctx.cast::<Context>();
     let result = call(ctx, enable_coroutine(state(ctx).private_data));
     if result.is_ok() {
-        release_objects(ctx);
+        context::release_objects(ctx);
     }
     bailout::raise(result);
 }
@@ -627,13 +627,13 @@ pub unsafe extern "C" fn http2_request_handler(request: *mut c_void) {
 fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     let (server, fd) = (state(ctx).private_data, state(ctx).fd);
     let Some((conn, facts)) = http2_connection(server, fd) else {
-        release_objects(ctx);
+        context::release_objects(ctx);
         return Ok(());
     };
     state(ctx).request.version = HTTP_VERSION_2;
     // SAFETY: the live server and stream context.
     if facts.static_handler && unsafe { swr_v1_phphttp2_server_static(server, ctx) } {
-        release_objects(ctx);
+        context::release_objects(ctx);
         return Ok(());
     }
     let state = state(ctx);
@@ -664,7 +664,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
             // SAFETY: a live stream context; an empty body.
             unsafe { swr_v1_phphttp2_server_respond(ctx, ptr::null(), 0) };
-            release_objects(ctx);
+            context::release_objects(ctx);
             return Ok(());
         }
         // SAFETY: a live context.
@@ -684,16 +684,8 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
         }
         Ok(true) => {}
     }
-    release_objects(ctx);
+    context::release_objects(ctx);
     Ok(())
-}
-
-/// The request's own references to its objects, released once handled.
-fn release_objects(ctx: *mut Context) {
-    // SAFETY: the request's object, referenced by the request.
-    unsafe { zval_ptr_dtor(state(ctx).request.zobject.ptr) };
-    // SAFETY: as above.
-    unsafe { zval_ptr_dtor(state(ctx).response.zobject.ptr) };
 }
 
 /// `php_swoole_http_server_onClose`: forget the session's addresses, then
@@ -757,10 +749,7 @@ fn worker() -> Option<Worker> {
 fn abandon(ctx: *mut Context) {
     state(ctx).end = 1;
     state(ctx).after_response = 0;
-    // SAFETY: the queued request's own references to its objects.
-    unsafe { zval_ptr_dtor(state(ctx).request.zobject.ptr) };
-    // SAFETY: as above.
-    unsafe { zval_ptr_dtor(state(ctx).response.zobject.ptr) };
+    context::release_objects(ctx);
 }
 
 /// `swoole_http_server_onBeforeRequest` after it swaps the hooks: count the

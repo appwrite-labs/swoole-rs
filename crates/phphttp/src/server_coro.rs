@@ -30,7 +30,7 @@ use swoole_rs_zend::{
     sys::{
         self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
-        zval, zval_ptr_dtor,
+        zval,
     },
     throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
 };
@@ -1137,16 +1137,6 @@ fn add_peer(context: *mut Context, peer: &Peer) {
     crate::server::add_long(table, Key::ServerPort, peer.server_port.into());
 }
 
-/// Release a context the loop still holds: its request and response objects.
-fn release(context: *mut Context) {
-    let state = send::state(context);
-    let (request, response) = (state.request.zobject.ptr, state.response.zobject.ptr);
-    // SAFETY: the context's live objects, released once.
-    unsafe { zval_ptr_dtor(request) };
-    // SAFETY: as above.
-    unsafe { zval_ptr_dtor(response) };
-}
-
 /// The request loop: parse each request on the connection and run its handler.
 fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
     let mut context: *mut Context = ptr::null_mut();
@@ -1269,10 +1259,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         } else if !call_handler(callable, &mut args, false)? {
             host::notice("handler error");
         }
-        // SAFETY: the context's objects, released once.
-        unsafe { zval_ptr_dtor(&raw mut args[0]) };
-        // SAFETY: as above.
-        unsafe { zval_ptr_dtor(&raw mut args[1]) };
+        context::release_objects(context);
         context = ptr::null_mut();
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
@@ -1285,7 +1272,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         }
     }
     if !context.is_null() {
-        release(context);
+        context::release_objects(context);
     }
     Ok(())
 }
@@ -1330,7 +1317,7 @@ fn http2(conn: &Connection, context: *mut Context) {
     // SAFETY: the session made above.
     unsafe { swr_v1_phphttp2_session_free(fd) };
     send::state(context).detached = 1;
-    release(context);
+    context::release_objects(context);
 }
 
 fn find_crlf2(data: &[u8]) -> Option<usize> {
@@ -1417,10 +1404,7 @@ fn http2_request(
         }
     }
     if result.is_ok() {
-        // SAFETY: the context's objects, released once.
-        unsafe { zval_ptr_dtor(&raw mut args[0]) };
-        // SAFETY: as above.
-        unsafe { zval_ptr_dtor(&raw mut args[1]) };
+        context::release_objects(context);
     }
     result
 }
