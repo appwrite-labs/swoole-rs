@@ -377,6 +377,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getgrnam")]
     fn isolation_reports_unknown_names_and_skips_empty_steps() {
         let mut steps = Vec::new();
         isolate(c"", c"", c"", |step| steps.push(step));
@@ -450,6 +451,7 @@ mod tests {
     /// `sched_setaffinity(getpid())`; the gets are Rust's `swoole_get_cpu_affinity`.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri models one CPU")]
     fn os_cpu_affinity() {
         let set = |set: &libc::cpu_set_t| unsafe {
             libc::sched_setaffinity(libc::getpid(), size_of::<libc::cpu_set_t>(), set)
@@ -479,6 +481,7 @@ mod tests {
     /// process's. A fork of the multithreaded harness can block on a lock another test
     /// thread held at the fork.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn os_set_isolation() {
         const CHILD: &str = "SWR_OS_SET_ISOLATION_CHILD";
         if std::env::var_os(CHILD).is_some() {

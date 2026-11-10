@@ -11,7 +11,6 @@ use swoole_rs_process::wait::wait_count;
 
 // SAFETY: crates/reactor's and crates/timer's.
 unsafe extern "C" {
-    fn swr_v1_event_current() -> *mut c_void;
     #[link_name = "_Z19swoole_timer_selectv"]
     fn swoole_timer_select();
 }
@@ -22,7 +21,7 @@ fn errno() -> c_int {
 
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
 mod registry {
-    use super::{c_int, c_void, swr_v1_event_current, wait_count};
+    use super::{c_int, c_void, wait_count};
     use crate::signal_upstream::{swoole_signal_clear, swoole_signal_set};
     use crate::{ReactorPrepared, swr_v1_reactor_deferred_push};
     use std::ptr;
@@ -34,10 +33,6 @@ mod registry {
 
     // SAFETY: crates/reactor's and crates/coroutine's.
     unsafe extern "C" {
-        fn swr_v1_event_set_exit_condition(
-            id: c_int,
-            condition: unsafe extern "C" fn(*mut usize) -> bool,
-        );
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -55,7 +50,7 @@ mod registry {
         unsafe { wait_reap(signo, resume) };
     }
 
-    unsafe extern "C" fn no_waiters(_event_num: *mut usize) -> bool {
+    extern "C-unwind" fn no_waiters(_event_num: *mut usize) -> bool {
         wait_count() == 0
     }
 
@@ -83,8 +78,7 @@ mod registry {
         if SIGNAL_READY.load(Ordering::Relaxed) {
             return;
         }
-        // SAFETY: no preconditions.
-        let reactor = unsafe { swr_v1_event_current() }.cast::<ReactorPrepared>();
+        let reactor = crate::event_api::swr_v1_event_current().cast::<ReactorPrepared>();
         // SAFETY: a coroutine runs, so the thread has a live loop, which begins with its
         // prepared state.
         let fields = unsafe { (*reactor).fields };
@@ -96,8 +90,7 @@ mod registry {
         } else {
             register();
         }
-        // SAFETY: as above.
-        unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_WAIT_PID, no_waiters) };
+        crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_WAIT_PID, no_waiters);
         // SAFETY: the loop's live fields.
         let queue = unsafe { &raw mut (*fields).destroy_callbacks };
         // SAFETY: the loop's live destroy queue; the call keeps no data.
@@ -110,7 +103,7 @@ mod registry {
     /// The current coroutine while the thread has a loop.
     unsafe extern "C" fn current() -> *mut c_void {
         // SAFETY: no preconditions.
-        if unsafe { swr_v1_event_current() }.is_null() {
+        if crate::event_api::swr_v1_event_current().is_null() {
             return ptr::null_mut();
         }
         swoole_rs_coroutine::current().cast()
@@ -213,8 +206,8 @@ pub unsafe extern "C" fn system_waitpid_safe(
         fn system_sleep(seconds: f64) -> c_int;
     }
     // SAFETY: no preconditions.
-    let outside =
-        unsafe { swr_v1_event_current() }.is_null() || swoole_rs_coroutine::current().is_null();
+    let outside = crate::event_api::swr_v1_event_current().is_null()
+        || swoole_rs_coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
         // SAFETY: as the caller promises.
         return unsafe { libc::waitpid(pid, status, options) };

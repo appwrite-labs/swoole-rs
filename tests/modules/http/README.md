@@ -43,10 +43,11 @@ no longer built (#1881).
 
 `http_parser.cpp` and `multipart_parser.cpp` tested only the bundled third-party
 parsers, so they left the lane (#1756) and with them `include/swoole_llhttp.h`.
-Their ports drive crates/oracle's unmodified copies of `thirdparty/llhttp` and
-`thirdparty/multipart_parser.c` with the same inputs, callbacks and expected values,
-one Rust test per TEST under the TEST's own name: `cargo test -p swoole-rs-oracle
---test http_parser --test multipart_parser`.
+Their ports, with the same inputs, callbacks and expected values and one Rust test per
+TEST under the TEST's own name, drive crates/oracle's unmodified copy of
+`thirdparty/llhttp` (`cargo test -p swoole-rs-oracle --test http_parser`) and
+crates/http's Rust multipart parser, which replaced `thirdparty/multipart_parser.c`
+(#2658; `cargo test -p swoole-rs-http --test multipart_parser`).
 
 | Upstream file | Rust test file | TESTs |
 | --- | --- | --- |
@@ -60,7 +61,7 @@ Four `http_server` TESTs drove a request through the `http_server::listen` SDK
 the TESTs left `http_server.cpp`. Their Rust ports, in `http_server.rs` (included by
 `crates/ports/src/read.rs`'s tests: `cargo test -p swoole-rs-ports http_server`), send
 the same request through the server's HTTP reader under the same port settings, with
-the request's effects running the bundled multipart parser and real temp files. The
+the request's effects running the multipart parser and real temp files. The
 recorded requests come from `crates/oracle/upstream/core-tests/fuzz/cases`.
 
 | Upstream TEST | Rust test | Same input | Assertions |
@@ -85,7 +86,7 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
-| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the bundled multipart parser (#1938) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
@@ -136,6 +137,67 @@ buffer: a 16 MiB response to one packet, then a close), is `server/src/http1/ser
 in the same binary and phase, over the same records. Upstream's client thread waits on a
 mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
 a blocking `TcpStream`.
+
+`core-tests/src/server/server.cpp`'s TESTs go in the same binary and phase, suite `server`,
+one function per TEST under its own name (#2533). Its `schedule*` TESTs are
+`server/src/http1/schedule.rs`: each creates a process-mode Server and calls crates/server's
+`schedule_worker` under one dispatch mode, with the workers' status, `coroutine_num` or
+`concurrency` and the fake connections' `uid` and `worker_id` set as upstream sets them.
+Upstream's stack `network::Socket fake_sock{}` is `make_socket(fd)`, its `info` assigned by
+the `Address::assign` body (`swr_v1_clients_address_assign`).
+
+| Upstream TEST | Dispatch mode |
+| --- | --- |
+| `schedule` | `DISPATCH_IDLE_WORKER`, all busy then four idle |
+| `schedule_1` | `DISPATCH_ROUND` |
+| `schedule_4` | `DISPATCH_IPMOD`: IPv4 and IPv6 connections and a UDP packet in `sw_tg_buffer()` |
+| `schedule_5` | `DISPATCH_UIDMOD` |
+| `schedule_8` | `DISPATCH_CO_CONN_LB` |
+| `schedule_9` | `DISPATCH_CO_REQ_LB` (`Worker::coroutine_num`) |
+| `schedule_10` | `DISPATCH_CONCURRENT_LB` (`Worker::concurrency`) |
+
+The TESTs that reload, kill and restart a started Server's workers are
+`server/src/http1/lifecycle.rs`. Upstream's lambdas are `extern "C"` callbacks in the Rust
+slots, and what they captured is a static. `test::counter_*` is a shared anonymous mapping,
+made before the server forks, as core-tests' main makes it from `sw_mem_pool()`. One more
+slot in it counts failed expectations, so one in a forked worker fails the case too,
+where gtest's parent never saw it. Upstream's
+reload, kill and restart methods are crates/process's `workers::entry` functions, and `add_worker`
+is crates/server's.
+
+| Upstream TEST | What it drives |
+| --- | --- |
+| `reload_all_workers`, `reload_all_workers2` | `SIGUSR2` then `SIGUSR1` to the manager (to the master in `2`) from worker 1; `onBeforeReload`/`onAfterReload` twice each |
+| `kill_user_workers`, `force_kill_all_workers`, `kill_user_workers1` | stopping a server whose user, task or event workers never return, with `max_wait_time` 1 |
+| `create_task_worker_fail` | `create()` refusing coroutine task workers over a message queue (`SW_ERROR_WRONG_OPERATION`) |
+| `reload_single_process`, `reload_no_task_worker` | `reload(true)` in a single-process base server (`SW_ERROR_OPERATION_NOT_SUPPORT`), and `reload(false)` with no task workers |
+| `restart_worker_process` | `restart_worker_process` over a task worker registered under this pid |
+| `reload_all_from_worker_error`, `reload_tasks_from_worker_error` | a reload requested from `onWorkerError`, with upstream's five-second watchdog |
+| `kill_worker_1`, `_2`, `_4`, `_5`, `worker_exit`, `shutdown_event` | `test_kill_worker` in base and process mode, with and without `reload_async`, `onWorkerExit`, and an `SW_SERVER_EVENT_SHUTDOWN` packet between workers |
+| `kill_self` | `test_kill_self`: a worker killing the worker that holds the connection |
+| `base`, `process`, `process_single_thread` | `test_base` and `test_process`: one request through each mode, the methods that must refuse (`shutdown` before start, `add_port` and `add_worker` after `create`, an unknown session, an unknown command), and the start, shutdown and manager callbacks |
+
+The lock upstream's client thread waits on is a condition variable when `onStart` unlocks
+it in the same process, and a pipe in `test_process`, whose forked worker 0 unlocks it.
+Three upstream assertions have no code left to test, so the cases leave them out:
+
+- `base`'s `Server::HOOK_WORKER_START` hook (`is_started()`), and `process`'s
+  `counter[2] >= 2`, which `manager_alarm`'s `Server::HOOK_MANAGER_TIMER` hook counted:
+  `Server::add_hook` and `manager_alarm` left the build (#1535).
+- `process`'s `call_command_handler_in_master(9999, ...)`: its body is now part of
+  `Server::command`, which looks the command up first, so nothing can call it with an
+  unknown id.
+
+Not yet run:
+
+- `clean_worker_1` (base mode) drives core-tests' `AsyncClient` from `onStart`'s timer in
+  the master's reactor, and nothing here ports that client yet.
+- `thread`, `task_thread`, `reload_thread`, `reload_thread_2` and `reload_thread_3` are
+  `#ifdef SW_THREAD` upstream. `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use
+  `MODE_THREAD`. The package links the NTS Cargo build's libswoole, where thread mode isn't
+  built: its `config.h` has no `SW_THREAD`, `SW_THREAD_LOCAL` globals are process-wide, and
+  `THREAD_SUPPORTED` stays false, so `create()` refuses `MODE_THREAD`. No lane builds the
+  case packages over ZTS.
 
 `core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
 `server`, in the same binary and phase, one function per TEST under its own name with the

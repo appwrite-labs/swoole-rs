@@ -29,7 +29,8 @@ are retried until the deadline.
 
 For the merge tier, failed phases come from its `phases` artifact, with new and fixed ones
 against the previous completed run on main, each new one with the open issues that mention it
-(or 'no open issue'); other failures show each failed job's log tail.
+(or 'no open issue'); other failures show each failed job's annotations: the tools print one
+per failed phase, PHPT regression and callgrind workload (tools/annotations.py).
 Status also shows the latest completed merge-tier run separately while the requested run
 is unfinished or absent. Its commit identifies the coverage; the exit code still describes
 the requested run.
@@ -50,10 +51,11 @@ import time
 import urllib.parse
 
 EXIT = {'passed': 0, 'failed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
-LOG_LINES = 40
 GATE_JOB = 'phpt / gate'
+# gate.py's annotation title for each regressed test, whose message starts with the test.
+REGRESSION = 'PHPT regression'
 # The merge-tier jobs (full-gates, or its shards "full-gates (N)") whose dev.py phases the
-# `phases*` artifacts list, replacing their log tails.
+# `phases*` artifacts list, replacing their annotations.
 PHASES_JOB = 'full-gates'
 
 
@@ -182,32 +184,22 @@ def wait(workflow, sha, deadline, poll):
         time.sleep(poll)
 
 
-def failure_logs(result):
-    """The tail of each failed job's log, so a failure can be read without another call."""
-    if result['state'] != 'failed':
-        tails = {}
-        for job in result.get('jobs', []):
-            if job['state'] == 'failure' and job.get('id'):
-                try:
-                    log = gh('api', f"repos/{{owner}}/{{repo}}/actions/jobs/{job['id']}/logs", '--allow-escape-sequences')
-                except subprocess.CalledProcessError as error:
-                    tails[job['name']] = ['Job log unavailable: ' + error.stderr.strip()]
-                    continue
-                lines = log.splitlines()
-                errors = [index for index, line in enumerate(lines) if '##[error]' in line]
-                if errors:
-                    lines = lines[:errors[-1] + 1]
-                tails[job['name']] = lines[-LOG_LINES:]
-        return {**result, 'logs': tails} if tails else result
-    try:
-        log = gh('run', 'view', str(result['run']), '--log-failed')
-    except subprocess.CalledProcessError:
-        return result
-    tails = {}
-    for line in log.splitlines():
-        job, _, text = line.partition('\t')
-        tails.setdefault(job, []).append(text.partition('\t')[2] or text)
-    return {**result, 'logs': {job: lines[-LOG_LINES:] for job, lines in tails.items()}}
+def annotations(job_id):
+    """A job's annotations as 'title: message' lines: what failed, without its log."""
+    rows = json.loads(gh('api', f'repos/{{owner}}/{{repo}}/check-runs/{job_id}/annotations?per_page=100') or '[]')
+    return [f"{row['title']}: {row['message']}" if row.get('title') else row['message'] for row in rows]
+
+
+def failure_annotations(result):
+    """Each failed job's annotations, even while its siblings still run."""
+    found = {}
+    for job in result.get('jobs', []):
+        if job['state'] == 'failure' and job.get('id'):
+            try:
+                found[job['name']] = annotations(job['id'])
+            except subprocess.CalledProcessError as error:
+                found[job['name']] = ['Annotations unavailable: ' + error.stderr.strip()]
+    return {**result, 'annotations': found} if found else result
 
 
 def phases(run, tails=None, reported=None):
@@ -237,20 +229,10 @@ def job_conclusions(run):
     return {job['name']: job['conclusion'] for job in json.loads(gh('run', 'view', str(run), '--json', 'jobs'))['jobs']}
 
 
-def gate_regressions(run):
-    """The PHPTs phpt-gate's summary lists as regressions (pass on upstream, fail here)."""
-    tests, listing = [], False
-    for line in gh('run', 'view', str(run), '--log-failed').splitlines():
-        job, _, text = line.partition('\t')
-        if job != GATE_JOB:
-            continue
-        text = text.partition('\t')[2] or text
-        text = text.split(' ', 1)[1] if text[:4].isdigit() and ' ' in text else text
-        if '<summary>' in text:
-            listing = 'regressions' in text
-        elif listing and text.startswith('- `'):
-            tests.append(text[3:].split('`')[0])
-    return tests
+def gate_regressions(job_id):
+    """The PHPTs the gate job annotated as regressions (pass on upstream, fail here)."""
+    prefix = REGRESSION + ': '
+    return [line[len(prefix):].split(' (')[0] for line in annotations(job_id) if line.startswith(prefix)]
 
 
 def phase_changes(result):
@@ -271,10 +253,12 @@ def phase_changes(result):
             # Like a phase, it's new unless it already failed in the previous run; the
             # full-gates shards are left out, since their phases speak for them.
             before = job_conclusions(run['databaseId'])
-            for job in sorted(job['name'] for job in result.get('jobs', []) if job['state'] == 'failure'):
-                if job.split(' (')[0] != PHASES_JOB and before.get(job) != 'failure':
-                    regressed = gate_regressions(result['run']) if job == GATE_JOB else []
-                    new.append(f"{job} job" + (f" ({', '.join(regressed)})" if regressed else ''))
+            for job in sorted((job for job in result.get('jobs', []) if job['state'] == 'failure'),
+                              key=lambda job: job['name']):
+                name = job['name']
+                if name.split(' (')[0] != PHASES_JOB and before.get(name) != 'failure':
+                    regressed = gate_regressions(job['id']) if name == GATE_JOB and job.get('id') else []
+                    new.append(f"{name} job" + (f" ({', '.join(regressed)})" if regressed else ''))
             return {**result, 'previous_run': run['url'], 'new_failures': new,
                     'fixed': sorted(name for name, passed in current.items() if passed and previous.get(name) is False),
                     'phase_logs': {name: tails[name] for name in new if name in tails},
@@ -319,10 +303,10 @@ def completed_main():
 def diagnostics(result):
     if result['state'] in ('passed', 'failed'):
         result = phase_changes(result)
-    result = failure_logs(result)
+    result = failure_annotations(result)
     if 'failed_phases' in result:
-        for job in [job for job in result.get('logs', {}) if job.split(' (')[0] == PHASES_JOB]:
-            result['logs'].pop(job)
+        for job in [job for job in result.get('annotations', {}) if job.split(' (')[0] == PHASES_JOB]:
+            result['annotations'].pop(job)
     return result
 
 
@@ -349,8 +333,8 @@ def report(result, as_json):
         print(f"  since {result['previous_run']}: new failures: "
               f"{', '.join(name + known(name) for name in result['new_failures']) or 'none'}; "
               f"fixed: {', '.join(result['fixed']) or 'none'}")
-    for job, lines in result.get('logs', {}).items():
-        print(f'--- {job} (last {len(lines)} lines)', *lines, sep='\n')
+    for job, lines in result.get('annotations', {}).items():
+        print(f'--- {job} annotations', *lines, sep='\n')
     for name, lines in result.get('phase_logs', {}).items():
         print(f'--- new failure {name} (last {len(lines)} log lines)', *lines, sep='\n')
     if result.get('last_completed'):

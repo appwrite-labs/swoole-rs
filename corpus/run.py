@@ -146,17 +146,22 @@ class WebSocket:
             data.extend(chunk)
         return bytes(data)
 
-    def send(self, payload, opcode=1):
+    def send(self, payload, opcode=1, fin=True):
+        """One frame: `fin=False` and then opcode 0 send a message in fragments."""
         mask = os.urandom(4)
-        first = 0x80 | opcode
+        first = (0x80 if fin else 0) | opcode
         if self.deflate:
             compressor = zlib.compressobj(wbits=-15)
             payload = (compressor.compress(payload) + compressor.flush(zlib.Z_SYNC_FLUSH))[:-4]
             first |= 0x40  # RSV1: compressed
-        if len(payload) >= 65536:
-            raise ValueError('test sender only supports frames under 64 KiB')
-        length = bytes([0x80 | len(payload)]) if len(payload) < 126 else b'\xfe' + struct.pack('!H', len(payload))
-        masked = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+        if len(payload) < 126:
+            length = bytes([0x80 | len(payload)])
+        elif len(payload) < 65536:
+            length = b'\xfe' + struct.pack('!H', len(payload))
+        else:
+            length = b'\xff' + struct.pack('!Q', len(payload))
+        key = int.from_bytes(mask * ((len(payload) + 3) // 4), 'big') >> (-len(payload) % 4 * 8)
+        masked = (int.from_bytes(payload, 'big') ^ key).to_bytes(len(payload), 'big')
         self.socket.sendall(bytes([first]) + length + mask + masked)
 
     def receive(self):

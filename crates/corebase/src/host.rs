@@ -664,6 +664,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
     fn datahead_dump_formats_and_truncates_like_sw_snprintf() {
         let head = DataHead {
             fd: -7,
@@ -694,6 +695,7 @@ mod tests {
     /// Upstream `TEST(base, datahead_dump)`, its inputs and its assertion as written:
     /// `std::string::find` returns `npos` (greater than 1) when the text is absent.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
     fn base_datahead_dump() {
         let head = DataHead {
             fd: 123,
@@ -716,6 +718,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn shell_exec_pipes_the_command_output() {
         let mut pid = 0;
         let fd =

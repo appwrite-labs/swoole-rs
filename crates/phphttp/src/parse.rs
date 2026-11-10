@@ -1,14 +1,15 @@
 //! The HTTP/1 request parser: llhttp and multipart callbacks over
 //! `swoole::http::ContextState`, filling `Swoole\Http\Request`'s `server`,
 //! `header`, `get`, `post`, `cookie` and `files` as upstream's
-//! `swoole_http_request.cc` did. llhttp and the multipart parser stay the
-//! bundled C (third-party); what Swoole itself owns goes through `host`.
+//! `swoole_http_request.cc` did. llhttp stays the bundled C (third-party); the
+//! multipart parser is crates/http's; what Swoole itself owns goes through `host`.
 use crate::host;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
+use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_httpbindings::{
     RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
     swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
@@ -23,22 +24,20 @@ use swoole_rs_zend::sys::{
 };
 use swoole_rs_zend::{Owned, OwnedArray, Value, ZStr, ZString, string};
 
-/// The bundled `multipart_parser` (`thirdparty/multipart_parser.h`), up to
-/// the fields its callbacks use.
-#[repr(C)]
+/// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
-    settings: *const c_void,
-    index: usize,
-    error_i: usize,
-    boundary_length: u8,
+    parser: MultipartParser,
     fp: *mut libc::FILE,
-    data: *mut c_void,
+}
+
+/// The multipart parser's callbacks: the context and the current upload's stream.
+struct Parts<'a> {
+    state: &'a mut State,
+    fp: &'a mut *mut libc::FILE,
 }
 
 type DataCb = unsafe extern "C" fn(*mut crate::state::Llhttp, *const c_char, usize) -> c_int;
 type NotifyCb = unsafe extern "C" fn(*mut crate::state::Llhttp) -> c_int;
-type PartDataCb = unsafe extern "C" fn(*mut Multipart, *const c_char, usize) -> c_int;
-type PartNotifyCb = unsafe extern "C" fn(*mut Multipart) -> c_int;
 
 /// `llhttp_settings_t`.
 #[repr(C)]
@@ -60,18 +59,6 @@ struct Settings {
     rest: [Option<NotifyCb>; 12],
 }
 
-/// `multipart_parser_settings`.
-#[repr(C)]
-struct PartSettings {
-    on_header_field: Option<PartDataCb>,
-    on_header_value: Option<PartDataCb>,
-    on_part_data: Option<PartDataCb>,
-    on_part_data_begin: Option<PartNotifyCb>,
-    on_headers_complete: Option<PartNotifyCb>,
-    on_part_data_end: Option<PartNotifyCb>,
-    on_body_end: Option<PartNotifyCb>,
-}
-
 unsafe extern "C" {
     fn llhttp_init(parser: *mut crate::state::Llhttp, kind: c_int, settings: *const c_void);
     fn llhttp_execute(parser: *mut crate::state::Llhttp, data: *const c_char, len: usize) -> c_int;
@@ -81,14 +68,6 @@ unsafe extern "C" {
     fn llhttp_should_keep_alive(parser: *const crate::state::Llhttp) -> c_int;
     fn llhttp_set_error_reason(parser: *mut crate::state::Llhttp, reason: *const c_char);
     fn llhttp_method_name(method: c_int) -> *const c_char;
-    fn multipart_parser_init(
-        boundary: *const c_char,
-        length: usize,
-        settings: *const PartSettings,
-    ) -> *mut Multipart;
-    fn multipart_parser_free(parser: *mut Multipart);
-    fn multipart_parser_execute(parser: *mut Multipart, data: *const c_char, len: usize) -> isize;
-    fn multipart_parser_error_msg(parser: *mut Multipart, buf: *mut c_char, len: usize) -> c_int;
     fn php_url_decode(text: *mut c_char, len: usize) -> usize;
     fn php_register_variable_safe(
         var: *const c_char,
@@ -158,15 +137,27 @@ static PIECES: Settings = Settings {
     ..SERVER
 };
 
-static PARTS: PartSettings = PartSettings {
-    on_header_field: Some(on_part_header_field),
-    on_header_value: Some(on_part_header_value),
-    on_part_data: Some(on_part_data),
-    on_part_data_begin: None,
-    on_headers_complete: Some(on_part_headers_complete),
-    on_part_data_end: Some(on_part_data_end),
-    on_body_end: None,
-};
+impl swoole_rs_http::multipart_parser::Parts for Parts<'_> {
+    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+        header_field(self.state, data.as_ptr(), data.len())
+    }
+
+    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+        part_header_value(self.state, data)
+    }
+
+    fn on_part_data(&mut self, data: &[u8]) -> c_int {
+        part_data(self.state, self.fp, data)
+    }
+
+    fn on_headers_complete(&mut self) -> c_int {
+        part_headers_complete(self.state, self.fp)
+    }
+
+    fn on_part_data_end(&mut self) -> c_int {
+        part_data_end(self.state, self.fp)
+    }
+}
 
 /// Keys interned at MINIT (Swoole's `SW_ZSTR_KNOWN`; interning returns the
 /// same strings).
@@ -383,16 +374,6 @@ unsafe fn state<'a>(parser: *mut crate::state::Llhttp) -> &'a mut State {
     // SAFETY: per the caller.
     let data = unsafe { (*parser).data };
     // SAFETY: `data` is the context, whose prefix `State` is.
-    unsafe { &mut *data.cast::<State>() }
-}
-
-/// The context a multipart parser belongs to (`p->data`).
-/// # Safety
-/// `parser` is a context's multipart parser, inside its callbacks.
-unsafe fn part_state<'a>(parser: *mut Multipart) -> &'a mut State {
-    // SAFETY: per the caller.
-    let data = unsafe { (*parser).data };
-    // SAFETY: `data` is the context, set by `multipart_init`.
     unsafe { &mut *data.cast::<State>() }
 }
 
@@ -830,7 +811,7 @@ unsafe extern "C" fn on_body(
         state.request.body_at = at.wrapping_sub(state.request.body_length).cast();
         state.request.body_length += length;
     }
-    if !state.mt_parser.is_null() && state.recv_chunked == 0 {
+    if state.mt_parser.is_some() && state.recv_chunked == 0 {
         let mut prefix = 0;
         // SAFETY: llhttp's span and a writable result.
         unsafe {
@@ -857,7 +838,7 @@ unsafe extern "C" fn on_message_complete(parser: *mut crate::state::Llhttp) -> c
         .map(|body| (body.as_ptr(), body.len()));
     let content_length = chunked.map_or(state.request.body_length, |(_, length)| length);
     if let Some((body, length)) = chunked
-        && !state.mt_parser.is_null()
+        && state.mt_parser.is_some()
     {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
@@ -895,11 +876,7 @@ unsafe extern "C" fn on_message_complete(parser: *mut crate::state::Llhttp) -> c
 }
 
 fn multipart_free(state: &mut State) {
-    if !state.mt_parser.is_null() {
-        // SAFETY: the parser `multipart_init` made, freed once.
-        unsafe { multipart_parser_free(state.mt_parser) };
-        state.mt_parser = ptr::null_mut();
-    }
+    state.mt_parser = None;
 }
 
 /// `Context::free`'s share: what the parser still holds.
@@ -969,16 +946,17 @@ pub(crate) unsafe fn multipart_boundary_of(
 
 /// `Context::init_multipart_parser`.
 fn multipart_init(state: &mut State, boundary: *const u8, length: usize) -> bool {
-    // SAFETY: the boundary's span and the static settings.
-    let parser = unsafe { multipart_parser_init(boundary.cast(), length, &raw const PARTS) };
-    state.mt_parser = parser;
-    if parser.is_null() {
-        host::fatal("multipart_parser_init() failed");
-        return false;
-    }
+    let boundary = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the boundary's span.
+        unsafe { std::slice::from_raw_parts(boundary, length) }
+    };
+    state.mt_parser = Some(Box::new(Multipart {
+        parser: MultipartParser::new(boundary),
+        fp: ptr::null_mut(),
+    }));
     state.parse.form_data = Some(Box::new(Vec::with_capacity(BUFFER_SIZE_STD)));
-    // SAFETY: the fresh parser.
-    unsafe { (*parser).data = ptr::from_mut(state).cast() };
     true
 }
 
@@ -999,16 +977,22 @@ pub(crate) unsafe fn init_multipart(
 
 /// `Context::parse_multipart_data`.
 pub(crate) fn multipart_parse(state: &mut State, at: *const u8, length: usize) -> bool {
-    let parser = state.mt_parser;
-    // SAFETY: the context's multipart parser and `length` readable bytes.
-    let parsed = unsafe { multipart_parser_execute(parser, at.cast(), length) };
+    let Some(mut multipart) = state.mt_parser.take() else {
+        return false;
+    };
+    let data = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: `length` readable bytes, which the callbacks do not touch.
+        unsafe { std::slice::from_raw_parts(at, length) }
+    };
+    let Multipart { parser, fp } = &mut *multipart;
+    let parsed = parser.execute(&mut Parts { state, fp }, data);
+    let mut reason = parser.error_message();
+    state.mt_parser = Some(multipart);
     let func = c"Context::parse_multipart_data";
     if parsed < 0 {
-        let mut reason = vec![0u8; STACK_BUFFER_SIZE];
-        // SAFETY: a writable buffer of its length.
-        let written =
-            unsafe { multipart_parser_error_msg(parser, reason.as_mut_ptr().cast(), reason.len()) };
-        reason.truncate(usize::try_from(written).unwrap_or(0).min(STACK_BUFFER_SIZE));
+        reason.truncate(STACK_BUFFER_SIZE);
         let mut message = b"parse multipart body failed, reason: ".to_vec();
         message.extend_from_slice(&reason);
         host::log(LOG_NOTICE, SERVER_INVALID_REQUEST, func, message);
@@ -1038,15 +1022,6 @@ pub(crate) fn compression_method(state: &mut State, at: *const u8, length: usize
         let method = method as i8;
         state.compression_method = method;
     }
-}
-
-unsafe extern "C" fn on_part_header_field(
-    parser: *mut Multipart,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: the multipart parser calls back with the context's parser.
-    header_field(unsafe { part_state(parser) }, at.cast(), length)
 }
 
 /// A string zval's bytes up to its first NUL (`%s`, `strlen`), and its length.
@@ -1088,15 +1063,8 @@ fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-unsafe extern "C" fn on_part_header_value(
-    parser: *mut Multipart,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: the multipart parser calls back with the context's parser.
-    let state = unsafe { part_state(parser) };
-    // SAFETY: the parser's span.
-    let value_ = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
+fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
+    let length = value_.len();
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
     // SAFETY: reads a PHP INI global.
@@ -1258,15 +1226,7 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-unsafe extern "C" fn on_part_data(
-    parser: *mut Multipart,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: the multipart parser calls back with the context's parser.
-    let state = unsafe { part_state(parser) };
-    // SAFETY: the parser's span.
-    let data = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
+fn part_data(state: &mut State, upload: &mut *mut libc::FILE, data: &[u8]) -> c_int {
     if state.parse.form_data_name.is_some() {
         state
             .parse
@@ -1275,19 +1235,17 @@ unsafe extern "C" fn on_part_data(
             .extend_from_slice(data);
         return 0;
     }
-    // SAFETY: the live multipart parser.
-    let fp = unsafe { (*parser).fp };
+    let fp = *upload;
     if fp.is_null() {
         return 0;
     }
     // SAFETY: an open stream and the parser's span.
-    let written = unsafe { libc::fwrite(at.cast(), 1, length, fp) };
-    if written != length {
+    let written = unsafe { libc::fwrite(data.as_ptr().cast(), 1, data.len(), fp) };
+    if written != data.len() {
         upload_long(state, b"error", UPLOAD_CANT_WRITE);
         // SAFETY: the stream, closed once.
         unsafe { libc::fclose(fp) };
-        // SAFETY: the live multipart parser.
-        unsafe { (*parser).fp = ptr::null_mut() };
+        *upload = ptr::null_mut();
         host::log(
             0,
             -errno(),
@@ -1298,9 +1256,7 @@ unsafe extern "C" fn on_part_data(
     0
 }
 
-unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
-    // SAFETY: the multipart parser calls back with the context's parser.
-    let state = unsafe { part_state(parser) };
+fn part_headers_complete(state: &mut State, upload: &mut *mut libc::FILE) -> c_int {
     if state.parse.input_name.is_none() {
         return 0;
     }
@@ -1329,8 +1285,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
         host::log(0, -errno(), c"multipart_body_on_header_complete", message);
         return 0;
     }
-    // SAFETY: the live multipart parser.
-    unsafe { (*parser).fp = fp };
+    *upload = fp;
     upload_bytes(state, b"tmp_name", &path);
     let tmpfiles = property(state, Property::TmpFiles);
     // SAFETY: the request's `tmpfiles` array and the path's bytes.
@@ -1338,9 +1293,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     0
 }
 
-unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
-    // SAFETY: the multipart parser calls back with the context's parser.
-    let state = unsafe { part_state(parser) };
+fn part_data_end(state: &mut State, upload: &mut *mut libc::FILE) -> c_int {
     if let Some(name) = state.parse.form_data_name.take() {
         let post = property(state, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
@@ -1359,14 +1312,12 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
     let Some(input_name) = state.parse.input_name.take() else {
         return 0;
     };
-    // SAFETY: the live multipart parser.
-    let fp = unsafe { (*parser).fp };
+    let fp = *upload;
     if !fp.is_null() {
         upload_long(state, b"size", file_size(fp));
         // SAFETY: the stream, closed once.
         unsafe { libc::fclose(fp) };
-        // SAFETY: the live multipart parser.
-        unsafe { (*parser).fp = ptr::null_mut() };
+        *upload = ptr::null_mut();
     }
     let Some(code) = upload_error(state).map(Value::long) else {
         state.parse.input_name = Some(input_name);
@@ -1471,16 +1422,6 @@ mod tests {
             size_of::<Settings>(),
             25 * size_of::<usize>(),
             "llhttp_settings_t"
-        );
-        assert_eq!(
-            size_of::<PartSettings>(),
-            7 * size_of::<usize>(),
-            "multipart_parser_settings"
-        );
-        assert_eq!(
-            std::mem::offset_of!(Multipart, data),
-            40,
-            "multipart_parser.data"
         );
     }
 

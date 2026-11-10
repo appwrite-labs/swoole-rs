@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn bump_pages_match_alignment_zeroing_capacity_and_growth() {
     for shared in [false, true] {
         let mut pages = Global::new(64, shared);

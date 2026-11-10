@@ -313,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn owner_io_copy_release_and_close() {
         if crate::isolated_process::run_in_child(
             "file_record::tests::owner_io_copy_release_and_close",
@@ -430,6 +431,7 @@ mod tests {
         }
     }
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn owner_drop_preserves_a_reopened_file_descriptor_number() {
         if crate::isolated_process::run_in_child(
             "file_record::tests::owner_drop_preserves_a_reopened_file_descriptor_number",

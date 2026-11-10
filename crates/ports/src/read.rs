@@ -666,7 +666,7 @@ pub(crate) mod tests {
     }
 
     /// The request's native effects (`swoole_rs_http`'s `HttpNative` ops): heap
-    /// strings, the bundled multipart parser and libc's files.
+    /// strings and libc's files.
     unsafe extern "C" fn request_native(
         op: u32,
         a: *mut c_void,
@@ -674,7 +674,6 @@ pub(crate) mod tests {
         n: u64,
         _: u64,
     ) -> u64 {
-        use swoole_rs_oracle::multipart;
         let length = usize::try_from(n).unwrap();
         let file = a.cast::<libc::FILE>();
         match op {
@@ -718,15 +717,6 @@ pub(crate) mod tests {
                     unsafe { buffer.str.add(buffer.length).copy_from(b, length) };
                     buffer.length += length;
                 }
-                0
-            }
-            3 => unsafe { multipart::multipart_parser_init(b.cast(), length, a) as u64 },
-            4 => {
-                unsafe { multipart::multipart_parser_execute(a, b.cast(), length) }.cast_unsigned()
-                    as u64
-            }
-            5 => {
-                unsafe { multipart::multipart_parser_free(a) };
                 0
             }
             6 => i64::from(unsafe { libc::mkstemp(a.cast()) }).cast_unsigned(),

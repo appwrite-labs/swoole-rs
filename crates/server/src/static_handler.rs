@@ -99,10 +99,6 @@ impl<E: Effects> StaticHandler<E> {
         })
     }
 
-    fn strings(&self, kind: u32) -> (bool, Vec<Vec<u8>>) {
-        self.server.static_strings(kind)
-    }
-
     fn autoindex(&self) -> bool {
         self.server.config().http_autoindex
     }
@@ -173,23 +169,27 @@ impl<E: Effects> StaticHandler<E> {
         let mut context = self.context.borrow_mut();
         self.server.static_rewrite(&mut context);
         let root = self.server.document_root();
-        let (_, locations) = self.strings(LOCATIONS);
-        let (index_enabled, index_files) = self.strings(INDEX_FILES);
-        let has_index = index_enabled && !index_files.is_empty();
+        let has_index = self
+            .server
+            .static_strings(INDEX_FILES, |enabled, files| enabled && !files.is_empty());
         let autoindex = self.autoindex();
-        context.try_serve(&root, &locations, has_index, autoindex, &self.effects)
+        self.server.static_strings(LOCATIONS, |_, locations| {
+            context.try_serve(root, locations, has_index, autoindex, &self.effects)
+        })
     }
 
     /// With `http_index_files`, the directory's first index file becomes the
     /// file. False to stop serving.
     #[must_use]
     pub fn try_serve_index_file(&self) -> bool {
-        let (enabled, files) = self.strings(INDEX_FILES);
-        let files = if enabled { files } else { Vec::new() };
         let autoindex = self.autoindex();
-        self.context
-            .borrow_mut()
-            .try_serve_index_file(&files, autoindex, &self.effects)
+        self.server.static_strings(INDEX_FILES, |enabled, files| {
+            self.context.borrow_mut().try_serve_index_file(
+                if enabled { files } else { &[] },
+                autoindex,
+                &self.effects,
+            )
+        })
     }
 
     /// The directory's listing page.

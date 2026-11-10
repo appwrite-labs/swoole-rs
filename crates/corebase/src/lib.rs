@@ -619,6 +619,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strndup")]
     fn dec2hex_returns_an_owned_digit_string() {
         for (value, base, expected) in [
             (255, 16, c"ff"),
@@ -641,6 +642,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strtol")]
     fn stoi_parser_publishes_only_representable_decimal_values() {
         for (text, expected) in [
             ("0", 0),
@@ -668,6 +670,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strncasecmp")]
     fn native_hex_accepts_non_hex_letters_and_counts_prefix() {
         let mut parsed = 0;
         unsafe {
