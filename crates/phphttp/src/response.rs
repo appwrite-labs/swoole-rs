@@ -17,6 +17,7 @@ use std::{
 };
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, declare_long, declare_property_null,
     handlers, init_object, push_string, set_key,
@@ -119,8 +120,8 @@ method_table! {
 /// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
+pub unsafe fn response_minit(args: &MinitArgs) {
+    let codecs = args.codecs | u32::from(args.compression) << 3;
     // SAFETY: MINIT, with a static table.
     unsafe {
         RESPONSE.register(

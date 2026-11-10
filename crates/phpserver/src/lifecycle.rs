@@ -148,14 +148,8 @@ unsafe extern "C" {
     /// `E_ERROR` for an unconstructed one.
     static swoole_process_ce: *mut zend_class_entry;
     fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void;
-    /// `Swoole\Http\Server` and `Swoole\WebSocket\Server` (crates/phphttp).
-    static swoole_http_server_ce: *mut zend_class_entry;
-    static swoole_websocket_server_ce: *mut zend_class_entry;
     /// `Swoole\Redis\Server` (crates/phpredis).
     static swoole_redis_server_ce: *mut zend_class_entry;
-    /// crates/phphttp's `swoole_http_server_can_cache_session_addr(serv)`.
-    #[link_name = "_Z41swoole_http_server_can_cache_session_addrPKN6swoole6ServerE"]
-    fn can_cache_session_addr(serv: *const c_void) -> bool;
     /// native/error/error.cc's `swoole_get_last_error_msg()`: `sw_error`.
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
@@ -170,14 +164,11 @@ fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
 fn kind(object: ServerObject) -> c_int {
     let ce = object.class();
-    // SAFETY: classes registered at MINIT, read-only since.
-    let (redis, websocket, http) = unsafe {
-        (
-            swoole_redis_server_ce,
-            swoole_websocket_server_ce,
-            swoole_http_server_ce,
-        )
-    };
+    // SAFETY: a class registered at MINIT, read-only since.
+    let redis = unsafe { swoole_redis_server_ce };
+    let http = swoole_rs_phpswoole::families().map(|families| &families.http);
+    let websocket = http.map_or(ptr::null_mut(), |http| (http.websocket_class)());
+    let http = http.map_or(ptr::null_mut(), |http| (http.server_class)());
     if instance_of(ce, redis) {
         KIND_REDIS
     } else if instance_of(ce, websocket) {
@@ -303,8 +294,10 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         // SAFETY: a live server.
         fact::MAX_CONNECTION => i64::from(serv.max_connection()),
-        // SAFETY: a live server.
-        fact::CACHE_SESSION_ADDR => i64::from(unsafe { can_cache_session_addr(serv.raw()) }),
+        fact::CACHE_SESSION_ADDR => i64::from(swoole_rs_phpswoole::families().is_some_and(
+            // SAFETY: a live server.
+            |families| unsafe { (families.http.can_cache_session_addr)(serv.raw()) },
+        )),
         _ => 0,
     }
 }

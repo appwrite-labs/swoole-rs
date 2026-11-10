@@ -20,6 +20,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::{php_swoole_server_get_ptr, php_swoole_server_zval_ptr};
 use swoole_rs_phpstubs::websocket as stubs;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
     DecodedFrame, INVALID_CONTROL, control_invalid, encode_close_into, encode_into, encoded_size,
@@ -142,9 +143,12 @@ const ERR: c_int = -1;
 /// `swoole::Server`, opaque.
 type Server = c_void;
 
-/// `Swoole\WebSocket\Server`; `swoole_server.cc` tells a WebSocket server by it.
-#[unsafe(no_mangle)]
-pub static mut swoole_websocket_server_ce: *mut zend_class_entry = ptr::null_mut();
+/// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
+/// tells a WebSocket server by it.
+#[must_use]
+pub fn websocket_class() -> *mut zend_class_entry {
+    SERVER.entry()
+}
 
 /// What the methods read of a `swoole::Connection`.
 #[derive(Clone, Copy)]
@@ -269,15 +273,10 @@ method_table! {
 /// `php_swoole_websocket_server_minit` registered them.
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Http\Server` is registered.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_websocket_minit(
-    module_number: c_int,
-    serializable: bool,
-    zlib: bool,
-) {
-    ZLIB.store(zlib, Relaxed);
-    // SAFETY: MINIT registered it first and nothing writes it now.
-    let http_server = unsafe { crate::server::swoole_http_server_ce };
+pub unsafe fn websocket_minit(args: &MinitArgs) {
+    let (module_number, serializable) = (args.module, args.thread);
+    ZLIB.store(args.zlib, Relaxed);
+    let http_server = crate::server::server_class();
     // SAFETY: MINIT, with a static table and the registered parent. Its
     // objects are the parent's (no handlers of its own are installed).
     unsafe {
@@ -340,8 +339,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_websocket_minit(
     // SAFETY: as above.
     unsafe { declare_string(close, c"reason", c"", ZEND_ACC_PUBLIC) };
     constants(module_number);
-    // SAFETY: MINIT, before any thread reads it.
-    unsafe { swoole_websocket_server_ce = SERVER.entry() };
 }
 
 /// The global constants, `SWOOLE_WEBSOCKET_*` then the BC `WEBSOCKET_*`, in

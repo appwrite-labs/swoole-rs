@@ -958,8 +958,7 @@ unsafe fn on_receive(server: *mut c_void, conn: *mut c_void, request: *mut c_voi
 }
 
 /// `php_swoole_http2_server_onClose`: the connection's session goes.
-#[unsafe(export_name = "_Z31php_swoole_http2_server_onClosePN6swoole6ServerEl")]
-pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session_id: i64) {
+pub fn server_on_close(session_id: i64) {
     crate::session::session_free(session_id);
 }
 

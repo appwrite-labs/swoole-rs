@@ -9,6 +9,7 @@ use crate::{
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
 use swoole_rs_phpstubs::http_request;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Call, Class, Key, Value, declare_long, declare_property_null, handlers, init_object,
     sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
@@ -60,8 +61,7 @@ method_table! {
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry {
+pub unsafe fn request_minit(_: &MinitArgs) {
     // SAFETY: MINIT, with a static table.
     unsafe {
         REQUEST.register(
@@ -89,7 +89,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry
         // SAFETY: as above.
         unsafe { declare_property_null(ce, name, swoole_rs_zend::sys::ZEND_ACC_PUBLIC) };
     }
-    ce
 }
 
 /// `http_request_get_and_check_context`.
