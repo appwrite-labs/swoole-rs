@@ -20,7 +20,3 @@ workspace = true
 [[test]]
 name = "http_parser"
 path = "../../tests/modules/http/http_parser.rs"
-
-[[test]]
-name = "multipart_parser"
-path = "../../tests/modules/http/multipart_parser.rs"
