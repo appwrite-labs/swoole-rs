@@ -235,3 +235,34 @@ this fixture's `rust_worker_retirement.abort_and_reset`) is crates/server's
 | `process_pool.worker` | `process_pool.worker` |
 | `process_pool.add_worker` | `process_pool.add_worker` |
 | `process_pool.reload_from_child_exit_callback` | `process_pool.reload_from_child_exit_callback` |
+
+`core-tests/src/coroutine/async.cpp` is Rust in `system/src/co_async.rs`, run by
+`hooks-system-rust`. `coroutine::async(handler, event, timeout)` and `async(fn)` are
+crates/hooks's `swr_v1_hook_async` and `swr_v1_hook_async_job` over `COROUTINE_ASYNC`,
+the operations the hooked functions use, and the package calls them through its
+`swoole-rs-hooks` dependency. `coroutine_async.gethostbyname` resolves www.baidu.com, so
+it is excluded as external network. It checks upstream's
+`(\d{1,3}).(\d{1,3}).(\d{1,3}).(\d{1,3})` match as an IPv4 parse, which accepts
+inet_ntop's output exactly when that output is a dotted quad.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `coroutine_async.usleep` | `coroutine_async.usleep` |
+| `coroutine_async.gethostbyname` | `coroutine_async.gethostbyname` (excluded: external network) |
+| `coroutine_async.error` | `coroutine_async.error` |
+| `coroutine_async.cancel` | `coroutine_async.cancel` |
+| `coroutine_async.timeout` | `coroutine_async.timeout` |
+
+`core-tests/src/coroutine/http_server.cpp`'s two TESTs have no Rust case. Their
+assertions are status 200 and the bodies of core-tests' own coroutine httplib server
+(`core-tests/include/httplib_server.h`, test-library code), as an httplib client thread
+sees them, so a port would test a Rust rewrite of that server and nothing in the
+build. The Swoole operations the server runs on already have cases:
+`coroutine_socket.bind_success`, `listen`, `accept`, `recv_success`,
+`write_and_read` and `cancel` (`SW_EVENT_READ`, which the server's `stop()` cancels its
+accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
+
+| Upstream TEST | Rust case or reason |
+| --- | --- |
+| `coroutine_http_server.get` | none: it asserts the test library's httplib server, whose Swoole operations are the cases above |
+| `coroutine_http_server.post` | none: as `get` |
