@@ -27,9 +27,11 @@ def shard(paths, index, count):
 # Outside tests/, but read by tests: config.php's TEST_IMAGE*, DOCUMENT_ROOT and
 # SOURCE_ROOT_PATH fixtures, and the static handlers' document_root (examples/).
 FIXTURES = ['README.md', 'docs/swoole-logo.svg', 'examples', 'package.xml', 'core-tests/fuzz/cases']
-# Each shard pays about 3 minutes of services and setup, so the PR tier runs one per PER_SHARD
-# tests (about 2.5 minutes of them), up to the merge tier's MAX_SHARDS.
-PER_SHARD, MAX_SHARDS = 150, 6
+# Each shard pays about 2 minutes of runner start, services and setup, so the PR tier runs one
+# per PER_SHARD tests (about 1.5 minutes of them), up to the merge tier's MAX_SHARDS. Nine,
+# because the shards are the merge queue's longest chain and the whole corpus is 17 minutes
+# of tests run one at a time: the slowest of nine takes 2.5 minutes, of six 3.7.
+PER_SHARD, MAX_SHARDS = 150, 9
 
 
 def blobs(source):

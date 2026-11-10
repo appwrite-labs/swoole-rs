@@ -116,21 +116,21 @@ without modifying the original PHPT assertions or capability probes.
 
 The merge tier (`.github/workflows/phpt.yml`, called from `merge.yml`) runs every pinned
 PHPT against the upstream reference and the Cargo build, both built
-with PHP sockets support, in 6 shards per engine. A push run leaves upstream's shards out
+with PHP sockets support, in 9 shards per engine. A push run leaves upstream's shards out
 while a baseline holds (below) and gates the Cargo build on that run's upstream reports;
 the weekly scheduled run and any dispatched one run them. The shards don't run as root, so the five
 tests that skip unless root run again as root in the `phpt-root` job, with their own
 re-runs and gate (`phpt-root.json`). The shards run:
 
 ```sh
-python3 corpus/upstream/inventory.py --shard 3/6 --output manifest.json
+python3 corpus/upstream/inventory.py --shard 3/9 --output manifest.json
 python3 corpus/upstream/run.py --manifest manifest.json --engine cargo=/absolute/swoole.so --output cargo-3.json
 python3 corpus/upstream/gate.py upstream-*.json cargo-*.json --output phpt.json
 ```
 
 `inventory.py` lists every `.phpt` at the pin (family = its `tests/` directory)
 and every other file under `tests/` as a support file. `--plan` prints the shard
-matrix for the families selected, one shard per 150 tests up to 6, as a JSON list of
+matrix for the families selected, one shard per 150 tests up to 9, as a JSON list of
 indexes (`--module swoole_server`: `[1, 2]`). `gate.py` fails if any test
 that passes on upstream does not pass on the Cargo build, including when its result is
 missing, and refuses interrupted shards. Tests failing on both are listed, not
@@ -159,7 +159,7 @@ as inconclusive.
 Before that, the PR tier's `phpt` job runs the families of the modules a PR
 touches (each module in `migration/modules.json` lists its `phpt_families`; every family
 for a change to shared build inputs) through the same `phpt.yml`, on the Cargo build alone,
-in one shard per 150 of their tests, at most 6 (`inventory.py --plan`), with the services those families reach. Upstream doesn't change between PRs, so the gate takes upstream's
+in one shard per 150 of their tests, at most 9 (`inventory.py --plan`), with the services those families reach. Upstream doesn't change between PRs, so the gate takes upstream's
 reports and `upstream.so` from main's latest merge-tier run whose upstream shards passed
 (`tools/ci.py phpt-baseline`), cut to those families. That baseline holds only while
 what upstream's results depend on is unchanged since its commit: the pin and its build,
