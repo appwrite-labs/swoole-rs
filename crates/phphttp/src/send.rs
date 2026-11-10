@@ -17,9 +17,10 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
+    Props,
     bailout::{self, Bailout},
     string::bytes,
-    sys::{self as z, zend_string},
+    sys::zend_string,
 };
 
 /// `SW_HTTP_MAX_APPEND_DATA`: a larger body is sent on its own, uncopied.
@@ -85,32 +86,25 @@ pub(crate) fn http2(
 
 /// The file's `Content-Type` header, unless the response has one.
 fn file_type(ctx: *mut Context, file: *mut zend_string) {
-    // SAFETY: the response's live object zval.
-    let object = unsafe { swoole_rs_zend::value::obj_of(state(ctx).response.zobject.ptr) };
-    // SAFETY: the registered class and its object, which declares `header`.
-    let header = unsafe {
-        z::swr_zend_property_array(crate::response::entry(), object, c"header".as_ptr(), 6)
+    let Some(object) = state(ctx).response.zobject.object() else {
+        return;
     };
-    // SAFETY: an array zval.
-    let table = unsafe { swoole_rs_zend::value::table(header) };
-    let key = c"Content-Type";
-    // SAFETY: a live table.
-    if !unsafe { z::zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) }.is_null() {
+    // SAFETY: the context's live response, under its registered class.
+    let props = unsafe { Props::new(crate::response::entry(), object) };
+    // SAFETY: nothing else borrows `header`, and no PHP code runs, until the
+    // type is added.
+    let header = unsafe { props.array(c"header") };
+    let key = b"Content-Type";
+    if header
+        .array()
+        .is_some_and(|header| header.find(key).is_some())
+    {
         return;
     }
     // SAFETY: a live file name.
     let path = unsafe { bytes(file) };
     let mime = swoole_rs_phpswoole::mime_type(path);
-    // SAFETY: a live array and the type's bytes, which Zend copies.
-    unsafe {
-        z::add_assoc_stringl_ex(
-            header,
-            key.as_ptr(),
-            key.count_bytes(),
-            mime.as_ptr(),
-            mime.count_bytes(),
-        );
-    };
+    header.insert_bytes(key, Some(mime.to_bytes()));
 }
 
 /// Send a header without borrowing context state across the IO.

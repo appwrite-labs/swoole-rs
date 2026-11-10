@@ -15,8 +15,8 @@ void swr_zend_hash_foreach_kv(const HashTable *table,
 
 /* SW_HASHTABLE_FOREACH_START2's step, without ZVAL_DEREF: the element at or after
  * `*position` (null past the end), with its string key in `*key` (null for an int
- * key); `*position` moves past it. Start at 0. */
-zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key);
+ * key, which goes in `*index`); `*position` moves past it. Start at 0. */
+zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index);
 
 /* _zend_handle_numeric_str: whether a string key is a canonical integer. */
 bool swr_zend_handle_numeric_str(const char *key, size_t length, zend_ulong *index);

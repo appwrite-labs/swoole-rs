@@ -6,7 +6,7 @@
 use crate::{
     context::{self, CompressionTypes},
     host::{self, Context},
-    parse::{Key, find, parse_request},
+    parse::{Key, add_protocol, add_server, parse_request},
     send,
     server::{Callable, call_handler},
     websocket,
@@ -1015,11 +1015,7 @@ unsafe extern "C" fn collect(
 /// handler arguments (released by the caller).
 fn objects(context: *mut Context) -> [zval; 2] {
     let state = send::state(context);
-    // SAFETY: the context's live request object.
-    let request = unsafe { *state.request.zobject.ptr };
-    // SAFETY: the context's live response object.
-    let response = unsafe { *state.response.zobject.ptr };
-    [request, response]
+    [state.request.zobject.value, state.response.zobject.value]
 }
 
 /// One connection's state across its requests.
@@ -1120,21 +1116,14 @@ fn on_accept(call: &Call) {
 
 /// `$request->server`'s addresses and ports of the connection.
 fn add_peer(context: *mut Context, peer: &Peer) {
-    // SAFETY: the request's `server` array.
-    let table = unsafe { value::table(send::state(context).request.zserver.ptr) };
+    let state = send::state(context);
     // The array takes a reference of its own to each of the loop's strings.
-    crate::server::add(
-        table,
-        Key::RemoteAddr,
-        peer.remote_addr.to_owned().into_raw(),
-    );
-    crate::server::add_long(table, Key::RemotePort, peer.remote_port.into());
-    crate::server::add(
-        table,
-        Key::ServerAddr,
-        peer.server_addr.to_owned().into_raw(),
-    );
-    crate::server::add_long(table, Key::ServerPort, peer.server_port.into());
+    let remote_addr = Owned::string(peer.remote_addr.to_owned());
+    add_server(state, Key::RemoteAddr, remote_addr);
+    add_server(state, Key::RemotePort, Owned::long(peer.remote_port.into()));
+    let server_addr = Owned::string(peer.server_addr.to_owned());
+    add_server(state, Key::ServerAddr, server_addr);
+    add_server(state, Key::ServerPort, Owned::long(peer.server_port.into()));
 }
 
 /// The request loop: parse each request on the connection and run its handler.
@@ -1326,9 +1315,10 @@ fn find_crlf2(data: &[u8]) -> Option<usize> {
 
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
 fn expects_continue(context: *mut Context) -> bool {
-    let expect = find(send::state(context).request.zheader.ptr, b"expect");
-    // SAFETY: null or a live header value.
-    unsafe { Value::from_ptr(expect) }
+    let header = send::state(context).request.zheader.get();
+    header
+        .and_then(Value::array)
+        .and_then(|header| header.find(b"expect"))
         .and_then(Value::bytes)
         .is_some_and(|text| text.eq_ignore_ascii_case(b"100-continue"))
 }
@@ -1367,25 +1357,24 @@ fn http2_request(
     http1: *mut Context,
     server: &HttpServer,
 ) -> Result<(), bailout::Bailout> {
-    let target = send::state(context).request.zserver.ptr;
-    let source = send::state(http1).request.zserver.ptr;
-    // SAFETY: a live array.
-    let table = unsafe { value::table(target) };
-    // SAFETY: a live array.
-    let source = unsafe { value::table(source) };
-    // SAFETY: both contexts' live `$server` arrays; each entry is added with
-    // its own reference.
-    unsafe { z::swr_zend_hash_foreach_kv(source, Some(copy_entry), table.cast()) };
-    // SAFETY: Zend interns the name once; the array keeps it.
-    let key = unsafe { z::swr_zend_http_intern(c"server_protocol".as_ptr(), 15) };
-    // SAFETY: as above.
-    let http2 = unsafe { z::swr_zend_http_intern(c"HTTP/2".as_ptr(), 6) };
-    // SAFETY: a zval is plain data.
-    let mut protocol = unsafe { std::mem::zeroed::<zval>() };
-    // SAFETY: an empty slot takes the interned string.
-    unsafe { z::swr_zval_str(&raw mut protocol, http2) };
-    // SAFETY: the live array, the interned key and value.
-    unsafe { z::zend_hash_add_new(table, key, &raw mut protocol) };
+    let source = send::state(http1)
+        .request
+        .zserver
+        .get()
+        .and_then(Value::array);
+    let target = send::state(context)
+        .request
+        .zserver
+        .get()
+        .and_then(Value::array);
+    if let (Some(source), Some(target)) = (source, target) {
+        // SAFETY: both contexts' live `$server` arrays; each entry is added
+        // with its own reference.
+        unsafe {
+            z::swr_zend_hash_foreach_kv(source.as_ptr(), Some(copy_entry), target.as_ptr().cast());
+        };
+    }
+    add_protocol(send::state(context), Key::Http2);
     let callable = server.handler(context);
     let mut args = objects(context);
     let mut result = Ok(());

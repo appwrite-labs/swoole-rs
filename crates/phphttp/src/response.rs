@@ -25,7 +25,6 @@ use swoole_rs_zend::{
         zend_string,
     },
     type_of,
-    value::obj_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -66,10 +65,6 @@ unsafe extern "C" {
     ) -> bool;
     static swoole_socket_coro_ce: *mut zend_class_entry;
 }
-
-/// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_http_response_ce: *mut zend_class_entry = ptr::null_mut();
 
 /// The response object is going: finish what the handler left unanswered
 /// (500 when no status was set) and release the context. True if user code
@@ -152,8 +147,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
     }
     crate::header::minit(ce);
     context::response_minit(ce);
-    // SAFETY: MINIT, before any thread reads it.
-    unsafe { swoole_http_response_ce = ce };
     crate::parse::minit(codecs);
 }
 
@@ -810,19 +803,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     };
     // SAFETY: a live context, and the server or the socket.
     unsafe { context::bind(ctx, server, socket) };
-    let response = call.return_value();
     let ce = RESPONSE.entry();
-    // SAFETY: the return slot and this registered class.
-    unsafe { init_object(response, ce) };
-    // SAFETY: the object just created.
-    let std = unsafe { obj_of(response) };
-    // SAFETY: a `Swoole\Http\Response`.
-    unsafe { context::set_context(std, ctx) };
     let state = send::state(ctx);
     state.fd = fd;
-    // SAFETY: the object zval just created.
-    state.response.zobject.value = unsafe { *response };
-    state.response.zobject.ptr = &raw mut state.response.zobject.value;
+    let slot = &mut state.response.zobject;
+    // SAFETY: the context's own zval and this registered class.
+    unsafe { init_object(&raw mut slot.value, ce) };
+    slot.ptr = &raw mut slot.value;
+    // The return slot takes the reference; the context borrows it.
+    call.set_value(slot.value);
+    let Some(std) = slot.object() else { return };
+    // SAFETY: a `Swoole\Http\Response`.
+    unsafe { context::set_context(std, ctx) };
     // SAFETY: the Response just created, under its class.
     let props = unsafe { Props::new(ce, std) };
     props.long(c"fd", fd);
