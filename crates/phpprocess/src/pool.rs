@@ -226,6 +226,7 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     }
     // SAFETY: as above.
     unsafe { Object_::dtor(object) };
+    swoole_rs_zend::bailout::finish();
 }
 
 method_table! {
@@ -342,7 +343,7 @@ fn dispatch(
     let argc = if worker.is_some() { 2 } else { 1 };
     // SAFETY: a live callable and `argc` arguments.
     let called = unsafe { host::callable_call(callable, argc, args.as_mut_ptr(), coroutine) };
-    if !called {
+    if !called && !swoole_rs_zend::bailout::pending() {
         // SAFETY: a live object zval.
         let std = unsafe { object_of(object) };
         // SAFETY: a live object.
@@ -382,6 +383,10 @@ fn owner(pool: Pool) -> (*mut zval, *mut zend_object, &'static mut PoolObject) {
 unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
     let (object, std, this) = owner(pool);
     clean();
+    if swoole_rs_zend::bailout::pending() {
+        swoole_rs_zend::bailout::finish();
+        return;
+    }
     CURRENT.store(pool, Ordering::Release);
     CURRENT_WORKER.store(worker, Ordering::Release);
     let id = i64::from(worker_view(worker).id);
@@ -399,6 +404,10 @@ unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
             this.enable_coroutine,
             "onWorkerStart",
         );
+    }
+    if swoole_rs_zend::bailout::pending() {
+        swoole_rs_zend::bailout::finish();
+        return;
     }
     let term = !this.on_message.is_null() || this.enable_coroutine;
     worker_signals(term);
@@ -431,7 +440,8 @@ unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
     let called = unsafe {
         host::callable_call(this.on_message, 2, args.as_mut_ptr(), this.enable_coroutine)
     };
-    if !called {
+    let bailed = swoole_rs_zend::bailout::pending();
+    if !called && !bailed {
         // SAFETY: a live object zval.
         let std = unsafe { object_of(object) };
         // SAFETY: a live object.
@@ -441,7 +451,9 @@ unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
             &message!("{}->onMessage handler error", name.to_string_lossy()),
         );
     }
-    worker_busy(false);
+    if !bailed {
+        worker_busy(false);
+    }
     // SAFETY: the string argument this callback owns.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
     swoole_rs_zend::bailout::finish();
@@ -674,9 +686,14 @@ fn on(call: &Call) {
             return;
         }
     };
-    if !slot.is_null() {
+    // The slot lets go first: a destructor that bails out leaves it empty.
+    let old = std::mem::replace(slot, ptr::null_mut());
+    if !old.is_null() {
         // SAFETY: the callable this slot owned.
-        unsafe { host::callable_free(*slot) };
+        unsafe { host::callable_free(old) };
+        if swoole_rs_zend::bailout::pending() {
+            return;
+        }
     }
     // SAFETY: a passed argument.
     *slot = unsafe { host::callable_create(callback) };

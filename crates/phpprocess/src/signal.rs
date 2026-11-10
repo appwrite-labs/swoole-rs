@@ -9,7 +9,9 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::{Call, E_ERROR, E_WARNING, long_zval, message, sys::IS_LONG, type_of};
+use swoole_rs_zend::{
+    Call, E_ERROR, E_WARNING, bailout, long_zval, message, sys::IS_LONG, type_of,
+};
 
 // SAFETY: crates/reactor's `swoole_signal_get_handler`, under its upstream symbol.
 unsafe extern "C" {
@@ -55,13 +57,13 @@ unsafe extern "C" fn on_signal(signo: c_int) {
     let coroutine = host::enable_coroutine();
     // SAFETY: a live callable from `signal()`, with one argument.
     let called = unsafe { host::callable_call(callable, 1, &raw mut argv, coroutine) };
-    if !called {
+    if !called && !bailout::pending() {
         fatal(
             E_WARNING,
             &message!("Swoole\\Process: signal [{signo}] handler error"),
         );
     }
-    swoole_rs_zend::bailout::finish();
+    bailout::finish();
 }
 
 /// `Process::signal(int $signo, callable|int|null $callback = null): bool`.
@@ -143,6 +145,8 @@ pub(crate) fn signal(call: &Call) {
         host::signal_listen();
     }
     if !old.is_null() {
+        // The slot lets go first: a destructor that bails out leaves it empty.
+        slot.store(ptr::null_mut(), Ordering::Release);
         if sync {
             // SAFETY: the previous callable, no longer referenced.
             unsafe { host::callable_free(old) };
@@ -151,6 +155,14 @@ pub(crate) fn signal(call: &Call) {
             unsafe { host::callable_defer_free(old) };
         }
         listeners(-1);
+        if bailout::pending() {
+            // Upstream stopped here, installing nothing.
+            if !callable.is_null() {
+                // SAFETY: the callable made above, which nothing holds.
+                unsafe { host::callable_free(callable) };
+            }
+            return;
+        }
     }
     if !callable.is_null() {
         listeners(1);
@@ -182,6 +194,13 @@ pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
 /// listeners, as after a fork, whose `swoole_fork()` removed the inherited handlers.
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_process_signal_clean() {
+    signal_clean();
+    bailout::finish();
+}
+
+/// [`php_swoole_process_signal_clean`]'s body, which frees every callable and
+/// leaves a destructor's bailout pending.
+fn signal_clean() {
     for slot in &CALLABLES {
         let callable = slot.swap(ptr::null_mut(), Ordering::AcqRel);
         if !callable.is_null() {
@@ -193,9 +212,10 @@ pub extern "C" fn php_swoole_process_signal_clean() {
 }
 
 /// `php_swoole_process_clean`: [`php_swoole_process_signal_clean`]; outside thread
-/// builds, a process that is not a user worker forgets its worker type.
+/// builds, a process that is not a user worker forgets its worker type. A
+/// destructor's bailout stays pending for the caller to stop on.
 pub(crate) fn clean() {
-    php_swoole_process_signal_clean();
+    signal_clean();
     host::reset_worker_type();
 }
 
@@ -203,4 +223,5 @@ pub(crate) fn clean() {
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_process_rshutdown() {
     clean();
+    bailout::finish();
 }
