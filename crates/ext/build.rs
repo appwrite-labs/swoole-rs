@@ -267,6 +267,7 @@ mod php {
             let dir = third.join("php/ssh2");
             p.cxx
                 .extend(["ssh2.cc", "ssh2_fopen_wrappers.cc", "ssh2_sftp.cc"].map(|f| dir.join(f)));
+            p.includes.extend(pkg_includes("libssh2"));
             p.libs.push("ssh2");
         }
         p

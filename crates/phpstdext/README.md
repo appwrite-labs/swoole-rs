@@ -8,10 +8,11 @@ the `php` and `active` features; `crates/ffi`'s `stdext` feature turns on
 ## The C remainder
 
 `src/stdext.c` is all the C this crate keeps. `build.rs` compiles it with the
-headers `php-config --includes` names (and PCRE2's), plus the pinned upstream
-tree `target/upstream/src` for `thirdparty/php/zend/zend_execute.c`. Without
-that tree (the PR tier's `rust` job) it warns and compiles nothing; the symbols
-are only resolved when the extension links.
+headers `php-config --includes` names (and PCRE2's), plus `native/swoole-src` for
+`thirdparty/php/zend/zend_execute.c`: a byte-for-byte copy of swoole-src v6.2.5's
+file, which excerpts PHP's `Zend/zend_execute.c` (Zend Engine License 2.00, as
+that file's header says). A clean clone builds it; the Zend symbols it calls are
+resolved when the extension links.
 
 It stays C because Rust cannot reach these bodies:
 
