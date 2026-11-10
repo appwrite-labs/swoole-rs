@@ -447,7 +447,11 @@ impl Client {
                     return;
                 }
                 // SAFETY: a live zval.
-                self.write_func = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
+                let created = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
+                // The old callable's destructor may have set a write_func: this one replaces it.
+                let nested = std::mem::replace(&mut self.write_func, created);
+                // SAFETY: the nested call's callable, if any, which the client no longer holds.
+                unsafe { native::swoole_http_client_coro_callable_free(nested) };
                 if bailout::pending() {
                     return;
                 }
