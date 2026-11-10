@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[2]
 # Runs are scripted per commit in FAKE_RUNS: {sha: [conclusion, ...]}, one entry
@@ -363,6 +364,21 @@ class Ci(unittest.TestCase):
         code, _, stderr = self.ci('next', runs={}, flags=(), limited={'api': 1})
         self.assertEqual(code, 1)
         self.assertRegex(stderr, r'API rate limit exceeded .*; it resets at \d\d:\d\d:\d\d')
+        self.assertIn('api rate_limit --jq .resources.core.reset', self.gh_calls)
+
+    def test_a_search_call_waits_on_the_search_limit(self):
+        sys.path.insert(0, str(ROOT))
+        from tools import ci
+        with tempfile.TemporaryDirectory() as temp:
+            gh = Path(temp) / 'gh'
+            gh.write_text(FAKE_GH)
+            gh.chmod(0o755)
+            state, log = Path(temp) / 'state.json', Path(temp) / 'gh.log'
+            state.write_text(json.dumps({'runs': {}, 'limited': {'api search/issues': 1}, 'reset_in': 0, 'search': {}}))
+            env = {'PATH': temp + os.pathsep + os.environ['PATH'], 'FAKE_STATE': str(state), 'FAKE_GH_LOG': str(log)}
+            with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(ci, 'RETRY_DEADLINE', float('inf')):
+                ci.gh('api', 'search/issues?q=%22x%22')
+            self.assertIn('api rate_limit --jq .resources.search.reset', log.read_text().splitlines())
 
     def test_a_deleted_branch_resolves_through_its_pull_request(self):
         code, result, _ = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'socket-timeout',
