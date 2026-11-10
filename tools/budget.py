@@ -154,8 +154,9 @@ def main():
         if kind == 'unforbidden':
             rises |= {c: (1, 0) for c, n in crates.items()
                       if n and c not in base[kind] and not current['unsafe'][c]
-                      and not any(UNCOUNTED.search(p.read_text(errors='replace'))
-                                  for p in (ROOT / 'crates' / c).rglob('*.rs'))}
+                      and not any(UNCOUNTED.search(line.split('//', 1)[0])
+                                  for p in (ROOT / 'crates' / c).rglob('*.rs')
+                                  for line in p.read_text(errors='replace').splitlines())}
         else:
             rises |= arrivals(crates, base[kind])
         failed = failed or bool(rises)
