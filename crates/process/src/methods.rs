@@ -656,9 +656,13 @@ pub fn swoole_get_worker_pid() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(1)).unwrap_or_default()
 }
 
-/// `swoole_get_worker_type()`.
+/// `swoole_get_worker_type()`: upstream's core-tests (`log.cpp`'s `log_level`) call it.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z22swoole_get_worker_typev")
+)]
 #[must_use]
-pub fn swoole_get_worker_type() -> c_int {
+pub extern "C" fn swoole_get_worker_type() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
 }
 

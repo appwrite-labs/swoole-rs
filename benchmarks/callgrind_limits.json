@@ -11,6 +11,7 @@
   "channel": 0.89,
   "task": 0.94,
   "mysql": 0.97,
+  "connect": 1.04,
   "http-client": 0.95,
   "client": 0.95,
   "socket": 0.99,
