@@ -6,7 +6,7 @@ use crate::{array::Array, barrier, classes, host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
-    Value as ZValue, bailout,
+    Call, Value as ZValue, bailout,
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
@@ -312,8 +312,8 @@ impl Item {
 
     /// `incr_update`: add to a float or, as upstream's union does, to the int
     /// view of anything else; the type never changes. The sum goes to the
-    /// return slot `out`.
-    pub(crate) fn add(&mut self, delta: &ZValue, out: *mut zval) {
+    /// return slot of `call`, a Thread method call.
+    pub(crate) fn add(&mut self, delta: &ZValue, call: &Call) {
         match &mut self.value {
             Value::Double(value) => {
                 let delta = delta.double();
@@ -321,7 +321,7 @@ impl Item {
                     return;
                 }
                 *value += delta;
-                set(out, IS_DOUBLE, zend_value { dval: *value });
+                set(call.return_value(), IS_DOUBLE, zend_value { dval: *value });
             }
             Value::Long(value) | Value::Bare(value) => {
                 let delta = delta.long();
@@ -329,22 +329,26 @@ impl Item {
                     return;
                 }
                 *value = value.wrapping_add(delta);
-                set(out, IS_LONG, zend_value { lval: *value });
+                set(call.return_value(), IS_LONG, zend_value { lval: *value });
             }
             // Upstream adds to a pointer here; leave the value alone.
-            _ => set(out, IS_LONG, zend_value { lval: delta.long() }),
+            _ => set(
+                call.return_value(),
+                IS_LONG,
+                zend_value { lval: delta.long() },
+            ),
         }
     }
 
     /// `incr_create`: a float or int item from `delta`, which is also the
-    /// result in the return slot `out`.
-    pub(crate) fn counter(delta: &ZValue, out: *mut zval) -> Self {
+    /// result in the return slot of `call`.
+    pub(crate) fn counter(delta: &ZValue, call: &Call) -> Self {
         let item = match delta.as_double() {
             Some(value) => Self::double(value),
             None => Self::long(delta.long()),
         };
-        // SAFETY: the return slot; an int or float.
-        unsafe { item.fetch(out) };
+        // SAFETY: the call's return slot, which holds nothing yet; an int or float.
+        unsafe { item.fetch(call.return_value()) };
         item
     }
 

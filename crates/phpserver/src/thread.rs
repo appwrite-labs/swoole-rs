@@ -104,6 +104,10 @@ fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailou
     if let Some(options) = unsafe { Value::from_ptr(setting) }.and_then(Value::array) {
         swoole_rs_phpcoroutines::set_coroutine_option(options);
     }
+    // A conversion's bailout ends the start here, as upstream's did.
+    if bailout::pending() {
+        return Err(Bailout);
+    }
     match MAIN.get() {
         // SAFETY: the body the ThreadFactory handed this thread, which is C++.
         Some((run, context)) => unsafe { bailout::trap(run, context) },
