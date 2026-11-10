@@ -3,7 +3,6 @@
 //! windows and HPACK codecs. Each stream owns its request's
 //! `swoole::http::Context`, a copy of the session's settings context, released
 //! with the stream.
-use crate::native::swoole_http2_client_coro_hpack_free;
 use libc::c_void;
 use std::{
     cell::{Cell, RefCell},
@@ -11,7 +10,10 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
     rc::Rc,
 };
-use swoole_rs_http2::sw_rs_http2_default_settings;
+use swoole_rs_http2::{
+    hpack::{Decoder, Encoder},
+    sw_rs_http2_default_settings,
+};
 use swoole_rs_phphttp::http2::Ctx;
 use swoole_rs_zend::bailout;
 
@@ -61,8 +63,9 @@ pub(crate) type Stream = Rc<StreamState>;
 pub(crate) struct SessionState {
     fd: i64,
     streams: RefCell<IdMap<u32, Stream>>,
-    pub(crate) inflater: Cell<*mut c_void>,
-    pub(crate) deflater: Cell<*mut c_void>,
+    pub(crate) inflater: RefCell<Decoder>,
+    /// Made on first use, sized by the peer's `SETTINGS_HEADER_TABLE_SIZE` then.
+    pub(crate) deflater: RefCell<Option<Encoder>>,
     /// `local_settings`, in `swoole::http2::Settings` order; never changed.
     local: [u32; 6],
     /// `remote_settings`, as the peer's SETTINGS frames set them.
@@ -135,8 +138,8 @@ impl SessionState {
         Self {
             fd,
             streams: RefCell::new(IdMap::default()),
-            inflater: Cell::new(std::ptr::null_mut()),
-            deflater: Cell::new(std::ptr::null_mut()),
+            inflater: RefCell::default(),
+            deflater: RefCell::default(),
             local,
             remote: local.map(Cell::new),
             remote_window_size: Cell::new(local[INIT_WINDOW_SIZE]),
@@ -217,8 +220,6 @@ impl SessionState {
 
 impl Drop for SessionState {
     fn drop(&mut self) {
-        // SAFETY: the session's own codecs (or null).
-        unsafe { swoole_http2_client_coro_hpack_free(self.inflater.get(), self.deflater.get()) };
         if !self.is_coro {
             // SAFETY: the server's settings context, made for this session
             // alone (a coroutine server's is its connection's).

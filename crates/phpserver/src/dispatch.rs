@@ -617,9 +617,7 @@ struct ExitStatus {
 
 type Ctx = *mut c_void;
 
-unsafe extern "C" {
-    fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int;
-}
+use swoole_rs_phpprocess::swr_v1_phpprocess_start;
 
 fn head<'a, T>(event: *mut T) -> &'a DataHead {
     // SAFETY: every Server event (`DataHead`, `RecvData`, `EventData`) starts

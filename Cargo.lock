@@ -568,6 +568,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
+ "swoole-rs-memory",
  "swoole-rs-process",
  "swoole-rs-reactor",
 ]
@@ -614,6 +615,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-http2"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-oracle",
+]
 
 [[package]]
 name = "swoole-rs-httpbindings"
@@ -719,10 +723,12 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-inflate",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-zend",
@@ -852,6 +858,7 @@ dependencies = [
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-utilities",
  "swoole-rs-zend",
 ]
 
@@ -915,10 +922,12 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
+ "swoole-rs-phpprocess",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",

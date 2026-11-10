@@ -69,7 +69,7 @@ inline void swoole_set_last_error(int e){errno=e;}
         tree=Path(temp);(tree/'reference').mkdir();(tree/'ported').mkdir();(tree/'support.h').write_text(support)
         (tree/'reference/reference.h').write_text(original('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"').replace('namespace swoole','namespace reference'))
         (tree/'reference/original.inc').write_text(kernel+'\nnamespace reference {\n'+futex+wait+realtime+'}\n'+original_bodies)
-        (tree/'ported/swoole_lock.h').write_text((ROOT/'native/locks/swoole_lock.h').read_text().replace('#include "swoole_memory.h"','#include "support.h"'))
+        (tree/'ported/swoole_lock.h').write_text((ROOT/'native/locks/swoole_lock.h').read_text().replace('#include "swoole.h"','#include "support.h"'))
         # Two translation units: the reference side sees only pinned text, the ported side
         # and the driver the hybrid build's flags.
         binary=tree/'gate';witness=str(Path(__file__).with_suffix('.cc'))

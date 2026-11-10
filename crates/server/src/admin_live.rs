@@ -355,9 +355,7 @@ impl Facts for Live<'_> {
         let user_workers = self.serv.user_worker_num();
         let workers = u64::from(config.worker_num) + u64::from(config.task_worker_num);
         let workers = workers + user_workers as u64;
-        let pool = swoole_rs_corebase::swr_v1_core_memory_pool();
-        // SAFETY: `SwooleG.memory_pool`, a `GlobalMemory`.
-        let global = unsafe { swoole_rs_memory::members::swr_global_memory_size(pool) };
+        let global = swoole_rs_memory::members::pool::memory_size();
         let buffer = swoole_rs_corebase::thread_buffer();
         let buffer = buffer.cast::<swoole_rs_buffer::string::CppString>();
         // SAFETY: null, or this thread's live buffer.

@@ -28,7 +28,7 @@ unsafe extern "C" {
 /// ends the request, or the thread in a `SW_THREAD` build. The frames it
 /// crosses own nothing.
 #[unsafe(no_mangle)]
-pub(crate) extern "C" fn sw_php_exit(status: c_int) {
+pub extern "C" fn sw_php_exit(status: c_int) {
     // SAFETY: a request's executor globals.
     unsafe { swr_zend_set_exit_status(status) };
     if built_with(Switch::Thread) {

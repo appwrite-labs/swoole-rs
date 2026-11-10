@@ -1,7 +1,6 @@
 //! Compile what the extension still needs of C and C++ (native/ and the bundled
 //! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
-//! phpize and configure. The thirdparty sources are native/swoole-src's, except
-//! nghttp2, which is still the pin's (`SWOOLE_SRC`).
+//! phpize and configure. The thirdparty sources are native/swoole-src's.
 
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
@@ -408,18 +407,6 @@ mod php {
             c.files(sources(module, "c"));
         }
         c.file(vendored.join("php/streams/plain_wrapper.c"))
-            .files(
-                [
-                    "nghttp2_hd.c",
-                    "nghttp2_rcbuf.c",
-                    "nghttp2_helper.c",
-                    "nghttp2_buf.c",
-                    "nghttp2_mem.c",
-                    "nghttp2_hd_huffman.c",
-                    "nghttp2_hd_huffman_data.c",
-                ]
-                .map(|f| third.join("nghttp2").join(f)),
-            )
             // Rust's coroutine links boost.context's switch even under thread context.
             .file(vendored.join("boost/asm").join(format!("make_{asm}")))
             .file(vendored.join("boost/asm").join(format!("jump_{asm}")))
