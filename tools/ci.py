@@ -65,6 +65,19 @@ def gh(*args):
         result = subprocess.run(['gh', *args], capture_output=True, text=True)
         if result.returncode == 0:
             return result.stdout
+        # Every agent shares one account's hourly API limit (and every job the Actions token's):
+        # wait for the reset when the deadline allows, else say when it comes.
+        if 'API rate limit exceeded' in result.stderr:
+            reset = subprocess.run(['gh', 'api', 'rate_limit', '--jq', '.resources.core.reset'],
+                                   capture_output=True, text=True).stdout.strip()
+            wait = int(reset) - time.time() + 1 if reset.isdigit() else None
+            at = f'{datetime.fromtimestamp(int(reset)):%H:%M:%S}' if wait is not None else 'an unknown time'
+            if wait is not None and time.monotonic() + wait <= RETRY_DEADLINE:
+                say(f'gh {args[0]}: API rate limit exceeded; waiting until {at}')
+                time.sleep(max(wait, 0))
+                continue
+            raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout,
+                                                f'{result.stderr.strip()}; it resets at {at}')
         # A 4xx is permanent even when its message (say, a branch name) contains a TRANSIENT word.
         transient = (not re.search(r'HTTP 4\d\d', result.stderr)
                      and any(text.lower() in result.stderr.lower() for text in TRANSIENT))
@@ -381,17 +394,18 @@ def claimable():
 # are listed and run, and the packages around them (and the PHP release: --php). A baseline's
 # upstream report stands in for running upstream only while these paths are as at HEAD.
 UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expectations.py', 'corpus/upstream/run.py',
-                'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install')
+                'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install',
+                '.github/actions/upstream')
 # Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that made
 # the reports (all must exist, an outage can drop one, and have succeeded) and the paths of its own
 # build and environment. `phpt` is the merge tier's six phpt.yml shards, whose upstream.so phpt-build
-# builds with build_upstream.py; each variant is one job that runs both engines.
+# builds through .github/actions/upstream like every variant; each variant is one job running both engines.
 BASELINES = {
     'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)', 6,
              ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
               '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
     **{variant: (f'phpt-{variant}', f'target/phpt/{variant}/upstream.json', rf'{variant} / phpt', 1,
-                 (f'.github/workflows/{variant}.yml', '.github/actions/upstream', 'corpus/upstream/baseline.sh',
+                 (f'.github/workflows/{variant}.yml', 'corpus/upstream/baseline.sh',
                   *(['.devcontainer/php.sh'] if variant == 'zts' else [])))
        for variant in ('cares', 'iouring', 'threadcontext', 'zts')},
 }

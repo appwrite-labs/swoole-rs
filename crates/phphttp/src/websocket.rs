@@ -26,18 +26,16 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Props, Value, bailout, declare_long, declare_property_null, declare_string,
-    handlers, init_object, method_table, register_long_constant,
+    Array, Call, Class, Owned, Props, Value, ZString, bailout, declare_long, declare_property_null,
+    declare_string, handlers, init_object, method_table, register_long_constant,
     string::{self, bytes},
     sys::{
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_STRING, IS_TRUE,
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
-        swr_zend_instanceof, swr_zend_string_release, swr_zend_ws_property_not_null, swr_zval_copy,
-        swr_zval_is_true, swr_zval_str, zend_ce_stringable, zend_class_entry,
-        zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
-        zval_ptr_dtor,
+        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset, swr_zend_instanceof,
+        swr_zend_string_release, swr_zend_ws_property_not_null, swr_zval_copy, swr_zval_is_true,
+        swr_zval_str, zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long,
+        zend_object, zend_string, zend_value, zval, zval_ptr_dtor,
     },
-    type_of,
     value::{self, empty_string, get_long, get_string, obj_of},
 };
 
@@ -864,24 +862,24 @@ fn unpack(call: &Call) {
     };
     let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
     let payload = payload.unwrap_or_default();
-    let mut zpayload = new_zval();
-    if frame.flags & FLAG_RSV1 != 0 {
-        if !uncompress(&raw mut zpayload, payload) {
+    let zpayload = if frame.flags & FLAG_RSV1 != 0 {
+        let plain = Owned::default();
+        if !uncompress(plain.as_ptr(), payload) {
             host::set_last_error(PROTOCOL_ERROR);
             call.set_bool(false);
             return;
         }
+        plain
     } else {
-        zpayload = zval_of(string::copy(payload));
-    }
+        Owned::string(ZString::new(payload))
+    };
+    // The Frame takes its own reference to the payload.
     construct(
         call.return_value(),
         i64::from(frame.opcode),
-        &raw mut zpayload,
+        zpayload.as_ptr(),
         frame.flags,
     );
-    // SAFETY: the payload reference made here.
-    unsafe { zval_ptr_dtor(&raw mut zpayload) };
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
@@ -1046,14 +1044,6 @@ fn dispatch(
     Ok(())
 }
 
-/// The bytes of a string zval (`php_swoole_get_recv_data`'s).
-fn string_bytes(data: &zval) -> &[u8] {
-    // SAFETY: a live string zval.
-    let string = unsafe { value::str_of(data) };
-    // SAFETY: a live string, borrowed for the zval's lifetime.
-    unsafe { bytes(string) }
-}
-
 /// The server object, as the first callback argument (borrowed).
 fn server_zval() -> zval {
     // SAFETY: the running server's live zval.
@@ -1082,28 +1072,22 @@ fn message(
     let Some(settings) = port_frames(server, fd) else {
         return Ok(ERR);
     };
-    let mut data = new_zval();
-    crate::server::recv_data(server, request, &raw mut data);
+    let mut data = Owned::default();
+    crate::server::recv_data(server, request, data.as_ptr());
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = message_policy(opcode, settings);
     if delivery != 0 {
-        if delivery == 2 {
-            let payload = string_bytes(&data);
-            if let Some(pong) = encode(payload, OPCODE_PONG, FLAG_FIN) {
-                send(server, fd, pong.bytes(), false);
-            }
+        if delivery == 2
+            && let Some(pong) = encode(data.bytes().unwrap_or_default(), OPCODE_PONG, FLAG_FIN)
+        {
+            send(server, fd, pong.bytes(), false);
         }
-        // SAFETY: the reference recv_data made.
-        unsafe { zval_ptr_dtor(&raw mut data) };
         return Ok(OK);
     }
     // RFC 7692: the payload is deflated.
     if flags & FLAG_RSV1 != 0 {
-        let mut plain = new_zval();
-        let ok = uncompress(&raw mut plain, string_bytes(&data));
-        // SAFETY: the reference recv_data made.
-        unsafe { zval_ptr_dtor(&raw mut data) };
-        if !ok {
+        let plain = Owned::default();
+        if !uncompress(plain.as_ptr(), data.bytes().unwrap_or_default()) {
             return Ok(OK);
         }
         data = plain;
@@ -1112,15 +1096,17 @@ fn message(
     construct(
         &raw mut args[1],
         zend_long::from(opcode),
-        &raw mut data,
+        data.as_ptr(),
         flags,
     );
     // SAFETY: the Frame just built.
     let frame = unsafe { obj_of(&raw const args[1]) };
     set(frame, FD, scalar(IS_LONG, fd));
-    dispatch(server, server_fd, ON_MESSAGE, &mut args, fd)?;
-    // SAFETY: the payload reference recv_data made.
-    unsafe { zval_ptr_dtor(&raw mut data) };
+    if let Err(bailout) = dispatch(server, server_fd, ON_MESSAGE, &mut args, fd) {
+        // As upstream, whose bailout jumps past the releases.
+        let _kept = data.into_zval();
+        return Err(bailout);
+    }
     // SAFETY: the Frame built above.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
     Ok(OK)
@@ -1320,34 +1306,21 @@ pub(crate) fn accept(context: *mut Context) {
     };
     let mut accepted = false;
     if offered && !state.request.zobject.ptr.is_null() {
-        let name = b"sec-websocket-extensions";
-        // SAFETY: the request's live `header` array.
-        let table = unsafe { value::table(state.request.zheader.ptr) };
-        // SAFETY: a live table and the name's bytes.
-        let value = unsafe {
-            swoole_rs_zend::sys::zend_hash_str_find(table, name.as_ptr().cast(), name.len())
-        };
-        // SAFETY: a found slot is a live zval.
-        if !value.is_null() && unsafe { type_of(value) } == IS_STRING {
-            // SAFETY: a string zval.
-            let text = unsafe { value::str_of(value) };
-            // SAFETY: a live string.
-            let text = unsafe { bytes(text) };
-            let first = text.split(|&byte| byte == b';').next().unwrap_or_default();
-            if first == b"permessage-deflate" {
-                accepted = true;
-                let mut offer = zval_of(string::copy(
-                    b"permessage-deflate; client_no_context_takeover; server_no_context_takeover",
-                ));
-                crate::response::set_header(
-                    context,
-                    b"Sec-Websocket-Extensions",
-                    &raw mut offer,
-                    false,
-                );
-                // SAFETY: the reference made here; the header array took its own.
-                unsafe { zval_ptr_dtor(&raw mut offer) };
-            }
+        // SAFETY: the request's live `header` array zval.
+        let header = unsafe { Value::from_ptr(state.request.zheader.ptr) };
+        let text = header
+            .and_then(Value::array)
+            .and_then(|header| header.find(b"sec-websocket-extensions"))
+            .and_then(Value::bytes);
+        if let Some(text) = text
+            && text.split(|&byte| byte == b';').next() == Some(b"permessage-deflate")
+        {
+            accepted = true;
+            crate::response::set_header_bytes(
+                context,
+                b"Sec-Websocket-Extensions",
+                b"permessage-deflate; client_no_context_takeover; server_no_context_takeover",
+            );
         }
     }
     let state = send::state(context);
