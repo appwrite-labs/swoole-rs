@@ -4,6 +4,8 @@
 //! backtracking engine tries alternatives in, on a Pike VM: time linear in the URL, and no
 //! recursion while matching.
 
+use std::ffi::c_char;
+
 /// libstdc++'s `_GLIBCXX_REGEX_STATE_LIMIT`: a larger program is `error_space`.
 const LIMIT: usize = 100_000;
 /// How deeply groups nest, so parsing and compiling recurse a bounded depth.
@@ -278,12 +280,17 @@ impl Parser<'_> {
             let (member, low) = self.class_atom()?;
             if self.rest.first() == Some(&b'-') && self.rest.get(1).is_some_and(|&b| b != b']') {
                 self.skip();
-                // A range's ends are single bytes: `[\d-z]` is an error.
-                let (low, high) = (low?, self.class_atom()?.1?);
+                // A range's ends are single bytes: `[\d-z]` is an error. libstdc++ compares
+                // the ends, and each byte with them, as `char`, which is signed on x86_64:
+                // there `[a-\xff]` is an error and `[\xff-a]` holds 0xff and 0x00-0x61.
+                let char = |byte: u8| c_char::from_ne_bytes([byte]);
+                let (low, high) = (char(low?), char(self.class_atom()?.1?));
                 if low > high {
                     return None;
                 }
-                set = set.range(low, high);
+                set = (0..=255)
+                    .filter(|&byte| (low..=high).contains(&char(byte)))
+                    .fold(set, Set::byte);
             } else {
                 set = set.union(member);
             }

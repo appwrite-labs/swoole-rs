@@ -97,6 +97,11 @@ the walk advances and ends, and there is one command at most.
 `sni_wildcard` splits its input at NUL into an SNI name and a certificate name and
 checks `swoole_rs_utilities::sni_wildcard_matches` against a glob over the lowercased
 names, in which the first `*`, with no `.` before it, matches any run without a `.`.
+`http_rewrite` adds one `~pattern~` rule to `swoole_rs_http::RewriteRules` and applies it
+to a URL (pattern, replacement and URL split at NUL): compiling and matching end, and a
+pattern of letters, digits and `/` replaces each occurrence as literal text. ClusterFuzzLite
+links libc++, not the libstdc++ upstream's `std::regex` comes from, so the comparison with
+upstream is the `http-rewrites` gate's (`tests/modules/http/rewrite_gate.cc`).
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in
