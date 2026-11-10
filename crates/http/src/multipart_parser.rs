@@ -397,3 +397,158 @@ impl MultipartParser {
 
 /// `MPPE_PAUSED` as an `error_reason`: nothing in the parser sets it.
 const MPPE_PAUSED_REASON: u8 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BODY: &[u8] = b"--AB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhello\r\n--AB\r\nX-Y: z\r\n\r\nworld\r\n--AB--";
+
+    /// Every callback as an event; the event numbered `pause` returns `MPPE_PAUSED`.
+    #[derive(Default)]
+    struct Recorder {
+        events: Vec<String>,
+        pause: Option<usize>,
+    }
+
+    impl Recorder {
+        fn push(&mut self, event: String) -> i32 {
+            let paused = self.pause == Some(self.events.len());
+            self.events.push(event);
+            if paused { MPPE_PAUSED } else { 0 }
+        }
+    }
+
+    impl Parts for Recorder {
+        fn on_header_field(&mut self, data: &[u8]) -> i32 {
+            self.push(format!("field {}", String::from_utf8_lossy(data)))
+        }
+        fn on_header_value(&mut self, data: &[u8]) -> i32 {
+            self.push(format!("value {}", String::from_utf8_lossy(data)))
+        }
+        fn on_part_data(&mut self, data: &[u8]) -> i32 {
+            self.push(format!("data {}", String::from_utf8_lossy(data)))
+        }
+        fn on_part_data_begin(&mut self, _: &[u8]) -> i32 {
+            self.push("begin".into())
+        }
+        fn on_headers_complete(&mut self) -> i32 {
+            self.push("headers".into())
+        }
+        fn on_part_data_end(&mut self) -> i32 {
+            self.push("end".into())
+        }
+        fn on_body_end(&mut self, _: &[u8]) -> i32 {
+            self.push("body end".into())
+        }
+    }
+
+    fn whole() -> Vec<String> {
+        [
+            "begin",
+            "field Content-Disposition",
+            "value form-data; name=\"a\"",
+            "headers",
+            "data hello",
+            "end",
+            "begin",
+            "field X-Y",
+            "value z",
+            "headers",
+            "data world",
+            "end",
+            "body end",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    fn len(bytes: &[u8]) -> isize {
+        isize::try_from(bytes.len()).unwrap()
+    }
+
+    fn find(needle: &[u8]) -> usize {
+        BODY.windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap()
+    }
+
+    /// Pausing at event `pause` returns `consumed` and leaves the parser in `state`;
+    /// resuming from there yields the same events as an unpaused parse.
+    fn pause_and_resume(pause: usize, consumed: usize, state: State) {
+        let mut parser = MultipartParser::new(b"AB");
+        let mut parts = Recorder {
+            pause: Some(pause),
+            ..Recorder::default()
+        };
+        assert_eq!(
+            parser.execute(&mut parts, BODY),
+            len(&BODY[..consumed]),
+            "paused"
+        );
+        assert_eq!(parts.events, whole()[..=pause], "events up to the pause");
+        assert_eq!(parser.state, state, "state after the pause");
+        assert_eq!(parser.error_reason, MPPE_OK, "a pause is not an error");
+        parts.pause = None;
+        let rest = &BODY[consumed..];
+        assert_eq!(parser.execute(&mut parts, rest), len(rest), "resumed");
+        assert_eq!(parts.events, whole(), "the parts in full");
+        assert_eq!(parser.state, State::End, "body ended");
+    }
+
+    #[test]
+    fn unpaused() {
+        let mut parser = MultipartParser::new(b"AB");
+        let mut parts = Recorder::default();
+        assert_eq!(parser.execute(&mut parts, BODY), len(BODY), "all parsed");
+        assert_eq!(parts.events, whole(), "the parts in full");
+    }
+
+    #[test]
+    fn pause_in_part_data_begin() {
+        // After "--AB\r\n".
+        pause_and_resume(0, 6, State::HeaderFieldStart);
+    }
+
+    #[test]
+    fn pause_in_header_field() {
+        // After the colon.
+        pause_and_resume(1, find(b":") + 1, State::HeaderValueStart);
+    }
+
+    #[test]
+    fn pause_in_headers_complete() {
+        // At the part's first data byte, which is not consumed.
+        pause_and_resume(3, find(b"hello"), State::PartData);
+    }
+
+    #[test]
+    fn pause_in_part_data_end() {
+        // After the CR that follows the first part's closing boundary.
+        pause_and_resume(5, find(b"--AB\r\nX") + 5, State::PartDataEnd);
+    }
+
+    #[test]
+    fn pause_in_part_data_at_chunk_end() {
+        // A data span flushed at a chunk's end: the whole chunk is consumed.
+        let mut parser = MultipartParser::new(b"AB");
+        let mut parts = Recorder {
+            pause: Some(4),
+            ..Recorder::default()
+        };
+        let split = find(b"hello") + 3;
+        let (head, rest) = BODY.split_at(split);
+        assert_eq!(parser.execute(&mut parts, head), len(head), "paused");
+        assert_eq!(
+            parts.events.last().map(String::as_str),
+            Some("data hel"),
+            "paused in data"
+        );
+        assert_eq!(parser.state, State::PartData, "state after the pause");
+        parts.pause = None;
+        assert_eq!(parser.execute(&mut parts, rest), len(rest), "resumed");
+        let mut expected = whole();
+        expected.splice(4..5, ["data hel".to_owned(), "data lo".to_owned()]);
+        assert_eq!(parts.events, expected, "the parts in full");
+    }
+}
