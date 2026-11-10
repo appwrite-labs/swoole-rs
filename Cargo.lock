@@ -611,6 +611,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-http2"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-oracle",
+]
 
 [[package]]
 name = "swoole-rs-httpbindings"

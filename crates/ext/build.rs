@@ -410,18 +410,6 @@ mod php {
         c.file(own(third.join("php/streams/plain_wrapper.c")))
             .files(["api.c", "http.c", "llhttp.c"].map(|f| third.join("llhttp").join(f)))
             .file(third.join("multipart_parser.c"))
-            .files(
-                [
-                    "nghttp2_hd.c",
-                    "nghttp2_rcbuf.c",
-                    "nghttp2_helper.c",
-                    "nghttp2_buf.c",
-                    "nghttp2_mem.c",
-                    "nghttp2_hd_huffman.c",
-                    "nghttp2_hd_huffman_data.c",
-                ]
-                .map(|f| third.join("nghttp2").join(f)),
-            )
             // Rust's coroutine links boost.context's switch even under thread context.
             .file(third.join("boost/asm").join(format!("make_{asm}")))
             .file(third.join("boost/asm").join(format!("jump_{asm}")))

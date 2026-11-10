@@ -578,7 +578,7 @@ fn main() {
         )
         .extra_warnings(false)
         .compile("swoole_oracle_llhttp");
-    // The bundled nghttp2 HPACK coder the HTTP/2 server and client link.
+    // Upstream's bundled nghttp2 HPACK coder, the reference crates/http2's hpack is tested against.
     cc::Build::new()
         .files(
             [

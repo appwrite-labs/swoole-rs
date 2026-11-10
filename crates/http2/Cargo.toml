@@ -8,5 +8,13 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["rlib", "staticlib"]
 
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+# RFC 7541's examples and a differential run against nghttp2 (tests/modules/http2/README.md).
+[[test]]
+name = "hpack"
+path = "../../tests/modules/http2/hpack.rs"
+
 [lints]
 workspace = true

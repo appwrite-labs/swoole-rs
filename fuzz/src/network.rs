@@ -294,15 +294,18 @@ pub fn http_chunked(bytes: &[u8]) {
     );
 }
 
-/// Any bytes as HEADERS frame payloads of one connection (a fuzzer-chosen frame size,
-/// server or client role), each decoded by the bundled nghttp2 inflater through the
-/// step loop the hybrid runs (`sw_rs_http2_inflate_step`): every call consumes at most
-/// what is left, every emitted name and value is readable and NUL-terminated, and the
-/// loop ends within one step per input byte.
+/// Any bytes as HEADERS or CONTINUATION payloads of one connection (a fuzzer-chosen
+/// frame size, server or client role, final or not), each decoded by
+/// `swoole_rs_http2::hpack` and by the nghttp2 inflater upstream bundles, through
+/// the step loop the HTTP/2 server and client run (`sw_rs_http2_inflate_step`):
+/// both consume the same bytes, decode the same fields and fail on the same step,
+/// and the loop ends within one step per input byte.
 pub fn http2_hpack(bytes: &[u8]) {
     let Some((&[role, size], blocks)) = bytes.split_first_chunk::<2>() else {
         return;
     };
+    let last = role & 2 == 0;
+    let mut decoder = swoole_rs_http2::hpack::Decoder::default();
     let mut inflater = std::ptr::null_mut();
     // SAFETY: `inflater` is a writable pointer.
     assert_eq!(unsafe { nghttp2::nghttp2_hd_inflate_new(&mut inflater) }, 0);
@@ -328,26 +331,34 @@ pub fn http2_hpack(bytes: &[u8]) {
                     &mut flags,
                     input.as_ptr(),
                     input.len(),
-                    1,
+                    c_int::from(last),
                 )
             };
+            let rust = decoder.decode(input, last);
             // A decoding error ends the connection.
             let Ok(read) = usize::try_from(read) else {
+                assert!(rust.is_err(), "nghttp2 failed on {input:?}");
                 break 'blocks;
             };
-            input = input.get(read..).expect("inflate read past its input");
-            if flags & nghttp2::INFLATE_EMIT != 0 {
-                for (text, length) in [(nv.name, nv.name_length), (nv.value, nv.value_length)] {
-                    // SAFETY: nghttp2's NUL-terminated copy, live until the next call.
-                    let text = unsafe { std::slice::from_raw_parts(text, length + 1) };
-                    assert_eq!(text.last(), Some(&0), "unterminated header {text:?}");
-                }
-            }
+            let rust = rust.expect("hpack failed where nghttp2 decoded");
+            assert_eq!(rust.read, read, "bytes read from {input:?}");
             #[expect(clippy::cast_sign_loss, reason = "nghttp2's flag bits")]
-            let step = sw_rs_http2_inflate_step(flags as u32, input.len(), u32::from(role & 1));
+            let flags = flags as u32;
+            assert_eq!(rust.flags(), flags, "flags over {input:?}");
+            if let Some((name, value)) = rust.header {
+                // SAFETY: nghttp2's field, live until the next call.
+                let expected = unsafe { std::slice::from_raw_parts(nv.name, nv.name_length) };
+                assert_eq!(name, expected, "name from {input:?}");
+                // SAFETY: as above.
+                let expected = unsafe { std::slice::from_raw_parts(nv.value, nv.value_length) };
+                assert_eq!(value, expected, "value from {input:?}");
+            }
+            input = input.get(read..).expect("inflate read past its input");
+            let step = sw_rs_http2_inflate_step(flags, input.len(), u32::from(role & 1));
             if step.end_headers != 0 {
                 // SAFETY: a live inflater.
                 unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
+                decoder.end_headers();
                 break;
             }
             if step.finish != 0 {

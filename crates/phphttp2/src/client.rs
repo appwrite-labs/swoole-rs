@@ -1,18 +1,20 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
 use crate::{
-    native::{self, Header, Socket},
+    native::{self, Socket},
     session::IdMap,
 };
 use libc::{c_char, c_int, c_void};
 use std::{collections::VecDeque, ffi::CStr, marker::PhantomData, ptr};
 use swoole_rs_http2::{
-    Http2Settings, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame,
-    sw_rs_http2_default_settings, sw_rs_http2_header_plan, sw_rs_http2_headers_flags,
-    sw_rs_http2_inflate_step, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
-    sw_rs_http2_pack_settings, sw_rs_http2_queue_action, sw_rs_http2_response,
-    sw_rs_http2_send_complete, sw_rs_http2_setting_plan, sw_rs_http2_stream_flags,
-    sw_rs_http2_stream_update, sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
+    Http2Settings, Http2WindowPlan,
+    hpack::{Decoder, Encoder, Error},
+    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
+    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
+    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings,
+    sw_rs_http2_queue_action, sw_rs_http2_response, sw_rs_http2_send_complete,
+    sw_rs_http2_setting_plan, sw_rs_http2_stream_flags, sw_rs_http2_stream_update,
+    sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
@@ -70,10 +72,6 @@ const MEDIA_GZIP: u32 = 3;
 /// `SW_HTTP2_SETTING_HEADER_TABLE_SIZE` and `..._MAX_HEADER_LIST_SIZE`.
 const SETTING_HEADER_TABLE_SIZE: u16 = 1;
 const SETTING_MAX_HEADER_LIST_SIZE: u16 = 6;
-/// `NGHTTP2_HD_INFLATE_EMIT`.
-const INFLATE_EMIT: c_int = 2;
-/// `NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE`.
-const NV_NO_COPY: u8 = 0x02 | 0x04;
 /// The `:authority` slot (`HTTP2_CLIENT_HOST_HEADER_INDEX`).
 const AUTHORITY: usize = 3;
 /// `SW_ERROR_*` and `HTTP_ESTATUS_SERVER_RESET`.
@@ -168,8 +166,8 @@ struct Client {
     streams: Streams,
     headers: Headers,
     queue: VecDeque<Vec<u8>>,
-    inflater: *mut c_void,
-    deflater: *mut c_void,
+    /// The connection's HPACK codecs, while connected.
+    hpack: Option<(Decoder, Encoder)>,
 }
 
 fn strerror<'a>(code: c_int) -> &'a CStr {
@@ -199,7 +197,6 @@ struct Headers {
     bytes: Vec<u8>,
     /// Each slot's name and value as (start, name length, value length).
     slots: Vec<Option<(usize, usize, usize)>>,
-    list: Vec<Header>,
 }
 
 impl Headers {
@@ -229,27 +226,16 @@ impl Headers {
         }
     }
 
-    /// The `nghttp2_nv` list over the arena, valid until the next change.
-    fn list(&mut self) -> &[Header] {
-        let base = self.bytes.as_ptr();
-        self.list.clear();
-        self.list.extend(self.slots.iter().map(|slot| match *slot {
-            Some((start, name, value)) => Header {
-                name: base.wrapping_add(start),
-                value: base.wrapping_add(start + name),
-                name_length: name,
-                value_length: value,
-                flags: NV_NO_COPY,
-            },
-            None => Header {
-                name: ptr::null(),
-                value: ptr::null(),
-                name_length: 0,
-                value_length: 0,
-                flags: 0,
-            },
-        }));
-        &self.list
+    /// Each slot's name and value (an unset slot's both empty).
+    fn list(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.slots.iter().map(|slot| {
+            let (start, name, value) = slot.unwrap_or_default();
+            let field = self
+                .bytes
+                .get(start..start + name + value)
+                .unwrap_or_default();
+            field.split_at(name.min(field.len()))
+        })
     }
 }
 
@@ -293,8 +279,7 @@ impl Client {
             streams: Streams::default(),
             headers: Headers::default(),
             queue: VecDeque::new(),
-            inflater: ptr::null_mut(),
-            deflater: ptr::null_mut(),
+            hpack: None,
         })
     }
 
@@ -332,10 +317,7 @@ impl Client {
         }
         self.queue.clear();
         self.streams.clear();
-        // SAFETY: the client's HPACK codecs, freed once.
-        unsafe { native::swoole_http2_client_coro_hpack_free(self.inflater, self.deflater) };
-        self.inflater = ptr::null_mut();
-        self.deflater = ptr::null_mut();
+        self.hpack = None;
     }
 
     /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
@@ -358,15 +340,6 @@ impl Client {
             unsafe { CStr::from_ptr(message) }.to_bytes()
         };
         self.update_error(code, message);
-    }
-
-    fn nghttp2_error(&self, code: c_int, message: &str) {
-        // SAFETY: nghttp2's static error text.
-        let reason = unsafe { native::swoole_http2_client_coro_strerror(code) };
-        // SAFETY: as above.
-        let reason = unsafe { CStr::from_ptr(reason) };
-        let text = format!("{message} with error: {}", reason.to_string_lossy());
-        self.update_error(code, text.as_bytes());
     }
 
     fn is_available(&self) -> bool {
@@ -418,7 +391,7 @@ impl Client {
         unsafe { native::swoole_http2_client_coro_setup(socket, self.conn.cast()) };
         // SAFETY: a live socket.
         if self.ssl && !unsafe { native::swoole_http2_client_coro_enable_ssl(socket) } {
-            return self.connect_failed(socket, None);
+            return self.connect_failed(socket);
         }
         // SAFETY: `$this` declares `setting`.
         let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") }.as_ptr();
@@ -434,24 +407,15 @@ impl Client {
             )
         };
         if !connected {
-            return self.connect_failed(socket, None);
+            return self.connect_failed(socket);
         }
         self.stream_id = 1;
         self.remote = sw_rs_http2_default_settings();
         self.remote_window = self.remote.init_window_size;
-        let mut code = 0;
-        // SAFETY: a writable local.
-        self.inflater = unsafe { native::swoole_http2_client_coro_inflater(&raw mut code) };
-        if code != 0 {
-            return self.connect_failed(socket, Some((code, "nghttp2_hd_inflate_new2() failed")));
-        }
-        // SAFETY: as above.
-        self.deflater = unsafe {
-            native::swoole_http2_client_coro_deflater(self.local.header_table_size, &raw mut code)
-        };
-        if code != 0 {
-            return self.connect_failed(socket, Some((code, "nghttp2_hd_deflate_new2() failed")));
-        }
+        self.hpack = Some((
+            Decoder::default(),
+            Encoder::new(self.local.header_table_size),
+        ));
         if !self.send(PREFACE) || !self.send_setting() {
             self.close();
             return false;
@@ -461,11 +425,8 @@ impl Client {
         true
     }
 
-    fn connect_failed(&mut self, socket: Socket, nghttp2: Option<(c_int, &str)>) -> bool {
-        match nghttp2 {
-            Some((code, message)) => self.nghttp2_error(code, message),
-            None => self.io_error(socket),
-        }
+    fn connect_failed(&mut self, socket: Socket) -> bool {
+        self.io_error(socket);
         self.close();
         false
     }
@@ -599,8 +560,8 @@ impl Client {
     }
 
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
-    /// its header, then the request's HPACK block; None after the error.
-    fn build_header(&mut self, request: Request<'_>) -> Option<Vec<u8>> {
+    /// its header, then the request's HPACK block.
+    fn build_header(&mut self, request: Request<'_>) -> Vec<u8> {
         let property = |name| request.property(name);
         let text = |name| property(name).bytes().filter(|text| !text.is_empty());
         let (method, path) = (text(c"method"), text(c"path"));
@@ -654,36 +615,12 @@ impl Client {
                 set.add(b"cookie", &[key, b"=", encoded.bytes()]);
             }
         }
-        let list = set.list();
-        let (headers, count) = (list.as_ptr(), list.len());
-        // SAFETY: the codec and a list of live headers.
-        let bound = unsafe {
-            native::swoole_http2_client_coro_deflate_bound(self.deflater, headers, count)
-        };
-        let mut frame = vec![0_u8; FRAME_HEADER + bound];
-        // SAFETY: as above, into the frame's `bound` bytes after its header.
-        let written = unsafe {
-            native::swoole_http2_client_coro_deflate(
-                self.deflater,
-                frame.as_mut_ptr().wrapping_add(FRAME_HEADER),
-                bound,
-                headers,
-                count,
-            )
-        };
-        self.headers = set;
-        if written < 0 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "nghttp2 error codes are small ints"
-            )]
-            self.nghttp2_error(written as c_int, "nghttp2_hd_deflate_hd() failed");
-            // The peer's decoder is out of step with this encoder now.
-            self.close();
-            return None;
+        let mut frame = vec![0_u8; FRAME_HEADER];
+        if let Some((_, encoder)) = &mut self.hpack {
+            encoder.encode(set.list(), &mut frame);
         }
-        frame.truncate(FRAME_HEADER + written.unsigned_abs());
-        Some(frame)
+        self.headers = set;
+        frame
     }
 
     /// `send_request`: the new stream's id, or 0.
@@ -714,9 +651,7 @@ impl Client {
                 );
             };
         }
-        let Some(mut frame) = self.build_header(request) else {
-            return 0;
-        };
+        let mut frame = self.build_header(request);
         let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
         let id = self.stream_id;
         self.create_stream(id, flags);
@@ -829,9 +764,7 @@ impl Client {
                     }
                     let key = u16::from_be_bytes([raw[0], raw[1]]);
                     let number = u32::from_be_bytes([raw[2], raw[3], raw[4], raw[5]]);
-                    if !self.apply_remote_setting(key, number) {
-                        return Frame::Fail;
-                    }
+                    self.apply_remote_setting(key, number);
                 }
                 if !self.send(&frame_header(TYPE_SETTINGS, 0, FLAG_ACK, id)) {
                     return Frame::Fail;
@@ -930,7 +863,7 @@ impl Client {
         Frame::Ready
     }
 
-    fn apply_remote_setting(&mut self, key: u16, number: u32) -> bool {
+    fn apply_remote_setting(&mut self, key: u16, number: u32) {
         let old = match key {
             SETTING_HEADER_TABLE_SIZE => self.remote.header_table_size,
             SETTING_MAX_HEADER_LIST_SIZE => self.remote.max_header_list_size,
@@ -952,16 +885,11 @@ impl Client {
         if plan.set_window != 0 {
             self.remote_window = number;
         }
-        if plan.change_deflater != 0 {
-            // SAFETY: the client's deflater.
-            let code =
-                unsafe { native::swoole_http2_client_coro_deflate_table(self.deflater, number) };
-            if code != 0 {
-                self.nghttp2_error(code, "nghttp2_hd_deflate_change_table_size() failed");
-                return false;
-            }
+        if plan.change_deflater != 0
+            && let Some((_, encoder)) = &mut self.hpack
+        {
+            encoder.set_table_size(number);
         }
-        true
     }
 
     /// A DATA frame: buffer (inflating gzip) and replenish the windows.
@@ -1030,40 +958,21 @@ impl Client {
             property(c"cookies"),
             property(c"set_cookie_headers"),
         );
+        let Some((decoder, _)) = &mut self.hpack else {
+            return;
+        };
         loop {
-            let mut inflate_flags = 0;
-            let mut header = Header {
-                name: ptr::null(),
-                name_length: 0,
-                value: ptr::null(),
-                value_length: 0,
-                flags: 0,
+            let step = match decoder.decode(input, true) {
+                Ok(step) => step,
+                Err(error) => {
+                    let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
+                    self.update_error(Error::CODE, text.as_bytes());
+                    return;
+                }
             };
-            // SAFETY: the codec, the block and writable locals.
-            let read = unsafe {
-                native::swoole_http2_client_coro_inflate(
-                    self.inflater,
-                    input.as_ptr(),
-                    input.len(),
-                    &raw mut inflate_flags,
-                    &raw mut header,
-                    true,
-                )
-            };
-            if read < 0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "nghttp2 error codes are small ints"
-                )]
-                self.nghttp2_error(read as c_int, "nghttp2_hd_inflate_hd failed");
-                return;
-            }
-            input = input.get(read.unsigned_abs()..).unwrap_or_default();
-            if inflate_flags & INFLATE_EMIT != 0 {
-                // SAFETY: nghttp2's header, live until the next inflate call.
-                let name = unsafe { std::slice::from_raw_parts(header.name, header.name_length) };
-                // SAFETY: as above.
-                let text = unsafe { std::slice::from_raw_parts(header.value, header.value_length) };
+            input = input.get(step.read..).unwrap_or_default();
+            let flags = step.flags();
+            if let Some((name, text)) = step.header {
                 let kind = header_kind(RESPONSE_HEADERS, name);
                 if name.first() == Some(&b':') {
                     if kind == HEADER_STATUS
@@ -1093,19 +1002,17 @@ impl Client {
                     unsafe {
                         add_assoc_stringl_ex(
                             headers,
-                            header.name.cast(),
-                            header.name_length,
-                            header.value.cast(),
-                            header.value_length,
+                            name.as_ptr().cast(),
+                            name.len(),
+                            text.as_ptr().cast(),
+                            text.len(),
                         );
                     };
                 }
             }
-            let step =
-                sw_rs_http2_inflate_step(u32::try_from(inflate_flags).unwrap_or(0), input.len(), 1);
+            let step = sw_rs_http2_inflate_step(flags, input.len(), 1);
             if step.end_headers != 0 {
-                // SAFETY: the client's inflater.
-                unsafe { native::swoole_http2_client_coro_inflate_end(self.inflater) };
+                decoder.end_headers();
                 return;
             }
             if step.finish != 0 {
@@ -1126,10 +1033,6 @@ impl Drop for Client {
         let mut conn = unsafe { Box::from_raw(self.conn) };
         // Emptied first, as the close hook does, in case releasing it runs the hook.
         drop(std::mem::take(&mut conn.zsocket));
-        if !self.inflater.is_null() || !self.deflater.is_null() {
-            // SAFETY: codecs still held (the socket closed without its hook).
-            unsafe { native::swoole_http2_client_coro_hpack_free(self.inflater, self.deflater) };
-        }
     }
 }
 
@@ -1686,28 +1589,22 @@ mod tests {
         set.slots.push(None);
         set.add(b"X-Token", &[b"a", b"=", b"b"]);
         set.set(1, b":authority", b"host:8080");
-        let list = set.list().to_vec();
-        let text = |pointer: *const u8, length: usize| {
-            // SAFETY: the arena outlives these reads.
-            unsafe { std::slice::from_raw_parts(pointer, length) }.to_vec()
-        };
-        assert_eq!(list.len(), 3, "three slots");
+        let list: Vec<_> = set.list().collect();
         assert_eq!(
-            text(list[1].name, list[1].name_length),
-            b":authority",
-            "reserved slot"
+            list,
+            [
+                (&b":method"[..], &b"GET"[..]),
+                (b":authority", b"host:8080"),
+                (b"x-token", b"a=b"),
+            ],
+            "the reserved slot set, names lowercased, values joined"
         );
+        set.slots.push(None);
         assert_eq!(
-            text(list[2].name, list[2].name_length),
-            b"x-token",
-            "lowercased"
+            set.list().last(),
+            Some((&b""[..], &b""[..])),
+            "an unset slot"
         );
-        assert_eq!(
-            text(list[2].value, list[2].value_length),
-            b"a=b",
-            "joined value"
-        );
-        assert_eq!(list[0].flags, NV_NO_COPY, "no-copy flags");
     }
 
     #[test]
