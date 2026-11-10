@@ -12,13 +12,14 @@ use crate::{
         add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
         add_next_index_long, add_next_index_null, add_next_index_stringl,
         swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
-        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_separate_array,
-        swr_zend_string_copy, swr_zend_string_release, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zval_is_true, swr_zval_str,
-        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find, zend_hash_update,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
-        zend_value, zval, zval_ptr_dtor,
+        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
+        swr_zend_separate_array, swr_zend_string_copy, swr_zend_string_release,
+        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
+        swr_zend_zval_value_name, swr_zval_is_true, swr_zval_str, swr_zval_try_addref,
+        zend_array_count, zend_class_entry, zend_hash_add_new, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_hash_update, zend_ini_parse_quantity,
+        zend_long, zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval,
+        zval_ptr_dtor,
     },
     value,
 };
@@ -221,6 +222,30 @@ impl Value {
     #[inline]
     pub fn bytes(&self) -> Option<&[u8]> {
         self.str().map(ZStr::bytes)
+    }
+
+    /// `Z_OBJPROP_P` of an object: its property table, which Zend builds if
+    /// need be and the object keeps.
+    #[must_use]
+    #[inline]
+    pub fn properties(&self) -> Option<&Array> {
+        if self.kind() != IS_OBJECT {
+            return None;
+        }
+        // SAFETY: a live object zval.
+        let table = unsafe { swr_zend_object_properties(self.as_ptr()) };
+        // SAFETY: the object's table, which the zval keeps while borrowed.
+        unsafe { Array::from_ptr(table) }
+    }
+
+    /// `zend_zval_value_name`: the type, or the object's class, a type error names.
+    #[must_use]
+    #[inline]
+    pub fn value_name(&self) -> &CStr {
+        // SAFETY: a live zval.
+        let name = unsafe { swr_zend_zval_value_name(self.as_ptr()) };
+        // SAFETY: a static type name, or the name of a class, which outlives its objects.
+        unsafe { CStr::from_ptr(name) }
     }
 
     /// `Z_ARRVAL_P` of an array.

@@ -1,7 +1,7 @@
 # Memory subsystem validation
 
-Checks for the Rust memory module (fixed/global/ring pools, heap,
-channel, shared mapping and table). ABI lifetimes and native contracts are in
+Checks for the Rust memory module (fixed and global pools, channel, shared
+mapping and table). ABI lifetimes and native contracts are in
 [native/memory/contract.md](../../../native/memory/contract.md).
 
 The `*.rs` files here are the crate's unit tests, included by
@@ -33,17 +33,21 @@ expected dead-owner warning never appears. macOS emits the warning.
 
 ## Upstream's GoogleTests, as Rust tests
 
-Upstream's fixed_pool, global_memory, ringbuffer, table, heap and core channel
-GoogleTests are Rust tests here, one per TEST with its inputs and expected values
-(#1513, #1665). Nothing in the build includes `swoole_table.h` or the `FixedPool`
-and `RingBuffer` facades any more, so they left with these ports.
+Upstream's fixed_pool, global_memory, table and core channel GoogleTests are Rust
+tests here, one per TEST with its inputs and expected values (#1513, #1665).
+Nothing in the build includes `swoole_table.h` or the `FixedPool` facade any more,
+so they left with these ports.
+
+`memory/ringbuffer.cpp` and `core/heap.cpp` have no port: their subjects went
+(#2599). Upstream calls `RingBuffer` from nowhere but that TEST, and the timer,
+`swoole::Heap`'s one caller, keeps its own heap (`crates/timer/src/heap.rs`), so
+nothing in the extension used the Rust ports.
 
 | Upstream TEST (core-tests/src/) | Rust test |
 | --- | --- |
 | `memory/fixed_pool.cpp` `fixed_pool.alloc` | `members::tests::fixed_pool_alloc` |
 | `memory/fixed_pool.cpp` `fixed_pool.realloc` | `members::tests::fixed_pool_realloc` |
 | `memory/global_memory.cpp` `global_memory.alloc` | `members::tests::global_memory_alloc` |
-| `memory/ringbuffer.cpp` `ringbuffer.thread` | `ringbuffer_thread` (test binary `ringbuffer`) |
 | `memory/table.cpp` `table.create` | `table::tests::table_create` |
 | `memory/table.cpp` `table.iterator` | `table::tests::table_iterator` |
 | `memory/table.cpp` `table.iterator_2` | `table::tests::table_iterator_2` |
@@ -59,13 +63,11 @@ and `RingBuffer` facades any more, so they left with these ports.
 | `core/channel.cpp` `channel.push` | `channel::tests::channel_push` |
 | `core/channel.cpp` `channel.peek` | `channel::tests::channel_peek` |
 | `core/channel.cpp` `channel.notify` | `channel::tests::channel_notify` |
-| `core/heap.cpp` `heap.random` | `heap::tests::heap_random` |
 
 Where a port differs from the C++ in form, not in what it checks: the table's
 header and arena are shared mappings made directly (`Table::make` takes the header
 from `SwooleG`'s pool, which a unit test has no `swoole_init` for);
-`ringbuffer.thread` hands records over `UnixDatagram` pairs (upstream's
-`UnixSocket(true, SOCK_DGRAM)`); `global_memory.alloc` skips `free`, a no-op; and the
+`global_memory.alloc` skips `free`, a no-op; and the
 fork tests wait for their own child rather than every child, and also check its exit
 status.
 

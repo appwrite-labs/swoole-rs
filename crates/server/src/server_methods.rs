@@ -1,8 +1,7 @@
 //! The public `Server` methods of `src/server/master.cc`, and the `BaseFactory`
 //! methods that were `src/server/base.cc`, that are one operation over a fresh
-//! context, defined under their upstream (Itanium) symbols when the hybrid links
-//! this crate (`upstream-symbols`). Each method fills the context the way its C++
-//! forward did and runs over it in Rust.
+//! context. Each method fills the context the way its C++ forward did and runs over
+//! it in Rust.
 
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
@@ -177,16 +176,7 @@ pub fn create(serv: view::Server<'_>) -> c_int {
 }
 
 /// `Server::destroy()`: nothing before the server is created.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server7destroyEv")
-)]
-pub unsafe extern "C-unwind" fn destroy(serv: *mut c_void) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub fn destroy(serv: view::Server<'_>) {
     if !serv.config().factory_.is_null() {
         run_on(serv, RUN_DESTROY, 0);
     }
@@ -243,14 +233,7 @@ pub(crate) fn workers_enter(operation: u32) -> swoole_rs_process::workers::entry
 ///
 /// # Safety
 /// `serv` is a live `Server` and `reactor` the master's reactor.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server19start_master_threadEPNS_7ReactorE")
-)]
-pub unsafe extern "C-unwind" fn start_master_thread(
-    serv: *mut c_void,
-    reactor: *mut c_void,
-) -> c_int {
+pub unsafe fn start_master_thread(serv: *mut c_void, reactor: *mut c_void) -> c_int {
     let mut ctx = NativeContext::new(serv);
     ctx.reactor = reactor;
     // SAFETY: as the caller guarantees.
@@ -316,10 +299,6 @@ pub(crate) unsafe extern "C" fn enable_accept(serv: *mut c_void) {
 ///
 /// # Safety
 /// `reactor` is the server's live reactor and `event` a read event on a listening socket.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server17accept_connectionEPNS_7ReactorEPNS_5EventE")
-)]
 pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_void) -> c_int {
     // SAFETY: as the caller guarantees.
     let serv = unsafe { crate::reactor_handle::Reactor::of(reactor) }
@@ -349,11 +328,8 @@ unsafe extern "C" {
 }
 
 /// `Server::get_startup_error_message()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server25get_startup_error_messageEv")
-)]
-pub extern "C" fn get_startup_error_message(_serv: *mut c_void) -> *const c_char {
+#[must_use]
+pub fn get_startup_error_message() -> *const c_char {
     // SAFETY: the calling thread's error text, always terminated.
     let message = unsafe { swoole_get_last_error_msg() };
     // SAFETY: as above.
@@ -420,13 +396,7 @@ pub fn add_port(
 ///
 /// # Safety
 /// `serv` is a live `Server`; the others are the reactor, port and socket to abort.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole6Server16abort_connectionEPNS_7ReactorEPKNS_10ListenPortEPNS_7network6SocketE"
-    )
-)]
-pub unsafe extern "C" fn abort_connection(
+pub unsafe fn abort_connection(
     serv: *mut c_void,
     reactor: *mut c_void,
     port: *const c_void,
@@ -444,13 +414,7 @@ pub unsafe extern "C" fn abort_connection(
 ///
 /// # Safety
 /// `serv` is a live `Server`; `port` and `sock` the accepting port and accepted socket.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole6Server14add_connectionEPKNS_10ListenPortEPNS_7network6SocketEi"
-    )
-)]
-pub unsafe extern "C" fn add_connection(
+pub unsafe fn add_connection(
     serv: *mut c_void,
     port: *const c_void,
     sock: *mut c_void,
@@ -591,11 +555,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
 ///
 /// # Safety
 /// `serv` is a live `Server`; `send` a live `SendData`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server18send_to_connectionEPKNS_8SendDataE")
-)]
-pub unsafe extern "C" fn send_to_connection(serv: *mut c_void, send: *const c_void) -> c_int {
+pub unsafe fn send_to_connection(serv: *mut c_void, send: *const c_void) -> c_int {
     // SAFETY: as the caller guarantees.
     let header = unsafe { &*send.cast::<SendData>() };
     let mut ctx = NativeContext::new(serv);

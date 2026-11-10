@@ -2,16 +2,16 @@
 // Compatibility derived from Swoole v6.2.5 src/os/wait.cc (Swoole contributors).
 //! Coroutine `waitpid` (`System::wait`, `waitpid`, `waitpid_safe` and their C API) and
 //! `swoole_waitpid`, under their upstream (Itanium) symbols, over crates/process's wait
-//! registry (or `io_uring`, with `iouring`). The process patch deletes `src/os/wait.cc`.
+//! registry, or the `io_uring` engine when one is registered. The process patch deletes
+//! `src/os/wait.cc`.
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
-// SAFETY: crates/reactor's, crates/coroutine's and crates/timer's.
+// SAFETY: crates/reactor's and crates/timer's.
 unsafe extern "C" {
     fn swr_v1_event_current() -> *mut c_void;
-    fn swr_v1_coroutine_current() -> *mut c_void;
     #[link_name = "_Z19swoole_timer_selectv"]
     fn swoole_timer_select();
 }
@@ -21,9 +21,8 @@ fn errno() -> c_int {
 }
 
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
-#[cfg(not(feature = "iouring"))]
 mod registry {
-    use super::{c_int, c_void, swr_v1_coroutine_current, swr_v1_event_current, wait_count};
+    use super::{c_int, c_void, swr_v1_event_current, wait_count};
     use crate::signal_upstream::{swoole_signal_clear, swoole_signal_set};
     use crate::{ReactorPrepared, swr_v1_reactor_deferred_push};
     use std::ptr;
@@ -39,8 +38,6 @@ mod registry {
             id: c_int,
             condition: unsafe extern "C" fn(*mut usize) -> bool,
         );
-        fn swr_v1_coroutine_native_resume(co: *mut c_void);
-        fn swr_v1_coroutine_timed_out(co: *mut c_void) -> bool;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -50,7 +47,7 @@ mod registry {
 
     unsafe extern "C" fn resume(co: *mut c_void) {
         // SAFETY: the registry hands back a coroutine it holds suspended.
-        unsafe { swr_v1_coroutine_native_resume(co) };
+        unsafe { swoole_rs_coroutine::resume(co) };
     }
 
     extern "C" fn signal_handler(signo: c_int) {
@@ -116,8 +113,7 @@ mod registry {
         if unsafe { swr_v1_event_current() }.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: no preconditions.
-        unsafe { swr_v1_coroutine_current() }
+        swoole_rs_coroutine::current().cast()
     }
 
     unsafe extern "C" fn yield_for(co: *mut c_void, timeout: f64) {
@@ -126,8 +122,9 @@ mod registry {
     }
 
     unsafe extern "C" fn timed_out(co: *mut c_void) -> bool {
-        // SAFETY: the coroutine that just resumed.
-        unsafe { swr_v1_coroutine_timed_out(co) }
+        // SAFETY: the coroutine that just resumed, live.
+        let code = unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).resume_code };
+        code == swoole_rs_coroutine::RC_TIMEDOUT
     }
 
     pub(super) static COROUTINES: Coroutines = Coroutines {
@@ -140,24 +137,18 @@ mod registry {
 }
 
 /// `Iouring::waitpid`, the last error set from errno when it fails.
-#[cfg(feature = "iouring")]
+///
+/// # Safety
+/// `status` is writable.
 unsafe fn iouring_waitpid(
+    uring: &crate::UringOps,
     pid: libc::pid_t,
     status: *mut c_int,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    // SAFETY: crates/hooks's engine, which this crate sits below.
-    unsafe extern "C" {
-        fn swr_v1_uring_waitpid(
-            pid: libc::pid_t,
-            status: *mut c_int,
-            options: c_int,
-            timeout: f64,
-        ) -> libc::pid_t;
-    }
     // SAFETY: as the caller promises.
-    let result = unsafe { swr_v1_uring_waitpid(pid, status, options, timeout) };
+    let result = unsafe { (uring.waitpid)(pid, status, options, timeout) };
     if result < 0 {
         log::set_last_error(errno());
     }
@@ -176,23 +167,19 @@ pub unsafe extern "C" fn system_waitpid(
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    #[cfg(feature = "iouring")]
-    {
+    if let Some(uring) = crate::wait_loop::uring() {
         // SAFETY: as the caller promises.
-        unsafe { iouring_waitpid(pid, status, options, timeout) }
+        return unsafe { iouring_waitpid(uring, pid, status, options, timeout) };
     }
-    #[cfg(not(feature = "iouring"))]
-    {
-        // SAFETY: as the caller promises; the static table.
-        let waited = unsafe {
-            swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES)
-        };
-        if waited.timed_out {
-            crate::socket_sync::set_errno(libc::ETIMEDOUT);
-            log::set_last_error(libc::ETIMEDOUT);
-        }
-        waited.pid
+    // SAFETY: as the caller promises; the static table.
+    let waited = unsafe {
+        swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES)
+    };
+    if waited.timed_out {
+        crate::socket_sync::set_errno(libc::ETIMEDOUT);
+        log::set_last_error(libc::ETIMEDOUT);
     }
+    waited.pid
 }
 
 /// `pid_t System::wait(int *, double timeout)`: any child.
@@ -216,40 +203,35 @@ pub unsafe extern "C" fn system_waitpid_safe(
     status: *mut c_int,
     options: c_int,
 ) -> libc::pid_t {
+    /// `SW_OK`, `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
+    const OK: c_int = 0;
+    const LOCK_DEFAULT_SECOND: f64 = 0.001;
+    const LOCK_MAX_SECOND: f64 = 0.1;
+    // SAFETY: crates/hooks's.
+    unsafe extern "C" {
+        #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
+        fn system_sleep(seconds: f64) -> c_int;
+    }
     // SAFETY: no preconditions.
-    let outside = unsafe { swr_v1_event_current() }.is_null()
-        // SAFETY: no preconditions.
-        || unsafe { swr_v1_coroutine_current() }.is_null();
+    let outside =
+        unsafe { swr_v1_event_current() }.is_null() || swoole_rs_coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
         // SAFETY: as the caller promises.
         return unsafe { libc::waitpid(pid, status, options) };
     }
-    #[cfg(feature = "iouring")]
-    {
+    if let Some(uring) = crate::wait_loop::uring() {
         // SAFETY: as the caller promises.
-        unsafe { iouring_waitpid(pid, status, options, -1.0) }
+        return unsafe { iouring_waitpid(uring, pid, status, options, -1.0) };
     }
-    #[cfg(not(feature = "iouring"))]
-    {
-        /// `SW_OK`, `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
-        const OK: c_int = 0;
-        const LOCK_DEFAULT_SECOND: f64 = 0.001;
-        const LOCK_MAX_SECOND: f64 = 0.1;
-        // SAFETY: crates/hooks's.
-        unsafe extern "C" {
-            #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-            fn system_sleep(seconds: f64) -> c_int;
+    let mut second = LOCK_DEFAULT_SECOND;
+    loop {
+        // SAFETY: as the caller promises.
+        let result = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
+        // SAFETY: in a coroutine.
+        if result != 0 || unsafe { system_sleep(second) } != OK {
+            return result;
         }
-        let mut second = LOCK_DEFAULT_SECOND;
-        loop {
-            // SAFETY: as the caller promises.
-            let result = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
-            // SAFETY: in a coroutine.
-            if result != 0 || unsafe { system_sleep(second) } != OK {
-                return result;
-            }
-            second = crate::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
-        }
+        second = crate::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
     }
 }
 

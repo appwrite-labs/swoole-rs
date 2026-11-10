@@ -12,6 +12,9 @@ use super::{
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::time::Instant;
+use swoole_rs_hooks::hooked::{
+    swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
+};
 
 // glibc's values (the core-tests build is Linux).
 const O_RDWR: c_int = 2;
@@ -185,10 +188,6 @@ unsafe extern "C" {
         pai: *mut *mut AddrInfo,
     ) -> c_int;
     fn swoole_coroutine_gethostbyname(name: *const c_char) -> *mut c_void;
-    #[link_name = "_Z34swoole_coroutine_get_socket_objecti"]
-    fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut CoSocket;
-    #[link_name = "_Z37swoole_coroutine_get_socket_object_exi"]
-    fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut CoSocket;
     pub(super) fn swr_v1_system_gethostbyname(
         host: *const c_char,
         length: usize,
@@ -802,8 +801,7 @@ fn exists() {
         assert_eq!(socket_create(fd), 0);
         // SAFETY: a lookup.
         assert!(unsafe { swoole_coroutine_socket_exists(fd) } != 0);
-        // SAFETY: as above.
-        let sock = unsafe { swoole_coroutine_get_socket_object(fd) };
+        let sock = swoole_coroutine_get_socket_object(fd).cast::<CoSocket>();
         assert!(!sock.is_null());
         // SAFETY: the live socket the map holds.
         assert_eq!(unsafe { (*sock).sock_fd }, fd);
@@ -1224,8 +1222,7 @@ fn ftruncate() {
 
 fn get_socket_fail() {
     {
-        // SAFETY: a lookup.
-        let rs = unsafe { swoole_coroutine_get_socket_object(999) };
+        let rs = swoole_coroutine_get_socket_object(999);
         assert_eq!(errno(), ENOTSOCK);
         assert!(rs.is_null());
     }
@@ -1238,8 +1235,7 @@ fn get_socket_fail() {
             assert!(errno() > 0);
         });
 
-        // SAFETY: a lookup.
-        let rs = unsafe { swoole_coroutine_get_socket_object_ex(fd.get()) };
+        let rs = swoole_coroutine_get_socket_object_ex(fd.get());
         assert_eq!(errno(), EWOULDBLOCK);
         assert!(rs.is_null());
         co_close(fd.get());

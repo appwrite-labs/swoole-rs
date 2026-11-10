@@ -1,6 +1,5 @@
 //! The `ListenPort` methods of `src/server/port.cc` that were one lifecycle run
-//! or one readable callback, defined under their upstream (Itanium) symbols when
-//! the hybrid links this crate (`upstream-symbols`). Lifecycle runs answer their
+//! or one readable callback. Lifecycle runs answer their
 //! effects in [`crate::lifecycle_native`], the readable callbacks in
 //! [`crate::read_native`].
 
@@ -76,11 +75,7 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
 ///
 /// # Safety
 /// `port` is a live `ListenPort` and `context` a live `SSLContext`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10ListenPort18ssl_context_createEPNS_10SSLContextEb")
-)]
-pub unsafe extern "C" fn ssl_context_create(
+pub unsafe fn ssl_context_create(
     port: *const c_void,
     context: *const swoole_rs_tls::OwnedTlsContext,
     allow_empty_cert: bool,
@@ -106,18 +101,11 @@ pub(crate) fn close(port: *mut c_void) {
 }
 
 /// `ListenPort::ssl_server_sni_callback(ssl, al, arg)`, OpenSSL's servername callback.
+/// It reads neither `al` nor `arg`.
 ///
 /// # Safety
 /// `ssl` is the handshake's live `SSL`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10ListenPort23ssl_server_sni_callbackEP6ssl_stPiPv")
-)]
-pub unsafe extern "C" fn ssl_server_sni_callback(
-    ssl: *mut c_void,
-    _al: *mut c_int,
-    _arg: *mut c_void,
-) -> c_int {
+pub unsafe fn ssl_server_sni_callback(ssl: *mut c_void) -> c_int {
     // SAFETY: as the caller guarantees; the SNI run finds the port from `ssl`.
     unsafe { run(RUN_SNI, ptr::null_mut(), |run| run.ssl = ssl.cast()) }
 }
@@ -393,16 +381,7 @@ pub(crate) fn get_protocols(config: &PortConfig) -> &'static CStr {
 }
 
 /// `ListenPort::clear_protocol()`.
-///
-/// # Safety
-/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10ListenPort14clear_protocolEv")
-)]
-pub unsafe extern "C" fn clear_protocol(port: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { port_config::of(port) };
+pub fn clear_protocol(config: &mut PortConfig) {
     config.open_eof_check = false;
     config.open_length_check = false;
     config.open_http_protocol = false;
@@ -1266,6 +1245,69 @@ mod tests {
         let at = (&raw mut port).cast::<c_void>();
         assert_eq!(create_socket(at), 0, "add_port");
         assert_eq!(c"dgram", get_protocols(unsafe { port_config::of(at) }));
+        close_socket(at);
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    /// Upstream's `server.protocols` (server/server.cpp). Its base-mode `Server` only
+    /// holds the port, so the port stands alone: `add_port` is `create_socket`.
+    #[test]
+    fn server_protocols() {
+        let mut port = unbound_port(1, "127.0.0.1", 0, false);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(create_socket(at), 0, "add_port");
+        let config = unsafe { port_config::of(at) };
+
+        config.open_eof_check = true;
+        assert_eq!(get_protocols(config), c"eof");
+        config.open_eof_check = false;
+
+        config.open_length_check = true;
+        assert_eq!(get_protocols(config), c"length");
+        config.open_length_check = false;
+
+        config.open_http_protocol = true;
+        assert_eq!(get_protocols(config), c"http");
+        config.open_http_protocol = false;
+
+        config.open_http_protocol = true;
+        config.open_http2_protocol = true;
+        config.open_websocket_protocol = true;
+        assert_eq!(get_protocols(config), c"http|http2|websocket");
+        config.open_http2_protocol = false;
+        config.open_websocket_protocol = false;
+        config.open_http_protocol = false;
+
+        config.open_http_protocol = true;
+        config.open_http2_protocol = true;
+        assert_eq!(get_protocols(config), c"http|http2");
+        config.open_http2_protocol = false;
+        config.open_http_protocol = false;
+
+        config.open_http_protocol = true;
+        config.open_websocket_protocol = true;
+        assert_eq!(get_protocols(config), c"http|websocket");
+        config.open_websocket_protocol = false;
+        config.open_http_protocol = false;
+
+        config.open_mqtt_protocol = true;
+        assert_eq!(get_protocols(config), c"mqtt");
+        config.open_mqtt_protocol = false;
+
+        config.open_redis_protocol = true;
+        assert_eq!(get_protocols(config), c"redis");
+        config.open_redis_protocol = false;
+
+        unsafe { clear_protocol(at) };
+        assert!(!config.open_eof_check);
+        assert!(!config.open_length_check);
+        assert!(!config.open_http_protocol);
+        assert!(!config.open_websocket_protocol);
+        assert!(!config.open_http2_protocol);
+        assert!(!config.open_mqtt_protocol);
+        assert!(!config.open_redis_protocol);
+        assert_eq!(get_protocols(config), c"raw");
+
         close_socket(at);
         unsafe { port_config::swr_v1_port_config_free(port) };
     }

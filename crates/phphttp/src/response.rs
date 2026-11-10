@@ -57,7 +57,6 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 unsafe extern "C" {
     /// `sw_reactor()`.
     fn swr_v1_event_reactor() -> *mut c_void;
-    static swoole_socket_coro_ce: *mut zend_class_entry;
 }
 
 /// The response object is going: finish what the handler left unanswered
@@ -736,8 +735,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     }
     if object.object().is_some() {
         let server_ce = swoole_rs_phpserver::server_class_entry();
-        // SAFETY: a class MINIT registered.
-        let socket_ce = unsafe { swoole_socket_coro_ce };
+        let socket_ce = swoole_rs_phpclients::socket_class();
         if instance_of(object, server_ce) {
             let Some(checked) = websocket::server_of(object.as_ptr()) else {
                 return;

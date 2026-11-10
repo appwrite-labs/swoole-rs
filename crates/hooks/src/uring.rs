@@ -617,7 +617,11 @@ operations! {
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
 #[must_use]
 pub fn sleep(host: &Host, seconds: f64) -> c_int {
-    let mut ts = timespec(seconds);
+    sleep_timespec(host, timespec(seconds))
+}
+
+/// Upstream's `sleep(tv_sec, tv_nsec)`, which `sleep(seconds)` converts to.
+fn sleep_timespec(host: &Host, mut ts: sys::__kernel_timespec) -> c_int {
     // SAFETY: `ts` outlives the request.
     request(host, -1.0, |sqe| unsafe {
         sys::swr_uring_prep_timeout(sqe, &raw mut ts, 0, 0);
@@ -940,6 +944,9 @@ pub unsafe fn poll(host: &Host, fd: *mut libc::pollfd, timeout: c_int) -> c_int 
     rc
 }
 
+#[cfg(test)]
+mod ported;
+
 /// A ring host for tests, shared with the TLS transport's.
 #[cfg(test)]
 pub(crate) mod testing {
@@ -992,7 +999,12 @@ pub(crate) mod testing {
     };
 
     pub(crate) fn with_engine(test: impl FnOnce()) {
-        let opened = open(Config::default(), &HOST);
+        with_config(Config::default(), test);
+    }
+
+    /// An engine as `SwooleG.iouring_*` configures it, for `test`.
+    pub(crate) fn with_config(config: Config, test: impl FnOnce()) {
+        let opened = open(config, &HOST);
         assert_eq!(opened.status, 0, "io_uring is available");
         ENGINE.with(|engine| engine.set(opened.uring));
         test();
@@ -1004,7 +1016,6 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{HOST, with_engine};
     use super::*;
 
     #[derive(Default)]
@@ -1149,70 +1160,5 @@ mod tests {
         assert_eq!(errno(), libc::ETIMEDOUT, "cancelled reads as a timeout");
         assert_eq!(complete(-(libc::EBADF as isize)), -1, "failure is -1");
         assert_eq!(errno(), libc::EBADF, "other errors pass through");
-    }
-
-    #[test]
-    fn file_operations_round_trip() {
-        let host = &HOST;
-        with_engine(|| {
-            let dir = std::env::temp_dir().join(format!("swr-uring-{}", std::process::id()));
-            let path = std::ffi::CString::new(dir.join("file").to_str().unwrap()).unwrap();
-            let dir_c = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
-            // SAFETY: valid paths and buffers throughout.
-            unsafe {
-                assert_eq!(mkdir(host, dir_c.as_ptr(), 0o755), 0, "mkdir");
-                let fd = open_file(host, path.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o644);
-                assert!(fd > 0, "open");
-                assert_eq!(
-                    write(host, fd, b"hello".as_ptr().cast(), 5, -1.0),
-                    5,
-                    "write"
-                );
-                let mut info: libc::stat = mem::zeroed();
-                assert_eq!(fstat(host, fd, &raw mut info), 0, "fstat");
-                assert_eq!(info.st_size, 5, "size");
-                assert_eq!(fsync(host, fd), 0, "fsync");
-                assert_eq!(close_fd(host, fd), 0, "close");
-                let fd = open_file(host, path.as_ptr(), libc::O_RDONLY, 0);
-                let mut buf = [0_u8; 8];
-                assert_eq!(read(host, fd, buf.as_mut_ptr().cast(), 8, -1.0), 5, "read");
-                assert_eq!(&buf[..5], b"hello", "contents");
-                assert_eq!(close_fd(host, fd), 0, "close");
-                assert_eq!(stat(host, path.as_ptr(), &raw mut info), 0, "stat");
-                assert_eq!(unlink(host, path.as_ptr()), 0, "unlink");
-                assert_eq!(stat(host, path.as_ptr(), &raw mut info), -1, "gone");
-                assert_eq!(errno(), libc::ENOENT, "ENOENT");
-                assert_eq!(rmdir(host, dir_c.as_ptr()), 0, "rmdir");
-            }
-        });
-    }
-
-    #[test]
-    fn sleep_expires_and_reads_time_out() {
-        let host = &HOST;
-        with_engine(|| {
-            // SAFETY: valid buffers throughout.
-            unsafe {
-                assert_eq!(sleep(host, 0.01), 0, "sleep expires");
-                let mut fds = [0; 2];
-                assert_eq!(libc::pipe(fds.as_mut_ptr()), 0, "pipe");
-                let mut buf = [0_u8; 1];
-                assert_eq!(
-                    read(host, fds[0], buf.as_mut_ptr().cast(), 1, 0.01),
-                    -1,
-                    "timed out"
-                );
-                assert_eq!(errno(), libc::ETIMEDOUT, "ETIMEDOUT");
-                let mut pollfd = libc::pollfd {
-                    fd: fds[1],
-                    events: libc::POLLOUT,
-                    revents: 0,
-                };
-                assert_eq!(poll(host, &raw mut pollfd, 100), 1, "writable");
-                assert_eq!(pollfd.revents & libc::POLLOUT, libc::POLLOUT, "POLLOUT");
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-            }
-        });
     }
 }

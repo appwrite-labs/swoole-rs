@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
-// Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,ring_buffer,global_memory,
+// Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,global_memory,
 // shared_memory,table}.cc (Swoole contributors).
-//! The upstream members of `FixedPool`, `RingBuffer`, `GlobalMemory`, the `sw_shm_*`
+//! The upstream members of `FixedPool`, `GlobalMemory`, the `sw_shm_*`
 //! functions and `Table`'s shared-memory lifecycle. `native/memory/swoole_memory.h` keeps
 //! `GlobalMemory`'s inline members for C++ callers, whose constructor throws; they call
 //! the `swr_v1_memory_global_memory_*` functions below. A
 //! constructor returns 0, -1 for upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2
-//! for `std::bad_alloc`. `FixedPool` and `RingBuffer` have no C++ facade left; their
-//! members serve the Rust ports of upstream's core tests in `tests/modules/memory/members.rs`.
+//! for `std::bad_alloc`. `FixedPool` has no C++ facade left: it is a Rust owner whose
+//! methods serve the Rust ports of upstream's core tests in `tests/modules/memory/members.rs`.
 //!
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
 //! carries.
 
 use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
 use crate::global::{self, Global};
-use crate::ring::{self, Storage};
 use crate::table::Table;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
+use std::mem;
+use std::ptr::{self, NonNull};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::{mem, ptr};
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::{sw_free, sw_malloc};
 
@@ -53,277 +53,129 @@ pub(crate) unsafe fn release(shared: bool, memory: *mut c_void) {
 
 // ---------------------------------------------------------------- FixedPool
 
-/// `FixedPool(slice_num, slice_size, shared)`: an owned arena.
-///
-/// # Safety
-/// `output` is writable.
-pub unsafe fn swr_v1_memory_fixed_pool_new(
-    slices: u32,
-    width: u32,
-    shared: bool,
-    output: *mut *mut Fixed,
-) -> i32 {
-    let Some(plan) = Layout::new(slices, width, 0, true) else {
-        return INVALID;
-    };
-    let memory = arena(shared, plan.total);
-    if memory.is_null() {
-        return NO_MEMORY;
-    }
-    // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
-    unsafe { fixed::construct(memory.cast(), plan, shared, true) };
-    // SAFETY: as the caller promises.
-    unsafe { output.write(memory.cast()) };
-    0
-}
+/// `swoole::FixedPool` over an owned arena: its header, then its slices, in
+/// memory from `arena(shared, ..)`. `&mut self` serializes allocation and release.
+pub struct FixedPool(NonNull<Fixed>);
 
-/// `FixedPool(slice_size, memory, size, shared)`: a pool over the caller's `memory`.
-///
-/// # Safety
-/// `memory` is null or `size` writable bytes the pool may use until it is destroyed;
-/// `output` is writable.
-pub unsafe fn swr_v1_memory_fixed_pool_borrow(
-    width: u32,
-    memory: *mut c_void,
-    size: usize,
-    shared: bool,
-    output: *mut *mut Fixed,
-) -> i32 {
-    let Some(plan) = Layout::new(0, width, size, false) else {
-        return INVALID;
-    };
-    if memory.is_null() || memory.addr().checked_add(plan.total).is_none() {
-        return INVALID;
+impl FixedPool {
+    /// `FixedPool(slice_num, slice_size, shared)`: `INVALID` for upstream's
+    /// `Exception(SW_ERROR_INVALID_PARAMS)`, `NO_MEMORY` for `std::bad_alloc`.
+    ///
+    /// # Errors
+    /// As above.
+    pub fn new(slices: u32, width: u32, shared: bool) -> Result<Self, i32> {
+        let plan = Layout::new(slices, width, 0, true).ok_or(INVALID)?;
+        let memory = NonNull::new(arena(shared, plan.total).cast::<Fixed>()).ok_or(NO_MEMORY)?;
+        // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
+        unsafe { fixed::construct(memory.as_ptr(), plan, shared, true) };
+        Ok(Self(memory))
     }
-    // SAFETY: as the caller promises, `size` (at least `plan.total`) writable bytes.
-    if unsafe { !fixed::construct(memory.cast(), plan, shared, false) } {
-        return INVALID;
-    }
-    // SAFETY: as the caller promises.
-    unsafe { output.write(memory.cast()) };
-    0
-}
 
-/// `FixedPool::~FixedPool()`.
-///
-/// # Safety
-/// `pool` is a constructed pool, destroyed once.
-pub unsafe fn swr_v1_memory_fixed_pool_delete(pool: *mut Fixed) {
-    // SAFETY: as the caller promises.
-    let header = unsafe { &*pool };
-    if header.allocated != 0 {
-        // SAFETY: an owned pool's arena came from `arena(shared, ..)`.
-        unsafe { release(header.shared != 0, pool.cast()) };
+    fn header(&self) -> &Fixed {
+        // SAFETY: the pool's constructed header, live until drop.
+        unsafe { self.0.as_ref() }
     }
-}
 
-/// `void *FixedPool::alloc(uint32_t size)`: the slice width was fixed at construction.
-///
-/// # Panics
-/// Upstream's assertion: an allocation fails only when no slice is spare.
-///
-/// # Safety
-/// `pool` is a constructed pool; allocation is serialized.
-pub unsafe fn swr_v1_memory_fixed_pool_alloc(pool: *mut Fixed) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    let result = unsafe { fixed::alloc(pool) };
-    if result.is_null() {
-        set_last_error(MALLOC_FAIL);
-        // SAFETY: as the caller promises.
-        let header = unsafe { &*pool };
-        // assert(get_number_of_spare_slice() == 0);
-        assert_eq!(
-            header.slices().0,
-            0,
-            "a failed allocation leaves no spare slice"
+    /// `void *FixedPool::alloc(uint32_t size)`: the slice width was fixed at construction.
+    ///
+    /// # Panics
+    /// Upstream's assertion: an allocation fails only when no slice is spare.
+    pub fn alloc(&mut self) -> *mut c_void {
+        // SAFETY: a constructed pool; `&mut self` serializes allocation.
+        let result = unsafe { fixed::alloc(self.0.as_ptr()) };
+        if result.is_null() {
+            set_last_error(MALLOC_FAIL);
+            // assert(get_number_of_spare_slice() == 0);
+            assert_eq!(self.spare(), 0, "a failed allocation leaves no spare slice");
+        }
+        result
+    }
+
+    /// `void FixedPool::free(void *ptr)`.
+    ///
+    /// # Panics
+    /// Upstream's assertions: `data` is an allocated slice of the pool.
+    pub fn free(&mut self, data: *mut c_void) {
+        let (memory, size) = (self.header().memory, self.header().size);
+        // assert(ptr > impl->memory && static_cast<char *>(ptr) < static_cast<char *>(impl->memory) + impl->size);
+        assert!(
+            data.addr() > memory.addr() && data.addr() < memory.addr() + size,
+            "a slice of this pool"
         );
+        // The same address, from the arena: nothing is read through the caller's pointer.
+        let slice = memory.wrapping_add(data.addr() - memory.addr());
+        // SAFETY: inside the arena, since the 48-byte header precedes `memory` and
+        // `slice` lies past it (asserted above): the byte `lock` would be at.
+        let lock = unsafe { slice.wrapping_sub(mem::size_of::<Slice>()).read() };
+        // assert(slice->lock == 1);
+        assert_eq!(lock, 1, "an allocated slice");
+        // SAFETY: a constructed pool; `free` checks the range and stride itself.
+        let freed = unsafe { fixed::free(self.0.as_ptr(), slice.cast()) };
+        assert!(freed, "a live slice of this pool");
     }
-    result
-}
 
-/// `void FixedPool::free(void *ptr)`.
-///
-/// # Panics
-/// Upstream's assertions: `data` is an allocated slice of the pool.
-///
-/// # Safety
-/// `pool` is a constructed pool, `data` a live slice of it; release is serialized.
-pub unsafe fn swr_v1_memory_fixed_pool_free(pool: *mut Fixed, data: *mut c_void) {
-    // SAFETY: as the caller promises.
-    let header = unsafe { &*pool };
-    let (memory, size) = (header.memory.addr(), header.size);
-    // assert(ptr > impl->memory && static_cast<char *>(ptr) < static_cast<char *>(impl->memory) + impl->size);
-    assert!(
-        data.addr() > memory && data.addr() < memory + size,
-        "a slice of this pool"
-    );
-    let slice = data.cast::<u8>().wrapping_sub(mem::size_of::<Slice>());
-    // SAFETY: a slice's header, `lock` first, precedes its data in the pool.
-    let lock = unsafe { slice.read() };
-    // assert(slice->lock == 1);
-    assert_eq!(lock, 1, "an allocated slice");
-    // SAFETY: as the caller promises.
-    let freed = unsafe { fixed::free(pool, data) };
-    assert!(freed, "a live slice of this pool");
-}
+    /// `uint32_t FixedPool::get_number_of_spare_slice() const`.
+    #[must_use]
+    pub fn spare(&self) -> u32 {
+        self.header().slices().0
+    }
 
-/// `FixedPool`'s `impl`: its first member.
-///
-/// # Safety
-/// `this` is a constructed `swoole::FixedPool`.
-unsafe fn fixed<'a>(this: *const c_void) -> &'a Fixed {
-    // SAFETY: as the caller promises; `impl` follows the vtable pointer.
-    let pool = unsafe { this.cast::<*const Fixed>().wrapping_add(1).read() };
-    // SAFETY: a constructed pool's header.
-    unsafe { &*pool }
-}
+    /// `uint32_t FixedPool::get_number_of_total_slice() const`.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.header().slices().1
+    }
 
-/// `uint32_t FixedPool::get_number_of_spare_slice() const`.
-#[must_use]
-pub unsafe extern "C" fn swr_fixed_pool_spare(this: *const c_void) -> u32 {
-    // SAFETY: `this` is a constructed FixedPool.
-    let pool = unsafe { fixed(this) };
-    pool.slices().0
-}
+    /// `uint32_t FixedPool::get_slice_size() const`.
+    #[must_use]
+    pub fn slice_size(&self) -> u32 {
+        self.header().slice_size
+    }
 
-/// `uint32_t FixedPool::get_number_of_total_slice() const`.
-#[must_use]
-pub unsafe extern "C" fn swr_fixed_pool_total(this: *const c_void) -> u32 {
-    // SAFETY: `this` is a constructed FixedPool.
-    let pool = unsafe { fixed(this) };
-    pool.slices().1
-}
-
-/// `uint32_t FixedPool::get_slice_size() const`.
-#[must_use]
-pub unsafe extern "C" fn swr_fixed_pool_slice_size(this: *const c_void) -> u32 {
-    // SAFETY: `this` is a constructed FixedPool.
-    let pool = unsafe { fixed(this) };
-    pool.slice_size
-}
-
-/// `void FixedPool::debug(int max_lines) const`: the slices on stdout.
-pub unsafe extern "C" fn swr_fixed_pool_debug(this: *const c_void, max_lines: c_int) {
-    // SAFETY: `this` is a constructed FixedPool.
-    let pool = unsafe { fixed(this) };
-    let mut cursor = DebugCursor::default();
-    // SAFETY: the format takes one string.
-    unsafe {
-        libc::printf(
-            c"===============================%s=================================\n".as_ptr(),
-            c"debug".as_ptr(),
-        )
-    };
-    // SAFETY: `pool` is live.
-    while let Some(record) = unsafe { fixed::debug_step(pool, &mut cursor, max_lines) } {
-        if record.self_link {
-            // SAFETY: a literal format with no arguments.
+    /// `void FixedPool::debug(int max_lines) const`: the slices on stdout, through C stdio.
+    pub fn debug(&self, max_lines: c_int) {
+        let mut cursor = DebugCursor::default();
+        // SAFETY: the format takes one string.
+        unsafe {
+            libc::printf(
+                c"===============================%s=================================\n".as_ptr(),
+                c"debug".as_ptr(),
+            )
+        };
+        // SAFETY: a constructed pool.
+        while let Some(record) = unsafe { fixed::debug_step(self.header(), &mut cursor, max_lines) }
+        {
+            if record.self_link {
+                // SAFETY: a literal format with no arguments.
+                unsafe {
+                    libc::printf(
+                        c"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n".as_ptr(),
+                    )
+                };
+            }
+            // SAFETY: the arguments match the format.
             unsafe {
                 libc::printf(
-                    c"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n".as_ptr(),
+                    c"#%llu\tslice[%p]\tprev=%p\tnext=%p\ttag=%d\tdata=%p\n".as_ptr(),
+                    libc::c_ulonglong::from(record.line),
+                    record.slice,
+                    record.prev,
+                    record.next,
+                    c_int::from(record.lock),
+                    record.data,
                 )
             };
         }
-        // SAFETY: the arguments match the format.
-        unsafe {
-            libc::printf(
-                c"#%llu\tslice[%p]\tprev=%p\tnext=%p\ttag=%d\tdata=%p\n".as_ptr(),
-                libc::c_ulonglong::from(record.line),
-                record.slice,
-                record.prev,
-                record.next,
-                c_int::from(record.lock),
-                record.data,
-            )
-        };
     }
 }
 
-// ---------------------------------------------------------------- RingBuffer
-
-/// `RingBuffer(size, shared)`.
-///
-/// # Safety
-/// `output` is writable.
-pub unsafe fn swr_v1_memory_ring_buffer_new(
-    size: u32,
-    shared: bool,
-    output: *mut *mut Storage,
-) -> i32 {
-    let Some(total) = ring::layout(size) else {
-        return INVALID;
-    };
-    let memory = arena(shared, total as usize);
-    if memory.is_null() {
-        return NO_MEMORY;
+impl Drop for FixedPool {
+    /// `FixedPool::~FixedPool()`.
+    fn drop(&mut self) {
+        let shared = self.header().shared != 0;
+        // SAFETY: the arena came from `arena(shared, ..)` in `new`, freed once.
+        unsafe { release(shared, self.0.as_ptr().cast()) };
     }
-    // SAFETY: a fresh, malloc-aligned arena of `total` bytes.
-    unsafe { ring::construct(memory.cast(), total, shared) };
-    // SAFETY: as the caller promises.
-    unsafe { output.write(memory.cast()) };
-    0
-}
-
-/// `RingBuffer::~RingBuffer()`.
-///
-/// # Safety
-/// `ring` is a constructed ring, destroyed once.
-pub unsafe fn swr_v1_memory_ring_buffer_delete(ring: *mut Storage) {
-    // SAFETY: as the caller promises.
-    let shared = unsafe { &*ring }.shared != 0;
-    // SAFETY: the ring's arena came from `arena(shared, ..)`.
-    unsafe { release(shared, ring.cast()) };
-}
-
-/// `void *RingBuffer::alloc(uint32_t size)`.
-///
-/// # Panics
-/// Upstream's assertion: `size` is positive.
-///
-/// # Safety
-/// `ring` is a constructed ring, allocated from by one producer.
-pub unsafe fn swr_v1_memory_ring_buffer_alloc(ring: *mut Storage, size: u32) -> *mut c_void {
-    // assert(size > 0);
-    assert!(size > 0, "a non-empty record");
-    // SAFETY: as the caller promises.
-    unsafe { ring::storage_alloc(ring, size) }
-}
-
-/// `void RingBuffer::free(void *ptr)`.
-///
-/// # Panics
-/// Upstream's assertions: `data` is an allocated record of the ring.
-///
-/// # Safety
-/// `ring` is a constructed ring and `data` a live record of it.
-pub unsafe fn swr_v1_memory_ring_buffer_free(ring: *mut Storage, data: *mut c_void) {
-    // Consumers share the header, and only touch `free_count`, atomically.
-    let free_count = ring
-        .wrapping_byte_add(mem::offset_of!(Storage, free_count))
-        .cast::<u32>();
-    // SAFETY: as the caller promises; `memory` and `size` don't change after construction.
-    let memory = unsafe { ring.cast::<*mut u8>().read() };
-    // SAFETY: as above.
-    let size = unsafe {
-        ring.wrapping_byte_add(mem::offset_of!(Storage, size))
-            .cast::<u32>()
-            .read()
-    };
-    // assert(ptr >= impl->memory);
-    assert!(data.addr() >= memory.addr(), "a record of this ring");
-    // assert(static_cast<char *>(ptr) <= static_cast<char *>(impl->memory) + impl->size);
-    assert!(
-        data.addr() <= memory.addr() + size as usize,
-        "a record of this ring"
-    );
-    let item = data.cast::<u16>().wrapping_sub(4);
-    // SAFETY: a record's 8-byte header, `uint16_t lock` first, precedes its data.
-    let lock = unsafe { item.read() };
-    // assert(item->lock == 1);
-    assert_eq!(lock, 1, "an allocated record");
-    // SAFETY: as the caller promises.
-    let freed = unsafe { ring::free(memory.cast(), size, free_count, data) };
-    assert!(freed, "a live record of this ring");
 }
 
 // ---------------------------------------------------------------- GlobalMemory
@@ -653,16 +505,14 @@ pub mod pool {
     }
 }
 
-unsafe extern "C" fn table_error(code: c_int) {
+fn table_error(code: c_int) {
     set_last_error(code);
 }
 
 /// `table_warning(message, length)`: a warning whose text starts with its function,
 /// `Name(): `.
-unsafe extern "C" fn table_warning(message: *const c_char, length: usize) {
-    // SAFETY: the table passes `length` readable bytes.
-    let text = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
-    let text = String::from_utf8_lossy(text);
+fn table_warning(message: &[u8]) {
+    let text = String::from_utf8_lossy(message);
     let (origin, rest) = text.split_once("(): ").unwrap_or(("", &text));
     let origin = std::ffi::CString::new(origin).unwrap_or_default();
     log::warning(&origin, format_args!("{rest}"));

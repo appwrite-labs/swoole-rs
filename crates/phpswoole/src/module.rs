@@ -137,7 +137,7 @@ pub struct MinitArgs {
 }
 
 /// The hooks of the crates above this one in the dependency graph
-/// (crates/phpcoroutines, phpthread and phpserver), which it runs where
+/// (crates/phpcoroutines, phpthread, phpserver and phpclients), which it runs where
 /// upstream's phases did, and which crates/phpruntime and phpprocess, between
 /// them, read too. crates/ffi, which links them all, registers them with
 /// [`crate::module_entry`] when Zend asks for the module entry, before any phase.
@@ -146,6 +146,9 @@ pub struct Families {
     pub coroutine_minit: [Minit; 3],
     /// `php_swoole_server_minit`.
     pub server_minit: Minit,
+    /// `php_swoole_timer_minit` and `php_swoole_timer_rshutdown`.
+    pub timer_minit: Minit,
+    pub timer_rshutdown: Hook,
     /// `php_swoole_tracer_minit(threshold, blocking, profile, leaks)`, at MINIT, once.
     pub tracer_minit: unsafe fn(i64, bool, bool, bool),
     /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
@@ -175,6 +178,24 @@ pub struct Families {
     pub active_threads: fn() -> usize,
     /// `swoole_server_ce`, for `Swoole\Process` (crates/phpprocess).
     pub server_class: fn() -> *mut zend_class_entry,
+    /// crates/phpclients' MINITs, in order: `php_swoole_socket_coro_minit`,
+    /// `_client_minit`, `_client_async_minit`, `_client_coro_minit` and
+    /// `_http_client_coro_minit`.
+    pub client_minit: [Minit; 5],
+    /// `php_swoole_name_resolver_minit`.
+    pub name_resolver_minit: Minit,
+    /// `php_swoole_socket_set(socket, settings)` over a coroutine socket, for
+    /// crates/phpruntime; `which` 2 applies only the SSL ones
+    /// (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
+    pub socket_settings: unsafe extern "C" fn(*mut c_void, *const zval, c_int) -> bool,
+    /// `php_swoole_name_resolver_add(resolver)` and
+    /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
+    pub name_resolver_add: unsafe fn(*mut zval) -> bool,
+    pub name_resolver_remove: unsafe fn(*mut zval) -> *mut zval,
+    /// `swoole_socket_coro_ce` and `swoole_client_ce`, for `Swoole\Event`
+    /// (crates/phpevents).
+    pub socket_class: fn() -> *mut zend_class_entry,
+    pub client_class: fn() -> *mut zend_class_entry,
     /// crates/phphttp's and phphttp2's.
     pub http: Http,
 }
@@ -224,33 +245,13 @@ unsafe extern "C" {
     fn php_swoole_process_minit(module_number: c_int);
     fn php_swoole_process_pool_minit(module_number: c_int);
     fn php_swoole_table_minit(module_number: c_int);
-    fn php_swoole_timer_minit(module_number: c_int);
     fn php_swoole_coroutine_lock_minit(module_number: c_int);
     fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
-    /// crates/phpclients' `Coroutine\Socket`.
-    fn swr_v1_phpclients_socket_minit(
-        exception: *mut zend_class_entry,
-        shortname: bool,
-        module: c_int,
-    );
-    fn php_swoole_client_minit(module_number: c_int);
-    fn php_swoole_client_async_minit(module_number: c_int);
-    /// crates/phpclients' `Coroutine\Client`.
-    fn swr_v1_phpclients_client_minit(shortname: bool, client_class: *mut *mut zend_class_entry);
-    /// crates/phpclients' `Coroutine\Http\Client`.
-    fn swr_v1_phpclients_http_client_minit(
-        exception: *mut zend_class_entry,
-        shortname: bool,
-        module: c_int,
-        features: u32,
-    );
     fn php_swoole_redis_server_minit(module_number: c_int);
-    fn php_swoole_name_resolver_minit(module_number: c_int);
     fn php_swoole_runtime_mshutdown();
     fn php_swoole_runtime_rinit();
     fn php_swoole_redis_server_rshutdown();
-    fn php_swoole_timer_rshutdown();
     fn php_swoole_runtime_rshutdown();
     fn php_swoole_process_rshutdown();
 }
@@ -297,7 +298,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_process_minit),
         M(php_swoole_process_pool_minit),
         M(php_swoole_table_minit),
-        M(php_swoole_timer_minit),
+        M(families.timer_minit),
     ];
     // coroutine
     steps.extend(families.coroutine_minit.map(M));
@@ -305,14 +306,10 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_coroutine_lock_minit),
         M(php_swoole_channel_coro_minit),
         M(php_swoole_runtime_minit),
-        // client
-        M(socket_coro_minit),
-        M(php_swoole_client_minit),
-        M(php_swoole_client_async_minit),
-        M(client_coro_minit),
-        M(http_client_coro_minit),
-        M(http_minit::<6>),
     ]);
+    // client
+    steps.extend(families.client_minit.map(M));
+    steps.extend([M(http_minit::<6>)]);
     // The bundled C clients, ssh2 and ftp.
     steps.extend(optional::client_minit());
     steps.extend([
@@ -325,7 +322,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(http_minit::<4>),
         M(http_minit::<5>),
         M(php_swoole_redis_server_minit),
-        M(php_swoole_name_resolver_minit),
+        M(families.name_resolver_minit),
     ]);
     steps.extend(optional::minit());
     steps.extend([M(tracer_minit), H(php_hooks), H(ready)]);
@@ -366,37 +363,14 @@ extern "C" fn http_minit<const N: usize>(module: c_int) {
     unsafe { minit(&args) };
 }
 
-/// `php_swoole_socket_coro_minit`.
-extern "C" fn socket_coro_minit(module_number: c_int) {
-    let exception = crate::EXCEPTION.entry();
-    let shortname = globals().use_shortname.get();
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpclients_socket_minit(exception, shortname, module_number) };
-}
-
 /// The codecs the build has: 1 zlib, 2 brotli, 4 zstd.
-fn codecs() -> u32 {
+#[must_use]
+pub fn codecs() -> u32 {
     [Switch::Zlib, Switch::Brotli, Switch::Zstd]
         .iter()
         .enumerate()
         .filter(|(_, capability)| crate::built_with(**capability))
         .fold(0, |features, (bit, _)| features | 1 << bit)
-}
-
-/// `php_swoole_client_coro_minit`.
-extern "C" fn client_coro_minit(_module_number: c_int) {
-    let shortname = globals().use_shortname.get();
-    let mut class = ptr::null_mut();
-    // SAFETY: Rust's MINIT, once, with a writable slot.
-    unsafe { swr_v1_phpclients_client_minit(shortname, &raw mut class) };
-}
-
-/// `php_swoole_http_client_coro_minit`: the compression the build has.
-extern "C" fn http_client_coro_minit(module_number: c_int) {
-    let exception = crate::EXCEPTION.entry();
-    let shortname = globals().use_shortname.get();
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpclients_http_client_minit(exception, shortname, module_number, codecs()) };
 }
 
 /// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its
@@ -591,7 +565,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(php_swoole_redis_server_rshutdown),
         Step::Hook(families.coroutine_rshutdown[0]),
         Step::Hook(families.coroutine_rshutdown[1]),
-        Step::Hook(php_swoole_timer_rshutdown),
+        Step::Hook(families.timer_rshutdown),
         Step::Hook(php_swoole_runtime_rshutdown),
         Step::Hook(php_swoole_process_rshutdown),
     ];

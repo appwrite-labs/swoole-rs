@@ -36,10 +36,6 @@ void swr_uring_prep_open(struct io_uring_sqe *sqe, const char *path, int flags, 
     io_uring_prep_open(sqe, path, flags, mode);
 }
 
-void swr_uring_prep_socket(struct io_uring_sqe *sqe, int domain, int type, int protocol, unsigned flags) {
-    io_uring_prep_socket(sqe, domain, type, protocol, flags);
-}
-
 void swr_uring_prep_connect(struct io_uring_sqe *sqe, int fd, const struct sockaddr *addr, socklen_t addrlen) {
     io_uring_prep_connect(sqe, fd, addr, addrlen);
 }
@@ -86,10 +82,6 @@ void swr_uring_prep_write(struct io_uring_sqe *sqe, int fd, const void *buf, uns
 
 void swr_uring_prep_splice(struct io_uring_sqe *sqe, int fd_in, int64_t off_in, int fd_out, int64_t off_out, unsigned nbytes, unsigned splice_flags) {
     io_uring_prep_splice(sqe, fd_in, off_in, fd_out, off_out, nbytes, splice_flags);
-}
-
-void swr_uring_prep_shutdown(struct io_uring_sqe *sqe, int fd, int how) {
-    io_uring_prep_shutdown(sqe, fd, how);
 }
 
 void swr_uring_prep_close(struct io_uring_sqe *sqe, int fd) {

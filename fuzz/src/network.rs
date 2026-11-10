@@ -385,3 +385,40 @@ pub fn resp_server(bytes: &[u8]) {
     }
     panic!("no end for {bytes:?}");
 }
+
+/// Up to 32 bytes of pattern, a replacement and up to 64 bytes of URL, NUL-separated, as one
+/// `~pattern~` rule of `RewriteRules`: compiling and applying it ends, and a pattern of
+/// letters, digits and `/` (all literal) replaces each occurrence, left to right, as
+/// `std::regex_replace` does. libstdc++ itself is compared in the `http-rewrites` gate.
+pub fn http_rewrite(bytes: &[u8]) {
+    let mut parts = bytes.splitn(3, |&b| b == 0);
+    let (pattern, replacement, url) = (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    );
+    if pattern.len() > 32 || url.len() > 64 {
+        return;
+    }
+    let mut rules = swoole_rs_http::RewriteRules::default();
+    rules.add(&[b"~", pattern, b"~"].concat(), replacement);
+    let rewritten = rules.apply(url);
+    let literal = pattern
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'/');
+    if pattern.is_empty() || !literal || replacement.contains(&b'$') {
+        return;
+    }
+    let (mut expected, mut rest) = (Vec::new(), url);
+    while let Some(at) = rest.windows(pattern.len()).position(|w| w == pattern) {
+        expected.extend_from_slice(&rest[..at]);
+        expected.extend_from_slice(replacement);
+        rest = &rest[at + pattern.len()..];
+    }
+    expected.extend_from_slice(rest);
+    assert_eq!(
+        rewritten,
+        Some(expected).filter(|expected| expected != url),
+        "~{pattern:?}~ -> {replacement:?} on {url:?}"
+    );
+}

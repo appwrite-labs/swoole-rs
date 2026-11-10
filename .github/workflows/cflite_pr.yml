@@ -32,7 +32,7 @@ jobs:
   # Fuzzes the targets a PR's change reaches for two minutes, starting from the
   # corpus the nightly batch run keeps. A crash fails the job and is uploaded.
   fuzz:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 15
     steps:
       - id: build
