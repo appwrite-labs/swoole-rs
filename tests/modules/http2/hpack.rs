@@ -430,8 +430,15 @@ impl Random {
     }
 }
 
-/// What a step loop saw: each field, then whether the block ended or failed.
-fn oracle(inflater: *mut core::ffi::c_void, block: &[u8], split: usize) -> (Headers, bool) {
+/// Both inflaters over `block` in fragments of `split`, call by call: the same
+/// bytes read, flags and fields, and the same call fails. Returns the fields
+/// and whether the block ended rather than failed.
+fn lockstep(
+    decoder: &mut Decoder,
+    inflater: *mut core::ffi::c_void,
+    block: &[u8],
+    split: usize,
+) -> (Headers, bool) {
     let mut headers = Vec::new();
     let fragments: Vec<&[u8]> = block.chunks(split.max(1)).collect();
     let count = fragments.len().max(1);
@@ -458,47 +465,36 @@ fn oracle(inflater: *mut core::ffi::c_void, block: &[u8], split: usize) -> (Head
                     i32::from(last),
                 )
             };
-            let Ok(read) = usize::try_from(read) else {
-                return (headers, false);
+            let (read, step) = match (usize::try_from(read), decoder.decode(input, last)) {
+                (Ok(read), Ok(step)) => (read, step),
+                (read, step) => {
+                    assert!(
+                        read.is_err() && step.is_err(),
+                        "only one failed on {input:x?}"
+                    );
+                    return (headers, false);
+                }
             };
+            assert_eq!(step.read, read, "bytes read from {input:x?}");
+            assert_eq!(
+                i32::try_from(step.flags()),
+                Ok(flags),
+                "flags over {input:x?}"
+            );
             input = &input[read..];
-            if flags & nghttp2::INFLATE_EMIT != 0 {
-                // SAFETY: nghttp2's field, live until the next call.
-                let name = unsafe { std::slice::from_raw_parts(nv.name, nv.name_length) };
-                // SAFETY: as above.
-                let value = unsafe { std::slice::from_raw_parts(nv.value, nv.value_length) };
-                headers.push((name.to_vec(), value.to_vec()));
-            }
-            if flags & nghttp2::INFLATE_FINAL != 0 {
-                // SAFETY: a live inflater.
-                unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
-                return (headers, true);
-            }
-            if flags & nghttp2::INFLATE_EMIT == 0 && input.is_empty() {
-                break;
-            }
-        }
-    }
-    unreachable!("a final fragment always ends the block")
-}
-
-fn rust(decoder: &mut Decoder, block: &[u8], split: usize) -> (Headers, bool) {
-    let mut headers = Vec::new();
-    let fragments: Vec<&[u8]> = block.chunks(split.max(1)).collect();
-    let count = fragments.len().max(1);
-    for at in 0..count {
-        let mut input = fragments.get(at).copied().unwrap_or_default();
-        let last = at + 1 == count;
-        loop {
-            let Ok(step) = decoder.decode(input, last) else {
-                return (headers, false);
-            };
-            input = &input[step.read..];
             if let Some((name, value)) = step.header {
+                // SAFETY: nghttp2's field, live until the next call.
+                let expected = unsafe { std::slice::from_raw_parts(nv.name, nv.name_length) };
+                assert_eq!(name, expected, "name");
+                // SAFETY: as above.
+                let expected = unsafe { std::slice::from_raw_parts(nv.value, nv.value_length) };
+                assert_eq!(value, expected, "value");
                 headers.push((name.to_vec(), value.to_vec()));
             }
             if step.done {
                 decoder.end_headers();
+                // SAFETY: a live inflater.
+                unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
                 return (headers, true);
             }
             if step.header.is_none() && input.is_empty() {
@@ -507,6 +503,33 @@ fn rust(decoder: &mut Decoder, block: &[u8], split: usize) -> (Headers, bool) {
         }
     }
     unreachable!("a final fragment always ends the block")
+}
+
+/// A fresh pair of inflaters over one block in fragments of `split`.
+fn lockstep_once(block: &str, split: usize) -> (Headers, bool) {
+    let mut inflater = std::ptr::null_mut();
+    // SAFETY: `inflater` is writable.
+    assert_eq!(
+        unsafe { nghttp2::nghttp2_hd_inflate_new(&raw mut inflater) },
+        0,
+        "inflater"
+    );
+    let result = lockstep(&mut Decoder::default(), inflater, &hex(block), split);
+    // SAFETY: the inflater made above.
+    unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
+    result
+}
+
+/// Inputs the `http2_hpack` fuzz target found: Huffman EOS fails in the
+/// fragment that completes it, not when the string ends.
+#[test]
+fn fuzz_regressions() {
+    assert_eq!(lockstep_once("639dffffffff", 1), (Vec::new(), false));
+    let block = "00ff07000000ffffffffffffffffffffffffffffff003b006f6d";
+    assert_eq!(lockstep_once(block, usize::MAX), (Vec::new(), false));
+    for split in 1..8 {
+        lockstep_once(block, split);
+    }
 }
 
 /// Encoded blocks, then the same with bytes changed, decoded block after block
@@ -556,13 +579,11 @@ fn matches_nghttp2() {
                 mutated = true;
             }
             let split = 1 + random.below(block.len().max(1));
-            let expected = oracle(inflater, &block, split);
-            let actual = rust(&mut decoder, &block, split);
-            assert_eq!(actual, expected, "{block:x?} in fragments of {split}");
+            let actual = lockstep(&mut decoder, inflater, &block, split);
             if !mutated {
                 assert_eq!(actual, (headers, true), "round trip");
             }
-            if !expected.1 {
+            if !actual.1 {
                 break;
             }
         }

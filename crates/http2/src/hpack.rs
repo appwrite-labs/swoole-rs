@@ -182,34 +182,47 @@ fn huffman_encode(text: &[u8], out: &mut Vec<u8>) {
     }
 }
 
-/// Canonical decoding one bit at a time; EOS, or padding that is longer than
-/// seven bits or not all ones, is an error.
-fn huffman_decode(input: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
-    let (mut code, mut length) = (0_u32, 0_usize);
-    for &byte in input {
-        for shift in (0..8).rev() {
-            code = code << 1 | u32::from(byte >> shift & 1);
-            length += 1;
-            let first = HUFFMAN.first.get(length).copied().ok_or(Error)?;
-            let count = HUFFMAN.count.get(length).copied().ok_or(Error)?;
-            let offset = code.wrapping_sub(first);
-            if offset < count {
-                let at = usize::from(HUFFMAN.start.get(length).copied().ok_or(Error)?);
-                let symbol = HUFFMAN
-                    .symbols
-                    .get(at + offset as usize)
-                    .copied()
-                    .ok_or(Error)?;
-                // EOS (256) is no byte.
-                out.push(u8::try_from(symbol).map_err(|_| Error)?);
-                (code, length) = (0, 0);
+/// Canonical decoding one bit at a time, resumable across fragments: the bits
+/// of the symbol read so far.
+#[derive(Clone, Copy, Default)]
+struct Bits {
+    code: u32,
+    length: usize,
+}
+
+impl Bits {
+    /// EOS fails as soon as its bytes arrive, as nghttp2's failure state does.
+    fn decode(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+        for &byte in input {
+            for shift in (0..8).rev() {
+                self.code = self.code << 1 | u32::from(byte >> shift & 1);
+                self.length += 1;
+                let first = HUFFMAN.first.get(self.length).copied().ok_or(Error)?;
+                let count = HUFFMAN.count.get(self.length).copied().ok_or(Error)?;
+                let offset = self.code.wrapping_sub(first);
+                if offset < count {
+                    let at = usize::from(HUFFMAN.start.get(self.length).copied().ok_or(Error)?);
+                    let symbol = HUFFMAN
+                        .symbols
+                        .get(at + offset as usize)
+                        .copied()
+                        .ok_or(Error)?;
+                    // EOS (256) is no byte.
+                    out.push(u8::try_from(symbol).map_err(|_| Error)?);
+                    *self = Self::default();
+                }
             }
         }
+        Ok(())
     }
-    if length > 7 || code != (1 << length) - 1 {
-        return Err(Error);
+
+    /// The string ended: padding longer than seven bits or not all ones fails.
+    fn finish(self) -> Result<(), Error> {
+        if self.length > 7 || self.code != (1 << self.length) - 1 {
+            return Err(Error);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// The first static entry named `name` (its value too if given), from 1.
@@ -295,33 +308,14 @@ impl Table {
     }
 }
 
-/// The integer of `prefix` bits starting `input` (RFC 7541 5.1), with its
-/// length: `None` while incomplete. Over `max`, partial or not, is an error.
-fn decode_integer(input: &[u8], prefix: u32, max: usize) -> Result<Option<(usize, usize)>, Error> {
-    let limit = (1_u8 << prefix) - 1;
-    let first = input.first().ok_or(Error)? & limit;
-    let mut value = u32::from(first);
-    let check = |value: u32| match usize::try_from(value) {
-        Ok(value) if value <= max => Ok(value),
-        _ => Err(Error),
-    };
-    if first < limit {
-        return Ok(Some((check(value)?, 1)));
+/// An integer's continuation byte (RFC 7541 5.1) added in, with nghttp2's
+/// bounds: 32 bits, at most five continuation bytes' worth of shift.
+fn continue_integer(value: u32, shift: u32, byte: u8) -> Result<u32, Error> {
+    let add = u32::from(byte & 0x7f);
+    if shift >= 32 || u32::MAX >> shift < add {
+        return Err(Error);
     }
-    let mut shift = 0;
-    for (at, &byte) in input.iter().enumerate().skip(1) {
-        let add = u32::from(byte & 0x7f);
-        if shift >= 32 || u32::MAX >> shift < add {
-            return Err(Error);
-        }
-        value = value.checked_add(add << shift).ok_or(Error)?;
-        if byte & 0x80 == 0 {
-            return Ok(Some((check(value)?, at + 1)));
-        }
-        shift += 7;
-    }
-    check(value)?;
-    Ok(None)
+    value.checked_add(add << shift).ok_or(Error)
 }
 
 #[expect(
@@ -341,27 +335,6 @@ fn encode_integer(out: &mut Vec<u8>, bits: u8, prefix: u32, value: usize) {
         rest >>= 7;
     }
     out.push(rest as u8);
-}
-
-/// A string literal (RFC 7541 5.2) into `out`, with the bytes it took: `None`
-/// while incomplete.
-fn decode_string(input: &[u8], out: &mut Vec<u8>) -> Result<Option<usize>, Error> {
-    let Some(&first) = input.first() else {
-        return Ok(None);
-    };
-    let Some((length, at)) = decode_integer(input, 7, MAX_STRING)? else {
-        return Ok(None);
-    };
-    let Some(text) = input.get(at..at + length) else {
-        return Ok(None);
-    };
-    out.clear();
-    if first & 0x80 != 0 {
-        huffman_decode(text, out)?;
-    } else {
-        out.extend_from_slice(text);
-    }
-    Ok(Some(at + length))
 }
 
 /// Huffman-coded when that is shorter.
@@ -395,14 +368,53 @@ impl Step<'_> {
     }
 }
 
+/// What an integer being read (RFC 7541 5.1) counts.
+#[derive(Clone, Copy)]
+enum Integer {
+    TableSize,
+    /// An indexed field (6.1).
+    Index,
+    /// A literal's name index, 0 for a new name (6.2).
+    Name,
+    /// A string's length (5.2): the value's or the name's.
+    Length {
+        value: bool,
+        huffman: bool,
+    },
+}
+
+/// Where the decoder stands inside a representation, which fragments may
+/// split anywhere, as `nghttp2_hd_inflate_hd`'s states do.
+#[derive(Clone, Copy)]
+enum State {
+    Opcode,
+    Integer {
+        integer: Integer,
+        value: u32,
+        shift: u32,
+    },
+    /// A string's first byte is next: the value's or the name's.
+    Length {
+        value: bool,
+    },
+    /// `left` bytes of a string remain.
+    Text {
+        value: bool,
+        huffman: bool,
+        left: usize,
+    },
+}
+
 /// The header block decoder (`nghttp2_hd_inflater`), whose table limit is
 /// `SETTINGS_HEADER_TABLE_SIZE`'s default.
 pub struct Decoder {
     table: Table,
-    /// A representation split across calls, kept until it completes.
-    pending: Vec<u8>,
-    /// A field was decoded in this block, so no table size update may follow.
+    state: State,
+    /// A representation opened this block, so no table size update may follow.
     in_block: bool,
+    /// The literal being read is added to the table.
+    indexing: bool,
+    huffman: Bits,
     bad: bool,
     name: Vec<u8>,
     value: Vec<u8>,
@@ -412,8 +424,10 @@ impl Default for Decoder {
     fn default() -> Self {
         Self {
             table: Table::new(DEFAULT_TABLE_SIZE),
-            pending: Vec::new(),
+            state: State::Opcode,
             in_block: false,
+            indexing: false,
+            huffman: Bits::default(),
             bad: false,
             name: Vec::new(),
             value: Vec::new(),
@@ -455,89 +469,165 @@ impl Decoder {
     /// The block ended (`nghttp2_hd_inflate_end_headers`): the next may open
     /// with table size updates.
     pub fn end_headers(&mut self) {
+        self.state = State::Opcode;
         self.in_block = false;
     }
 
+    /// The bytes read, and whether they ended in a field.
     fn step(&mut self, input: &[u8], last: bool) -> Result<(usize, bool), Error> {
-        let mut buffer = std::mem::take(&mut self.pending);
-        let carried = buffer.len();
-        if carried > 0 {
-            buffer.extend_from_slice(input);
-        }
-        let data = if carried > 0 {
-            buffer.as_slice()
-        } else {
-            input
-        };
-        let mut at = 0;
-        while let Some(rest) = data.get(at..).filter(|rest| !rest.is_empty()) {
-            let Some((length, emitted)) = self.representation(rest)? else {
-                if last {
-                    return Err(Error);
+        let mut rest = input;
+        loop {
+            if let State::Text {
+                value,
+                huffman,
+                left,
+            } = self.state
+            {
+                let (text, after) = rest.split_at(left.min(rest.len()));
+                rest = after;
+                let out = if value {
+                    &mut self.value
+                } else {
+                    &mut self.name
+                };
+                if huffman {
+                    self.huffman.decode(text, out)?;
+                } else {
+                    out.extend_from_slice(text);
                 }
-                self.pending = rest.to_vec();
-                return Ok((input.len(), false));
-            };
-            at += length;
-            if emitted {
-                return Ok((at - carried, true));
+                let left = left - text.len();
+                self.state = State::Text {
+                    value,
+                    huffman,
+                    left,
+                };
+                if left > 0 {
+                    break;
+                }
+                if huffman {
+                    self.huffman.finish()?;
+                }
+                if value {
+                    return Ok((input.len() - rest.len(), self.emit()));
+                }
+                self.state = State::Length { value: true };
+                continue;
             }
+            let Some((&byte, after)) = rest.split_first() else {
+                break;
+            };
+            rest = after;
+            let (integer, value, shift, last_byte) = match self.state {
+                State::Opcode => {
+                    let (integer, prefix) = match byte {
+                        0x80.. => (Integer::Index, 7),
+                        0x40.. => (Integer::Name, 6),
+                        0x20.. if self.in_block => return Err(Error),
+                        0x20.. => (Integer::TableSize, 5),
+                        _ => (Integer::Name, 4),
+                    };
+                    self.in_block |= !matches!(integer, Integer::TableSize);
+                    self.indexing = byte & 0xc0 == 0x40;
+                    let limit = (1 << prefix) - 1;
+                    (integer, u32::from(byte & limit), 0, byte & limit < limit)
+                }
+                State::Length { value } => {
+                    let huffman = byte & 0x80 != 0;
+                    let integer = Integer::Length { value, huffman };
+                    (integer, u32::from(byte & 0x7f), 0, byte & 0x7f < 0x7f)
+                }
+                State::Integer {
+                    integer,
+                    value,
+                    shift,
+                } => (
+                    integer,
+                    continue_integer(value, shift, byte)?,
+                    shift + 7,
+                    byte & 0x80 == 0,
+                ),
+                State::Text { .. } => unreachable!("read above"),
+            };
+            let max = match integer {
+                Integer::TableSize => DEFAULT_TABLE_SIZE,
+                Integer::Index | Integer::Name => self.table.len(),
+                Integer::Length { .. } => MAX_STRING,
+            };
+            // nghttp2 bounds a partial integer too.
+            let checked = usize::try_from(value)
+                .ok()
+                .filter(|&checked| checked <= max)
+                .ok_or(Error)?;
+            if !last_byte {
+                self.state = State::Integer {
+                    integer,
+                    value,
+                    shift,
+                };
+                continue;
+            }
+            if self.integer(integer, checked)? {
+                return Ok((input.len() - rest.len(), true));
+            }
+        }
+        if last && !matches!(self.state, State::Opcode) {
+            return Err(Error);
         }
         Ok((input.len(), false))
     }
 
-    /// One representation (RFC 7541 6): its length and whether it decoded a
-    /// field, or `None` while incomplete.
-    fn representation(&mut self, input: &[u8]) -> Result<Option<(usize, bool)>, Error> {
-        let first = input.first().copied().ok_or(Error)?;
-        if first & 0xe0 == 0x20 {
-            if self.in_block {
-                return Err(Error);
-            }
-            let Some((size, length)) = decode_integer(input, 5, DEFAULT_TABLE_SIZE)? else {
-                return Ok(None);
-            };
-            self.table.resize(size);
-            return Ok(Some((length, false)));
-        }
-        let prefix = match first {
-            0x80.. => 7,
-            0x40.. => 6,
-            _ => 4,
-        };
-        let Some((index, mut at)) = decode_integer(input, prefix, self.table.len())? else {
-            return Ok(None);
-        };
-        if prefix == 7 {
-            let (name, value) = self.table.get(index).ok_or(Error)?;
-            self.name.clear();
-            self.name.extend_from_slice(name);
-            self.value.clear();
-            self.value.extend_from_slice(value);
-        } else {
-            if index == 0 {
-                let Some(length) =
-                    decode_string(input.get(at..).unwrap_or_default(), &mut self.name)?
-                else {
-                    return Ok(None);
-                };
-                at += length;
-            } else {
-                let (name, _) = self.table.get(index).ok_or(Error)?;
+    /// Act on a complete integer: whether that emitted a field.
+    fn integer(&mut self, integer: Integer, value: usize) -> Result<bool, Error> {
+        self.state = State::Opcode;
+        match integer {
+            Integer::TableSize => self.table.resize(value),
+            Integer::Index => {
+                let (name, field) = self.table.get(value).ok_or(Error)?;
                 self.name.clear();
                 self.name.extend_from_slice(name);
+                self.value.clear();
+                self.value.extend_from_slice(field);
+                return Ok(true);
             }
-            let rest = input.get(at..).unwrap_or_default();
-            let Some(length) = decode_string(rest, &mut self.value)? else {
-                return Ok(None);
-            };
-            at += length;
-            if prefix == 6 {
-                self.table.insert(&self.name, &self.value);
+            Integer::Name if value == 0 => self.state = State::Length { value: false },
+            Integer::Name => {
+                let (name, _) = self.table.get(value).ok_or(Error)?;
+                self.name.clear();
+                self.name.extend_from_slice(name);
+                self.state = State::Length { value: true };
+            }
+            Integer::Length { value: true, .. } if value == 0 => {
+                self.value.clear();
+                return Ok(self.emit());
+            }
+            Integer::Length {
+                value: is_value,
+                huffman,
+            } => {
+                if is_value {
+                    &mut self.value
+                } else {
+                    &mut self.name
+                }
+                .clear();
+                self.huffman = Bits::default();
+                self.state = State::Text {
+                    value: is_value,
+                    huffman,
+                    left: value,
+                };
             }
         }
-        self.in_block = true;
-        Ok(Some((at, true)))
+        Ok(false)
+    }
+
+    /// A literal is complete: index it if asked.
+    fn emit(&mut self) -> bool {
+        self.state = State::Opcode;
+        if self.indexing {
+            self.table.insert(&self.name, &self.value);
+        }
+        true
     }
 }
 
