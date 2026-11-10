@@ -22,7 +22,7 @@ use swoole_rs_zend::{
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, module_registry,
         zend_class_entry, zend_get_type_by_const, zend_hash_str_find, zend_object,
-        zend_object_handlers, zval, zval_ptr_dtor,
+        zend_object_handlers, zval,
     },
     throw_constructed_twice, unset_property_deny, value,
 };
@@ -823,10 +823,8 @@ fn send_file(call: &Call) {
 
 /// `recvfrom(&$peername, float $timeout = 0): string|false`.
 fn recvfrom(call: &Call) {
-    let parsed = call
-        .arity(1, 2)
-        .and_then(|()| Ok((call.zval_deref(1), call.double(2, 0.0)?)));
-    let Ok((peer, timeout)) = parsed else {
+    let parsed = call.arity(1, 2).and_then(|()| call.double(2, 0.0));
+    let Ok(timeout) = parsed else {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
@@ -837,11 +835,7 @@ fn recvfrom(call: &Call) {
     if bytes <= 0 {
         return set_received(call, buffer, bytes);
     }
-    // SAFETY: the dereferenced by-reference argument: release what it held and
-    // make it the peer's address.
-    unsafe { zval_ptr_dtor(peer) };
-    // SAFETY: as above, released.
-    unsafe { peer.write(address(socket).into_owned().into_zval()) };
+    call.assign(1, address(socket).into_owned());
     call.set_zstring(buffer.into_zstring());
 }
 

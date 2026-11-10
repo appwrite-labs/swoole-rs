@@ -5,38 +5,25 @@
 //! (`crate::native`).
 use crate::{
     native::{self, Co, Socket, Transfer},
+    net::{SOCK_SSL, SOCK_TCP, SOCK_TCP6, SOCK_UNIX_STREAM, check_type, socket_type},
     socket::{socket_of, strerror, warn},
 };
 use libc::{c_char, c_int};
-use std::{
-    ffi::{CStr, CString},
-    ptr,
-};
+use std::{ffi::CStr, ptr};
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
-    Call, Class, Object, Owned, OwnedArray, Props, Value, declare_bool, declare_long,
+    Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool, declare_long,
     declare_string, set_object,
-    string::{self, ZBuf},
+    string::ZBuf,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
-        get_active_function_name, zend_class_entry, zend_object, zend_object_handlers, zend_string,
-        zend_type_error, zval, zval_ptr_dtor,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
+        zend_object_handlers, zend_string, zval,
     },
     unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `SW_FLAG_ASYNC`, `SW_FLAG_SYNC`, `SW_FLAG_KEEP` and `SW_SOCK_SSL`: flags a
-/// client type carries besides its socket type.
-const TYPE_FLAGS: i64 = (1 << 10) | (1 << 11) | (1 << 12) | (1 << 9);
-/// `SW_SOCK_*`.
-const SOCK_TCP: i64 = 1;
-const SOCK_TCP6: i64 = 3;
-const SOCK_UNIX_STREAM: i64 = 5;
-const SOCK_UNIX_DGRAM: i64 = 6;
-/// `SW_SOCK_SSL`.
-const SOCK_SSL: i64 = 1 << 9;
 /// `SW_PHP_CLIENT_BUFFER_SIZE`.
 const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
@@ -170,11 +157,6 @@ fn this<'a>(call: &Call) -> &'a mut Data {
     // SAFETY: client methods are non-static, so `$this` is a client object, and
     // no other reference to its data is live during the call.
     unsafe { ClientObject::data(call.this()) }
-}
-
-/// `php_swoole_client_get_type`: the socket type without the client flags.
-fn socket_type(kind: i64) -> i64 {
-    kind & !TYPE_FLAGS
 }
 
 /// `Address::verify_port(port, true)`, over upstream's `int` port.
@@ -370,27 +352,7 @@ fn construct(call: &Call) {
     let Ok(kind) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    if !(SOCK_TCP..=SOCK_UNIX_DGRAM).contains(&socket_type(kind)) {
-        let mut space: *const c_char = ptr::null();
-        // SAFETY: inside a method call; Zend returns static names.
-        let class = unsafe { get_active_class_name(&raw mut space) };
-        // SAFETY: as above.
-        let class = unsafe { CStr::from_ptr(class) };
-        // SAFETY: as above.
-        let space = unsafe { CStr::from_ptr(space) };
-        // SAFETY: as above.
-        let function = unsafe { get_active_function_name() };
-        // SAFETY: as above.
-        let function = unsafe { CStr::from_ptr(function) };
-        let message = format!(
-            "{}{}{}() expects parameter 1 to be client type, unknown type {kind} given",
-            class.to_string_lossy(),
-            space.to_string_lossy(),
-            function.to_string_lossy(),
-        );
-        let message = CString::new(message).unwrap_or_default();
-        // SAFETY: "%s" takes the NUL-terminated message.
-        unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
+    if !check_type(kind) {
         return call.set_bool(false);
     }
     // SAFETY: from a handler.
@@ -518,8 +480,6 @@ fn recvfrom(call: &Call) {
     let Ok(length) = call.arity(2, 3).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    let address = call.zval_deref(2);
-    let port = (call.num_args() >= 3).then(|| call.zval_deref(3));
     let Some(length) = usize::try_from(length).ok().filter(|length| *length > 0) else {
         return call.set_bool(false);
     };
@@ -533,16 +493,9 @@ fn recvfrom(call: &Call) {
         return call.set_bool(false);
     }
     let (peer, peer_port) = socket.address();
-    // SAFETY: the dereferenced by-reference argument: release it, then make it
-    // the peer's address.
-    unsafe { zval_ptr_dtor(address) };
-    // SAFETY: as above; it takes the new string's only reference.
-    unsafe { value::set_str(address, string::copy(peer.to_bytes())) };
-    if let Some(port) = port {
-        // SAFETY: as for the address.
-        unsafe { zval_ptr_dtor(port) };
-        // SAFETY: as above.
-        unsafe { value::set_long(port, i64::from(peer_port)) };
+    call.assign(2, Owned::string(ZString::new(peer.to_bytes())));
+    if call.num_args() >= 3 {
+        call.assign(3, Owned::long(i64::from(peer_port)));
     }
     call.set_zstring(buffer.into_zstring());
 }

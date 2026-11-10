@@ -12,6 +12,7 @@ use crate::{
         swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
         zend_execute_data, zend_expected_type, zend_object, zend_string, zend_update_property_long,
         zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
+        zval_ptr_dtor,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -301,6 +302,17 @@ impl Call {
     #[inline]
     pub fn zval_deref(&self, n: u32) -> *mut zval {
         self.arg_value(n).dereferenced().as_ptr()
+    }
+
+    /// Make by-reference argument `n` (1-based), which must be passed, hold
+    /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
+    #[inline]
+    pub fn assign(&self, n: u32, value: crate::Owned) {
+        let slot = self.zval_deref(n);
+        // SAFETY: a passed argument's live value, released here.
+        unsafe { zval_ptr_dtor(slot) };
+        // SAFETY: as above; the slot takes over the value.
+        unsafe { slot.write(value.into_zval()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
