@@ -122,6 +122,7 @@
         "crates/http/",
         "crates/http-ffi/",
         "crates/locale/",
+        "crates/brotli/",
         "crates/deflate/",
         "crates/inflate/",
         "crates/zlib/",

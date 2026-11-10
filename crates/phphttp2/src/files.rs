@@ -9,7 +9,7 @@ use libc::c_void;
 use std::ffi::CString;
 use swoole_rs_hooks::offload::async_job;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
-use swoole_rs_phphttp::http2::Field;
+use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_zend::{Value as Zval, bailout, string, sys::zend_string};
 
@@ -85,12 +85,12 @@ fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
-fn set_header(ctx: *mut c_void, name: &[u8], value: &[u8]) {
-    swoole_rs_phphttp::set_header_bytes(ctx, name, value);
+fn set_header(ctx: Ctx, name: &[u8], value: &[u8]) {
+    ctx.set_header(name, value);
 }
 
 /// A string entry of one of the request's arrays (`$server`, `$header`).
-fn entry<'a>(ctx: *mut c_void, array: Value, key: &[u8]) -> Option<&'a [u8]> {
+fn entry<'a>(ctx: Ctx, array: Value, key: &[u8]) -> Option<&'a [u8]> {
     // SAFETY: the context's live array, which outlives the request's handling.
     unsafe { Zval::from_ptr(zval_of(ctx, array)) }?
         .array()?
@@ -98,7 +98,7 @@ fn entry<'a>(ctx: *mut c_void, array: Value, key: &[u8]) -> Option<&'a [u8]> {
         .bytes()
 }
 
-fn body(ctx: *mut c_void, data: &[u8], end_stream: bool) -> bool {
+fn body(ctx: Ctx, data: &[u8], end_stream: bool) -> bool {
     of(ctx).is_some_and(|(session, stream)| send_body(ctx, &session, &stream, data, end_stream))
 }
 
@@ -107,16 +107,13 @@ fn body(ctx: *mut c_void, data: &[u8], end_stream: bool) -> bool {
 /// # Safety
 /// `server` is the live server and `ctx` a live HTTP/2 stream context.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_static(
-    server: *mut c_void,
-    ctx: *mut c_void,
-) -> bool {
+pub unsafe extern "C" fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: Ctx) -> bool {
     let served = serve(server, ctx);
     bailout::finish();
     served
 }
 
-fn serve(server: *mut c_void, ctx: *mut c_void) -> bool {
+fn serve(server: *mut c_void, ctx: Ctx) -> bool {
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
@@ -166,8 +163,7 @@ fn serve(server: *mut c_void, ctx: *mut c_void) -> bool {
             set_header(ctx, b"Accept-Ranges", b"bytes");
         }
     }
-    // SAFETY: a live context.
-    unsafe { swoole_rs_phphttp::http2::unhook(ctx) };
+    ctx.unhook();
     if entry(ctx, Value::Server, b"request_method")
         .is_some_and(|method| method.eq_ignore_ascii_case(b"HEAD"))
     {
@@ -187,7 +183,7 @@ fn content_range(offset: i64, length: usize, size: usize) -> String {
 
 /// `http2_server_send_range_file`: the file's ranges, the stream (and so the
 /// context) held while a coroutine reads it.
-fn send_ranges(ctx: *mut c_void, handler: &StaticHandler) -> bool {
+fn send_ranges(ctx: Ctx, handler: &StaticHandler) -> bool {
     let _held = of(ctx);
     let trailer = begin_file(ctx, &handler.content_type(), handler.content_length());
     if trailer < 0 {
@@ -246,7 +242,7 @@ fn send_ranges(ctx: *mut c_void, handler: &StaticHandler) -> bool {
 /// `ctx` is a live HTTP/2 stream context and `file` a live string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp2_server_send_file(
-    ctx: *mut c_void,
+    ctx: Ctx,
     file: *mut zend_string,
     offset: i64,
     length: usize,
@@ -288,7 +284,7 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
     Some(content)
 }
 
-fn send_content(ctx: *mut c_void, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
+fn send_content(ctx: Ctx, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
     let available = sw_rs_http2_file_length(length, content.len());
     // SAFETY: the table's type or the fallback, copied before PHP can change it.
     let content_type = unsafe { std::ffi::CStr::from_ptr(swoole_rs_framing::mime::get(path)) };

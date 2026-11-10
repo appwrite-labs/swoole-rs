@@ -5,7 +5,7 @@
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
 //! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
 //! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
-use crate::dispatch::{handler_error, invoke, server_callback, server_zval, set_last_error, undef};
+use crate::dispatch::{handler_error, invoke, set_last_error, undef, zserv};
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
@@ -756,7 +756,7 @@ fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
 pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
     let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
-    let zserv = server_zval(server.raw());
+    let zserv = zserv();
     let Some(mut data) = unpack(req)? else {
         return Ok(SW_ERR);
     };
@@ -779,7 +779,7 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
         4
     };
     let mut retval = undef();
-    let cb = server_callback(server.raw(), ON_TASK);
+    let cb = crate::lifecycle::callback(ON_TASK);
     let outcome = match invoke(
         cb,
         args.get_mut(..argc).unwrap_or_default(),
@@ -807,7 +807,7 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
 pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
-    let zserv = server_zval(server.raw());
+    let zserv = zserv();
     let info = info(req);
     let id = info.id;
     let Some(mut data) = unpack(req)? else {
@@ -829,7 +829,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_
         }
         cb.unwrap_or(ptr::null_mut())
     } else {
-        server_callback(server.raw(), ON_FINISH)
+        crate::lifecycle::callback(ON_FINISH)
     };
     if cb.is_null() {
         let outcome = event_warning(c"require 'onFinish' callback");
