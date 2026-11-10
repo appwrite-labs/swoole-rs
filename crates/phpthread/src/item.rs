@@ -193,10 +193,14 @@ impl Item {
     }
 
     /// `ArrayItem::fetch`: whether it wrote `out` (upstream leaves it untouched
-    /// for null, booleans aside, and undef).
+    /// for null, booleans aside, and undef). Nothing runs once a bailout is
+    /// pending: upstream never ran past it.
     /// # Safety
     /// In a request; `out` is writable and holds nothing.
     pub(crate) unsafe fn fetch(&self, out: *mut zval) -> bool {
+        if bailout::pending() {
+            return false;
+        }
         match &self.value {
             Value::Long(value) => set(out, IS_LONG, zend_value { lval: *value }),
             Value::Double(value) => set(out, IS_DOUBLE, zend_value { dval: *value }),

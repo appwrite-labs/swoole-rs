@@ -279,6 +279,9 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     let socket_kind = socket_type(kind) as i32;
     let created = crate::socket::create_socket(socket_kind);
     if created.is_null() {
+        if swoole_rs_zend::bailout::pending() {
+            return None;
+        }
         let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         report_object(object, code, error_message(code));
         return None;
