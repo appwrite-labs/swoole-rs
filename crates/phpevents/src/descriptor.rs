@@ -1,11 +1,8 @@
 //! Descriptor admission over actual Zend values and SDK stream/socket leaves.
 use super::{Message, native};
 use std::{ffi::CStr, ptr};
+use swoole_rs_phpprocess::swoole_process_ce;
 use swoole_rs_zend::{bailout::Bailout, sys as z, type_of, value};
-
-unsafe extern "C" {
-    static mut swoole_process_ce: *mut z::zend_class_entry;
-}
 
 fn warning(message: &CStr) -> Result<(), Bailout> {
     native::fatal_warning(message)

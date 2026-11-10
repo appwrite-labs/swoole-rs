@@ -9,6 +9,7 @@ use std::{
     mem, ptr, slice,
 };
 use swoole_rs_buffer::string;
+use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
@@ -55,7 +56,7 @@ unsafe extern "C" {
     ) -> bool;
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
-    fn swr_v1_core_last_error() -> c_int;
+
     // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
     pub(crate) fn zif_swoole_async_dns_lookup_coro(
         frame: *mut z::zend_execute_data,
@@ -514,8 +515,7 @@ fn wait_signal(call: &Call) {
         call.set_long(signo.into());
         return;
     }
-    // SAFETY: reads the thread's last error.
-    let error = unsafe { swr_v1_core_last_error() };
+    let error = last_error();
     if error == libc::EBUSY {
         host::fatal_error(
             E_WARNING,
@@ -524,8 +524,7 @@ fn wait_signal(call: &Call) {
     } else if error == libc::EINVAL {
         host::fatal_error(E_WARNING, c"Invalid signal in the given list");
     }
-    // SAFETY: as above.
-    swoole_rs_corebase::sys::set_errno(unsafe { swr_v1_core_last_error() });
+    swoole_rs_corebase::sys::set_errno(last_error());
     call.set_bool(false);
 }
 

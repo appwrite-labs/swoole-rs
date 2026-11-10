@@ -245,8 +245,7 @@ fn bus_deliver(pool: Pool) {
 }
 
 fn new_message_bus(pool: Pool) -> i64 {
-    // SAFETY: `SwooleG.memory_pool` is live once a pool is created.
-    let msg_id = unsafe { mem_pool::alloc(8) }.cast::<i64>();
+    let msg_id = mem_pool::alloc(8).cast::<i64>();
     if msg_id.is_null() {
         return 0;
     }
@@ -502,8 +501,7 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_HAVE_MSGQUEUE => 1,
         OP_ALLOC_WORKERS => {
             let size = record(pool).worker_num as usize * size_of::<WorkerRecord>();
-            // SAFETY: `SwooleG.memory_pool` is live once a pool is created.
-            record(pool).workers = unsafe { mem_pool::alloc(size as u32) }.cast();
+            record(pool).workers = mem_pool::alloc(size as u32).cast();
             i64::from(!record(pool).workers.is_null())
         }
         OP_NEW_MESSAGE_BOX => {

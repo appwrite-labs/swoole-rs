@@ -32,10 +32,8 @@ const HTTP2_INIT_WINDOW_SIZE: u32 = 4;
 const HTTP2_MAX_FRAME_SIZE: u32 = 5;
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 6;
 
-unsafe extern "C" {
-    /// crates/clients' resolver address (`dns_server`).
-    fn swr_v1_clients_set_dns_server(server: *const u8, length: usize);
-}
+// crates/clients' resolver address (`dns_server`).
+use swoole_rs_clients::dns::swr_v1_clients_set_dns_server;
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
 /// Nothing is found once a bailout is pending: upstream's setters stopped at
