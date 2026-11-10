@@ -40,6 +40,16 @@ Two measure compression against `benchmarks/compression` (#2649): `gzip` posts
 both directions are compressed. Their records started 5% above an arm64 Linux
 run (0.99 each); the ratchet lowers them once two merge runs beat them.
 
+Two measure TLS against `benchmarks/tls` (#2648), which serves the pin's test
+certificate (`tests/include/ssl_certs/server.crt`, RSA 4096) so it needs
+`target/upstream/src`: `https` (GETs on one kept-alive connection: the record
+layer) and `wss` (the WebSocket echo over TLS). Their records started 5% above an
+arm64 Linux run (0.99 and 0.99); the ratchet lowers them once two merge runs beat
+them. A full handshake per request is not measured: OpenSSL's RSA signature is
+about 56 million instructions of it on both engines, so the ratio reads 1.0000
+whatever Swoole does, and the run takes minutes. `connect` covers the
+per-connection cost Swoole itself adds.
+
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
 (default `127.0.0.1`, root/root, database `test`) and `--php-extension mysqlnd

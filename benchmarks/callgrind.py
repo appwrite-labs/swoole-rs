@@ -20,6 +20,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -38,7 +39,9 @@ MESSAGE = DOCUMENT[:1024]
 # (application directory, method, path, body, expected response body). method 'WS' opens a
 # WebSocket to the app and echoes `body` frame by frame instead of sending HTTP; 'WSZ' does
 # so with permessage-deflate. 'GZ' is a POST sent with Accept-Encoding: gzip whose response
-# must come back gzip-encoded.
+# must come back gzip-encoded. 'TLS' is a GET over HTTPS on one connection and 'WSS' the
+# WebSocket echo over TLS. The pin's test certificate is self-signed, so the client doesn't
+# verify it.
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -65,7 +68,12 @@ WORKLOADS = {
     # Compression (#2649): a gzip-encoded HTTP response and a permessage-deflate echo.
     'gzip': ('benchmarks/compression', 'GZ', '/gzip', DOCUMENT, DOCUMENT),
     'websocket-deflate': ('benchmarks/compression', 'WSZ', '/chat', MESSAGE, MESSAGE),
+    # TLS (#2648): the record layer on a kept-alive connection, and wss.
+    'https': ('benchmarks/tls', 'TLS', '/', None, b'ok\n'),
+    'wss': ('benchmarks/tls', 'WSS', '/chat', b'ping', b'ping'),
 }
+TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+TLS.check_hostname, TLS.verify_mode = False, ssl.CERT_NONE
 
 
 def h2_frame(kind, flags, stream, payload=b''):
@@ -116,8 +124,8 @@ def wait_for_port(port, proc, seconds=180):
 
 def send(port, workload, count):
     _, method, path, payload, expected = workload
-    if method in ('WS', 'WSZ'):
-        client = WebSocket(port, deflate=method == 'WSZ')
+    if method in ('WS', 'WSZ', 'WSS'):
+        client = WebSocket(port, deflate=method == 'WSZ', tls=TLS if method == 'WSS' else None)
         try:
             for _ in range(count):
                 client.send(payload)
@@ -130,12 +138,15 @@ def send(port, workload, count):
     if method == 'H2':
         send_h2(port, path, expected, count)
         return
-    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+    if method == 'TLS':
+        conn = http.client.HTTPSConnection('127.0.0.1', port, timeout=60, context=TLS)
+    else:
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):
         if method == 'GZ':
             conn.request('POST', path, payload, {'Accept-Encoding': 'gzip'})
         else:
-            conn.request(method, path, payload)
+            conn.request('GET' if method == 'TLS' else method, path, payload)
         response = conn.getresponse()
         body = response.read()
         if method == 'GZ':
