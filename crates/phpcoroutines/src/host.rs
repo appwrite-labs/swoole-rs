@@ -75,17 +75,12 @@ unsafe extern "C" {
     ) -> *mut c_void;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
-    // crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
+    // crates/phpevents, crates/phpclients and PHP.
     fn sw_php_exit(status: c_int);
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
     fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool;
-    fn swr_v1_phphelpers_call_anyway(
-        fci: *mut swoole_rs_zend::sys::zend_fcall_info,
-        fcc: *mut swoole_rs_zend::sys::zend_fcall_info_cache,
-    ) -> c_int;
-    fn swr_v1_phphelpers_cache_free(fcc: *mut swoole_rs_zend::sys::zend_fcall_info_cache);
 }
 
 /// The globals, server state and build switches [`flag`] reads.
@@ -586,7 +581,7 @@ unsafe extern "C" fn defers(context: *mut c_void) {
         // SAFETY: as above.
         let fcc = unsafe { &raw mut (*task).fcc };
         // SAFETY: as above.
-        if unsafe { swr_v1_phphelpers_call_anyway(fci, fcc) } != 0 {
+        if unsafe { swoole_rs_phphelpers::swr_v1_phphelpers_call_anyway(fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         // SAFETY: the executor's pending exception, if any.
@@ -594,7 +589,7 @@ unsafe extern "C" fn defers(context: *mut c_void) {
             bailout::raise(Err(bailout::Bailout));
         }
         // SAFETY: the callable's cache, then its emalloc'd holder.
-        unsafe { swr_v1_phphelpers_cache_free(fcc) };
+        unsafe { swoole_rs_phphelpers::swr_v1_phphelpers_cache_free(fcc) };
         // SAFETY: as above.
         unsafe { swoole_rs_zend::sys::swr_zend_efree(task.cast()) };
     }
