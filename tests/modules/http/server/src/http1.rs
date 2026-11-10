@@ -11,6 +11,9 @@
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
 //! frames, so it records the failure, which the case asserts on once the server stops.
+//!
+//! server.rs holds `core-tests/src/server/buffer.cpp`'s TEST, and server_config.rs
+//! `server/server.cpp`'s connection and configuration TESTs, over the same records.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::mem::offset_of;
@@ -30,6 +33,7 @@ pub(super) mod lifecycle;
 /// schedule.rs: `core-tests/src/server/server.cpp`'s `schedule*` TESTs.
 pub(super) mod schedule;
 pub(super) mod server;
+pub(super) mod server_config;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
