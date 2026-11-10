@@ -14,6 +14,9 @@ crate-type = ["rlib"]
 # Define the upstream C++ symbols of the methods `crates/process/src/methods.rs` holds;
 # only the hybrid, which deletes their C++ definitions, enables it.
 upstream-symbols = []
+# Upstream's SW_THREAD build without a thread-safe PHP (the http/server case binary, whose
+# MODE_THREAD servers run each worker as a thread): `SwooleWG` is thread-local.
+thread = []
 
 [lints]
 workspace = true
