@@ -1506,7 +1506,7 @@ unsafe extern "C" fn eof_check_connect(_: *mut c_void, serv: *mut c_void, ev: *m
 
 /// `TEST(server, eof_check)`.
 fn eof_check() {
-    let serv = Server::new(MODE_BASE);
+    let serv = new_server(MODE_BASE);
     serv.config().worker_num = 1;
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
@@ -1618,7 +1618,7 @@ unsafe extern "C" fn ignore_worker_start(_: *mut c_void, _: *mut c_void, _: *mut
 
 /// `test_command(mode)`.
 fn test_command(mode: c_int) {
-    let serv = Server::new(mode);
+    let serv = new_server(mode);
     serv.config().worker_num = 4;
     serv.config().task_worker_num = 4;
     serv.config().reactor_num = 2;
@@ -1710,7 +1710,7 @@ unsafe extern "C" fn abnormal_worker_start(_: *mut c_void, serv: *mut c_void, _:
 
 /// `TEST(server, abnormal_pipeline_data)`.
 fn abnormal_pipeline_data() {
-    let server = Server::new(MODE_PROCESS);
+    let server = new_server(MODE_PROCESS);
     server.config().worker_num = 2;
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
@@ -1741,7 +1741,7 @@ unsafe extern "C" fn shutdown_after_manager_start(_: *mut c_void, serv: *mut c_v
 /// `TEST(server, base_event_worker_pool_cleanup)`. The pool's `map_` (pid to worker) is
 /// its `registry` in crates/process.
 fn base_event_worker_pool_cleanup() {
-    let server = Server::new(MODE_BASE);
+    let server = new_server(MODE_BASE);
     server.config().worker_num = 2;
     assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(server.create(), SW_OK);
@@ -1801,7 +1801,7 @@ unsafe extern "C" fn abort_worker_start(_: *mut c_void, _: *mut c_void, _: *mut 
 
 /// `TEST(server, abort_worker)`. The `new` Server leaks, as upstream's.
 fn abort_worker() {
-    let server = Server::new(MODE_BASE);
+    let server = new_server(MODE_BASE);
     server.config().worker_num = 2;
 
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
@@ -1885,7 +1885,7 @@ unsafe extern "C" fn pipe_writable_receive(
 
 /// `TEST(server, reactor_thread_pipe_writable)`.
 fn reactor_thread_pipe_writable() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 1;
 
     RDATA_4M.set(random_bytes(4 * 1024 * 1024)).unwrap();
@@ -2009,7 +2009,7 @@ unsafe extern "C" fn send_timeout_receive(
 
 /// `TEST(server, send_timeout)`.
 fn send_timeout() {
-    let serv = Server::new(MODE_BASE);
+    let serv = new_server(MODE_BASE);
     serv.config().worker_num = 1;
     set_log_warning();
 
