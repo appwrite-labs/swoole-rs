@@ -32,7 +32,7 @@ pub unsafe fn swr_v1_clients_ip(
     };
     match version {
         4 => {
-            if let Ok(ip) = ipv4(text, allow_zeroes != 0).ok_or(()) {
+            if let Ok(ip) = ipv4(text.as_bytes(), allow_zeroes != 0).ok_or(()) {
                 result.bytes[..4].copy_from_slice(&ip.octets());
                 result.length = 4;
             }

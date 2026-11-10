@@ -19,7 +19,6 @@ use std::os::unix::net::UnixStream;
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_HOST6: &str = "::1";
-const MODE_THREAD: c_int = 3;
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_UDP6: c_int = 4;
 const SW_SOCK_UNIX_DGRAM: c_int = 6;

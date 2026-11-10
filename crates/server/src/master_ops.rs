@@ -1724,28 +1724,10 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH,
         OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
     };
-    use core::ffi::c_void;
+    use swoole_rs_clients::address::{Resolve, swr_v1_clients_address_assign};
+    use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
+    use swoole_rs_ossupport::swoole_daemon;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
-    type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
-    // SAFETY: crates/ossupport's, crates/corebase's and crates/clients' bodies,
-    // under their upstream symbols.
-    unsafe extern "C" {
-        #[link_name = "_Z13swoole_daemonii"]
-        fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int;
-        #[link_name = "_Z22swoole_redirect_stdoutPKc"]
-        fn swoole_redirect_stdout(file: *const c_char);
-        #[link_name = "_Z29swoole_get_systemd_listen_fdsv"]
-        fn swoole_get_systemd_listen_fds() -> c_int;
-        fn swr_v1_clients_address_assign(
-            address: *mut c_void,
-            length: *mut libc::socklen_t,
-            kind: c_int,
-            host: *const c_char,
-            host_length: usize,
-            port: c_int,
-            resolve: Option<Resolve>,
-        ) -> c_int;
-    }
     let serv = o.ctx.serv;
     Some(match op {
         OP_LC_DAEMON => {
@@ -1756,10 +1738,10 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     unsafe { swr_v1_logger_redirect(logger, true) };
                 }
                 // SAFETY: a NUL-terminated path.
-                _ => unsafe { swoole_redirect_stdout(c"/dev/null".as_ptr()) },
+                _ => unsafe { swoole_redirect_stdout_file(c"/dev/null".as_ptr()) },
             }
-            // SAFETY: the master, before it starts any thread.
-            sign(unsafe { swoole_daemon(0, 1) })
+            // The master, before it starts any thread.
+            sign(swoole_daemon(0, 1))
         }
         OP_LC_FACTORY_START => u64::from(crate::factory::start(o.state)),
         OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
@@ -1826,7 +1808,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             swoole_rs_corebase::get_env(name).map_or(i64::MIN.cast_unsigned(), sign)
         }
         // SAFETY: reads the environment.
-        OP_SYSTEMD_FDS => sign(unsafe { swoole_get_systemd_listen_fds() }),
+        OP_SYSTEMD_FDS => sign(swoole_get_systemd_listen_fds()),
         OP_ST_INIT_PIPE => {
             // SAFETY: the context's live `MessageBus`.
             let bus = unsafe { crate::objects::Bus::of(o.ctx.object) };
@@ -2293,16 +2275,8 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const IPC_MSGQUEUE: u64 = 2;
     const SW_TASK_WORKER: c_int = 4;
     const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
-    // SAFETY: crates/process' method, under its upstream symbol.
-    unsafe extern "C-unwind" {
-        /// crates/process' `ProcessPool::listen(socket_file, backlog)`.
-        #[link_name = "_ZNK6swoole11ProcessPool6listenEPKci"]
-        fn pool_listen(
-            pool: *const core::ffi::c_void,
-            file: *const c_char,
-            backlog: c_int,
-        ) -> c_int;
-    }
+    // crates/process' `ProcessPool::listen(socket_file, backlog)`.
+    use swoole_rs_process::methods::listen_unix as pool_listen;
     let serv = o.ctx.serv;
     let config = o.config();
     Some(match op {
