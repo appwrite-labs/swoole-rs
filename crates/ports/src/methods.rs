@@ -1269,4 +1269,67 @@ mod tests {
         close_socket(at);
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
+
+    /// Upstream's `server.protocols` (server/server.cpp). Its base-mode `Server` only
+    /// holds the port, so the port stands alone: `add_port` is `create_socket`.
+    #[test]
+    fn server_protocols() {
+        let mut port = unbound_port(1, "127.0.0.1", 0, false);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(create_socket(at), 0, "add_port");
+        let config = unsafe { port_config::of(at) };
+
+        config.open_eof_check = true;
+        assert_eq!(get_protocols(config), c"eof");
+        config.open_eof_check = false;
+
+        config.open_length_check = true;
+        assert_eq!(get_protocols(config), c"length");
+        config.open_length_check = false;
+
+        config.open_http_protocol = true;
+        assert_eq!(get_protocols(config), c"http");
+        config.open_http_protocol = false;
+
+        config.open_http_protocol = true;
+        config.open_http2_protocol = true;
+        config.open_websocket_protocol = true;
+        assert_eq!(get_protocols(config), c"http|http2|websocket");
+        config.open_http2_protocol = false;
+        config.open_websocket_protocol = false;
+        config.open_http_protocol = false;
+
+        config.open_http_protocol = true;
+        config.open_http2_protocol = true;
+        assert_eq!(get_protocols(config), c"http|http2");
+        config.open_http2_protocol = false;
+        config.open_http_protocol = false;
+
+        config.open_http_protocol = true;
+        config.open_websocket_protocol = true;
+        assert_eq!(get_protocols(config), c"http|websocket");
+        config.open_websocket_protocol = false;
+        config.open_http_protocol = false;
+
+        config.open_mqtt_protocol = true;
+        assert_eq!(get_protocols(config), c"mqtt");
+        config.open_mqtt_protocol = false;
+
+        config.open_redis_protocol = true;
+        assert_eq!(get_protocols(config), c"redis");
+        config.open_redis_protocol = false;
+
+        unsafe { clear_protocol(at) };
+        assert!(!config.open_eof_check);
+        assert!(!config.open_length_check);
+        assert!(!config.open_http_protocol);
+        assert!(!config.open_websocket_protocol);
+        assert!(!config.open_http2_protocol);
+        assert!(!config.open_mqtt_protocol);
+        assert!(!config.open_redis_protocol);
+        assert_eq!(get_protocols(config), c"raw");
+
+        close_socket(at);
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
 }
