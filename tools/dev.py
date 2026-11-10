@@ -420,6 +420,11 @@ def plan(args, reports):
             arg for project in json.loads((ROOT / 'corpus/manifest.json').read_text())
             if project['id'] != '11-buffer-lifecycle' for arg in ['--project', project['id']]]
         script('applications', 'corpus/run.py', *php, *engines, *projects, '--require-all', *report('applications'))
+    if sys.platform.startswith('linux') and (integrate or 'reactor' in modules):
+        # The applications under strace: the socket options, flags and epoll registrations
+        # PHP can't see. Seconds, so the candidate lane runs it for the reactor's sockets too.
+        script('syscalls', 'corpus/syscalls.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
+               *report('syscalls'))
     network = ['--external-network'] if getattr(args, 'external_network', False) else []
     if args.case and not integrate:
         script('phpt', 'corpus/upstream/run.py', *php, *engines, '--jobs', args.jobs,
