@@ -19,6 +19,7 @@
 )]
 
 mod asynchronous;
+pub use asynchronous::zif_swoole_async_dns_lookup_coro;
 mod constants;
 mod entry;
 mod functions;

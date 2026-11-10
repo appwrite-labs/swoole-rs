@@ -3,12 +3,15 @@
 //! callables. WebSocket framing is crates/phphttp's, which registers it here
 //! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::native::{Co, Socket};
-use libc::{c_char, c_int, c_void, mode_t, off_t, size_t};
+use libc::{c_char, c_int, c_void, size_t};
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, swr_string_drop};
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
 use swoole_rs_hooks::socket_members::{get_read_buffer, get_write_buffer};
+use swoole_rs_hooks::stdio::{
+    swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
+};
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
 use swoole_rs_zend::{
     Array, Call, Value, bailout, set_object, string,
@@ -60,9 +63,6 @@ unsafe extern "C" {
     fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
-    fn swoole_coroutine_open(path: *const c_char, flags: c_int, mode: mode_t) -> c_int;
-    fn swoole_coroutine_ftruncate(fd: c_int, length: off_t) -> c_int;
-    fn swoole_coroutine_lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t;
 }
 
 /// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_READ`.
