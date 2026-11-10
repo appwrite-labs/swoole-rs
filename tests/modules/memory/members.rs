@@ -69,25 +69,6 @@ fn a_fixed_pool_hands_out_each_slice_once() {
 }
 
 #[test]
-fn a_ring_buffer_reuses_freed_records() {
-    let mut ring = ptr::null_mut();
-    assert_eq!(
-        unsafe { swr_v1_memory_ring_buffer_new(8, false, &raw mut ring) },
-        INVALID
-    );
-    assert_eq!(
-        unsafe { swr_v1_memory_ring_buffer_new(256, true, &raw mut ring) },
-        0
-    );
-    for _ in 0..64 {
-        let record = unsafe { swr_v1_memory_ring_buffer_alloc(ring, 40) };
-        assert!(!record.is_null());
-        unsafe { swr_v1_memory_ring_buffer_free(ring, record) };
-    }
-    unsafe { swr_v1_memory_ring_buffer_delete(ring) };
-}
-
-#[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
     let mut pool = ptr::null_mut();
@@ -154,7 +135,7 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 }
 
 // Upstream's core-tests/src/memory/{fixed_pool,global_memory}.cpp, one test per
-// TEST, with its inputs and expected values (ringbuffer.cpp is ringbuffer_thread.rs).
+// TEST, with its inputs and expected values.
 // `this` is a stand-in C++ object: a FixedPool's vtable pointer, then `impl`, or a
 // GlobalMemory's `impl`.
 
