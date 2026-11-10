@@ -225,18 +225,12 @@ impl Bits {
     }
 }
 
-/// The first static entry named `name` and the first that is `name: value`, from 1,
-/// in one pass: entries sharing a name are adjacent.
-fn static_index(name: &[u8], value: &[u8]) -> (Option<usize>, Option<usize>) {
-    let Some(first) = STATIC.iter().position(|&(n, _)| n == name) else {
-        return (None, None);
-    };
-    let exact = STATIC
+/// The first static entry named `name` (its value too if given), from 1.
+fn static_index(name: &[u8], value: Option<&[u8]>) -> Option<usize> {
+    let index = STATIC
         .iter()
-        .skip(first)
-        .take_while(|&&(n, _)| n == name)
-        .position(|&(_, v)| v == value);
-    (Some(first + 1), exact.map(|offset| first + offset + 1))
+        .position(|&(n, v)| n == name && value.is_none_or(|value| v == value))?;
+    Some(index + 1)
 }
 
 /// A dynamic table entry's name and value.
@@ -713,15 +707,15 @@ impl Encoder {
                     | b"set-cookie"
             )
             && ENTRY_OVERHEAD + name.len() + value.len() <= self.table.max * 3 / 4;
-        let (named, exact) = static_index(name, value);
         let exact = (!never)
-            .then(|| self.table.find(name, Some(value)).or(exact))
-            .flatten();
+            .then(|| self.table.find(name, Some(value)))
+            .flatten()
+            .or_else(|| (!never).then(|| static_index(name, Some(value))).flatten());
         if let Some(index) = exact {
             encode_integer(out, 0x80, 7, index);
             return;
         }
-        let index = named.or_else(|| self.table.find(name, None));
+        let index = static_index(name, None).or_else(|| self.table.find(name, None));
         if indexing {
             self.table.insert(name, value);
         }

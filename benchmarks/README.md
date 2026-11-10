@@ -20,6 +20,14 @@ The merge tier's `callgrind` job runs it for `plaintext`, `echo-1k`, `json` and
 rather than `echo-64k`: how a 64 KiB request is split across reads differs between
 runners, and that changes how much of it the Expect-header scan walks (#338).
 
+Records come from the merge tier's x86_64 numbers (its `callgrind` artifact), set 5%
+above them; a local arm64 run doesn't predict them. On x86_64, glibc copies and fills
+large buffers with `rep movsb`/`rep stosb`, which callgrind counts once per byte, so a
+64 KiB `memcpy` is about 65,000 instructions there and a few thousand on arm64. Bulk
+copies both engines make weigh far more on x86_64 and pull its ratio towards 1.0
+(`websocket-64k` is 0.56 on arm64 and 0.98 on x86_64), and a copy or fill only one
+engine makes weighs far more against it (#2778).
+
 The same job also runs `websocket` (a WebSocket echo against `06-websocket`) and
 `timer` (an endpoint in `08-timers/server.php` that adds and clears a batch of
 far-future timers per request), on the same ratchet, and `app`: `benchmarks/app`,
@@ -88,7 +96,13 @@ that come back), `websocket-64k` (one 64 KiB frame echoed), `websocket-fragmente
 (a 4 KiB message sent as four fragments, echoed as one frame), `upload` (a
 multipart POST with a 64 KiB file) and `static` (a 16 KiB file from
 `enable_static_handler`). Their records started 5% above an arm64 Linux run
-(1.26, 0.57, 0.73, 1.00 and 1.05).
+(1.26, 0.57, 0.73, 1.00 and 1.05), which the x86_64 merge tier never met (#2778).
+`http2-concurrent` measured 3.56 there until #2712 and 1.09 after it; 66,000 of its
+444,000 instructions a request were the static handler zero-filling a 4 KiB filename
+buffer for each of the 16 streams, which it no longer does, and it keeps its 0.93.
+`websocket-64k` is two 64 KiB copies on both engines (0.98 on x86_64), so its record
+is 1.03, and `websocket-fragmented`'s is 0.88, 5% above its 0.834 before #2795 (#2808
+tracks the read-path cost that took it to 0.876).
 
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
