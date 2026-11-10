@@ -22,6 +22,69 @@ fn warnings() -> Vec<String> {
     WARNINGS.with(|w| w.borrow_mut().drain(..).collect())
 }
 
+/// The key a row holds.
+/// # Safety
+/// `row` is a row of a created table, or the iterator's copy of one.
+unsafe fn row_key<'a>(row: *const Row) -> &'a [u8] {
+    Live(row.cast_mut()).key()
+}
+
+/// `TableRow::unlock()`.
+/// # Safety
+/// `row` is a row of a created table this process locked.
+unsafe fn unlock(row: *mut Row) {
+    Live(row).unlock();
+}
+
+/// A row's column data, unchecked.
+fn data(row: *const Row) -> Data {
+    Data {
+        data: Live(row.cast_mut()).data(),
+        size: usize::MAX,
+    }
+}
+
+/// A number column's 8 bytes.
+/// # Safety
+/// `row` is a locked row (or the iterator's copy) of the column's table.
+unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
+    data(row).number(column)
+}
+
+/// A string column's bytes, valid while the row is locked.
+/// # Safety
+/// As `get_number`.
+unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
+    data(row).bytes(column)
+}
+
+/// The raw row access the tests drive, beside the guards.
+trait Raw {
+    /// `Table::clear_row`.
+    unsafe fn clear_row(&self, row: *mut Row);
+    /// `TableRow::set_value` with this table's warning log.
+    unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize);
+    /// `Table::current`: the iterator's copy of its row (null before `create`).
+    fn current(&self) -> *mut Row;
+}
+
+impl Raw for Table {
+    unsafe fn clear_row(&self, row: *mut Row) {
+        for column in self.columns() {
+            unsafe { clear_value(row, column) };
+        }
+    }
+
+    unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize) {
+        unsafe { set_value(row, column, value, length, self.warning) };
+    }
+
+    fn current(&self) -> *mut Row {
+        unsafe { self.cursor.as_mut() }
+            .map_or(ptr::null_mut(), |cursor| cursor.current.as_mut_ptr().cast())
+    }
+}
+
 /// `swoole_hash_php` (DJB "times 33"), as upstream's default.
 unsafe extern "C" fn djb(key: *const c_char, length: usize) -> u64 {
     let bytes = unsafe { slice::from_raw_parts(key.cast::<u8>(), length) };

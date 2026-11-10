@@ -27,7 +27,7 @@ pub(crate) struct Stats {
 }
 
 /// A `swoole::Coroutine`, which starts with its `swoole_rs_coroutine::Coroutine`.
-type Co = *mut c_void;
+pub(crate) type Co = *mut c_void;
 
 unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.

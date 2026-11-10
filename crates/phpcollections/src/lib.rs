@@ -1,13 +1,7 @@
 //! PHP `Swoole\Coroutine\Channel` and `Swoole\Table` (with the `php` feature,
-//! see docs/zend.md).
+//! see docs/zend.md), with no `unsafe`.
 #![cfg(feature = "php")]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
 mod channel;
 mod table;

@@ -2,33 +2,25 @@
 //! over the memory crate's table (its header from Swoole's global pool, its
 //! arena shared memory), hashing keys with Zend's string hash.
 //!
-//! `E_ERROR` and Swoole's fatal errors leave a method by a bailout or exit;
-//! where a method can raise one, nothing it holds needs dropping.
+//! Each method keeps its table alive while it runs, so PHP code it runs (a
+//! `__toString`, an error handler) cannot free it underneath; `destroy()`
+//! frees it once the last running method is done.
 use std::{
-    ffi::{CStr, c_char, c_int},
-    ptr,
+    cell::Cell,
+    ffi::{CStr, c_int},
+    rc::Rc,
 };
 use swoole_rs_memory::{
-    members::{swr_table_create, swr_table_destroy, swr_table_make},
-    table::{
-        Column, NEW_ROW, Row, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table, clear_value, get_number,
-        get_string, row_key, unlock,
-    },
+    members::SharedTable,
+    table::{Column, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table},
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Class, Message, Minit, Object, Owned, bailout,
-    sys::{
-        E_ERROR, E_WARNING, HashPosition, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex,
-        add_assoc_long_ex, add_assoc_stringl_ex, swr_zend_array_init, swr_zend_string_init,
-        swr_zend_string_release, zend_ce_countable, zend_ce_iterator, zend_class_entry,
-        zend_class_implements, zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
-        zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_hash_str_find,
-        zend_object, zend_object_handlers, zend_string, zend_string_hash_func, zval,
-    },
-    unset_property_deny,
+    Call, Custom, CustomClass, Message, Minit, Owned, OwnedArray, Value, ZString,
+    bailout::{self, Bailout},
+    method_table,
+    sys::{E_ERROR, E_WARNING, ZEND_ACC_PUBLIC},
 };
-use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_TABLE_KEY_SIZE`, `SW_TABLE_CONFLICT_PROPORTION`.
 const KEY_SIZE: usize = 64;
@@ -39,92 +31,73 @@ const MALLOC_FAIL: i64 = 501;
 const PHP_FATAL_ERROR: c_int = 503;
 const WRONG_OPERATION: c_int = 509;
 const PHP_RUNTIME_NOTICE: c_int = 510;
-/// `HASH_KEY_IS_STRING`, `HASH_KEY_NON_EXISTENT`.
-const KEY_IS_STRING: i64 = 1;
-const KEY_NON_EXISTENT: i64 = 3;
 
-static TABLE: Class = Class::new();
+static TABLE: CustomClass<Held> = CustomClass::new();
 
-/// `struct TableObject { Table *ptr; zend_object std; }`.
-type TableObject = Object<*mut Table>;
+/// `struct TableObject { Table *ptr; zend_object std; }`: none until
+/// `__construct`, and again after `destroy()`. Like upstream, the shared
+/// table outlives its object (forked workers may use it).
+struct Held(Cell<Option<Rc<SharedTable>>>);
 
-/// `zend_string_hash_val` of the PHP string whose bytes `key` points into
-/// (every key is one), as upstream's `set_hash_func` hook did.
-unsafe extern "C" fn zend_hash(key: *const c_char, _length: usize) -> u64 {
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "`val` follows the string's aligned header"
-    )]
-    let string = key
-        .wrapping_byte_sub(std::mem::offset_of!(zend_string, val))
-        .cast::<zend_string>()
-        .cast_mut();
-    // SAFETY: `key` is a live zend_string's `val`.
-    let cached = unsafe { (*string).h };
-    if cached != 0 {
-        return cached;
+impl Custom for Held {
+    fn class() -> &'static CustomClass<Self> {
+        &TABLE
     }
-    // SAFETY: as above; Zend caches the hash on the string.
-    unsafe { zend_string_hash_func(string) }
+
+    fn new() -> Self {
+        Self(Cell::new(None))
+    }
 }
 
-unsafe extern "C" fn create_object(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it;
-    // a null table is valid zeroed data.
-    unsafe { TableObject::create(&TABLE, ce) }
-}
-
-unsafe extern "C" fn free_object(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created; like upstream, the
-    // shared table outlives it (forked workers may use it).
-    unsafe { TableObject::dtor(std) };
+impl Held {
+    fn get(&self) -> Option<Rc<SharedTable>> {
+        let table = self.0.take();
+        let copy = table.clone();
+        self.0.set(table);
+        copy
+    }
 }
 
 method_table! {
     static METHODS = [
-        c"__construct" => zim_swoole_table___construct, &table::arginfo_class_Swoole_Table___construct, z::ZEND_ACC_PUBLIC;
-        c"column" => zim_swoole_table_column, &table::arginfo_class_Swoole_Table_column, z::ZEND_ACC_PUBLIC;
-        c"create" => zim_swoole_table_create, &table::arginfo_class_Swoole_Table_create, z::ZEND_ACC_PUBLIC;
-        c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, z::ZEND_ACC_PUBLIC;
-        c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, z::ZEND_ACC_PUBLIC;
-        c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, z::ZEND_ACC_PUBLIC;
-        c"count" => zim_swoole_table_count, &table::arginfo_class_Swoole_Table_count, z::ZEND_ACC_PUBLIC;
-        c"del" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, z::ZEND_ACC_PUBLIC;
-        c"delete" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, z::ZEND_ACC_PUBLIC;
-        c"exists" => zim_swoole_table_exists, &table::arginfo_class_Swoole_Table_exists, z::ZEND_ACC_PUBLIC;
-        c"exist" => zim_swoole_table_exists, &table::arginfo_class_Swoole_Table_exists, z::ZEND_ACC_PUBLIC;
-        c"incr" => zim_swoole_table_incr, &table::arginfo_class_Swoole_Table_incr, z::ZEND_ACC_PUBLIC;
-        c"decr" => zim_swoole_table_decr, &table::arginfo_class_Swoole_Table_decr, z::ZEND_ACC_PUBLIC;
-        c"getSize" => zim_swoole_table_getSize, &table::arginfo_class_Swoole_Table_getSize, z::ZEND_ACC_PUBLIC;
-        c"getMemorySize" => zim_swoole_table_getMemorySize, &table::arginfo_class_Swoole_Table_getMemorySize, z::ZEND_ACC_PUBLIC;
-        c"stats" => zim_swoole_table_stats, &table::arginfo_class_Swoole_Table_stats, z::ZEND_ACC_PUBLIC;
-        c"rewind" => zim_swoole_table_rewind, &table::arginfo_class_Swoole_Table_rewind, z::ZEND_ACC_PUBLIC;
-        c"valid" => zim_swoole_table_valid, &table::arginfo_class_Swoole_Table_valid, z::ZEND_ACC_PUBLIC;
-        c"next" => zim_swoole_table_next, &table::arginfo_class_Swoole_Table_next, z::ZEND_ACC_PUBLIC;
-        c"current" => zim_swoole_table_current, &table::arginfo_class_Swoole_Table_current, z::ZEND_ACC_PUBLIC;
-        c"key" => zim_swoole_table_key, &table::arginfo_class_Swoole_Table_key, z::ZEND_ACC_PUBLIC;
+        c"__construct" => zim_swoole_table___construct, &table::arginfo_class_Swoole_Table___construct, ZEND_ACC_PUBLIC;
+        c"column" => zim_swoole_table_column, &table::arginfo_class_Swoole_Table_column, ZEND_ACC_PUBLIC;
+        c"create" => zim_swoole_table_create, &table::arginfo_class_Swoole_Table_create, ZEND_ACC_PUBLIC;
+        c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, ZEND_ACC_PUBLIC;
+        c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, ZEND_ACC_PUBLIC;
+        c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, ZEND_ACC_PUBLIC;
+        c"count" => zim_swoole_table_count, &table::arginfo_class_Swoole_Table_count, ZEND_ACC_PUBLIC;
+        c"del" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, ZEND_ACC_PUBLIC;
+        c"delete" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, ZEND_ACC_PUBLIC;
+        c"exists" => zim_swoole_table_exists, &table::arginfo_class_Swoole_Table_exists, ZEND_ACC_PUBLIC;
+        c"exist" => zim_swoole_table_exists, &table::arginfo_class_Swoole_Table_exists, ZEND_ACC_PUBLIC;
+        c"incr" => zim_swoole_table_incr, &table::arginfo_class_Swoole_Table_incr, ZEND_ACC_PUBLIC;
+        c"decr" => zim_swoole_table_decr, &table::arginfo_class_Swoole_Table_decr, ZEND_ACC_PUBLIC;
+        c"getSize" => zim_swoole_table_getSize, &table::arginfo_class_Swoole_Table_getSize, ZEND_ACC_PUBLIC;
+        c"getMemorySize" => zim_swoole_table_getMemorySize, &table::arginfo_class_Swoole_Table_getMemorySize, ZEND_ACC_PUBLIC;
+        c"stats" => zim_swoole_table_stats, &table::arginfo_class_Swoole_Table_stats, ZEND_ACC_PUBLIC;
+        c"rewind" => zim_swoole_table_rewind, &table::arginfo_class_Swoole_Table_rewind, ZEND_ACC_PUBLIC;
+        c"valid" => zim_swoole_table_valid, &table::arginfo_class_Swoole_Table_valid, ZEND_ACC_PUBLIC;
+        c"next" => zim_swoole_table_next, &table::arginfo_class_Swoole_Table_next, ZEND_ACC_PUBLIC;
+        c"current" => zim_swoole_table_current, &table::arginfo_class_Swoole_Table_current, ZEND_ACC_PUBLIC;
+        c"key" => zim_swoole_table_key, &table::arginfo_class_Swoole_Table_key, ZEND_ACC_PUBLIC;
     ];
 }
 
-/// MINIT: register `Swoole\Table` as upstream's `php_swoole_table_minit` did.
-/// # Safety
-/// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_table_minit(module: c_int) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(module) };
-    minit.register(&TABLE, c"Swoole\\Table", &METHODS.0, configure);
-    let entry = TABLE.entry();
-    // SAFETY: Zend's interfaces are registered before extensions' MINIT.
-    let iterator = unsafe { zend_ce_iterator };
-    // SAFETY: as above.
-    let countable = unsafe { zend_ce_countable };
-    // SAFETY: MINIT, a registered class and a registered interface.
-    unsafe { zend_class_implements(entry, 1, iterator) };
-    // SAFETY: as above.
-    unsafe { zend_class_implements(entry, 1, countable) };
-    minit.property_null(&TABLE, c"size", z::ZEND_ACC_PUBLIC);
-    minit.property_null(&TABLE, c"memorySize", z::ZEND_ACC_PUBLIC);
+swoole_rs_zend::minit!(table_minit => register);
+
+/// `php_swoole_table_minit`: register `Swoole\Table`, an `Iterator` and
+/// `Countable`, with its properties and type constants.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "minit! raises the bailout a MINIT body returns"
+)]
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register_object::<Held>(c"Swoole\\Table", &METHODS.0, 0);
+    minit.implements(&TABLE, minit.iterator());
+    minit.implements(&TABLE, minit.countable());
+    minit.property_null(&TABLE, c"size", ZEND_ACC_PUBLIC);
+    minit.property_null(&TABLE, c"memorySize", ZEND_ACC_PUBLIC);
     for (name, value) in [
         (c"TYPE_INT", TYPE_INT),
         (c"TYPE_STRING", TYPE_STRING),
@@ -132,19 +105,7 @@ pub unsafe extern "C" fn php_swoole_table_minit(module: c_int) {
     ] {
         minit.class_constant_long(&TABLE, name, value.into());
     }
-}
-
-/// Not serializable, clone and unset denied, custom object.
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    TableObject::install(entry, handlers, create_object, free_object);
-}
-
-fn this(call: &Call) -> &'static mut *mut Table {
-    // SAFETY: Table methods are non-static, so `$this` is one of our objects.
-    unsafe { TableObject::data(call.this()) }
+    Ok(())
 }
 
 /// `php_swoole_fatal_error(level, "%s", message)`: always reported.
@@ -190,23 +151,24 @@ fn set_failed(key: &[u8]) {
 }
 
 /// The table this object made, if any.
-fn table_of(call: &Call) -> Option<&'static mut Table> {
-    // SAFETY: a table `make` returned stays valid until `destroy` nulls the pointer.
-    unsafe { this(call).as_mut() }
+fn table_of(call: &Call) -> Option<Rc<SharedTable>> {
+    call.custom::<Held>()?.get()
 }
 
 /// `table_get_and_check_ptr`: the table, or Swoole's fatal error (which exits).
-fn constructed(call: &Call) -> Option<&'static mut Table> {
+fn constructed(call: &Call) -> Option<Rc<SharedTable>> {
     let table = table_of(call);
     if table.is_none() {
-        // SAFETY: Swoole's fatal error, from a handler.
-        unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+            WRONG_OPERATION,
+            c"must call constructor first",
+        ));
     }
     table
 }
 
 /// `table_get_and_check_ptr2`: also created and not destroyed (an `E_ERROR`).
-fn created(call: &Call) -> Option<&'static mut Table> {
+fn created(call: &Call) -> Option<Rc<SharedTable>> {
     let table = constructed(call)?;
     if !table.ready() {
         // The deferred bailout ends the method here, as upstream's fatal does.
@@ -214,6 +176,18 @@ fn created(call: &Call) -> Option<&'static mut Table> {
         return None;
     }
     Some(table)
+}
+
+/// `change(table)` on this object's table while no running method uses it
+/// (one that does has created it, which every change refuses); false otherwise.
+fn change(call: &Call, change: impl FnOnce(&mut SharedTable) -> bool) -> bool {
+    let Some(held) = call.custom::<Held>() else {
+        return false;
+    };
+    let mut table = held.0.take();
+    let changed = table.as_mut().and_then(Rc::get_mut).is_some_and(change);
+    held.0.set(table);
+    changed
 }
 
 /// The key as upstream passes it: its length cut to a `uint16_t`.
@@ -228,7 +202,10 @@ fn table_key(key: &[u8]) -> &[u8] {
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.
 fn construct(call: &Call) {
-    if !this(call).is_null() {
+    let Some(held) = call.custom::<Held>() else {
+        return;
+    };
+    if held.get().is_some() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
@@ -245,17 +222,14 @@ fn construct(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream passes the zend_long to a uint32_t and the double to a float"
     )]
-    let table = swr_table_make(rows as u32, conflict as f32);
-    // SAFETY: a made table, or null.
-    if let Some(made) = unsafe { table.as_mut() } {
-        made.set_hash(zend_hash);
-    } else {
+    let made = SharedTable::make(rows as u32, conflict as f32, swoole_rs_zend::string::hash);
+    let Some(table) = made else {
         let exception = swoole_rs_phpswoole::exception();
         call.throw(exception, c"global memory allocation failure", MALLOC_FAIL);
         call.set_bool(false);
         return;
-    }
-    *this(call) = table;
+    };
+    held.0.set(Some(Rc::new(table)));
 }
 
 /// `column(string $name, int $type, int $size = 0): bool`.
@@ -290,25 +264,28 @@ fn column(call: &Call) {
         call.set_bool(false);
         return;
     }
+    drop(table);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "upstream casts the type to the enum and the size to size_t"
     )]
-    call.set_bool(table.add_column(name, kind as u32, size as usize));
+    call.set_bool(change(call, |table| {
+        table.add_column(name, kind as u32, size as usize)
+    }));
 }
 
 /// `create(): bool`.
 fn create(call: &Call) {
-    let Some(table) = constructed(call) else {
+    if constructed(call).is_none() {
         return;
-    };
-    // SAFETY: a constructed table.
-    if unsafe { !swr_table_create(table) } {
+    }
+    if !change(call, SharedTable::create) {
         fatal(E_ERROR, c"unable to allocate memory");
         call.set_bool(false);
         return;
     }
+    let Some(table) = table_of(call) else { return };
     call.update_property_long(Some(&TABLE), c"size", long(table.size()));
     call.update_property_long(Some(&TABLE), c"memorySize", long(table.memory_size()));
     call.set_bool(true);
@@ -321,69 +298,29 @@ fn long(value: usize) -> i64 {
 
 /// `destroy(): bool`.
 fn destroy(call: &Call) {
-    let Some(table) = created(call) else { return };
-    // SAFETY: the table this object made; nothing uses it after.
-    unsafe { swr_table_destroy(table) };
-    *this(call) = ptr::null_mut();
-    call.set_bool(true);
-}
-
-fn is_null(value: *mut zval) -> bool {
-    if value.is_null() {
-        return true;
+    if created(call).is_none() {
+        return;
     }
-    // SAFETY: a live zval.
-    let value = unsafe { *value };
-    // SAFETY: every zval sets `u1.type_info`.
-    let kind = unsafe { value.u1.type_info };
-    kind & 0xff == IS_NULL
+    if let Some(table) = call.custom::<Held>().and_then(|held| held.0.take()) {
+        table.destroy();
+    }
+    call.set_bool(true);
 }
 
 /// `table_set_field_value`: store `value` into a row's column; a new row
 /// clears a column its array leaves out or sets to null.
-fn store(table: &Table, row: *mut Row, column: &Column, value: *mut zval, initialize: bool) {
-    if initialize && is_null(value) {
-        // SAFETY: a locked row of this table and one of its columns.
-        unsafe { clear_value(row, column) };
+fn store(row: &Locked, column: &Column, value: Option<&Value>, initialize: bool) {
+    let Some(value) = value.filter(|value| !(initialize && value.is_null())) else {
+        row.clear(column);
         return;
-    }
+    };
     match column.kind {
-        TYPE_STRING => {
-            // SAFETY: a live zval; `zval_get_string`.
-            let string = unsafe { swoole_rs_zend::value::get_string(value) };
-            // SAFETY: a live string.
-            let bytes = unsafe { string_bytes(string) };
-            // SAFETY: as above; the string is copied (cut to the column, with a warning).
-            unsafe { table.set_value(row, column, bytes.as_ptr(), bytes.len()) };
-            // SAFETY: our reference.
-            unsafe { swr_zend_string_release(string) };
-        }
-        TYPE_FLOAT => {
-            // SAFETY: a live zval; `zval_get_double`.
-            let number = unsafe { swoole_rs_zend::value::get_double(value) };
-            // SAFETY: as above.
-            unsafe { table.set_value(row, column, (&raw const number).cast(), 0) };
-        }
-        _ => {
-            // SAFETY: a live zval; `zval_get_long`.
-            let number = unsafe { swoole_rs_zend::value::get_long(value) };
-            // SAFETY: as above.
-            unsafe { table.set_value(row, column, (&raw const number).cast(), 0) };
-        }
+        // Copied, cut to the column with a warning.
+        TYPE_STRING => row.set_bytes(column, value.string().bytes()),
+        TYPE_FLOAT => row.set_number(column, value.double().to_bits()),
+        #[expect(clippy::cast_sign_loss, reason = "the long's 8 bytes")]
+        _ => row.set_number(column, value.long() as u64),
     }
-}
-
-/// `ZSTR_VAL`/`ZSTR_LEN`.
-/// # Safety
-/// A live string, not released while the result is used.
-unsafe fn string_bytes<'a>(string: *mut zend_string) -> &'a [u8] {
-    // SAFETY: per the caller.
-    let length = unsafe { (*string).len };
-    let bytes = string
-        .wrapping_byte_add(std::mem::offset_of!(zend_string, val))
-        .cast::<u8>();
-    // SAFETY: as above; `val` holds `len` bytes.
-    unsafe { std::slice::from_raw_parts(bytes, length) }
 }
 
 /// `set(string $key, array $value): bool`.
@@ -391,7 +328,7 @@ fn set(call: &Call) {
     let Some(table) = created(call) else { return };
     let parsed = call
         .arity(2, 2)
-        .and_then(|()| Ok((call.string(1, b"")?, call.array(2)?)));
+        .and_then(|()| Ok((call.string(1, b"")?, call.array_ref(2)?)));
     let Ok((key, array)) = parsed else {
         call.set_bool(false);
         return;
@@ -405,54 +342,23 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let (mut lock, mut flags) = (ptr::null_mut(), 0);
-    let row = table.set(table_key(key), &mut lock, Some(&mut flags));
-    if row.is_null() {
-        // SAFETY: the bucket lock `set` took.
-        unsafe { unlock(lock) };
+    let Some(row) = table.lock_set(table_key(key)).filter(Locked::found) else {
         set_failed(key);
         call.set_bool(false);
         return;
-    }
-    // SAFETY: an array argument.
-    let hash = unsafe { swoole_rs_zend::value::table(array) };
-    if flags & NEW_ROW != 0 {
+    };
+    if row.is_new() {
         for column in table.columns() {
-            let name = column.name();
-            // SAFETY: a live array; Zend reads `len` bytes of the name.
-            let value = unsafe { zend_hash_str_find(hash, name.as_ptr().cast(), name.len()) };
-            store(table, row, column, value, true);
+            store(&row, column, array.find(column.name()), true);
         }
     } else {
-        let mut position: HashPosition = 0;
-        // SAFETY: a live array and a writable position.
-        unsafe { zend_hash_internal_pointer_reset_ex(hash, &raw mut position) };
-        loop {
-            let (mut name, mut index) = (ptr::null_mut(), 0);
-            // SAFETY: as above.
-            let kind = unsafe {
-                zend_hash_get_current_key_ex(hash, &raw mut name, &raw mut index, &raw mut position)
-            };
-            // An int or a zend_hash_key_type, by PHP version.
-            let kind = i64::from(kind);
-            if kind == KEY_NON_EXISTENT {
-                break;
+        for (name, value) in array.entries() {
+            if let Some(column) = name.and_then(|name| table.column(name)) {
+                store(&row, column, Some(value), false);
             }
-            if kind == KEY_IS_STRING {
-                // SAFETY: a key of the live array.
-                let name = unsafe { string_bytes(name) };
-                if let Some(column) = table.column(name) {
-                    // SAFETY: as above.
-                    let value = unsafe { zend_hash_get_current_data_ex(hash, &raw mut position) };
-                    store(table, row, column, value, false);
-                }
-            }
-            // SAFETY: as above.
-            unsafe { zend_hash_move_forward_ex(hash, &raw mut position) };
         }
     }
-    // SAFETY: the row lock `set` took.
-    unsafe { unlock(lock) };
+    drop(row);
     call.set_bool(true);
 }
 
@@ -466,32 +372,24 @@ fn update(call: &Call, subtract: bool) {
         call.set_bool(false);
         return;
     };
-    let by = call.zval(3);
-    let (mut lock, mut flags) = (ptr::null_mut(), 0);
-    let row = table.set(table_key(key), &mut lock, Some(&mut flags));
-    // SAFETY: the bucket lock `set` took (released before any warning).
-    let unlock = || unsafe { unlock(lock) };
-    if row.is_null() {
-        unlock();
+    let by = call.value(3);
+    let Some(row) = table.lock_set(table_key(key)).filter(Locked::found) else {
         fatal(E_WARNING, c"unable to allocate memory");
         call.set_bool(false);
         return;
-    }
+    };
     let Some(column) = table.column(name) else {
-        unlock();
+        drop(row);
         report(b"column[", name, b"] does not exist");
         call.set_bool(false);
         return;
     };
-    if flags & NEW_ROW != 0 {
-        // SAFETY: a new, locked row of this table.
-        unsafe { table.clear_row(row) };
+    if row.is_new() {
+        row.clear_row();
     }
-    // SAFETY: a locked row; 8 bytes of a number column.
-    let bits = || unsafe { get_number(row, column) };
     match column.kind {
         TYPE_STRING => {
-            unlock();
+            drop(row);
             fatal(
                 E_WARNING,
                 if subtract {
@@ -503,36 +401,25 @@ fn update(call: &Call, subtract: bool) {
             call.set_bool(false);
         }
         TYPE_FLOAT => {
-            let by = if by.is_null() {
-                1.0
-            } else {
-                // SAFETY: a passed argument.
-                unsafe { swoole_rs_zend::value::get_double(by) }
-            };
-            let current = f64::from_bits(bits());
+            let by = by.map_or(1.0, Value::double);
+            let current = f64::from_bits(row.number(column));
             let value = if subtract { current - by } else { current + by };
-            // SAFETY: a locked row and 8 bytes.
-            unsafe { table.set_value(row, column, (&raw const value).cast(), 0) };
-            unlock();
+            row.set_number(column, value.to_bits());
+            drop(row);
             set_double(call, value);
         }
         _ => {
-            let by = if by.is_null() {
-                1
-            } else {
-                // SAFETY: a passed argument.
-                unsafe { swoole_rs_zend::value::get_long(by) }
-            };
+            let by = by.map_or(1, Value::long);
             #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
-            let current = bits() as i64;
+            let current = row.number(column) as i64;
             let value = if subtract {
                 current.wrapping_sub(by)
             } else {
                 current.wrapping_add(by)
             };
-            // SAFETY: a locked row and 8 bytes.
-            unsafe { table.set_value(row, column, (&raw const value).cast(), 0) };
-            unlock();
+            #[expect(clippy::cast_sign_loss, reason = "the long's 8 bytes")]
+            row.set_number(column, value as u64);
+            drop(row);
             call.set_long(value);
         }
     }
@@ -550,60 +437,62 @@ fn decr(call: &Call) {
     update(call, true);
 }
 
-/// A column's value in a locked row.
-enum Value<'a> {
+/// A locked row, or the iterator's copy of one.
+trait Row {
+    fn number(&self, column: &Column) -> u64;
+    fn bytes(&self, column: &Column) -> &[u8];
+}
+
+impl Row for Locked<'_> {
+    fn number(&self, column: &Column) -> u64 {
+        Locked::number(self, column)
+    }
+    fn bytes(&self, column: &Column) -> &[u8] {
+        Locked::bytes(self, column)
+    }
+}
+
+impl Row for Current {
+    fn number(&self, column: &Column) -> u64 {
+        Current::number(self, column)
+    }
+    fn bytes(&self, column: &Column) -> &[u8] {
+        Current::bytes(self, column)
+    }
+}
+
+/// A column's value in a row.
+enum Field<'a> {
     Long(i64),
     Double(f64),
     Bytes(&'a [u8]),
 }
 
-fn read<'a>(row: *mut Row, column: &Column) -> Value<'a> {
+fn read<'a>(row: &'a impl Row, column: &Column) -> Field<'a> {
     match column.kind {
-        // SAFETY: a locked row (or the iterator's copy); valid while it is.
-        TYPE_STRING => Value::Bytes(unsafe { get_string(row, column) }),
-        kind => {
-            // SAFETY: a locked row; 8 bytes of a number column.
-            let bits = unsafe { get_number(row, column) };
-            if kind == TYPE_FLOAT {
-                Value::Double(f64::from_bits(bits))
-            } else {
-                #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
-                Value::Long(bits as i64)
-            }
-        }
+        TYPE_STRING => Field::Bytes(row.bytes(column)),
+        TYPE_FLOAT => Field::Double(f64::from_bits(row.number(column))),
+        #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
+        _ => Field::Long(row.number(column) as i64),
     }
 }
 
-/// `table_row2array`: every column of a locked row, into `target`.
-fn row_array(table: &Table, row: *mut Row, target: *mut zval) {
-    // SAFETY: a writable zval.
-    unsafe { swr_zend_array_init(target) };
+/// `table_row2array`: every column of a row, as the result.
+fn row_array(call: &Call, table: &Table, row: &impl Row) {
+    let mut array = OwnedArray::default();
     for column in table.columns() {
-        let (name, length) = (swoole_rs_zend::key_ptr(column.name()), column.name().len());
+        let name = column.name();
         match read(row, column) {
-            // SAFETY: an array; Zend copies the key and the bytes.
-            Value::Long(value) => unsafe { add_assoc_long_ex(target, name, length, value) },
-            // SAFETY: as above.
-            Value::Double(value) => unsafe { add_assoc_double_ex(target, name, length, value) },
-            // SAFETY: as above.
-            Value::Bytes(bytes) => unsafe {
-                add_assoc_stringl_ex(
-                    target,
-                    name,
-                    length,
-                    bytes.as_ptr().cast_mut().cast(),
-                    bytes.len(),
-                );
-            },
+            Field::Long(value) => array.insert_long(name, value),
+            Field::Double(value) => array.insert_double(name, value),
+            Field::Bytes(bytes) => array.insert_bytes(name, Some(bytes)),
         }
     }
+    call.set_owned(array.into_owned());
 }
 
 fn set_bytes(call: &Call, bytes: &[u8]) {
-    // SAFETY: Zend copies the bytes.
-    let string = unsafe { swr_zend_string_init(bytes.as_ptr().cast(), bytes.len()) };
-    // SAFETY: a new string the return value takes over.
-    unsafe { call.set_string(string) };
+    call.set_zstring(ZString::new(bytes));
 }
 
 /// `get(string $key, ?string $field = null): mixed`.
@@ -611,10 +500,10 @@ fn get(call: &Call) {
     let Some(table) = created(call) else { return };
     let parsed = call.arity(1, 2).and_then(|()| {
         let key = call.string(1, b"")?;
-        let field = if is_null(call.zval(2)) {
+        let field = if call.value(2).is_none_or(Value::is_null) {
             None
         } else {
-            call.str(2)?
+            call.zstr(2)?
         };
         Ok((key, field))
     });
@@ -622,25 +511,22 @@ fn get(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let mut lock = ptr::null_mut();
-    let row = table.get(table_key(key), &mut lock);
-    if row.is_null() {
+    let Some(row) = table.lock_get(table_key(key)).filter(Locked::found) else {
         call.set_bool(false);
-    } else if let Some(field) = field {
-        // SAFETY: a live string argument.
-        match table.column(unsafe { string_bytes(field) }) {
+        return;
+    };
+    if let Some(field) = field {
+        match table.column(field.bytes()) {
             None => call.set_bool(false),
-            Some(column) => match read(row, column) {
-                Value::Long(value) => call.set_long(value),
-                Value::Double(value) => set_double(call, value),
-                Value::Bytes(bytes) => set_bytes(call, bytes),
+            Some(column) => match read(&row, column) {
+                Field::Long(value) => call.set_long(value),
+                Field::Double(value) => set_double(call, value),
+                Field::Bytes(bytes) => set_bytes(call, bytes),
             },
         }
     } else {
-        row_array(table, row, call.return_value());
+        row_array(call, &table, &row);
     }
-    // SAFETY: the bucket lock `get` took.
-    unsafe { unlock(lock) };
 }
 
 /// A key argument (`"s"` or `Z_PARAM_STRING`), or `RETURN_FALSE`.
@@ -744,36 +630,33 @@ fn next(call: &Call) {
     table.forward();
 }
 
-/// The iterator's current row and its key (empty past the end).
-fn current_row<'a>(table: &Table) -> (*mut Row, &'a [u8]) {
-    let row = table.current();
-    // SAFETY: the iterator's copy of a row, which only the iterator rewrites.
-    (row, unsafe { row_key(row) })
+/// The iterator's current row, unless it is past the end (an empty key).
+fn current_row(call: &Call) -> Option<(Rc<SharedTable>, Current)> {
+    let table = created(call)?;
+    let row = table.current_row()?;
+    Some((table, row))
 }
 
 fn valid(call: &Call) {
-    let Some(table) = created(call) else { return };
-    call.set_bool(!current_row(table).1.is_empty());
+    if let Some((_, row)) = current_row(call) {
+        call.set_bool(!row.key().is_empty());
+    }
 }
 
 fn current(call: &Call) {
-    let Some(table) = created(call) else { return };
-    let (row, key) = current_row(table);
-    if key.is_empty() {
-        call.set_null();
-        return;
+    match current_row(call) {
+        Some((table, row)) if !row.key().is_empty() => row_array(call, &table, &row),
+        Some(_) => call.set_null(),
+        None => {}
     }
-    row_array(table, row, call.return_value());
 }
 
 fn key_of(call: &Call) {
-    let Some(table) = created(call) else { return };
-    let key = current_row(table).1;
-    if key.is_empty() {
-        call.set_null();
-        return;
+    match current_row(call) {
+        Some((_, row)) if !row.key().is_empty() => set_bytes(call, row.key()),
+        Some(_) => call.set_null(),
+        None => {}
     }
-    set_bytes(call, key);
 }
 
 swoole_rs_zend::handlers! {

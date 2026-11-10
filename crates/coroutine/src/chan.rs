@@ -4,10 +4,12 @@
 //!
 //! The host runs the coroutines through [`Effects`]: suspending the current one
 //! (with its timeout timer and cancel function) and resuming a waiter. No Rust
-//! reference to the channel lives across an effect: other coroutines use the
+//! reference into the channel lives across an effect: other coroutines use the
 //! channel while this one is suspended, and a resumed waiter may delete it, so
-//! an operation never touches it after a resume that ends it.
+//! an operation never touches it after a resume that ends it. The operations
+//! take the channel's cell, which is not `Sync`.
 use core::ffi::c_void;
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 
 pub const PRODUCER: u32 = 1;
@@ -34,14 +36,12 @@ pub struct Channel {
 pub trait Effects {
     /// The current coroutine, queued as a waiter.
     fn current(&self) -> *mut c_void;
-    /// Suspends the current coroutine, already queued under `role`, until it
-    /// is resumed, canceled or its timeout fires. A cancel or timeout removes
-    /// it ([`Channel::remove`]) before resuming it, and the timer is deleted
-    /// before this returns `CANCELED` and/or `TIMEDOUT` bits.
-    ///
-    /// # Safety
-    /// `ch` is live until the coroutine is resumed.
-    unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32;
+    /// Suspends the current coroutine, already queued under `role` in `ch`,
+    /// until it is resumed, canceled or its timeout fires. The timer is
+    /// deleted before this returns `CANCELED` and/or `TIMEDOUT` bits; the
+    /// operation then removes the waiter ([`Channel::remove`]) if a cancel or
+    /// timeout has not.
+    fn wait(&mut self, ch: &UnsafeCell<Channel>, role: u32) -> u32;
     /// Resumes a waiter just taken from a queue.
     fn resume(&mut self, co: *mut c_void);
 }
@@ -110,17 +110,48 @@ impl Channel {
     }
 }
 
+/// `f` of the channel, which no other borrow reaches meanwhile: the cell is not
+/// `Sync`, and `f` (only the bodies below) runs no effect.
+fn with<R>(ch: &UnsafeCell<Channel>, f: impl FnOnce(&mut Channel) -> R) -> R {
+    // SAFETY: as above.
+    f(unsafe { &mut *ch.get() })
+}
+
+/// What a channel reports: its last error, items and waiters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stats {
+    pub error: i32,
+    pub length: usize,
+    pub producers: usize,
+    pub consumers: usize,
+    pub full: bool,
+}
+
+/// The channel's [`Stats`].
+pub fn stats(ch: &UnsafeCell<Channel>) -> Stats {
+    with(ch, |c| Stats {
+        error: c.error,
+        length: c.length(),
+        producers: c.producer_num(),
+        consumers: c.consumer_num(),
+        full: c.is_full(),
+    })
+}
+
+/// [`Channel::pop_data`]: the oldest item without waiting, or null.
+pub fn take(ch: &UnsafeCell<Channel>) -> *mut c_void {
+    with(ch, Channel::pop_data)
+}
+
 /// Queues the current coroutine as a `role` waiter and suspends it. Returns the
 /// error to report, or `ERROR_OK` to proceed.
-///
-/// # Safety
-/// `ch` is live and unborrowed.
-unsafe fn wait(ch: *mut Channel, fx: &mut impl Effects, role: u32) -> i32 {
+fn wait(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, role: u32) -> i32 {
     let co = fx.current();
-    // SAFETY: live; the borrow ends before the effect.
-    unsafe { (*ch).queue(role) }.push_back(co);
-    // SAFETY: forwarded from the caller.
-    let flags = unsafe { fx.wait(ch, role) };
+    with(ch, |c| c.queue(role).push_back(co));
+    let flags = fx.wait(ch, role);
+    if flags != 0 {
+        with(ch, |c| c.remove(role, co));
+    }
     if flags & CANCELED != 0 {
         ERROR_CANCELED
     } else if flags & TIMEDOUT != 0 {
@@ -130,91 +161,87 @@ unsafe fn wait(ch: *mut Channel, fx: &mut impl Effects, role: u32) -> i32 {
     }
 }
 
-/// `Channel::pop`: the oldest item, or null with the error set.
-///
-/// # Safety
-/// `ch` is live and unborrowed. After the final resume it is not touched.
-pub unsafe fn pop(ch: *mut Channel, fx: &mut impl Effects) -> *mut c_void {
-    {
-        // SAFETY: live; the borrow ends before the next effect.
-        let c = unsafe { &mut *ch };
-        if c.closed && c.data.is_empty() {
-            c.error = ERROR_CLOSED;
+/// Sets the error unless it is `ERROR_OK`; whether it was.
+fn ok(ch: &UnsafeCell<Channel>, status: i32) -> bool {
+    if status != ERROR_OK {
+        with(ch, |c| c.error = status);
+    }
+    status == ERROR_OK
+}
+
+/// `Channel::pop`: the oldest item, or null with the error set. After the
+/// final resume the channel is not touched.
+pub fn pop(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> *mut c_void {
+    let (closed, wait_first) = with(ch, |c| {
+        (
+            c.closed && c.data.is_empty(),
+            c.data.is_empty() || !c.consumers.is_empty(),
+        )
+    });
+    if closed {
+        ok(ch, ERROR_CLOSED);
+        return core::ptr::null_mut();
+    }
+    if wait_first {
+        let status = wait(ch, fx, CONSUMER);
+        let closed = with(ch, |c| c.closed && c.data.is_empty());
+        if !ok(
+            ch,
+            if status == ERROR_OK && closed {
+                ERROR_CLOSED
+            } else {
+                status
+            },
+        ) {
             return core::ptr::null_mut();
         }
-        if c.data.is_empty() || !c.consumers.is_empty() {
-            // SAFETY: forwarded from the caller.
-            let mut status = unsafe { wait(ch, fx, CONSUMER) };
-            // SAFETY: live again after the suspension.
-            let c = unsafe { &mut *ch };
-            if status == ERROR_OK && c.closed && c.data.is_empty() {
-                status = ERROR_CLOSED;
-            }
-            if status != ERROR_OK {
-                c.error = status;
-                return core::ptr::null_mut();
-            }
-        }
     }
-    // SAFETY: live; the borrow ends before the resume.
-    let c = unsafe { &mut *ch };
-    let data = c.pop_data();
-    if let Some(co) = c.producers.pop_front() {
+    let (data, producer) = with(ch, |c| (c.pop_data(), c.producers.pop_front()));
+    if let Some(co) = producer {
         fx.resume(co);
     }
     data
 }
 
-/// `Channel::push`: false with the error set when it fails.
-///
-/// # Safety
-/// As for [`pop`].
-pub unsafe fn push(ch: *mut Channel, fx: &mut impl Effects, data: *mut c_void) -> bool {
-    {
-        // SAFETY: live; the borrow ends before the next effect.
-        let c = unsafe { &mut *ch };
-        if c.closed {
-            c.error = ERROR_CLOSED;
+/// `Channel::push`: false with the error set when it fails. After the final
+/// resume the channel is not touched.
+pub fn push(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, data: *mut c_void) -> bool {
+    let (closed, wait_first) = with(ch, |c| (c.closed, c.is_full() || !c.producers.is_empty()));
+    if closed {
+        return ok(ch, ERROR_CLOSED);
+    }
+    if wait_first {
+        let status = wait(ch, fx, PRODUCER);
+        let closed = with(ch, |c| c.closed);
+        if !ok(
+            ch,
+            if status == ERROR_OK && closed {
+                ERROR_CLOSED
+            } else {
+                status
+            },
+        ) {
             return false;
         }
-        if c.is_full() || !c.producers.is_empty() {
-            // SAFETY: forwarded from the caller.
-            let mut status = unsafe { wait(ch, fx, PRODUCER) };
-            // SAFETY: live again after the suspension.
-            let c = unsafe { &mut *ch };
-            if status == ERROR_OK && c.closed {
-                status = ERROR_CLOSED;
-            }
-            if status != ERROR_OK {
-                c.error = status;
-                return false;
-            }
-        }
     }
-    // SAFETY: live; the borrow ends before the resume.
-    let c = unsafe { &mut *ch };
-    c.data.push_back(data);
-    if let Some(co) = c.consumers.pop_front() {
+    let consumer = with(ch, |c| {
+        c.data.push_back(data);
+        c.consumers.pop_front()
+    });
+    if let Some(co) = consumer {
         fx.resume(co);
     }
     true
 }
 
 /// `Channel::close`: wakes producers, then consumers.
-///
-/// # Safety
-/// As for [`pop`]; the channel stays alive until close returns.
-pub unsafe fn close(ch: *mut Channel, fx: &mut impl Effects) -> bool {
-    // SAFETY: live.
-    if unsafe { (*ch).closed } {
+pub fn close(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> bool {
+    if with(ch, |c| std::mem::replace(&mut c.closed, true)) {
         return false;
     }
-    // SAFETY: live.
-    unsafe { (*ch).closed = true };
     for role in [PRODUCER, CONSUMER] {
         // Re-read the queue after each resume: the woken waiter may change it.
-        // SAFETY: live; the borrow ends before the resume.
-        while let Some(co) = unsafe { (*ch).queue(role).pop_front() } {
+        while let Some(co) = with(ch, |c| c.queue(role).pop_front()) {
             fx.resume(co);
         }
     }

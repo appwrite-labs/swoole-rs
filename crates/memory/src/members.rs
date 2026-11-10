@@ -613,6 +613,64 @@ pub unsafe fn swr_table_destroy(this: *mut Table) {
     }
 }
 
+/// A table [`swr_table_make`] made, owned by this process: its header lives as
+/// long as this does, unless [`SharedTable::destroy`] has freed it by then.
+/// Dropping it leaves the table to the processes that share it (forked workers
+/// may still use it), as upstream's objects do.
+pub struct SharedTable {
+    table: NonNull<Table>,
+    destroyed: std::cell::Cell<bool>,
+}
+
+impl SharedTable {
+    /// [`swr_table_make`], keys hashed with `hash`.
+    #[must_use]
+    pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
+        let mut table = NonNull::new(swr_table_make(rows, conflict))?;
+        // SAFETY: a made table nothing else references yet.
+        unsafe { table.as_mut() }.set_hash(hash);
+        Some(Self {
+            table,
+            destroyed: std::cell::Cell::new(false),
+        })
+    }
+
+    /// `Table::add_column`.
+    pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
+        // SAFETY: a live table, and `&mut self` excludes every borrow of it.
+        unsafe { self.table.as_mut() }.add_column(name, kind, size)
+    }
+
+    /// `Table::create()` ([`swr_table_create`]).
+    pub fn create(&mut self) -> bool {
+        // SAFETY: a made table, which `&mut self` borrows alone.
+        unsafe { swr_table_create(self.table.as_ptr()) }
+    }
+
+    /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.
+    pub fn destroy(&self) {
+        self.destroyed.set(true);
+    }
+}
+
+impl std::ops::Deref for SharedTable {
+    type Target = Table;
+
+    fn deref(&self) -> &Table {
+        // SAFETY: live until this drops; only `&mut self` mutates it.
+        unsafe { self.table.as_ref() }
+    }
+}
+
+impl Drop for SharedTable {
+    fn drop(&mut self) {
+        if self.destroyed.get() {
+            // SAFETY: a made table, destroyed once: nothing borrows it any more.
+            unsafe { swr_table_destroy(self.table.as_ptr()) };
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/members.rs"]
 mod tests;

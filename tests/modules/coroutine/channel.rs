@@ -209,12 +209,12 @@ impl Effects for Rt {
         rt::me() as *mut c_void
     }
 
-    unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32 {
+    fn wait(&mut self, ch: &std::cell::UnsafeCell<Channel>, role: u32) -> u32 {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
         };
-        let (co, addr) = (rt::me(), ch as usize);
+        let (co, addr) = (rt::me(), ch.get() as usize);
         let timedout = Arc::new(AtomicBool::new(false));
         let fired = Arc::clone(&timedout);
         let timer = (self.timeout > 0.0).then(|| {
@@ -253,23 +253,24 @@ impl Chan {
     fn ptr(self) -> *mut Channel {
         self.0 as *mut Channel
     }
+    fn cell(self) -> &'static std::cell::UnsafeCell<Channel> {
+        // SAFETY: live until `delete`; `UnsafeCell` is a transparent `Channel`.
+        unsafe { &*self.ptr().cast() }
+    }
     fn push(self, data: *mut c_void) -> bool {
         self.push_for(data, -1.0)
     }
     fn push_for(self, data: *mut c_void, timeout: f64) -> bool {
-        // SAFETY: live until `delete`.
-        unsafe { push(self.ptr(), &mut Rt { timeout }, data) }
+        push(self.cell(), &mut Rt { timeout }, data)
     }
     fn pop(self) -> *mut c_void {
         self.pop_for(-1.0)
     }
     fn pop_for(self, timeout: f64) -> *mut c_void {
-        // SAFETY: as above.
-        unsafe { pop(self.ptr(), &mut Rt { timeout }) }
+        pop(self.cell(), &mut Rt { timeout })
     }
     fn close(self) -> bool {
-        // SAFETY: as above.
-        unsafe { close(self.ptr(), &mut Rt { timeout: 0.0 }) }
+        close(self.cell(), &mut Rt { timeout: 0.0 })
     }
     fn get_error(self) -> i32 {
         // SAFETY: as above.
@@ -465,9 +466,9 @@ impl Effects for Log {
     fn current(&self) -> *mut c_void {
         9 as *mut c_void
     }
-    unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32 {
+    fn wait(&mut self, ch: &std::cell::UnsafeCell<Channel>, role: u32) -> u32 {
         // SAFETY: the test's live channel.
-        unsafe { (*ch).remove(role, self.current()) };
+        unsafe { (*ch.get()).remove(role, self.current()) };
         self.flags
     }
     fn resume(&mut self, co: *mut c_void) {
@@ -477,33 +478,31 @@ impl Effects for Log {
 
 #[test]
 fn cancel_wins_over_timeout() {
-    let mut ch = Channel::new(1);
+    let mut ch = std::cell::UnsafeCell::new(Channel::new(1));
     let mut fx = Log {
         flags: CANCELED | TIMEDOUT,
         resumed: vec![],
     };
-    // SAFETY: a live channel.
-    unsafe {
-        assert_eq!(pop(&raw mut ch, &mut fx), null_mut());
-        assert_eq!(ch.error(), ERROR_CANCELED);
-        fx.flags = TIMEDOUT;
-        assert_eq!(pop(&raw mut ch, &mut fx), null_mut());
-        assert_eq!(ch.error(), ERROR_TIMEOUT);
-    }
-    assert_eq!(ch.consumer_num(), 0);
+    assert_eq!(pop(&ch, &mut fx), null_mut());
+    assert_eq!(ch.get_mut().error(), ERROR_CANCELED);
+    fx.flags = TIMEDOUT;
+    assert_eq!(pop(&ch, &mut fx), null_mut());
+    assert_eq!(ch.get_mut().error(), ERROR_TIMEOUT);
+    assert_eq!(ch.get_mut().consumer_num(), 0);
 }
 
 #[test]
 fn close_wakes_producers_then_consumers() {
-    let mut ch = Channel::new(0);
-    ch.producers.extend([1, 2].map(|n| n as *mut c_void));
-    ch.consumers.push_back(3 as *mut c_void);
+    let mut ch = std::cell::UnsafeCell::new(Channel::new(0));
+    ch.get_mut()
+        .producers
+        .extend([1, 2].map(|n| n as *mut c_void));
+    ch.get_mut().consumers.push_back(3 as *mut c_void);
     let mut fx = Log {
         flags: 0,
         resumed: vec![],
     };
-    // SAFETY: a live channel.
-    assert!(unsafe { close(&raw mut ch, &mut fx) });
+    assert!(close(&ch, &mut fx));
     assert_eq!(fx.resumed, [1, 2, 3]);
 }
 

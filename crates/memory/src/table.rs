@@ -361,35 +361,6 @@ fn clamp(key: &[u8]) -> &[u8] {
     key.get(..KEY_SIZE - 1).unwrap_or(key)
 }
 
-/// The key a row holds.
-/// # Safety
-/// `row` is a row of a created table, or the iterator's copy of one.
-#[must_use]
-pub unsafe fn row_key<'a>(row: *const Row) -> &'a [u8] {
-    Live(row.cast_mut()).key()
-}
-
-/// `TableRow::lock()`.
-/// # Safety
-/// `row` is a row of a created table.
-pub unsafe fn lock(row: *mut Row, warning: Warning) {
-    Live(row).lock(warning);
-}
-
-/// `TableRow::unlock()`.
-/// # Safety
-/// `row` is a row of a created table this process locked.
-pub unsafe fn unlock(row: *mut Row) {
-    Live(row).unlock();
-}
-
-/// `TableRow::clear()`: the header but its lock word.
-/// # Safety
-/// `row` is a locked row of a created table.
-pub unsafe fn clear(row: *mut Row) {
-    Live(row).zero(offset_of!(Row, lock_pid));
-}
-
 /// `TableRow::set_value()`: a number's 8 bytes, or a string cut to the
 /// column with a warning.
 /// # Safety
@@ -440,28 +411,6 @@ pub unsafe fn clear_value(row: *mut Row, column: &Column) {
     let width = if column.kind == TYPE_STRING { 4 } else { 8 };
     // SAFETY: per the caller; the column's first `width` bytes.
     unsafe { ptr::write_bytes(Live(row).data().wrapping_add(column.index), 0, width) };
-}
-
-/// A number column's 8 bytes.
-/// # Safety
-/// `row` is a locked row (or the iterator's copy) of the column's table.
-#[must_use]
-pub unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
-    let at = Live(row.cast_mut()).data().wrapping_add(column.index);
-    // SAFETY: per the caller.
-    unsafe { at.cast::<u64>().read_unaligned() }
-}
-
-/// A string column's bytes, valid while the row is locked.
-/// # Safety
-/// As `get_number`.
-#[must_use]
-pub unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
-    let at = Live(row.cast_mut()).data().wrapping_add(column.index);
-    // SAFETY: per the caller.
-    let length = unsafe { at.cast::<u32>().read_unaligned() };
-    // SAFETY: as above; a stored length never exceeds the column.
-    unsafe { slice::from_raw_parts(at.wrapping_add(4), length as usize) }
 }
 
 impl Table {
@@ -966,30 +915,6 @@ impl Table {
         self.mutex.unlock();
     }
 
-    /// `Table::clear_row`: every column empty or zero.
-    /// # Safety
-    /// `row` is a locked row of this table.
-    pub unsafe fn clear_row(&self, row: *mut Row) {
-        for column in self.columns() {
-            // SAFETY: per the caller.
-            unsafe { clear_value(row, column) };
-        }
-    }
-
-    /// `TableRow::set_value` with this table's warning log.
-    /// # Safety
-    /// As `set_value`.
-    pub unsafe fn set_value(
-        &self,
-        row: *mut Row,
-        column: &Column,
-        value: *const u8,
-        length: usize,
-    ) {
-        // SAFETY: per the caller.
-        unsafe { set_value(row, column, value, length, self.warning) };
-    }
-
     fn cursor<T>(&self, step: impl FnOnce(&mut Cursor, usize) -> T) -> Option<T> {
         if self.cursor.is_null() {
             return None;
@@ -1066,12 +991,197 @@ impl Table {
         Some(row)
     }
 
-    /// `Table::current`: the iterator's copy of its row (null before `create`).
+    /// [`Table::set`] as a guard: None before `create`; a guard without a row
+    /// when no row could be made.
     #[must_use]
-    pub fn current(&self) -> *mut Row {
-        // SAFETY: this process's cursor, or null; the copy never moves.
-        unsafe { self.cursor.as_mut() }
-            .map_or(ptr::null_mut(), |cursor| cursor.current.as_mut_ptr().cast())
+    pub fn lock_set(&self, key: &[u8]) -> Option<Locked<'_>> {
+        let (mut lock, mut flags) = (ptr::null_mut(), 0);
+        let row = self.set(key, &mut lock, Some(&mut flags));
+        self.locked(lock, row, flags)
+    }
+
+    /// [`Table::get`] as a guard: None before `create`; a guard without a row
+    /// when `key` has none.
+    #[must_use]
+    pub fn lock_get(&self, key: &[u8]) -> Option<Locked<'_>> {
+        let mut lock = ptr::null_mut();
+        let row = self.get(key, &mut lock);
+        self.locked(lock, row, 0)
+    }
+
+    fn locked(&self, lock: *mut Row, row: *mut Row, flags: i32) -> Option<Locked<'_>> {
+        (!lock.is_null()).then(|| Locked {
+            table: self,
+            bucket: Live(lock),
+            row: (!row.is_null()).then_some(Live(row)),
+            flags,
+        })
+    }
+
+    /// A copy of the iterator's current row: None before `create`.
+    #[must_use]
+    pub fn current_row(&self) -> Option<Current> {
+        self.cursor(|cursor, row_size| Current {
+            row: cursor.current.clone(),
+            size: row_size - ROW,
+        })
+    }
+}
+
+/// A row's column data, `size` bytes at `data`: a locked row's or the
+/// iterator's copy. Reads and writes stay inside the column's bytes; a column
+/// that does not fit (another table's) reads as zero or empty.
+#[derive(Clone, Copy)]
+struct Data {
+    data: *mut u8,
+    size: usize,
+}
+
+impl Data {
+    /// The column's bytes: a number's 8, or a string's length word and capacity.
+    fn slot(self, column: &Column) -> Option<*mut u8> {
+        let end = column.index.checked_add(column.width as usize)?;
+        (end <= self.size && column.width >= 8).then(|| self.data.wrapping_add(column.index))
+    }
+
+    fn number(self, column: &Column) -> u64 {
+        // SAFETY: the column's 8 bytes inside the row (`slot`).
+        self.slot(column)
+            .map_or(0, |at| unsafe { at.cast::<u64>().read_unaligned() })
+    }
+
+    fn bytes<'a>(self, column: &Column) -> &'a [u8] {
+        let Some(at) = self.slot(column) else {
+            return &[];
+        };
+        // SAFETY: the column's length word (`slot`).
+        let length = unsafe { at.cast::<u32>().read_unaligned() } as usize;
+        let length = length.min(column.width as usize - 4);
+        // SAFETY: at most the column's capacity, inside the row.
+        unsafe { slice::from_raw_parts(at.wrapping_add(4), length) }
+    }
+}
+
+/// A bucket this process locked, with the key's row in it if there is one
+/// (`Table::set`'s or `Table::get`'s); unlocked on drop.
+pub struct Locked<'a> {
+    table: &'a Table,
+    bucket: Live,
+    row: Option<Live>,
+    flags: i32,
+}
+
+impl Locked<'_> {
+    /// Whether the guard holds the key's row.
+    #[must_use]
+    pub fn found(&self) -> bool {
+        self.row.is_some()
+    }
+
+    /// `SW_TABLE_FLAG_NEW_ROW`: `lock_set` made the row.
+    #[must_use]
+    pub fn is_new(&self) -> bool {
+        self.flags & NEW_ROW != 0
+    }
+
+    /// The row, when the column fits it.
+    fn slot(&self, column: &Column) -> Option<*mut Row> {
+        self.data()?.slot(column).and(self.row.map(|row| row.0))
+    }
+
+    fn data(&self) -> Option<Data> {
+        self.row.map(|row| Data {
+            data: row.data(),
+            size: self.table.item_size,
+        })
+    }
+
+    /// A number column's 8 bytes (0 without a row).
+    #[must_use]
+    pub fn number(&self, column: &Column) -> u64 {
+        self.data().map_or(0, |data| data.number(column))
+    }
+
+    /// A string column's bytes (empty without a row).
+    #[must_use]
+    pub fn bytes(&self, column: &Column) -> &[u8] {
+        self.data().map_or(&[], |data| data.bytes(column))
+    }
+
+    /// `TableRow::set_value` of a number column's 8 bytes.
+    pub fn set_number(&self, column: &Column, value: u64) {
+        if let Some(row) = self.slot(column) {
+            let bytes = value.to_ne_bytes();
+            // SAFETY: a locked row of this table; the column fits it.
+            unsafe { set_value(row, column, bytes.as_ptr(), 8, self.table.warning) };
+        }
+    }
+
+    /// `TableRow::set_value` of a string column: cut to it with a warning.
+    /// Nothing for a number column.
+    pub fn set_bytes(&self, column: &Column, value: &[u8]) {
+        if let Some(row) = self.slot(column).filter(|_| column.kind == TYPE_STRING) {
+            // SAFETY: as above; `value` holds its length, which a string takes.
+            unsafe { set_value(row, column, value.as_ptr(), value.len(), self.table.warning) };
+        }
+    }
+
+    /// `TableColumn::clear()`: an empty string or a zero number.
+    pub fn clear(&self, column: &Column) {
+        if let Some(row) = self.slot(column) {
+            // SAFETY: as above.
+            unsafe { clear_value(row, column) };
+        }
+    }
+
+    /// `Table::clear_row`: every column empty or zero.
+    pub fn clear_row(&self) {
+        for column in self.table.columns() {
+            self.clear(column);
+        }
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        self.bucket.unlock();
+    }
+}
+
+/// A copy of the iterator's current row: an empty key past the last.
+pub struct Current {
+    row: Vec<u64>,
+    size: usize,
+}
+
+impl Current {
+    fn live(&self) -> Live {
+        Live(self.row.as_ptr().cast_mut().cast())
+    }
+
+    fn data(&self) -> Data {
+        Data {
+            data: self.live().data(),
+            size: self.size,
+        }
+    }
+
+    /// The row's key.
+    #[must_use]
+    pub fn key(&self) -> &[u8] {
+        self.live().key()
+    }
+
+    /// A number column's 8 bytes.
+    #[must_use]
+    pub fn number(&self, column: &Column) -> u64 {
+        self.data().number(column)
+    }
+
+    /// A string column's bytes.
+    #[must_use]
+    pub fn bytes(&self, column: &Column) -> &[u8] {
+        self.data().bytes(column)
     }
 }
 
