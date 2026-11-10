@@ -209,10 +209,12 @@ mod tests {
     fn cid(_: *mut c_void) -> i64 {
         STATE.with(|state| state.borrow().cid)
     }
-    #[expect(clippy::unnecessary_wraps, reason = "the host's signature")]
+    /// A fresh word for the program's life, as the pool's are.
     fn allocate() -> Option<&'static AtomicU32> {
+        static WORDS: [AtomicU32; 16] = [const { AtomicU32::new(7) }; 16];
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         STATE.with(|state| state.borrow_mut().allocated += 1);
-        Some(Box::leak(Box::new(AtomicU32::new(7))))
+        WORDS.get(NEXT.fetch_add(1, Ordering::Relaxed))
     }
     fn sleep(second: f64) -> CoroutineOutcome {
         let (lock, releases, result, bailed) = STATE.with(|state| {
