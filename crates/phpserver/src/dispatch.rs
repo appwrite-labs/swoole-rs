@@ -988,7 +988,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: &Wo
     props.long(c"manager_pid", i64::from(gs.manager_pid));
     // SAFETY: the worker and its process object; this frame owns nothing that
     // needs a drop, as the process exits through a bailout.
-    unsafe { swr_v1_phpprocess_start(worker.cast(), process) };
+    unsafe { swr_v1_phpprocess_start(ptr::from_ref(worker).cast_mut().cast(), process) };
 }
 
 /// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
