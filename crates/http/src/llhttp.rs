@@ -503,6 +503,7 @@ const CHUNKED_WORDS: Words = Words::new(&["chunked"]);
 const PREFACE_WORDS: Words = Words::new(&[PREFACE]);
 
 /// Match `c` against `words`, after the parser's `index` bytes of word `word`.
+#[inline]
 fn next_word(words: &Words, parser: &mut Parser, c: u8) -> Word {
     let index = usize::from(parser.index);
     // Only the words matched so far (at first, those starting with `c`) can
@@ -636,6 +637,22 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     fn eat(&mut self, next: State) -> Next {
         self.p += 1;
         Ok(next)
+    }
+
+    /// Match the input against `words` (lower-cased if `fold`), consuming each
+    /// byte that leaves a longer word in play, as llhttp matches a sequence: a
+    /// whole word or a mismatch stops at its byte, the input's end at `Partial`.
+    fn word(&mut self, words: &Words, fold: bool) -> Word {
+        loop {
+            let Some(&c) = self.data.get(self.p) else {
+                return Word::Partial;
+            };
+            let c = if fold { lower(c) } else { c };
+            match next_word(words, self.cb.parser(), c) {
+                Word::Partial => self.p += 1,
+                word => return word,
+            }
+        }
     }
 
     /// Consume `c` and the bytes after it while they are `accept`ed, as llhttp's
@@ -899,14 +916,15 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     }
 
     /// The method's next byte.
-    fn method(&mut self, c: u8) -> Next {
+    fn method(&mut self) -> Next {
+        let word = self.word(&METHOD_WORDS, false);
         let parser = self.parser();
-        match next_word(&METHOD_WORDS, parser, c) {
+        match word {
             Word::Whole(method) => {
                 parser.method = method;
                 self.eat(State::ReqFirstSpace)
             }
-            Word::Partial => self.eat(State::Method),
+            Word::Partial => Ok(State::Method),
             Word::Mismatch => {
                 // `GET` ends where `GET_PARAMETER` would go on.
                 let index = usize::from(parser.index);
@@ -921,11 +939,12 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     }
 
     /// The protocol's next byte, and on a request its method's check.
-    fn protocol(&mut self, c: u8) -> Next {
+    fn protocol(&mut self) -> Next {
+        let word = self.word(&PROTOCOL_WORDS, false);
         let parser = self.parser();
-        let protocol = match next_word(&PROTOCOL_WORDS, parser, c) {
+        let protocol = match word {
             Word::Whole(protocol) => protocol,
-            Word::Partial => return self.eat(State::Protocol),
+            Word::Partial => return Ok(State::Protocol),
             Word::Mismatch => {
                 parser.index = 0;
                 return self.fail(8, &"Expected HTTP/, RTSP/ or ICE/");
@@ -947,9 +966,10 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     }
 
     /// A tracked header name's next byte, or the general token rules.
-    fn header_field(&mut self, c: u8) -> Next {
+    fn header_field(&mut self) -> Next {
+        let word = self.word(&HEADER_WORDS, true);
         let parser = self.parser();
-        match next_word(&HEADER_WORDS, parser, lower(c)) {
+        match word {
             Word::Whole(header) => {
                 parser.header_state = HEADER_STATES
                     .get(usize::from(header))
@@ -957,7 +977,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     .unwrap_or_default();
                 self.eat(State::HeaderFieldColon)
             }
-            Word::Partial => self.eat(State::HeaderField),
+            Word::Partial => Ok(State::HeaderField),
             Word::Mismatch => {
                 parser.index = 0;
                 parser.header_state = 0;
@@ -966,9 +986,10 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         }
     }
 
-    fn connection(&mut self, c: u8) -> Next {
+    fn connection(&mut self) -> Next {
+        let word = self.word(&CONNECTION_WORDS, true);
         let parser = self.parser();
-        match next_word(&CONNECTION_WORDS, parser, lower(c)) {
+        match word {
             Word::Whole(token) => {
                 parser.header_state = CONNECTION_STATES
                     .get(usize::from(token))
@@ -976,7 +997,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     .unwrap_or_default();
                 self.eat(State::ConnectionWs)
             }
-            Word::Partial => self.eat(State::ConnectionMatch),
+            Word::Partial => Ok(State::ConnectionMatch),
             Word::Mismatch => {
                 parser.index = 0;
                 Ok(State::ConnectionToken)
@@ -984,11 +1005,12 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         }
     }
 
-    fn te_chunked(&mut self, c: u8) -> Next {
+    fn te_chunked(&mut self) -> Next {
+        let word = self.word(&CHUNKED_WORDS, true);
         let parser = self.parser();
-        match next_word(&CHUNKED_WORDS, parser, lower(c)) {
+        match word {
             Word::Whole(_) => self.eat(State::TeChunkedLast),
-            Word::Partial => self.eat(State::TeChunked),
+            Word::Partial => Ok(State::TeChunked),
             Word::Mismatch => {
                 parser.index = 0;
                 Ok(State::TeToken)
@@ -996,11 +1018,12 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         }
     }
 
-    fn pri_upgrade(&mut self, c: u8) -> Next {
+    fn pri_upgrade(&mut self) -> Next {
+        let word = self.word(&PREFACE_WORDS, false);
         let parser = self.parser();
-        match next_word(&PREFACE_WORDS, parser, c) {
+        match word {
             Word::Whole(_) => self.eat_fail(HPE_PAUSED_H2_UPGRADE, &"Pause on PRI/Upgrade"),
-            Word::Partial => self.eat(State::PriUpgrade),
+            Word::Partial => Ok(State::PriUpgrade),
             Word::Mismatch => {
                 parser.index = 0;
                 self.fail(9, &"Expected HTTP/2 Connection Preface")
@@ -1066,7 +1089,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     S::Method
                 })
             }
-            S::Method => self.method(c),
+            S::Method => self.method(),
             S::ReqFirstSpace => {
                 if c == b' ' {
                     return self.eat(S::ReqSpaces);
@@ -1183,7 +1206,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 }
                 Ok(S::Protocol)
             }
-            S::Protocol => self.protocol(c),
+            S::Protocol => self.protocol(),
             S::AfterProtocol => {
                 if c == b'/' {
                     return self.eat(S::HttpMajor);
@@ -1215,7 +1238,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 }
                 self.fail(2, &"Expected CRLF after version")
             }
-            S::PriUpgrade => self.pri_upgrade(c),
+            S::PriUpgrade => self.pri_upgrade(),
             S::ResAfterVersion => {
                 if c == b' ' {
                     let parser = self.parser();
@@ -1273,7 +1296,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     Ok(S::HeaderField)
                 }
             },
-            S::HeaderField => self.header_field(c),
+            S::HeaderField => self.header_field(),
             S::HeaderFieldColon => match c {
                 b' ' => self.close_fail(true, 10, &"Invalid header field char"),
                 b':' => self.close(true, S::FieldComplete),
@@ -1334,9 +1357,9 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             }
             S::Connection => match c {
                 9 | b' ' => self.eat(S::Connection),
-                _ => self.connection(c),
+                _ => self.connection(),
             },
-            S::ConnectionMatch => self.connection(c),
+            S::ConnectionMatch => self.connection(),
             S::ConnectionToken => match c {
                 b',' => self.eat(S::Connection),
                 _ if list_char(c) => self.eat(S::ConnectionToken),
@@ -1372,7 +1395,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 b' ' => self.eat(S::ContentLengthWs),
                 _ => self.close_fail(false, 11, &"Invalid character in Content-Length"),
             },
-            S::TeChunked => self.te_chunked(c),
+            S::TeChunked => self.te_chunked(),
             S::TeChunkedLast => match c {
                 10 | 13 => {
                     self.parser().header_state = 8;
