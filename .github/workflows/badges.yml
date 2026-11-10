@@ -22,6 +22,8 @@ defaults:
     shell: bash
 jobs:
   badges:
+    # Latest-wins cancels most merge-tier runs, and a cancelled one has nothing new to show.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 10
     env:
@@ -33,7 +35,11 @@ jobs:
       # The newest finished merge-tier run on main with a gate result (a gate missing a shard
       # uploads no phpt.json), and its build variants' gates. Latest-wins cancels most runs,
       # so they are skipped before the limit, or 20 of them hide every finished run.
+      # Not on a push: a push changes none of the run results below, and looking them up costs
+      # about 40 API calls from the hourly limit every job shares. The badges that come from
+      # the checkout are still rewritten.
       - id: gate
+        if: github.event_name != 'push'
         run: |
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
             if gh run download "$run" -n phpt -D gate/phpt 2>/dev/null && [ -f gate/phpt/phpt.json ]; then
@@ -49,6 +55,7 @@ jobs:
       # (it uploads one when the limits fail too, which is when the badge matters most):
       # cg/ is the newest, for the badge, and cg-previous/ the one before it.
       - id: callgrind
+        if: github.event_name != 'push'
         run: |
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
             dir=cg
@@ -81,7 +88,8 @@ jobs:
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/1894/sub_issues" -F sub_issue_id="$id"
           fi
       # The newest completed Coverage run on main whose report job uploaded a summary.
-      - run: |
+      - if: github.event_name != 'push'
+        run: |
           for run in $(gh run list --workflow coverage.yml --branch main --status completed --limit 5 --json databaseId -q '.[].databaseId'); do
             gh run download "$run" -n coverage -D coverage 2>/dev/null && [ -f coverage/summary.json ] && break
             rm -rf coverage
