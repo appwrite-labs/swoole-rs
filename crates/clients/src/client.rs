@@ -1747,9 +1747,7 @@ mod ops {
             CONNECT_ASYNC => {
                 socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
             }
-            CONNECT_SYNC => {
-                socket.edit(|socket| socket_upstream::socket_connect_sync(socket, address))
-            }
+            CONNECT_SYNC => socket_upstream::connect_sync(socket, address),
             _ => {
                 let fd = socket.fd();
                 let storage = (&raw const record.server_addr.addr).cast();
