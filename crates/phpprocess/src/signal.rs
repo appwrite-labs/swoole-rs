@@ -9,9 +9,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, bailout, long_zval, message, sys::IS_LONG, type_of,
-};
+use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Value, bailout, long_zval, message};
 
 // SAFETY: crates/reactor's `swoole_signal_get_handler`, under its upstream symbol.
 unsafe extern "C" {
@@ -126,8 +124,7 @@ pub(crate) fn signal(call: &Call) {
             call.set_bool(true);
             return;
         }
-        // SAFETY: a passed argument.
-        Some(value) if unsafe { type_of(value) } == IS_LONG && is_ignore(value) => {
+        Some(_) if call.value(2).and_then(Value::as_long) == Some(SIG_IGN) => {
             (ptr::null_mut(), IGNORE)
         }
         Some(value) => {
@@ -170,13 +167,6 @@ pub(crate) fn signal(call: &Call) {
     slot.store(callable, Ordering::Release);
     host::signal_set(number, handler, true);
     call.set_bool(true);
-}
-
-fn is_ignore(value: *mut swoole_rs_zend::sys::zval) -> bool {
-    // SAFETY: an IS_LONG zval.
-    let value = unsafe { (*value).value };
-    // SAFETY: as above.
-    unsafe { value.lval == SIG_IGN }
 }
 
 /// `php_swoole_signal_isset_handler`, which `proc_open`'s hook asks about

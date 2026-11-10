@@ -369,11 +369,6 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
         }
     }
     crate::signal::clean();
-    if swoole_rs_zend::bailout::pending() {
-        // SAFETY: the callable made above.
-        unsafe { host::callable_free(callable) };
-        swoole_rs_zend::bailout::finish();
-    }
     // SAFETY: a Process object.
     unsafe { update_property_long(entry(), std, c"pid", i64::from(worker.pid)) };
     if worker.pipe >= 0 {
@@ -382,7 +377,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     }
     // SAFETY: as above.
     let coroutine = unsafe { data(std) }.enable_coroutine;
-    if coroutine && host::reactor_init() < 0 {
+    if swoole_rs_zend::bailout::pending() || (coroutine && host::reactor_init() < 0) {
         // SAFETY: the callable made above.
         unsafe { host::callable_free(callable) };
         swoole_rs_zend::bailout::finish();
