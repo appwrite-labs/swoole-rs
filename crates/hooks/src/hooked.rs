@@ -506,24 +506,16 @@ fn blocking(fd: c_int, write: bool) -> SocketRecord {
     socket
 }
 
-/// `SocketImpl *swoole_coroutine_get_socket_object(int)`: `fd`'s socket, or null.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z34swoole_coroutine_get_socket_objecti")
-)]
+/// Upstream's `swoole_coroutine_get_socket_object`: `fd`'s socket, or null.
 #[must_use]
-pub extern "C" fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut c_void {
+pub fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut c_void {
     socket_map::get(fd)
 }
 
-/// `SocketImpl *swoole_coroutine_get_socket_object_ex(int)`: as
+/// Upstream's `swoole_coroutine_get_socket_object_ex`: as
 /// [`swoole_coroutine_get_socket_object`], but null outside a coroutine.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z37swoole_coroutine_get_socket_object_exi")
-)]
 #[must_use]
-pub extern "C" fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut c_void {
+pub fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut c_void {
     hooked(fd).map_or(core::ptr::null_mut(), |(_, socket)| socket.this())
 }
 
