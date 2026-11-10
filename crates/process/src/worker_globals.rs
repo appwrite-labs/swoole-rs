@@ -164,9 +164,7 @@ pub fn worker_global_stopped() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worker_record::{
-        Worker, swr_v1_worker_exceeded_max_requests, swr_v1_worker_init, swr_v1_worker_shutdown,
-    };
+    use crate::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     static RANDOM_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -198,6 +196,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no libc time")]
     fn lifecycle_limit_and_detached_copy_preserve_private_record_fields() {
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
         unsafe {
@@ -209,9 +208,9 @@ mod tests {
             assert_eq!(swr_v1_worker_global_get(4), 0);
             worker_global_max_requests(2, 0, maximum);
             Worker::new(&raw mut worker).add_request_count();
-            assert!(!swr_v1_worker_exceeded_max_requests(&raw const worker));
+            assert!(!Worker::new(&raw const worker).exceeded_max_request());
             Worker::new(&raw mut worker).add_request_count();
-            assert!(swr_v1_worker_exceeded_max_requests(&raw const worker));
+            assert!(Worker::new(&raw const worker).exceeded_max_request());
             worker_global_detach(&raw mut worker);
             let copy = (*thread_globals()).worker_copy;
             assert_ne!(copy, &raw mut worker);

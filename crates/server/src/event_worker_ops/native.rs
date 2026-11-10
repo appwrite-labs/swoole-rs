@@ -10,7 +10,6 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::{swoole_get_worker_pid, swoole_get_worker_type};
 use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ARM_EXIT, OP_BUS_CLEAR, OP_BUS_EMPTY, OP_BUS_POP, OP_BUS_READ, OP_COMMAND_REQUEST,
     OP_CONN_UNREAD, OP_COUNT_COROUTINES, OP_DO_TASK, OP_DRAIN_WORKER_PIPES, OP_EVENT_BEGIN,
@@ -34,7 +33,6 @@ use crate::view;
 unsafe extern "C-unwind" {
     #[link_name = "_Z22swoole_coroutine_countv"]
     safe fn coroutine_count() -> usize;
-    fn swr_v1_event_set_end_callback(id: c_int, callback: unsafe extern "C" fn());
 }
 
 /// `Reactor::PRIORITY_TRY_EXIT`, `PRIORITY_WORKER_CALLBACK`; `SW_FD_PIPE`.
@@ -270,7 +268,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let size = size_of::<DataHead>();
             // SAFETY: the live server, one of its workers and the event.
             sized(unsafe {
-                entry::send_to_worker_from_worker(ctx.serv, worker.cast(), data, size, PIPE_MASTER)
+                swoole_rs_process::methods::send_pipe_message(worker, data, size, PIPE_MASTER)
             })
         }
         _ => return reactor_op(ctx, op, arg),
@@ -325,8 +323,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ARM_EXIT => {
             ctx.reactor().fields().wait_exit = true;
-            // SAFETY: the thread's reactor, which is the context's.
-            unsafe { swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit) };
+            swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
             let now = crate::shared::unix_now();
             // SAFETY: this thread's worker globals.
             unsafe { (*thread_globals()).exit_time = now };
@@ -361,8 +358,10 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_COUNT_COROUTINES => {
             COUNTED.set(ctx.worker);
-            // SAFETY: the thread's reactor.
-            unsafe { swr_v1_event_set_end_callback(PRIORITY_WORKER_CALLBACK, count_coroutines) };
+            swoole_rs_reactor::swr_v1_event_set_end_callback(
+                PRIORITY_WORKER_CALLBACK,
+                count_coroutines,
+            );
             0
         }
         _ => return None,
@@ -392,7 +391,7 @@ thread_local! {
 }
 
 /// `worker->coroutine_num = Coroutine::count()`, after each round of the loop.
-extern "C" fn count_coroutines() {
+extern "C-unwind" fn count_coroutines() {
     // SAFETY: the worker OP_COUNT_COROUTINES named, live while its loop runs.
     if let Some(worker) = unsafe { COUNTED.get().as_mut() } {
         worker.coroutine_num = coroutine_count();
@@ -425,7 +424,7 @@ fn context(serv: *mut c_void, reactor: Reactor) -> Context {
 }
 
 /// `Worker_reactor_try_to_exit`: the loop's end callback while the worker exits.
-extern "C" fn try_to_exit() {
+extern "C-unwind" fn try_to_exit() {
     let mut ctx = worker_context(Reactor::thread());
     run(&mut ctx, RUN_TRY_EXIT, 0);
 }

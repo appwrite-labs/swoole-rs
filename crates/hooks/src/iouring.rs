@@ -22,15 +22,6 @@ const EVENT_READ: c_int = 1 << 9;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
-// SAFETY: crates/reactor's.
-unsafe extern "C" {
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C" fn(*mut usize) -> bool,
-    );
-    fn swr_v1_event_set_end_callback(id: c_int, callback: unsafe extern "C" fn());
-}
-
 /// The thread's `Iouring`: the engine (null if the ring could not be created) and
 /// its fd's record on `reactor`.
 struct Iouring {
@@ -174,9 +165,8 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
     unsafe { (*socket).object = iouring.cast() };
     // SAFETY: the new instance, not yet shared.
     unsafe { (*iouring).socket = socket };
+    swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
     // SAFETY: the thread's live reactor.
-    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle) };
-    // SAFETY: as above.
     let fields = unsafe { prepared(reactor) }.fields;
     // SAFETY: its live fields.
     let queue = unsafe { &raw mut (*fields).destroy_callbacks };
@@ -184,8 +174,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
     if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) } != 0 {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
     }
-    // SAFETY: the thread's live reactor.
-    unsafe { swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit) };
+    swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit);
     // SAFETY: the record and its live reactor.
     if unsafe { reactor_change(reactor, socket, 0, EVENT_READ) } < 0 {
         log::sys_error(
@@ -197,7 +186,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
 }
 
 /// The exit condition: requests in flight or waiting keep the loop running.
-unsafe extern "C" fn idle(event_num: *mut usize) -> bool {
+extern "C-unwind" fn idle(event_num: *mut usize) -> bool {
     let iouring = INSTANCE.get();
     // SAFETY: null or the thread's live instance.
     if let Some(iouring) = unsafe { iouring.as_ref() }
@@ -212,7 +201,7 @@ unsafe extern "C" fn idle(event_num: *mut usize) -> bool {
 }
 
 /// The end-of-loop callback: submit what the loop queued.
-unsafe extern "C" fn submit() {
+extern "C-unwind" fn submit() {
     // SAFETY: null or the thread's live engine, from the event loop.
     if let Some(engine) = unsafe { current().as_mut() } {
         engine.submit_queued();

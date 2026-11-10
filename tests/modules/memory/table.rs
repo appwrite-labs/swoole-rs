@@ -114,6 +114,7 @@ fn read(table: &Table, key: &[u8]) -> Option<i64> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn make_clamps_rows_and_conflict_as_upstream() {
     for (rows, size) in [(0, 64), (65, 128), (1024, 1024), (0x9000_0000, 0x8000_0000)] {
         assert_eq!(Owned::new(rows, 0.2).get().size(), size);
@@ -124,6 +125,7 @@ fn make_clamps_rows_and_conflict_as_upstream() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn columns_keep_every_declaration_and_find_the_first() {
     let mut table = Owned::new(64, 0.2);
     let t = table.get_mut();
@@ -149,6 +151,7 @@ fn columns_keep_every_declaration_and_find_the_first() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn sizes_match_upstream_accounting() {
     for (rows, conflict, width) in [(64, 0.2, 0), (1024, 0.2, 9), (128, 1.0, 13), (65, 0.5, 31)] {
         let mut table = Owned::new(rows, conflict);
@@ -173,6 +176,7 @@ fn sizes_match_upstream_accounting() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn set_get_del_and_counters() {
     let table = three_columns(64, 0.2);
     let t = table.get();
@@ -199,6 +203,7 @@ fn set_get_del_and_counters() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn long_keys_are_cut_to_63_bytes() {
     let table = three_columns(64, 0.2);
     let t = table.get();
@@ -212,6 +217,7 @@ fn long_keys_are_cut_to_63_bytes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn collisions_chain_and_deleting_the_root_promotes_the_next() {
     let mut table = three_columns(64, 0.2);
     table.get_mut().set_hash(collide);
@@ -232,6 +238,7 @@ fn collisions_chain_and_deleting_the_root_promotes_the_next() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn exhaustion_keeps_the_root_locked_and_flags_untouched() {
     let mut table = three_columns(64, 0.2);
     table.get_mut().set_hash(collide);
@@ -253,6 +260,7 @@ fn exhaustion_keeps_the_root_locked_and_flags_untouched() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn iteration_visits_every_row_once_including_chains() {
     let mut table = three_columns(64, 0.2);
     for hash in [djb as Hash, collide] {
@@ -282,6 +290,7 @@ fn iteration_visits_every_row_once_including_chains() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn values_clear_and_cut_strings_with_a_warning() {
     let table = three_columns(64, 0.2);
     let t = table.get();
@@ -309,6 +318,7 @@ fn values_clear_and_cut_strings_with_a_warning() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn a_lock_whose_owner_died_is_taken_over() {
     let table = three_columns(64, 0.2);
     let t = table.get();
@@ -329,6 +339,7 @@ fn a_lock_whose_owner_died_is_taken_over() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn a_lock_held_too_long_is_taken_over() {
     let table = three_columns(64, 0.2);
     let t = table.get();
@@ -342,6 +353,7 @@ fn a_lock_held_too_long_is_taken_over() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn threads_update_one_row_under_its_lock() {
     let table = three_columns(64, 0.2);
     put(table.get(), b"shared", 0);
@@ -368,6 +380,7 @@ fn threads_update_one_row_under_its_lock() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn uncreated_tables_refuse_row_operations() {
     let table = Owned::new(64, 0.2);
     let t = table.get();
@@ -526,6 +539,7 @@ const TEST_JPG_MD5SUM: &str = "64a42b4c0f3c65a14c23b60d3880a917";
 
 /// `TEST(table, create)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_create() {
     let table = Upstream::new(1024);
     let ptr = table.ptr();
@@ -570,6 +584,7 @@ fn start_iterator(ptr: &Table) {
 
 /// `TEST(table, iterator)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_iterator() {
     let table = Upstream::new(1024);
     table.set("php", &row(b"php", 1, 1.245));
@@ -580,6 +595,7 @@ fn table_iterator() {
 
 /// `TEST(table, iterator_2)`: every key hashes to 1.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_iterator_2() {
     let table = Upstream::new(1024);
     unsafe { &mut *table.0 }.set_hash(one);
@@ -591,6 +607,7 @@ fn table_iterator_2() {
 
 /// `TEST(table, conflict1)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_conflict1() {
     let table = Upstream::new(TEST_TABLE_SIZE);
     assert!(!table.exists("swift"));
@@ -609,6 +626,7 @@ fn table_conflict1() {
 
 /// `TEST(table, conflict2)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_conflict2() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     assert!(table.del("java"));
@@ -622,6 +640,7 @@ fn table_conflict2() {
 
 /// `TEST(table, conflict3)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_conflict3() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     assert!(table.del("golang"));
@@ -632,6 +651,7 @@ fn table_conflict3() {
 
 /// `TEST(table, conflict4)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_conflict4() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     assert!(table.del("c++"));
@@ -645,6 +665,7 @@ fn table_conflict4() {
 /// `TEST(table, get_value)`: clearing a string column keeps its bytes, which
 /// `ASSERT_STREQ` reads up to their NUL.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_get_value() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     let ptr = table.ptr();
@@ -683,6 +704,7 @@ fn table_get_value() {
 /// `TEST(table, lock)`: four threads in turn take the row's lock and keep it; the
 /// test unlocks it once at the end.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_lock() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     let address = table.0.expose_provenance();
@@ -710,6 +732,7 @@ fn table_lock() {
 
 /// `TEST(table, size_limit)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_size_limit() {
     let t1 = make(0x9000_0000, 1.2);
     assert_eq!(unsafe { &*t1 }.size(), 0x8000_0000);
@@ -735,6 +758,7 @@ fn wait(child: libc::pid_t) -> c_int {
 /// `TEST(table, lock_crash)`: a child exits holding the row's lock; the parent
 /// still gets the row.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_lock_crash() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     let ptr = table.ptr();
@@ -753,6 +777,7 @@ fn table_lock_crash() {
 
 /// `TEST(table, lock_race)`: a child and the parent take the row's lock at once.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_lock_race() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
     let ptr = table.ptr();
