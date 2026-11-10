@@ -15,7 +15,7 @@ use swoole_rs_reactor::event_api::{
     swoole_event_is_available, swoole_event_is_running, swr_v1_event_current,
 };
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_change};
-use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push};
+use swoole_rs_reactor::{SocketRecord, UringOps, swr_v1_reactor_deferred_push};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
 const EVENT_READ: c_int = 1 << 9;
@@ -265,19 +265,22 @@ pub(crate) unsafe fn ready(object: *mut c_void) -> c_int {
     }
 }
 
-// crates/reactor sits below this crate, so its wait loop reaches the engine by
-// symbol: these three are the only ones left.
+/// The engine's operations crates/reactor calls; it sits below this crate, so
+/// `swoole_init` registers them (`stdio::swr_v1_hook_install`).
+pub(crate) static REACTOR: UringOps = UringOps {
+    interrupted,
+    interrupt,
+    waitpid,
+};
 
 /// The epoll wait was interrupted (EINTR) on a thread with an instance.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_uring_interrupted(_reactor: *mut c_void) -> c_int {
+fn interrupted() -> bool {
     let eintr = std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
-    c_int::from(eintr && !current().is_null())
+    eintr && !current().is_null()
 }
 
 /// `reactor->iouring_interrupt_handler`: harvest the completions.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_uring_interrupt(_reactor: *mut c_void) {
+fn interrupt() {
     let engine = current();
     if !engine.is_null() {
         // SAFETY: the thread's live engine, from the event loop.
@@ -289,8 +292,7 @@ pub extern "C" fn swr_v1_uring_interrupt(_reactor: *mut c_void) {
 ///
 /// # Safety
 /// `status` is valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_waitpid(
+unsafe fn waitpid(
     pid: libc::pid_t,
     status: *mut c_int,
     options: c_int,
