@@ -9,7 +9,7 @@ description = "PHP Swoole\\Process class over the Worker record, its pipe and qu
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php",
-       "dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-ossupport", "dep:swoole-rs-corebase",
+       "dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-ossupport", "swoole-rs-ossupport/upstream-symbols", "dep:swoole-rs-corebase",
        "dep:swoole-rs-phpswoole", "dep:swoole-rs-reactor", "dep:swoole-rs-tls", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php",
        "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-server",
        "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-timer", "swoole-rs-timer/upstream-symbols"]

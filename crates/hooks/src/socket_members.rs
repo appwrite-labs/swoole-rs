@@ -190,19 +190,6 @@ struct Transfer<F> {
     call: F,
 }
 
-// SAFETY: crates/clients' `Address::assign` body, linked into the hybrid with this crate.
-unsafe extern "C" {
-    fn swr_v1_clients_address_assign(
-        address: *mut c_void,
-        length: *mut libc::socklen_t,
-        kind: c_int,
-        host: *const c_char,
-        host_length: usize,
-        port: c_int,
-        resolve: Option<unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int>,
-    ) -> c_int;
-}
-
 /// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
 const BAD_HOST_ADDR: c_int = 722;
 const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
@@ -214,7 +201,7 @@ pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port
     let terminated = [host, &[0]].concat();
     // SAFETY: the address's own union and length, and the host's bytes and NUL.
     let error = unsafe {
-        swr_v1_clients_address_assign(
+        swoole_rs_clients::address::swr_v1_clients_address_assign(
             (&raw mut address.addr).cast(),
             &raw mut address.len,
             kind,

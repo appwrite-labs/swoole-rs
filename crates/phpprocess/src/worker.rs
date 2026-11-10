@@ -23,8 +23,8 @@ const CLOSE_READ: i64 = 3;
 const CLOSE_WRITE: i64 = 4;
 const TIMEOUT_ALL: c_int = 15;
 
-// SAFETY: the C++ runtime's allocator, and crates/reactor's and
-// crates/ossupport's functions, under their upstream symbols.
+// SAFETY: the C++ runtime's allocator, and crates/reactor's functions, under
+// their upstream symbols.
 unsafe extern "C" {
     #[link_name = "_Znwm"]
     fn operator_new(size: usize) -> *mut c_void;
@@ -36,8 +36,6 @@ unsafe extern "C" {
     pub(crate) fn swoole_event_free() -> c_int;
     #[link_name = "_Z18swoole_event_writePN6swoole7network6SocketEPKvm"]
     fn swoole_event_write(socket: *mut SocketRecord, data: *const c_void, length: usize) -> isize;
-    #[link_name = "_Z13swoole_daemonii"]
-    pub(crate) fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int;
 }
 
 /// What the methods read of a `Worker`.

@@ -961,9 +961,8 @@ fn daemon(call: &Call) {
         // SAFETY: the array argument, which the loop does not modify.
         unsafe { each_value(pipes, each) };
     }
-    // SAFETY: crates/ossupport's daemon().
     call.set_bool(
-        unsafe { worker::swoole_daemon(c_int::from(nochdir), c_int::from(noclose)) } == 0,
+        swoole_rs_ossupport::swoole_daemon(c_int::from(nochdir), c_int::from(noclose)) == 0,
     );
 }
 
