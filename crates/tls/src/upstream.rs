@@ -301,28 +301,14 @@ unsafe fn vector_io(socket: *mut SocketRecord, vector: *const c_void, write: boo
     unsafe { swr_v1_socket_iov_owned(fd, write, owner, io, socket.cast()) }
 }
 
-/// `ssize_t Socket::readv(IOVector *)`.
-///
-/// # Safety
-/// `socket` is a live record and `vector` a live `IOVector`.
-pub unsafe fn socket_readv(socket: *mut SocketRecord, vector: *const c_void) -> isize {
-    // SAFETY: as the caller promises.
-    unsafe { vector_io(socket, vector, false) }
-}
-
-/// `ssize_t Socket::writev(IOVector *)`.
-///
-/// # Safety
-/// `socket` is a live record and `vector` a live `IOVector`.
-pub unsafe fn socket_writev(socket: *mut SocketRecord, vector: *const c_void) -> isize {
-    // SAFETY: as the caller promises.
-    unsafe { vector_io(socket, vector, true) }
-}
+/// `ssize_t Socket::readv(IOVector *)` and `writev`: the same calls as `ssl_readv` and
+/// `ssl_writev`, since [`vector_io`] goes through OpenSSL only when the socket holds an SSL.
+pub use self::{socket_ssl_readv as socket_readv, socket_ssl_writev as socket_writev};
 
 /// `ssize_t Socket::ssl_readv(IOVector *)`.
 ///
 /// # Safety
-/// `socket` is a live record holding an SSL and `vector` a live `IOVector`.
+/// `socket` is a live record and `vector` a live `IOVector`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket9ssl_readvEPNS0_8IOVectorE")
@@ -338,7 +324,7 @@ pub unsafe extern "C" fn socket_ssl_readv(
 /// `ssize_t Socket::ssl_writev(IOVector *)`.
 ///
 /// # Safety
-/// `socket` is a live record holding an SSL and `vector` a live `IOVector`.
+/// `socket` is a live record and `vector` a live `IOVector`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket10ssl_writevEPNS0_8IOVectorE")
@@ -1290,16 +1276,12 @@ pub unsafe extern "C-unwind" fn socket_send_async(
     data: *const c_void,
     length: usize,
 ) -> isize {
-    let Some((reactor, prepared)) = swoole_rs_reactor::socket_upstream::event_reactor() else {
+    if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
         // SAFETY: as the caller promises.
         return unsafe { socket_send_sync(socket, data, length, 0) };
-    };
-    // SAFETY: `swoole_event_write`: the live reactor's `write`, set at construction.
-    let Some(write) = (unsafe { (*prepared.fields).write }) else {
-        return -1;
-    };
-    // SAFETY: as the caller promises, on the thread's reactor.
-    unsafe { write(reactor, socket, data, length) }
+    }
+    // SAFETY: as the caller promises, on the thread's available reactor.
+    unsafe { swoole_rs_reactor::event_api::swoole_event_write(socket, data, length) }
 }
 
 /// `bool Socket::ssl_shutdown()`: false without an SSL.

@@ -18,6 +18,8 @@ use core::ffi::c_long;
 #[cfg(unix)]
 mod context;
 #[cfg(unix)]
+pub mod event_socket;
+#[cfg(unix)]
 pub mod reactor_write;
 #[cfg(unix)]
 mod socket;

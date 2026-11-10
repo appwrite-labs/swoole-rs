@@ -356,6 +356,7 @@ mod tests {
                 swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"hello".as_ptr(), 5),
                 0
             );
+            // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
             let hooks = hooks(socket.cast(), &raw mut (*socket).kernel_nobufs);
             let handle = crate::Socket::from_ptr(socket).unwrap();
             reset(2, 0, false);

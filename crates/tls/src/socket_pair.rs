@@ -246,18 +246,12 @@ pub unsafe extern "C" fn write(
 }
 
 /// `void SocketPair::clean() const`: reads and drops whatever the worker end holds.
-///
-/// # Safety
-/// `this` is a live pair whose worker end is a live socket.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole10SocketPair5cleanEv")
 )]
-pub unsafe extern "C" fn clean(this: *const SocketPair) {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { (*this).worker_socket };
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+pub extern "C" fn clean(this: &SocketPair) {
+    let [_, Some(socket)] = ends(this) else {
         return;
     };
     let mut buffer = [0_u8; 1024];
@@ -348,7 +342,7 @@ mod tests {
         assert_eq!(received, sent);
         assert_eq!(unsafe { write(this, sent.as_ptr().cast(), sent.len()) }, 4);
         set_blocking(unsafe { &mut *this }, false);
-        unsafe { clean(this) };
+        clean(unsafe { &*this });
         assert!(unsafe { read(this, received.as_mut_ptr().cast(), received.len()) } < 0);
         set_timeout(unsafe { &mut *this }, 2.5);
         assert_eq!(pair.timeout, 2.5);
