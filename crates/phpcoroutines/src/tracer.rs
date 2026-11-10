@@ -716,8 +716,7 @@ unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fc
 /// profiling or blocking detection is on.
 /// # Safety
 /// At MINIT, once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(
+pub unsafe fn tracer_minit(
     blocking_threshold: zend_long,
     blocking_detection: bool,
     profile: bool,
@@ -736,16 +735,14 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(
 }
 
 /// `php_swoole_tracer_rinit`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_tracer_rinit() {
+pub extern "C" fn tracer_rinit() {
     if leak_detection() {
         hook();
     }
 }
 
 /// `php_swoole_tracer_rshutdown`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_tracer_rshutdown() {
+pub extern "C" fn tracer_rshutdown() {
     if leak_detection() {
         unhook();
     }

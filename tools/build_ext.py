@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Build swoole.so with Cargo alone (crates/ext): no phpize, configure or make.
 
-crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
-prepares in target/ext/src, then the extension is checked to load and report the pinned version.
-Prints `Built cargo: <path>` (target/ext/swoole.so) and writes target/ext/build-manifest.json,
-which tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
-and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
+crates/ext's build.rs compiles native/ and the bundled thirdparty C from the unpatched pin it
+checks out in target/ext/src (native/swoole-src owns the files it changes), then the extension
+is checked to load and report the pinned version.
+Prints `Built cargo: <path>` (target/ext/swoole.so) and writes the build's config.h beside it, which
+the ABI export gate preprocesses with, and target/ext/build-manifest.json, which
+tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
+and build_upstream.py's `--configure` switches turn on the crates/ext feature of the same build profile.
 
 `--native` also lays out target/ext/sdk for the native gates, which link fixtures outside PHP:
 lib/ holds the Zend-free libswoole_rs_ffi.a and crates/ext's compiled C and C++ archives,
@@ -23,13 +25,49 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import HOOK_SWITCHES, MODULES, headers_for
 from tools.build_upstream import COMMIT, VERSION
+from tools.check_migration import MODULES
 from tools.harness import ROOT
-from tools.patches import apply
 
 # crates/ext's features that are swoole-rs-ffi's too: the Zend-free archive's build profile.
 FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
+
+# The ffi features that replace upstream's optional hooks, by the configure switch
+# that builds each: the Rust code links what that switch makes the extension link.
+HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
+                  'firebird': '--with-swoole-firebird', 'sqlite': '--enable-swoole-sqlite',
+                  'oci': '--with-swoole-oracle', 'curl': '--enable-swoole-curl',
+                  'ssh2': '--with-swoole-ssh2', 'ftp': '--enable-swoole-ftp'}
+
+
+def headers_for(modules):
+    headers = [ROOT / 'native/include/swoole_rs.h', ROOT / 'native/include/swoole_rs_server_state.h',
+               ROOT / 'native/include/swoole_rs_server_view.h', ROOT / 'native/include/swoole_rs_server_records.h', ROOT / 'native/include/swoole_rs_port_state.h', ROOT / 'native/include/swoole_rs_server_shared.h', ROOT / 'native/include/swoole_rs_server_strings.h']
+    headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
+    for module in modules:
+        if module != 'corebase':
+            headers.extend((ROOT / 'native/include').glob(f'swoole_rs_{module}_*.h'))
+        contract = ROOT / 'native/include' / f'swoole_rs_{module}.h'
+        if contract.is_file():
+            headers.append(contract)
+        headers.extend((ROOT / 'native' / module).rglob('*.h'))
+    if len({path.name.casefold() for path in headers}) != len(headers):
+        raise ValueError('ABI header basenames overlap in the build prefix')
+    return sorted(headers)
+
+
+def native_sources():
+    """Owned C and C++ (native/<module>/*.c and *.cc: what stable Rust can't express), by the path
+    it compiles at in a pin checkout, where CMake's src/ glob finds it."""
+    paths = sorted((ROOT / 'native').glob('*/*.c')) + sorted((ROOT / 'native').glob('*/*.cc'))
+    return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in paths}
+
+
+def zend_free_native_sources():
+    """native_sources() without the extension's own glue, which includes PHP's headers: it belongs
+    in swoole.so, not in a Zend-free libswoole such as core-tests and the SDK consumers link."""
+    return {name: path for name, path in native_sources().items()
+            if not any(header in path.read_bytes() for header in (b'#include "swoole_rs_phphost.h"', b'#include "php_swoole.h"'))}
 
 
 def cargo(arguments, env):
@@ -41,11 +79,10 @@ def cargo(arguments, env):
     return messages
 
 
-def sdk(messages, features, profile, env):
+def sdk(out, features, profile, env):
     """target/ext/sdk: the Zend-free FFI archive (no Zend references, so fixtures link it into
-    executables), crates/ext's native archives, and the ABI headers with the build's config.h."""
-    out = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
-                    and m['package_id'].split('#')[0].endswith('/ext')))
+    executables), crates/ext's native archives, and the ABI headers with the build's config.h,
+    from crates/ext's build script `out` directory."""
     # `--crate-type staticlib` alone: rustc skips thin LTO whenever an rlib is among the outputs.
     built = cargo(['rustc', '--crate-type', 'staticlib', '--profile', profile, '--no-default-features', '-p', 'swoole-rs-ffi',
                    *(['--features', ','.join(features)] if features else [])], env)
@@ -60,6 +97,22 @@ def sdk(messages, features, profile, env):
     for header in headers_for(MODULES):
         shutil.copy2(header, root / 'include' / header.name)
     shutil.copy2(out / 'config.h', root / 'include/config.h')
+
+
+def checkout(tree):
+    """The pin, unpatched, in `tree`: kept when it is already there and clean. Cloned from
+    target/upstream/src when that exists, else from GitHub."""
+    def git(*args):
+        return subprocess.run(['git', '-C', str(tree), *args], check=True, capture_output=True, text=True).stdout
+    if (tree / '.git').exists() and git('status', '--porcelain', '--untracked-files=no') == '' \
+            and git('rev-parse', 'HEAD').strip() == COMMIT:
+        return
+    shutil.rmtree(tree, ignore_errors=True)
+    reference = ROOT / 'target/upstream/src'
+    source = [str(reference)] if (reference / '.git').exists() else ['--depth', '1', '--branch', VERSION,
+                                                                     'https://github.com/swoole/swoole-src.git']
+    subprocess.run(['git', '-c', 'advice.detachedHead=false', 'clone', '-q', *source, str(tree)], check=True)
+    git('checkout', '-q', COMMIT)
 
 
 def native_flags(archive):
@@ -95,12 +148,12 @@ def main():
     parser.add_argument('--stdext', action='store_true', help='Build with the experimental stdext')
     parser.add_argument('--fix-halfclose', action='store_true', help='Build the opt-in half-close repairs')
     parser.add_argument('--configure', action='append', default=[], metavar='ARG',
-                        help="A service hook's configure switch, as build_hybrid.py takes it; repeatable")
+                        help="A service hook's configure switch, as build_upstream.py takes it; repeatable")
     parser.add_argument('--native', action='store_true', help='Also lay out target/ext/sdk for the native gates')
     args = parser.parse_args()
     out = ROOT / 'target/ext'
     tree = out / 'src'
-    apply(tree)
+    checkout(tree)
     env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
@@ -117,8 +170,11 @@ def main():
         if feature in ('odbc', 'oci') and ',' in value:
             env['SWOOLE_ODBC_DIR' if feature == 'odbc' else 'SWOOLE_ORACLE_DIR'] = value.split(',')[1]
     messages = cargo(['build', '--profile', args.profile, '-p', 'swoole-rs-ext', '--features', ','.join(features)], env)
+    built_by = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
+                         and m['package_id'].split('#')[0].endswith('/ext')))
+    shutil.copy2(built_by / 'config.h', out / 'config.h')
     if args.native:
-        sdk(messages, [f for f in features if f in FFI_FEATURES], args.profile, env)
+        sdk(built_by, [f for f in features if f in FFI_FEATURES], args.profile, env)
     # CARGO_BUILD_TARGET (coverage.yml) puts the library under target/<triple>/.
     target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'), os.environ.get('CARGO_BUILD_TARGET', ''))
     built = target / ('debug' if args.profile == 'dev' else args.profile) / (

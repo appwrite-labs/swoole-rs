@@ -64,21 +64,16 @@ pub(crate) const TIMEOUT_READ: c_int = 1 << 2;
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
 
-/// `php_swoole_check_reactor()`, then a `Coroutine\Socket` of `kind`; null
-/// with `errno` in `error`.
-pub(crate) unsafe fn swoole_http_client_coro_create_socket(
-    kind: i64,
-    error: *mut c_int,
-) -> *mut zend_object {
+/// `php_swoole_check_reactor()`, then a `Coroutine\Socket` of `kind`, or
+/// `errno`.
+pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<*mut zend_object, c_int> {
     swoole_rs_phpruntime::check_reactor();
     #[expect(clippy::cast_possible_truncation, reason = "a swSocketType")]
-    // SAFETY: PHP is running.
-    let object = unsafe { crate::socket::php_swoole_create_socket(kind as i32) };
+    let object = crate::socket::create_socket(kind as i32);
     if object.is_null() {
-        // SAFETY: the caller's slot.
-        unsafe { *error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) };
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
-    object
+    Ok(object)
 }
 
 /// The close hook: hands the popped write buffer to the client's conn.

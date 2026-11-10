@@ -4,11 +4,19 @@ use crate::{
     Value,
     sys::{
         module_registry, swr_zend_hash_foreach, swr_zend_property_slot, zend_array,
-        zend_class_entry, zend_declare_property_null, zend_hash_str_find, zend_object,
-        zend_update_property, zval,
+        zend_class_entry, zend_declare_property_null, zend_fcall_info, zend_fcall_info_cache,
+        zend_hash_str_find, zend_object, zend_update_property, zval,
     },
 };
 use std::ffi::{CStr, c_int, c_void};
+
+/// An empty `zend_fcall_info` (no function, object or arguments), for a
+/// parser or the caller to fill.
+// SAFETY: pointers, integers and an undef zval, for which zero is valid.
+pub const EMPTY_FCI: zend_fcall_info = unsafe { std::mem::zeroed() };
+/// An empty `zend_fcall_info_cache`, likewise.
+// SAFETY: pointers, for which zero is valid.
+pub const EMPTY_FCC: zend_fcall_info_cache = unsafe { std::mem::zeroed() };
 
 /// Whether the extension `name` (lowercase, as `module_registry` keys it) is
 /// loaded.

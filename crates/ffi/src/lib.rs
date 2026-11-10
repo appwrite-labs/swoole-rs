@@ -118,3 +118,45 @@ pub use swoole_rs_curl as curl;
 
 #[cfg(feature = "ssh2")]
 pub use swoole_rs_ssh2 as ssh2;
+
+/// `get_module()`'s entry (crates/ext, native/phphelpers/host.c): phpswoole's,
+/// whose phases run the crates above it, which only this one links together.
+#[cfg(feature = "php")]
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phpswoole_module() -> *mut std::ffi::c_void {
+    swoole_rs_phpswoole::module_entry(&FAMILIES).cast()
+}
+
+#[cfg(feature = "php")]
+static FAMILIES: swoole_rs_phpswoole::Families = {
+    use swoole_rs_phpcoroutines as co;
+    use swoole_rs_phpthread as thread;
+    swoole_rs_phpswoole::Families {
+        coroutine_minit: [
+            co::php_swoole_coroutine_minit,
+            co::php_swoole_coroutine_system_minit,
+            co::php_swoole_coroutine_scheduler_minit,
+        ],
+        server_minit: swoole_rs_phpserver::php_swoole_server_minit,
+        tracer_minit: co::tracer_minit,
+        thread_minit: thread::thread_minit,
+        thread_classes_minit: [
+            thread::barrier_minit,
+            thread::queue_minit,
+            thread::map_minit,
+            thread::arraylist_minit,
+        ],
+        coroutine_rinit: co::php_swoole_coroutine_rinit,
+        thread_rinit: thread::thread_rinit,
+        tracer_rinit: co::tracer_rinit,
+        server_rshutdown: swoole_rs_phpserver::php_swoole_server_rshutdown,
+        coroutine_rshutdown: [
+            co::php_swoole_coroutine_rshutdown,
+            co::php_swoole_coroutine_scheduler_rshutdown,
+        ],
+        thread_rshutdown: thread::thread_rshutdown,
+        tracer_rshutdown: co::tracer_rshutdown,
+        thread_bailout: thread::thread_bailout,
+        print_backtrace: co::print_coroutine_backtrace,
+    }
+};

@@ -42,7 +42,8 @@ pub use error::{
 };
 pub use function::create_object_deny;
 pub use helpers::{
-    declare_property_null, each_value, long_zval, module_loaded, property, update_property,
+    EMPTY_FCC, EMPTY_FCI, declare_property_null, each_value, long_zval, module_loaded, property,
+    update_property,
 };
 pub use object::{Object, Props, init_object, set_object};
 pub use swoole_rs_zend_sys as sys;
@@ -51,7 +52,7 @@ pub use value::{
     add_long as add_assoc_long, get_long as to_long, obj_of as object_of, push_str as push_string,
     update_long as update_property_long,
 };
-pub use zval::{Array, Entries, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString};
+pub use zval::{Array, ArrayMut, Entries, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString};
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
 /// methods, `zif_<function>` for functions) so upstream's tables name them

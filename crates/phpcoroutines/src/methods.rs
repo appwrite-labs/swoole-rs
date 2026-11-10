@@ -24,9 +24,8 @@ use swoole_rs_zend::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
         swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
-        zend_exception_set_previous, zend_fcall_info, zend_fcall_info_cache,
-        zend_fetch_debug_backtrace, zend_object, zend_objects_new, zend_throw_exception_object,
-        zval,
+        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_object, zend_objects_new,
+        zend_throw_exception_object, zval,
     },
 };
 
@@ -60,10 +59,7 @@ swoole_rs_zend::handlers! {
 
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
-    // SAFETY: all-zero is an empty call info, filled by the parser.
-    let mut fci: zend_fcall_info = unsafe { mem::zeroed() };
-    // SAFETY: as above.
-    let mut fcc: zend_fcall_info_cache = unsafe { mem::zeroed() };
+    let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
     let parsed = call.arity(1, u32::MAX).and_then(|()| {
         // SAFETY: argument 1 is passed; the outputs are writable locals.
         unsafe { bailout::parse_func(call.zval(1), 1, &raw mut fci, &raw mut fcc) }
@@ -615,17 +611,11 @@ fn trapped(bailed: std::ffi::c_int) -> Result<(), Bailout> {
     if bailed == 0 { Ok(()) } else { Err(Bailout) }
 }
 
-/// `sw_php_print_backtrace` for C++: 1 if output bailed out.
-/// # Safety
-/// `return_value` is null or a writable zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_print_backtrace(
-    cid: c_long,
-    options: c_long,
-    limit: c_long,
-    return_value: *mut zval,
-) -> u8 {
-    u8::from(print_backtrace(cid, options, limit, return_value).is_err())
+/// `sw_php_print_backtrace(cid)`, printed (crates/phpswoole's fatal error).
+/// # Errors
+/// The output bailed out.
+pub fn print_coroutine_backtrace(cid: c_long) -> Result<(), Bailout> {
+    print_backtrace(cid, 0, 0, ptr::null_mut())
 }
 
 /// `Co::printBackTrace(int $cid = 0, int $options = 0, int $limit = 0)`.

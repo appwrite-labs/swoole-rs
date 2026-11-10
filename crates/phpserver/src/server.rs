@@ -430,7 +430,6 @@ unsafe extern "C" {
 /// `Swoole\Server\Port`.
 /// # Safety
 /// Zend's MINIT, once.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     use swoole_rs_corebase::{Switch, built_with};
     let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));
@@ -1214,11 +1213,11 @@ fn count(call: &Call) {
 /// `offsetExists`/`offsetGet`: `Swoole\Server`'s own method, called on the
 /// server object as PHP would.
 fn delegate(call: &Call, method: &[u8]) {
-    let serv = iterator(call).serv;
+    iterator(call);
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let zserv = crate::dispatch::server_zval(serv);
+    let zserv = crate::dispatch::zserv();
     let mut retval = crate::dispatch::undef();
     // SAFETY: the server's object zval.
     let object = unsafe { swoole_rs_zend::object_of(&raw const zserv) };

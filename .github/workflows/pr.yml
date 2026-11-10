@@ -4,9 +4,6 @@ on:
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -42,8 +39,6 @@ jobs:
         with:
           fetch-depth: 2
       - run: python3 tools/check_migration.py
-      # The all-modules patch set applies to the pin (seconds), so a conflict fails a required check.
-      - run: python3 tools/patches.py check
       # No crate's unsafe or slow-layout count may rise above main's.
       - run: python3 tools/budget.py --base HEAD^1
       - run: tests/dev/run.sh
@@ -93,22 +88,22 @@ jobs:
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           echo "$changed"
-          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream|ext)|arginfo)\.py$|crates/(phpstubs|ext)/|\.github/|\.devcontainer/)'; then
+          if echo "$changed" | grep -qE '^(native/|tools/(build_(upstream|ext)|arginfo)\.py$|crates/(phpstubs|ext)/|\.github/|\.devcontainer/)'; then
             echo ext=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/hooks/|native/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
+          if echo "$changed" | grep -qE '^(native/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
             echo iouring=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/(clients|corebase)/|crates/(clients|corebase|cares-sys)/|\.github/workflows/cares\.yml$)'; then
+          if echo "$changed" | grep -qE '^(crates/(clients|corebase|cares-sys)/|\.github/workflows/cares\.yml$)'; then
             echo cares=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
+          if echo "$changed" | grep -qE '^(crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
+          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/http2/|crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then
+          if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then
             echo h2spec=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(tools/asan\.py|tools/lsan\.supp|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
@@ -128,7 +123,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Restores main's release build; the patched and upstream trees must start clean.
+      # Restores main's release build; the upstream tree must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
@@ -144,11 +139,6 @@ jobs:
         run: python3 tools/build_upstream.py
       # crates/phpstubs is current, and says what the pin's gen_stub.php headers say.
       - run: python3 tools/arginfo.py --check
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
       - run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
@@ -156,7 +146,6 @@ jobs:
       - run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
           python3 tests/modules/hooks/ssh2_aliases.py --source target/upstream/src --archive target/release/libswoole_rs_ffi.a --output target/reports/ssh2-aliases.json
-      - run: ccache --show-stats
       # Exercise SNI's deferred port resolution on the production extension before merging.
       - run: >
           python3 corpus/upstream/run.py
@@ -180,12 +169,6 @@ jobs:
           python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine cargo=target/ext/swoole.so
           --output target/reports/corpus-halfclose.json
-      # This run built main as of its push. Auto-merge follows `required` within seconds,
-      # so re-apply the patch set (still the thirdparty source until #2200) over main as it is now.
-      - run: |
-          git fetch -q origin main
-          git -c user.name=ci -c user.email=ci@localhost merge -q --no-edit FETCH_HEAD
-          python3 tools/patches.py check
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -197,24 +180,40 @@ jobs:
     needs: changes
     if: needs.changes.outputs.iouring == 'true'
     uses: ./.github/workflows/iouring.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The c-ares build variant (merge tier), when a PR touches resolver code. Informative.
   cares:
     needs: changes
     if: needs.changes.outputs.cares == 'true'
     uses: ./.github/workflows/cares.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The ZTS build variant (merge tier), when a PR touches thread or ZTS code. Informative.
   zts:
     needs: changes
     if: needs.changes.outputs.zts == 'true'
     uses: ./.github/workflows/zts.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The thread-context build variant (merge tier), when a PR touches the coroutine context. Informative.
   threadcontext:
     needs: changes
     if: needs.changes.outputs.threadcontext == 'true'
     uses: ./.github/workflows/threadcontext.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # HTTP/2 conformance (merge tier), when a PR touches HTTP/2 code. Informative.
   h2spec:

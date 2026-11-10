@@ -159,8 +159,12 @@ touches (each module in `migration/modules.json` lists its `phpt_families`; ever
 for a change to shared build inputs) through the same `phpt.yml`, on the Cargo build alone,
 6 shards with the services. Upstream doesn't change between PRs, so the gate takes upstream's
 reports and `upstream.so` from main's latest merge-tier run whose upstream shards passed
-(`tools/ci.py phpt-baseline`), cut to those families. A PR that changes
-`tools/build_upstream.py` or `corpus/upstream/` runs upstream too.
+(`tools/ci.py phpt-baseline`), cut to those families. That baseline holds only while
+what upstream's results depend on is unchanged since its commit: the pin and its build,
+the runner, the services and packages (`UPSTREAM_KEY` and `BASELINES` in `tools/ci.py`).
+A PR that changes one of those, or anything under `corpus/upstream/` (pr.yml's own
+check), runs upstream too. `--variant` finds the c-ares, io_uring and thread-context
+workflows' upstream reports the same way, and `--php` also requires the PHP release.
 
 `services.yml` holds those services, and `services.py` prints the ones some families reach
 (every one for a family it doesn't list); `.github/actions/phpt-env` starts what its

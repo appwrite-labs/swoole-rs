@@ -76,11 +76,6 @@ pub(crate) unsafe extern "C" fn swoole_rs_php_error(
     bailout::raise(report(kind, level, unsafe { CStr::from_ptr(message) }));
 }
 
-/// `swoole_strerror(code)`.
-pub(crate) fn swoole_strerror(code: c_int) -> *const c_char {
-    swoole_rs_error::swoole_strerror(code)
-}
-
 /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
 /// # Safety
 /// It may longjmp: the frames it skips own nothing.

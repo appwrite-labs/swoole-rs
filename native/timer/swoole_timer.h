@@ -8,7 +8,6 @@
 #include "swoole.h"
 
 #include "swoole_rs_timer.h"
-#include "swoole_rs_timer_runtime.h"
 #include "swoole_reactor.h"
 #include "swoole_util.h"
 

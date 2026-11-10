@@ -11,10 +11,6 @@
 #ifdef SW_HAVE_ZLIB
 #include <zlib.h>
 #endif
-#ifdef SW_HAVE_BROTLI
-#include <brotli/encode.h>
-#include <brotli/decode.h>
-#endif
 #ifdef SW_HAVE_ZSTD
 #include <zstd.h>
 #endif
@@ -35,7 +31,6 @@ ZEND_DLEXPORT zend_module_entry *get_module(void) {
 // MINFO's version rows: the headers' macros, or the linked library's answer.
 struct swr_phpswoole_versions {
     const char *built, *openssl, *curl, *cares, *zlib, *zstd;
-    uint32_t brotli_encoder, brotli_decoder;
 };
 
 void swr_phpswoole_versions(struct swr_phpswoole_versions *info) {
@@ -51,10 +46,6 @@ void swr_phpswoole_versions(struct swr_phpswoole_versions *info) {
     info->zlib = ZLIB_VERSION;
 #else
     info->zlib = "enabled";
-#endif
-#ifdef SW_HAVE_BROTLI
-    info->brotli_encoder = BrotliEncoderVersion();
-    info->brotli_decoder = BrotliDecoderVersion();
 #endif
 #ifdef ZSTD_VERSION_NUMBER
     info->zstd = ZSTD_VERSION_STRING;

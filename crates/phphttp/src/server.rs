@@ -14,19 +14,23 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     ffi::{CStr, c_char, c_int, c_void},
+    mem::ManuallyDrop,
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_memory::flat::Table;
+use swoole_rs_phpserver::{
+    php_swoole_get_recv_data, php_swoole_server_get_callback, php_swoole_server_isset_callback,
+    php_swoole_server_on_close, php_swoole_server_on_receive,
+};
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
     HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
-    swr_zend_http_uploads_rshutdown, swr_zend_string_copy, swr_zend_string_init,
-    swr_zend_string_release, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
+    swr_zend_http_uploads_rshutdown, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
     zend_string, zval, zval_ptr_dtor,
 };
-use swoole_rs_zend::{Class, bailout, string, value};
+use swoole_rs_zend::{Class, ZStr, ZString, bailout, string, value};
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 static SERVER: Class = Class::new();
@@ -113,33 +117,15 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// Elsewhere: the TCP `onReceive` and `onClose` (crates/phpserver), the
-// WebSocket and HTTP/2 `onReceive`s (ext-src), the port callbacks and the
-// received data (swoole_server.cc), the connection's addresses (master.cc) and
-// its peer's port and loopback check (crates/clients).
+// Elsewhere: the HTTP/2 `onReceive` (crates/phphttp2), the connection's
+// addresses and its peer's port and loopback check (crates/clients).
 unsafe extern "C" {
-    fn swr_v1_phpserver_on_receive(server: *mut c_void, request: *mut c_void) -> c_int;
     #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
     fn swoole_http2_server_onReceive(
         server: *mut c_void,
         conn: *mut ConnectionRecord,
         request: *mut c_void,
     ) -> c_int;
-    fn swr_v1_phpserver_on_close(server: *mut c_void, info: *mut DataHead);
-    #[link_name = "_Z32php_swoole_server_isset_callbackPN6swoole6ServerEPNS_10ListenPortEi"]
-    fn php_swoole_server_isset_callback(
-        server: *mut c_void,
-        port: *mut c_void,
-        kind: c_int,
-    ) -> bool;
-    #[link_name = "_Z30php_swoole_server_get_callbackPN6swoole6ServerEii"]
-    fn php_swoole_server_get_callback(
-        server: *mut c_void,
-        server_fd: c_int,
-        kind: c_int,
-    ) -> *mut c_void;
-    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
-    fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
     fn swr_v1_clients_address_host(
         address: *const swoole_rs_corebase::net_types::SocketAddress,
     ) -> *const c_char;
@@ -152,10 +138,13 @@ unsafe extern "C" {
     fn swr_v1_event_reactor() -> *mut c_void;
 }
 
+/// A keep-alive session's server and remote address, until it closes, by its
+/// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
+/// releases them; a thread's exit, after the request heap is gone, must not.
+type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
+
 php_local! {
-    /// A keep-alive session's server and remote address, until it closes,
-    /// by its connection's fd. The session check drops a reused fd's entry.
-    static ADDRESSES: RefCell<Table<(i64, [*mut zend_string; 2])>> = RefCell::new(Table::new());
+    static ADDRESSES: RefCell<Addresses> = RefCell::new(ManuallyDrop::new(Table::new()));
     /// Requests waiting for the worker's concurrency to drop.
     static QUEUED: RefCell<VecDeque<*mut Context>> = RefCell::new(VecDeque::new());
 }
@@ -182,7 +171,7 @@ pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
     unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
 }
 
-fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mut zend_string {
+fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> ZString {
     let text = if local {
         // SAFETY: the live server and connection the caller passed.
         unsafe { swoole_rs_server::local_addr::get_local_addr(server, conn) }
@@ -193,9 +182,7 @@ fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mu
         unsafe { swr_v1_clients_address_host(info) }
     };
     // SAFETY: the server's NUL-terminated address text.
-    let text = unsafe { CStr::from_ptr(text) };
-    // SAFETY: a byte span of the address text.
-    unsafe { swr_zend_string_init(text.as_ptr(), text.to_bytes().len()) }
+    ZString::new(unsafe { CStr::from_ptr(text) }.to_bytes())
 }
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
@@ -229,8 +216,8 @@ fn addresses(
     let cached = cache.and_then(|fd| cached(server, conn, fd, session));
     let [local, remote] =
         cached.unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]);
-    add(table, Key::ServerAddr, local);
-    add(table, Key::RemoteAddr, remote);
+    add(table, Key::ServerAddr, local.into_raw());
+    add(table, Key::RemoteAddr, remote.into_raw());
 }
 
 /// The session's cached addresses, each referenced once more for the caller;
@@ -240,31 +227,17 @@ fn cached(
     conn: *mut ConnectionRecord,
     fd: usize,
     session: i64,
-) -> Option<[*mut zend_string; 2]> {
-    let [local, remote] = ADDRESSES.with_borrow_mut(|cached| {
-        if let Some(&(owner, addresses)) = cached.get(fd)
-            && owner == session
+) -> Option<[ZString; 2]> {
+    ADDRESSES.with_borrow_mut(|cached| {
+        if let Some((owner, addresses)) = cached.get(fd)
+            && *owner == session
         {
-            return Some(addresses);
+            return Some(addresses.each_ref().map(|address| ZStr::to_owned(address)));
         }
         let addresses = [address(server, conn, true), address(server, conn, false)];
-        match cached.insert(fd, (session, addresses)) {
-            Ok(old) => {
-                if let Some((_, old)) = old {
-                    release(old);
-                }
-                Some(addresses)
-            }
-            Err((_, made)) => {
-                release(made);
-                None
-            }
-        }
-    })?;
-    // SAFETY: cached strings, each referenced once more by the array.
-    let local = unsafe { swr_zend_string_copy(local) };
-    // SAFETY: as above.
-    Some([local, unsafe { swr_zend_string_copy(remote) }])
+        let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
+        cached.insert(fd, (session, addresses)).ok().map(|_| copies)
+    })
 }
 
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
@@ -281,7 +254,7 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
     match receive(server, request, &info) {
         CLOSED => -1,
         // SAFETY: the live server and its request.
-        TCP => unsafe { swr_v1_phpserver_on_receive(server.raw(), request) },
+        TCP => unsafe { php_swoole_server_on_receive(server, request) },
         WEBSOCKET => websocket::on_message(server.raw(), request, &info),
         HTTP2 => {
             let conn = server
@@ -309,7 +282,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     // SAFETY: the connection's live port.
     let config = unsafe { view::port(port) };
     // SAFETY: the live server and port.
-    let isset = |kind| unsafe { php_swoole_server_isset_callback(server.raw(), port, kind) };
+    let isset = |kind| unsafe { php_swoole_server_isset_callback(server, port, kind) };
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol && isset(ON_REQUEST);
     let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
@@ -345,23 +318,22 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     let state = state(ctx);
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
-    let zdata = &raw mut state.request.zdata;
+    let zdata = state.request.zdata.as_ptr();
     // SAFETY: the live server and its request; the data moves into the context.
     unsafe { php_swoole_get_recv_data(server.raw(), zdata, request) };
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
-    let result =
-        handle(server.raw(), conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
-            if route == REQUEST {
-                // SAFETY: a live context; false leaves it queued.
-                if !unsafe { context::before_request(ctx) } {
-                    return Ok(());
-                }
-                call(ctx, facts.coroutine)?;
+    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
+        if route == REQUEST {
+            // SAFETY: a live context; false leaves it queued.
+            if !unsafe { context::before_request(ctx) } {
+                return Ok(());
             }
-            release_objects(ctx);
-            Ok(())
-        });
+            call(ctx, facts.coroutine)?;
+        }
+        release_objects(ctx);
+        Ok(())
+    });
     bailout::raise(result);
     DONE
 }
@@ -412,7 +384,7 @@ pub(crate) fn call_handler(
             args.as_mut_ptr(),
             std::ptr::null_mut(),
             coroutine,
-            swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create,
+            swoole_rs_phpcoroutines::create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
         )
     };
@@ -433,11 +405,12 @@ pub(crate) fn call_port(
     args: &mut [zval],
 ) -> Result<Option<bool>, bailout::Bailout> {
     // SAFETY: the live server.
-    let callback = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
+    let server = unsafe { view::Server::from_raw(server) };
+    let callback = php_swoole_server_get_callback(server, server_fd, kind);
     if callback.is_null() {
         return Ok(None);
     }
-    call_handler(callback.cast(), args, enable_coroutine(server)).map(Some)
+    call_handler(callback.cast(), args, enable_coroutine(server.raw())).map(Some)
 }
 
 /// `php_swoole_get_recv_data`: the request's payload into `zdata`.
@@ -494,7 +467,7 @@ fn notice(message: &str) {
 
 /// Parse the request, fill `$request->server` and pick the handler.
 fn handle(
-    server: *mut c_void,
+    server: view::Server<'_>,
     conn: *mut ConnectionRecord,
     ctx: *mut Context,
     zdata: *mut zval,
@@ -529,7 +502,7 @@ fn handle(
     // SAFETY: the request's `server` array.
     let table = unsafe { value::table(state.request.zserver.ptr) };
     addresses(
-        server,
+        server.raw(),
         conn,
         table,
         session,
@@ -551,8 +524,7 @@ fn handle(
     // SAFETY: the request's live connection.
     let handshake = unsafe { (*conn).websocket_status } == STATUS_CONNECTION;
     let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
-    // SAFETY: the live server.
-    let callback = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
+    let callback = php_swoole_server_get_callback(server, server_fd, kind);
     if callback.is_null() {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -563,17 +535,10 @@ fn handle(
     }
     state.callback = callback;
     if handshake {
-        websocket::upgrading(server, session);
+        websocket::upgrading(server.raw(), session);
         state.upgrade = 1;
     }
     Ok(REQUEST)
-}
-
-fn release([local, remote]: [*mut zend_string; 2]) {
-    // SAFETY: the cache's references.
-    unsafe { swr_zend_string_release(local) };
-    // SAFETY: as above.
-    unsafe { swr_zend_string_release(remote) };
 }
 
 /// An HTTP/2 request's connection and server state.
@@ -694,7 +659,8 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
     add_protocol(state, Key::Http2);
     // SAFETY: the live server.
-    state.callback = unsafe { php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST) };
+    let server = unsafe { view::Server::from_raw(server) };
+    state.callback = php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST);
     if state.before_request != 0 {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
@@ -744,18 +710,15 @@ pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHea
     let session = unsafe { (*info).fd };
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd)
-        && let Some((_, addresses)) = ADDRESSES.with_borrow_mut(|cached| {
-            cached
-                .get(fd)
-                .is_some_and(|&(owner, _)| owner == session)
-                .then(|| cached.remove(fd))
-                .flatten()
-        })
     {
-        release(addresses);
+        ADDRESSES.with_borrow_mut(|cached| {
+            if cached.get(fd).is_some_and(|(owner, _)| *owner == session) {
+                cached.remove(fd);
+            }
+        });
     }
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpserver_on_close(server.raw(), info) };
+    unsafe { php_swoole_server_on_close(server, info) };
 }
 
 /// The counters of the worker serving requests.
@@ -864,9 +827,9 @@ pub extern "C" fn swr_v1_phphttp_server_rinit() {
 pub extern "C" fn swr_v1_phphttp_server_rshutdown() {
     // SAFETY: RSHUTDOWN, on the request's thread.
     unsafe { swr_zend_http_uploads_rshutdown() };
-    for (_, (_, addresses)) in ADDRESSES.with_borrow_mut(std::mem::take).iter() {
-        release(*addresses);
-    }
+    let addresses = ADDRESSES
+        .with_borrow_mut(|cached| std::mem::replace(cached, ManuallyDrop::new(Table::new())));
+    drop(ManuallyDrop::into_inner(addresses));
     while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         abandon(ctx);
     }
