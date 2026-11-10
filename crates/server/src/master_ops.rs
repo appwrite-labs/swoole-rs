@@ -1873,13 +1873,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
     const ACCEPT_RETRY_MSEC: libc::c_long =
         (swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME * 1000.0) as libc::c_long;
-    // SAFETY: native/reactor's.
-    unsafe extern "C" {
-        fn swr_v1_event_set_exit_condition(
-            id: c_int,
-            condition: unsafe extern "C" fn(*mut usize) -> bool,
-        );
-    }
     let serv = o.ctx.serv;
     let slot = |index| o.state.callbacks.slot(index);
     let reopen_logger = || {
@@ -1969,10 +1962,10 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FORCED_EXIT => {
             FORCED_EXIT_SERVER.store(serv, Relaxed);
             FORCED_EXIT_TIME.store(crate::shared::unix_now(), Relaxed);
-            // SAFETY: this thread's live reactor.
-            unsafe {
-                swr_v1_event_set_exit_condition(EXIT_CONDITION_FORCED_TERMINATION, forced_exit);
-            };
+            swoole_rs_reactor::swr_v1_event_set_exit_condition(
+                EXIT_CONDITION_FORCED_TERMINATION,
+                forced_exit,
+            );
             0
         }
         OP_THREAD0_SHUTDOWN => {
@@ -2069,7 +2062,7 @@ static FORCED_EXIT_TIME: core::sync::atomic::AtomicI64 = core::sync::atomic::Ato
 
 /// The forced-termination exit condition: past `max_wait_time`, stop the loop.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
+extern "C-unwind" fn forced_exit(_: *mut usize) -> bool {
     let serv = FORCED_EXIT_SERVER.load(Relaxed);
     // SAFETY: the server that is shutting down, live until its loop exits.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();

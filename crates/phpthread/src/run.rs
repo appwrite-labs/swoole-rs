@@ -26,7 +26,6 @@ use swoole_rs_zend::{
 
 unsafe extern "C" {
     // crates/reactor: `SwooleTG.reactor`.
-    fn swr_v1_event_current() -> *mut c_void;
 }
 
 /// PHP threads running, the main thread included.
@@ -134,8 +133,8 @@ unsafe extern "C" fn epilogue(_start: *mut c_void) {
     // SAFETY: pure reads of this thread's state.
     if unsafe { swr_zend_guard_pending() } != 0 {
         // SAFETY: no preconditions.
-        let reactor =
-            unsafe { swr_v1_event_current() }.cast::<swoole_rs_reactor::ReactorPrepared>();
+        let reactor = swoole_rs_reactor::event_api::swr_v1_event_current()
+            .cast::<swoole_rs_reactor::ReactorPrepared>();
         // SAFETY: null or this thread's live reactor, which begins with its
         // prepared state.
         if let Some(prepared) = unsafe { reactor.as_ref() } {

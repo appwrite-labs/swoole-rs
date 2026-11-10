@@ -9,7 +9,7 @@ use crate::ReactorPrepared;
 #[cfg(target_os = "linux")]
 use crate::SocketRecord;
 use crate::socket_sync::set_errno;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 #[cfg(target_os = "linux")]
 use std::ptr;
 use swoole_rs_corebase::log;
@@ -33,13 +33,7 @@ type SignalHandler = unsafe extern "C" fn(c_int);
 
 // SAFETY: crates/reactor's.
 unsafe extern "C" {
-    fn swr_v1_event_reactor() -> *mut c_void;
-    fn swr_v1_event_current() -> *mut c_void;
     #[cfg(target_os = "linux")]
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C" fn(*mut usize) -> bool,
-    );
     #[cfg(target_os = "linux")]
     #[link_name = "_Z16swoole_event_addPN6swoole7network6SocketEi"]
     fn swoole_event_add(socket: *mut SocketRecord, events: c_int) -> c_int;
@@ -74,8 +68,7 @@ struct Event {
 
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
 fn current() -> Option<ReactorPrepared> {
-    // SAFETY: no preconditions.
-    let reactor = unsafe { swr_v1_event_current() };
+    let reactor = crate::event_api::swr_v1_event_current();
     // SAFETY: null or a live `Reactor`, which begins with its prepared state.
     unsafe { reactor.cast::<ReactorPrepared>().as_ref() }.copied()
 }
@@ -92,8 +85,7 @@ fn capabilities() -> u8 {
 }
 
 fn available() -> bool {
-    // SAFETY: no preconditions.
-    !unsafe { swr_v1_event_reactor() }.is_null()
+    !crate::event_api::swr_v1_event_reactor().is_null()
 }
 
 fn has_reactor() -> bool {
@@ -179,7 +171,7 @@ mod descriptor {
     use super::{
         EVENT_READ, EXIT_CONDITION_SIGNALFD, Event, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK,
         SocketRecord, c_int, c_void, current, ptr, socket_free, swoole_event_add, swoole_event_del,
-        swoole_event_isset_handler, swoole_event_set_handler, swr_v1_event_set_exit_condition,
+        swoole_event_isset_handler, swoole_event_set_handler,
     };
     use crate::socket_upstream::make_socket_fd;
     use crate::swr_v1_reactor_deferred_push;
@@ -236,17 +228,17 @@ mod descriptor {
         swoole_rs_process::signal_loop::destroyed(&OPS);
     }
 
+    /// The signalfd's exit condition, which the reactor calls with its event count.
+    extern "C-unwind" fn exit_condition(event_num: *mut usize) -> bool {
+        // SAFETY: the reactor lends its live, writable event count for the call.
+        unsafe { swoole_rs_process::signal_loop::exit_condition(event_num) }
+    }
+
     /// The read handler, the exit condition and the destroy callback.
     pub(super) fn install() {
         // SAFETY: the thread's available loop.
         unsafe { swoole_event_set_handler(FD_SIGNAL, EVENT_READ, read) };
-        // SAFETY: as above.
-        unsafe {
-            swr_v1_event_set_exit_condition(
-                EXIT_CONDITION_SIGNALFD,
-                swoole_rs_process::signal_loop::exit_condition,
-            );
-        };
+        crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNALFD, exit_condition);
         let Some(reactor) = current() else { return };
         // SAFETY: the loop's live fields.
         let queue = unsafe { &raw mut (*reactor.fields).destroy_callbacks };

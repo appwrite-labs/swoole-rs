@@ -54,11 +54,6 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     host::raise(bailed);
 }
 
-unsafe extern "C" {
-    /// `sw_reactor()`.
-    fn swr_v1_event_reactor() -> *mut c_void;
-}
-
 /// The response object is going: finish what the handler left unanswered
 /// (500 when no status was set) and release the context. True if user code
 /// bailed out on the way.
@@ -70,7 +65,7 @@ fn release(ctx: *mut Context) -> bool {
         && (state.send_chunked != 0 || state.send_header == 0)
         && state.detached == 0
         // SAFETY: reads a thread global.
-        && !unsafe { swr_v1_event_reactor() }.is_null()
+        && !swoole_rs_reactor::event_api::swr_v1_event_reactor().is_null()
     {
         if state.response.status == 0 {
             state.response.status = INTERNAL_SERVER_ERROR;

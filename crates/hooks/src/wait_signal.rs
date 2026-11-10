@@ -185,10 +185,6 @@ mod native {
 
     // SAFETY: native/reactor/reactor.cc's and crates/reactor's.
     unsafe extern "C" {
-        fn swr_v1_event_set_exit_condition(
-            id: c_int,
-            condition: unsafe extern "C" fn(*mut usize) -> bool,
-        );
         #[link_name = "_Z17swoole_signal_setiPFviEb"]
         fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
         #[link_name = "_Z25swoole_signal_get_handleri"]
@@ -258,7 +254,7 @@ mod native {
         unsafe { crate::reactor_handlers::defer(run, change, Some(dispose)) };
     }
 
-    extern "C" fn listeners_done(_: *mut usize) -> bool {
+    extern "C-unwind" fn listeners_done(_: *mut usize) -> bool {
         swr_v1_core_signal_async_listener_num() == 0
     }
 
@@ -268,10 +264,10 @@ mod native {
             swr_v1_core_set_signal_async_listener_num(count.wrapping_sub(1));
             return;
         }
-        // SAFETY: a waiter runs on the thread's loop; setting it again keeps it.
-        unsafe {
-            swr_v1_event_set_exit_condition(EXIT_CONDITION_CO_SIGNAL_LISTENER, listeners_done);
-        }
+        swoole_rs_reactor::swr_v1_event_set_exit_condition(
+            EXIT_CONDITION_CO_SIGNAL_LISTENER,
+            listeners_done,
+        );
         swr_v1_core_set_signal_async_listener_num(count + 1);
     }
 }

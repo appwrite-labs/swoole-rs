@@ -29,11 +29,6 @@ unsafe extern "C" {
     fn php_swoole_reactor_init() -> c_int;
     fn swr_v1_phpevents_wait();
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
-    fn swr_v1_event_current() -> *mut c_void;
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C" fn(*mut usize) -> bool,
-    );
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
 }
@@ -226,8 +221,8 @@ pub(crate) unsafe fn callable_defer_free(callable: *mut c_void) {
 
 /// `Reactor::defer(call, data)` on this thread's loop.
 fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    // SAFETY: no preconditions.
-    let reactor = unsafe { swr_v1_event_current() }.cast::<swoole_rs_reactor::ReactorPrepared>();
+    let reactor = swoole_rs_reactor::event_api::swr_v1_event_current()
+        .cast::<swoole_rs_reactor::ReactorPrepared>();
     // SAFETY: the live loop, which begins with its prepared state.
     let fields = unsafe { (*reactor).fields };
     // SAFETY: the loop's live fields.
@@ -336,7 +331,7 @@ pub fn timer_uses_reactor() -> bool {
     }
 }
 
-unsafe extern "C" fn listening(_event_num: *mut usize) -> bool {
+extern "C-unwind" fn listening(_event_num: *mut usize) -> bool {
     swr_v1_core_signal_listener_num() == 0 || !swoole_rs_corebase::swr_v1_core_wait_signal()
 }
 
@@ -344,8 +339,7 @@ unsafe extern "C" fn listening(_event_num: *mut usize) -> bool {
 /// waits (setting it again replaces it with the same condition).
 pub(crate) fn signal_listen() {
     swoole_rs_phpswoole::check_reactor();
-    // SAFETY: the loop just checked; a static condition.
-    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNAL_LISTENER, listening) };
+    swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNAL_LISTENER, listening);
 }
 
 /// Outside thread builds, a process that is not a user worker forgets its
