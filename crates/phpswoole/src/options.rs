@@ -38,7 +38,12 @@ unsafe extern "C" {
 }
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
+/// Nothing is found once a bailout is pending: upstream's setters stopped at
+/// the conversion that bailed out, so no later option is read or applied.
 pub(crate) fn get<'a>(options: &'a Array, key: &CStr) -> Option<&'a Value> {
+    if bailout::pending() {
+        return None;
+    }
     options.get(key.to_bytes())
 }
 
@@ -50,9 +55,10 @@ fn long(value: &Value) -> i64 {
     value.long()
 }
 
-/// `timeout_format`: non-positive or oversized timeouts mean `INT_MAX` seconds.
-fn timeout(value: &Value) -> f64 {
-    clamp(value.double())
+/// `timeout_format`: non-positive or oversized timeouts mean `INT_MAX` seconds;
+/// `None` after a bailout, as [`Value::applied_double`].
+fn timeout(value: &Value) -> Option<f64> {
+    value.applied_double().map(clamp)
 }
 
 fn clamp(timeout: f64) -> f64 {
@@ -103,7 +109,10 @@ pub fn php_swoole_parse_to_size(value: &Value) -> i64 {
 /// The option under `key`, if set, as `convert` reads it, passed to `set`.
 fn option<T>(options: &Array, key: &CStr, convert: impl FnOnce(&Value) -> T, set: impl FnOnce(T)) {
     if let Some(value) = get(options, key) {
-        set(convert(value));
+        let converted = convert(value);
+        if !bailout::pending() {
+            set(converted);
+        }
     }
 }
 
@@ -141,10 +150,10 @@ pub fn php_swoole_set_global_option(options: &Array) {
 const OPERATION_NOT_SUPPORT: i64 = 507;
 
 /// `php_swoole_set_global_option`'s body: false after a size that does not
-/// parse, whose fatal error is deferred.
+/// parse, whose fatal error is deferred, or a conversion's deferred bailout.
 pub fn set_global(options: &Array) -> bool {
     let Err((failed, error)) = apply(options) else {
-        return true;
+        return !bailout::pending();
     };
     size_error(failed, &error);
     false
@@ -211,21 +220,23 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         unsafe { swr_v1_clients_set_dns_server(server.cast(), length) };
     });
     // [Socket]
-    if let Some(value) = get(options, c"socket_dns_timeout") {
-        timeouts.dns = timeout(value);
+    if let Some(dns) = get(options, c"socket_dns_timeout").and_then(timeout) {
+        timeouts.dns = dns;
     }
-    if let Some(value) = get(options, c"socket_connect_timeout") {
-        timeouts.connect = timeout(value);
+    if let Some(connect) = get(options, c"socket_connect_timeout").and_then(timeout) {
+        timeouts.connect = connect;
     }
-    if let Some(value) =
-        get(options, c"socket_write_timeout").or_else(|| get(options, c"socket_send_timeout"))
+    if let Some(write) = get(options, c"socket_write_timeout")
+        .or_else(|| get(options, c"socket_send_timeout"))
+        .and_then(timeout)
     {
-        timeouts.write = timeout(value);
+        timeouts.write = write;
     }
-    if let Some(value) =
-        get(options, c"socket_read_timeout").or_else(|| get(options, c"socket_recv_timeout"))
+    if let Some(read) = get(options, c"socket_read_timeout")
+        .or_else(|| get(options, c"socket_recv_timeout"))
+        .and_then(timeout)
     {
-        timeouts.read = timeout(value);
+        timeouts.read = read;
     }
     if let Some(value) = get(options, c"socket_buffer_size") {
         #[expect(
@@ -234,12 +245,15 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
             reason = "upstream assigns the size to a uint32_t"
         )]
         let size = size_of(value)? as u32;
+        if bailout::pending() {
+            return Ok(());
+        }
         // SAFETY: as for the timeouts.
         unsafe { (*defaults).buffer_size = size };
     }
-    if let Some(value) = get(options, c"socket_timeout") {
-        timeouts.read = timeout(value);
-        timeouts.write = timeouts.read;
+    if let Some(both) = get(options, c"socket_timeout").and_then(timeout) {
+        timeouts.read = both;
+        timeouts.write = both;
     }
     // [HTTP2]: (key, setting, parsed as a size).
     let http2: [(&CStr, u32, bool); 6] = [
@@ -261,6 +275,9 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     for (key, id, sized) in http2 {
         if let Some(value) = get(options, key) {
             let setting = if sized { size_of(value)? } else { long(value) };
+            if bailout::pending() {
+                return Ok(());
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
