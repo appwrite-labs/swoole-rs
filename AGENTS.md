@@ -3,7 +3,8 @@
 Complexity is the devil, and simplicity is human. Before starting, consider what
 can be deleted. Aim for a net negative LoC delta where the task permits it.
 
-Never edit target/upstream/src. It is the pinned reference.
+Never edit target/upstream/src. It is the pinned reference, built only as the
+oracle; swoole.so builds without it.
 
 Preserve upstream test assertions and expected outputs. Never mark unsupported,
 SKIP or XFAIL as passed, or weaken capability probes to hide behavior failures.

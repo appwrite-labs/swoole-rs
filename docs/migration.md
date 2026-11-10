@@ -95,8 +95,8 @@ A use that must stay (output order PHP can see, a cold path) keeps the `expect`.
 ## Roadmap
 
 `swoole.so` compiles no upstream first-party code (`src/`, `ext-src/`, `include/`):
-`crates/ext` builds Rust, `native/` and the pin's bundled `thirdparty/` C, with the
-thirdparty files the hybrid changed owned under `native/swoole-src/`.
+`crates/ext` builds Rust and `native/`, whose `swoole-src/` owns the bundled
+`thirdparty/` C that has no Rust replacement; the build reads nothing from the pin.
 
 Phases 1 to 3 and 5 are done: green baseline ([#20](https://github.com/appwrite-labs/swoole-rs/issues/20)),
 wider oracle ([#58](https://github.com/appwrite-labs/swoole-rs/issues/58)), graduate and

@@ -13,8 +13,8 @@ test = false
 doctest = false
 
 [features]
-# Build the extension for the PHP that `$PHP_CONFIG` names, from the unpatched
-# pin `$SWOOLE_SRC` (tools/build_ext.py prepares both). Without it the crate is empty.
+# Build the extension for the PHP that `$PHP_CONFIG` names (tools/build_ext.py sets it).
+# Without both, the crate links no native code.
 php = ["swoole-rs-ffi/php", "dep:cc", "dep:openssl-sys"]
 # The merge tier's PHPT profile, one feature per configure switch (`--enable-sockets`,
 # `--enable-mysqlnd`, `--enable-swoole-pgsql`, ...): build.rs adds what config.m4 does.

@@ -4,7 +4,6 @@
 
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
-    println!("cargo::rerun-if-env-changed=SWOOLE_SRC");
     // Zend's symbols resolve against the PHP that loads the extension.
     if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
         println!("cargo::rustc-cdylib-link-arg=-Wl,-undefined,dynamic_lookup");
@@ -96,8 +95,14 @@ mod php {
         env::var_os(format!("CARGO_FEATURE_{}", name.to_uppercase())).is_some()
     }
 
+    /// A library's headers. Its directory goes on the link line too: Homebrew's
+    /// (libssh2's) is off the linker's default path.
     fn pkg_includes(module: &str) -> Vec<PathBuf> {
-        include_flags(Command::new("pkg-config").args(["--cflags", module])).unwrap_or_default()
+        let pkg = |arg| path_flags(Command::new("pkg-config").args([arg, module]));
+        for dir in pkg("--libs-only-L").unwrap_or_default() {
+            println!("cargo::rustc-link-search=native={}", dir.display());
+        }
+        pkg("--cflags").unwrap_or_default()
     }
 
     /// The major version `pkg-config --modversion` reports for `module`.
@@ -274,13 +279,13 @@ mod php {
         p
     }
 
-    /// The `-I` directories a command prints.
-    fn include_flags(command: &mut Command) -> Option<Vec<PathBuf>> {
+    /// The `-I` or `-L` directories a command prints.
+    fn path_flags(command: &mut Command) -> Option<Vec<PathBuf>> {
         let output = command.output().ok().filter(|o| o.status.success())?;
         Some(
             String::from_utf8_lossy(&output.stdout)
                 .split_whitespace()
-                .filter_map(|flag| flag.strip_prefix("-I"))
+                .filter_map(|flag| flag.strip_prefix("-I").or_else(|| flag.strip_prefix("-L")))
                 .map(PathBuf::from)
                 .collect(),
         )
@@ -288,10 +293,10 @@ mod php {
 
     /// PHP's headers, and PCRE2's, which ext/pcre's include (as `build_upstream.py` adds them).
     fn php_includes(php_config: &str) -> Vec<PathBuf> {
-        let mut includes = include_flags(Command::new(php_config).arg("--includes"))
+        let mut includes = path_flags(Command::new(php_config).arg("--includes"))
             .expect("ext: php-config --includes ($PHP_CONFIG) failed");
         includes.extend(
-            include_flags(Command::new("pkg-config").args(["--cflags", "libpcre2-8"]))
+            path_flags(Command::new("pkg-config").args(["--cflags", "libpcre2-8"]))
                 .unwrap_or_default(),
         );
         includes
@@ -320,9 +325,11 @@ mod php {
     }
 
     pub(super) fn build() {
-        let Some(tree) = env::var_os("SWOOLE_SRC").map(PathBuf::from) else {
+        // `cargo clippy --all-features` turns on every hook, whose libraries CI's plain
+        // jobs lack: only tools/build_ext.py, which names the PHP, builds the native code.
+        let Ok(php_config) = env::var("PHP_CONFIG") else {
             println!(
-                "cargo::warning=SWOOLE_SRC is unset: swoole.so links no native objects and will not load (tools/build_ext.py sets it)"
+                "cargo::warning=PHP_CONFIG is unset: swoole.so links no native objects and will not load (tools/build_ext.py sets it)"
             );
             return;
         };
@@ -332,8 +339,6 @@ mod php {
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
         let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("ext: target arch");
         let platform = if os == "macos" { MACOS } else { LINUX };
-        let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
-        let third = tree.join("thirdparty");
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
         let profile = profile(&vendored, php_version_id(&php_config));
@@ -367,11 +372,7 @@ mod php {
             .collect();
         modules.sort();
         includes.extend(modules.iter().cloned());
-        includes.extend([owned.clone(), owned.join("thirdparty")]);
-        // The pin's headers, which only the profile's PHP-derived thirdparty sources read (#2660).
-        if !profile.c.is_empty() || !profile.cxx.is_empty() {
-            includes.extend([tree.clone(), tree.join("ext-src"), third.clone()]);
-        }
+        includes.extend([owned, vendored.clone()]);
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);

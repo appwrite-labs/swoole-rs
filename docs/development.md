@@ -43,7 +43,8 @@ in the same run; the planner refuses missing prerequisites.
 ## Builds
 
 The `cargo-build` phase runs `tools/build_ext.py --native`: Cargo builds
-`target/ext/swoole.so`, the engine every PHP gate loads, and lays out
+`target/ext/swoole.so` with no swoole-src checkout, the engine every PHP gate
+loads, and lays out
 `target/ext/sdk/` (the Zend-free `libswoole_rs_ffi.a`, crates/ext's native C and
 C++ archives and the ABI headers) for the native gates, which link fixtures
 outside PHP. Cargo rebuilds only what changed. Integrate's upstream control is

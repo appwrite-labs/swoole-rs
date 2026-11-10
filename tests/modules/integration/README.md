@@ -8,8 +8,7 @@ python3 tests/modules/integration/test_bridge.py --archive path/to/libswoole_rs_
 ```
 
 Requires PHP and C/C++ compilers. Select extensions with `--reference` and
-`--extension` (default `target/ext/swoole.so`), the pin it was built from with `--source`
-(default `target/ext/src`) and PHP with `--php`. The expected feature bits are
+`--extension` (default `target/ext/swoole.so`) and PHP with `--php`. The expected feature bits are
 every module's. The C and C++ consumers link a Zend-free `--archive`.
 
 The tests execute C and C++ consumers, check the ABI exports every module's

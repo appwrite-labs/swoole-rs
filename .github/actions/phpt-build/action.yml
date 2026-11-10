@@ -35,7 +35,7 @@ runs:
         services="--php-sockets --configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
         services="$services --configure=--enable-swoole-sqlite --configure=--with-swoole-oracle=instantclient,/usr/local/instantclient"
         echo "args=$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2" >> "$GITHUB_OUTPUT"
-    # Only for the upstream engine: build_ext.py clones the pin itself.
+    # Only for the upstream engine.
     - id: upstream
       if: contains(inputs.engines, 'upstream')
       uses: ./.github/actions/upstream
