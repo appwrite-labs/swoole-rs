@@ -16,12 +16,6 @@ unsafe extern "C" {
     );
 }
 
-#[cfg(feature = "stdext")]
-// SAFETY: crates/phpstdext's MINIT, linked with this feature.
-unsafe extern "C" {
-    fn swr_v1_phpstdext_minit();
-}
-
 #[cfg(feature = "ssh2")]
 // SAFETY: the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
 unsafe extern "C" {
@@ -187,7 +181,7 @@ pub(crate) fn minit() -> Vec<Step> {
     ]);
     let stdext: Vec<Step> = Vec::from([
         #[cfg(feature = "stdext")]
-        Step::Hook(swr_v1_phpstdext_minit),
+        Step::Hook(swoole_rs_phpstdext::swr_v1_phpstdext_minit),
     ]);
     let thread = built([(Switch::Thread, Step::Hook(thread_minit))]);
     drivers.into_iter().chain(thread).chain(stdext).collect()
