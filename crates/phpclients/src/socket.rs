@@ -16,16 +16,14 @@ use std::{
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
-    Call, Class, Invalid, Object, declare_bool, declare_long, declare_string,
-    register_long_constant, set_object, string,
+    Array, Call, Class, Invalid, Object, OwnedArray, Value, declare_bool, declare_long,
+    declare_string, register_long_constant, set_object, string,
     sys::{
-        E_WARNING, HashPosition, IS_LONG, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        ZEND_ACC_READONLY, module_registry, zend_class_entry, zend_get_type_by_const,
-        zend_hash_get_current_data_ex, zend_hash_internal_pointer_reset_ex,
-        zend_hash_move_forward_ex, zend_hash_str_find, zend_object, zend_object_handlers,
-        zend_string, zval, zval_ptr_dtor,
+        E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, module_registry,
+        zend_class_entry, zend_get_type_by_const, zend_hash_str_find, zend_object,
+        zend_object_handlers, zend_string, zval, zval_ptr_dtor,
     },
-    throw_constructed_twice, type_of, unset_property_deny, value,
+    throw_constructed_twice, unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -665,32 +663,10 @@ fn send_all(call: &Call) {
     send_as(call, Transfer::SendAll);
 }
 
-/// The values of the array in `array`, in order (`SW_HASHTABLE_FOREACH_START`).
-/// # Safety
-/// `array` is a live array zval that does not change while the result is used.
-unsafe fn values(array: *mut zval) -> impl Iterator<Item = *mut zval> {
-    // SAFETY: per the caller.
-    let table = unsafe { value::table(array) };
-    let mut position: HashPosition = 0;
-    // SAFETY: a live table and a writable position.
-    unsafe { zend_hash_internal_pointer_reset_ex(table, &raw mut position) };
-    std::iter::from_fn(move || {
-        // SAFETY: as above.
-        let item = unsafe { zend_hash_get_current_data_ex(table, &raw mut position) };
-        if item.is_null() {
-            return None;
-        }
-        // SAFETY: as above.
-        unsafe { zend_hash_move_forward_ex(table, &raw mut position) };
-        Some(item)
-    })
-}
-
 /// The vectors argument: its element count, or false (with errCode EINVAL)
 /// past `IOV_MAX`.
-fn vector_count(socket: Co, array: *mut zval) -> Option<usize> {
-    // SAFETY: a live array argument.
-    let count = unsafe { value::count(array) };
+fn vector_count(socket: Co, array: &Array) -> Option<usize> {
+    let count = array.count();
     if count > IOV_MAX {
         let message = format!("The maximum of iov count is {IOV_MAX}");
         socket.set_error(libc::EINVAL, message.as_bytes());
@@ -700,12 +676,10 @@ fn vector_count(socket: Co, array: *mut zval) -> Option<usize> {
 }
 
 /// `zend_get_type_by_const(Z_TYPE_P(item))`.
-fn type_name(item: *mut zval) -> String {
-    // SAFETY: a live element.
-    let kind = unsafe { type_of(item) };
+fn type_name(item: &Value) -> String {
     #[expect(clippy::cast_possible_wrap, reason = "zval types are below 32")]
     // SAFETY: Zend returns a static name or null.
-    let name = unsafe { zend_get_type_by_const(kind as c_int) };
+    let name = unsafe { zend_get_type_by_const(item.kind() as c_int) };
     if name.is_null() {
         return String::new();
     }
@@ -716,9 +690,9 @@ fn type_name(item: *mut zval) -> String {
 }
 
 /// `(array $io_vector, float $timeout = 0)`.
-fn vector_arguments(call: &Call) -> Result<(*mut zval, f64), Invalid> {
+fn vector_arguments(call: &Call) -> Result<(&Array, f64), Invalid> {
     call.arity(1, 2)?;
-    Ok((call.array(1)?, call.double(2, 0.0)?))
+    Ok((call.array_ref(1)?, call.double(2, 0.0)?))
 }
 
 /// `writeVector` and `writeVectorAll`: `(array $io_vector, float $timeout = 0): int|false`.
@@ -731,26 +705,20 @@ fn write_vector_as(call: &Call, op: c_int) {
     sync(call, socket);
 }
 
-fn write_vector(call: &Call, socket: Co, op: c_int, array: *mut zval, timeout: f64) {
+fn write_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) {
     let Some(count) = vector_count(socket, array) else {
         return call.set_bool(false);
     };
     let mut vectors = Vec::with_capacity(count);
-    // SAFETY: a live array argument the call does not change.
-    for (index, item) in unsafe { values(array) }.enumerate() {
-        // SAFETY: a live element.
-        if unsafe { type_of(item) } != IS_STRING {
+    for (index, (_, item)) in array.entries().enumerate() {
+        let Some(bytes) = item.bytes() else {
             let given = type_name(item);
             throw(
                 libc::EINVAL,
                 &format!("Item #[{index}] must be of type string, {given} given"),
             );
             return call.set_bool(false);
-        }
-        // SAFETY: an IS_STRING element.
-        let text = unsafe { value::str_of(item) };
-        // SAFETY: as above.
-        let bytes = unsafe { string::bytes(text) };
+        };
         if bytes.is_empty() {
             throw(
                 libc::EINVAL,
@@ -790,7 +758,7 @@ fn read_vector_as(call: &Call, op: c_int) {
     sync(call, socket);
 }
 
-fn read_vector(call: &Call, socket: Co, op: c_int, array: *mut zval, timeout: f64) {
+fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) {
     let Some(count) = vector_count(socket, array) else {
         return call.set_bool(false);
     };
@@ -802,10 +770,8 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: *mut zval, timeout: f6
             unsafe { string::free(string::from_val(vector.iov_base.cast())) };
         }
     };
-    // SAFETY: a live array argument the call does not change.
-    for (index, item) in unsafe { values(array) }.enumerate() {
-        // SAFETY: a live element.
-        if unsafe { type_of(item) } != IS_LONG {
+    for (index, (_, item)) in array.entries().enumerate() {
+        let Some(length) = item.as_long() else {
             let given = type_name(item);
             throw(
                 libc::EINVAL,
@@ -813,9 +779,8 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: *mut zval, timeout: f6
             );
             release(&vectors);
             return call.set_bool(false);
-        }
-        // SAFETY: an IS_LONG element.
-        let Ok(length) = usize::try_from(unsafe { value::long_of(item) }) else {
+        };
+        let Ok(length) = usize::try_from(length) else {
             throw(
                 libc::EINVAL,
                 &format!("Item #[{index}] must be greater than 0"),
@@ -929,22 +894,26 @@ fn recvfrom(call: &Call) {
     // SAFETY: the dereferenced by-reference argument: release what it held and
     // make it the peer's address.
     unsafe { zval_ptr_dtor(peer) };
-    // SAFETY: as above.
-    unsafe { value::array_init(peer) };
-    add_address(peer, socket);
+    // SAFETY: as above, released.
+    unsafe { peer.write(address(socket).into_owned().into_zval()) };
     // SAFETY: an unshared buffer string `used` bytes of which were filled.
     unsafe { string::truncate(buffer, used) };
     // SAFETY: the return value takes the buffer's only reference.
     unsafe { call.set_string(buffer) };
 }
 
-/// `address` and `port` of the socket's last address into `array`.
-pub(crate) fn add_address(array: *mut zval, socket: Co) {
+/// `["address" => .., "port" => ..]` of the socket's last address.
+fn address(socket: Co) -> OwnedArray {
     let (address, port) = socket.address();
-    // SAFETY: a live array.
-    unsafe { value::add_string(array, c"address", address) };
-    // SAFETY: as above.
-    unsafe { value::add_long(array, c"port", i64::from(port)) };
+    endpoint(address, port)
+}
+
+/// `["address" => address, "port" => port]`.
+fn endpoint(address: &CStr, port: c_int) -> OwnedArray {
+    let mut array = OwnedArray::default();
+    array.insert_bytes(b"address", Some(address.to_bytes()));
+    array.insert_long(b"port", i64::from(port));
+    array
 }
 
 /// `sendto(string $addr, int $port, string $data): int|false`.
@@ -1001,9 +970,7 @@ fn getsockname(call: &Call) {
         sync(call, socket);
         return call.set_bool(false);
     }
-    // SAFETY: the return slot is writable and holds nothing yet.
-    unsafe { value::array_init(call.return_value()) };
-    add_address(call.return_value(), socket);
+    call.set_owned(address(socket).into_owned());
 }
 
 /// `getpeername(): array|false`.
@@ -1013,14 +980,7 @@ fn getpeername(call: &Call) {
         sync(call, socket);
         return call.set_bool(false);
     };
-    let address = address.as_c_str();
-    let array = call.return_value();
-    // SAFETY: the return slot is writable and holds nothing yet.
-    unsafe { value::array_init(array) };
-    // SAFETY: a live array.
-    unsafe { value::add_string(array, c"address", address) };
-    // SAFETY: as above.
-    unsafe { value::add_long(array, c"port", i64::from(port)) };
+    call.set_owned(endpoint(&address, port).into_owned());
 }
 
 /// `cancel(int $event = SW_EVENT_READ): bool`; the socket is checked first.
@@ -1040,16 +1000,15 @@ fn cancel(call: &Call) {
 /// `setProtocol(array $settings): bool`; the socket is checked first.
 fn set_protocol(call: &Call) {
     let Some(socket) = open(call) else { return };
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live array argument.
-    if unsafe { value::count(settings) } == 0 {
+    if settings.count() == 0 {
         return call.set_bool(false);
     }
     call.set_bool(crate::socket_options::apply(
         socket,
-        settings,
+        call.zval(1),
         crate::socket_options::PROTOCOL,
     ));
 }

@@ -669,13 +669,15 @@ impl ArrayMut {
         }
     }
 
-    /// `add_next_index_zval`: the array takes `value`.
+    /// `add_next_index_zval`: the array takes `value`, which is released
+    /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]
     pub fn push(&mut self, value: Owned) {
-        let mut value = value.into_zval();
-        if let Some(array) = self.0.array() {
-            // SAFETY: a live array; it takes the value.
-            unsafe { zend_hash_next_index_insert(array.as_ptr(), &raw mut value) };
+        let Some(array) = self.0.array() else { return };
+        // SAFETY: a live array; it copies the zval in when it inserts it.
+        let added = unsafe { zend_hash_next_index_insert(array.as_ptr(), value.as_ptr()) };
+        if !added.is_null() {
+            std::mem::forget(value);
         }
     }
 
