@@ -29,18 +29,14 @@ mod native {
     pub(super) fn compile() {
         println!("cargo::rerun-if-env-changed=PHP_CONFIG");
         println!("cargo::rerun-if-changed=src/stdext.c");
-        // The pinned upstream tree holds Swoole's copy of zend_execute.c's
-        // private primitives. The rust tier has no tree and links nothing.
-        let upstream = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/upstream/src");
-        let primitives = upstream.join("thirdparty/php/zend/zend_execute.c");
-        println!("cargo::rerun-if-changed={}", primitives.display());
-        if !primitives.is_file() {
-            println!(
-                "cargo::warning=phpstdext: no {} (tools/build_upstream.py fetches it): stdext's Zend calls stay unlinked",
-                primitives.display()
-            );
-            return;
-        }
+        // Swoole's copy of zend_execute.c's private primitives, which native/swoole-src owns.
+        let swoole_src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../native/swoole-src");
+        println!(
+            "cargo::rerun-if-changed={}",
+            swoole_src
+                .join("thirdparty/php/zend/zend_execute.c")
+                .display()
+        );
         let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
         cc::Build::new()
             .file("src/stdext.c")
@@ -49,7 +45,7 @@ mod native {
             .includes(include_flags(
                 Command::new("pkg-config").args(["--cflags", "libpcre2-8"]),
             ))
-            .include(upstream)
+            .include(swoole_src)
             // Swoole's copy is upstream code, with helpers these wrappers never call.
             .warnings(false)
             .compile("swoole_rs_phpstdext");

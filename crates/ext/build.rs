@@ -101,6 +101,20 @@ mod php {
         include_flags(Command::new("pkg-config").args(["--cflags", module])).unwrap_or_default()
     }
 
+    /// The major version `pkg-config --modversion` reports for `module`.
+    fn pkg_major_version(module: &str) -> Option<u32> {
+        let output = Command::new("pkg-config")
+            .args(["--modversion", module])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout)
+            .split('.')
+            .next()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
     /// config.m4's `SW_PHP_VERSION_ID`: 84 for PHP 8.4.x.
     fn php_version_id(php_config: &str) -> u32 {
         let output = Command::new(php_config)
@@ -138,19 +152,7 @@ mod php {
         if feature("pgsql") {
             p.define(&["SW_USE_PGSQL"]);
             // config.m4 probes for PQsendClosePrepared, which libpq 17 added.
-            let major = Command::new("pkg-config")
-                .args(["--modversion", "libpq"])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .split('.')
-                        .next()?
-                        .trim()
-                        .parse::<u32>()
-                        .ok()
-                });
-            if major.is_some_and(|major| major >= 17) {
+            if pkg_major_version("libpq").is_some_and(|major| major >= 17) {
                 p.define(&["HAVE_PQCLOSEPREPARED"]);
             }
             let dir = bundled.join("pdo_pgsql");
@@ -267,6 +269,7 @@ mod php {
             let dir = third.join("php/ssh2");
             p.cxx
                 .extend(["ssh2.cc", "ssh2_fopen_wrappers.cc", "ssh2_sftp.cc"].map(|f| dir.join(f)));
+            p.includes.extend(pkg_includes("libssh2"));
             p.libs.push("ssh2");
         }
         p
