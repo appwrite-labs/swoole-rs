@@ -14,7 +14,8 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   `module_loaded`, a `php_stream`'s bitfields).
 - `crates/zend`: the safe layer. `Call` (argument count, `$this`, `long`/`double`
   parsed as `Z_PARAM_LONG`/`Z_PARAM_DOUBLE`, `set_long`/`set_bool`), `Object<T>`
-  (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`),
+  (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`;
+  [Objects](#objects) makes it safe),
   `Class` (registration from a method table), `unset_property_deny`,
   `throw_exception`/`throw_error`, and values: `&Value` (a borrowed zval, from
   `Call::value` or `Value::from_ptr`: `as_long`, `as_double`, `str`, `array`,
@@ -44,15 +45,15 @@ family crate's `php`. `crates/ext` builds `swoole.so` with `php` on (fat LTO und
 ## Methods
 
 ```rust
-methods! {
-    this_word;                                   // locate $this's state
-    zim_swoole_atomic_add: u32 => word::add;     // Zend name => body
+handlers! {
+    leaf:                                        // hot: no bailout check after the body
+    zim_swoole_atomic_add => word::add::<Atomic>; // Zend name => body
 }
 
-pub(crate) fn add<W: Word>(call: &Call, word: *mut W) {
+fn fetch<H: Holder>(call: &Call, op: fn(&H::Word, i64) -> i64) {
     match call.arity(0, 1).and_then(|()| call.long(1, 1)) {
-        Ok(value) => call.set_long(unsafe { W::apply(word, ADD_FETCH, value, 0) }),
-        Err(_) => call.set_bool(false),        // ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)
+        Ok(value) => call.set_long(word::<H>(call).map_or(0, |word| op(word, value))),
+        Err(_) => failed(call),                  // ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)
     }
 }
 ```
@@ -61,8 +62,32 @@ Speed: a method crosses crates (`zend`, the mechanism crate) and rustc inlines
 non-generic functions across crates only when they are `#[inline]`. Keep the
 `zend` call-frame accessors `#[inline]`, and give the mechanism a plain
 `#[inline] pub` Rust function beside its `swr_v1_*` export (as
-`locks::atomic32` sits beside `swr_v1_locks_atomic32`); calling the export
+`locks::Lock` sits beside `swr_v1_locks_lock`); calling the export
 costs Atomic::add about 40 instructions.
+
+## Objects
+
+A class whose objects carry Rust state (Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`)
+implements `zend::Custom` for that state and registers with
+`Minit::register_object::<T>`, which installs generated create and free
+handlers: `Custom::new` makes each object's data, and the data drops with the
+object. `Call::custom::<T>()` borrows `$this`'s data and `Value::custom::<T>()`
+any value's, both `None` for an object of another class; `new_object(data)`
+makes one without running its constructor. The data is shared while a method
+runs PHP code, so mutable state sits in `Cell`s and `OnceCell`s.
+
+```rust
+static LOCK: CustomClass<Held> = CustomClass::new();
+struct Held(OnceCell<Lock>);              // unset until __construct
+
+impl Custom for Held {
+    fn class() -> &'static CustomClass<Self> { &LOCK }
+    fn new() -> Self { Self(OnceCell::new()) }
+}
+```
+
+A `CustomClass<T>` serves one data type, so a handler can't read another
+class's objects as `T`. `crates/phplocks` uses no `unsafe` at all.
 
 Mirror upstream's ZPP block exactly: the same min/max, defaults and failure
 return value. Errors are Zend's own (`zend_wrong_parameters_count_error`,

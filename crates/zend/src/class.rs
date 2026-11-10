@@ -56,7 +56,9 @@ impl Class {
 
     /// `register`, extending `parent` (null for none).
     /// # Safety
-    /// As `register`; `parent` is null or a registered class.
+    /// As `register`; `parent` is null or a registered class. A
+    /// [`CustomClass`](crate::CustomClass) registers only through
+    /// [`Minit::register_object`](crate::Minit::register_object).
     pub unsafe fn register_child(
         &self,
         name: &CStr,
@@ -179,6 +181,7 @@ impl Class {
 
     /// The handlers this class's objects use (null before MINIT).
     #[must_use]
+    #[inline]
     pub fn handlers(&self) -> *const zend_object_handlers {
         self.handlers.get().map_or(ptr::null(), ptr::from_ref)
     }

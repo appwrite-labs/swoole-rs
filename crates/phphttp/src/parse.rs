@@ -1,14 +1,15 @@
 //! The HTTP/1 request parser: llhttp and multipart callbacks over
 //! `swoole::http::ContextState`, filling `Swoole\Http\Request`'s `server`,
 //! `header`, `get`, `post`, `cookie` and `files` as upstream's
-//! `swoole_http_request.cc` did. llhttp stays the bundled C (third-party); the
-//! multipart parser is crates/http's; what Swoole itself owns goes through `host`.
+//! `swoole_http_request.cc` did. Both parsers are crates/http's; what Swoole
+//! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Slot, State};
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
+use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_httpbindings::{
     RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
@@ -36,38 +37,7 @@ struct Parts<'a> {
     fp: &'a mut *mut libc::FILE,
 }
 
-type DataCb = unsafe extern "C" fn(*mut crate::state::Llhttp, *const c_char, usize) -> c_int;
-type NotifyCb = unsafe extern "C" fn(*mut crate::state::Llhttp) -> c_int;
-
-/// `llhttp_settings_t`.
-#[repr(C)]
-struct Settings {
-    on_message_begin: Option<NotifyCb>,
-    on_protocol: Option<DataCb>,
-    on_url: Option<DataCb>,
-    on_status: Option<DataCb>,
-    on_method: Option<DataCb>,
-    on_version: Option<DataCb>,
-    on_header_field: Option<DataCb>,
-    on_header_value: Option<DataCb>,
-    on_chunk_extension_name: Option<DataCb>,
-    on_chunk_extension_value: Option<DataCb>,
-    on_headers_complete: Option<NotifyCb>,
-    on_body: Option<DataCb>,
-    on_message_complete: Option<NotifyCb>,
-    /// `on_protocol_complete` to `on_reset`.
-    rest: [Option<NotifyCb>; 12],
-}
-
 unsafe extern "C" {
-    fn llhttp_init(parser: *mut crate::state::Llhttp, kind: c_int, settings: *const c_void);
-    fn llhttp_execute(parser: *mut crate::state::Llhttp, data: *const c_char, len: usize) -> c_int;
-    fn llhttp_get_error_pos(parser: *const crate::state::Llhttp) -> *const c_char;
-    fn llhttp_resume(parser: *mut crate::state::Llhttp);
-    fn llhttp_resume_after_upgrade(parser: *mut crate::state::Llhttp);
-    fn llhttp_should_keep_alive(parser: *const crate::state::Llhttp) -> c_int;
-    fn llhttp_set_error_reason(parser: *mut crate::state::Llhttp, reason: *const c_char);
-    fn llhttp_method_name(method: c_int) -> *const c_char;
     fn php_url_decode(text: *mut c_char, len: usize) -> usize;
     fn php_register_variable_safe(
         var: *const c_char,
@@ -78,14 +48,10 @@ unsafe extern "C" {
     fn php_register_variable_ex(var: *const c_char, val: *mut zval, track: *mut zval);
 }
 
-/// llhttp's `HPE_INVALID_HEADER_TOKEN`, `HPE_PAUSED`, `HPE_PAUSED_UPGRADE`,
-/// `HPE_USER`, `F_CHUNKED` and `F_TRAILING`.
-const INVALID_HEADER_TOKEN: i32 = 10;
-const PAUSED: c_int = 21;
-const PAUSED_UPGRADE: c_int = 22;
-const USER: c_int = 24;
-const CHUNKED: u16 = 8;
-const TRAILING: u16 = 0x80;
+use llhttp::{
+    F_CHUNKED as CHUNKED, F_TRAILING as TRAILING, HPE_INVALID_HEADER_TOKEN as INVALID_HEADER_TOKEN,
+    HPE_PAUSED as PAUSED, HPE_PAUSED_UPGRADE as PAUSED_UPGRADE, HPE_USER as USER,
+};
 /// `PARSE_COOKIE` and `PARSE_STRING` (`main/php_variables.h`).
 const PARSE_COOKIE: c_int = 2;
 const PARSE_STRING: c_int = 3;
@@ -112,30 +78,71 @@ const UPLOAD_FILE_READY: i64 = 8;
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
 
-static SERVER: Settings = Settings {
-    on_message_begin: None,
-    on_protocol: None,
-    on_url: Some(on_url),
-    on_status: None,
-    on_method: None,
-    on_version: None,
-    on_header_field: Some(on_header_field),
-    on_header_value: Some(on_header_value),
-    on_chunk_extension_name: None,
-    on_chunk_extension_value: None,
-    on_headers_complete: Some(on_headers_complete),
-    on_body: Some(on_body),
-    on_message_complete: Some(on_message_complete),
-    rest: [None; 12],
-};
+/// The server's llhttp callbacks, over a context's state.
+struct Server<'a>(&'a mut State);
 
-/// `Request::parse()`: input arrives in pieces appended to `request.zdata`.
-static PIECES: Settings = Settings {
-    on_url: Some(on_piece_url),
-    on_header_field: Some(on_piece_header_field),
-    on_header_value: Some(on_piece_header_value),
-    ..SERVER
-};
+/// `Request::parse()`'s: input arrives in pieces appended to `request.zdata`.
+struct Pieces<'a>(&'a mut State);
+
+impl Callbacks for Server<'_> {
+    fn parser(&mut self) -> &mut Parser {
+        &mut self.0.parser
+    }
+
+    fn on_url(&mut self, data: &[u8]) -> c_int {
+        on_url(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+        on_header_field(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+        on_header_value(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_headers_complete(&mut self) -> c_int {
+        on_headers_complete(self.0)
+    }
+
+    fn on_body(&mut self, data: &[u8]) -> c_int {
+        on_body(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_message_complete(&mut self) -> c_int {
+        on_message_complete(self.0)
+    }
+}
+
+impl Callbacks for Pieces<'_> {
+    fn parser(&mut self) -> &mut Parser {
+        &mut self.0.parser
+    }
+
+    fn on_url(&mut self, data: &[u8]) -> c_int {
+        on_piece_url(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+        on_piece_header_field(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+        on_piece_header_value(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_headers_complete(&mut self) -> c_int {
+        on_headers_complete(self.0)
+    }
+
+    fn on_body(&mut self, data: &[u8]) -> c_int {
+        on_body(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_message_complete(&mut self) -> c_int {
+        on_message_complete(self.0)
+    }
+}
 
 impl swoole_rs_http::multipart_parser::Parts for Parts<'_> {
     fn on_header_field(&mut self, data: &[u8]) -> c_int {
@@ -350,14 +357,8 @@ fn treat_data(arg: c_int, bytes: *const u8, length: usize, array: *mut zval) {
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
 pub(crate) fn init_request_parser(ctx: *mut crate::host::Context) {
-    let state = crate::send::state(ctx);
-    // SAFETY: the context's own parser; llhttp keeps no settings pointer from init.
-    unsafe { llhttp_init(&raw mut state.parser, HTTP_REQUEST, ptr::null()) };
-    state.parser.data = ctx;
+    crate::send::state(ctx).parser = Parser::new(llhttp::REQUEST);
 }
-
-/// `HTTP_REQUEST`.
-const HTTP_REQUEST: c_int = 1;
 
 /// `swoole_http_parse_cookie`.
 pub(crate) fn parse_cookie(array: *mut zval, bytes: *const u8, length: usize) {
@@ -366,44 +367,31 @@ pub(crate) fn parse_cookie(array: *mut zval, bytes: *const u8, length: usize) {
     }
 }
 
-/// The context the parser belongs to (`parser->data`).
-/// # Safety
-/// `parser` is a live context's parser, inside its callbacks.
-unsafe fn state<'a>(parser: *mut crate::state::Llhttp) -> &'a mut State {
-    // SAFETY: per the caller.
-    let data = unsafe { (*parser).data };
-    // SAFETY: `data` is the context, whose prefix `State` is.
-    unsafe { &mut *data.cast::<State>() }
-}
-
 /// `swoole_llhttp_parser_execute`.
-fn execute(
-    state: *mut State,
-    settings: &'static Settings,
-    data: *const c_char,
-    length: usize,
-) -> usize {
-    // SAFETY: a live context; only the field's address is taken.
-    let parser = unsafe { &raw mut (*state).parser };
-    // SAFETY: as above.
-    unsafe { (*parser).settings = ptr::from_ref(settings).cast() };
-    // SAFETY: an initialised parser and `length` readable bytes.
-    let result = unsafe { llhttp_execute(parser, data, length) };
+fn execute(state: *mut State, pieces: bool, data: *const c_char, length: usize) -> usize {
+    // SAFETY: a live context, which the parse and its callbacks borrow alone.
+    let state = unsafe { &mut *state };
+    let input = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: `length` readable bytes, which the callbacks do not write.
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
+    };
+    let result = if pieces {
+        llhttp::execute(&mut Pieces(state), input)
+    } else {
+        llhttp::execute(&mut Server(state), input)
+    };
     if result == 0 {
         return length;
     }
-    // SAFETY: the parser stopped inside `data`.
-    let parsed = unsafe { llhttp_get_error_pos(parser) }
-        .addr()
-        .wrapping_sub(data.addr());
+    let parser = &mut state.parser;
     match result {
-        // SAFETY: a paused parser.
-        PAUSED => unsafe { llhttp_resume(parser) },
-        // SAFETY: as above.
-        PAUSED_UPGRADE => unsafe { llhttp_resume_after_upgrade(parser) },
+        PAUSED => parser.resume(),
+        PAUSED_UPGRADE => parser.resume_after_upgrade(),
         _ => {}
     }
-    parsed
+    parser.error_pos()
 }
 
 /// `Context::parse`.
@@ -414,7 +402,7 @@ pub(crate) unsafe fn parse_request(
     data: *const c_char,
     length: usize,
 ) -> usize {
-    execute(context.cast(), &SERVER, data, length)
+    execute(context.cast(), false, data, length)
 }
 
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
@@ -427,7 +415,7 @@ pub(crate) fn parse_piece(state: *mut State, data: &[u8]) -> usize {
     let (start, length) = zdata_span(unsafe { &*state });
     execute(
         state,
-        &PIECES,
+        true,
         start.wrapping_add(length - data.len()).cast(),
         data.len(),
     )
@@ -439,13 +427,8 @@ fn zdata_span(state: &State) -> (*const u8, usize) {
     (bytes.as_ptr(), bytes.len())
 }
 
-unsafe extern "C" fn on_url(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    url(unsafe { state(parser) }, at.cast(), length)
+fn on_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
+    url(state, at.cast(), length)
 }
 
 fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
@@ -471,13 +454,7 @@ fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
     0
 }
 
-unsafe extern "C" fn on_header_field(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_header_field(state: &mut State, at: *const c_char, length: usize) -> c_int {
     // A request's trailer fields are ignored.
     if state.parser.flags & TRAILING != 0 {
         return 0;
@@ -492,13 +469,7 @@ fn header_field(state: &mut State, at: *const u8, length: usize) -> c_int {
     0
 }
 
-unsafe extern "C" fn on_piece_url(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
     state.parse.url_length += length;
     let (start, total) = zdata_span(state);
     // llhttp flushes unfinished spans at the end of each input buffer.
@@ -513,13 +484,7 @@ unsafe extern "C" fn on_piece_url(
     )
 }
 
-unsafe extern "C" fn on_piece_header_field(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_piece_header_field(state: &mut State, at: *const c_char, length: usize) -> c_int {
     if state.parser.flags & TRAILING != 0 {
         return 0;
     }
@@ -531,13 +496,7 @@ unsafe extern "C" fn on_piece_header_field(
     0
 }
 
-unsafe extern "C" fn on_piece_header_value(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) -> c_int {
     if state.parser.flags & TRAILING != 0 {
         return 0;
     }
@@ -559,22 +518,15 @@ unsafe extern "C" fn on_piece_header_value(
     result
 }
 
-unsafe extern "C" fn on_header_value(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_header_value(state: &mut State, at: *const c_char, length: usize) -> c_int {
     if state.parser.flags & TRAILING != 0 {
         return 0;
     }
     header_value(state, at.cast(), length)
 }
 
-fn set_error_reason(state: &mut State, reason: &CStr) {
-    // SAFETY: the context's parser and a static reason.
-    unsafe { llhttp_set_error_reason(&raw mut state.parser, reason.as_ptr()) };
+fn set_error_reason(state: &mut State, reason: &'static &'static str) {
+    state.parser.set_reason(reason);
 }
 
 /// `swoole_http_token_list_contains_value(at, length, "websocket")`, with
@@ -645,13 +597,13 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
             const MAX_LENGTH: usize = STACK_BUFFER_SIZE - 1;
             let seen = state.parse.header_value_len;
             if seen > MAX_LENGTH || length > MAX_LENGTH - seen {
-                set_error_reason(state, c"Upgrade header value exceeds the maximum length");
+                set_error_reason(state, &"Upgrade header value exceeds the maximum length");
                 return USER;
             }
             state.parse.header_value_len += length;
             match contains_websocket(at, length) {
                 -1 => {
-                    set_error_reason(state, c"Upgrade header value exceeds the maximum length");
+                    set_error_reason(state, &"Upgrade header value exceeds the maximum length");
                     return USER;
                 }
                 1 => {
@@ -695,9 +647,7 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
     0
 }
 
-unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_headers_complete(state: &mut State) -> c_int {
     let request = &mut state.request;
     request.version =
         c_int::from(state.parser.http_major) * 100 + c_int::from(state.parser.http_minor);
@@ -722,7 +672,7 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
     request.ext_len = ext_len;
 
     let method = method_name(state);
-    let method = Owned::string(ZString::new(method.to_bytes()));
+    let method = Owned::string(ZString::new(method.as_bytes()));
     add_server(state, Key::RequestMethod, method);
     add_server(state, Key::RequestUri, Owned::string(ZString::new(path)));
 
@@ -742,7 +692,7 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
     add_protocol(state, protocol);
 
     // SAFETY: the context's parser.
-    state.keepalive = u8::from(unsafe { llhttp_should_keep_alive(&raw const state.parser) } != 0);
+    state.keepalive = u8::from(state.parser.should_keep_alive());
     state.recv_chunked = u8::from(state.parser.flags & CHUNKED != 0);
     state.parse.header_name = ptr::null();
     0
@@ -781,16 +731,10 @@ fn microtime() -> f64 {
     seconds
 }
 
-unsafe extern "C" fn on_body(
-    parser: *mut crate::state::Llhttp,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
+fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
     if length == 0 {
         return 0;
     }
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
     let at = at.cast::<u8>();
     let received = state
         .parse
@@ -827,9 +771,7 @@ unsafe extern "C" fn on_body(
     if state.completed != 0 { PAUSED } else { 0 }
 }
 
-unsafe extern "C" fn on_message_complete(parser: *mut crate::state::Llhttp) -> c_int {
-    // SAFETY: llhttp calls back with the context's parser.
-    let state = unsafe { state(parser) };
+fn on_message_complete(state: &mut State) -> c_int {
     let chunked = state
         .parse
         .chunked_body
@@ -1383,13 +1325,9 @@ pub(crate) fn body(state: *mut State) -> Option<&'static [u8]> {
 }
 
 /// `llhttp_method_name(parser.method)`.
-pub(crate) fn method_name(state: *const State) -> &'static CStr {
+pub(crate) fn method_name(state: *const State) -> &'static str {
     // SAFETY: a live context.
-    let method = unsafe { (*state).parser.method };
-    // SAFETY: llhttp's own name table, for any method number.
-    let name = unsafe { llhttp_method_name(c_int::from(method)) };
-    // SAFETY: a static NUL-terminated name.
-    unsafe { CStr::from_ptr(name) }
+    llhttp::method_name(unsafe { (*state).parser.method })
 }
 
 #[cfg(test)]
@@ -1413,15 +1351,6 @@ mod tests {
     #[test]
     fn names_keep_their_terminator() {
         assert_eq!(&*c_copy(b"a[b]"), b"a[b]\0");
-    }
-
-    #[test]
-    fn settings_follow_the_c_structs() {
-        assert_eq!(
-            size_of::<Settings>(),
-            25 * size_of::<usize>(),
-            "llhttp_settings_t"
-        );
     }
 
     #[test]

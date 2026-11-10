@@ -114,6 +114,15 @@ class Differences(unittest.TestCase):
         self.assertEqual(only, {'upstream': [], 'cargo': ['d']})
         self.assertEqual(unstable, ['b', 'c', 'e'])
 
+    def test_a_read_that_found_nothing_is_timing_but_other_eagains_are_not(self):
+        empty = ['recvfrom(0) = EAGAIN', 'recvmsg(0) = EAGAIN', 'read() = EAGAIN', 'readv() = EAGAIN']
+        gated = ['sendto(MSG_NOSIGNAL) = EAGAIN', 'accept4(SOCK_CLOEXEC) = EAGAIN', 'recvfrom(MSG_PEEK) = ECONNRESET']
+        runs = {'upstream': [Counter(['recvfrom(0) = ok'])] * 2,
+                'cargo': [Counter(['recvfrom(0) = ok', *empty, *gated])] * 2}
+        only, unstable = differences(runs)
+        self.assertEqual(only, {'upstream': [], 'cargo': sorted(gated)})
+        self.assertEqual(unstable, sorted(empty))
+
     def test_allowlist_matches_engine_project_and_pattern(self):
         allowed = [{'engine': 'cargo', 'project': '0[12]-*', 'signature': 'prctl(PR_SET_NAME*', 'reason': 'thread names'}]
         self.assertEqual(explain('01-hello', 'cargo', 'prctl(PR_SET_NAME, ""...) = ok', allowed), allowed[0])
@@ -135,10 +144,20 @@ class Run(unittest.TestCase):
         self.assertIn('accept4', traced)
         self.assertNotIn('openat', traced)
 
+    def test_a_driver_runs_in_process_with_the_traced_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Path(directory, 'driver.py')
+            driver.write_text('def run_lifecycle(engine):\n    engine.append("traced")\n')
+            engine = []
+            syscalls.run(engine, {'id': '11-buffer-lifecycle', 'entry': str(driver), 'mode': 'driver'}, None)
+        self.assertEqual(engine, ['traced'])
+
     def test_main_fails_on_an_unexplained_difference_and_reports_every_one(self):
         def run_project(engine, project):
             extra = 'prctl(PR_SET_NAME, ""...) = 0\n' if engine.name == 'cargo' else 'listen(3, 128) = 0\n'
             extra += 'close(3) = 0\n' * (10 if engine.name == 'cargo' else 1)
+            extra += 'recvfrom(5, 0x1, 65536, 0, NULL, NULL) = -1 EAGAIN (Resource temporarily unavailable)\n' * (
+                9 if engine.name == 'cargo' else 0)
             engine.trace.with_name('trace.1').write_text('listen(3, 512) = 0\n' * (project['id'] == '01-hello') + extra)
         manifest = [{'id': '01-hello'}, {'id': '11-driver', 'mode': 'driver'}]
         with tempfile.TemporaryDirectory() as directory:
@@ -158,9 +177,12 @@ class Run(unittest.TestCase):
         self.assertEqual(row['differences'], [
             {'engine': 'cargo', 'signature': 'prctl(PR_SET_NAME, ""...) = ok', 'reason': 'names'},
             {'engine': 'upstream', 'signature': 'listen(128) = ok', 'reason': None}])
-        self.assertEqual(row['counts']['cargo'], {'listen(512) = ok': 2, 'prctl(PR_SET_NAME, ""...) = ok': 2, 'close() = ok': 20})
-        # Twenty closes against two is listed; two listens against none is within two calls a run.
-        self.assertEqual(row['count_differences'], {'close() = ok': [20, 2]})
+        self.assertEqual(row['counts']['cargo'], {'listen(512) = ok': 2, 'prctl(PR_SET_NAME, ""...) = ok': 2, 'close() = ok': 20,
+                                                  'recvfrom(0) = EAGAIN': 18})
+        self.assertEqual(row['unstable'], ['recvfrom(0) = EAGAIN'])
+        # Twenty closes against two is listed, and so is an empty read a run makes per request
+        # (timing for the gate, not for the count); two listens against none is within two calls a run.
+        self.assertEqual(row['count_differences'], {'close() = ok': [20, 2], 'recvfrom(0) = EAGAIN': [18, 0]})
         self.assertIn('01-hello             count cargo 20, upstream 2: close() = ok', out.getvalue())
         self.assertEqual(report['stale'], [{'engine': 'cargo', 'signature': 'never', 'reason': 'stale'}])
 

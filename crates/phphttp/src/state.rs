@@ -1,6 +1,5 @@
 //! `swoole::http::ContextState`: the part of `swoole::http::Context` the
-//! request parser reads and writes. Rust owns the layout; only `Llhttp` must
-//! match C (thirdparty llhttp's `llhttp_t`).
+//! request parser reads and writes. Rust owns the layout.
 use std::{
     collections::HashSet,
     ffi::{CString, c_char, c_int, c_void},
@@ -10,32 +9,6 @@ use swoole_rs_zend::{
     ArrayMut, Owned, Props, Value,
     sys::{swr_zend_http_property_array, zend_object, zval},
 };
-
-/// `llhttp_t` (`thirdparty/llhttp/llhttp.h`, `llhttp__internal_s`).
-#[repr(C)]
-pub(crate) struct Llhttp {
-    index: i32,
-    span_pos0: *mut c_void,
-    span_cb0: *mut c_void,
-    pub(crate) error: i32,
-    pub(crate) reason: *const c_char,
-    error_pos: *const c_char,
-    pub(crate) data: *mut c_void,
-    current: *mut c_void,
-    pub(crate) content_length: u64,
-    kind: u8,
-    pub(crate) method: u8,
-    pub(crate) http_major: u8,
-    pub(crate) http_minor: u8,
-    header_state: u8,
-    lenient_flags: u16,
-    upgrade: u8,
-    finish: u8,
-    pub(crate) flags: u16,
-    status_code: u16,
-    initial_message_completed: u8,
-    pub(crate) settings: *const c_void,
-}
 
 /// A `zval *` and the `zval` it points at once set (`Request`'s pairs).
 #[repr(C)]
@@ -154,7 +127,7 @@ pub(crate) struct Parse {
 pub(crate) struct State {
     pub(crate) fd: i64,
     pub(crate) request: Request,
-    pub(crate) parser: Llhttp,
+    pub(crate) parser: swoole_rs_http::llhttp::Parser,
     pub(crate) mt_parser: Option<Box<crate::parse::Multipart>>,
     pub(crate) completed: u8,
     pub(crate) keepalive: u8,
@@ -236,31 +209,5 @@ pub(crate) struct Response {
 
 /// The layout the upstream `ContextState` had.
 const _: () = assert!(size_of::<Parse>() == 144, "upstream ContextState layout");
-const _: () = assert!(size_of::<State>() == 768, "upstream ContextState layout");
 const _: () = assert!(size_of::<Response>() == 120, "upstream ContextState layout");
-const _: () = assert!(size_of::<Llhttp>() == 96, "llhttp_t");
 const _: () = assert!(size_of::<Request>() == 272, "upstream ContextState layout");
-const _: () = assert!(
-    std::mem::offset_of!(State, parse) == 400,
-    "upstream ContextState layout"
-);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_fields_follow_the_response_state() {
-        assert_eq!(std::mem::offset_of!(State, websocket_compression), 675);
-        assert_eq!(std::mem::offset_of!(State, zsocket), 680);
-        assert_eq!(std::mem::offset_of!(State, stream_id), 696);
-        assert_eq!(std::mem::offset_of!(State, write_buffer), 712);
-        assert_eq!(std::mem::offset_of!(State, compressed), 720);
-        assert_eq!(std::mem::offset_of!(State, callback), 728);
-        assert_eq!(std::mem::offset_of!(State, before_request), 736);
-        assert_eq!(std::mem::offset_of!(State, websocket_settings), 738);
-        assert_eq!(std::mem::offset_of!(State, upload_tmp_dir), 744);
-        assert_eq!(std::mem::offset_of!(State, compression_types), 752);
-        assert_eq!(std::mem::offset_of!(State, ws_buffer), 760);
-    }
-}

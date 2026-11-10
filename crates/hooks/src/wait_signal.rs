@@ -254,7 +254,7 @@ mod native {
         unsafe { crate::reactor_handlers::defer(run, change, Some(dispose)) };
     }
 
-    extern "C-unwind" fn listeners_done(_: *mut usize) -> bool {
+    extern "C-unwind" fn listeners_done(_: &mut usize) -> bool {
         swr_v1_core_signal_async_listener_num() == 0
     }
 

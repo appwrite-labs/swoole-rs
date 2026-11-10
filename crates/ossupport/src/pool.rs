@@ -147,8 +147,12 @@ impl Pool {
         }
     }
 
+    /// A new worker counts as idle from here, not from its first wait: it takes the
+    /// next task, so a dispatch before it starts waiting must not grow the pool for it
+    /// (upstream counts it only at its wait, so one task right after `start` can add a worker).
     fn spawn(&'static self, core: bool) {
         let key = self.next_key.fetch_add(1, Ordering::Relaxed);
+        self.waiting.fetch_add(1, Ordering::SeqCst);
         // Registered under the lock, so a worker can never retire before it is known.
         let mut threads = lock(&self.threads);
         // The worker inherits a fully blocked mask (upstream's `ThreadPool::create_thread`).
@@ -157,11 +161,11 @@ impl Pool {
                 .stack_size(STACK_SIZE)
                 .spawn(move || self.work(core, key))
         });
-        match spawned {
-            Ok(thread) => {
-                threads.insert(key, thread);
-            }
-            Err(_) => (self.hooks.spawn_failed)(),
+        if let Ok(thread) = spawned {
+            threads.insert(key, thread);
+        } else {
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
+            (self.hooks.spawn_failed)();
         }
     }
 
@@ -202,9 +206,9 @@ impl Pool {
         loop {
             let mut state = lock(&self.state);
             if !state.running {
+                self.waiting.fetch_sub(1, Ordering::SeqCst);
                 break;
             }
-            self.waiting.fetch_add(1, Ordering::SeqCst);
             let pending = |state: &mut State| state.queue.is_empty() && state.running;
             let timeout = if core || self.config.idle <= 0.0 {
                 state = self
@@ -231,6 +235,7 @@ impl Pool {
                 self.closing.fetch_sub(1, Ordering::SeqCst);
                 break;
             }
+            self.waiting.fetch_add(1, Ordering::SeqCst);
         }
         (self.hooks.thread_clean)();
     }
@@ -425,7 +430,13 @@ mod tests {
         let pool = Pool::acquire(HOOKS, 2, 1, 4, 0.0, 0.5);
         assert_eq!(pool.worker_num(), 1, "core workers start eagerly");
         assert_eq!(pool.task_id(), 0, "task ids start at zero");
-        for event in 0..40 {
+        pool.dispatch(0);
+        assert_eq!(
+            pool.worker_num(),
+            1,
+            "a core worker that has not reached its wait yet takes the first task"
+        );
+        for event in 1..40 {
             pool.dispatch(event);
             PEAK.fetch_max(pool.worker_num(), Ordering::SeqCst);
         }

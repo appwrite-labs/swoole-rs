@@ -602,6 +602,7 @@ name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
  "swoole-rs-buffer",
+ "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-locks",
@@ -877,6 +878,7 @@ dependencies = [
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -973,6 +975,7 @@ dependencies = [
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
  "swoole-rs-phphelpers",
+ "swoole-rs-phpstdext",
  "swoole-rs-phpstubs",
  "swoole-rs-reactor",
  "swoole-rs-sqlite",
@@ -1152,6 +1155,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
 ]
 
 [[package]]

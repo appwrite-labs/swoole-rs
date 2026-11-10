@@ -121,7 +121,25 @@ impl Call {
         Some(unsafe { crate::Owned::object(this) })
     }
 
+    /// `$this`'s [`Custom`](crate::Custom) data, or None when `$this` is no `T`
+    /// object (a static method). The frame holds `$this` for the call.
+    #[must_use]
+    #[inline]
+    pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
+        // SAFETY: the frame's live `$this`, held while `self` is borrowed.
+        unsafe { crate::object::custom(self.this_object()?) }
+    }
+
+    /// Swoole's "Constructor of %s can only be called once" `Error`, for `$this`.
+    pub fn constructed_twice(&self) {
+        if let Some(this) = self.this_object() {
+            // SAFETY: a handler, with its live `$this`.
+            unsafe { crate::throw_constructed_twice(this) };
+        }
+    }
+
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
+    #[inline]
     fn this_object(&self) -> Option<*mut zend_object> {
         // SAFETY: a live frame.
         let this = unsafe { &raw const (*self.frame).This };

@@ -64,6 +64,10 @@ MASKS = [(re.compile(r'\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d[^\]]*\]'), '[time]'),
          (re.compile(r'/[^\s\'"]*/fuzz-\d+\.php'), 'PROGRAM')]
 TIMEOUT = 10
 VERDICTS = ('same', 'timeout', 'control-crash', 'divergent', 'flaky')
+# A `go` coroutine's channel timeout, far beyond any run of the main coroutine's waits (12 of
+# at most 3 ms): concurrent deadlines a few ms apart fire in an order load decides, on
+# every engine.
+GO_WAIT = '0.2'
 
 
 class Gen:
@@ -85,8 +89,9 @@ class Gen:
                          "'5'", "'abc'", 'null', 'true', '[]')
 
     def timeout(self):
-        # Channel, Atomic and Lock wait for ever on a timeout <= 0.
-        return self.pick('0.001', '0.002', '0.01', "'0.001'")
+        # Channel, Atomic and Lock wait for ever on a timeout <= 0. At most 3 ms, so a
+        # coroutine's run of waits ends long before a `go` coroutine's GO_WAIT.
+        return self.pick('0.001', '0.002', '0.003', "'0.001'")
 
     def sleep(self):
         return self.pick('0.001', '0', '-0.5', "'0.001'", "'x'", 'null')
@@ -136,9 +141,9 @@ class Gen:
             elif op == 'errCode':
                 out.append("s('chan.errCode', fn() => $c?->errCode);")
             elif op == 'go-pop':
-                out.append("go(function () use ($c) { s('chan.go.pop', fn() => $c?->pop(0.005)); });")
+                out.append(f"go(function () use ($c) {{ s('chan.go.pop', fn() => $c?->pop({GO_WAIT})); }});")
             elif op == 'go-push':
-                out.append(f"go(function () use ($c) {{ s('chan.go.push', fn() => $c?->push({self.scalar()}, 0.005)); }});")
+                out.append(f"go(function () use ($c) {{ s('chan.go.push', fn() => $c?->push({self.scalar()}, {GO_WAIT})); }});")
             else:
                 out.append(f"s('chan.{op}', fn() => $c?->{op}());")
 
@@ -261,7 +266,8 @@ class Gen:
         for _ in range(self.rng.randint(1, 5)):
             op = self.pick('after', 'after', 'tick', 'clear', 'exists', 'stats', 'list', 'clearAll')
             if op == 'after':
-                out.append(f"$id = s('timer.after', fn() => Swoole\\Timer::after({self.pick('1', '0', '-1', '2', "'1'", '0.5')}, "
+                # 10 ms or more: past a tick's two fires (at most 6 ms), so their order never races.
+                out.append(f"$id = s('timer.after', fn() => Swoole\\Timer::after({self.pick('10', '0', '-1', '30', "'10'", '0.5')}, "
                            "static function () { echo \"  fired after\\n\"; }));")
             elif op == 'tick':
                 out.append(f"$id = s('timer.tick', fn() => Swoole\\Timer::tick({self.pick('1', '0', '-1', '3')}, "

@@ -24,3 +24,11 @@ workspace = true
 [[test]]
 name = "multipart_parser"
 path = "../../tests/modules/http/multipart_parser.rs"
+
+[[test]]
+name = "http_parser"
+path = "../../tests/modules/http/http_parser.rs"
+
+[[test]]
+name = "llhttp_differential"
+path = "../../tests/modules/http/llhttp_differential.rs"

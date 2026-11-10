@@ -31,13 +31,9 @@ int32_t swr_v1_locks_wakeup(uint32_t *, int32_t n);
 int32_t swr_v1_locks_coroutine_try(uint32_t *, uintptr_t held_cookie, int64_t held_cid, uintptr_t current_cookie, int64_t current_cid, uint8_t blocking);
 int32_t swr_v1_locks_coroutine_release(uint32_t *);
 double swr_v1_locks_coroutine_backoff(double second, double initial, double maximum);
-/* PHP Swoole\Atomic, Swoole\Lock and Swoole\Coroutine\Lock are Rust
- * (crates/phplocks), MINITs included. */
-#ifdef SW_THREAD /* config.h: ZTS builds with thread support */
-/* Swoole\Thread\Atomic, Atomic\Long and Lock, whose resources Thread\Map,
- * ArrayList and Queue share. */
-void swr_v1_phplocks_thread_atomic_minit(void);
-#endif
+/* PHP Swoole\Atomic, Swoole\Lock, Swoole\Coroutine\Lock and (ZTS)
+ * Swoole\Thread\Atomic, Atomic\Long and Lock are Rust (crates/phplocks),
+ * MINITs included. */
 #ifdef __cplusplus
 }
 #endif

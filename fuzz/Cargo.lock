@@ -138,6 +138,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-http-ffi",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
@@ -295,6 +296,15 @@ dependencies = [
  "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-process",
+]
+
+[[package]]
+name = "swoole-rs-timer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-reactor",
 ]
 
 [[package]]

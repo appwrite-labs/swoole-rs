@@ -70,6 +70,13 @@ jobs:
       # inputs), and main's merge-tier run whose upstream results gate them. Every family
       # and upstream run here when this PR changes what upstream's results depend on
       # (tools/ci.py BASELINES).
+      # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
+      # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
+      - uses: actions/cache/restore@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ github.run_id }}
+          restore-keys: phpt-baseline-
       - id: phpt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,7 +92,7 @@ jobs:
                                             'corpus/upstream/', *UPSTREAM_KEY, *BASELINES['phpt'][4]], text=True)
           print('all' if runner or modules == sorted(MODULES) else ' '.join(phpt_families(modules)))")
           echo "families=$families" >> "$GITHUB_OUTPUT"
-          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline || true)"
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --saved baseline-cache || true)"
           if [ -n "$run" ]; then
             echo "baseline=$run" >> "$GITHUB_OUTPUT"
             echo 'engines=["cargo"]' >> "$GITHUB_OUTPUT"
@@ -285,10 +292,18 @@ jobs:
         run: >
           python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --skip-phase phpt
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
+      # What main's newest merge-tier run failed, saved by its `required` job: the key itself
+      # never matches, its prefix does. The API is the fallback when no baseline is cached.
+      - if: steps.candidate.outcome == 'failure'
+        uses: actions/cache/restore@v4
+        with:
+          path: baseline
+          key: merge-baseline-${{ github.run_id }}
+          restore-keys: merge-baseline-
       - if: steps.candidate.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 tools/ci.py new-failures target/reports/dev/*/loop.json
+        run: python3 tools/ci.py new-failures target/reports/dev/*/loop.json --baseline baseline/failures.json
       - uses: actions/upload-artifact@v4
         if: always() && steps.touched.outputs.modules != ''
         with:

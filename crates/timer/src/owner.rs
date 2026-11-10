@@ -50,7 +50,7 @@ pub struct Info {
 /// `swoole::TimerNode`; `native/timer/swoole_timer.h` asserts the offsets. Only
 /// `TimerNode::new` makes one, so `plain` can trail what C++ sees.
 #[repr(C)]
-pub(crate) struct TimerNode {
+pub struct TimerNode {
     pub(crate) id: c_long,
     kind: i32,
     pub(crate) exec_msec: i64,
@@ -163,7 +163,7 @@ fn apply(view: &TimerView) -> *mut TimerNode {
 
 /// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`, and the
 /// queue a `RefCell` that no borrow holds across a callback or destructor.
-pub(crate) struct Owner {
+pub struct Owner {
     reactor: Cell<*mut c_void>,
     queue: RefCell<Queue>,
     owner_pid: libc::pid_t,
@@ -492,7 +492,7 @@ fn attach(reactor: *mut c_void) {
 }
 
 /// The exit condition: no timer is pending.
-extern "C-unwind" fn idle(_event_num: *mut usize) -> bool {
+extern "C-unwind" fn idle(_event_num: &mut usize) -> bool {
     crate::wrapper::current().is_none_or(|timer| timer.count() == 0)
 }
 
@@ -543,7 +543,7 @@ pub(crate) unsafe extern "C-unwind" fn swr_v1_timer_owner_free(timer: *mut Owner
 /// # Safety
 /// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn swr_v1_timer_owner_queue(timer: *const Owner) -> *mut Queue {
+pub unsafe extern "C" fn swr_v1_timer_owner_queue(timer: *const Owner) -> *mut Queue {
     // SAFETY: as the caller promises.
     unsafe { owner(timer) }.queue.as_ptr()
 }
@@ -553,7 +553,7 @@ unsafe extern "C" fn swr_v1_timer_owner_queue(timer: *const Owner) -> *mut Queue
 /// # Safety
 /// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn swr_v1_timer_owner_reactor(timer: *const Owner) -> *mut c_void {
+pub unsafe extern "C" fn swr_v1_timer_owner_reactor(timer: *const Owner) -> *mut c_void {
     // SAFETY: as the caller promises.
     unsafe { owner(timer) }.reactor.get()
 }
@@ -563,7 +563,10 @@ unsafe extern "C" fn swr_v1_timer_owner_reactor(timer: *const Owner) -> *mut c_v
 /// # Safety
 /// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_reinit(timer: *mut Owner, manually_trigger: bool) {
+pub unsafe extern "C-unwind" fn swr_v1_timer_owner_reinit(
+    timer: *mut Owner,
+    manually_trigger: bool,
+) {
     // SAFETY: as the caller promises.
     unsafe { owner(timer) }.reinit(manually_trigger);
 }

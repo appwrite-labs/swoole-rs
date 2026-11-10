@@ -1,18 +1,12 @@
 //! PHP `Swoole\Atomic`, `Swoole\Atomic\Long`, `Swoole\Lock` and (ZTS)
 //! `Swoole\Thread\Atomic`, `Swoole\Thread\Atomic\Long` and `Swoole\Thread\Lock`:
-//! class registration, objects and every method, over the locks crate's atomic
-//! words and locks. C++ keeps the global pool the process-shared words and
-//! locks live in. See docs/zend.md.
+//! class registration, objects and every method, over atomic words and the
+//! locks crate's locks, with no `unsafe`. Process-shared words and locks live
+//! in Swoole's global memory pool. See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg(feature = "php")]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
 mod atomic;
 mod coroutine;
