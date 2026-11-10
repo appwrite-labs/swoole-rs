@@ -381,17 +381,18 @@ def claimable():
 # are listed and run, and the packages around them (and the PHP release: --php). A baseline's
 # upstream report stands in for running upstream only while these paths are as at HEAD.
 UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expectations.py', 'corpus/upstream/run.py',
-                'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install')
+                'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install',
+                '.github/actions/upstream')
 # Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that made
 # the reports (all must exist, an outage can drop one, and have succeeded) and the paths of its own
 # build and environment. `phpt` is the merge tier's six phpt.yml shards, whose upstream.so phpt-build
-# builds with build_upstream.py; each variant is one job that runs both engines.
+# builds through .github/actions/upstream like every variant; each variant is one job running both engines.
 BASELINES = {
     'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)', 6,
              ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
               '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
     **{variant: (f'phpt-{variant}', f'target/phpt/{variant}/upstream.json', rf'{variant} / phpt', 1,
-                 (f'.github/workflows/{variant}.yml', '.github/actions/upstream', 'corpus/upstream/baseline.sh',
+                 (f'.github/workflows/{variant}.yml', 'corpus/upstream/baseline.sh',
                   *(['.devcontainer/php.sh'] if variant == 'zts' else [])))
        for variant in ('cares', 'iouring', 'threadcontext', 'zts')},
 }
