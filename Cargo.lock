@@ -756,6 +756,7 @@ dependencies = [
  "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-phptimer",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
