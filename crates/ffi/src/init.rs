@@ -74,7 +74,7 @@ fn init() {
         swoole_rs_utilities::swoole_set_log_level(0);
         swoole_rs_corebase::swr_v1_core_set_trace_flags(0x7fff_ffff);
     }
-    swoole_rs_corebase::swr_v1_core_set_memory_pool(pool::new());
+    pool::init();
     if !built_with(Switch::Futex) {
         pool::wait_registry_init();
     }
