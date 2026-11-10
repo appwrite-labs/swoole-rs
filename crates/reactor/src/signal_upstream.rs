@@ -230,9 +230,8 @@ mod descriptor {
     }
 
     /// The signalfd's exit condition, which the reactor calls with its event count.
-    extern "C-unwind" fn exit_condition(event_num: *mut usize) -> bool {
-        // SAFETY: the reactor lends its live, writable event count for the call.
-        unsafe { swoole_rs_process::signal_loop::exit_condition(event_num) }
+    extern "C-unwind" fn exit_condition(event_num: &mut usize) -> bool {
+        swoole_rs_process::signal_loop::exit_condition(event_num)
     }
 
     /// The read handler, the exit condition and the destroy callback.

@@ -216,12 +216,8 @@ pub fn destroyed(ops: &Ops) {
         unsafe { (descriptor.del)(socket) };
     }
 }
-/// # Safety
-/// A native exit-condition callback lends its writable event count for this call.
-pub unsafe extern "C" fn exit_condition(event_num: *mut usize) -> bool {
-    // SAFETY: this callback receives the reactor's live writable counter.
-    let count = unsafe { event_num.read() };
-    // SAFETY: preserve native unsigned decrement, including wrap, before returning true.
-    unsafe { event_num.write(count.wrapping_sub(1)) };
+/// The signal loop's exit condition: one event fewer, with upstream's unsigned wrap.
+pub fn exit_condition(event_num: &mut usize) -> bool {
+    *event_num = event_num.wrapping_sub(1);
     true
 }

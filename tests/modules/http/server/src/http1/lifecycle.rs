@@ -6,7 +6,11 @@
 use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
-use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU64};
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
+use swoole_rs_clients::client::{
+    Call, Client, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op, swr_v1_clients_listen,
+    swr_v1_clients_new, swr_v1_clients_run,
+};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::entry;
@@ -20,6 +24,7 @@ const SW_TASK_WORKER: c_int = 4;
 // glibc's values (the core-tests build is Linux).
 const SIGUSR1: c_int = 10;
 const SIGUSR2: c_int = 12;
+const SHUT_RDWR: c_int = 2;
 const PROT_READ_WRITE: c_int = 3;
 const MAP_SHARED_ANONYMOUS: c_int = 0x21;
 const TEST_COUNTER_NUM: usize = 32;
@@ -52,6 +57,8 @@ unsafe extern "C" {
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     #[link_name = "_Z17swoole_random_intv"]
     fn swoole_random_int() -> u64;
+    #[link_name = "_Z18swoole_event_deferPFvPvES_"]
+    fn swoole_event_defer(call: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
 }
 
 unsafe extern "C-unwind" {
@@ -1468,6 +1475,132 @@ fn process_single_thread() {
     wait_all_child_processes();
 }
 
+/// `test_clean_worker`'s `AsyncClient ac(SW_SOCK_TCP)`, made before the server forks, so
+/// a worker's `ac.get_client()` is the master's client, over the same socket.
+static CLEAN_CLIENT: AtomicPtr<Client> = AtomicPtr::new(ptr::null_mut());
+static CLEAN_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// `ac.get_client()->op(...)`, once `set` fills the call's arguments: its result.
+fn client_run(op: Op, set: impl FnOnce(&mut Call)) -> i64 {
+    let mut call = Call::new(CLEAN_CLIENT.load(Ordering::SeqCst), op);
+    set(&mut call);
+    // SAFETY: the live client; the call's pointers hold what its operation uses.
+    unsafe { swr_v1_clients_run((&raw mut call).cast()) };
+    call.result
+}
+
+/// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
+unsafe extern "C" fn clean_client_event(
+    _: *mut c_void,
+    event: c_int,
+    _: *const c_char,
+    error: usize,
+) {
+    match event {
+        ON_CONNECT => {
+            client_run(Op::Send, |call| {
+                call.data = TEST_STR.as_ptr().cast();
+                call.length = TEST_STR.len();
+            });
+        }
+        ON_ERROR => eprintln!("WARNING: connect failed, error={error}"),
+        ON_RECEIVE => {
+            counter_incr(3, 1);
+        }
+        _ => {}
+    }
+}
+
+unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
+    let events = [ON_CONNECT, ON_ERROR, ON_CLOSE, ON_RECEIVE]
+        .iter()
+        .fold(0, |events, kind| events | 1 << kind);
+    // SAFETY: the live client; its callbacks take no object.
+    unsafe {
+        swr_v1_clients_listen(
+            CLEAN_CLIENT.load(Ordering::SeqCst),
+            ptr::null_mut(),
+            events,
+            clean_client_event,
+        )
+    };
+    let host = CString::new(TEST_HOST).unwrap();
+    let connected = client_run(Op::Connect, |call| {
+        call.data = host.as_ptr();
+        call.a = CLEAN_PORT.load(Ordering::SeqCst).into();
+        call.timeout = -1.0;
+    }) >= 0;
+    expect(connected, "ac.connect(TEST_HOST, port->get_port())");
+}
+
+unsafe extern "C" fn clean_on_start(_: *mut c_void, serv: *mut c_void) {
+    timer_after(100, clean_connect_timer, Server(serv));
+}
+
+unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
+    let worker = current_worker().cast();
+    // SAFETY: the running server and this process's worker.
+    unsafe { entry::clean_worker_connections(serv, worker) };
+    client_run(Op::Shutdown, |call| call.a = SHUT_RDWR.into());
+    // SAFETY: as above.
+    unsafe { entry::stop_async_worker(serv, worker) };
+}
+
+unsafe extern "C" fn clean_on_connect(_: *mut c_void, serv: *mut c_void, _: *mut DataHead) {
+    // SAFETY: a deferred call over the running server.
+    unsafe { swoole_event_defer(clean_deferred, serv) };
+}
+
+unsafe extern "C" fn clean_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
+    if !check(
+        Server(serv).view().connection_num() == 0,
+        "serv->get_connection_num() == 0",
+    ) {
+        return;
+    }
+    if counter_incr(1, 1) == 3 {
+        timer_after(100, shutdown_timer, Server(serv));
+    }
+}
+
+unsafe extern "C" fn ignore_worker(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {}
+
+/// `TEST(server, clean_worker_1)`: `test_clean_worker(Server::MODE_BASE)`.
+fn clean_worker_1() {
+    let serv = Server::new(MODE_BASE);
+    serv.config().worker_num = 2;
+
+    counter_init();
+
+    let client = swr_v1_clients_new(SW_SOCK_TCP, true);
+    assert!(
+        !client.is_null(),
+        "AsyncClient ac(SW_SOCK_TCP) has a socket"
+    );
+    CLEAN_CLIENT.store(client, Ordering::SeqCst);
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert!(port.is_some());
+    CLEAN_PORT.store(port.unwrap().port(), Ordering::SeqCst);
+    assert_eq!(serv.create(), SW_OK);
+
+    serv.set_callback(CB_CONNECT, clean_on_connect as *const c_void);
+    serv.set_callback(CB_RECEIVE, kill_on_receive as *const c_void);
+    serv.set_callback(CB_CLOSE, kill_on_close as *const c_void);
+    serv.set_callback(CB_WORKER_START, clean_worker_start as *const c_void);
+    serv.set_callback(cb::CB_WORKER_STOP as usize, ignore_worker as *const c_void);
+    serv.set_callback(CB_START, clean_on_start as *const c_void);
+
+    assert_eq!(serv.start(), SW_OK);
+    assert_eq!(counter_get(0), 0); // Server on_receive
+    assert_eq!(counter_get(1), 3); // worker start
+    assert_eq!(counter_get(2), 0); // Server on_close
+    assert_eq!(counter_get(3), 0); // Client on_receive
+    assert_no_failure();
+    client_run(Op::Free, |_| {});
+    serv.delete();
+}
+
 pub const CASES: &[(&str, fn())] = &[
     ("base", base),
     ("process", process),
@@ -1488,6 +1621,7 @@ pub const CASES: &[(&str, fn())] = &[
     ("worker_exit", worker_exit),
     ("shutdown_event", shutdown_event),
     ("kill_self", kill_self),
+    ("clean_worker_1", clean_worker_1),
     ("reload_all_from_worker_error", reload_all_from_worker_error),
     (
         "reload_tasks_from_worker_error",

@@ -14,7 +14,7 @@ use std::ffi::{c_int, c_void};
 pub type EndFn = extern "C-unwind" fn();
 /// An exit condition a caller sets: whether the loop may exit, given the event count it
 /// may change for the conditions after it.
-pub type ExitFn = extern "C-unwind" fn(*mut usize) -> bool;
+pub type ExitFn = extern "C-unwind" fn(&mut usize) -> bool;
 
 /// `Reactor::PRIORITY_*`: `PRIORITY_IOURING_SUBMIT` (7) is the last.
 const PRIORITY_DEFER_TASK: c_int = 1;
@@ -185,7 +185,7 @@ pub(crate) unsafe fn if_exit(owner: *mut ReactorState) -> bool {
             continue;
         };
         let accepted = match exit {
-            Exit::Call(call) => call(&raw mut event_num),
+            Exit::Call(call) => call(&mut event_num),
             // SAFETY: a single field read.
             Exit::Defer => unsafe { (*owner).fields.defer_tasks.is_null() },
             Exit::Default => event_num == 0,
@@ -430,37 +430,31 @@ mod tests {
         });
     }
 
-    extern "C-unwind" fn exit1(n: *mut usize) -> bool {
+    extern "C-unwind" fn exit1(n: &mut usize) -> bool {
         push(1);
-        // SAFETY: the walk's count.
-        unsafe {
-            assert_eq!(*n, 0);
-            *n += 7;
-        }
+        assert_eq!(*n, 0);
+        *n += 7;
         true
     }
-    extern "C-unwind" fn exit2(n: *mut usize) -> bool {
+    extern "C-unwind" fn exit2(n: &mut usize) -> bool {
         push(2);
-        // SAFETY: the walk's count.
-        assert_eq!(unsafe { *n }, 7);
+        assert_eq!(*n, 7);
         false
     }
-    extern "C-unwind" fn exit3(n: *mut usize) -> bool {
+    extern "C-unwind" fn exit3(n: &mut usize) -> bool {
         push(3);
-        // SAFETY: the walk's count.
-        assert_eq!(unsafe { *n }, 7);
+        assert_eq!(*n, 7);
         true
     }
-    extern "C-unwind" fn refuse(_: *mut usize) -> bool {
+    extern "C-unwind" fn refuse(_: &mut usize) -> bool {
         push(3);
         false
     }
-    extern "C-unwind" fn exit_mutating(n: *mut usize) -> bool {
+    extern "C-unwind" fn exit_mutating(n: &mut usize) -> bool {
         push(1);
         set_exit(2, exit3);
         callbacks().set_exit(3, None);
-        // SAFETY: the walk's count.
-        unsafe { *n += 7 };
+        *n += 7;
         true
     }
 

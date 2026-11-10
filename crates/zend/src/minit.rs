@@ -3,7 +3,7 @@
 use crate::{
     Class,
     bailout::Bailout,
-    sys::{zend_class_entry, zend_function_entry, zend_long},
+    sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function_entry, zend_long},
 };
 use std::{
     ffi::{CStr, c_int},
@@ -89,6 +89,38 @@ impl Minit {
         };
         // SAFETY: MINIT, with a static, terminated table or none, and a registered parent.
         unsafe { class.register_child(name, table, parent.0, |entry, _| entry.ce_flags |= flags) };
+    }
+
+    /// Register `T`'s class as `name` with `methods` and `flags` added to its
+    /// `ce_flags`: not serializable and, as Swoole's custom objects are, not
+    /// cloneable, with `unset` denied, its objects embedding a `T`
+    /// ([`Custom`](crate::Custom)).
+    /// # Panics
+    /// The class is already registered, or `methods` is not `PHP_FE_END`-terminated.
+    pub fn register_object<T: crate::Custom>(
+        &self,
+        name: &CStr,
+        methods: &'static [zend_function_entry],
+        flags: u32,
+    ) {
+        let class = T::class();
+        let table = terminated(methods);
+        assert!(class.entry().is_null(), "a class registers once");
+        let configure = |entry: &mut zend_class_entry, handlers: &mut _| {
+            entry.ce_flags |= flags | ZEND_ACC_NOT_SERIALIZABLE;
+            crate::object::install_custom::<T>(entry, handlers);
+        };
+        // SAFETY: MINIT, with a static, terminated table.
+        unsafe { class.register(name, table, configure) };
+    }
+
+    /// `zend_declare_property_long(..., ZEND_ACC_PUBLIC)` on a registered class.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long) {
+        assert!(!class.entry().is_null(), "a registered class");
+        // SAFETY: MINIT, after registration.
+        unsafe { class.property_long(name, value) };
     }
 
     /// `zend_declare_class_constant_long` on a registered class.

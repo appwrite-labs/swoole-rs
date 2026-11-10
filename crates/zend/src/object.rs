@@ -135,6 +135,133 @@ impl<T> Object<T> {
     }
 }
 
+/// The Rust data a class's objects embed (Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`),
+/// with no `unsafe` in the family crate: [`Minit::register_object`](crate::Minit::register_object)
+/// installs create and free handlers that make each object's data with
+/// [`Custom::new`] and drop it with the object, and [`Call::custom`](crate::Call::custom)
+/// and [`Value::custom`](crate::Value::custom) borrow it. Mutable state goes in
+/// `Cell`s or `OnceCell`s: methods, and PHP code they run, share the data.
+pub trait Custom: Sized + 'static {
+    /// The class.
+    fn class() -> &'static CustomClass<Self>;
+    /// A new object's data, before its constructor runs.
+    fn new() -> Self;
+}
+
+/// A class whose objects embed a `T`, which only
+/// [`Minit::register_object`](crate::Minit::register_object) registers.
+pub struct CustomClass<T>(Class, PhantomData<fn() -> T>);
+
+impl<T> CustomClass<T> {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Class::new(), PhantomData)
+    }
+}
+
+impl<T> Default for CustomClass<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> std::ops::Deref for CustomClass<T> {
+    type Target = Class;
+
+    fn deref(&self) -> &Class {
+        &self.0
+    }
+}
+
+/// `T`'s data in `std`, when `std` is one of `T`'s objects: made by [`create`]
+/// or [`new_object`], whose handlers are `T`'s class's.
+/// # Safety
+/// `std` is a live object that outlives `'a`.
+pub(crate) unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
+    // SAFETY: per the caller.
+    if unsafe { (*std).handlers } != T::class().handlers() {
+        return None;
+    }
+    // SAFETY: only `create::<T>` and `new_object::<T>` give an object the
+    // handlers `register_object::<T>` made, after writing its data; only
+    // `free::<T>` drops it, when no reference to the object (so none to its
+    // data) remains. Handlers are null only before registration.
+    Some(unsafe { &*Object::<T>::data_ptr(std) })
+}
+
+/// A new object of `T`'s class around `data`, as its `create_object` handler
+/// makes one, but with no constructor run. When Zend's allocation bails out,
+/// `data` drops, the bailout is deferred ([`bailout::defer`]) and the value is
+/// undef.
+/// # Panics
+/// `T`'s class is not registered by [`Minit::register_object`](crate::Minit::register_object).
+#[must_use]
+pub fn new_object<T: Custom>(data: T) -> Owned {
+    let class = T::class();
+    assert!(!class.entry().is_null(), "a registered class");
+    // SAFETY: the registered class's own entry, laid out for `T`.
+    match unsafe { make(class, class.entry(), data) } {
+        // SAFETY: the new object, whose one reference this takes.
+        Ok(std) => unsafe { Owned::object(std) },
+        Err(bailed) => {
+            bailed.defer();
+            Owned::default()
+        }
+    }
+}
+
+/// Allocate an object of `ce` (`class` or a subclass of it) around `data`,
+/// containing Zend's bailouts so that `data` drops before one continues.
+/// # Safety
+/// `ce` is `class`'s entry or a subclass's, and `class`'s handlers are `T`'s.
+unsafe fn make<T: Custom>(
+    class: &Class,
+    ce: *mut zend_class_entry,
+    data: T,
+) -> Result<*mut zend_object, bailout::Bailout> {
+    const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
+    // SAFETY: per the caller; `data` is written before the object is shared.
+    let std = unsafe { Object::<T>::try_create(class, ce) }?;
+    // SAFETY: the object's data, allocated and unused.
+    unsafe { Object::<T>::data_ptr(std).write(data) };
+    Ok(std)
+}
+
+/// `T`'s `create_object` handler, which raises a contained bailout once `T`'s
+/// data has dropped.
+/// # Safety
+/// Zend calls it with `T`'s class or a subclass of it, which inherits it.
+unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_object {
+    let data = T::new();
+    // SAFETY: per Zend; `register_object` gave `T`'s class `T`'s handlers.
+    let made = unsafe { make(T::class(), ce, data) };
+    made.unwrap_or_else(|bailed| {
+        bailout::raise(Err(bailed));
+        std::ptr::null_mut()
+    })
+}
+
+/// `T`'s `free_obj` handler: drop the data, then free the standard object.
+/// # Safety
+/// Zend calls it once, with one of `T`'s objects whose last reference went.
+unsafe extern "C" fn free<T: Custom>(std: *mut zend_object) {
+    // SAFETY: per Zend; nothing borrows the data any more.
+    unsafe { Object::<T>::data_ptr(std).drop_in_place() };
+    // SAFETY: as above.
+    unsafe { zend_object_std_dtor(std) };
+}
+
+/// The handlers [`Minit::register_object`](crate::Minit::register_object)
+/// installs for `T`: not cloneable, `unset` denied, `T`'s create and free.
+pub(crate) fn install_custom<T: Custom>(
+    entry: &mut zend_class_entry,
+    handlers: &mut zend_object_handlers,
+) {
+    handlers.clone_obj = None;
+    handlers.unset_property = Some(crate::unset_property_deny);
+    Object::<T>::install(entry, handlers, create::<T>, free::<T>);
+}
+
 /// Property writes on a live object, under a class that sees them (Zend's
 /// `scope`). Zend copies every name and value.
 #[derive(Clone, Copy)]

@@ -38,13 +38,16 @@ Every other HTTP workload reuses one kept-alive connection. `connect` (#2651) is
 `plaintext` on a new connection per request, sent with `Connection: close`, and the
 client waits for the server's close, so accepting the connection, setting up its
 session and tearing it down count in every request. Its record started 5% above an
-arm64 Linux run (0.99); the ratchet lowers it once two merge runs beat it.
+arm64 Linux run (0.99), but the x86 merge tier measures about 1.085, so it was reset to
+1.09 (#2748 tracks the per-connection cost).
 
 Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
 each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
 GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and
 `Coroutine\Socket`). `callgrind.py` serves their peers, an HTTP server and a TCP
-echo, from threads of its own, so callgrind counts only the client side. Their records started 5% above an
+echo, from threads of its own, so callgrind counts only the client side. The echo
+replies after 2 ms, so the client waits on the reactor once per request instead of
+whenever the reply happens to be late. Their records started 5% above an
 arm64 Linux run (0.92, 0.91 and 0.94); the ratchet lowers them once two merge runs
 beat them.
 

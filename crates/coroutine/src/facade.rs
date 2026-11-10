@@ -37,6 +37,7 @@ const CORO_TIME: u32 = 8;
 
 // SAFETY: crates/timer's, crates/hooks' and crates/reactor's upstream
 // functions; those marked safe take no pointers and have no preconditions.
+// Declarations, since each of those crates depends on this one.
 unsafe extern "C-unwind" {
     fn swr_v1_timer_add_plain_sec(
         timeout: f64,

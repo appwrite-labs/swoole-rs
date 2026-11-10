@@ -14,13 +14,8 @@ use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{Registry, SocketRecord, reactor_upstream};
+use swoole_rs_timer::{TimerStats, swr_v1_timer_owner_queue, swr_v1_timer_stats_get};
 use swoole_rs_tls::socket_pair::SocketPair;
-
-// SAFETY: crates/timer's queue, linked into the same archive.
-unsafe extern "C" {
-    fn swr_v1_timer_owner_queue(timer: *const c_void) -> *const c_void;
-    fn swr_v1_timer_stats_get(queue: *const c_void, out: *mut [u64; 5]) -> i32;
-}
 
 /// `zend_memory_usage(true)`, from the PHP binding.
 static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
@@ -161,11 +156,11 @@ fn timer_count() -> u64 {
         return 0;
     }
     // SAFETY: this thread's live timer.
-    let queue = unsafe { swr_v1_timer_owner_queue(timer) };
-    let mut stats = [0; 5];
-    // SAFETY: the timer's live queue and a `swr_v1_timer_stats` to fill.
+    let queue = unsafe { swr_v1_timer_owner_queue(timer.cast()) };
+    let mut stats = TimerStats::default();
+    // SAFETY: the timer's live queue and a `TimerStats` to fill.
     unsafe { swr_v1_timer_stats_get(queue, &raw mut stats) };
-    stats[0]
+    stats.count as u64
 }
 
 struct Live<'a> {
