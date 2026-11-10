@@ -483,18 +483,6 @@ fn wait_pid(call: &Call) {
     wait_for(call, pid, timeout);
 }
 
-/// `errno = value`.
-fn set_errno(value: c_int) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: the calling thread's errno slot.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    // SAFETY: the calling thread's errno slot.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: as above.
-    unsafe { *slot = value };
-}
-
 /// `waitSignal(int|array $signals, float $timeout = -1)`.
 fn wait_signal(call: &Call) {
     if !main_thread(call) {
@@ -537,7 +525,7 @@ fn wait_signal(call: &Call) {
         host::fatal_error(E_WARNING, c"Invalid signal in the given list");
     }
     // SAFETY: as above.
-    set_errno(unsafe { swr_v1_core_last_error() });
+    swoole_rs_corebase::sys::set_errno(unsafe { swr_v1_core_last_error() });
     call.set_bool(false);
 }
 

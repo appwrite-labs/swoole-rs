@@ -2,6 +2,7 @@
 use std::{
     ffi::{CStr, CString, c_char},
     ptr,
+    rc::Rc,
 };
 use swoole_rs_zend::{
     bailout, string,
@@ -17,14 +18,6 @@ pub struct Callable {
     value: zval,
     cache: zend_fcall_info_cache,
     name: *mut zend_string,
-}
-
-fn outcome<T>(value: T) -> Result<T, bailout::Bailout> {
-    if bailout::pending() {
-        Err(bailout::Bailout)
-    } else {
-        Ok(value)
-    }
 }
 
 fn deferred(bailed: i32) -> bool {
@@ -49,14 +42,49 @@ impl Drop for Callable {
     }
 }
 
+impl Callable {
+    /// `sw_callable_create(value)`: none, after a warning, when `value` is not
+    /// callable. Dropping the last owner releases it, deferring a destructor's
+    /// bailout.
+    /// # Errors
+    /// A native PHP leaf bailed out.
+    pub fn new(value: &swoole_rs_zend::Value) -> Result<Option<Rc<Self>>, bailout::Bailout> {
+        // SAFETY: a live candidate, and Swoole's C warning leaf.
+        let handle = unsafe {
+            factory(
+                value.as_ptr(),
+                ptr::null(),
+                true,
+                ptr::null_mut(),
+                sys::swr_zend_callable_warning,
+            )
+        }?;
+        if handle.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: `factory` gave up this Box.
+        Ok(Some(Rc::from(unsafe { Box::from_raw(handle) })))
+    }
+
+    /// The resolved cache, for a call: Zend reads it (an unresolved call
+    /// resolves into a local cache), so a shared owner may lend it.
+    #[must_use]
+    pub fn cache_ptr(&self) -> *mut zend_fcall_info_cache {
+        ptr::from_ref(&self.cache).cast_mut()
+    }
+}
+
 /// # Errors
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.
 /// # Safety
 /// `value` is a live callable candidate. `report` is C/C++ and may report a PHP warning.
 pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, bailout::Bailout> {
-    // SAFETY: all-zero is an undefined zval and an unused cache.
-    let mut state: Box<Callable> = Box::new(unsafe { std::mem::zeroed() });
+    let mut state = Box::new(Callable {
+        value: swoole_rs_zend::UNDEF,
+        cache: swoole_rs_zend::EMPTY_FCC,
+        name: ptr::null_mut(),
+    });
     let mut truth = false;
     // SAFETY: a live candidate; the C shim traps any user-code bailout.
     if deferred(unsafe { sys::swr_zend_try_facade_truth(value, &raw mut truth) }) {
@@ -108,7 +136,7 @@ pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, 
 pub unsafe fn release(handle: *mut Callable) -> Result<(), bailout::Bailout> {
     // SAFETY: ownership returns to Rust, including its zval and diagnostic string.
     drop(unsafe { Box::from_raw(handle) });
-    outcome(())
+    bailout::outcome(())
 }
 
 /// # Safety
@@ -164,10 +192,8 @@ pub unsafe fn invoke(
 ) -> Result<bool, bailout::Bailout> {
     // SAFETY: the owned callback remains live; retain raw pointers across PHP reentry.
     let cache = unsafe { &raw mut (*handle).cache };
-    // SAFETY: zero initializes fci's optional members and the temporary return zval.
-    let mut fci: sys::zend_fcall_info = unsafe { std::mem::zeroed() };
-    // SAFETY: zero is an undefined zval.
-    let mut temporary: zval = unsafe { std::mem::zeroed() };
+    let mut fci = swoole_rs_zend::EMPTY_FCI;
+    let mut temporary = swoole_rs_zend::UNDEF;
     fci.size = size_of::<sys::zend_fcall_info>();
     fci.retval = if retval.is_null() {
         &raw mut temporary
@@ -196,7 +222,7 @@ pub unsafe fn invoke(
             bailout::trap(sys::swr_zend_zval_release, (&raw mut temporary).cast())
         });
     }
-    outcome(success)
+    bailout::outcome(success)
 }
 
 /// # Errors
@@ -225,7 +251,7 @@ pub unsafe fn factory(
                     sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505)
                 });
             }
-            return outcome(ptr::null_mut());
+            return bailout::outcome(ptr::null_mut());
         }
     }
     // SAFETY: the candidate and native reporter satisfy callable_new's contract.
@@ -248,5 +274,5 @@ pub unsafe fn factory(
         // SAFETY: a registered exception class; Zend copies the message.
         deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
     }
-    outcome(ptr::null_mut())
+    bailout::outcome(ptr::null_mut())
 }
