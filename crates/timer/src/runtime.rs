@@ -140,6 +140,16 @@ pub unsafe fn swr_v1_timer_delay_deadline(
 mod tests {
     use super::*;
 
+    /// Upstream's `time.get_ms_steady`, over `Timer::get_absolute_msec`'s clock.
+    #[test]
+    fn time_get_ms_steady() {
+        let us = 3000;
+        let ms1 = absolute_msec();
+        std::thread::sleep(std::time::Duration::from_micros(us));
+        let ms2 = absolute_msec();
+        assert!(ms2 - ms1 >= i64::try_from(us / 1000).unwrap());
+    }
+
     #[test]
     fn native_modes_and_armed_timeout_are_independent_of_queue_state() {
         assert_eq!(swr_v1_timer_backend(1, 1), 0);
