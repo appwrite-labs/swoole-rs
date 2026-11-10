@@ -22,6 +22,12 @@ fn timer() -> *mut Timer {
     unsafe { *slot() }
 }
 
+/// Publishes `timer` (or null) as this thread's.
+fn publish(timer: *mut Timer) {
+    // SAFETY: this thread's live slot.
+    unsafe { *slot() = timer };
+}
+
 /// This thread's timer, if it has one.
 pub(crate) fn current<'a>() -> Option<&'a Timer> {
     // SAFETY: null or this thread's live timer.
@@ -48,8 +54,7 @@ extern "C" fn swoole_timer_is_available() -> bool {
 #[unsafe(export_name = "_Z19swoole_timer_createb")]
 extern "C-unwind" fn swoole_timer_create(manually_trigger: bool) -> *mut c_void {
     let timer = Timer::create(manually_trigger);
-    // SAFETY: this thread's live slot.
-    unsafe { *slot() = timer };
+    publish(timer);
     timer.cast()
 }
 
@@ -75,8 +80,9 @@ fn add(ms: c_long, persistent: bool, node: TimerNode) -> *mut TimerNode {
     if timer().is_null() {
         swoole_timer_create(false);
     }
-    // SAFETY: this thread's live timer.
-    unsafe { &*timer() }.add(ms, persistent, node)
+    current().map_or(std::ptr::null_mut(), |timer| {
+        timer.add(ms, persistent, node)
+    })
 }
 
 /// `TimerNode *swoole_timer_add(double timeout, ...)`: seconds, at least
@@ -243,8 +249,7 @@ pub(crate) extern "C-unwind" fn swoole_timer_free() {
     }
     // SAFETY: the timer swoole_timer_create made, freed once.
     unsafe { swr_v1_timer_owner_free(timer) };
-    // SAFETY: this thread's live slot.
-    unsafe { *slot() = std::ptr::null_mut() };
+    publish(std::ptr::null_mut());
 }
 
 /// `void swoole_timer_select()`: runs due timers, if there is a timer.
