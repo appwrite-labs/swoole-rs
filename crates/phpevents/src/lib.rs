@@ -433,13 +433,16 @@ struct Cycle(Rc<Callable>);
 
 impl CycleTask for Cycle {
     fn run(&self) {
-        let result = invoke(&self.0, None).and_then(|ok| {
+        // Its own reference: the callback may clear this task.
+        let callable = Rc::clone(&self.0);
+        let result = invoke(&callable, None).and_then(|ok| {
             if ok {
                 Ok(())
             } else {
                 native::warning(c"Swoole\\Event::end callback handler error")
             }
         });
+        drop(callable);
         bailout::raise(result);
     }
 
