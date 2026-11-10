@@ -130,14 +130,6 @@ impl Call {
         unsafe { crate::object::custom(self.this_object()?) }
     }
 
-    /// Swoole's "Constructor of %s can only be called once" `Error`, for `$this`.
-    pub fn constructed_twice(&self) {
-        if let Some(this) = self.this_object() {
-            // SAFETY: a handler, with its live `$this`.
-            unsafe { crate::throw_constructed_twice(this) };
-        }
-    }
-
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
     #[inline]
     fn this_object(&self) -> Option<*mut zend_object> {

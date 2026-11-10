@@ -12,12 +12,13 @@ use std::{
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
-    Call, Class, declare_long, register_long_constant,
+    Call, Class, Minit,
+    bailout::Bailout,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
-        swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_ce_exception,
-        zend_class_entry, zend_execute_data, zend_read_property, zend_string, zend_throw_exception,
+        swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_class_entry,
+        zend_execute_data, zend_read_property, zend_string, zend_throw_exception,
         zend_update_property, zend_update_property_long, zend_update_property_str,
     },
 };
@@ -105,70 +106,39 @@ method_table! {
     ];
 }
 
-unsafe extern "C" {
-    static spl_ce_ArrayIterator: *mut zend_class_entry;
-    static spl_ce_ArrayObject: *mut zend_class_entry;
-}
+swoole_rs_zend::minit!(php_swoole_coroutine_minit => register);
 
-/// `php_swoole_coroutine_minit`.
-/// # Safety
-/// Called once, at MINIT, after `Swoole\Exception` and SPL's classes.
-pub unsafe extern "C" fn php_swoole_coroutine_minit(module_number: i32) {
-    let exception = swoole_rs_phpswoole::exception_class();
-    // SAFETY: SPL registers its classes before any extension's MINIT.
-    let array_iterator = unsafe { spl_ce_ArrayIterator };
-    // SAFETY: as above.
-    let array_object = unsafe { spl_ce_ArrayObject };
-    // SAFETY: MINIT, once, with the registered parent classes.
-    let result =
-        unsafe { init_phpcoroutines_minit(module_number, exception, array_iterator, array_object) };
-    if let Err(error) = result {
-        error.defer();
-        swoole_rs_zend::bailout::finish();
-    }
-}
-
-unsafe fn init_phpcoroutines_minit(
-    module_number: i32,
-    exception: *mut zend_class_entry,
-    array_iterator: *mut zend_class_entry,
-    array_object: *mut zend_class_entry,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+/// `php_swoole_coroutine_minit`, after `Swoole\Exception` and SPL's classes.
+fn register(minit: &Minit) -> Result<(), Bailout> {
     let shortname = host::flag(host::SHORTNAME);
-    let alias = |class: &Class, name: &CStr| -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    let alias = |class: &Class, name: &CStr| -> Result<(), Bailout> {
         if shortname {
-            // SAFETY: MINIT, after registration.
-            unsafe { class.alias(name) }?;
+            minit.alias(class, name)?;
         }
         Ok(())
     };
     let methods = if host::flag(host::CORO_TIME) {
-        COROUTINE_METHODS.as_ptr()
+        &COROUTINE_METHODS.0
     } else {
         COROUTINE_METHODS.without(&[c"getExecuteTime"])
     };
-    // SAFETY: MINIT, with a table that lives for the process.
-    unsafe { COROUTINE.register_static(c"Swoole\\Coroutine", methods) };
+    minit.register_static(&COROUTINE, c"Swoole\\Coroutine", methods);
     alias(&COROUTINE, c"Co")?;
-    // SAFETY: MINIT; SPL registers ArrayIterator and ArrayObject first.
-    unsafe {
-        ITERATOR.register_child(
-            c"Swoole\\Coroutine\\Iterator",
-            ptr::null(),
-            array_iterator,
-            |_, _| {},
-        );
-    };
+    minit.register_child(
+        &ITERATOR,
+        c"Swoole\\Coroutine\\Iterator",
+        &[],
+        minit.array_iterator(),
+        |_, _| {},
+    );
     alias(&ITERATOR, c"Co\\Iterator")?;
-    // SAFETY: as above.
-    unsafe {
-        CONTEXT.register_child(
-            c"Swoole\\Coroutine\\Context",
-            ptr::null(),
-            array_object,
-            |_, _| {},
-        );
-    };
+    minit.register_child(
+        &CONTEXT,
+        c"Swoole\\Coroutine\\Context",
+        &[],
+        minit.array_object(),
+        |_, _| {},
+    );
     alias(&CONTEXT, c"Co\\Context")?;
     let constants: [(&CStr, i64); 6] = [
         (c"SWOOLE_DEFAULT_MAX_CORO_NUM", runtime::DEFAULT_MAX_NUM),
@@ -179,54 +149,26 @@ unsafe fn init_phpcoroutines_minit(
         (c"SWOOLE_CORO_END", 3),
     ];
     for (name, value) in constants {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { register_long_constant(name, value, module_number) };
+        minit.long_constant(name, value);
     }
     // Exit is prohibited in a coroutine: it throws this instead.
-    // SAFETY: MINIT; Swoole\Exception is registered.
-    unsafe {
-        EXIT.register_child(
-            c"Swoole\\ExitException",
-            EXIT_EXCEPTION_METHODS.as_ptr(),
-            exception,
-            |_, _| {},
-        );
-    };
-    // SAFETY: MINIT, after registration.
-    unsafe { declare_long(EXIT.entry(), c"flags", 0, ZEND_ACC_PRIVATE) };
-    // SAFETY: as above.
-    unsafe { declare_long(EXIT.entry(), c"status", 0, ZEND_ACC_PRIVATE) };
-    // SAFETY: Zend's Exception, registered before extensions.
-    let parent = unsafe { zend_ce_exception };
+    let exception = minit.parent(swoole_rs_phpswoole::exception());
+    minit.register_child(
+        &EXIT,
+        c"Swoole\\ExitException",
+        &EXIT_EXCEPTION_METHODS.0,
+        exception,
+        |_, _| {},
+    );
+    minit.property_long(&EXIT, c"flags", 0, ZEND_ACC_PRIVATE);
+    minit.property_long(&EXIT, c"status", 0, ZEND_ACC_PRIVATE);
     let final_class = |entry: &mut zend_class_entry, _: &mut _| entry.ce_flags |= ZEND_ACC_FINAL;
-    // SAFETY: MINIT.
-    unsafe {
-        CANCELED.register_child(
-            c"Swoole\\Coroutine\\CanceledException",
-            ptr::null(),
-            parent,
-            final_class,
-        );
-    };
-    // SAFETY: MINIT.
-    unsafe {
-        TIMEOUT.register_child(
-            c"Swoole\\Coroutine\\TimeoutException",
-            ptr::null(),
-            parent,
-            final_class,
-        );
-    };
-    // SAFETY: MINIT, with the module's number.
-    unsafe {
-        register_long_constant(
-            c"SWOOLE_EXIT_IN_COROUTINE",
-            EXIT_IN_COROUTINE,
-            module_number,
-        );
-    };
-    // SAFETY: as above.
-    unsafe { register_long_constant(c"SWOOLE_EXIT_IN_SERVER", EXIT_IN_SERVER, module_number) };
+    let canceled = c"Swoole\\Coroutine\\CanceledException";
+    minit.register_child(&CANCELED, canceled, &[], minit.exception(), final_class);
+    let timeout = c"Swoole\\Coroutine\\TimeoutException";
+    minit.register_child(&TIMEOUT, timeout, &[], minit.exception(), final_class);
+    minit.long_constant(c"SWOOLE_EXIT_IN_COROUTINE", EXIT_IN_COROUTINE);
+    minit.long_constant(c"SWOOLE_EXIT_IN_SERVER", EXIT_IN_SERVER);
     if host::flag(host::CLI) {
         // SAFETY: MINIT; the handlers are static.
         unsafe {

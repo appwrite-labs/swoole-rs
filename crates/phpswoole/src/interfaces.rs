@@ -6,7 +6,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ptr,
 };
-use swoole_rs_zend::{Call, E_WARNING, OwnedArray, handlers, php_error};
+use swoole_rs_zend::{Call, E_WARNING, OwnedArray, handlers, report};
 
 handlers! {
     zif_swoole_get_local_ip => local_ip;
@@ -35,8 +35,7 @@ pub fn sys_warning(what: &[u8]) {
             .unwrap_or(text.len()),
     );
     let text = CString::new(text).unwrap_or_default();
-    // SAFETY: a handler, with a NUL-terminated message.
-    swoole_rs_zend::bailout::defer(unsafe { php_error(E_WARNING, &text) });
+    swoole_rs_zend::bailout::defer(report(E_WARNING, &text));
 }
 
 /// The host's interfaces (`getifaddrs`), freed on drop.
@@ -241,12 +240,9 @@ fn local_mac(call: &Call) {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn local_mac(call: &Call) {
-    // SAFETY: a handler, with a literal message.
-    swoole_rs_zend::bailout::defer(unsafe {
-        php_error(
-            E_WARNING,
-            c"swoole_get_local_mac is not supported on this platform",
-        )
-    });
+    swoole_rs_zend::bailout::defer(report(
+        E_WARNING,
+        c"swoole_get_local_mac is not supported on this platform",
+    ));
     call.set_bool(false);
 }

@@ -11,7 +11,7 @@ use std::{
 use swoole_rs_phphelpers::callable;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Value, bailout, message, php_error,
+    Call, E_ERROR, E_WARNING, Value, bailout, message, report,
     string::bytes,
     sys::{
         IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
@@ -314,8 +314,7 @@ impl Settings<'_> {
 fn notice(message: &CStr) -> Step {
     set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
     if display_errors() {
-        // SAFETY: a warning from a handler.
-        bailout::defer(unsafe { php_error(E_WARNING, message) });
+        bailout::defer(report(E_WARNING, message));
     }
     checked()
 }
@@ -633,8 +632,7 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
                     "sched_getaffinity() failed, Error: {}[{error}]",
                     reason.to_string_lossy()
                 );
-                // SAFETY: a warning from a handler.
-                bailout::defer(unsafe { php_error(E_WARNING, text.as_cstr()) });
+                bailout::defer(report(E_WARNING, text.as_cstr()));
             }
             return checked().map(|()| false);
         }

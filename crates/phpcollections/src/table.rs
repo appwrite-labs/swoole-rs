@@ -17,7 +17,7 @@ use swoole_rs_memory::{
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Class, Message, Object, Owned, bailout, php_error,
+    Call, Class, Message, Minit, Object, Owned, bailout,
     sys::{
         E_ERROR, E_WARNING, HashPosition, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex,
         add_assoc_long_ex, add_assoc_stringl_ex, swr_zend_array_init, swr_zend_string_init,
@@ -26,7 +26,7 @@ use swoole_rs_zend::{
         zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_hash_str_find,
         zend_object, zend_object_handlers, zend_string, zend_string_hash_func, zval,
     },
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -110,9 +110,10 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_table_minit(_module: c_int) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { TABLE.register(c"Swoole\\Table", METHODS.as_ptr(), configure) };
+pub unsafe extern "C" fn php_swoole_table_minit(module: c_int) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module) };
+    minit.register(&TABLE, c"Swoole\\Table", &METHODS.0, configure);
     let entry = TABLE.entry();
     // SAFETY: Zend's interfaces are registered before extensions' MINIT.
     let iterator = unsafe { zend_ce_iterator };
@@ -122,17 +123,14 @@ pub unsafe extern "C" fn php_swoole_table_minit(_module: c_int) {
     unsafe { zend_class_implements(entry, 1, iterator) };
     // SAFETY: as above.
     unsafe { zend_class_implements(entry, 1, countable) };
-    // SAFETY: MINIT, after registration.
-    unsafe { TABLE.property_null(c"size") };
-    // SAFETY: as above.
-    unsafe { TABLE.property_null(c"memorySize") };
+    minit.property_null(&TABLE, c"size", z::ZEND_ACC_PUBLIC);
+    minit.property_null(&TABLE, c"memorySize", z::ZEND_ACC_PUBLIC);
     for (name, value) in [
         (c"TYPE_INT", TYPE_INT),
         (c"TYPE_STRING", TYPE_STRING),
         (c"TYPE_FLOAT", TYPE_FLOAT),
     ] {
-        // SAFETY: as above.
-        unsafe { TABLE.constant_long(name, value.into()) };
+        minit.class_constant_long(&TABLE, name, value.into());
     }
 }
 
@@ -153,8 +151,7 @@ fn this(call: &Call) -> &'static mut *mut Table {
 fn fatal(level: u32, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
     #[expect(clippy::cast_possible_wrap, reason = "E_ERROR and E_WARNING")]
-    // SAFETY: from a handler.
-    bailout::defer(unsafe { php_error(level as i32, message) });
+    bailout::defer(swoole_rs_zend::report(level as i32, message));
 }
 
 /// `php_swoole_fatal_error(E_WARNING, "<before>%s<after>", text)` of Zend's
@@ -167,8 +164,7 @@ fn report(before: &[u8], text: &[u8], after: &[u8]) -> bool {
     message.push(after);
     swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
     #[expect(clippy::cast_possible_wrap, reason = "E_WARNING")]
-    // SAFETY: from a handler; the message lives on this stack.
-    let reported = unsafe { php_error(E_WARNING as i32, message.as_cstr()) };
+    let reported = swoole_rs_zend::report(E_WARNING as i32, message.as_cstr());
     let bailed = reported.is_err();
     bailout::defer(reported);
     bailed
@@ -189,8 +185,7 @@ fn set_failed(key: &[u8]) {
     swoole_rs_corebase::log::set_last_error(PHP_RUNTIME_NOTICE);
     if swoole_rs_phpswoole::display_errors() {
         #[expect(clippy::cast_possible_wrap, reason = "E_WARNING")]
-        // SAFETY: from a handler; the message lives on this stack.
-        bailout::defer(unsafe { php_error(E_WARNING as i32, message.as_cstr()) });
+        bailout::defer(swoole_rs_zend::report(E_WARNING as i32, message.as_cstr()));
     }
 }
 
@@ -234,8 +229,7 @@ fn table_key(key: &[u8]) -> &[u8] {
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.
 fn construct(call: &Call) {
     if !this(call).is_null() {
-        // SAFETY: a live `$this`.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }
@@ -256,9 +250,8 @@ fn construct(call: &Call) {
     if let Some(made) = unsafe { table.as_mut() } {
         made.set_hash(zend_hash);
     } else {
-        let exception = swoole_rs_phpswoole::exception_class();
-        // SAFETY: as above.
-        unsafe { throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL) };
+        let exception = swoole_rs_phpswoole::exception();
+        call.throw(exception, c"global memory allocation failure", MALLOC_FAIL);
         call.set_bool(false);
         return;
     }

@@ -20,7 +20,7 @@ use swoole_rs_utilities::{
     swr_v1_logger_set, swr_v1_logger_set_date_format,
 };
 use swoole_rs_zend::{
-    Array, E_ERROR, Value, ZStr, ZString, bailout, php_error, sys::ZEND_ACC_NOT_SERIALIZABLE,
+    Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
     throw_exception,
 };
 
@@ -88,8 +88,7 @@ fn size_error(failed: &ZStr, error: &ZStr) {
     ]
     .concat();
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: an error from Rust, through the shim's zend_try.
-    bailout::defer(unsafe { php_error(E_ERROR, &message) });
+    bailout::defer(report(E_ERROR, &message));
 }
 
 /// `php_swoole_parse_to_size(zv)`: a size string as an ini quantity

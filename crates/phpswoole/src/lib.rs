@@ -61,8 +61,8 @@ use std::{
     sync::atomic::{AtomicI32, AtomicU32, Ordering},
 };
 use swoole_rs_zend::{
-    Class, register_long_constant,
-    sys::{zend_ce_error, zend_ce_exception, zend_class_entry, zend_object_handlers},
+    Class,
+    sys::{zend_class_entry, zend_object_handlers},
 };
 
 /// The `swr_v1_phpswoole_minit` flags.
@@ -138,27 +138,28 @@ pub fn swoole_fatal_error(
 /// # Safety
 /// Zend's MINIT.
 pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_int) -> c_int {
-    begin(kind, module_number);
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
+    begin(&minit, kind);
     let mut flags = constants::flags();
     if module::globals().use_shortname.get() {
         flags |= constants::SHORTNAME;
     }
     FLAGS.store(flags, Ordering::Relaxed);
     MODULE_NUMBER.store(module_number, Ordering::Relaxed);
-    // SAFETY: MINIT, with the module's number.
-    unsafe { constants::register(module_number, flags) };
-    // SAFETY: Zend registers Exception before any extension's MINIT.
-    let parent = unsafe { zend_ce_exception };
-    // SAFETY: MINIT, extending Exception, with no methods.
-    unsafe { EXCEPTION.register_child(c"Swoole\\Exception", ptr::null(), parent, |_, _| {}) };
+    constants::register(&minit, flags);
+    minit.register_child(
+        &EXCEPTION,
+        c"Swoole\\Exception",
+        &[],
+        minit.exception(),
+        |_, _| {},
+    );
     // SAFETY: registered above, so its handlers are set.
     let handlers = unsafe { *EXCEPTION.handlers() };
     // SAFETY: MINIT, before any family copies it.
     unsafe { swoole_exception_handlers = handlers };
-    // SAFETY: Zend registers Error before any extension's MINIT.
-    let parent = unsafe { zend_ce_error };
-    // SAFETY: MINIT, extending Error, with no methods.
-    unsafe { ERROR.register_child(c"Swoole\\Error", ptr::null(), parent, |_, _| {}) };
+    minit.register_child(&ERROR, c"Swoole\\Error", &[], minit.error(), |_, _| {});
     // SAFETY: MINIT, before any family reads them.
     unsafe { swoole_exception_ce = EXCEPTION.entry() };
     // SAFETY: as above.
@@ -175,7 +176,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
 
 /// MINIT's start: the `SWOOLE_RS_*` constants, then the module globals and
 /// their ini entries.
-fn begin(kind: c_int, module_number: c_int) {
+fn begin(minit: &swoole_rs_zend::Minit, kind: c_int) {
     #[expect(
         clippy::cast_possible_wrap,
         reason = "upstream's zend_long of the bits"
@@ -186,13 +187,12 @@ fn begin(kind: c_int, module_number: c_int) {
         (c"SWOOLE_RS_ABI_VERSION", abi),
         (c"SWOOLE_RS_FEATURE_BITS", features),
     ] {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { register_long_constant(name, value, module_number) };
+        minit.long_constant(name, value);
     }
     let globals = module::globals_init();
     // SAFETY: MINIT, once, after the globals' constructor, with their
     // process-lifetime address.
-    unsafe { ini::swr_v1_phpswoole_register_ini(globals, module_number, kind) };
+    unsafe { ini::swr_v1_phpswoole_register_ini(globals, minit.module(), kind) };
 }
 
 /// `php_swoole_check_reactor()`: this thread's event loop, unless the request

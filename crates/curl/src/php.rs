@@ -47,13 +47,10 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
     let Some(handle) = (unsafe { handle.as_ref() }) else {
         if required {
             swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-            // SAFETY: a warning from a PHP function; nothing here needs a drop.
-            bailout::raise(unsafe {
-                swoole_rs_zend::php_error(
-                    E_WARNING,
-                    c"The given handle is not initialized in coroutine",
-                )
-            });
+            bailout::raise(swoole_rs_zend::report(
+                E_WARNING,
+                c"The given handle is not initialized in coroutine",
+            ));
             return std::ptr::null_mut();
         }
         return ch;

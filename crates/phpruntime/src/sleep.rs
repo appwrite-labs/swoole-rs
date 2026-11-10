@@ -6,7 +6,7 @@ use swoole_rs_hooks::sleep::{
     CoroutineSleep, swr_v1_hooks_nanosleep, swr_v1_hooks_sleep, swr_v1_hooks_sleep_until,
     swr_v1_hooks_usleep,
 };
-use swoole_rs_zend::{Call, E_WARNING, message, php_error, sys::zend_argument_value_error};
+use swoole_rs_zend::{Call, E_WARNING, message, sys::zend_argument_value_error};
 
 swoole_rs_zend::handlers! {
     zif_swoole_sleep => sleep;
@@ -109,13 +109,10 @@ fn time_sleep_until(call: &Call) {
             unsafe { zend_argument_value_error(1, c"%s".as_ptr(), message.as_cstr().as_ptr()) };
         }
         WARN => {
-            // SAFETY: a handler's context.
-            swoole_rs_zend::bailout::defer(unsafe {
-                php_error(
-                    E_WARNING,
-                    c"Argument #1 ($timestamp) must be greater than or equal to the current time",
-                )
-            });
+            swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
+                E_WARNING,
+                c"Argument #1 ($timestamp) must be greater than or equal to the current time",
+            ));
             call.set_bool(false);
         }
         _ => call.set_bool(true),

@@ -13,7 +13,8 @@ use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
-    Call, Class, E_WARNING,
+    Call, Class, E_WARNING, Minit,
+    bailout::Bailout,
     sys::{IS_ARRAY, zend_value_error, zval},
     type_of, value,
 };
@@ -92,22 +93,17 @@ method_table! {
     ];
 }
 
+swoole_rs_zend::minit!(php_swoole_coroutine_system_minit => register);
+
 /// MINIT: `Swoole\Coroutine\System` (`Co\System`), not
 /// instantiable, and the `FILE_LOCK` constant.
-/// # Safety
-/// Called once, at MINIT, with the extension's module number.
-pub unsafe extern "C" fn php_swoole_coroutine_system_minit(module_number: c_int) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", METHODS.as_ptr()) };
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register_static(&SYSTEM, c"Swoole\\Coroutine\\System", &METHODS.0);
     if host::flag(host::SHORTNAME) {
-        // SAFETY: MINIT, after registration.
-        if let Err(error) = unsafe { SYSTEM.alias(c"Co\\System") } {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
+        minit.alias(&SYSTEM, c"Co\\System")?;
     }
-    // SAFETY: MINIT, with the module number.
-    unsafe { swoole_rs_zend::register_long_constant(c"FILE_LOCK", FILE_LOCK, module_number) };
+    minit.long_constant(c"FILE_LOCK", FILE_LOCK);
+    Ok(())
 }
 
 /// `RETVAL_STRINGL`: `out` (an empty zval) takes a copy of the string.

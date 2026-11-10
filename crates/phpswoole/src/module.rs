@@ -17,7 +17,7 @@ use swoole_rs_corebase::{
 use swoole_rs_zend::{
     Call, E_WARNING,
     bailout::{self, Bailout},
-    php_error,
+    report,
     sys::{
         HashTable, swr_zend_after_fork, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
         swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_function_find,
@@ -123,12 +123,11 @@ pub type Hook = unsafe extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
 pub type HttpMinit = unsafe fn(&MinitArgs);
 
-/// What the HTTP MINIT steps read of Swoole's own: the module, its exception
-/// class, `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
+/// What the HTTP MINIT steps read of Swoole's own: the module,
+/// `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
 /// the build's compression, zlib and thread switches.
 pub struct MinitArgs {
     pub module: c_int,
-    pub exception: *mut zend_class_entry,
     pub shortname: bool,
     pub codecs: u32,
     pub compression: bool,
@@ -159,8 +158,8 @@ pub struct Families {
     pub tracer_minit: unsafe fn(i64, bool, bool, bool),
     /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
     /// queue's, map's and list's, each at MINIT before any PHP thread starts.
-    pub thread_minit: unsafe fn(),
-    pub thread_classes_minit: [unsafe fn(); 4],
+    pub thread_minit: fn(&swoole_rs_zend::Minit),
+    pub thread_classes_minit: [fn(&swoole_rs_zend::Minit); 4],
     /// RINIT's coroutine, thread and tracer steps.
     pub coroutine_rinit: Hook,
     pub thread_rinit: Hook,
@@ -355,7 +354,6 @@ extern "C" fn http_minit<const N: usize>(module: c_int) {
     let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
     let args = MinitArgs {
         module,
-        exception: crate::EXCEPTION.entry(),
         shortname: globals().use_shortname.get(),
         codecs: codecs(),
         compression: flags & crate::constants::COMPRESSION != 0,
@@ -612,13 +610,10 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
     let function = unsafe { swr_zend_function_find(name.as_ptr(), name.count_bytes()) };
     if function.is_null() {
         set_last_error(PHP_FATAL_ERROR);
-        // SAFETY: an error from Rust, through the shim.
-        bailout::defer(unsafe {
-            php_error(
-                E_WARNING,
-                c"swoole_set_process_name only support in CLI mode",
-            )
-        });
+        bailout::defer(report(
+            E_WARNING,
+            c"swoole_set_process_name only support in CLI mode",
+        ));
         // SAFETY: Zend's frame and return slot.
         unsafe { Call::new(frame, value) }.set_bool(false);
     } else {

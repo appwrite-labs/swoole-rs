@@ -19,14 +19,14 @@ use swoole_rs_clients::client::{
 use swoole_rs_clients::swr_v1_clients_port;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR,
+    Call, Class, E_ERROR, Minit,
     bailout::{self, Bailout},
-    declare_property_null, set_object, string,
+    set_object, string,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers, zval,
         zval_ptr_dtor,
     },
-    throw_error, throw_exception, unset_property_deny, update_property, value,
+    unset_property_deny, update_property, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -84,21 +84,19 @@ method_table! {
     ];
 }
 
-/// `php_swoole_client_async_minit`: objects come from the parent's
-/// `create_object`, which Zend inherits.
-/// # Safety
-/// Called once, at MINIT, after `Swoole\Client`'s.
-pub unsafe extern "C" fn php_swoole_client_async_minit(_module_number: c_int) {
-    // SAFETY: MINIT, with a static table and the registered parent.
-    unsafe {
-        ASYNC.register_child(
-            c"Swoole\\Async\\Client",
-            METHODS.as_ptr(),
-            net::CLIENT.entry(),
-            configure,
-        );
-    }
-    let ce = ASYNC.entry();
+swoole_rs_zend::minit!(php_swoole_client_async_minit => register);
+
+/// `php_swoole_client_async_minit`, after `Swoole\Client`'s: objects come from
+/// the parent's `create_object`, which Zend inherits.
+#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register_child(
+        &ASYNC,
+        c"Swoole\\Async\\Client",
+        &METHODS.0,
+        minit.parent(&net::CLIENT),
+        configure,
+    );
     for name in [
         c"onConnect",
         c"onError",
@@ -108,9 +106,9 @@ pub unsafe extern "C" fn php_swoole_client_async_minit(_module_number: c_int) {
         c"onBufferEmpty",
         c"onSSLReady",
     ] {
-        // SAFETY: MINIT, with the class just registered.
-        unsafe { declare_property_null(ce, name, ZEND_ACC_PRIVATE) };
+        minit.property_null(&ASYNC, name, ZEND_ACC_PRIVATE);
     }
+    Ok(())
 }
 
 fn callbacks<'a>(data: &net::Data) -> Option<&'a mut [*mut c_void; 7]> {
@@ -237,8 +235,7 @@ unsafe extern "C" fn async_event(
 /// `__construct(int $type)`.
 fn construct(call: &Call) {
     let Ok(kind) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
-        // SAFETY: from a handler.
-        unsafe { throw_error(c"socket type param is required") };
+        call.throw_error(c"socket type param is required");
         return call.set_bool(false);
     };
     if !check_type(kind) {
@@ -537,14 +534,11 @@ fn enable_ssl(call: &Call) {
     }
     let zcallback = call.zval(1);
     if zcallback.is_null() {
-        // SAFETY: from a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                net::EXCEPTION_PARENT.load(std::sync::atomic::Ordering::Acquire),
-                c"require `onSslReady` callback",
-                i64::from(INVALID_PARAMS),
-            );
-        }
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            c"require `onSslReady` callback",
+            i64::from(INVALID_PARAMS),
+        );
         return call.set_bool(false);
     }
     let Some(conn) = net::connected(call) else {

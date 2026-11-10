@@ -56,9 +56,16 @@ swoole_rs_zend::minit!(minit => register);
 /// MINIT: `Swoole\Timer` (not instantiable) and the `swoole_timer_*` functions,
 /// `Swoole\Timer\Iterator` (an `ArrayIterator`) and the `SWOOLE_TIMER_*` constants.
 fn register(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_static(&TIMER, c"Swoole\\Timer", &METHODS.0, &ALIASES)?;
+    minit.register_static(&TIMER, c"Swoole\\Timer", &METHODS.0);
+    minit.function_aliases(&TIMER, &METHODS.0, &ALIASES)?;
     let parent = minit.array_iterator();
-    minit.register_child(&ITERATOR, c"Swoole\\Timer\\Iterator", &[], parent, 0);
+    minit.register_child(
+        &ITERATOR,
+        c"Swoole\\Timer\\Iterator",
+        &[],
+        parent,
+        |_, _| {},
+    );
     minit.long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS);
     minit.double_constant(c"SWOOLE_TIMER_MIN_SEC", 0.001);
     minit.long_constant(c"SWOOLE_TIMER_MAX_MS", MAX_MS);

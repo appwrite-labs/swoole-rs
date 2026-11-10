@@ -11,15 +11,14 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_zend::{
-    bailout, string,
+    Minit, bailout, string,
     sys::{
         IS_ARRAY, IS_UNDEF, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_array_init,
         swr_zend_bailout_to, swr_zend_guard_clear, swr_zend_guard_mark, swr_zend_guard_pending,
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
         swr_zend_tsrm_api_name, swr_zend_tsrm_is_main_thread, swr_zend_tsrm_is_shutdown,
-        swr_zval_try_addref, zend_declare_class_constant_long, zend_declare_class_constant_string,
-        zend_string, zval, zval_ptr_dtor,
+        swr_zval_try_addref, zend_declare_class_constant_string, zend_string, zval, zval_ptr_dtor,
     },
     type_of,
 };
@@ -180,22 +179,18 @@ extern "C" fn guard_context() -> *mut c_void {
 
 /// MINIT (`php_swoole_thread_minit`): the exit scopes' hooks, `Swoole\Thread`
 /// with its constants, then `Swoole\Thread\Error`.
-/// # Safety
-/// MINIT, before any PHP thread starts.
-pub unsafe fn thread_minit() {
+pub fn thread_minit(minit: &Minit) {
     // SAFETY: MINIT, before any thread reads them.
     unsafe { swr_zend_guard_register(Some(guard_context), Some(thread_bailout)) };
-    // SAFETY: MINIT.
-    let ce = unsafe { thread::register() };
+    let class = thread::register(minit);
     // `std::thread::hardware_concurrency()`.
     // SAFETY: no preconditions.
     let cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(0);
-    // SAFETY: MINIT; Zend copies the name.
-    unsafe { zend_declare_class_constant_long(ce, c"HARDWARE_CONCURRENCY".as_ptr(), 20, cpus) };
+    minit.class_constant_long(class, c"HARDWARE_CONCURRENCY", cpus);
     // SAFETY: no preconditions; TSRM's static name.
     let api = unsafe { swr_zend_tsrm_api_name() };
     // SAFETY: MINIT; Zend copies both strings.
-    unsafe { zend_declare_class_constant_string(ce, c"API_NAME".as_ptr(), 8, api) };
+    unsafe { zend_declare_class_constant_string(class.entry(), c"API_NAME".as_ptr(), 8, api) };
     let policies = [
         (c"SCHED_OTHER", libc::SCHED_OTHER),
         (c"SCHED_FIFO", libc::SCHED_FIFO),
@@ -211,10 +206,7 @@ pub unsafe fn thread_minit() {
         (c"SCHED_DEADLINE", 6),
     ];
     for (name, value) in policies {
-        // SAFETY: MINIT; Zend copies the name.
-        unsafe {
-            zend_declare_class_constant_long(ce, name.as_ptr(), name.count_bytes(), value.into());
-        }
+        minit.class_constant_long(class, name, value.into());
     }
 }
 

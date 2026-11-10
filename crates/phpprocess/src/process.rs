@@ -15,16 +15,16 @@ use std::{
 use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
-    each_value, handlers, message, object_of, register_long_constant, set_object,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, add_assoc_long, class_name, each_value,
+    handlers, message, object_of, set_object,
     sys::{
-        _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, swr_zend_emalloc,
-        swr_zend_is_true, swr_zend_object_addref, swr_zend_object_release, swr_zend_string_alloc,
-        swr_zend_string_free, zend_class_entry, zend_get_executed_filename, zend_hash_str_find,
-        zend_object, zend_object_handlers, zend_read_property, zend_string, zval,
+        _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
+        swr_zend_emalloc, swr_zend_is_true, swr_zend_object_addref, swr_zend_object_release,
+        swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_get_executed_filename,
+        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property, zend_string,
+        zval,
     },
-    throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
-    update_property, update_property_long,
+    type_of, unset_property_deny, update_property, update_property_long,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -212,8 +212,9 @@ pub static mut swoole_process_ce: *mut zend_class_entry = ptr::null_mut();
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { PROCESS.register(c"Swoole\\Process", METHODS.as_ptr(), configure) };
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module) };
+    minit.register(&PROCESS, c"Swoole\\Process", &METHODS.0, configure);
     for (name, value) in [
         (c"IPC_NOWAIT", IPC_NOWAIT),
         (c"PIPE_MASTER", 1),
@@ -224,25 +225,19 @@ pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
         (c"PIPE_TYPE_STREAM", PIPE_TYPE_STREAM),
         (c"PIPE_TYPE_DGRAM", PIPE_TYPE_DGRAM),
     ] {
-        // SAFETY: MINIT, after `register`.
-        unsafe { PROCESS.constant_long(name, value) };
+        minit.class_constant_long(&PROCESS, name, value);
     }
     for name in [c"pipe", c"msgQueueId", c"msgQueueKey", c"pid", c"id"] {
-        // SAFETY: as above.
-        unsafe { PROCESS.property_null(name) };
+        minit.property_null(&PROCESS, name, ZEND_ACC_PUBLIC);
     }
-    // SAFETY: as above.
-    unsafe { declare_property_null(entry(), c"callback", ZEND_ACC_PRIVATE) };
+    minit.property_null(&PROCESS, c"callback", ZEND_ACC_PRIVATE);
     if !swoole_rs_zend::module_loaded(c"pcntl") {
         for (name, value) in signal_constants() {
-            // SAFETY: MINIT of `module`.
-            unsafe { register_long_constant(name, value, module) };
+            minit.long_constant(name, value);
         }
     }
-    // SAFETY: as above.
-    unsafe { register_long_constant(c"SWOOLE_MSGQUEUE_ORIENT", MSGQUEUE_ORIENT, module) };
-    // SAFETY: as above.
-    unsafe { register_long_constant(c"SWOOLE_MSGQUEUE_BALANCE", MSGQUEUE_BALANCE, module) };
+    minit.long_constant(c"SWOOLE_MSGQUEUE_ORIENT", MSGQUEUE_ORIENT);
+    minit.long_constant(c"SWOOLE_MSGQUEUE_BALANCE", MSGQUEUE_BALANCE);
     // SAFETY: MINIT, before any reader.
     unsafe { swoole_process_ce = entry() };
 }
@@ -409,13 +404,11 @@ fn construct(call: &Call) {
     // SAFETY: a live object.
     let name = unsafe { class_name(object) }.to_string_lossy();
     let refuse = |text| {
-        // SAFETY: in a handler.
-        unsafe { throw_error(message!("{text}").as_cstr()) };
+        call.throw_error(message!("{text}").as_cstr());
         call.set_bool(false);
     };
     if !process.worker.is_null() {
-        // SAFETY: in a handler, with `$this`.
-        unsafe { throw_constructed_twice(object) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }
@@ -465,14 +458,11 @@ fn construct(call: &Call) {
             };
             let fd = worker::open_pipe(worker, socket_type);
             if fd < 0 {
-                // SAFETY: in a handler, with Swoole's exception class.
-                unsafe {
-                    throw_exception(
-                        host::exception(),
-                        c"failed to create unix soccket",
-                        i64::from(errno()),
-                    );
-                }
+                call.throw(
+                    swoole_rs_phpswoole::exception(),
+                    c"failed to create unix soccket",
+                    i64::from(errno()),
+                );
                 call.set_bool(false);
                 return;
             }

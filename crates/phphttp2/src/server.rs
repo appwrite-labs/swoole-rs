@@ -146,8 +146,7 @@ fn report(code: c_int, always: bool, message: &[u8]) {
     if always || swoole_rs_phpswoole::display_errors() {
         let text = message.split(|&byte| byte == 0).next().unwrap_or_default();
         let message = CString::new(text).unwrap_or_default();
-        // SAFETY: a warning, printed through "%s".
-        bailout::defer(unsafe { swoole_rs_zend::php_error(swoole_rs_zend::E_WARNING, &message) });
+        bailout::defer(swoole_rs_zend::report(swoole_rs_zend::E_WARNING, &message));
     }
 }
 

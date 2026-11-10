@@ -15,19 +15,17 @@ use std::{
     ffi::{CStr, CString},
     mem::size_of,
     ptr,
-    sync::atomic::Ordering,
 };
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text};
 use swoole_rs_zend::{
     Array, Call, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
-    php_error, set_object,
+    report, set_object,
     sys::{
         E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer,
         zend_object, zval,
     },
-    throw_exception,
 };
 
 /// `SW_TIMEOUT_*`.
@@ -420,9 +418,7 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
 }
 
 fn throw_unsupported(message: &CStr) {
-    let exception = net::EXCEPTION_PARENT.load(Ordering::Acquire);
-    // SAFETY: from a handler or a C++ method, with Swoole's exception class.
-    unsafe { throw_exception(exception, message, OPERATION_NOT_SUPPORT) };
+    swoole_rs_phpswoole::exception().throw(message, OPERATION_NOT_SUPPORT);
 }
 
 /// `php_swoole_socket_set_ssl`.
@@ -654,8 +650,7 @@ fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
             let message = format!("no key \"{}\" passed in optval", key.to_string_lossy());
             let message = CString::new(message).unwrap_or_default();
             #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-            // SAFETY: from a handler.
-            bailout::defer(unsafe { php_error(E_WARNING as i32, &message) });
+            bailout::defer(report(E_WARNING as i32, &message));
             return Err(bailout::pending());
         }
     }

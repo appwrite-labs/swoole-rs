@@ -47,9 +47,9 @@ use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_phphelpers::callable as handle;
 use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Message,
+    Call, Class, E_WARNING, Message, Minit,
     bailout::{self, Bailout},
-    message, register_long_constant,
+    message,
     sys::{
         swr_zend_callable_warning, swr_zend_runtime_find_class, swr_zend_stream_factory,
         swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
@@ -306,16 +306,16 @@ unsafe extern "C" {
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_runtime_minit(module_number: i32) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { RUNTIME.register_static(c"Swoole\\Runtime", METHODS.as_ptr()) };
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register_static(&RUNTIME, c"Swoole\\Runtime", &METHODS.0);
     let features = features();
     let all = flags::all(features & flags::NATIVE_CURL != 0);
     for (name, value) in CONSTANTS.into_iter().chain([(c"SWOOLE_HOOK_ALL", all)]) {
         if flags::PDO.contains(&value) && features & value == 0 {
             continue;
         }
-        // SAFETY: MINIT, with the module's number.
-        unsafe { register_long_constant(name, i64::from(value), module_number) };
+        minit.long_constant(name, i64::from(value));
     }
     // SAFETY: MINIT, before any PHP thread starts.
     unsafe { swr_zend_stream_factory_set(Some(stream::transport_factory_body)) };
@@ -533,8 +533,7 @@ fn mongodb(requested: u32, installed: u32) -> Result<(), Bailout> {
             "Cannot declare class {}, because the name is already in use",
             ALIAS.to_string_lossy()
         );
-        // SAFETY: from a handler.
-        unsafe { swoole_rs_zend::zend_error(E_WARNING, text.as_cstr()) }?;
+        swoole_rs_zend::zend_error(E_WARNING, text.as_cstr())?;
     }
     Ok(())
 }

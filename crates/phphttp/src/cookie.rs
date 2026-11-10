@@ -9,12 +9,12 @@ use swoole_rs_httpbindings::{
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Object, Owned, OwnedArray, ZStr, ZString,
+    Call, Class, Minit, Object, Owned, OwnedArray, ZStr, ZString,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, php_format_date, php_time, php_url_encode, zend_class_entry,
         zend_object, zend_object_handlers, zval,
     },
-    throw_constructed_twice, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -240,9 +240,10 @@ method_table! {
 /// `php_swoole_http_cookie_minit`: register the class.
 /// # Safety
 /// Called once, at MINIT.
-pub unsafe fn php_swoole_http_cookie_minit(_: &MinitArgs) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { COOKIE.register(c"Swoole\\Http\\Cookie", METHODS.as_ptr(), configure) };
+pub unsafe fn php_swoole_http_cookie_minit(args: &MinitArgs) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
+    minit.register(&COOKIE, c"Swoole\\Http\\Cookie", &METHODS.0, configure);
 }
 
 /// Not serializable, clone and unset denied, custom object.
@@ -272,8 +273,7 @@ fn construct(call: &Call) {
     // SAFETY: Cookie methods are non-static, so `$this` is one of our objects.
     let slot = unsafe { CookieObject::data(call.this()) };
     if slot.is_some() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }

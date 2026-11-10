@@ -120,7 +120,7 @@ swoole_rs_zend::minit!(coroutine_lock_minit => register);
 )]
 fn register(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Held>(c"Swoole\\Coroutine\\Lock", &METHODS.0, 0);
-    minit.property_long(&CLASS, c"errCode", 0);
+    minit.property_long(&CLASS, c"errCode", 0, ZEND_ACC_PUBLIC);
     Ok(())
 }
 fn construct(call: &Call) {
@@ -128,7 +128,7 @@ fn construct(call: &Call) {
         return;
     };
     if held.0.get().is_some() {
-        call.constructed_twice();
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }

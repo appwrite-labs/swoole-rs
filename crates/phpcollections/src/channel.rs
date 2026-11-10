@@ -6,7 +6,8 @@ use swoole_rs_coroutine::chan::{self as queue, CANCELED, Channel, Effects, TIMED
 use swoole_rs_phpcoroutines as co;
 use swoole_rs_phpstubs::channel_coro;
 use swoole_rs_zend::{
-    Call, Class, Object, register_long_constant,
+    Call, Class, Minit, Object,
+    bailout::{self, Bailout},
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_emalloc, swr_zval_try_addref,
         swr_zval_try_delref, zend_class_entry, zend_object, zend_object_handlers,
@@ -216,37 +217,27 @@ method_table! {
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_channel_coro_minit(module_number: i32) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phpcollections_channel_minit(module_number) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
-    }
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    bailout::raise(register(&minit));
 }
 
-unsafe fn init_phpcollections_channel_minit(
-    module_number: i32,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe { CHANNEL.register(c"Swoole\\Coroutine\\Channel", METHODS.as_ptr(), configure) };
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register(
+        &CHANNEL,
+        c"Swoole\\Coroutine\\Channel",
+        &METHODS.0,
+        configure,
+    );
     if swoole_rs_phpswoole::globals().use_shortname.get() {
-        // SAFETY: MINIT, after registration.
-        unsafe { CHANNEL.alias(c"Co\\Channel") }?;
-        // SAFETY: as above.
-        unsafe { CHANNEL.alias(c"Chan") }?;
+        minit.alias(&CHANNEL, c"Co\\Channel")?;
+        minit.alias(&CHANNEL, c"Chan")?;
     }
-    // SAFETY: as above.
-    unsafe { CHANNEL.property_long(c"capacity", 0) };
-    // SAFETY: as above.
-    unsafe { CHANNEL.property_long(c"errCode", 0) };
+    minit.property_long(&CHANNEL, c"capacity", 0, z::ZEND_ACC_PUBLIC);
+    minit.property_long(&CHANNEL, c"errCode", 0, z::ZEND_ACC_PUBLIC);
     for (name, value) in CONSTANTS {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { register_long_constant(name, value, module_number) };
+        minit.long_constant(name, value);
     }
-
     Ok(())
 }
 

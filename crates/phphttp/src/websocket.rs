@@ -27,9 +27,8 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Owned, Props, Value, ZStr, ZString, bailout, declare_long,
-    declare_property_null, declare_string, handlers, init_object, method_table,
-    register_long_constant,
+    Array, Call, Class, Minit, Owned, Props, Value, ZStr, ZString, bailout, handlers, init_object,
+    method_table,
     string::{self, bytes},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
@@ -172,8 +171,7 @@ pub(crate) fn server_of(object: *mut zval) -> Option<*mut Server> {
         let message = format!("Invalid instance of {}", name.to_string_lossy());
         host::set_last_error(host::PHP_FATAL_ERROR);
         let message = std::ffi::CString::new(message).unwrap_or_default();
-        // SAFETY: an E_ERROR, raised once the handler's frames are done.
-        bailout::defer(unsafe { swoole_rs_zend::php_error(swoole_rs_zend::E_ERROR, &message) });
+        bailout::defer(swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message));
         return None;
     }
     Some(server)
@@ -267,32 +265,30 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Http\Server` is registered.
 pub unsafe fn websocket_minit(args: &MinitArgs) {
-    let (module_number, serializable) = (args.module, args.thread);
+    let serializable = args.thread;
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
     ZLIB.store(args.zlib, Relaxed);
     swoole_rs_phpclients::register_websocket(client_websocket);
-    let http_server = crate::server::server_class();
-    // SAFETY: MINIT, with a static table and the registered parent. Its
-    // objects are the parent's (no handlers of its own are installed).
-    unsafe {
-        SERVER.register_child(
-            c"Swoole\\WebSocket\\Server",
-            SERVER_METHODS.as_ptr(),
-            http_server,
-            |entry, _| {
-                if !serializable {
-                    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-                }
-            },
-        );
-    }
-    // SAFETY: as above.
-    unsafe {
-        FRAME.register(
-            c"Swoole\\WebSocket\\Frame",
-            FRAME_METHODS.as_ptr(),
-            |_, _| {},
-        );
-    }
+    // Its objects are the parent's (no handlers of its own are installed).
+    let http_server = minit.parent(&crate::server::SERVER);
+    minit.register_child(
+        &SERVER,
+        c"Swoole\\WebSocket\\Server",
+        &SERVER_METHODS.0,
+        http_server,
+        |entry, _| {
+            if !serializable {
+                entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+            }
+        },
+    );
+    minit.register(
+        &FRAME,
+        c"Swoole\\WebSocket\\Frame",
+        &FRAME_METHODS.0,
+        |_, _| {},
+    );
     let ce = FRAME.entry();
     // SAFETY: Stringable is registered by the engine before any extension.
     let stringable = unsafe { zend_ce_stringable };
@@ -304,40 +300,39 @@ pub unsafe fn websocket_minit(args: &MinitArgs) {
         (c"flags", i64::from(FLAG_FIN)),
     ] {
         if name == c"opcode" {
-            // SAFETY: as above; declared in upstream's order.
-            unsafe { declare_string(ce, c"data", c"", ZEND_ACC_PUBLIC) };
+            // Declared in upstream's order.
+            minit.property_string(&FRAME, c"data", c"", ZEND_ACC_PUBLIC);
         }
-        // SAFETY: as above.
-        unsafe { declare_long(ce, name, value, ZEND_ACC_PUBLIC) };
+        minit.property_long(&FRAME, name, value, ZEND_ACC_PUBLIC);
     }
-    // SAFETY: as above.
-    unsafe { declare_property_null(ce, c"finish", ZEND_ACC_PUBLIC) };
+    minit.property_null(&FRAME, c"finish", ZEND_ACC_PUBLIC);
     for (slot, name) in SLOTS.iter().zip(SLOT_NAMES) {
         // SAFETY: the registered class, which declares the property.
         let offset =
             unsafe { swr_zend_http_property_offset(ce, name.as_ptr(), name.count_bytes()) };
         slot.store(offset, Relaxed);
     }
-    // SAFETY: as above, extending Frame.
-    unsafe {
-        CLOSE_FRAME.register_child(c"Swoole\\WebSocket\\CloseFrame", ptr::null(), ce, |_, _| {});
-    }
-    let close = CLOSE_FRAME.entry();
+    let frame = minit.parent(&FRAME);
+    minit.register_child(
+        &CLOSE_FRAME,
+        c"Swoole\\WebSocket\\CloseFrame",
+        &[],
+        frame,
+        |_, _| {},
+    );
     for (name, value) in [
         (c"opcode", i64::from(OPCODE_CLOSE)),
         (c"code", CLOSE_NORMAL),
     ] {
-        // SAFETY: as above.
-        unsafe { declare_long(close, name, value, ZEND_ACC_PUBLIC) };
+        minit.property_long(&CLOSE_FRAME, name, value, ZEND_ACC_PUBLIC);
     }
-    // SAFETY: as above.
-    unsafe { declare_string(close, c"reason", c"", ZEND_ACC_PUBLIC) };
-    constants(module_number);
+    minit.property_string(&CLOSE_FRAME, c"reason", c"", ZEND_ACC_PUBLIC);
+    constants(&minit);
 }
 
 /// The global constants, `SWOOLE_WEBSOCKET_*` then the BC `WEBSOCKET_*`, in
 /// upstream's order.
-fn constants(module: c_int) {
+fn constants(minit: &Minit) {
     let opcodes = [
         (c"CONTINUATION", OPCODE_CONTINUATION),
         (c"TEXT", OPCODE_TEXT),
@@ -357,8 +352,7 @@ fn constants(module: c_int) {
     let register = |prefix: &str, group: &str, name: &CStr, value: i64| {
         let name = format!("{prefix}{group}{}", name.to_string_lossy());
         let name = std::ffi::CString::new(name).unwrap_or_default();
-        // SAFETY: MINIT, with the extension's module number; Zend copies the name.
-        unsafe { register_long_constant(&name, value, module) };
+        minit.long_constant(&name, value);
     };
     for (prefix, bc) in [("SWOOLE_WEBSOCKET_", false), ("WEBSOCKET_", true)] {
         let mut statuses = vec![

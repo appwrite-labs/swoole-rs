@@ -212,7 +212,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
             minit.class_constant_long(&LOCK, name, kind);
         }
     }
-    minit.property_long(&LOCK, c"errCode", 0);
+    minit.property_long(&LOCK, c"errCode", 0, ZEND_ACC_PUBLIC);
     Ok(())
 }
 
@@ -226,7 +226,7 @@ fn construct<T: Shared + Holder>(call: &Call, long: bool, resource: fn() -> Reso
         return;
     };
     if this.resource().get().is_some() {
-        call.constructed_twice();
+        call.throw_constructed_twice();
         // Upstream's Long constructor returns false here, Atomic's nothing.
         if long {
             call.set_bool(false);
@@ -270,7 +270,7 @@ fn lock_construct(call: &Call) {
         return;
     };
     if this.0.get().is_some() {
-        call.constructed_twice();
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }

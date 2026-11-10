@@ -3,7 +3,11 @@
 use crate::{
     Class,
     bailout::Bailout,
-    sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function_entry, zend_long},
+    sys::{
+        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, zend_ce_error, zend_ce_exception,
+        zend_class_entry, zend_function_entry, zend_long, zend_object_handlers,
+        zend_register_bool_constant, zend_register_string_constant,
+    },
 };
 use std::{
     ffi::{CStr, c_int},
@@ -13,6 +17,7 @@ use std::{
 
 unsafe extern "C" {
     static spl_ce_ArrayIterator: *mut zend_class_entry;
+    static spl_ce_ArrayObject: *mut zend_class_entry;
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
@@ -41,19 +46,50 @@ impl Minit {
     /// `SW_REGISTER_LONG_CONSTANT`.
     pub fn long_constant(&self, name: &CStr, value: zend_long) {
         // SAFETY: MINIT, with the module's number.
-        unsafe { crate::register_long_constant(name, value, self.module) };
+        unsafe { crate::class::register_long_constant(name, value, self.module) };
     }
 
     /// `SW_REGISTER_DOUBLE_CONSTANT`.
     pub fn double_constant(&self, name: &CStr, value: f64) {
         // SAFETY: MINIT, with the module's number.
-        unsafe { crate::register_double_constant(name, value, self.module) };
+        unsafe { crate::class::register_double_constant(name, value, self.module) };
     }
 
-    /// [`Class::register_static`] of `name` with `methods`, then `SW_FUNCTION_ALIAS`
-    /// of each `(method, alias)` with that method's arginfo.
-    /// # Errors
-    /// Stops at a contained allocation or registration bailout.
+    /// `REGISTER_BOOL_CONSTANT`, persistent.
+    pub fn bool_constant(&self, name: &CStr, value: bool) {
+        // SAFETY: MINIT, with the module's number; Zend copies the name.
+        unsafe {
+            zend_register_bool_constant(
+                name.as_ptr(),
+                name.count_bytes(),
+                value,
+                persistent(),
+                self.module,
+            );
+        }
+    }
+
+    /// `REGISTER_STRING_CONSTANT`, persistent.
+    pub fn string_constant(&self, name: &CStr, value: &CStr) {
+        // SAFETY: MINIT, with the module's number; Zend copies the name and value.
+        unsafe {
+            zend_register_string_constant(
+                name.as_ptr(),
+                name.count_bytes(),
+                value.as_ptr(),
+                persistent(),
+                self.module,
+            );
+        }
+    }
+
+    /// The module number Zend gave this module.
+    #[must_use]
+    pub fn module(&self) -> c_int {
+        self.module
+    }
+
+    /// [`Class::register_static`] of `name` with `methods`.
     /// # Panics
     /// `methods` is not `PHP_FE_END`-terminated.
     pub fn register_static(
@@ -61,17 +97,45 @@ impl Minit {
         class: &Class,
         name: &CStr,
         methods: &'static [zend_function_entry],
-        aliases: &[(&CStr, &CStr)],
-    ) -> Result<(), Bailout> {
-        let table = terminated(methods);
+    ) {
         // SAFETY: MINIT, with a static, terminated table.
-        unsafe { class.register_static(name, table) };
-        // SAFETY: MINIT, after registering the class with the same table.
-        unsafe { class.function_aliases(table, aliases) }
+        unsafe { class.register_static(name, terminated(methods)) };
     }
 
-    /// [`Class::register_child`] of `name`, extending `parent`, with `methods`
-    /// (none when empty) and `flags` added to its `ce_flags`.
+    /// `SW_FUNCTION_ALIAS` of each `(method, alias)` of `class`, registered with
+    /// `methods`, with that method's arginfo.
+    /// # Errors
+    /// Stops at a contained allocation or registration bailout.
+    /// # Panics
+    /// `class` is not registered, or `methods` is not `PHP_FE_END`-terminated.
+    pub fn function_aliases(
+        &self,
+        class: &Class,
+        methods: &'static [zend_function_entry],
+        aliases: &[(&CStr, &CStr)],
+    ) -> Result<(), Bailout> {
+        registered(class);
+        // SAFETY: MINIT, after registering the class; the table is static and terminated.
+        unsafe { class.function_aliases(terminated(methods), aliases) }
+    }
+
+    /// Register `name` with `methods` (none when empty), then let `configure`
+    /// adjust the entry and a copy of the standard handlers (Swoole's
+    /// `SW_INIT_CLASS_ENTRY` followed by its `SW_SET_CLASS_*` macros).
+    /// # Panics
+    /// `methods` is neither empty nor `PHP_FE_END`-terminated.
+    pub fn register(
+        &self,
+        class: &Class,
+        name: &CStr,
+        methods: &'static [zend_function_entry],
+        configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
+    ) {
+        // SAFETY: MINIT, with a static, terminated table or none.
+        unsafe { class.register_child(name, table(methods), ptr::null_mut(), configure) };
+    }
+
+    /// [`Self::register`], extending `parent`.
     /// # Panics
     /// `methods` is neither empty nor `PHP_FE_END`-terminated.
     pub fn register_child(
@@ -80,15 +144,21 @@ impl Minit {
         name: &CStr,
         methods: &'static [zend_function_entry],
         parent: Parent,
-        flags: u32,
+        configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        let table = if methods.is_empty() {
-            ptr::null()
-        } else {
-            terminated(methods)
-        };
         // SAFETY: MINIT, with a static, terminated table or none, and a registered parent.
-        unsafe { class.register_child(name, table, parent.0, |entry, _| entry.ce_flags |= flags) };
+        unsafe { class.register_child(name, table(methods), parent.0, configure) };
+    }
+
+    /// Swoole's `SW_CLASS_ALIAS`: `name` (no leading backslash) names `class` too.
+    /// # Errors
+    /// A contained PHP allocation or alias registration bailout.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn alias(&self, class: &Class, name: &CStr) -> Result<(), Bailout> {
+        registered(class);
+        // SAFETY: MINIT, after registration.
+        unsafe { class.alias(name) }
     }
 
     /// Register `T`'s class as `name` with `methods` and `flags` added to its
@@ -114,22 +184,53 @@ impl Minit {
         unsafe { class.register(name, table, configure) };
     }
 
-    /// `zend_declare_property_long(..., ZEND_ACC_PUBLIC)` on a registered class.
-    /// # Panics
-    /// `class` is not registered.
-    pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long) {
-        assert!(!class.entry().is_null(), "a registered class");
-        // SAFETY: MINIT, after registration.
-        unsafe { class.property_long(name, value) };
-    }
-
     /// `zend_declare_class_constant_long` on a registered class.
     /// # Panics
     /// `class` is not registered.
     pub fn class_constant_long(&self, class: &Class, name: &CStr, value: zend_long) {
-        assert!(!class.entry().is_null(), "a registered class");
+        registered(class);
         // SAFETY: MINIT, after registration.
         unsafe { class.constant_long(name, value) };
+    }
+
+    /// `zend_declare_property_long` with `access` (`ZEND_ACC_*`) flags.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long, access: u32) {
+        // SAFETY: MINIT, with a registered class.
+        unsafe { crate::class::declare_long(registered(class), name, value, access) };
+    }
+
+    /// `zend_declare_property_double` with `access` flags.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_double(&self, class: &Class, name: &CStr, value: f64, access: u32) {
+        // SAFETY: MINIT, with a registered class.
+        unsafe { crate::class::declare_double(registered(class), name, value, access) };
+    }
+
+    /// `zend_declare_property_bool` with `access` flags.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_bool(&self, class: &Class, name: &CStr, value: bool, access: u32) {
+        // SAFETY: MINIT, with a registered class.
+        unsafe { crate::class::declare_bool(registered(class), name, value, access) };
+    }
+
+    /// `zend_declare_property_string` with `access` flags.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_string(&self, class: &Class, name: &CStr, value: &CStr, access: u32) {
+        // SAFETY: MINIT, with a registered class.
+        unsafe { crate::class::declare_string(registered(class), name, value, access) };
+    }
+
+    /// `zend_declare_property_null` with `access` flags.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_null(&self, class: &Class, name: &CStr, access: u32) {
+        // SAFETY: MINIT, with a registered class.
+        unsafe { crate::class::declare_null(registered(class), name, access) };
     }
 
     /// A registered class, to extend.
@@ -137,9 +238,28 @@ impl Minit {
     /// `class` is not registered.
     #[must_use]
     pub fn parent(&self, class: &Class) -> Parent {
-        let entry = class.entry();
-        assert!(!entry.is_null(), "a registered class");
-        Parent(entry)
+        Parent(registered(class))
+    }
+
+    /// Zend's `Exception`.
+    #[must_use]
+    pub fn exception(&self) -> Parent {
+        // SAFETY: Zend registers its classes before any extension's MINIT.
+        Parent(unsafe { zend_ce_exception })
+    }
+
+    /// Zend's `Error`.
+    #[must_use]
+    pub fn error(&self) -> Parent {
+        // SAFETY: as above.
+        Parent(unsafe { zend_ce_error })
+    }
+
+    /// SPL's `ArrayObject`.
+    #[must_use]
+    pub fn array_object(&self) -> Parent {
+        // SAFETY: SPL registers it at its MINIT, before any extension that depends on it.
+        Parent(unsafe { spl_ce_ArrayObject })
     }
 
     /// SPL's `ArrayIterator`.
@@ -147,6 +267,27 @@ impl Minit {
     pub fn array_iterator(&self) -> Parent {
         // SAFETY: SPL registers it at its MINIT, before any extension that depends on it.
         Parent(unsafe { spl_ce_ArrayIterator })
+    }
+}
+
+/// `CONST_PERSISTENT` as the `int` the register functions take.
+fn persistent() -> c_int {
+    c_int::try_from(CONST_PERSISTENT).unwrap_or(c_int::MAX)
+}
+
+/// `class`'s entry, checking it is registered.
+fn registered(class: &Class) -> *mut zend_class_entry {
+    let entry = class.entry();
+    assert!(!entry.is_null(), "a registered class");
+    entry
+}
+
+/// `methods` as a table pointer: null when empty, else checking its `PHP_FE_END`.
+fn table(methods: &'static [zend_function_entry]) -> *const zend_function_entry {
+    if methods.is_empty() {
+        ptr::null()
+    } else {
+        terminated(methods)
     }
 }
 

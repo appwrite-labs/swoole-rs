@@ -36,7 +36,7 @@ use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::event;
 use swoole_rs_reactor::{Event, ReactorTask, SocketRecord, event_api};
 use swoole_rs_zend::{
-    Call, Class,
+    Call, Class, Minit,
     bailout::{self, Bailout, trap},
     sys::{IS_NULL, swr_zend_callable_warning, swr_zend_zval_release, swr_zval_try_addref, zval},
 };
@@ -92,16 +92,14 @@ method_table! {
 }
 
 /// MINIT: `Swoole\Event` (not instantiable) and the `swoole_event_*` functions.
+/// # Safety
+/// Zend's MINIT of this module, with its number.
 #[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_event_minit(_module_number: c_int) {
-    bailout::raise(minit());
-}
-
-fn minit() -> Result<(), Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe { EVENT.register_static(c"Swoole\\Event", METHODS.as_ptr()) };
-    // SAFETY: MINIT, after registration, with the class's own table.
-    unsafe { EVENT.function_aliases(METHODS.as_ptr(), &ALIASES) }
+pub unsafe extern "C" fn php_swoole_event_minit(module_number: c_int) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register_static(&EVENT, c"Swoole\\Event", &METHODS.0);
+    bailout::raise(minit.function_aliases(&EVENT, &METHODS.0, &ALIASES));
 }
 
 /// A NUL-terminated message on the stack.
