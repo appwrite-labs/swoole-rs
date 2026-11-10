@@ -43,10 +43,11 @@ no longer built (#1881).
 
 `http_parser.cpp` and `multipart_parser.cpp` tested only the bundled third-party
 parsers, so they left the lane (#1756) and with them `include/swoole_llhttp.h`.
-Their ports drive crates/oracle's unmodified copies of `thirdparty/llhttp` and
-`thirdparty/multipart_parser.c` with the same inputs, callbacks and expected values,
-one Rust test per TEST under the TEST's own name: `cargo test -p swoole-rs-oracle
---test http_parser --test multipart_parser`.
+Their ports, with the same inputs, callbacks and expected values and one Rust test per
+TEST under the TEST's own name, drive crates/oracle's unmodified copy of
+`thirdparty/llhttp` (`cargo test -p swoole-rs-oracle --test http_parser`) and
+crates/http's Rust multipart parser, which replaced `thirdparty/multipart_parser.c`
+(#2658; `cargo test -p swoole-rs-http --test multipart_parser`).
 
 | Upstream file | Rust test file | TESTs |
 | --- | --- | --- |
@@ -60,7 +61,7 @@ Four `http_server` TESTs drove a request through the `http_server::listen` SDK
 the TESTs left `http_server.cpp`. Their Rust ports, in `http_server.rs` (included by
 `crates/ports/src/read.rs`'s tests: `cargo test -p swoole-rs-ports http_server`), send
 the same request through the server's HTTP reader under the same port settings, with
-the request's effects running the bundled multipart parser and real temp files. The
+the request's effects running the multipart parser and real temp files. The
 recorded requests come from `crates/oracle/upstream/core-tests/fuzz/cases`.
 
 | Upstream TEST | Rust test | Same input | Assertions |
@@ -85,7 +86,7 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
-| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the bundled multipart parser (#1938) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
