@@ -20,7 +20,7 @@ use swoole_rs_zend::{
     Class, Object, Owned, Value, init_object,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset, zend_class_entry,
-        zend_object, zend_object_handlers, zend_string, zval,
+        zend_object, zend_object_handlers, zend_string, zval, zval_ptr_dtor,
     },
     unset_property_deny,
     value::{obj_of, set_long},
@@ -393,6 +393,18 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
     crate::context::server(state)
         .by_session(state.fd)
         .is_some_and(|conn| conn.closed.load(Relaxed) == 0 && conn.peer_closed == 0)
+}
+
+/// The context's own references to its request and response objects,
+/// released once it is handled. Their free handlers clear the slots, and the
+/// second frees the context, so each pointer is read before its release.
+pub(crate) fn release_objects(ctx: *mut Context) {
+    let request = send::state(ctx).request.zobject.ptr;
+    // SAFETY: the context's live request object, released once.
+    unsafe { zval_ptr_dtor(request) };
+    let response = send::state(ctx).response.zobject.ptr;
+    // SAFETY: as above, for the response.
+    unsafe { zval_ptr_dtor(response) };
 }
 
 /// `Context::free`: release the context once neither object nor an HTTP/2
