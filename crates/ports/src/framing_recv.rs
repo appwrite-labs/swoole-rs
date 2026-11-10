@@ -76,8 +76,8 @@ pub(crate) trait Packages {
     const HEAD: Option<u32>;
     /// `get_package_length` over the buffered `bytes`.
     fn length(r: &Recv, p: &Protocol, bytes: &[u8]) -> i64;
-    /// `onPackage` over the first `length` bytes of the buffer `b`.
-    fn dispatch(r: &Recv, b: &CppString, length: u64) -> c_int;
+    /// `onPackage` over the buffer `b`'s `offset` bytes (the awaited package) from byte `start`.
+    fn dispatch(r: &Recv, b: &CppString, start: usize) -> c_int;
 }
 
 /// The protocol's own callbacks, as upstream calls them.
@@ -100,9 +100,18 @@ impl Packages for Callbacks {
             as i64)
     }
     #[inline(always)]
-    fn dispatch(r: &Recv, b: &CppString, length: u64) -> c_int {
-        // SAFETY: the live protocol and socket, and `length` bytes at the buffer start.
-        unsafe { dispatch(r.protocol, r.socket, b.str, length) }
+    fn dispatch(r: &Recv, b: &CppString, start: usize) -> c_int {
+        let length = b.offset.unsigned_abs();
+        // SAFETY: the live protocol and socket, and the package's `length` bytes from
+        // `start`, inside the buffer (the loop dispatches only a whole one).
+        unsafe {
+            dispatch(
+                r.protocol,
+                r.socket,
+                b.str.wrapping_add(start).cast_const(),
+                length,
+            )
+        }
     }
 }
 
@@ -257,10 +266,16 @@ fn effect<K: Packages>(r: &Recv, op: u32, arg: u64, flags: u32) -> i64 {
             }
             rare(r, b, p, s, op, arg)
         }
-        OP_GET_LENGTH => K::length(r, p, b.view()),
-        OP_DISPATCH => i64::from(K::dispatch(r, b, arg)),
+        OP_GET_LENGTH => K::length(r, p, b.view().get(start(arg)..).unwrap_or_default()),
+        OP_DISPATCH => i64::from(K::dispatch(r, b, start(arg))),
         _ => rare(r, b, p, s, op, arg),
     }
+}
+
+/// A byte position the loop passed as an effect's arg.
+#[inline(always)]
+fn start(arg: u64) -> usize {
+    usize::try_from(arg).unwrap_or(usize::MAX)
 }
 
 /// A failed `OP_RECV`, and the effects a frame rarely needs.
