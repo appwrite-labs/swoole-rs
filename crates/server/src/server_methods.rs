@@ -735,6 +735,7 @@ pub fn create_base_factory(serv: view::Server<'_>) -> *mut c_void {
 ///
 /// # Safety
 /// `factory` is a live `Factory`; `send` null or what `op` reads.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) unsafe fn on_base(factory: *mut c_void, send: *mut c_void, op: u32, arg: u64) -> bool {
     // `Factory::server_`, its first member (server.cc asserts the layout).
     // SAFETY: as the caller guarantees.
@@ -747,6 +748,7 @@ pub(crate) unsafe fn on_base(factory: *mut c_void, send: *mut c_void, op: u32, a
 
 /// `BaseFactory::end(session_id, flags)`'s argument: the C++ forward's
 /// `(uint64_t) session_id | ((uint64_t) flags << 48)`.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn end_arg(session_id: c_long, flags: c_int) -> u64 {
     session_id.cast_unsigned() | (i64::from(flags).cast_unsigned() << 48)
 }

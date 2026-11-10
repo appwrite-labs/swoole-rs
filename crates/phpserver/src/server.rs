@@ -84,7 +84,7 @@ pub(crate) struct ServerData {
 }
 
 /// `SW_THREAD`, as MINIT was told.
-pub(crate) use swoole_rs_server::thread_mode_ops::SUPPORTED as THREAD;
+pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
 
 thread_local! {
     /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):
