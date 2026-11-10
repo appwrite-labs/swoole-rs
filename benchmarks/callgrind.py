@@ -121,8 +121,12 @@ class Pong(http.server.BaseHTTPRequestHandler):
 
 
 class Echo(socketserver.BaseRequestHandler):
+    # The reply waits 2 ms, so the client's recv() always finds nothing and waits on the
+    # reactor once. Whether a prompt reply beat recv() was timing, and swung client and socket
+    # between 0.86 and 1.05 from one merge run to the next.
     def handle(self):
         while data := self.request.recv(65536):
+            time.sleep(0.002)
             self.request.sendall(data)
 
 
