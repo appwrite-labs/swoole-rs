@@ -28,7 +28,7 @@ cursor, activation and the bailout mark) and `swr_v1_coroutine` (id, state,
 resume code, task, cancel function, the origin tree and timing). Rust keeps the
 scheduler in upstream's `SW_THREAD_LOCAL` scope (`thread_local!` under ZTS, a
 plain static otherwise; `swr_v1_coroutine_scheduler_get`) and allocates each
-`swoole::Coroutine` as a `swr_v1_coroutine` followed by its `swr_v1_context`
+`swoole::Coroutine` as a `swr_v1_coroutine` followed by its `Context`
 (`context::Native`), whose `native` field points back at it. C++ getters read
 fields inline; every write is a Rust call.
 
@@ -70,16 +70,16 @@ no native source left.
 ## Context stack
 
 `swr_v1_context_stack_alloc(size, flags)` allocates a coroutine stack with
-`malloc`, or with `SWR_CTX_STACK_PROTECT` (`SW_CONTEXT_PROTECT_STACK_PAGE`) as an
+`malloc`, or with `STACK_PROTECT` (`SW_CONTEXT_PROTECT_STACK_PAGE`) as an
 anonymous mapping (plus `MAP_STACK` on OpenBSD) whose lowest page is made
-inaccessible; it returns null on failure, which C++ reports as upstream does.
-`SWR_CTX_STACK_MARK` (`SW_CONTEXT_DETECT_STACK_USAGE`) writes upstream's magic
+inaccessible; it returns null on failure, which context init reports as upstream does.
+`STACK_MARK` (`SW_CONTEXT_DETECT_STACK_USAGE`) writes upstream's magic
 markers before the context is made: at `size - offset + 31` for each doubling
 `offset` from 64 KiB while `offset <= size`. `swr_v1_context_stack_usage`
 samples them while `offset < size` and reports twice the last changed offset,
 or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags.
 
-`crates/coroutine/src/context.rs` owns the `swr_v1_context` record that follows
+`crates/coroutine/src/context.rs` owns the `Context` record that follows
 each coroutine's `swr_v1_coroutine`: init
 allocates the stack and makes the boost.context fcontext (out of memory is
 upstream's fatal error and exit 254), swap_in/swap_out jump with
@@ -89,7 +89,7 @@ valgrind stack registration are not kept; config.m4 fails on a CPU without
 boost asm, and links it with the thread backend too, since the Rust context
 references it either way.
 
-With `SWR_CTX_THREAD` (`--enable-thread-context`) the record has no stack and
+With `THREAD` (`--enable-thread-context`) the record has no stack and
 `fctx` owns a thread (`crates/coroutine/src/thread.rs`; `thread_context.cc` is
 gone). A switch hands a baton, a binary semaphore, from one thread to the next,
 where upstream unlocks `std::mutex`es from threads that didn't lock them. init
