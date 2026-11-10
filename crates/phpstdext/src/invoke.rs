@@ -61,7 +61,6 @@ pub(crate) fn compiled_function(name: &CStr) -> *mut zend_function {
 /// The `INIT_METHOD_CALL` user opcode handler.
 /// # Safety
 /// Zend's user opcode handler contract: a live frame at this opline.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_data) -> c_int {
     // SAFETY: a live frame.
     let opline = unsafe { (*frame).opline };
