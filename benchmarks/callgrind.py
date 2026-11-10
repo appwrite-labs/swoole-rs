@@ -11,6 +11,7 @@ allowed to drift by NOISE (docs/migration.md, Speed). --ratchet lowers those rec
 two consecutive merge-tier results both beat (.github/workflows/badges.yml files the issue).
 """
 import argparse
+import gzip
 import http.client
 import json
 import math
@@ -30,8 +31,16 @@ from corpus.run import WebSocket
 
 NOISE = 1.01  # counts for the same binaries drift well under 1% between runs
 PAYLOAD = bytes(range(256)) * 256
+# Compressible JSON text, about 4 KiB and 1 KiB.
+DOCUMENT = json.dumps([{'id': i, 'event': 'order.created', 'status': 'paid', 'total': i * 25}
+                       for i in range(64)], separators=(',', ':')).encode()
+MESSAGE = DOCUMENT[:1024]
+FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 # (application directory, method, path, body, expected response body). method 'WS' opens a
-# WebSocket to the app and echoes `body` frame by frame instead of sending HTTP. 'GET1' is a
+# WebSocket to the app and echoes `body` frame by frame instead of sending HTTP; 'WSZ' does
+# so with permessage-deflate. 'GZ' is a POST sent with Accept-Encoding: gzip whose response
+# must come back gzip-encoded. 'TCP' and 'UDP' send `body` as raw bytes on one connection
+# (one socket) and read `expected` back. 'GET1' is a
 # GET on a new connection each time, closed by the server (Connection: close).
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
@@ -58,6 +67,13 @@ WORKLOADS = {
     'mysql': ('benchmarks/mysql', 'GET', '/?id=42', None, b'{"id":42,"name":"benchmark"}'),
     # plaintext with accept, the connection's setup and its close in every request (#2651).
     'connect': ('corpus/01-hello', 'GET1', '/', None, b'Hello, Swoole!\n'),
+    # Compression (#2649): a gzip-encoded HTTP response and a permessage-deflate echo.
+    'gzip': ('benchmarks/compression', 'GZ', '/gzip', DOCUMENT, DOCUMENT),
+    'websocket-deflate': ('benchmarks/compression', 'WSZ', '/chat', MESSAGE, MESSAGE),
+    # Swoole\Server without HTTP (#2650): length-prefixed and end-marker framing, and UDP.
+    'tcp-length': ('corpus/07-tcp-framing', 'TCP', None, FRAME, FRAME),
+    'tcp-eof': ('benchmarks/framing', 'TCP', None, PAYLOAD[:1024] + b'\r\n', PAYLOAD[:1024] + b'\r\n'),
+    'udp': ('benchmarks/framing', 'UDP', None, PAYLOAD[:1024], PAYLOAD[:1024]),
 }
 
 
@@ -109,8 +125,8 @@ def wait_for_port(port, proc, seconds=180):
 
 def send(port, workload, count):
     _, method, path, payload, expected = workload
-    if method == 'WS':
-        client = WebSocket(port)
+    if method in ('WS', 'WSZ'):
+        client = WebSocket(port, deflate=method == 'WSZ')
         try:
             for _ in range(count):
                 client.send(payload)
@@ -136,11 +152,34 @@ def send(port, workload, count):
             if response.status != 200 or body != expected:
                 raise RuntimeError(f'unexpected response {response.status}: {body[:80]!r}')
         return
+    if method in ('TCP', 'UDP'):
+        if method == 'TCP':
+            sock = socket.create_connection(('127.0.0.1', port), timeout=60)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(60)
+            sock.connect(('127.0.0.1', port))
+        with sock:
+            for _ in range(count):
+                sock.sendall(payload)
+                body = sock.recv(65536)
+                while method == 'TCP' and len(body) < len(expected) and (chunk := sock.recv(65536)):
+                    body += chunk
+                if body != expected:
+                    raise RuntimeError(f'unexpected {method} reply: {body[:80]!r}')
+        return
     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):
-        conn.request(method, path, payload)
+        if method == 'GZ':
+            conn.request('POST', path, payload, {'Accept-Encoding': 'gzip'})
+        else:
+            conn.request(method, path, payload)
         response = conn.getresponse()
         body = response.read()
+        if method == 'GZ':
+            if response.getheader('Content-Encoding') != 'gzip':
+                raise RuntimeError(f'response not gzip-encoded: {response.getheaders()!r}')
+            body = gzip.decompress(body)
         if response.status not in (200, 201) or body != expected:
             raise RuntimeError(f'unexpected response {response.status}: {body[:80]!r}')
     conn.close()

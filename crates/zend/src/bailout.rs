@@ -98,6 +98,13 @@ pub fn pending() -> bool {
     PENDING.get() || native_thread_exit()
 }
 
+/// `value`, or a [`Bailout`] while one is pending, which stays pending.
+/// # Errors
+/// A bailout is pending.
+pub fn outcome<T>(value: T) -> Result<T, Bailout> {
+    if pending() { Err(Bailout) } else { Ok(value) }
+}
+
 /// Hand a contained bailout to an outer C trampoline after Rust cleanup.
 /// The caller must re-raise a true result in C; consuming the pending bit here
 /// prevents a caught shutdown bailout from poisoning a later request operation.

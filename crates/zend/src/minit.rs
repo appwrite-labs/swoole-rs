@@ -71,7 +71,7 @@ impl Minit {
     }
 
     /// [`Class::register_child`] of `name`, extending `parent`, with `methods`
-    /// (none when empty).
+    /// (none when empty) and `flags` added to its `ce_flags`.
     /// # Panics
     /// `methods` is neither empty nor `PHP_FE_END`-terminated.
     pub fn register_child(
@@ -80,6 +80,7 @@ impl Minit {
         name: &CStr,
         methods: &'static [zend_function_entry],
         parent: Parent,
+        flags: u32,
     ) {
         let table = if methods.is_empty() {
             ptr::null()
@@ -87,7 +88,26 @@ impl Minit {
             terminated(methods)
         };
         // SAFETY: MINIT, with a static, terminated table or none, and a registered parent.
-        unsafe { class.register_child(name, table, parent.0, |_, _| {}) };
+        unsafe { class.register_child(name, table, parent.0, |entry, _| entry.ce_flags |= flags) };
+    }
+
+    /// `zend_declare_class_constant_long` on a registered class.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn class_constant_long(&self, class: &Class, name: &CStr, value: zend_long) {
+        assert!(!class.entry().is_null(), "a registered class");
+        // SAFETY: MINIT, after registration.
+        unsafe { class.constant_long(name, value) };
+    }
+
+    /// A registered class, to extend.
+    /// # Panics
+    /// `class` is not registered.
+    #[must_use]
+    pub fn parent(&self, class: &Class) -> Parent {
+        let entry = class.entry();
+        assert!(!entry.is_null(), "a registered class");
+        Parent(entry)
     }
 
     /// SPL's `ArrayIterator`.
