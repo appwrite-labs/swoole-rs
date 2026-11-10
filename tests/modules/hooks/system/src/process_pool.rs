@@ -3,9 +3,10 @@
 //! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are zeroed mirrors of the
 //! records Rust owns, checked against the fixture's sizes; the callbacks are `extern "C"`
 //! functions, as upstream's are captureless lambdas, so a failed assertion inside one aborts
-//! the process it runs in. The fixture gives `sw_mem_pool()`, `swoole_set_isolation`,
-//! `SwooleWG` and `sw_timer()->remove`. core-tests' shared counters are `sw_mem_pool()`
-//! memory, so workers' increments reach the master, as upstream's do.
+//! the process it runs in. The fixture gives `swoole_set_isolation`, `SwooleWG` and
+//! `sw_timer()->remove`. core-tests' shared counters are `sw_mem_pool()` memory
+//! (crates/memory's `members::pool::alloc`), so workers' increments reach the master, as
+//! upstream's do.
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
 use std::io::{Read, Write};
@@ -14,6 +15,7 @@ use std::os::unix::net::UnixStream;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_memory::members::pool as mem_pool;
 
 use super::timer::{TimerNode, after, swoole_timer_del, swoole_timer_free, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
@@ -233,7 +235,6 @@ struct Worker {
 
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
-    fn swr_case_mem_pool_alloc(size: u32) -> *mut c_void;
     fn swr_case_set_isolation_user(user: *const c_char);
     fn swr_case_worker_max_request() -> u32;
     fn swr_case_current_worker() -> *mut Worker;
@@ -463,10 +464,7 @@ fn handler(f: Handler) -> usize {
 fn counter_init() {
     let mut counters = COUNTERS.load(SeqCst);
     if counters.is_null() {
-        // SAFETY: the shared global memory pool.
-        counters =
-            unsafe { swr_case_mem_pool_alloc((size_of::<c_int>() * TEST_COUNTER_NUM) as u32) }
-                .cast();
+        counters = mem_pool::alloc((size_of::<c_int>() * TEST_COUNTER_NUM) as u32).cast();
         COUNTERS.store(counters, SeqCst);
     }
     for index in 0..TEST_COUNTER_NUM {
@@ -814,8 +812,7 @@ extern "C" fn dispatch_random_128(pool: *mut Pool) {
 
 fn shutdown_() {
     let pool = new_pool();
-    // SAFETY: the shared global memory pool.
-    let shm_value = unsafe { swr_case_mem_pool_alloc(size_of::<c_int>() as u32) }.cast::<c_int>();
+    let shm_value = mem_pool::alloc(size_of::<c_int>() as u32).cast::<c_int>();
     assert_eq!(create(pool, 1, 0x9501, SW_IPC_MSGQUEUE), SW_OK);
 
     // init

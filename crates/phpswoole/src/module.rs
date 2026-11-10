@@ -146,6 +146,9 @@ pub struct Families {
     pub coroutine_minit: [Minit; 3],
     /// `php_swoole_server_minit`.
     pub server_minit: Minit,
+    /// crates/phplocks' MINITs: `php_swoole_atomic_minit`, `_lock_minit` and
+    /// `_coroutine_lock_minit`, then (`SW_THREAD`) the thread atomics' and lock's.
+    pub locks_minit: [Minit; 4],
     /// `php_swoole_timer_minit` and `php_swoole_timer_rshutdown`.
     pub timer_minit: Minit,
     pub timer_rshutdown: Hook,
@@ -164,6 +167,8 @@ pub struct Families {
     pub tracer_rinit: Hook,
     /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
     pub server_rshutdown: Hook,
+    /// MSHUTDOWN's server step: the servers this process kept past their objects.
+    pub server_mshutdown: Hook,
     pub coroutine_rshutdown: [Hook; 2],
     pub thread_rshutdown: Hook,
     pub tracer_rshutdown: Hook,
@@ -243,12 +248,9 @@ pub fn families() -> Option<&'static Families> {
 
 unsafe extern "C" {
     fn php_swoole_event_minit(module_number: c_int);
-    fn php_swoole_atomic_minit(module_number: c_int);
-    fn php_swoole_lock_minit(module_number: c_int);
     fn php_swoole_process_minit(module_number: c_int);
     fn php_swoole_process_pool_minit(module_number: c_int);
     fn php_swoole_table_minit(module_number: c_int);
-    fn php_swoole_coroutine_lock_minit(module_number: c_int);
     fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
     fn php_swoole_runtime_mshutdown();
@@ -294,8 +296,8 @@ pub(crate) fn startup(module_number: c_int) {
         H(core_startup),
         M(php_swoole_event_minit),
         // base
-        M(php_swoole_atomic_minit),
-        M(php_swoole_lock_minit),
+        M(families.locks_minit[0]),
+        M(families.locks_minit[1]),
         M(php_swoole_process_minit),
         M(php_swoole_process_pool_minit),
         M(php_swoole_table_minit),
@@ -304,7 +306,7 @@ pub(crate) fn startup(module_number: c_int) {
     // coroutine
     steps.extend(families.coroutine_minit.map(M));
     steps.extend([
-        M(php_swoole_coroutine_lock_minit),
+        M(families.locks_minit[2]),
         M(php_swoole_channel_coro_minit),
         M(php_swoole_runtime_minit),
     ]);
@@ -487,6 +489,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
     ];
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
+    steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
     steps.extend([
         // The tables' process-private parts, which upstream leaves to the exit.
         Step::Hook(swoole_rs_memory::table::release),

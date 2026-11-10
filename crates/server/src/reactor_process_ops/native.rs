@@ -23,12 +23,7 @@ use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
 use crate::view;
-
-// SAFETY: crates/timer's bodies.
-unsafe extern "C-unwind" {
-    fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
-    fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
-}
+use swoole_rs_timer::{swr_v1_timer_owner_reactor, swr_v1_timer_owner_reinit};
 
 /// `SW_IPC_UNIXSOCK`, `SW_WORKER`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const IPC_UNIXSOCK: c_int = 1;
@@ -60,8 +55,7 @@ impl Context {
     }
     /// `serv->ports`.
     pub(super) fn ports(&self) -> &[*mut c_void] {
-        // SAFETY: as above.
-        unsafe { super::ports(self.serv) }
+        self.server().ports()
     }
     pub(super) fn callback_slot(&self, index: u32) -> Option<&crate::callbacks::CallbackSlot> {
         self.state().callbacks.slot(index)
@@ -168,16 +162,17 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_TIMER_DETACHED => {
             let timer = timer();
             // SAFETY: this thread's live timer.
-            u64::from(!timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer) }.is_null())
+            u64::from(
+                !timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer.cast()) }.is_null(),
+            )
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            unsafe { swr_v1_timer_owner_reinit(timer(), false) };
+            unsafe { swr_v1_timer_owner_reinit(timer().cast(), false) };
             0
         }
         OP_PORT_ADD => {
-            // SAFETY: the context's live server.
-            let port = *unsafe { super::ports(ctx.serv) }.get(usize::try_from(arg).ok()?)?;
+            let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
             // SAFETY: one of its live ports.
             let port = unsafe { view::port(port) };
             let gs = port.counters()?;

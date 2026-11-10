@@ -37,6 +37,7 @@ mod vm;
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
 pub use functions::mime_type;
+pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
@@ -55,7 +56,7 @@ pub use serialize::{serialize, unserialize};
 pub use swoole_rs_corebase::{Switch, built_with};
 
 use std::{
-    ffi::{CStr, c_int},
+    ffi::{CStr, c_char, c_int},
     ptr,
     sync::atomic::{AtomicI32, AtomicU32, Ordering},
 };
@@ -107,6 +108,26 @@ pub fn exception_class() -> *mut zend_class_entry {
 #[must_use]
 pub fn exception() -> &'static Class {
     &EXCEPTION
+}
+
+/// `swoole_fatal_error(code, "%s", message)` from a handler: a `Swoole\Error`
+/// printed, then the process exits, or this PHP thread ends with the bailout
+/// this returns, trapped below the caller's frames.
+/// # Errors
+/// The thread's bailout; defer it ([`swoole_rs_zend::bailout::defer`]).
+pub fn swoole_fatal_error(
+    code: c_int,
+    message: &CStr,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    /// The hook, from the shim's `zend_try`, through this frame, which owns nothing.
+    unsafe extern "C" fn fatal(code: c_int, _: c_int, message: *const c_char) {
+        // SAFETY: `report_code`'s NUL-terminated message.
+        let message = unsafe { CStr::from_ptr(message) };
+        // SAFETY: as above.
+        unsafe { swoole_rs_corebase::fatal_error(code, message) };
+    }
+    // SAFETY: `fatal` is a C-ABI reporter.
+    unsafe { swoole_rs_zend::bailout::report_code(fatal, code, 0, message) }
 }
 
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the

@@ -58,6 +58,12 @@ class PhaseTimeout(unittest.TestCase):
         self.assertIn('timed out after 1s', rows['slow']['log_tail'][-1])
         self.assertNotIn('log_tail', rows['quick'])
 
+    def test_a_failed_phase_is_annotated(self):
+        with patch.object(dev, 'annotate') as annotate:
+            code, rows = self.run_main([('broken', ['false']), ('fine', ['true'])])
+        self.assertNotEqual(code, 0)
+        annotate.assert_called_once_with('error', 'broken failed', f"exit 1, {rows['broken']['log']}")
+
     def test_a_crashing_phase_fails_instead_of_hanging(self):
         def execute(command, **options):
             raise RuntimeError('boom')

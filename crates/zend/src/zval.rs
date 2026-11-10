@@ -117,6 +117,14 @@ impl Value {
         (self.kind() == IS_OBJECT).then(|| unsafe { value::obj_of(self.as_ptr()) })
     }
 
+    /// The [`Custom`](crate::Custom) data of a `T` object.
+    #[must_use]
+    #[inline]
+    pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
+        // SAFETY: the zval holds the object while borrowed.
+        unsafe { crate::object::custom(self.object()?) }
+    }
+
     /// `Z_PTR_P` of a pointer (`IS_PTR`), as function and class tables hold.
     #[must_use]
     #[inline]
@@ -278,6 +286,15 @@ impl Value {
 /// A borrowed hash table (`zend_array`).
 #[repr(transparent)]
 pub struct Array(UnsafeCell<HashTable>);
+
+/// The `zend_refcounted_h` a counted value begins with: its refcount, then
+/// `type_info`. Only for a `zend_string` or `HashTable`, which both do.
+#[inline]
+fn header<T>(counted: &UnsafeCell<T>) -> [u32; 2] {
+    // SAFETY: the borrow keeps the value live, and its first eight bytes are
+    // the header's two `u32`s.
+    unsafe { counted.get().cast::<[u32; 2]>().read() }
+}
 
 /// An array key: `ZEND_HASH_FOREACH_KEY`'s string or integer.
 #[derive(Clone, Copy)]
@@ -483,9 +500,7 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn interned(&self) -> bool {
-        // SAFETY: a live string begins with its `zend_refcounted_h`: the
-        // refcount, then `type_info`, two `u32`s.
-        let [_, info] = unsafe { self.as_ptr().cast::<[u32; 2]>().read() };
+        let [_, info] = header(&self.0);
         info & IS_STR_INTERNED != 0
     }
 
@@ -708,6 +723,11 @@ impl ArrayMut {
     #[inline]
     fn separate(&mut self) -> *mut zval {
         let zval = self.0.as_ptr();
+        // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
+        // immutable array counts 2), so an unshared one skips the call.
+        if self.0.array().is_some_and(|array| header(&array.0)[0] <= 1) {
+            return zval;
+        }
         // SAFETY: an array zval borrowed mutably; a shared or immutable array
         // is duplicated, and the zval's reference moves to the copy.
         unsafe { swr_zend_separate_array(zval) };

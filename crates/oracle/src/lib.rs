@@ -833,7 +833,7 @@ pub mod clients {
     }
 }
 
-/// The bundled nghttp2 HPACK inflater the HTTP/2 server and client decode headers with.
+/// Upstream's bundled nghttp2 HPACK inflater, the reference for crates/http2's `hpack`.
 pub mod nghttp2 {
     use core::ffi::{c_int, c_void};
 

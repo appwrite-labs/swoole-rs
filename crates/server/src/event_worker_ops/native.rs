@@ -371,8 +371,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 impl Context {
     /// `serv->ports`.
     fn ports(&self) -> &[*mut c_void] {
-        // SAFETY: the context's live server.
-        unsafe { crate::reactor_process_ops::ports(self.serv) }
+        self.server().ports()
     }
 }
 

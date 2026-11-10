@@ -25,9 +25,6 @@ const IPC_BUFFER_SIZE: u16 = 8192;
 
 // The C++ framing functions a client's protocol points at.
 unsafe extern "C" {
-    /// `swoole::mqtt::set_protocol(protocol)`.
-    #[link_name = "_ZN6swoole4mqtt12set_protocolEPNS_8ProtocolE"]
-    pub(crate) fn mqtt_set_protocol(protocol: *mut Protocol);
     /// `Protocol::default_length_func`.
     #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
     pub(crate) fn default_length_func();
@@ -191,7 +188,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
         record.protocol.get_package_length = default_length_func as *mut c_void;
     } else if on {
         // SAFETY: the client's own protocol.
-        unsafe { mqtt_set_protocol(&raw mut record.protocol) };
+        unsafe { swoole_rs_protocols_ffi::set_protocol(&raw mut record.protocol) };
     }
 }
 

@@ -34,11 +34,20 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Every other HTTP workload reuses one kept-alive connection. `connect` (#2651) is
+`plaintext` on a new connection per request, sent with `Connection: close`, and the
+client waits for the server's close, so accepting the connection, setting up its
+session and tearing it down count in every request. Its record started 5% above an
+arm64 Linux run (0.99), but the x86 merge tier measures about 1.085, so it was reset to
+1.09 (#2748 tracks the per-connection cost).
+
 Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
 each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
 GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and
 `Coroutine\Socket`). `callgrind.py` serves their peers, an HTTP server and a TCP
-echo, from threads of its own, so callgrind counts only the client side. Their records started 5% above an
+echo, from threads of its own, so callgrind counts only the client side. The echo
+replies after 2 ms, so the client waits on the reactor once per request instead of
+whenever the reply happens to be late. Their records started 5% above an
 arm64 Linux run (0.92, 0.91 and 0.94); the ratchet lowers them once two merge runs
 beat them.
 
@@ -86,6 +95,20 @@ multipart POST with a 64 KiB file) and `static` (a 16 KiB file from
 (default `127.0.0.1`, root/root, database `test`) and `--php-extension mysqlnd
 --php-extension pdo --php-extension pdo_mysql`. Its record started at a
 provisional 1.10; the ratchet lowers it once two merge runs beat it.
+
+Four measure database and network hooks against `benchmarks/hooks` (#2653), one
+round trip per request: `pgsql` and `sqlite` run a prepared `SELECT` through
+hooked PDO (PostgreSQL on `PGSQL_HOST`, default `127.0.0.1`, root/root, database
+`test`; SQLite in a file under the server's data directory), `curl` is a GET to
+the HTTP peer with `SWOOLE_HOOK_NATIVE_CURL`, and `dns` a
+`Coroutine\System::dnsLookup` through c-ares, with the DNS cache off, that a
+resolver `callgrind.py` serves answers. They need both engines built with
+`--configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite
+--configure=--enable-swoole-curl --configure=--enable-cares` and
+`--php-extension pdo_pgsql --php-extension curl`. Building the main pair that way
+would shift every other workload's record, so they run on a second pair, and
+`--append` adds their results to the main pair's `--output`, which stays the one
+result the ratchet reads.
 
 ```sh
 python3 tools/build_ext.py --profile release-lto

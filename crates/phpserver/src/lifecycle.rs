@@ -137,19 +137,12 @@ impl PortInfo {
     }
 }
 
-unsafe extern "C" {
-    /// crates/server's `new Server(mode)`, `delete serv` and the admin commands.
-    fn swr_v1_server_new(mode: c_int) -> *mut c_void;
-    fn swr_v1_server_delete(serv: *mut c_void);
-    fn swr_v1_server_admin_register(serv: *mut c_void, php_memory: extern "C" fn() -> usize);
-    /// `Swoole\Process` (crates/phpprocess), and its object's `Worker`; an
-    /// `E_ERROR` for an unconstructed one.
-    static swoole_process_ce: *mut zend_class_entry;
-    fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void;
-    /// native/error/error.cc's `swoole_get_last_error_msg()`: `sw_error`.
-    #[link_name = "_Z25swoole_get_last_error_msgv"]
-    fn swoole_get_last_error_msg() -> *const c_char;
-}
+// crates/server's `new Server(mode)`, `delete serv` and the admin commands;
+// `Swoole\Process` (crates/phpprocess) and its object's `Worker`, an `E_ERROR` for an
+// unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
+use swoole_rs_error::swoole_get_last_error_msg;
+use swoole_rs_phpprocess::{swoole_process_ce, swr_v1_phpprocess_worker};
+use swoole_rs_server::{swr_v1_server_admin_register, swr_v1_server_delete, swr_v1_server_new};
 
 /// `instanceof_function(ce, parent)`.
 fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
@@ -509,12 +502,42 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     drop(property);
     // SAFETY: the object Zend is freeing.
     unsafe { zend_object_std_dtor(object) };
-    if let Some(server) = server.filter(|&server| fact(server, fact::MASTER)) {
-        crate::thread::free_setting(server);
-        // SAFETY: the master owns the Server; nothing refers to it now.
-        unsafe { swr_v1_server_delete(server.raw()) };
+    if let Some(server) = server {
+        if fact(server, fact::MASTER) {
+            crate::thread::free_setting(server);
+            delete(server.raw());
+        } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
+            // Never started, or a base-mode start returned: upstream keeps it to the
+            // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
+            orphans().push(server.raw() as usize);
+        }
     }
     bailout::finish();
+}
+
+/// `delete serv`, by its owner, once nothing refers to it.
+fn delete(serv: *mut c_void) {
+    // SAFETY: the master's server whose object went, or one MSHUTDOWN deletes; once.
+    unsafe { swr_v1_server_delete(serv) };
+}
+
+/// The servers [`free`] leaves to [`php_swoole_server_mshutdown`], and those a
+/// failed `__construct` never bound: upstream keeps them, as `SwooleG.server` too.
+fn orphans() -> std::sync::MutexGuard<'static, Vec<usize>> {
+    static ORPHANS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    ORPHANS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// MSHUTDOWN: the event worker pool a bailed-out single worker left, then the
+/// servers whose objects went in a process that isn't their master, now that no
+/// object can name them.
+pub extern "C" fn php_swoole_server_mshutdown() {
+    swoole_rs_server::reactor_process_ops::destroy_abandoned_pool();
+    for serv in std::mem::take(&mut *orphans()) {
+        delete(serv as *mut c_void);
+    }
 }
 
 /// A live object and a class declaring the properties written, for as long as
@@ -746,8 +769,8 @@ fn construct(call: &Call) {
             return call.set_bool(false);
         }
     }
-    // SAFETY: a supported mode.
-    let serv = unsafe { swr_v1_server_new(c_int::try_from(mode).unwrap_or_default()) };
+    // A supported mode.
+    let serv = swr_v1_server_new(c_int::try_from(mode).unwrap_or_default());
     // SAFETY: the server just made.
     let server = unsafe { view::Server::from_raw(serv) };
     if mode == MODE_BASE {
@@ -760,6 +783,7 @@ fn construct(call: &Call) {
         if server_methods::add_systemd_socket(server) <= 0 {
             // SAFETY: from a handler.
             unsafe { throw_error(c"failed to add systemd socket") };
+            orphans().push(serv as usize);
             return call.set_bool(false);
         }
     } else if {
@@ -782,6 +806,7 @@ fn construct(call: &Call) {
         text.push(reason.to_bytes());
         text.push(format!("[{code}]").as_bytes());
         exception(text.as_cstr(), code.into());
+        orphans().push(serv as usize);
         return call.set_bool(false);
     }
     bind(call, server);
@@ -1135,8 +1160,8 @@ fn has_key(setting: *mut zval, key: &CStr) -> bool {
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
     if server_methods::create(serv) < 0 {
-        // SAFETY: the calling thread's `sw_error`.
-        let reason = unsafe { swoole_get_last_error_msg() };
+        // The calling thread's `sw_error`.
+        let reason = swoole_get_last_error_msg();
         // SAFETY: always NUL-terminated.
         let reason = unsafe { CStr::from_ptr(reason) };
         let mut text = Message::new();

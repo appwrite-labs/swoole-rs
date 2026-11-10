@@ -77,7 +77,7 @@ throw), on URLs up to 256 bytes because libstdc++'s
 `swoole_rs_clients::domain_decode` with dns.cc's `domain_decode` wherever Rust stays
 in bounds; other inputs are outside the compared domain and aren't run.
 
-The targets in `src/network.rs` have no oracle side; each checks a parser that
+The targets in `src/network.rs` but `http2_hpack` have no oracle side; each checks a parser that
 reads untrusted bytes against the wire format or against invariants of its output.
 `http2_frame` checks `get_frame_length`, `sw_rs_http2_decode_frame` and
 `sw_rs_http2_unpack_setting` against the RFC 9113 frame header and SETTINGS layout.
@@ -85,13 +85,13 @@ reads untrusted bytes against the wire format or against invariants of its outpu
 query's id): it succeeds exactly when it pushes an address, and each is IP text.
 `http_multipart` feeds crates/http's multipart parser a boundary and body
 in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
-`http_chunked` feeds the bundled llhttp a chunked request or response in chunks: body
+`http_chunked` feeds crates/http's llhttp a chunked request or response in chunks: body
 spans stay inside their chunk and never exceed the input. `http2_hpack` splits its
-input into HEADERS payloads of one connection and decodes each with the bundled
-nghttp2 inflater (`upstream/thirdparty/nghttp2`) through the step loop the HTTP/2
-server and client run (`sw_rs_http2_inflate_step`): each call consumes at most what
-is left, each emitted name and value is NUL-terminated, and the loop ends within one
-step per byte. `resp_server` walks a
+input into header block fragments of one connection and decodes each with
+`swoole_rs_http2::hpack` and the nghttp2 inflater upstream bundled
+(`upstream/thirdparty/nghttp2`) through the step loop the HTTP/2 server and client
+run (`sw_rs_http2_inflate_step`): both read the same bytes, decode the same fields
+and fail on the same step, and the loop ends within one step per byte. `resp_server` walks a
 `Redis\Server` request with `resp_php_next`: spans stay inside the request,
 the walk advances and ends, and there is one command at most.
 `sni_wildcard` splits its input at NUL into an SNI name and a certificate name and
@@ -107,6 +107,10 @@ libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in
 `artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target> <file>`.
 On Linux, build with `CC=clang CXX=clang++` so the C++ ASan matches rustc's.
+On macOS, ld64 keeps the crates' unreached references to upstream symbols, so link with
+`RUSTFLAGS=-Clink-arg=-Wl,-undefined,dynamic_lookup`, and run with
+`ASAN_OPTIONS=detect_container_overflow=0`: libFuzzer's own corpus reading otherwise
+trips a container-overflow false positive against the system libc++.
 
 ## Adding a target
 

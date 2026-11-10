@@ -58,7 +58,10 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::socket_upstream::socket_wait_event;
 use swoole_rs_reactor::{Event, SocketRecord};
-use swoole_rs_timer::swr_v1_timer_add_plain;
+use swoole_rs_timer::{
+    swoole_timer_create, swoole_timer_get_next_msec, swoole_timer_is_available,
+    swoole_timer_select, swr_v1_timer_add_plain, swr_v1_timer_owner_reinit,
+};
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
 
@@ -80,18 +83,8 @@ const CHAN_SHM: c_int = 8;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
-// SAFETY: crates/timer's and crates/bus' C entries,
-// crates/reactor's, and their upstream symbols.
+// SAFETY: crates/reactor's, under its upstream symbol.
 unsafe extern "C-unwind" {
-    #[link_name = "_Z19swoole_timer_selectv"]
-    fn swoole_timer_select();
-    #[link_name = "_Z26swoole_timer_get_next_msecv"]
-    fn swoole_timer_get_next_msec() -> i64;
-    #[link_name = "_Z25swoole_timer_is_availablev"]
-    fn swoole_timer_is_available() -> bool;
-    #[link_name = "_Z19swoole_timer_createb"]
-    fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
-    fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
 }
@@ -252,8 +245,7 @@ fn bus_deliver(pool: Pool) {
 }
 
 fn new_message_bus(pool: Pool) -> i64 {
-    // SAFETY: `SwooleG.memory_pool` is live once a pool is created.
-    let msg_id = unsafe { mem_pool::alloc(8) }.cast::<i64>();
+    let msg_id = mem_pool::alloc(8).cast::<i64>();
     if msg_id.is_null() {
         return 0;
     }
@@ -509,8 +501,7 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_HAVE_MSGQUEUE => 1,
         OP_ALLOC_WORKERS => {
             let size = record(pool).worker_num as usize * size_of::<WorkerRecord>();
-            // SAFETY: `SwooleG.memory_pool` is live once a pool is created.
-            record(pool).workers = unsafe { mem_pool::alloc(size as u32) }.cast();
+            record(pool).workers = mem_pool::alloc(size as u32).cast();
             i64::from(!record(pool).workers.is_null())
         }
         OP_NEW_MESSAGE_BOX => {
@@ -669,15 +660,14 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             unsafe { &mut *task }.set_timer(timer);
         }
         OP_TIMER_INIT => {
-            // SAFETY: this thread's timer, if any.
-            if unsafe { swoole_timer_is_available() } {
+            if swoole_timer_is_available() {
                 // SAFETY: this thread's timer slot, holding its live timer.
                 let timer = unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() };
                 // SAFETY: as above.
-                unsafe { swr_v1_timer_owner_reinit(timer, true) };
+                unsafe { swr_v1_timer_owner_reinit(timer.cast(), true) };
             } else {
-                // SAFETY: this thread has no timer.
-                unsafe { swoole_timer_create(true) };
+                // This thread has no timer.
+                swoole_timer_create(true);
             }
         }
         OP_PUSH_STOP => {
@@ -818,8 +808,7 @@ unsafe extern "C" fn running(pool: *mut c_void, worker: *mut c_void) -> bool {
 }
 
 unsafe extern "C" fn end(_: *mut c_void) {
-    // SAFETY: this thread's timer, if any.
-    unsafe { swoole_timer_select() };
+    swoole_timer_select();
     swoole_rs_process::signal::swoole_signal_dispatch();
 }
 
@@ -883,8 +872,7 @@ unsafe extern "C" fn pipe_read(arg: *mut c_void) {
         let pipe = worker_of(c.worker.cast())
             .pipe_worker
             .cast::<SocketRecord>();
-        // SAFETY: this thread's timer, if any.
-        let next = unsafe { swoole_timer_get_next_msec() };
+        let next = swoole_timer_get_next_msec();
         #[expect(clippy::cast_precision_loss, reason = "msec2sec's (double) conversion")]
         let timeout = next as f64 / 1000.0;
         // SAFETY: the worker's pipe.
@@ -896,8 +884,7 @@ unsafe extern "C" fn pipe_read(arg: *mut c_void) {
 
 unsafe extern "C" fn pipe_wait(arg: *mut c_void) {
     io(arg, |c| {
-        // SAFETY: this thread's timer, if any.
-        let next = unsafe { swoole_timer_get_next_msec() };
+        let next = swoole_timer_get_next_msec();
         // SAFETY: the worker's pipe.
         let pipe = unsafe { &*worker_of(c.worker.cast()).pipe_worker.cast() };
         let ready = socket_wait_event(pipe, next as c_int, EVENT_READ);

@@ -317,13 +317,7 @@ pub(crate) mod native {
     use core::ffi::c_void;
     use swoole_rs_corebase::constants::FdType;
 
-    use swoole_rs_timer::swr_v1_timer_add_plain_sec;
-
-    // SAFETY: crates/timer's.
-    unsafe extern "C" {
-        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-        fn swoole_timer_del(node: *mut c_void) -> bool;
-    }
+    use swoole_rs_timer::{swoole_timer_del, swr_v1_timer_add_plain_sec};
 
     pub(super) fn add(fd: i32, events: i32, task: *mut c_void) -> *mut c_void {
         // SAFETY: a poll registers in a coroutine, on its thread's running reactor.
@@ -352,7 +346,7 @@ pub(crate) mod native {
 
     pub(crate) fn timer_del(timer: *mut c_void) {
         // SAFETY: the task's pending timer.
-        unsafe { swoole_timer_del(timer) };
+        unsafe { swoole_timer_del(timer.cast()) };
     }
 
     pub(super) fn defer(task: *mut c_void) {

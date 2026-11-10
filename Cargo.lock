@@ -568,6 +568,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
+ "swoole-rs-memory",
  "swoole-rs-process",
  "swoole-rs-reactor",
 ]
@@ -601,6 +602,7 @@ name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
  "swoole-rs-buffer",
+ "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-locks",
@@ -614,6 +616,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-http2"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-oracle",
+]
 
 [[package]]
 name = "swoole-rs-httpbindings"
@@ -719,10 +724,12 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-inflate",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-zend",
@@ -852,6 +859,7 @@ dependencies = [
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-utilities",
  "swoole-rs-zend",
 ]
 
@@ -870,6 +878,7 @@ dependencies = [
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -915,10 +924,12 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
+ "swoole-rs-phpprocess",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -964,6 +975,7 @@ dependencies = [
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
  "swoole-rs-phphelpers",
+ "swoole-rs-phpstdext",
  "swoole-rs-phpstubs",
  "swoole-rs-reactor",
  "swoole-rs-sqlite",
@@ -1143,6 +1155,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
 ]
 
 [[package]]

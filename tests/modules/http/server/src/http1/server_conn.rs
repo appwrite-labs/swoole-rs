@@ -154,13 +154,8 @@ fn checks_held() {
 }
 
 /// `Server(mode)`, with the shared memory mapped first, so the server's forks share it.
-/// The MODE_THREAD TESTs need upstream's `enable_thread` build (`SW_THREAD`); the crates
-/// have thread mode when the extension's MINIT says so, which the case does here.
 fn new_server(mode: c_int) -> Server {
     shared();
-    if mode == MODE_THREAD {
-        swoole_rs_server::THREAD_SUPPORTED.store(true, Ordering::Relaxed);
-    }
     Server::new(mode)
 }
 

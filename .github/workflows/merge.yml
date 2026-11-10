@@ -125,12 +125,20 @@ jobs:
         uses: ./.github/actions/phpt-build
         with:
           engines: upstream cargo
+      # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
+      # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
+      - if: github.event_name == 'push' || github.event_name == 'merge_group'
+        uses: actions/cache/restore@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ github.run_id }}
+          restore-keys: phpt-baseline-
       - id: baseline
         if: github.event_name == 'push' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --php "$(php -r 'echo PHP_VERSION;')" || true)"
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --saved baseline-cache --php "$(php -r 'echo PHP_VERSION;')" || true)"
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
@@ -149,11 +157,15 @@ jobs:
   # http-client, client and socket are benchmarks/clients' outbound coroutine clients (#2647).
   # gzip and websocket-deflate are benchmarks/compression (#2649).
   # tcp-length, tcp-eof and udp are Swoole\Server without HTTP (#2650).
+  # connect is plaintext on a new connection per request (#2651).
   # https and wss are benchmarks/tls (#2648).
   # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
   # http2-concurrent, websocket-64k, websocket-fragmented, upload and static are
   # benchmarks/traffic (#2652).
+  # Not in the merge queue: at about 11 minutes it is the slowest job by 3, and a group
+  # lands a queue slot later for every minute its run takes. A regression shows on main's run.
   callgrind:
+    if: github.event_name != 'merge_group'
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
     services:
@@ -189,6 +201,7 @@ jobs:
           --workload http-client --workload client --workload socket
           --workload gzip --workload websocket-deflate
           --workload tcp-length --workload tcp-eof --workload udp
+          --workload connect
           --workload https --workload wss
           --workload atomic --workload process-mode
           --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented

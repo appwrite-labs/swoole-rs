@@ -33,7 +33,7 @@ unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
-    // crates/coroutine, crates/timer, crates/reactor,
+    // crates/coroutine, crates/reactor,
     // crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
@@ -45,12 +45,9 @@ unsafe extern "C" {
     fn coroutine_deactivate();
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(timer: *mut c_void) -> bool;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
     // crates/phpevents, crates/phpclients and PHP.
-    fn sw_php_exit(status: c_int);
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
@@ -238,6 +235,17 @@ pub fn current_safe() -> Co {
     co
 }
 
+/// `System::sleep(seconds)` of the running coroutine: 0, or -1 once canceled,
+/// and -1 outside a coroutine, where upstream's raises a fatal error.
+#[must_use]
+pub fn sleep(seconds: f64) -> c_int {
+    if current().is_null() {
+        return -1;
+    }
+    // SAFETY: C++ sleeps the running coroutine, which returns here.
+    unsafe { system_sleep(seconds) }
+}
+
 pub(crate) fn current_task() -> *mut c_void {
     task(current())
 }
@@ -351,8 +359,11 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
         // SAFETY: the creator's arguments, live until this coroutine first yields.
         let (count, sleep) = unsafe { *args.cast::<(c_long, f64)>() };
         for _ in 0..count {
-            // SAFETY: in a coroutine.
-            unsafe { system_sleep(sleep) };
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "upstream ignores each sleep's result"
+            )]
+            let _ = super::sleep(sleep);
         }
     }
     let mut args = (count, sleep);
@@ -682,7 +693,7 @@ pub unsafe fn timer_add(
 /// `timer` is live.
 pub unsafe fn timer_del(timer: *mut c_void) {
     // SAFETY: a live timer.
-    unsafe { swoole_timer_del(timer) };
+    unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
 }
 
 /// PHP 8.4+ `exit()`: the original handler, false if there is none.
@@ -705,10 +716,8 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
         clippy::cast_possible_truncation,
         reason = "upstream passes the zend_long status as int"
     )]
-    // SAFETY: Swoole's exit, which does not return here.
-    unsafe {
-        sw_php_exit(status as c_int);
-    };
+    // Swoole's exit, which does not return here.
+    swoole_rs_phpswoole::sw_php_exit(status as c_int);
 }
 
 pub(crate) fn reactor_init() -> i32 {

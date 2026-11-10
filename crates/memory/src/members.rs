@@ -2,22 +2,21 @@
 // Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,global_memory,
 // shared_memory,table}.cc (Swoole contributors).
 //! The upstream members of `FixedPool`, `GlobalMemory`, the `sw_shm_*`
-//! functions and `Table`'s shared-memory lifecycle. `native/memory/swoole_memory.h` keeps
-//! `GlobalMemory`'s inline members for C++ callers, whose constructor throws; they call
-//! the `swr_v1_memory_global_memory_*` functions below. A
-//! constructor returns 0, -1 for upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2
-//! for `std::bad_alloc`. `FixedPool` has no C++ facade left: it is a Rust owner whose
+//! functions and `Table`'s shared-memory lifecycle. A constructor's error is -1 for
+//! upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2 for `std::bad_alloc`.
+//! `FixedPool` and `GlobalMemory` have no C++ facade left: they are Rust owners whose
 //! methods serve the Rust ports of upstream's core tests in `tests/modules/memory/members.rs`.
 //!
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
 //! carries.
 
-use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
+use crate::fixed::{self, DebugCursor, Fixed, Layout};
 use crate::global::{self, Global};
 use crate::table::Table;
 use std::ffi::{c_int, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::{sw_free, sw_malloc};
@@ -104,12 +103,9 @@ impl FixedPool {
         );
         // The same address, from the arena: nothing is read through the caller's pointer.
         let slice = memory.wrapping_add(data.addr() - memory.addr());
-        // SAFETY: inside the arena, since the 48-byte header precedes `memory` and
-        // `slice` lies past it (asserted above): the byte `lock` would be at.
-        let lock = unsafe { slice.wrapping_sub(mem::size_of::<Slice>()).read() };
-        // assert(slice->lock == 1);
-        assert_eq!(lock, 1, "an allocated slice");
-        // SAFETY: a constructed pool; `free` checks the range and stride itself.
+        // SAFETY: a constructed pool; `free` checks the stride before it reads a
+        // slice header, then upstream's `slice->lock == 1`, so a pointer into a
+        // slice's (maybe uninitialized) data is refused unread.
         let freed = unsafe { fixed::free(self.0.as_ptr(), slice.cast()) };
         assert!(freed, "a live slice of this pool");
     }
@@ -222,84 +218,128 @@ impl Drop for GlobalImpl {
     }
 }
 
-/// The pool in `slot`. In a process forked from the one that made a shared pool, a
-/// fresh pool replaces it first, without taking the inherited lock a parent thread may
-/// have held at the fork, and keeps it.
+/// `swoole::GlobalMemory`: pages allocated once for the program's life, whose `free` is
+/// a no-op. It holds its pool, which a forked process replaces (see `current`). Errors
+/// are upstream's constructor's throws: `INVALID` for
+/// `Exception(SW_ERROR_INVALID_PARAMS)` and `NO_MEMORY` for `std::bad_alloc`.
 ///
-/// # Safety
-/// `slot` is a constructed pool's `impl` slot.
-unsafe fn current<'a>(slot: *mut *mut GlobalImpl) -> Result<&'a GlobalImpl, i32> {
-    // SAFETY: as the caller promises.
-    let slot = unsafe { &mut *slot };
-    // SAFETY: as above; a pool lives until it is deleted.
-    let pool = unsafe { &**slot };
-    if pool.creator == 0 || pool.creator == std::process::id() {
-        return Ok(pool);
-    }
-    *slot = GlobalImpl::new(pool.page_size, true, *slot)?;
-    // SAFETY: as above.
-    Ok(unsafe { &**slot })
+/// Every read of the pool counts itself in `users` first, so `delete` frees the pool only
+/// when nothing reads it; a pool a reader still holds is left mapped instead.
+pub struct GlobalMemory {
+    pool: AtomicPtr<GlobalImpl>,
+    users: AtomicUsize,
 }
 
-/// `GlobalMemory(pagesize, shared)`.
-///
-/// # Panics
-/// Upstream's assertion: pages are at least `SW_MIN_PAGE_SIZE`.
-///
-/// # Safety
-/// `output` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_global_memory_new(
-    pagesize: u32,
-    shared: bool,
-    output: *mut *mut GlobalImpl,
-) -> i32 {
-    // assert(pagesize >= SW_MIN_PAGE_SIZE);
-    assert!(
-        pagesize >= MIN_PAGE_SIZE,
-        "a page of at least SW_MIN_PAGE_SIZE"
-    );
-    match GlobalImpl::new(pagesize, shared, ptr::null_mut()) {
-        Ok(this) => {
-            // SAFETY: as the caller promises.
-            unsafe { output.write(this) };
-            0
+impl GlobalMemory {
+    /// A memory with no pool yet, `SwooleG.memory_pool` before `swoole_init`.
+    const fn empty() -> Self {
+        Self {
+            pool: AtomicPtr::new(ptr::null_mut()),
+            users: AtomicUsize::new(0),
         }
-        Err(status) => status,
+    }
+
+    /// `GlobalMemory(pagesize, shared)`.
+    ///
+    /// # Errors
+    /// `INVALID` for a page size the pages can't use, `NO_MEMORY` when the first page
+    /// can't be had.
+    ///
+    /// # Panics
+    /// Upstream's assertion: pages are at least `SW_MIN_PAGE_SIZE`.
+    pub fn new(pagesize: u32, shared: bool) -> Result<Self, i32> {
+        // assert(pagesize >= SW_MIN_PAGE_SIZE);
+        assert!(
+            pagesize >= MIN_PAGE_SIZE,
+            "a page of at least SW_MIN_PAGE_SIZE"
+        );
+        let pool = GlobalImpl::new(pagesize, shared, ptr::null_mut())?;
+        Ok(Self {
+            pool: AtomicPtr::new(pool),
+            users: AtomicUsize::new(0),
+        })
+    }
+
+    /// Runs `read` over this process's pool, counted in `users` while it runs. In a
+    /// process forked from the one that made a shared pool, a fresh pool replaces it
+    /// first, without taking the inherited lock a parent thread may have held at the
+    /// fork, and keeps it.
+    fn with<R>(&self, read: impl FnOnce(&GlobalImpl) -> R) -> Result<R, i32> {
+        self.users.fetch_add(1, Ordering::SeqCst);
+        let result = self.current().map(read);
+        self.users.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    /// The pool, for `with`, which counts the caller as a user.
+    fn current(&self) -> Result<&GlobalImpl, i32> {
+        let pool = self.pool.load(Ordering::SeqCst);
+        // SAFETY: null or a pool this memory owns. `delete` takes it out before it frees
+        // it, and frees it only when no `with` is running; `drop` has `&mut self`.
+        let Some(found) = (unsafe { pool.as_ref() }) else {
+            return Err(INVALID);
+        };
+        if found.creator == 0 || found.creator == std::process::id() {
+            return Ok(found);
+        }
+        let fresh = GlobalImpl::new(found.page_size, true, pool)?;
+        // Publish it only over the pool it replaces: a `delete` or another thread's
+        // replacement in between wins, and the unpublished pool goes, minus the
+        // inherited one it doesn't own.
+        let published = self
+            .pool
+            .compare_exchange(pool, fresh, Ordering::SeqCst, Ordering::SeqCst);
+        if published.is_err() {
+            // SAFETY: `GlobalImpl::new`'s box, never published, so only this frame holds it.
+            let mut unpublished = unsafe { Box::from_raw(fresh) };
+            unpublished.inherited = ptr::null_mut();
+            drop(unpublished);
+            return self.current();
+        }
+        // SAFETY: the fresh pool, owned as above.
+        Ok(unsafe { &*fresh })
+    }
+
+    /// `void *GlobalMemory::alloc(uint32_t size)`: a zeroed block, or null with
+    /// upstream's warning.
+    ///
+    /// # Errors
+    /// `INVALID` once the pool is deleted, or what `GlobalMemory::new` returns when a
+    /// forked process's fresh pool can't be had.
+    pub fn alloc(&self, size: u32) -> Result<*mut c_void, i32> {
+        self.with(|pool| alloc(&mut pool.pages(), size))
+    }
+
+    /// `size_t GlobalMemory::capacity() const`: zero without a pool.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.with(|pool| pool.pages().capacity()).unwrap_or(0)
+    }
+
+    /// `size_t GlobalMemory::get_memory_size() const`, as `capacity`.
+    #[must_use]
+    pub fn memory_size(&self) -> usize {
+        self.with(|pool| pool.pages().memory_size()).unwrap_or(0)
+    }
+
+    /// Takes the pool out and frees it, every page and then the registry, unless a
+    /// reader still holds it.
+    fn delete(&self) {
+        let pool = self.pool.swap(ptr::null_mut(), Ordering::SeqCst);
+        if !pool.is_null() && self.users.load(Ordering::SeqCst) == 0 {
+            // SAFETY: `GlobalImpl::new`'s box, taken out of this memory, freed once. A
+            // `with` that counted itself before this load holds it, so none does; one that
+            // counts itself after it loads null.
+            drop(unsafe { Box::from_raw(pool) });
+        }
     }
 }
 
-/// `GlobalMemory::~GlobalMemory()`: frees every page, then the registry.
-///
-/// # Panics
-/// If the registry kept a page, which draining rules out.
-///
-/// # Safety
-/// `pool` came from `swr_v1_memory_global_memory_new` or `alloc`'s reset, destroyed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_global_memory_delete(pool: *mut GlobalImpl) {
-    // SAFETY: as the caller promises; dropping it frees its pages.
-    drop(unsafe { Box::from_raw(pool) });
-}
-
-/// `void *GlobalMemory::alloc(uint32_t size)`, from this process's pool (`current`).
-///
-/// # Safety
-/// `pool` is a constructed pool's `impl` slot; `output` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_global_memory_alloc(
-    pool: *mut *mut GlobalImpl,
-    size: u32,
-    output: *mut *mut c_void,
-) -> i32 {
-    // SAFETY: as the caller promises.
-    let (status, block) = match unsafe { current(pool) } {
-        Ok(current) => (0, alloc(&mut current.pages(), size)),
-        Err(status) => (status, ptr::null_mut()),
-    };
-    // SAFETY: as the caller promises.
-    unsafe { output.write(block) };
-    status
+impl Drop for GlobalMemory {
+    /// `GlobalMemory::~GlobalMemory()`.
+    fn drop(&mut self) {
+        self.delete();
+    }
 }
 
 /// `GlobalMemoryImpl::alloc`'s body: a block, or null with upstream's warning.
@@ -320,28 +360,6 @@ fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
         log::warning(c"GlobalMemory::alloc", format_args!("alloc memory error"));
     }
     block
-}
-
-/// A `GlobalMemory`'s `impl` slot, its one member.
-fn slot(this: *const c_void) -> *mut *mut GlobalImpl {
-    this.cast::<*mut GlobalImpl>().cast_mut()
-}
-
-upstream! {
-    "_ZNK6swoole12GlobalMemory8capacityEv", "_ZNK6swoole12GlobalMemory8capacityEv" =>
-    /// `size_t GlobalMemory::capacity() const`.
-    #[must_use]
-    pub unsafe extern "C" fn swr_global_memory_capacity(this: *const c_void) -> usize {
-        // SAFETY: `this` is a constructed GlobalMemory; zero if a fresh pool can't be had.
-        unsafe { current(slot(this)) }.map_or(0, |pool| pool.pages().capacity())
-    }
-    "_ZNK6swoole12GlobalMemory15get_memory_sizeEv", "_ZNK6swoole12GlobalMemory15get_memory_sizeEv" =>
-    /// `size_t GlobalMemory::get_memory_size() const`.
-    #[must_use]
-    pub unsafe extern "C" fn swr_global_memory_size(this: *const c_void) -> usize {
-        // SAFETY: as above.
-        unsafe { current(slot(this)) }.map_or(0, |pool| pool.pages().memory_size())
-    }
 }
 
 // ---------------------------------------------------------------- sw_shm_*
@@ -443,43 +461,46 @@ pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_vo
 
 // ---------------------------------------------------------------- Table
 
-/// `SwooleG.memory_pool`: a `GlobalMemory` (`native/memory/swoole_memory.h`), whose
-/// one member is its `impl` slot. Its `free` is a no-op, so nothing calls it.
+/// `SwooleG.memory_pool`: the process's `GlobalMemory`, made by `swoole_init` and
+/// deleted by `swoole_clean`. Its `free` is a no-op, so nothing calls it.
 pub mod pool {
-    use super::{
-        GlobalImpl, swr_v1_memory_global_memory_alloc, swr_v1_memory_global_memory_delete,
-    };
+    use super::GlobalMemory;
     use std::ffi::c_void;
     use std::ptr;
+    use std::slice;
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 
-    /// `new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`, `swoole_init`'s pool. Where
-    /// upstream's constructor throws, the process aborts.
-    #[must_use]
-    pub fn new() -> *mut c_void {
+    static POOL: GlobalMemory = GlobalMemory::empty();
+
+    /// `SwooleG.memory_pool = new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`,
+    /// `swoole_init`'s pool. Where upstream's constructor throws, the process aborts. A
+    /// pool that is already there stays.
+    pub fn init() {
         let page = swoole_rs_corebase::constants::SW_GLOBAL_MEMORY_PAGESIZE;
-        let Ok(pool) = GlobalImpl::new(page, true, ptr::null_mut()) else {
+        let Ok(fresh) = GlobalMemory::new(page, true) else {
             std::process::abort();
         };
-        Box::into_raw(Box::new(pool)).cast()
+        let pool = fresh.pool.swap(ptr::null_mut(), SeqCst);
+        let installed = POOL
+            .pool
+            .compare_exchange(ptr::null_mut(), pool, SeqCst, SeqCst);
+        if installed.is_err() {
+            // Not installed: `fresh` frees it.
+            fresh.pool.store(pool, SeqCst);
+        }
     }
 
-    /// `delete SwooleG.memory_pool`.
+    /// `delete SwooleG.memory_pool`. A thread still reading the pool keeps it mapped.
     pub fn delete() {
-        let pool = swoole_rs_corebase::swr_v1_core_memory_pool().cast::<*mut GlobalImpl>();
-        if !pool.is_null() {
-            // SAFETY: `new`'s, deleted once, by `swoole_clean`.
-            let pool = unsafe { Box::from_raw(pool) };
-            // SAFETY: its live pages, which only it frees.
-            unsafe { swr_v1_memory_global_memory_delete(*pool) };
-        }
+        POOL.delete();
     }
 
     /// Without futex, waiters register in a Rust registry in shared memory, from the
     /// pool `swoole_init` just made: a fatal error when it can't be had.
     pub fn wait_registry_init() {
         let size = u32::try_from(swoole_rs_utilities::swr_v1_utils_wait_registry_size());
-        // SAFETY: `swoole_init` has made the pool.
-        let registry = unsafe { alloc(size.unwrap_or(u32::MAX)) };
+        let registry = alloc(size.unwrap_or(u32::MAX));
         // SAFETY: null or that many shared bytes, for the program's life.
         if !unsafe { swoole_rs_utilities::swr_v1_utils_wait_registry_init(registry) } {
             let message = c"failed to allocate atomic wait registry";
@@ -488,20 +509,41 @@ pub mod pool {
         }
     }
 
-    /// `sw_mem_pool()->alloc(size)`.
-    ///
-    /// # Safety
-    /// `SwooleG.memory_pool` is a live pool.
+    /// `sw_mem_pool()->alloc(size)`: a zeroed block, or null with upstream's warning.
+    /// Where upstream throws (no pool, or a forked process's fresh pool can't be had),
+    /// the process aborts.
     #[must_use]
-    pub unsafe fn alloc(size: u32) -> *mut c_void {
-        let pool = swoole_rs_corebase::swr_v1_core_memory_pool().cast();
-        let mut block = ptr::null_mut();
-        // SAFETY: as the caller promises, `pool` is a live pool's `impl` slot.
-        if unsafe { swr_v1_memory_global_memory_alloc(pool, size, &raw mut block) } != 0 {
-            // A forked process's fresh pool failed: upstream's `alloc` throws.
-            std::process::abort();
-        }
-        block
+    pub fn alloc(size: u32) -> *mut c_void {
+        POOL.alloc(size).unwrap_or_else(|_| std::process::abort())
+    }
+
+    /// `sw_mem_pool()->get_memory_size()`, or 0 before `swoole_init`.
+    #[must_use]
+    pub fn memory_size() -> usize {
+        POOL.memory_size()
+    }
+
+    /// An atomic that is valid zeroed and needs no more than the pool's alignment.
+    pub trait Word: sealed::Sealed {}
+    impl Word for AtomicU32 {}
+    impl Word for AtomicI64 {}
+    impl Word for AtomicU64 {}
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for std::sync::atomic::AtomicU32 {}
+        impl Sealed for std::sync::atomic::AtomicI64 {}
+        impl Sealed for std::sync::atomic::AtomicU64 {}
+    }
+
+    /// `count` zero words from [`alloc`], as long as PHP runs: `Swoole\Atomic`'s
+    /// and `Swoole\Lock`'s.
+    #[must_use]
+    pub fn words<W: Word>(count: usize) -> Option<&'static [W]> {
+        let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
+        let block = alloc(size).cast::<W>();
+        // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
+        // for each `Word`), which the pool gives no one else.
+        (!block.is_null()).then(|| unsafe { slice::from_raw_parts(block, count) })
     }
 }
 
@@ -520,14 +562,10 @@ fn table_warning(message: &[u8]) {
 
 /// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
 /// memory pool, so forked workers share it.
-///
-/// # Safety
-/// `swoole_init` made the global pool.
 #[must_use]
-pub unsafe fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
+pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     #[expect(clippy::cast_possible_truncation, reason = "a sub-page header")]
-    // SAFETY: as the caller promises.
-    let table = unsafe { pool::alloc(mem::size_of::<Table>() as u32) }.cast::<Table>();
+    let table = pool::alloc(mem::size_of::<Table>() as u32).cast::<Table>();
     if table.is_null() {
         return table;
     }

@@ -134,8 +134,7 @@ const MUTEX: i32 = 3;
 /// `serv` is a live `Server` and `worker` one of its workers.
 pub unsafe fn create_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
     let size = u32::try_from(swoole_rs_locks::swr_v1_locks_size(MUTEX)).unwrap_or(u32::MAX);
-    // SAFETY: the server's global memory pool is live.
-    let lock = unsafe { swoole_rs_memory::members::pool::alloc(size) };
+    let lock = swoole_rs_memory::members::pool::alloc(size);
     // SAFETY: `size` fresh bytes, aligned by the pool; nothing else sees them yet.
     if lock.is_null() || unsafe { swoole_rs_locks::swr_v1_locks_init(lock, MUTEX, 1) } != 0 {
         // Upstream's `Mutex` constructor throws, which ends the process here.

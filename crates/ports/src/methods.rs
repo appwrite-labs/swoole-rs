@@ -254,7 +254,6 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
         FD_STREAM_SERVER
     };
     let socket = make_socket_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
-    config.socket = socket.cast();
     if socket.is_null() {
         log::set_last_error(errno());
         return -1;
@@ -330,6 +329,9 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     let info = unsafe { &raw const (*socket).info };
     // SAFETY: get_name filled the record's address.
     config.port = unsafe { swr_v1_clients_address_port(info) };
+    // Only a bound record: each failure above frees its own, which the port's
+    // delete would otherwise free again.
+    config.socket = socket.cast();
     0
 }
 
@@ -664,6 +666,10 @@ mod tests {
         assert!(config.socket.is_null(), "freed");
         let stream = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(!import(at, stream), "not listening");
+        assert!(
+            config.socket.is_null(),
+            "the refused record freed, not kept"
+        );
         unsafe { libc::close(stream) };
     }
 
@@ -905,6 +911,7 @@ mod tests {
         let port = unbound_port(5, &long, 0, false);
         let at = (&raw const port).cast_mut().cast::<c_void>();
         assert_eq!(create_socket(at), -1, "invalid address");
+        assert!(unsafe { (*port).socket }.is_null(), "freed, not kept");
         unsafe { port_config::swr_v1_port_config_free(port) };
         // An address no local interface has: bind(2) fails.
         let port = unbound_port(1, "203.0.113.1", 0, false);
@@ -915,6 +922,7 @@ mod tests {
             libc::EADDRNOTAVAIL,
             "errno as the last error"
         );
+        assert!(unsafe { (*port).socket }.is_null(), "freed, not kept");
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
 

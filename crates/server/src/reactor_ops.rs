@@ -18,6 +18,7 @@ use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, SocketRecord, reactor_upstream, what_event_want};
+use swoole_rs_timer::swoole_timer_del;
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
@@ -76,12 +77,6 @@ const SW_EVENT_WRITE: c_int = 1 << 10;
 const EVENT_CLOSE: c_int = 4;
 const EVENT_CONNECT: c_int = 5;
 const EVENT_BUFFER_EMPTY: c_int = 14;
-
-unsafe extern "C-unwind" {
-    /// crates/timer's `swoole_timer_del`.
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut c_void) -> bool;
-}
 
 /// master.cc's `ReactorThreadContext`, which asserts this layout. The entry points
 /// (`reactor_entry`) build it; native code reads and writes its task.
@@ -638,14 +633,14 @@ pub(crate) unsafe fn answer(
         OP_WR_TIMER_DEL => {
             let output = &mut o.sock().output;
             // SAFETY: the socket's live send timer.
-            unsafe { swoole_timer_del(output.send_timer) };
+            unsafe { swoole_timer_del(output.send_timer.cast()) };
             output.send_timer = core::ptr::null_mut();
             0
         }
         OP_CC_TIMER_DEL => {
             let conn = o.conn();
             // SAFETY: the connection's live timer.
-            unsafe { swoole_timer_del(conn.timer) };
+            unsafe { swoole_timer_del(conn.timer.cast()) };
             conn.timer = core::ptr::null_mut();
             0
         }
@@ -810,7 +805,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let thread = unsafe { &mut *o.ctx.thread.cast::<ThreadRecord>() };
             if !thread.heartbeat_timer.is_null() {
                 // SAFETY: the thread's live heartbeat timer.
-                unsafe { swoole_timer_del(thread.heartbeat_timer) };
+                unsafe { swoole_timer_del(thread.heartbeat_timer.cast()) };
                 thread.heartbeat_timer = core::ptr::null_mut();
             }
             0
@@ -964,10 +959,9 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
     };
-    // SAFETY: crates/timer's and native/reactor's, under their upstream symbols.
+    use swoole_rs_timer::swoole_timer_delay;
+    // SAFETY: native/reactor's, under their upstream symbols.
     unsafe extern "C-unwind" {
-        #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
-        fn swoole_timer_delay(node: *mut c_void, delay_ms: c_long);
         #[link_name = "_Z17swoole_event_initi"]
         fn swoole_event_init(flags: c_int) -> c_int;
         #[link_name = "_Z17swoole_event_waitv"]
@@ -1002,7 +996,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             )]
             let delay = o.port().max_idle_time as c_long;
             // SAFETY: the socket's live send timer.
-            unsafe { swoole_timer_delay(o.sock().output.send_timer, delay) };
+            unsafe { swoole_timer_delay(o.sock().output.send_timer.cast(), delay) };
             0
         }
         OP_RESUME_READ => {

@@ -156,9 +156,7 @@ impl Item {
                 };
             }
         }
-        let std = object.object().unwrap_or(ptr::null_mut());
-        // SAFETY: a live object.
-        if let Some((class, resource)) = unsafe { phplocks::shared(std) } {
+        if let Some((class, resource)) = phplocks::shared(object) {
             let kind = match class {
                 Shareable::Lock => IS_LOCK,
                 Shareable::Atomic => IS_ATOMIC,
@@ -222,8 +220,9 @@ impl Item {
                     IS_ATOMIC => Shareable::Atomic,
                     _ => Shareable::Long,
                 };
-                // SAFETY: per the caller.
-                unsafe { phplocks::shared_object(out, class, resource.as_ref()) };
+                let object = phplocks::shared_object(class, resource.as_ref());
+                // SAFETY: per the caller; `out` takes the new object's reference.
+                unsafe { out.write(object.into_zval()) };
             }
             Value::Socket { fd, kind } => match self.kind {
                 // SAFETY: per the caller.
