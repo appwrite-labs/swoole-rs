@@ -35,7 +35,7 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.annotations import annotate_each
+from tools.annotations import annotate
 
 # First match wins; the reason is the official runner's SKIPIF text.
 CATEGORIES = [
@@ -277,11 +277,14 @@ def main():
     if rechecked is not None:
         confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)
         annotate_regressions(results, confirmed + inconclusive)
-        annotate_each('notice', 'PHPT flaky on upstream', flaky)
-        annotate_each('notice', 'PHPT passed on re-run', recovered)
+        for test in flaky:
+            annotate('notice', 'PHPT flaky on upstream', test)
+        for test in recovered:
+            annotate('notice', 'PHPT passed on re-run', test)
         return int(bool(confirmed or inconclusive))
     regressions = compare(results)[0]
-    annotate_each('error', 'PHPT regression', regressions)
+    for regression in regressions:
+        annotate('error', 'PHPT regression', regression)
     return int(bool(regressions))
 
 
@@ -291,7 +294,8 @@ def annotate_regressions(results, tests):
     for row in results:
         if row['engine'] != 'upstream' and row['status'] != 'passed':
             failed[row['test']].append(f"{row['engine']}: {row['status']}")
-    annotate_each('error', 'PHPT regression', [f"{test} ({', '.join(failed[test]) or 'failed'})" for test in tests])
+    for test in tests:
+        annotate('error', 'PHPT regression', f"{test} ({', '.join(failed[test]) or 'failed'})")
 
 
 if __name__ == '__main__':

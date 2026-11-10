@@ -45,7 +45,6 @@ void swr_v1_core_set_signal_async_listener_num(uint32_t value);
 long swr_v1_core_trace_flags(void);
 uint32_t swr_v1_core_pagesize(void);
 void swr_v1_core_set_pagesize(uint32_t value);
-void *swr_v1_core_memory_pool(void);
 void *swr_v1_core_stdout(void);
 void *swr_v1_core_logger(void);
 void *swr_v1_core_server(void);

@@ -1,7 +1,9 @@
 """The PHPT gate shards every test once, classifies skips and fails only on upstream passes cargo loses."""
 import io
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -307,15 +309,40 @@ class PhptGate(unittest.TestCase):
                                       env={**environment, **env}, capture_output=True, text=True)
             self.assertNotIn('::error', gate().stderr)
             lines = gate(GITHUB_ACTIONS='true').stderr.splitlines()
-        # Nine by name and one count: GitHub shows about ten annotations of a level per step.
+        # Nine by name and one count: GitHub keeps about ten annotations of a level per step.
         self.assertEqual(lines[0], '::error title=PHPT regression::tests/t/0.phpt (cargo: failed)')
         self.assertEqual(len(lines), 10)
-        self.assertEqual(lines[-1], '::error title=PHPT regressions::3 more of 12; the step summary lists them all')
+        self.assertEqual(lines[-1], '::error title=3 more errors::3 more past the first 9; the log lists them all')
 
     def test_annotation_properties_escape_their_separators(self):
         from tools.annotations import escape
         self.assertEqual(escape('a: b, 100%\nc', separators=True), 'a%3A b%2C 100%25%0Ac')
         self.assertEqual(escape('a: b, c'), 'a: b, c')
+
+    def test_concurrent_annotations_keep_the_step_budget(self):
+        # dev.py's phase threads annotate at once: nine by name, the rest counted.
+        import threading
+        from tools import annotations
+        emitted = []
+        with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
+                mock.patch.object(annotations, '_shown', annotations.Counter()), \
+                mock.patch.object(annotations, '_omitted', annotations.Counter()), \
+                mock.patch.object(annotations, 'emit', lambda *args: emitted.append(args)), \
+                mock.patch.object(annotations.atexit, 'register'):
+            self.addCleanup(sys.setswitchinterval, sys.getswitchinterval())
+            sys.setswitchinterval(1e-6)
+            start = threading.Barrier(16)
+            def worker(n):
+                start.wait()
+                for i in range(50):
+                    annotations.annotate('error', f'{n}.{i} failed', 'exit 1')
+            threads = [threading.Thread(target=worker, args=(n,)) for n in range(16)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(len(emitted), annotations.PER_STEP - 1)
+            self.assertEqual(annotations._omitted['error'], 16 * 50 - (annotations.PER_STEP - 1))
 
 
 if __name__ == '__main__':
