@@ -107,20 +107,17 @@ macro_rules! methods {
 
 methods! {
     fn start_manager_process(serv: *mut c_void) -> c_int = RUN_START_MANAGER(serv, NONE, NONE, 0);
-    "_ZN6swoole6Server22restart_worker_processERKNS_10ExitStatusE"
     fn restart_worker_process(serv: *mut c_void, exit_status: *const c_void) -> c_int
         = RUN_RESTART_WORKER(serv, exit_status, NONE, 0);
     fn read_worker_message(pool: *mut c_void, msg: *mut c_void) -> ()
         = RUN_READ_WORKER_MESSAGE(pool, msg, NONE, 0);
     #[must_use]
-    "_ZNK6swoole6Server6reloadEb"
     fn reload(serv: *const c_void, reload_all_workers: bool) -> bool
         = RUN_RELOAD(serv, NONE, NONE, u64::from(reload_all_workers));
 
     fn worker_signal_init(serv: *const c_void) -> () = RUN_SIGNAL_INIT(serv, NONE, NONE, 0);
     fn worker_signal_handler(signo: c_int) -> ()
         = RUN_WORKER_SIGNAL(NONE, NONE, NONE, i64::from(signo).cast_unsigned());
-    "_ZN6swoole6Server19worker_accept_eventEPNS_8DataHeadE"
     fn worker_accept_event(serv: *mut c_void, info: *mut c_void) -> ()
         = RUN_ACCEPT_EVENT(serv, NONE, info, 0);
     fn worker_start_callback(serv: *mut c_void, worker: *mut c_void) -> ()
@@ -133,18 +130,15 @@ methods! {
     "_ZN6swoole6Server25call_worker_stop_callbackEPNS_6WorkerE"
     fn call_worker_stop_callback(serv: *mut c_void, worker: *mut c_void) -> ()
         = RUN_CALL_WORKER_STOP(serv, worker, NONE, 0);
-    "_ZN6swoole6Server26call_worker_error_callbackEPNS_6WorkerERKNS_10ExitStatusE"
     fn call_worker_error_callback(serv: *mut c_void, worker: *mut c_void, status: *const c_void) -> ()
         = RUN_CALL_WORKER_ERROR(serv, worker, status, 0);
     #[must_use]
-    "_ZN6swoole6Server11kill_workerEi"
     fn kill_worker(serv: *mut c_void, worker_id: c_int) -> bool
         = RUN_KILL_WORKER(serv, NONE, NONE, i64::from(worker_id).cast_unsigned());
     "_ZN6swoole6Server17stop_async_workerEPNS_6WorkerE"
     fn stop_async_worker(serv: *mut c_void, worker: *mut c_void) -> ()
         = RUN_STOP_ASYNC(serv, worker, NONE, 0);
     fn drain_worker_pipe(serv: *const c_void) -> () = RUN_DRAIN_PIPES(serv, NONE, NONE, 0);
-    "_ZN6swoole6Server24clean_worker_connectionsEPNS_6WorkerE"
     fn clean_worker_connections(serv: *mut c_void, worker: *mut c_void) -> ()
         = RUN_CLEAN_CONNECTIONS(serv, worker, NONE, 0);
     fn start_event_worker(serv: *mut c_void, worker: *mut c_void) -> c_int
@@ -153,39 +147,33 @@ methods! {
     fn send_to_reactor_thread(serv: *const c_void, ev_data: *const c_void, sendn: usize, session_id: c_long) -> isize
         = RUN_SEND_TO_REACTOR_THREAD(serv, ev_data, &raw const session_id, sendn as u64);
 
-    "_ZN6swoole6Server23start_reactor_processesEv"
     fn start_reactor_processes(serv: *mut c_void) -> c_int
         = RUN_REACTOR_PROCESS_START(serv, NONE, NONE, 0);
-    "_ZN6swoole6Server25reactor_process_main_loopEPNS_11ProcessPoolEPNS_6WorkerE"
     fn reactor_process_main_loop(pool: *mut c_void, worker: *mut c_void) -> c_int
         = RUN_REACTOR_PROCESS_MAIN(pool, worker, NONE, 0);
 }
 
 methods! {
-    "_ZN6swoole6Server21create_thread_factoryEv"
     fn create_thread_factory(serv: *mut c_void) -> *mut c_void
         = RUN_CREATE_THREAD_FACTORY(serv, NONE, NONE, 0);
-    "_ZNK6swoole6Server22destroy_thread_factoryEv"
     fn destroy_thread_factory(serv: *const c_void) -> () = RUN_DESTROY_THREAD_FACTORY(serv, NONE, NONE, 0);
-    "_ZN6swoole6Server20start_worker_threadsEv"
     fn start_worker_threads(serv: *mut c_void) -> c_int = RUN_START_WORKER_THREADS(serv, NONE, NONE, 0);
-    "_ZN6swoole6Server19stop_worker_threadsEv"
     fn stop_worker_threads(serv: *mut c_void) -> () = RUN_STOP_WORKER_THREADS(serv, NONE, NONE, 0);
     #[must_use]
     fn reload_worker_threads(serv: *const c_void, reload_all_workers: bool) -> bool
         = RUN_THREAD_RELOAD(serv, NONE, NONE, u64::from(reload_all_workers));
 }
 
-/// Each `ThreadFactory` method that enters one operation over its server and itself.
+/// Each `ThreadFactory` method that enters one operation over its server and itself: the
+/// upstream method, Rust name, parameters, return type and the operation's argument.
 macro_rules! thread_factory_methods {
-    ($($(#[$attr:meta])* $symbol:literal fn $name:ident($($p:ident: $t:ty),*) -> $r:ty
+    ($($(#[$attr:meta])* $method:literal fn $name:ident($($p:ident: $t:ty),*) -> $r:ty
         = $op:ident($arg:expr);)*) => {$(
-        #[doc = concat!("`", $symbol, "`.")]
+        #[doc = concat!("`ThreadFactory::", $method, "`.")]
         ///
         /// # Safety
         /// `factory` is a live `ThreadFactory`.
         $(#[$attr])*
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
         pub unsafe extern "C" fn $name(factory: *mut c_void, $($p: $t),*) -> $r {
             // SAFETY: as the caller guarantees: `Factory::server_` is its first member.
             let serv = unsafe { *factory.cast::<*mut c_void>() };
@@ -197,18 +185,18 @@ macro_rules! thread_factory_methods {
 
 thread_factory_methods! {
     #[must_use]
-    "_ZN6swoole13ThreadFactory5startEv"
+    "start()"
     fn thread_factory_start() -> bool = RUN_THREAD_FACTORY_START(0);
-    "_ZN6swoole13ThreadFactory4waitEv"
+    "wait()"
     fn thread_factory_wait() -> () = RUN_THREAD_MANAGER_WAIT(0);
     #[must_use]
-    "_ZN6swoole13ThreadFactory6reloadEb"
+    "reload(reload_all_workers)"
     fn thread_factory_reload(reload_all_workers: bool) -> bool
         = RUN_THREAD_RELOAD(u64::from(reload_all_workers));
-    "_ZN6swoole13ThreadFactory24terminate_manager_threadEv"
+    "terminate_manager_thread()"
     fn terminate_manager_thread() -> () = RUN_THREAD_TERMINATE_MANAGER(0);
     #[must_use]
-    "_ZNK6swoole13ThreadFactory20get_master_thread_idEv"
+    "get_master_thread_id()"
     fn get_master_thread_id() -> u32 = RUN_THREAD_ID(1);
 }
 
@@ -220,7 +208,6 @@ pub struct Bytes {
 
 methods! {
     #[must_use]
-    "_ZN6swoole6Server17init_task_workersEv"
     fn init_task_workers(serv: *mut c_void) -> bool = RUN_INIT_TASK_WORKERS(serv, NONE, NONE, 0);
 }
 
