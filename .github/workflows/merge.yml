@@ -154,7 +154,10 @@ jobs:
   # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
   # http2-concurrent, websocket-64k, websocket-fragmented, upload and static are
   # benchmarks/traffic (#2652).
+  # Not in the merge queue: at about 11 minutes it is the slowest job by 3, and a group
+  # lands a queue slot later for every minute its run takes. A regression shows on main's run.
   callgrind:
+    if: github.event_name != 'merge_group'
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
     services:

@@ -442,12 +442,15 @@ def phpt_baseline(kind='phpt', php=None):
 REQUIRED = ('required',)
 
 
-def new_failures(loops):
+def new_failures(loops, saved=None):
     """The phases failed in `loops` (dev.py loop.json paths) that main's latest completed merge-tier
-    run with phases didn't fail: a PR's gates block only on what it breaks, not on red main."""
+    run with phases didn't fail: a PR's gates block only on what it breaks, not on red main.
+    `saved` is that run's own record (run_failures), which spares the API calls that find it."""
     failed = set()
     for loop in loops:
         failed |= {row['phase'] for row in json.loads(Path(loop).read_text())['phases'] if row['failed']}
+    if saved:
+        return f"main's merge-tier run {saved.get('run')}", sorted(failed - set(saved['phases']))
     runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
                          '--limit', '30', '--json', 'databaseId,conclusion,url'))
     for run in runs:
@@ -561,7 +564,8 @@ def main(argv=None):
     failures.add_argument('--phases', type=Path, help="with --needs: the directory of the run's phases* artifacts")
     failures.add_argument('--shards', type=int, default=3, help="with --needs: how many shards full-gates has")
     failures.add_argument('--save', type=Path, help='with --needs: write what the run failed here, as a baseline')
-    failures.add_argument('--baseline', type=Path, help='with --needs: fail on what this baseline did not fail')
+    failures.add_argument('--baseline', type=Path, help="fail on what this saved baseline didn't fail; with loop.json "
+                          "reports a missing file falls back to the API")
     args = parser.parse_args(argv)
     global RETRY_DEADLINE, RETRY_BASE
     if args.command == 'phpt-baseline':
@@ -591,7 +595,8 @@ def main(argv=None):
         if not args.loops:
             sys.exit('new-failures: no loop.json given; the gates ran nothing')
         try:
-            baseline, new = new_failures(args.loops)
+            saved = json.loads(args.baseline.read_text()) if args.baseline and args.baseline.exists() else None
+            baseline, new = new_failures(args.loops, saved)
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         print(f"Against {baseline or 'no merge-tier run with phases'}: " +

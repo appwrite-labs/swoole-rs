@@ -335,6 +335,16 @@ class Ci(unittest.TestCase):
             loop.write_text(json.dumps({'phases': [{'phase': 'abi-native', 'failed': True}]}))
             code, _, _ = self.ci('new-failures', str(loop), runs={}, flags=(), history=history, phases=main_phases)
             self.assertEqual(code, 0)
+            # main's saved baseline answers without the API; a missing file falls back to it.
+            saved = Path(temp) / 'failures.json'
+            saved.write_text(json.dumps({'phases': ['abi-native'], 'jobs': [], 'run': '8'}))
+            loop.write_text(json.dumps({'phases': [{'phase': 'abi-native', 'failed': True}, {'phase': 'timer-native', 'failed': True}]}))
+            code, _, _ = self.ci('new-failures', str(loop), '--baseline', str(saved), runs={}, flags=())
+            self.assertEqual((code, self.gh_calls), (1, []))
+            self.assertIn("Against main's merge-tier run 8: new failures: timer-native", self.out)
+            code, _, _ = self.ci('new-failures', str(loop), '--baseline', str(Path(temp) / 'none.json'), runs={}, flags=(),
+                                 history=history, phases=main_phases)
+            self.assertEqual((code, bool(self.gh_calls)), (1, True))
         code, _, _ = self.ci('new-failures', runs={}, flags=())
         self.assertEqual(code, 1)
 
