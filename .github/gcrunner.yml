@@ -29,7 +29,8 @@ runners:
     zone: europe-west4-a+europe-west1-b+europe-west3-a+europe-north1-a
     spot: false
 
-  # Jobs that only read GitHub's API or aggregate other jobs' results.
+  # Jobs that only read GitHub's API or aggregate other jobs' results. Those on a run's longest
+  # chain (`required`, the PR tier's `changes`) are on GitHub-hosted runners instead, which start at once.
   small:
     family: n2d
     cpu: 2
