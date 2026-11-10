@@ -467,12 +467,10 @@ fn handle(
         if parser.error == HPE_OK {
             notice("Incomplete HTTP request: parsed successfully but missing required components");
         } else {
-            // SAFETY: llhttp's NUL-terminated reason for its error.
-            let reason = unsafe { CStr::from_ptr(parser.reason) };
             notice(&format!(
                 "Invalid HTTP request discarded: {} bytes unprocessed. Reason: {}",
                 data.len() - parsed,
-                reason.to_string_lossy()
+                parser.reason()
             ));
         }
         return Ok(DONE);

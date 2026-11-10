@@ -186,7 +186,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
 }
 
 /// The exit condition: requests in flight or waiting keep the loop running.
-extern "C-unwind" fn idle(event_num: *mut usize) -> bool {
+extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
     let iouring = INSTANCE.get();
     // SAFETY: null or the thread's live instance.
     if let Some(iouring) = unsafe { iouring.as_ref() }
@@ -194,8 +194,7 @@ extern "C-unwind" fn idle(event_num: *mut usize) -> bool {
         && unsafe { iouring.engine.as_ref() }
             .is_none_or(|engine| engine.task_num() == 0 && engine.waiting_num() == 0)
     {
-        // SAFETY: the reactor passes its live count.
-        unsafe { *event_num -= 1 };
+        *event_num -= 1;
     }
     true
 }

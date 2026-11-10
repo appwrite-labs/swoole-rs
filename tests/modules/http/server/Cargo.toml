@@ -20,7 +20,9 @@ swoole-rs-corebase = { path = "../../../../crates/corebase" }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-locks = { path = "../../../../crates/locks" }
 swoole-rs-ports = { path = "../../../../crates/ports" }
-swoole-rs-process = { path = "../../../../crates/process" }
+# `thread`: core-tests run the server TESTs in upstream's SW_THREAD build, whose MODE_THREAD
+# workers are threads with their own `SwooleWG`.
+swoole-rs-process = { path = "../../../../crates/process", features = ["thread"] }
 swoole-rs-server = { path = "../../../../crates/server" }
 swoole-rs-tls = { path = "../../../../crates/tls" }
 swoole-rs-utilities = { path = "../../../../crates/utilities" }

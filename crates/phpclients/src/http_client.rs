@@ -7,7 +7,6 @@
 use crate::{
     http_native::{self as native, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
-    llhttp::{self, Parser, Settings},
     native::{Co, Socket, swoole_rs_php_error, unconstructed},
     socket::socket_of,
 };
@@ -16,13 +15,11 @@ use std::{
     ffi::{CStr, CString},
     mem::MaybeUninit,
     ptr,
-    sync::{
-        LazyLock,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_error::swr_v1_error_strerror;
+use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
@@ -141,14 +138,49 @@ struct Client {
     bailout: bool,
 }
 
-static PARSER: LazyLock<Settings> = LazyLock::new(|| Settings {
-    on_header_field: Some(on_header_field),
-    on_header_value: Some(on_header_value),
-    on_headers_complete: Some(on_headers_complete),
-    on_body: Some(on_body),
-    on_message_complete: Some(on_message_complete),
-    ..Settings::default()
-});
+/// The client's llhttp callbacks, through the pointer `recv_response` parses with.
+struct Hooks(*mut Client);
+
+impl Callbacks for Hooks {
+    fn parser(&mut self) -> &mut Parser {
+        // SAFETY: the client, live while `recv_response` parses.
+        unsafe { &mut (*self.0).parser }
+    }
+
+    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+        on_header_field(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+        on_header_value(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_headers_complete(&mut self) -> c_int {
+        on_headers_complete(self.0)
+    }
+
+    fn on_body(&mut self, data: &[u8]) -> c_int {
+        on_body(self.0, data.as_ptr().cast(), data.len())
+    }
+
+    fn on_message_complete(&mut self) -> c_int {
+        on_message_complete(self.0)
+    }
+}
+
+/// `swoole_llhttp_parser_execute`: how many bytes parsed; a pause resumes.
+fn parse(this: *mut Client, data: &[u8]) -> usize {
+    let result = llhttp::execute(&mut Hooks(this), data);
+    if result == llhttp::HPE_OK {
+        return data.len();
+    }
+    // SAFETY: the client, live while `recv_response` parses.
+    let parser = unsafe { &mut (*this).parser };
+    let parsed = parser.error_pos();
+    parser.resume();
+    parser.resume_after_upgrade();
+    parsed
+}
 
 fn features() -> u32 {
     FEATURES.load(Ordering::Relaxed)
@@ -345,7 +377,7 @@ impl Client {
             basic_auth: Vec::new(),
             head: false,
             resolve: Box::default(),
-            parser: Parser::new(),
+            parser: Parser::default(),
             wait_response: false,
             header_field: (ptr::null(), 0),
             body: Vec::new(),
@@ -883,7 +915,7 @@ impl Client {
         let mut header_completed = false;
         let mut header_offset = 0_usize;
         let this: *mut Self = self;
-        self.parser.init_response(this.cast());
+        self.parser = Parser::new(llhttp::RESPONSE);
         let timeout = if timeout == 0.0 {
             self.response_timeout
         } else {
@@ -901,8 +933,8 @@ impl Client {
             if received <= 0 {
                 if received == 0 {
                     socket.set_err(libc::ECONNRESET);
-                    if total > 0 && !self.parser.keep_alive() {
-                        self.parser.finish();
+                    if total > 0 && !self.parser.should_keep_alive() {
+                        llhttp::finish(&mut Hooks(this));
                         success = true;
                     }
                 }
@@ -932,7 +964,7 @@ impl Client {
             total += count;
             // SAFETY: the buffer's first `count` bytes are this response's data.
             let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), count) };
-            let parsed = self.parser.execute(&PARSER, data);
+            let parsed = parse(this, data);
             if self.bailout {
                 return false;
             }
@@ -942,12 +974,12 @@ impl Client {
             {
                 break;
             }
-            if self.parser.error != llhttp::OK {
+            if self.parser.error != llhttp::HPE_OK {
                 socket.set_err(INVALID_PROTOCOL);
                 break;
             }
             if self.event_stream && self.parser.needs_eof() {
-                self.parser.finish();
+                llhttp::finish(&mut Hooks(this));
             }
             if self.completed {
                 if self.parser.upgrade != 0 && count > parsed + WEBSOCKET_HEADER {
@@ -1341,34 +1373,21 @@ impl<'a> FilePart<'a> {
     }
 }
 
-/// The client behind `parser.data`.
-/// # Safety
-/// `parser` is the client's own, executing inside `recv_response`.
-unsafe fn parser_client<'a>(parser: *mut Parser) -> &'a mut Client {
-    // SAFETY: per the caller, `data` is the client.
-    let data = unsafe { (*parser).data };
-    // SAFETY: as above.
-    unsafe { &mut *data.cast::<Client>() }
+/// The client `recv_response` parses for, inside its callbacks.
+fn parser_client<'a>(this: *mut Client) -> &'a mut Client {
+    // SAFETY: the client, live while `recv_response` parses; each callback
+    // takes it afresh, as the C callbacks read `parser->data`.
+    unsafe { &mut *this }
 }
 
-unsafe extern "C" fn on_header_field(
-    parser: *mut Parser,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the client's parser.
-    let client = unsafe { parser_client(parser) };
+fn on_header_field(this: *mut Client, at: *const c_char, length: usize) -> c_int {
+    let client = parser_client(this);
     client.header_field = (at.cast(), length);
     0
 }
 
-unsafe extern "C" fn on_header_value(
-    parser: *mut Parser,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: llhttp calls back with the client's parser.
-    let client = unsafe { parser_client(parser) };
+fn on_header_value(this: *mut Client, at: *const c_char, length: usize) -> c_int {
+    let client = parser_client(this);
     let (field, field_length) = client.header_field;
     // SAFETY: llhttp's spans point into the buffer being parsed.
     let name = unsafe { std::slice::from_raw_parts(field, field_length) };
@@ -1415,15 +1434,13 @@ unsafe extern "C" fn on_header_value(
     0
 }
 
-unsafe extern "C" fn on_headers_complete(parser: *mut Parser) -> c_int {
-    // SAFETY: llhttp calls back with the client's parser.
-    let client = unsafe { parser_client(parser) };
+fn on_headers_complete(this: *mut Client) -> c_int {
+    let client = parser_client(this);
     c_int::from(client.head || client.parser.status_code == NO_CONTENT)
 }
 
-unsafe extern "C" fn on_body(parser: *mut Parser, at: *const c_char, length: usize) -> c_int {
-    // SAFETY: llhttp calls back with the client's parser.
-    let client = unsafe { parser_client(parser) };
+fn on_body(this: *mut Client, at: *const c_char, length: usize) -> c_int {
+    let client = parser_client(this);
     // SAFETY: llhttp's span points into the buffer being parsed.
     let data = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
     let decompress =
@@ -1447,8 +1464,8 @@ unsafe extern "C" fn on_body(parser: *mut Parser, at: *const c_char, length: usi
         // live until the call returns (the body is cleared after).
         let result =
             unsafe { native::swoole_http_client_coro_call(callable, object, pointer.cast(), size) };
-        // SAFETY: the callback may have reentered the client; read it afresh.
-        let client = unsafe { parser_client(parser) };
+        // The callback may have reentered the client; read it afresh.
+        let client = parser_client(this);
         client.body.clear();
         client.in_callback = false;
         if result == 2 {
@@ -1484,13 +1501,12 @@ unsafe extern "C" fn on_body(parser: *mut Parser, at: *const c_char, length: usi
     0
 }
 
-unsafe extern "C" fn on_message_complete(parser: *mut Parser) -> c_int {
-    // SAFETY: llhttp calls back with the client's parser.
-    let client = unsafe { parser_client(parser) };
+fn on_message_complete(this: *mut Client) -> c_int {
+    let client = parser_client(this);
     client.completed = true;
     if client.parser.upgrade != 0 && !client.websocket {
         client.parser.upgrade = 0;
-        return llhttp::PAUSED;
+        return llhttp::HPE_PAUSED;
     }
     client
         .props()
@@ -1500,7 +1516,7 @@ unsafe extern "C" fn on_message_complete(parser: *mut Parser) -> c_int {
     } else {
         client.download_name = None;
     }
-    llhttp::PAUSED
+    llhttp::HPE_PAUSED
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {

@@ -69,7 +69,7 @@ upstream workers. The restart test explicitly reuses only its database directory
 ## Syscalls
 
 `syscalls.py` (the `syscalls` phase on Linux, in the integrate lane and when the reactor
-changes) runs projects 1–10 under `strace -f` on both engines, twice each, and compares
+changes) runs projects 1–11 under `strace -f` on both engines, twice each, and compares
 what the calls carry: socket options, socket and accept flags, `fcntl` and `ioctl` modes,
 epoll registrations, send and receive flags, clone flags, signal dispositions, and each
 result's errno. Fds, addresses, ports, lengths and buffers are dropped. A signature every
@@ -81,6 +81,8 @@ or a `kind:bug` issue that the entry's reason names. A call both engines make, m
 twice a run and a quarter more often on one, is listed as a count difference (extra or
 fewer calls per request); timing moves counts too, so those aren't gated.
 `target/reports/syscalls.json` holds every difference and each engine's call counts.
+Project 11 runs on the builds without `--fix-halfclose`, which share upstream's half-close
+truncation; its runner records that failed case and carries on, so both engines trace every case.
 
 ## Original Swoole PHPT tests
 

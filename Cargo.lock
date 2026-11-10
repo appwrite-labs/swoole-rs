@@ -975,6 +975,7 @@ dependencies = [
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
  "swoole-rs-phphelpers",
+ "swoole-rs-phpstdext",
  "swoole-rs-phpstubs",
  "swoole-rs-reactor",
  "swoole-rs-sqlite",

@@ -200,12 +200,11 @@ unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
 }
 
 /// The reactor's exit condition: in-flight events keep it running.
-extern "C-unwind" fn pending(event_num: *mut usize) -> bool {
+extern "C-unwind" fn pending(event_num: &mut usize) -> bool {
     let threads = current();
     // SAFETY: null or the live handle.
     if !threads.is_null() && unsafe { (*threads).task_num } == 0 {
-        // SAFETY: the reactor passes its live count.
-        unsafe { *event_num -= 1 };
+        *event_num -= 1;
     }
     true
 }

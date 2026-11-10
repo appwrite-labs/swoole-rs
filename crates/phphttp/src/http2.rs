@@ -368,7 +368,6 @@ impl Ctx {
         if !found || !unsafe { parse::init_multipart(ctx.cast(), boundary, length) } {
             return false;
         }
-        send::state(ctx).parser.data = ctx.cast();
         true
     }
 

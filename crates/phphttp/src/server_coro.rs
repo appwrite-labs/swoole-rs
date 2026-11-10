@@ -286,7 +286,6 @@ unsafe extern "C" {
     fn get_read_buffer(socket: Socket) -> *mut Buffer;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
-    fn llhttp_should_keep_alive(parser: *const crate::state::Llhttp) -> c_int;
 }
 
 /// A live socket's record: the listener, or a connection the loop serves.
@@ -1200,9 +1199,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let callable = conn.server.handler(context);
         let mut args = objects(context);
         let state = send::state(context);
-        // SAFETY: the context's llhttp parser.
-        let keep_alive = unsafe { llhttp_should_keep_alive(&raw const state.parser) } != 0
-            && state.websocket == 0;
+        let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
         if callable.is_null() {
             send::state(context).response.status = NOT_FOUND;
