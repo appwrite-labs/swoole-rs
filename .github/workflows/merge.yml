@@ -19,7 +19,7 @@ jobs:
   # balanced by weight left one near 20 minutes (#318). Each slice runs the builds (the Cargo
   # extension and the upstream reference); the rest is split by tools/phase_weights.json (dev.py --shard).
   full-gates:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -96,7 +96,7 @@ jobs:
   # Every pinned PHPT on upstream and the Cargo build (crates/ext): any test that passes on
   # upstream must pass on cargo (corpus/upstream/gate.py).
   phpt-build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     outputs:
       php: ${{ steps.build.outputs.php }}
@@ -121,7 +121,7 @@ jobs:
   # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
   callgrind:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
     services:
       mysql:
@@ -168,7 +168,7 @@ jobs:
   # swoole_stdext needs the experimental --stdext build, which changes PHP itself
   # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
   phpt-stdext:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -249,7 +249,7 @@ jobs:
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
   # here; full-gates builds without it.
   halfclose:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -284,7 +284,7 @@ jobs:
   # its chroot and unreachable resolver need nothing the runner lacks (it passes as root).
   phpt-root:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -339,7 +339,7 @@ jobs:
   # build-swoole workflow runs it (corpus/library/run.py).
   library:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -392,7 +392,7 @@ jobs:
   # upstream. conformance.yml runs all 517 cases nightly.
   autobahn:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -423,7 +423,7 @@ jobs:
   # reference and the Cargo build, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
   alpine:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     container: php:8.5-alpine
     # The image has no bash, so this job can't use the workflow's bash default.
