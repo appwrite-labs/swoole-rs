@@ -57,7 +57,8 @@ pub(crate) fn install_handlers() {
         (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
         (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler));
+        // SAFETY: `on_event` needs only the live event of a cURL socket.
+        unsafe { event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler)) };
     }
 }
 

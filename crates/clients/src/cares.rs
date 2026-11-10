@@ -157,8 +157,10 @@ unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
 fn install() {
     let read = EventType::SW_EVENT_READ as i32;
     let write = EventType::SW_EVENT_WRITE as i32;
-    event_api::swoole_event_set_handler(FD, read, Some(readable));
-    event_api::swoole_event_set_handler(FD, write, Some(writable));
+    // SAFETY: the handlers need only the live event of a registered c-ares wrapper.
+    unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
+    // SAFETY: as above.
+    unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
     // SAFETY: the live reactor's destroy queue; the call keeps no data.
     let queue = unsafe { &raw mut (*reactor_fields()).destroy_callbacks };
     // SAFETY: as above.

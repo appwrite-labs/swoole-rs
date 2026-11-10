@@ -165,15 +165,23 @@ pub unsafe extern "C-unwind" fn swoole_event_writev(
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
-/// nothing without a reactor. The reactor calls `handler` with its live event.
+/// nothing without a reactor. Safe callers use [`swoole_event_set_fd_handler`].
+///
+/// # Safety
+/// `handler` is sound to call with the live reactor and any live event of
+/// `fd_type`, whenever the reactor dispatches one.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE")
 )]
-pub extern "C" fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Option<Handler>) {
+pub unsafe extern "C" fn swoole_event_set_handler(
+    fd_type: c_int,
+    event: c_int,
+    handler: Option<Handler>,
+) {
     let reactor = current();
     if !reactor.is_null() {
-        // SAFETY: the thread's live reactor.
+        // SAFETY: the thread's live reactor, and a handler as the caller promises.
         unsafe { crate::reactor_upstream::reactor_set_handler(reactor, fd_type, event, handler) };
     }
 }
@@ -270,7 +278,8 @@ unsafe extern "C" fn fd_handler<H: FdHandler>(_reactor: *mut c_void, event: *mut
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
 pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: c_int) {
-    swoole_event_set_handler(fd_type, event, Some(fd_handler::<H>));
+    // SAFETY: `fd_handler` needs only the live event the reactor passes it.
+    unsafe { swoole_event_set_handler(fd_type, event, Some(fd_handler::<H>)) };
 }
 
 /// A reactor cycle task: `Reactor::future_task` or `idle_task`.
