@@ -16,7 +16,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn passed(&self, n: u32) -> Option<*mut zval> {
-        (n <= self.num_args()).then(|| self.arg(n))
+        self.passed_arg(n).then(|| self.arg(n))
     }
 
     /// `Z_PARAM_STR_OR_NULL`: as `str`, but a passed null is `None`.
@@ -33,7 +33,7 @@ impl Call {
     /// As [`Call::str_or_null`].
     #[inline]
     pub fn zstr_or_null(&self, n: u32) -> Result<Option<&ZStr>, Invalid> {
-        if n > self.num_args() || self.arg_value(n).is_null() {
+        if self.value(n).is_none_or(crate::Value::is_null) {
             return Ok(None);
         }
         self.parse_str(n, _zend_expected_type_Z_EXPECTED_STRING_OR_NULL)
@@ -70,7 +70,7 @@ impl Call {
     /// thrown, or a `__toString` bailed out (deferred).
     #[inline]
     pub fn str_or_long(&self, n: u32) -> Result<Option<Result<i64, *mut zend_string>>, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(None);
         }
         let arg = self.arg_value(n);
@@ -130,7 +130,7 @@ impl Call {
     /// The argument is not an array; Zend has thrown.
     #[inline]
     pub fn array_opt(&self, n: u32) -> Result<Option<*mut zval>, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(None);
         }
         self.array(n).map(Some)

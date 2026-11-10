@@ -62,7 +62,6 @@ int main(void) {
                    if not header.name.endswith('_hook.h')]
         # Inventory the declarations selected by the actual target/compiler and
         # configured SDK. Raw text includes unavailable OS backends as well.
-        source = ARGS.source
         includes = shlex.split(run([ARGS.php_config, '--includes']).stdout)
         directories = sorted({str(header.parent) for header in headers})
         # Configure-gated declarations (SW_STDEXT, SW_THREAD, SW_USE_CURL, ...) follow the
@@ -72,9 +71,8 @@ int main(void) {
             inventory.write_text(''.join(f'#include "{header}"\n' for header in headers))
             text = run(shlex.split(os.environ.get('CXX', 'c++')) + [
                 '-E', '-P', '-x', 'c++', '-include', str(ARGS.extension.parent / 'config.h'), *[f'-I{path}' for path in directories],
-                # crates/ext's order: native/swoole-src's copies ahead of the pin's files.
-                '-I', str(OWNED), '-I', str(source), '-I', str(source / 'ext-src'),
-                '-I', str(OWNED / 'thirdparty'), '-I', str(source / 'thirdparty'), *includes, str(inventory)]).stdout
+                # crates/ext's order: native/swoole-src's copies, then PHP's headers.
+                '-I', str(OWNED), '-I', str(OWNED / 'thirdparty'), *includes, str(inventory)]).stdout
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
         expected = set(re.findall(r'\b(swr_v[0-9]+_\w+)\s*\(', text))
         self.assertTrue(expected, 'No selected ABI declarations were checked')
@@ -141,7 +139,6 @@ if __name__ == '__main__':
     parser.add_argument('--php-config', default=os.environ.get('PHP_CONFIG', 'php-config'))
     parser.add_argument('--reference', type=Path, default=ROOT / 'target/upstream/src/modules/swoole.so')
     parser.add_argument('--extension', type=Path, default=ROOT / 'target/ext/swoole.so', help='The Cargo-built swoole.so')
-    parser.add_argument('--source', type=Path, default=ROOT / 'target/ext/src', help='The pin it was built from')
     parser.add_argument('--archive', type=Path, help='A Zend-free libswoole_rs_ffi.a for the C and C++ consumers')
     parser.add_argument('--startup-only', action='store_true', help='Positive startup/flag gates; the C and C++ consumers remain integration-only')
     ARGS = parser.parse_args()

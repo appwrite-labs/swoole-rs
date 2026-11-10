@@ -34,6 +34,14 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
+each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
+GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and
+`Coroutine\Socket`). `callgrind.py` serves their peers, an HTTP server and a TCP
+echo, from threads of its own, so callgrind counts only the client side. Their records started 5% above an
+arm64 Linux run (0.92, 0.91 and 0.94); the ratchet lowers them once two merge runs
+beat them.
+
 Two measure compression against `benchmarks/compression` (#2649): `gzip` posts
 4 KiB of JSON with `Accept-Encoding: gzip` and checks the gzip-encoded echo, and
 `websocket-deflate` echoes 1 KiB of JSON with permessage-deflate negotiated, so
@@ -46,6 +54,14 @@ connection: `tcp-length` (length-prefixed frames, `07-tcp-framing`), `tcp-eof`
 `benchmarks/framing`. Their records started 5% above an arm64 Linux run
 (0.97, 0.52 and 1.04); the ratchet lowers them once two merge runs beat them.
 
+`atomic` (#2654) adds 64 values to a `Swoole\Atomic`, each under a `Swoole\Lock`
+mutex, against `benchmarks/primitives`, and `process-mode` is `plaintext` against
+`benchmarks/process`: `SWOOLE_PROCESS` with two workers, so the master's reactor
+reads each request and dispatches it to a worker, which every other workload
+skips. Their records started 5% above an arm64 Linux run (0.97 and 0.90).
+`Swoole\Thread` and io_uring file reads need a ZTS PHP and the
+`--enable-swoole-thread` / `--enable-iouring` builds of both engines, which this
+job doesn't make.
 Five send larger or concurrent traffic to `benchmarks/traffic` (#2652), a server
 of its own so its static handler's per-request file check stays out of the other
 workloads: `http2-concurrent` (16 HTTP/2 streams at once, each posting 4000 bytes

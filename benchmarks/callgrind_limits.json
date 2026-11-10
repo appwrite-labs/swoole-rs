@@ -11,6 +11,9 @@
   "channel": 0.89,
   "task": 0.94,
   "mysql": 0.97,
+  "http-client": 0.97,
+  "client": 0.96,
+  "socket": 0.99,
   "gzip": 1.04,
   "websocket-deflate": 1.04,
   "tcp-length": 1.02,
@@ -20,5 +23,7 @@
   "websocket-64k": 0.62,
   "websocket-fragmented": 0.78,
   "upload": 1.05,
-  "static": 1.10
+  "static": 1.10,
+  "atomic": 1.02,
+  "process-mode": 0.95
 }

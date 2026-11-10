@@ -13,6 +13,7 @@ two consecutive merge-tier results both beat (.github/workflows/badges.yml files
 import argparse
 import gzip
 import http.client
+import http.server
 import json
 import math
 import os
@@ -20,9 +21,11 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -69,6 +72,10 @@ WORKLOADS = {
     # A prepared SELECT through hooked PDO mysql (#2066); needs MySQL on MYSQL_HOST (root/root,
     # database test) and --php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql.
     'mysql': ('benchmarks/mysql', 'GET', '/?id=42', None, b'{"id":42,"name":"benchmark"}'),
+    # Outbound coroutine clients (#2647), against the peers below.
+    'http-client': ('benchmarks/clients', 'GET', '/http', None, b'ok\n'),
+    'client': ('benchmarks/clients', 'GET', '/client', None, b'ok\n'),
+    'socket': ('benchmarks/clients', 'GET', '/socket', None, b'ok\n'),
     # Compression (#2649): a gzip-encoded HTTP response and a permessage-deflate echo.
     'gzip': ('benchmarks/compression', 'GZ', '/gzip', DOCUMENT, DOCUMENT),
     'websocket-deflate': ('benchmarks/compression', 'WSZ', '/chat', MESSAGE, MESSAGE),
@@ -76,6 +83,9 @@ WORKLOADS = {
     'tcp-length': ('corpus/07-tcp-framing', 'TCP', None, FRAME, FRAME),
     'tcp-eof': ('benchmarks/framing', 'TCP', None, PAYLOAD[:1024] + b'\r\n', PAYLOAD[:1024] + b'\r\n'),
     'udp': ('benchmarks/framing', 'UDP', None, PAYLOAD[:1024], PAYLOAD[:1024]),
+    # Swoole\Atomic and Swoole\Lock, and plaintext dispatched through SWOOLE_PROCESS's master (#2654).
+    'atomic': ('benchmarks/primitives', 'GET', '/atomic', None, b'2016\n'),
+    'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
     # Larger and concurrent traffic (#2652), against benchmarks/traffic.
     'http2-concurrent': ('benchmarks/traffic', 'H2C', '/echo', H2BODY, H2BODY),
     'websocket-64k': ('benchmarks/traffic', 'WS', '/', PAYLOAD, PAYLOAD),
@@ -83,6 +93,39 @@ WORKLOADS = {
     'upload': ('benchmarks/traffic', 'UP', '/upload', PAYLOAD, b'65536\n'),
     'static': ('benchmarks/traffic', 'GET', '/static.txt', None, STATIC),
 }
+
+
+class Pong(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', '4')
+        self.end_headers()
+        self.wfile.write(b'pong')
+
+    def log_message(self, *args):
+        pass
+
+
+class Echo(socketserver.BaseRequestHandler):
+    def handle(self):
+        while data := self.request.recv(65536):
+            self.request.sendall(data)
+
+
+def peers():
+    """Environment naming the peers benchmarks/clients calls: an HTTP server and a TCP echo,
+    served from threads of this process so callgrind counts only the client side."""
+    if not hasattr(peers, 'env'):
+        servers = [http.server.ThreadingHTTPServer(('127.0.0.1', 0), Pong),
+                   socketserver.ThreadingTCPServer(('127.0.0.1', 0), Echo)]
+        for server in servers:
+            server.daemon_threads = True
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        peers.env = {'PEER_HTTP_PORT': str(servers[0].server_address[1]),
+                     'PEER_ECHO_PORT': str(servers[1].server_address[1])}
+    return peers.env
 
 
 def h2_frame(kind, flags, stream, payload=b''):
@@ -209,7 +252,7 @@ def instructions(engine, workload, requests, warmup, profiles=None):
         command = ['valgrind', '--tool=callgrind', '--trace-children=yes', '--instr-atstart=no',
                    f'--callgrind-out-file={out}/cg.%p',
                    *engine.command(ROOT / workload[0] / 'server.php')]
-        proc = subprocess.Popen(command, env={**os.environ, 'TEST_PORT': str(port), 'TEST_DATA': data},
+        proc = subprocess.Popen(command, env={**os.environ, **peers(), 'TEST_PORT': str(port), 'TEST_DATA': data},
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         try:
             wait_for_port(port, proc)
