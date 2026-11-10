@@ -47,6 +47,7 @@ enum swIPCMode {
     SW_IPC_SOCKET = 3,
 };
 
+SW_API int swoole_get_worker_type();
 SW_API void swoole_set_worker_id(swoole::WorkerId worker_id);
 SW_API void swoole_set_worker_type(int type);
 
