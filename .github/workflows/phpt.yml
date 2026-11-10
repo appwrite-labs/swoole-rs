@@ -88,15 +88,43 @@ jobs:
           pattern: phpt-*-*
           merge-multiple: true
           path: shards
-      # The baseline's upstream reports, cut to the families run here.
+      # A run on main whose upstream shards all passed keeps their reports and upstream.so in a
+      # cache under its run id, which later runs restore without the REST API: the Actions token's
+      # hourly limit is shared by every job, and an artifact download that hits it fails the gate
+      # (#2496). Saving is best effort: on a miss the gate downloads the artifacts as before.
+      - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: phpt-engines
+      - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        continue-on-error: true
+        run: mkdir baseline-cache && cp shards/upstream-*.json phpt-engines/upstream.so baseline-cache/
+      - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ github.run_id }}
+      - if: inputs.baseline != ''
+        id: baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ inputs.baseline }}
+      # The baseline's upstream reports, cut to the families run here; the artifacts only on a miss.
       - if: inputs.baseline != ''
         env:
           GH_TOKEN: ${{ github.token }}
           FAMILIES: ${{ inputs.families }}
         run: |
-          gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
+          if [ "${{ steps.baseline.outputs.cache-hit }}" != true ]; then
+            gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
+            mkdir -p baseline-cache && cp baseline/*/*.json baseline-cache/
+          fi
           families=$(printf '%s\n' $FAMILIES | jq -R . | jq -sc 'map(select(. != ""))')
-          for report in baseline/*/*.json; do
+          for report in baseline-cache/upstream-*.json; do
             jq --argjson f "$families" '.results |= map(select(($f | length) == 0 or (.module | IN($f[]))))' \
               "$report" > "shards/$(basename "$report")"
           done
@@ -120,8 +148,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
-          cp baseline-engines/upstream.so target/phpt/upstream.so
+          if [ ! -f baseline-cache/upstream.so ]; then
+            gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+            cp baseline-engines/upstream.so baseline-cache/upstream.so
+          fi
+          cp baseline-cache/upstream.so target/phpt/upstream.so
       - if: steps.flagged.outputs.rerun == 'true'
         run: |
           python3 corpus/upstream/inventory.py --output target/phpt/all.json
