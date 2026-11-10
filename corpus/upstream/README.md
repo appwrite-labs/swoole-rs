@@ -116,7 +116,9 @@ without modifying the original PHPT assertions or capability probes.
 
 The merge tier (`.github/workflows/phpt.yml`, called from `merge.yml`) runs every pinned
 PHPT against the upstream reference and the Cargo build, both built
-with PHP sockets support, in 6 shards per engine. The shards don't run as root, so the five
+with PHP sockets support, in 6 shards per engine. A push run leaves upstream's shards out
+while a baseline holds (below) and gates the Cargo build on that run's upstream reports;
+the weekly scheduled run and any dispatched one run them. The shards don't run as root, so the five
 tests that skip unless root run again as root in the `phpt-root` job, with their own
 re-runs and gate (`phpt-root.json`). The shards run:
 
@@ -162,8 +164,8 @@ reports and `upstream.so` from main's latest merge-tier run whose upstream shard
 (`tools/ci.py phpt-baseline`), cut to those families. That baseline holds only while
 what upstream's results depend on is unchanged since its commit: the pin and its build,
 the runner, the services and packages (`UPSTREAM_KEY` and `BASELINES` in `tools/ci.py`).
-A PR that changes one of those, or anything under `corpus/upstream/` (pr.yml's own
-check), runs every family, and upstream too. `--variant` finds the c-ares, io_uring and thread-context
+A PR that changes one of those runs every family, and upstream too; one that changes
+anything else under `corpus/upstream/` runs every family on the Cargo build. `--variant` finds the c-ares, io_uring and thread-context
 workflows' upstream reports the same way, and `--php` also requires the PHP release.
 
 `services.yml` holds those services, and `services.py` prints the ones some families reach

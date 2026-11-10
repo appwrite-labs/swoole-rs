@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Watch this repository's CI. GitHub merges pull requests itself (`gh pr merge --auto --squash`).
+"""Watch this repository's CI. GitHub merges pull requests itself: `gh pr merge --auto --squash`
+puts a PR in main's merge queue once its PR tier passes.
 
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main); a run
                              replaced by a newer push to main follows the newer run
@@ -9,12 +10,16 @@
                              token lacks it
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
                              whose finished PR-tier run has none (GitHub abandoned its jobs:
-                             re-run it), oldest first (exit 2 when there are none)
+                             re-run it), and PRs the merge queue dropped (fix what their run
+                             broke, then queue them again), oldest first (exit 2 when there are none)
   ci.py phpt-baseline [--variant NAME] [--php VERSION]
                              `RUN SHA` of main's newest merge-tier run whose upstream PHPT reports
                              still stand for upstream at HEAD, so it needn't run (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
                              didn't exist, in main's latest completed merge-tier run (exit 1 if any)
+  ci.py new-failures --run RUN
+                             the same for merge-tier run RUN while it runs, its failed jobs too:
+                             the merge queue's `required` check
 
 For a pull request: `ci.py wait --workflow pr.yml --commit BRANCH` for its PR tier (a branch
 auto-merge deleted resolves through its PR). It returns at once (exit 4, state `conflicts`) when
@@ -205,10 +210,10 @@ def failure_logs(result):
     return {**result, 'logs': {job: lines[-LOG_LINES:] for job, lines in tails.items()}}
 
 
-def phases(run, tails=None):
+def phases(run, tails=None, reported=None):
     """{phase: passed} from a run's `phases*` artifacts (each shard's loop.json), or None without any.
     A phase every shard runs (the builds) passes only if it passed everywhere. Failed phases'
-    log tails are added to `tails` when given."""
+    log tails are added to `tails` when given, and the artifacts' names to `reported`."""
     with tempfile.TemporaryDirectory() as directory:
         try:
             gh('run', 'download', str(run), '-p', 'phases*', '-D', directory)
@@ -219,6 +224,8 @@ def phases(run, tails=None):
             return None
         passed = {}
         for loop in loops:
+            if reported is not None:
+                reported.add(loop.relative_to(directory).parts[0])
             for row in json.loads(loop.read_text())['phases']:
                 passed[row['phase']] = passed.get(row['phase'], True) and not row['failed']
                 if tails is not None and row.get('log_tail'):
@@ -466,10 +473,66 @@ def new_failures(loops):
     return None, sorted(failed)
 
 
+def queue_failures(run):
+    """(baseline url, new failures) of merge-tier run `run`, read while it runs by its `required`
+    job: the merge queue lands a group only if it fails nothing but what main's latest completed
+    merge-tier run already failed. A job is judged like a phase. A full-gates shard speaks
+    through its phases, and one that failed without reporting any broke before its gates ran,
+    which no baseline excuses."""
+    reported = set()
+    current = phases(run, reported=reported) or {}
+    failed = sorted(name for name, conclusion in job_conclusions(run).items()
+                    if conclusion and conclusion not in ('success', 'skipped'))
+    history = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
+                            '--limit', '30', '--json', 'databaseId,conclusion,url'))
+    for baseline in history:
+        previous = baseline['conclusion'] in ('success', 'failure') and phases(baseline['databaseId'])
+        if previous:
+            before = job_conclusions(baseline['databaseId'])
+            new = sorted(name for name, passed in current.items() if not passed and previous.get(name) is not False)
+            for job in failed:
+                shard = re.fullmatch(re.escape(PHASES_JOB) + r' \((\d+)\)', job)
+                if shard and f'phases-{shard.group(1)}' not in reported:
+                    new.append(f'{job} job (no phases)')
+                elif not shard and before.get(job) != 'failure':
+                    new.append(f'{job} job')
+            return baseline['url'], new
+    return None, sorted(name for name, passed in current.items() if not passed) + [f'{job} job' for job in failed]
+
+
+# Open PRs with their merge-queue state: one call, where the REST list has none of it.
+QUEUE_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {
+  pullRequests(states: OPEN, first: 100) { nodes {
+    number title createdAt isDraft isInMergeQueue autoMergeRequest { enabledAt }
+    timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) { nodes {
+      __typename ... on RemovedFromMergeQueueEvent { reason } } } } } } }'''
+
+
+def dequeued():
+    """Open PRs the merge queue dropped: their group failed `required`, and GitHub turned their
+    auto-merge off with it, so nothing merges them until someone fixes and queues them again.
+    Each with the reason GitHub gives and its group's merge-tier run."""
+    pulls = json.loads(gh('api', 'graphql', '-F', 'owner={owner}', '-F', 'repo={repo}', '-f', 'query=' + QUEUE_QUERY,
+                          '--jq', '.data.repository.pullRequests.nodes'))
+    rows = [{'number': pull['number'], 'title': pull['title'], 'created': pull['createdAt'],
+             'blocking': ['left the merge queue: ' + (pull['timelineItems']['nodes'][0].get('reason') or 'no reason given')]}
+            for pull in pulls
+            if not (pull['isDraft'] or pull['isInMergeQueue'] or pull['autoMergeRequest'])
+            and [event['__typename'] for event in pull['timelineItems']['nodes']] == ['RemovedFromMergeQueueEvent']]
+    if rows:
+        # A group's branch is gh-readonly-queue/main/pr-<number>-<base sha>.
+        runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--event', 'merge_group', '--limit', '100',
+                             '--json', 'headBranch,url'))
+        for row in rows:
+            run = next((run['url'] for run in runs if f"/pr-{row['number']}-" in run.get('headBranch', '')), None)
+            row['blocking'] += [run] if run else []
+    return rows
+
+
 def stuck():
     """Open auto-merge PRs that won't merge by themselves: conflicting with main, with a failed
-    required check on their head, or with a finished PR-tier run that never created one. Oldest
-    first, each with what blocks it."""
+    required check on their head, or with a finished PR-tier run that never created one. And
+    PRs the merge queue dropped (dequeued). Oldest first, each with what blocks it."""
     pulls = [pull for pull in map(json.loads, gh(
         'api', '--paginate', 'repos/{owner}/{repo}/pulls?state=open&per_page=100', '--jq', '.[]').splitlines())
         if pull.get('auto_merge')]
@@ -493,7 +556,7 @@ def stuck():
         if blocking:
             rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['created_at'],
                          'blocking': blocking})
-    return rows
+    return sorted(rows + dequeued(), key=lambda row: row['created'])
 
 
 def main(argv=None):
@@ -512,8 +575,11 @@ def main(argv=None):
     baseline.add_argument('--variant', choices=[kind for kind in BASELINES if kind != 'phpt'], default='phpt',
                           help="a variant workflow's upstream report (default: phpt.yml's shards)")
     baseline.add_argument('--php', help="the PHP_VERSION the baseline's upstream must have run on")
-    commands.add_parser('new-failures').add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
+    failures = commands.add_parser('new-failures')
+    failures.add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
+    failures.add_argument('--run', help='a merge-tier run in progress, in place of loop.json reports')
     args = parser.parse_args(argv)
+    global RETRY_DEADLINE, RETRY_BASE
     if args.command == 'phpt-baseline':
         try:
             baseline = phpt_baseline(args.variant, args.php)
@@ -523,14 +589,17 @@ def main(argv=None):
             print(*baseline)
         return 0 if baseline else 2
     if args.command == 'new-failures':
-        if not args.loops:
+        if not args.loops and not args.run:
             sys.exit('new-failures: no loop.json given; the gates ran nothing')
+        if args.run:
+            # A dropped PR waits for an agent, so a transient gh failure is worth retrying.
+            RETRY_DEADLINE = time.monotonic() + 900
         try:
-            baseline, new = new_failures(args.loops)
+            baseline, new = queue_failures(args.run) if args.run else new_failures(args.loops)
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         print(f"Against {baseline or 'no merge-tier run with phases'}: " +
-              (f"new failures: {', '.join(new)}" if new else 'no new failures; every failed phase fails on main too'))
+              (f"new failures: {', '.join(new)}" if new else 'no new failures; whatever failed fails on main too'))
         return int(bool(new))
     if args.command in ('next', 'stuck'):
         try:
@@ -541,7 +610,6 @@ def main(argv=None):
             f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])} {row['title']}" for row in queue))
         return 0 if queue else 2
     deadline = time.monotonic() + args.timeout
-    global RETRY_DEADLINE, RETRY_BASE
     RETRY_DEADLINE, RETRY_BASE = deadline, min(RETRY_BASE, args.poll) if args.poll else 0.0
     try:
         sha = resolve(args.commit)

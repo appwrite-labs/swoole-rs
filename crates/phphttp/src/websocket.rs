@@ -269,6 +269,7 @@ method_table! {
 pub unsafe fn websocket_minit(args: &MinitArgs) {
     let (module_number, serializable) = (args.module, args.thread);
     ZLIB.store(args.zlib, Relaxed);
+    swoole_rs_phpclients::register_websocket(client_websocket);
     let http_server = crate::server::server_class();
     // SAFETY: MINIT, with a static table and the registered parent. Its
     // objects are the parent's (no handlers of its own are installed).
@@ -1324,126 +1325,87 @@ struct ClientWebSocket {
     message: Assembly,
 }
 
-/// A client's WebSocket state, as `WebSocketSettings` starts.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_http_client_coro_ws_new() -> *mut c_void {
-    let state = ClientWebSocket {
+/// A client's WebSocket state, as `WebSocketSettings` starts; registered
+/// with crates/phpclients at MINIT.
+fn client_websocket() -> Box<dyn swoole_rs_phpclients::WebSocket> {
+    Box::new(ClientWebSocket {
         frames: 0,
         mask: true,
         compression: false,
         message: None,
-    };
-    Box::into_raw(Box::new(state)).cast()
-}
-
-/// # Safety
-/// `ws` is live from `swoole_http_client_coro_ws_new`, freed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_http_client_coro_ws_free(ws: *mut c_void) {
-    // SAFETY: per the caller.
-    drop(unsafe { Box::from_raw(ws.cast::<ClientWebSocket>()) });
-}
-
-/// # Safety
-/// As [`swoole_http_client_coro_ws_free`], but live.
-unsafe fn client<'a>(ws: *mut c_void) -> &'a mut ClientWebSocket {
-    // SAFETY: per the caller.
-    unsafe { &mut *ws.cast::<ClientWebSocket>() }
-}
-
-/// `WebSocket::apply_setting(settings, vht, false)`.
-/// # Safety
-/// `ws` is a live client state and `settings` an array zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_http_client_coro_ws_apply(ws: *mut c_void, settings: *const zval) {
-    // SAFETY: per the caller.
-    let (state, settings) = (unsafe { client(ws) }, unsafe { Value::from_ptr(settings) });
-    let Some(table) = settings.and_then(Value::array) else {
-        return;
-    };
-    state.mask = setting(table, b"websocket_mask").unwrap_or(true);
-    if ZLIB.load(Relaxed)
-        && let Some(on) = setting(table, b"websocket_compression")
-    {
-        state.compression = on;
-    }
-    for (key, bit) in [
-        (&b"open_websocket_close_frame"[..], OPEN_CLOSE_FRAME),
-        (b"open_websocket_ping_frame", OPEN_PING_FRAME),
-        (b"open_websocket_pong_frame", OPEN_PONG_FRAME),
-    ] {
-        if let Some(on) = setting(table, key) {
-            state.frames = if on {
-                state.frames | bit
-            } else {
-                state.frames & !bit
-            };
-        }
-    }
-}
-
-/// # Safety
-/// `ws` is a live client state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_http_client_coro_ws_compression(ws: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    unsafe { client(ws) }.compression
-}
-
-/// Pack a frame and send it: 0, 1 if packing failed (a bailout may be
-/// pending, for the caller's handler to raise), 2 if sending did.
-/// # Safety
-/// `socket` and `ws` are live; `data` is a live zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_http_client_coro_ws_push(
-    socket: *mut c_void,
-    ws: *mut c_void,
-    data: *mut zval,
-    opcode: i64,
-    flags: c_int,
-    code: i64,
-    compress: bool,
-) -> c_int {
-    let mut frame = FrameObject::new(data, opcode, i64::from(byte(i64::from(flags))), code);
-    // SAFETY: per the caller.
-    if unsafe { client(ws) }.mask {
-        frame.flags |= FLAG_MASK;
-    }
-    if compress {
-        frame.flags |= FLAG_COMPRESS;
-    }
-    pack(&frame).map_or(1, |packed| {
-        let packed = packed.bytes();
-        // SAFETY: the live socket and the packed bytes.
-        let written = unsafe { co::send_all(socket, packed.as_ptr().cast(), packed.len()) };
-        if usize::try_from(written).is_ok_and(|written| written == packed.len()) {
-            0
-        } else {
-            2
-        }
     })
 }
 
-/// `websocket::recv_frame` on the client's socket; a bailout it defers is
-/// the caller's handler's to raise.
-/// # Safety
-/// `socket` and `ws` are live; `return_value` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_http_client_coro_ws_recv(
-    socket: *mut c_void,
-    ws: *mut c_void,
-    return_value: *mut zval,
-    timeout: f64,
-) {
-    // SAFETY: per the caller.
-    let state = unsafe { client(ws) };
-    recv(
-        state.frames,
-        &mut state.message,
-        socket,
-        return_value,
-        timeout,
-    );
+impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
+    fn apply(&mut self, table: &Array) {
+        self.mask = setting(table, b"websocket_mask").unwrap_or(true);
+        if ZLIB.load(Relaxed)
+            && let Some(on) = setting(table, b"websocket_compression")
+        {
+            self.compression = on;
+        }
+        for (key, bit) in [
+            (&b"open_websocket_close_frame"[..], OPEN_CLOSE_FRAME),
+            (b"open_websocket_ping_frame", OPEN_PING_FRAME),
+            (b"open_websocket_pong_frame", OPEN_PONG_FRAME),
+        ] {
+            if let Some(on) = setting(table, key) {
+                self.frames = if on {
+                    self.frames | bit
+                } else {
+                    self.frames & !bit
+                };
+            }
+        }
+    }
+
+    fn compression(&self) -> bool {
+        self.compression
+    }
+
+    fn push(
+        &self,
+        socket: swoole_rs_phpclients::Co,
+        data: &Value,
+        opcode: i64,
+        flags: c_int,
+        code: i64,
+        compress: bool,
+    ) -> c_int {
+        let mut frame = FrameObject::new(
+            data.as_ptr(),
+            opcode,
+            i64::from(byte(i64::from(flags))),
+            code,
+        );
+        if self.mask {
+            frame.flags |= FLAG_MASK;
+        }
+        if compress {
+            frame.flags |= FLAG_COMPRESS;
+        }
+        pack(&frame).map_or(1, |packed| {
+            let packed = packed.bytes();
+            // SAFETY: the live socket and the packed bytes.
+            let written =
+                unsafe { co::send_all(socket.as_ptr(), packed.as_ptr().cast(), packed.len()) };
+            if usize::try_from(written).is_ok_and(|written| written == packed.len()) {
+                0
+            } else {
+                2
+            }
+        })
+    }
+
+    fn recv(&mut self, socket: swoole_rs_phpclients::Co, call: &Call, timeout: f64) {
+        recv(
+            self.frames,
+            &mut self.message,
+            socket.as_ptr(),
+            call.return_value(),
+            timeout,
+        );
+    }
 }
 
 /// `WebSocketSettings`' bits for [`recv`], and with `compression` a

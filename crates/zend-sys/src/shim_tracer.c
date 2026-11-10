@@ -5,6 +5,7 @@
 #include "shim_tracer.h"
 #include "ext/standard/php_math.h"
 #include "ext/json/php_json.h"
+#include "zend_exceptions.h"
 #include "zend_smart_str.h"
 
 /* PHP 8.4 passes the custom handlers the caller's file and line in debug builds. */
@@ -144,4 +145,44 @@ void swr_zend_json_decode(const char *text, size_t length, zval *out) {
         ZVAL_FALSE(out);
     }
     zend_string_release(copy);
+}
+
+extern PHP_JSON_API zend_class_entry *php_json_exception_ce;
+
+static void json_decode_ex(zval *out, const char *text, size_t length, zend_long options, zend_long depth) {
+    if (!(options & PHP_JSON_THROW_ON_ERROR)) {
+        JSON_G(error_code) = PHP_JSON_ERROR_NONE;
+    }
+    if (!length) {
+        if (!(options & PHP_JSON_THROW_ON_ERROR)) {
+            JSON_G(error_code) = PHP_JSON_ERROR_SYNTAX;
+        } else {
+            zend_throw_exception(php_json_exception_ce, "Syntax error", PHP_JSON_ERROR_SYNTAX);
+        }
+        ZVAL_NULL(out);
+        return;
+    }
+    if (depth <= 0) {
+        php_error_docref(NULL, E_WARNING, "Depth must be greater than zero");
+        ZVAL_NULL(out);
+        return;
+    }
+    if (depth > INT_MAX) {
+        php_error_docref(NULL, E_WARNING, "Depth must be lower than %d", INT_MAX);
+        ZVAL_NULL(out);
+        return;
+    }
+    php_json_decode_ex(out, (char *) text, length, options, depth);
+}
+
+int swr_zend_try_json_decode_ex(zval *out, const char *text, size_t length, zend_long options, zend_long depth) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
+        json_decode_ex(out, text, length, options, depth);
+    }
+    SWR_ZEND_CATCH {
+        bailed = 1;
+    }
+    SWR_ZEND_END_TRY();
+    return bailed;
 }

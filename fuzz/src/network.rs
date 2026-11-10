@@ -1,15 +1,16 @@
 //! Network parsers fuzzed on their own: each target checks the parser against a
 //! reference decode or against invariants of its output, not against the oracle.
 
-use std::cell::{Cell, RefCell};
-use std::ffi::{c_char, c_int, c_void};
+use std::cell::Cell;
+use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
+use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
-use swoole_rs_oracle::{multipart, nghttp2};
+use swoole_rs_oracle::nghttp2;
 use swoole_rs_protocols::{RespPhpState, resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
@@ -113,25 +114,9 @@ pub fn dns_reply(bytes: &[u8]) {
 }
 
 thread_local! {
-    /// The chunk `multipart_parser_execute` is reading.
+    /// The chunk the parser is reading.
     static CHUNK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-    /// The current part's header value, for the filename scan.
-    static VALUE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
-
-/// `multipart_parser_settings`.
-#[repr(C)]
-struct Settings {
-    on_header_field: Option<DataCallback>,
-    on_header_value: Option<DataCallback>,
-    on_part_data: Option<DataCallback>,
-    on_part_data_begin: Option<Callback>,
-    on_headers_complete: Option<Callback>,
-    on_part_data_end: Option<Callback>,
-    on_body_end: Option<Callback>,
-}
-type DataCallback = unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> c_int;
-type Callback = unsafe extern "C" fn(*mut c_void) -> c_int;
 
 /// A span the parser emits lies inside the chunk it was handed.
 fn in_chunk(at: *const c_char, length: usize) {
@@ -143,52 +128,39 @@ fn in_chunk(at: *const c_char, length: usize) {
     );
 }
 
-unsafe extern "C" fn on_span(_: *mut c_void, at: *const c_char, length: usize) -> c_int {
-    in_chunk(at, length);
-    0
+/// The multipart callbacks: header spans checked, the current part's header value
+/// kept for the filename scan.
+#[derive(Default)]
+struct Parts {
+    value: Vec<u8>,
 }
 
-/// Part data comes from the chunk, a literal or the parser's own boundary copy (a
-/// boundary prefix that turned out to be data), so it is only read, under ASan.
-unsafe extern "C" fn on_part_data(_: *mut c_void, at: *const c_char, length: usize) -> c_int {
-    // SAFETY: the parser hands out `length` readable bytes at `at`.
-    let data = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
-    std::hint::black_box(data.iter().fold(0u8, |sum, &byte| sum ^ byte));
-    0
+impl swoole_rs_http::multipart_parser::Parts for Parts {
+    fn on_header_field(&mut self, data: &[u8]) -> i32 {
+        in_chunk(data.as_ptr().cast(), data.len());
+        0
+    }
+
+    fn on_header_value(&mut self, data: &[u8]) -> i32 {
+        in_chunk(data.as_ptr().cast(), data.len());
+        self.value.extend_from_slice(data);
+        0
+    }
+
+    fn on_headers_complete(&mut self) -> i32 {
+        let mut value = std::mem::take(&mut self.value);
+        value.push(0);
+        // SAFETY: `value` is writable and NUL-terminated.
+        let status = unsafe { swr_v1_http_multipart_filename(value.as_mut_ptr(), value.len()) };
+        assert!(matches!(status, 0 | 1), "filename status {status}");
+        0
+    }
 }
 
-unsafe extern "C" fn on_value(_: *mut c_void, at: *const c_char, length: usize) -> c_int {
-    in_chunk(at, length);
-    // SAFETY: `in_chunk` placed the span inside the live chunk.
-    let value = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
-    VALUE.with_borrow_mut(|buffer| buffer.extend_from_slice(value));
-    0
-}
-
-unsafe extern "C" fn on_headers_complete(_: *mut c_void) -> c_int {
-    let mut value = VALUE.take();
-    value.push(0);
-    // SAFETY: `value` is writable and NUL-terminated.
-    let status = unsafe { swr_v1_http_multipart_filename(value.as_mut_ptr(), value.len()) };
-    assert!(matches!(status, 0 | 1), "filename status {status}");
-    0
-}
-
-const SETTINGS: Settings = Settings {
-    on_header_field: Some(on_span),
-    on_header_value: Some(on_value),
-    on_part_data: Some(on_part_data),
-    on_part_data_begin: None,
-    on_headers_complete: Some(on_headers_complete),
-    on_part_data_end: None,
-    on_body_end: None,
-};
-
-/// A boundary of 1 to 70 bytes (RFC 2046 5.1.1) and any body, handed to the bundled
-/// multipart parser the server streams uploads through, in fuzzer-chosen chunks:
-/// each call consumes at most its chunk or fails with -1, every header span stays inside
-/// it, part data is readable, and the filename scan of each part's headers stays in
-/// bounds.
+/// A boundary of 1 to 70 bytes (RFC 2046 5.1.1) and any body, handed to the multipart
+/// parser the server streams uploads through, in fuzzer-chosen chunks: each call
+/// consumes at most its chunk or fails with -1, every header span stays inside it, and
+/// the filename scan of each part's headers stays in bounds.
 pub fn multipart(bytes: &[u8]) {
     let Some((&[boundary, step], rest)) = bytes.split_first_chunk::<2>() else {
         return;
@@ -196,25 +168,13 @@ pub fn multipart(bytes: &[u8]) {
     let Some((boundary, body)) = rest.split_at_checked(usize::from(boundary % 70) + 1) else {
         return;
     };
-    VALUE.take();
-    let settings = SETTINGS;
-    // SAFETY: the boundary holds its length in bytes; the settings outlive the parser.
-    let parser = unsafe {
-        multipart::multipart_parser_init(
-            boundary.as_ptr().cast(),
-            boundary.len(),
-            (&raw const settings).cast(),
-        )
-    };
-    assert!(!parser.is_null());
+    let mut parser = MultipartParser::new(boundary);
+    let mut parts = Parts::default();
     let step = usize::from(step).max(1);
     for chunk in body.chunks(step) {
         let start = chunk.as_ptr() as usize;
         CHUNK.set((start, start + chunk.len()));
-        // SAFETY: `chunk` holds its length in bytes; `parser` is live.
-        let processed = unsafe {
-            multipart::multipart_parser_execute(parser, chunk.as_ptr().cast(), chunk.len())
-        };
+        let processed = parser.execute(&mut parts, chunk);
         assert!(
             usize::try_from(processed).map_or(processed == -1, |n| n <= chunk.len()),
             "processed {processed} of {}",
@@ -224,8 +184,6 @@ pub fn multipart(bytes: &[u8]) {
             break;
         }
     }
-    // SAFETY: `parser` came from `multipart_parser_init`.
-    unsafe { multipart::multipart_parser_free(parser) };
 }
 
 /// `llhttp_t`'s storage: its fields need fewer than 128 bytes, eight-byte aligned.

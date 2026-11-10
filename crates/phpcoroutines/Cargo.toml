@@ -11,7 +11,7 @@ description = "PHP coroutines: each coroutine's PHP context and VM swap, activat
 php = ["dep:libc", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php",
        "dep:swoole-rs-coroutine", "swoole-rs-coroutine/upstream-symbols", "dep:swoole-rs-corebase", "dep:swoole-rs-hooks", "dep:swoole-rs-buffer",
-       "dep:swoole-rs-reactor", "dep:swoole-rs-server"]
+       "dep:swoole-rs-reactor", "dep:swoole-rs-server", "dep:swoole-rs-timer", "swoole-rs-timer/upstream-symbols"]
 # Co::stats() reports the io_uring engine (upstream's SW_USE_IOURING); crates/ffi's iouring.
 iouring = ["swoole-rs-hooks?/iouring", "swoole-rs-hooks?/upstream-symbols"]
 
@@ -28,6 +28,7 @@ swoole-rs-hooks = { path = "../hooks", optional = true }
 swoole-rs-buffer = { path = "../buffer", optional = true }
 swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-timer = { path = "../timer", optional = true }
 
 [lints]
 workspace = true

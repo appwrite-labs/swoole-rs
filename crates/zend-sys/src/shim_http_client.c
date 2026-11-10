@@ -58,6 +58,7 @@ void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zv
     }
     zval *current = numeric ? zend_hash_index_find(table, index) : zend_hash_str_find(table, key, length);
     if (Z_TYPE_P(current) == IS_ARRAY) {
+        SEPARATE_ARRAY(current);
         add_next_index_zval(current, element);
         return;
     }

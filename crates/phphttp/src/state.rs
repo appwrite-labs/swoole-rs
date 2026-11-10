@@ -155,7 +155,7 @@ pub(crate) struct State {
     pub(crate) fd: i64,
     pub(crate) request: Request,
     pub(crate) parser: Llhttp,
-    pub(crate) mt_parser: *mut crate::parse::Multipart,
+    pub(crate) mt_parser: Option<Box<crate::parse::Multipart>>,
     pub(crate) completed: u8,
     pub(crate) keepalive: u8,
     pub(crate) recv_chunked: u8,
