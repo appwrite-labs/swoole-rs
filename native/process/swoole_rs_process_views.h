@@ -1,6 +1,3 @@
-#ifndef SWR_PROCESS_NATIVE_VIEW_CONTEXT
-#include "swoole_server.h"
-#else
 #ifndef SWOOLE_RS_PROCESS_VIEWS_H
 #define SWOOLE_RS_PROCESS_VIEWS_H
 // Generated from crates/process/src/{worker_record,process_pool}.rs and crates/tls/src/socket_pair.rs.
@@ -83,5 +80,4 @@
     int socks[2]; \
     network::Socket * master_socket; \
     network::Socket * worker_socket;
-#endif
 #endif

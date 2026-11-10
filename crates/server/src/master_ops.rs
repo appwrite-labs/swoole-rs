@@ -112,12 +112,12 @@ const EVENT_CLOSE: u8 = 4;
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
 const SENDFILE_TASK_SIZE: usize = 16;
-// native/process/swoole_server.h asserts the native sizes of the arrays allocated here.
+// The native sizes of the arrays allocated here.
 const _: () = assert!(
     SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
     "server.cc sizeof(Session), sizeof(ServerPortGS)"
 );
-/// `SW_BUFFER_MIN_SIZE`, which `swoole_server.h` asserts.
+/// `SW_BUFFER_MIN_SIZE`.
 const BUFFER_MIN_SIZE: u32 = 65536;
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;

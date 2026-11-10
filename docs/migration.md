@@ -114,7 +114,8 @@ delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)) and the Z
 
 None, since #959 (2026-11-08). The last two headers left as owned
 copies trimmed to what C++ still uses: `include/swoole_server.h` in #1465
-(`native/process/swoole_server.h`) and `include/swoole.h` in #959 (`native/corebase/swoole.h`).
+(`native/process/swoole_server.h`, deleted once no C++ included it, #2394) and `include/swoole.h`
+in #959 (`native/corebase/swoole.h`).
 
 References: [Rust FFI](https://doc.rust-lang.org/nomicon/ffi.html),
 [upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.5/CMakeLists.txt),

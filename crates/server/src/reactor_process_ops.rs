@@ -332,8 +332,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let socket = conn.socket.cast::<SocketRecord>();
     Some(match op {
         OP_CLOSE_SESSION => {
-            // SAFETY: the context's live server.
-            unsafe { crate::server_methods::close(serv, conn.session_id, true) };
+            crate::server_methods::close(server, conn.session_id, true);
             0
         }
         OP_CONN_CLOSE_QUEUED => u64::from(conn.close_queued),

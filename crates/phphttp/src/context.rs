@@ -213,19 +213,14 @@ pub(crate) unsafe fn server_send(
     data: *const c_char,
     length: usize,
 ) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send's uint32_t length"
-    )]
-    // SAFETY: per the caller.
-    let sent = unsafe { server_methods::send(server, fd, data.cast(), length as u32) };
-    if sent || swoole_rs_corebase::log::last_error() != OUTPUT_SEND_YIELD {
-        return sent;
-    }
     // SAFETY: per the caller.
     let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: per the caller, live while the coroutine waits.
     let data = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    let sent = server_methods::send(server, fd, data);
+    if sent || swoole_rs_corebase::log::last_error() != OUTPUT_SEND_YIELD {
+        return sent;
+    }
     swoole_rs_phpserver::php_swoole_server_send_yield(server, fd, data).unwrap_or_else(|bailed| {
         bailed.defer();
         false
@@ -254,17 +249,14 @@ pub(crate) fn sendfile(
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
-        // SAFETY: the context's live server and the file name's bytes.
-        unsafe {
-            server_methods::sendfile(
-                target,
-                fd,
-                name.as_ptr().cast(),
-                u32::try_from(name.len()).unwrap_or(u32::MAX),
-                offset,
-                length,
-            )
-        }
+        // SAFETY: the context's live server.
+        server_methods::sendfile(
+            unsafe { view::Server::from_raw(target) },
+            fd,
+            name,
+            offset,
+            length,
+        )
     }
 }
 
@@ -277,7 +269,7 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
         unsafe { co::close(target) }
     } else {
         // SAFETY: the context's live server.
-        unsafe { server_methods::close(target, fd, false) }
+        server_methods::close(unsafe { view::Server::from_raw(target) }, fd, false)
     }
 }
 

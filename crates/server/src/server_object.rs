@@ -1,5 +1,5 @@
 //! The `Server` and `ListenPort` objects, which Rust allocates and frees and C++
-//! only views (`native/process/swoole_server.h`, `native/include/swoole_rs_port_state.h`).
+//! only views (`native/include/swoole_rs_server_view.h`, `native/include/swoole_rs_port_state.h`).
 //! A `Server *` is a [`ServerObject`]; a `ListenPort *` is a box of the pointer to
 //! the port's settings. The Rust ports of core-tests' server cases
 //! (tests/modules/http/server/src/http1.rs) make and delete theirs here too.

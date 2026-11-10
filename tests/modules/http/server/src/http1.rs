@@ -15,10 +15,12 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::mem::offset_of;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_server::{ConnectionRecord, server_methods, view};
 
 use crate::client::{Client, USER_AGENT};
 
@@ -499,7 +501,7 @@ const CONNECTION_OFFSETS: &[usize] = &[
     offset_of!(Connection, server_fd),
 ];
 
-/// The pointers that head a `Server` (native/process/swoole_server.h).
+/// The pointers that head a `Server` (crates/server/src/view.rs).
 #[repr(C)]
 struct Head {
     state: *mut c_void,
@@ -534,28 +536,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 
     fn swr_v1_server_set_document_root(serv: *mut c_void, path: *const u8, length: usize) -> bool;
-    #[link_name = "_ZN6swoole6Server8add_portE12swSocketTypePKci"]
-    fn server_add_port(
-        serv: *mut c_void,
-        kind: c_int,
-        host: *const c_char,
-        port: c_int,
-    ) -> *mut c_void;
-    #[link_name = "_ZN6swoole6Server6createEv"]
-    fn server_create(serv: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole6Server5startEv"]
-    fn server_start(serv: *mut c_void) -> c_int;
-    #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
-    fn server_send(serv: *mut c_void, session: c_long, data: *const c_void, length: u32) -> bool;
-    #[link_name = "_ZNK6swoole6Server8sendfileElPKcjlm"]
-    fn server_sendfile(
-        serv: *mut c_void,
-        session: c_long,
-        file: *const c_char,
-        length: u32,
-        offset: c_long,
-        size: usize,
-    ) -> bool;
 }
 
 unsafe extern "C" {
@@ -569,12 +549,6 @@ unsafe extern "C" {
 unsafe extern "C-unwind" {
     fn swr_v1_server_text_slot(state: *const c_void, index: usize) -> *const c_void;
     fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
-    #[link_name = "_ZNK6swoole6Server19get_idle_worker_numEv"]
-    fn server_get_idle_worker_num(serv: *mut c_void) -> u32;
-    #[link_name = "_ZNK6swoole6Server21is_healthy_connectionEdPKNS_10ConnectionE"]
-    fn server_is_healthy_connection(serv: *mut c_void, now: f64, conn: *const Connection) -> bool;
-    #[link_name = "_ZN6swoole6Server8feedbackEPNS_10ConnectionENS_15ServerEventTypeE"]
-    fn server_feedback(serv: *mut c_void, conn: *mut Connection, event: c_int) -> bool;
     #[link_name = "_ZN6swoole9microtimeEv"]
     fn microtime() -> f64;
     #[link_name = "_Z20swoole_set_worker_idj"]
@@ -612,6 +586,12 @@ impl Port {
 
     fn set_package_max_length(self, max_length: u32) {
         self.config().protocol.package_max_length = max_length;
+    }
+
+    /// The crates' view of this port's settings.
+    pub(super) fn settings(self) -> &'static mut swoole_rs_server::port_config::PortConfig {
+        // SAFETY: a live port, whose settings the cases set from one thread.
+        unsafe { swoole_rs_server::port_config::of(self.0) }
     }
 }
 
@@ -732,8 +712,7 @@ impl Server {
 
     fn add_port(self, kind: c_int, host: &str, port: c_int) -> Option<Port> {
         let host = CString::new(host).unwrap();
-        // SAFETY: a NUL-terminated host.
-        let port = unsafe { server_add_port(self.0, kind, host.as_ptr(), port) };
+        let port = server_methods::add_port(self.view(), kind, &host, port);
         (!port.is_null()).then_some(Port(port))
     }
 
@@ -753,40 +732,20 @@ impl Server {
     }
 
     fn create(self) -> c_int {
-        // SAFETY: a configured server.
-        unsafe { server_create(self.0) }
+        server_methods::create(self.view())
     }
 
     fn start(self) -> c_int {
-        // SAFETY: a created server.
-        unsafe { server_start(self.0) }
+        server_methods::start(self.view())
     }
 
     fn send(self, session: c_long, data: &[u8]) -> bool {
-        // SAFETY: `data` is readable for its length.
-        unsafe {
-            server_send(
-                self.0,
-                session,
-                data.as_ptr().cast(),
-                u32::try_from(data.len()).unwrap(),
-            )
-        }
+        assert!(u32::try_from(data.len()).is_ok());
+        server_methods::send(self.view(), session, data)
     }
 
     fn sendfile(self, session: c_long, file: &str) -> bool {
-        let path = CString::new(file).unwrap();
-        // SAFETY: a NUL-terminated path.
-        unsafe {
-            server_sendfile(
-                self.0,
-                session,
-                path.as_ptr(),
-                u32::try_from(file.len()).unwrap(),
-                0,
-                0,
-            )
-        }
+        server_methods::sendfile(self.view(), session, file.as_bytes(), 0, 0)
     }
 
     fn get_connection_by_session_id(self, session: c_long) -> &'static mut Connection {
@@ -795,18 +754,26 @@ impl Server {
     }
 
     fn get_idle_worker_num(self) -> u32 {
-        // SAFETY: a running server.
-        unsafe { server_get_idle_worker_num(self.0) }
+        server_methods::get_idle_worker_num(self.view())
     }
 
     fn is_healthy_connection(self, now: f64, conn: &Connection) -> bool {
-        // SAFETY: a live connection.
-        unsafe { server_is_healthy_connection(self.0, now, conn) }
+        // SAFETY: the crate's record, whose layout `check_layout` matched this one's.
+        self.view().healthy(now, unsafe {
+            &*ptr::from_ref(conn).cast::<ConnectionRecord>()
+        })
     }
 
     fn feedback(self, conn: &mut Connection, event: c_int) -> bool {
-        // SAFETY: a live connection.
-        unsafe { server_feedback(self.0, conn, event) }
+        // SAFETY: as above.
+        let record = unsafe { &mut *ptr::from_mut(conn).cast::<ConnectionRecord>() };
+        server_methods::feedback(self.view(), record, event)
+    }
+
+    /// The crates' view of this server.
+    fn view(self) -> view::Server<'static> {
+        // SAFETY: the cases' Servers live until the case ends.
+        unsafe { view::Server::from_raw(self.0) }
     }
 }
 
