@@ -1,5 +1,5 @@
-//! Swoole's memory pools and collections: fixed, global and ring pools, the heap,
-//! channel, shared mappings and the shared-memory table.
+//! Swoole's memory pools and collections: fixed and global pools, the channel,
+//! shared mappings and the shared-memory table.
 #![cfg_attr(
     test,
     expect(
@@ -33,9 +33,6 @@ pub mod channel;
 pub mod fixed;
 pub mod flat;
 mod global;
-pub mod heap;
-mod pool;
-pub mod ring;
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/allocation.rs"]
@@ -45,11 +42,6 @@ pub use channel::{
     swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_full,
     swr_v1_memory_channel_in, swr_v1_memory_channel_init, swr_v1_memory_channel_lock,
     swr_v1_memory_channel_out, swr_v1_memory_channel_print, swr_v1_memory_channel_signal,
-};
-pub use heap::{
-    swr_v1_memory_heap_at, swr_v1_memory_heap_count, swr_v1_memory_heap_create,
-    swr_v1_memory_heap_pop, swr_v1_memory_heap_push, swr_v1_memory_heap_release,
-    swr_v1_memory_heap_remove, swr_v1_memory_heap_update,
 };
 
 pub mod members;

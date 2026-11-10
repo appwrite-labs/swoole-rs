@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,ring_buffer,global_memory,
+// Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,global_memory,
 // shared_memory,table}.cc (Swoole contributors).
-//! The upstream members of `FixedPool`, `RingBuffer`, `GlobalMemory`, the `sw_shm_*`
+//! The upstream members of `FixedPool`, `GlobalMemory`, the `sw_shm_*`
 //! functions and `Table`'s shared-memory lifecycle. `native/memory/swoole_memory.h` keeps
 //! `GlobalMemory`'s inline members for C++ callers, whose constructor throws; they call
 //! the `swr_v1_memory_global_memory_*` functions below. A
 //! constructor returns 0, -1 for upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2
-//! for `std::bad_alloc`. `FixedPool` and `RingBuffer` have no C++ facade left; their
+//! for `std::bad_alloc`. `FixedPool` has no C++ facade left; its
 //! members serve the Rust ports of upstream's core tests in `tests/modules/memory/members.rs`.
 //!
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
@@ -14,7 +14,6 @@
 
 use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
 use crate::global::{self, Global};
-use crate::ring::{self, Storage};
 use crate::table::Table;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -237,93 +236,6 @@ pub unsafe extern "C" fn swr_fixed_pool_debug(this: *const c_void, max_lines: c_
             )
         };
     }
-}
-
-// ---------------------------------------------------------------- RingBuffer
-
-/// `RingBuffer(size, shared)`.
-///
-/// # Safety
-/// `output` is writable.
-pub unsafe fn swr_v1_memory_ring_buffer_new(
-    size: u32,
-    shared: bool,
-    output: *mut *mut Storage,
-) -> i32 {
-    let Some(total) = ring::layout(size) else {
-        return INVALID;
-    };
-    let memory = arena(shared, total as usize);
-    if memory.is_null() {
-        return NO_MEMORY;
-    }
-    // SAFETY: a fresh, malloc-aligned arena of `total` bytes.
-    unsafe { ring::construct(memory.cast(), total, shared) };
-    // SAFETY: as the caller promises.
-    unsafe { output.write(memory.cast()) };
-    0
-}
-
-/// `RingBuffer::~RingBuffer()`.
-///
-/// # Safety
-/// `ring` is a constructed ring, destroyed once.
-pub unsafe fn swr_v1_memory_ring_buffer_delete(ring: *mut Storage) {
-    // SAFETY: as the caller promises.
-    let shared = unsafe { &*ring }.shared != 0;
-    // SAFETY: the ring's arena came from `arena(shared, ..)`.
-    unsafe { release(shared, ring.cast()) };
-}
-
-/// `void *RingBuffer::alloc(uint32_t size)`.
-///
-/// # Panics
-/// Upstream's assertion: `size` is positive.
-///
-/// # Safety
-/// `ring` is a constructed ring, allocated from by one producer.
-pub unsafe fn swr_v1_memory_ring_buffer_alloc(ring: *mut Storage, size: u32) -> *mut c_void {
-    // assert(size > 0);
-    assert!(size > 0, "a non-empty record");
-    // SAFETY: as the caller promises.
-    unsafe { ring::storage_alloc(ring, size) }
-}
-
-/// `void RingBuffer::free(void *ptr)`.
-///
-/// # Panics
-/// Upstream's assertions: `data` is an allocated record of the ring.
-///
-/// # Safety
-/// `ring` is a constructed ring and `data` a live record of it.
-pub unsafe fn swr_v1_memory_ring_buffer_free(ring: *mut Storage, data: *mut c_void) {
-    // Consumers share the header, and only touch `free_count`, atomically.
-    let free_count = ring
-        .wrapping_byte_add(mem::offset_of!(Storage, free_count))
-        .cast::<u32>();
-    // SAFETY: as the caller promises; `memory` and `size` don't change after construction.
-    let memory = unsafe { ring.cast::<*mut u8>().read() };
-    // SAFETY: as above.
-    let size = unsafe {
-        ring.wrapping_byte_add(mem::offset_of!(Storage, size))
-            .cast::<u32>()
-            .read()
-    };
-    // assert(ptr >= impl->memory);
-    assert!(data.addr() >= memory.addr(), "a record of this ring");
-    // assert(static_cast<char *>(ptr) <= static_cast<char *>(impl->memory) + impl->size);
-    assert!(
-        data.addr() <= memory.addr() + size as usize,
-        "a record of this ring"
-    );
-    let item = data.cast::<u16>().wrapping_sub(4);
-    // SAFETY: a record's 8-byte header, `uint16_t lock` first, precedes its data.
-    let lock = unsafe { item.read() };
-    // assert(item->lock == 1);
-    assert_eq!(lock, 1, "an allocated record");
-    // SAFETY: as the caller promises.
-    let freed = unsafe { ring::free(memory.cast(), size, free_count, data) };
-    assert!(freed, "a live record of this ring");
 }
 
 // ---------------------------------------------------------------- GlobalMemory
