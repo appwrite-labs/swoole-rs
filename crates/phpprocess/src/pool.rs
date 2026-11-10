@@ -696,7 +696,14 @@ fn on(call: &Call) {
         }
     }
     // SAFETY: a passed argument.
-    *slot = unsafe { host::callable_create(callback) };
+    let created = unsafe { host::callable_create(callback) };
+    // The old callable's destructor may have called on() for this event: this
+    // call's callable replaces the one that stored.
+    let nested = std::mem::replace(slot, created);
+    if !nested.is_null() {
+        // SAFETY: the nested call's callable, which no slot holds now.
+        unsafe { host::callable_free(nested) };
+    }
     call.set_bool(true);
 }
 

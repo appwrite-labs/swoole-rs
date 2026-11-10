@@ -164,7 +164,14 @@ pub(crate) fn signal(call: &Call) {
     if !callable.is_null() {
         listeners(1);
     }
-    slot.store(callable, Ordering::Release);
+    // In a sync process the old callable's destructor ran, and may have called
+    // signal() for this number: this call's callable replaces the one that stored.
+    let nested = slot.swap(callable, Ordering::AcqRel);
+    if !nested.is_null() {
+        // SAFETY: the nested call's callable, which no slot holds now.
+        unsafe { host::callable_free(nested) };
+        listeners(-1);
+    }
     host::signal_set(number, handler, true);
     call.set_bool(true);
 }
