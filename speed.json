@@ -1,1 +1,1 @@
-{"schemaVersion": 1, "label": "speed vs upstream", "message": "12/12 faster \u00b7 slowest table 0.98\u00d7", "color": "brightgreen"}
+{"schemaVersion": 1, "label": "speed vs upstream", "message": "13/15 faster \u00b7 slowest tcp-length 1.07\u00d7", "color": "orange"}
