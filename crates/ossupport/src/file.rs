@@ -475,6 +475,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn open_close_and_tmpfile_follow_upstream() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut template = *b"/tmp/swr-ossupport-XXXXXX\0";

@@ -124,7 +124,6 @@ unsafe extern "C" {
     fn swr_v1_clients_address_loopback(
         address: *const swoole_rs_corebase::net_types::SocketAddress,
     ) -> bool;
-    fn swr_v1_event_reactor() -> *mut c_void;
 }
 
 /// A keep-alive session's server and remote address, until it closes, by its
@@ -763,8 +762,7 @@ pub(crate) fn release_request() {
     let concurrency = unsafe { &mut *worker.concurrency };
     *concurrency = concurrency.wrapping_sub(1);
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
-        // SAFETY: no preconditions.
-        let reactor = unsafe { swr_v1_event_reactor() };
+        let reactor = swoole_rs_reactor::event_api::swr_v1_event_reactor();
         // SAFETY: the thread's live reactor, which begins with its prepared state.
         let fields = unsafe { (*reactor.cast::<swoole_rs_reactor::ReactorPrepared>()).fields };
         // SAFETY: a queued context, alive until its deferred request ends.

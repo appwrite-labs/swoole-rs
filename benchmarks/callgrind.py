@@ -30,6 +30,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.annotations import annotate
 from tools.harness import ROOT, parse_engines
 from corpus.run import WebSocket
 
@@ -357,6 +358,8 @@ def main():
             (first, a), (second, b) = counts.items()
             limit, over, stale = verdict(a / b, recorded.get(workload), args.max_ratio)
             failed |= over
+            if over:
+                annotate('error', f'callgrind {workload}', f'ratio {a / b:.4f} over limit {limit:.4f}')
             print(f'ratio {first}/{second} {workload}: {a / b:.4f}' + (f' exceeds {limit:.4f}' if over else '')
                   + (f'; below the recorded {recorded[workload]}, lowest record {lowest(a / b):.2f}' if stale else ''))
     args.output.parent.mkdir(parents=True, exist_ok=True)
