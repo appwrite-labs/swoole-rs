@@ -450,6 +450,8 @@ unsafe extern "C" fn ssl_write_start(_: *mut c_void, serv: *mut c_void) {
             std::thread::sleep(Duration::from_micros(5000));
         }
 
+        // Not upstream's: an early EOF would leave its ASSERT_MEMEQ comparing nothing.
+        assert_eq!(length, rbuf.len(), "the 2 MiB buffer filled");
         assert!(rbuf[..length] == wbuf()[..length], "ASSERT_MEMEQ");
         c.close();
 
