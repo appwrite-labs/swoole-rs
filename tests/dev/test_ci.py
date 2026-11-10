@@ -289,23 +289,34 @@ class Ci(unittest.TestCase):
                               (12, ['left the merge queue: no reason given'])]))
 
     def test_a_merge_queue_run_may_fail_only_what_main_already_fails(self):
-        history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'}, {'databaseId': 4, 'conclusion': 'failure', 'url': 'u4'}]
-        # Shard 1 reports a known failure and a regression, shard 2 passes and shard 3 died before its gates.
-        phases = {'7': [[['old', False], ['timer-model', False]], [['build', True]]], '4': [['old', False], ['timer-model', True]]}
-        jobs = {'7': [['full-gates (1)', 'failure'], ['full-gates (2)', 'success'], ['full-gates (3)', 'failure'],
-                      ['callgrind', 'failure'], ['phpt / gate', 'failure'], ['alpine', 'cancelled'], ['required', None]],
-                '4': [['full-gates (1)', 'failure'], ['callgrind', 'failure'], ['phpt / gate', 'success'], ['alpine', 'success']]}
-        code, _, _ = self.ci('new-failures', '--run', '7', runs={}, flags=(), history=history, phases=phases, jobs=jobs)
-        self.assertEqual(code, 1)
-        # callgrind fails on main too, and the run's own unfinished `required` job isn't judged.
-        self.assertIn('Against u4: new failures: timer-model, alpine job, full-gates (3) job (no phases), phpt / gate job', self.out)
-        # A finished run's log is never read: the run is still in progress.
-        self.assertFalse(any('--log-failed' in call or 'search/issues' in call for call in self.gh_calls))
-        phases['7'] = [['old', False]]
-        jobs['7'] = [['full-gates (1)', 'failure'], ['callgrind', 'failure'], ['required', None]]
-        code, _, _ = self.ci('new-failures', '--run', '7', runs={}, flags=(), history=history, phases=phases, jobs=jobs)
-        self.assertEqual(code, 0)
-        self.assertIn('no new failures', self.out)
+        def loops(root, shards):
+            for name, rows in shards.items():
+                loop = Path(root) / name / 'x/loop.json'
+                loop.parent.mkdir(parents=True)
+                loop.write_text(json.dumps({'phases': [{'phase': phase, 'failed': not passed} for phase, passed in rows]}))
+        def needs(**results):
+            return json.dumps({job.replace('_', '-'): {'result': result, 'outputs': {}} for job, result in results.items()})
+        with tempfile.TemporaryDirectory() as temp:
+            main, queue, baseline = Path(temp) / 'main', Path(temp) / 'queue', Path(temp) / 'baseline/failures.json'
+            # Without a baseline nothing is known to fail on main, so nothing may land.
+            code, _, error = self.ci('new-failures', '--needs', needs(), '--phases', str(queue), '--baseline', str(baseline), runs={}, flags=())
+            self.assertEqual((code, 'no baseline' in error), (1, True))
+            # main: one known-red phase and a red callgrind; recording them never fails.
+            loops(main, {'phases-1': [['old', False], ['timer-model', True]], 'phases-2': [['build', True]], 'phases-3': [['build', True]]})
+            code, _, _ = self.ci('new-failures', '--needs', needs(full_gates='failure', callgrind='failure', phpt='success'),
+                                 '--phases', str(main), '--save', str(baseline), runs={}, flags=())
+            self.assertEqual((code, json.loads(baseline.read_text())['phases']), (0, ['old']))
+            # The group: a regressed phase, a newly failed job, a cancelled one, and shard 3 died before its gates.
+            loops(queue, {'phases-1': [['old', False], ['timer-model', False]], 'phases-2': [['build', True]], 'phases-halfclose': [['build', True]]})
+            code, _, _ = self.ci('new-failures', '--needs', needs(full_gates='failure', callgrind='failure', phpt='failure', alpine='cancelled', zts='skipped'),
+                                 '--phases', str(queue), '--baseline', str(baseline), runs={}, flags=())
+            self.assertEqual(code, 1)
+            self.assertIn('new failures: timer-model, alpine job, phpt job, full-gates job (a shard reported no phases)', self.out)
+            # What main fails too lands, and the check never calls the API.
+            code, _, _ = self.ci('new-failures', '--needs', needs(full_gates='failure', callgrind='failure'),
+                                 '--phases', str(main), '--baseline', str(baseline), runs={}, flags=())
+            self.assertEqual((code, self.gh_calls), (0, []))
+            self.assertIn('no new failures', self.out)
 
     def test_new_failures_are_gate_failures_main_does_not_share(self):
         history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},
