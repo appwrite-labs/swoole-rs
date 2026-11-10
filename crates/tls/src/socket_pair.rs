@@ -255,9 +255,7 @@ pub unsafe extern "C" fn write(
 )]
 pub unsafe extern "C" fn clean(this: *const SocketPair) {
     // SAFETY: as the caller promises.
-    let socket = unsafe { (*this).worker_socket };
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+    let [_, Some(socket)] = ends(unsafe { &*this }) else {
         return;
     };
     let mut buffer = [0_u8; 1024];

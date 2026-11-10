@@ -10,13 +10,7 @@
     )
 )]
 #![cfg(feature = "php")]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
 mod descriptor;
 mod loop_driver;
@@ -24,40 +18,53 @@ mod native;
 
 use native::has_reactor;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
-    ffi::{CStr, c_char, c_int, c_void},
-    fmt,
-    io::Write,
-    ptr,
+    ffi::{CStr, c_int},
+    mem::ManuallyDrop,
+    rc::Rc,
 };
-use swoole_rs_corebase::constants::EventType;
-use swoole_rs_phphelpers::{callable, function_call};
+use swoole_rs_corebase::constants::{EventType, FdType};
+use swoole_rs_phphelpers::callable::Callable;
 use swoole_rs_phpstubs::event;
-use swoole_rs_reactor::{Event, ReactorTask, Socket, event_api};
+use swoole_rs_reactor::event_api::{self, CycleTask, Deferred, FdHandler};
+use swoole_rs_tls::event_socket::EventSocket;
 use swoole_rs_zend::{
-    Call, Class, Minit,
-    bailout::{self, Bailout, trap},
-    sys::{IS_NULL, swr_zend_callable_warning, swr_zend_zval_release, swr_zval_try_addref, zval},
+    Call, Class, E_WARNING, Minit, Owned, Value,
+    bailout::{self, Bailout},
+    message,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `EventObject`: the fd's PHP value and its callbacks (callables).
-#[repr(C)]
+/// `php_event_object`: the fd's PHP value and its callbacks.
 struct EventObject {
-    zsocket: zval,
-    readable: *mut c_void,
-    writable: *mut c_void,
+    zsocket: Owned,
+    readable: Option<Rc<Callable>>,
+    writable: Option<Rc<Callable>>,
+}
+
+/// A user fd's socket and, until a failed callback detaches it, its object.
+struct Registered {
+    /// Which `add` made it: the fd may be deleted and added again while a
+    /// handler runs PHP.
+    id: u64,
+    socket: EventSocket,
+    object: Option<EventObject>,
 }
 
 const READ: i64 = EventType::SW_EVENT_READ as i64;
 const WRITE: i64 = EventType::SW_EVENT_WRITE as i64;
+const FD_USER: c_int = FdType::SW_FD_USER as c_int;
 
 static EVENT: Class = Class::new();
 
 thread_local! {
-    /// `event_socket_map`: fd to `Socket *`.
-    static SOCKETS: RefCell<HashMap<i32, usize>> = RefCell::new(HashMap::new());
+    /// `event_socket_map`: fd to its socket. Never dropped: what a thread leaves
+    /// registered is leaked, as upstream's, not released once PHP is gone.
+    static SOCKETS: RefCell<ManuallyDrop<HashMap<i32, Registered>>> =
+        RefCell::new(ManuallyDrop::new(HashMap::new()));
+    /// The last `Registered::id` handed out.
+    static ADDED: Cell<u64> = const { Cell::new(0) };
 }
 
 /// The global functions `SW_FUNCTION_ALIAS` registers, in upstream's order.
@@ -91,47 +98,21 @@ method_table! {
     ];
 }
 
+swoole_rs_zend::minit!(minit => register);
+
 /// MINIT: `Swoole\Event` (not instantiable) and the `swoole_event_*` functions.
-/// # Safety
-/// Zend's MINIT of this module, with its number.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_event_minit(module_number: c_int) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(module_number) };
+fn register(minit: &Minit) -> Result<(), Bailout> {
     minit.register_static(&EVENT, c"Swoole\\Event", &METHODS.0);
-    bailout::raise(minit.function_aliases(&EVENT, &METHODS.0, &ALIASES));
+    minit.function_aliases(&EVENT, &METHODS.0, &ALIASES)
 }
 
-/// A NUL-terminated message on the stack.
-struct Message([u8; 160]);
-
-impl Message {
-    fn new(args: fmt::Arguments) -> Self {
-        let mut buffer = [0; 160];
-        let mut out = &mut buffer[..159];
-        // A message too long for the buffer is cut, as `snprintf` would.
-        let _cut = out.write_fmt(args);
-        Self(buffer)
-    }
-
-    fn as_ptr(&self) -> *const c_char {
-        self.0.as_ptr().cast()
-    }
-
-    fn as_cstr(&self) -> &CStr {
-        CStr::from_bytes_until_nul(&self.0).unwrap_or(c"")
-    }
-}
-
-fn fatal_warning(message: *const c_char) {
-    // SAFETY: a NUL-terminated message.
-    let message = unsafe { CStr::from_ptr(message) };
+fn fatal_warning(message: &CStr) {
     bailout::defer(native::fatal_warning(message));
 }
 
-fn fd(zsocket: *mut zval) -> i32 {
-    // SAFETY: the handler lends its live descriptor candidate.
-    match unsafe { descriptor::convert(zsocket) } {
+/// `php_swoole_convert_to_fd(value)`, deferring a bailout.
+fn fd(value: Option<&Value>) -> i32 {
+    match value.map_or(Ok(-1), descriptor::convert) {
         Ok(fd) => fd,
         Err(error) => {
             error.defer();
@@ -140,17 +121,8 @@ fn fd(zsocket: *mut zval) -> i32 {
     }
 }
 
-/// The user socket `add` registered for `fd`.
-fn socket<'a>(fd: i32) -> Option<Socket<'a>> {
-    let socket = SOCKETS.with_borrow(|sockets| sockets.get(&fd).copied())?;
-    // SAFETY: the registry holds records `add` made, on this thread, until `del` removes and
-    // frees them.
-    unsafe { Socket::from_ptr(socket as *mut _) }
-}
-
-/// The `EventObject` a user socket carries.
-fn object_of(socket: Socket<'_>) -> *mut EventObject {
-    socket.read(|record| record.object).cast()
+fn registered(fd: i32) -> bool {
+    SOCKETS.with_borrow(|sockets| sockets.contains_key(&fd))
 }
 
 /// `int` events, as the reactor takes them.
@@ -162,34 +134,38 @@ fn events_of(events: i64) -> c_int {
     events as c_int
 }
 
-fn is_null(value: *mut zval) -> bool {
-    if value.is_null() {
-        return true;
-    }
-    // SAFETY: a live zval.
-    let value = unsafe { *value };
-    // SAFETY: every zval sets `u1.type_info`.
-    let kind = unsafe { value.u1.type_info };
-    kind & 0xff == IS_NULL
+/// The callable argument `value`, deferring a bailout.
+fn callable(value: Option<&Value>, name: Option<&CStr>, allow_null: bool) -> Option<Rc<Callable>> {
+    let exception = swoole_rs_phpswoole::exception();
+    Callable::argument(value, name, allow_null, Some(exception)).unwrap_or_else(|error| {
+        error.defer();
+        None
+    })
 }
 
-fn callable(zfn: *mut zval, name: Option<&CStr>, allow_null: bool) -> *mut c_void {
-    let name = name.map_or(ptr::null(), CStr::as_ptr);
-    let exception = swoole_rs_phpswoole::exception_class();
-    // SAFETY: the live candidate, static diagnostic name and C reporter remain
-    // valid through the contained SDK resolution.
-    match unsafe { callable::factory(zfn, name, allow_null, exception, swr_zend_callable_warning) }
-    {
-        Ok(handle) => handle.cast(),
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
+/// Dropped once the loop is out of the pass that may still be using it.
+struct Later<T>(T);
+
+impl<T: 'static> Deferred for Later<T> {
+    /// Drop it, then raise a destructor's bailout from this frame, which owns
+    /// nothing by then.
+    fn run(self) {
+        drop(self);
+        bailout::finish();
+    }
+
+    /// The reactor was freed first: drop it now, and leave a bailout to the
+    /// handler that freed it rather than jump out of the reactor's drop.
+    fn dispose(self) {
+        drop(self);
     }
 }
-fn release(handle: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: callers transfer one live callback owner, exactly once.
-    unsafe { callable::release(handle.cast()) }
+
+/// Drop `value` once the loop is out of this pass; at once without a reactor.
+fn later<T: 'static>(value: T) {
+    if let Err(value) = event_api::swoole_event_defer_value(Later(value)) {
+        value.dispose();
+    }
 }
 
 /// `add(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = SWOOLE_EVENT_READ)`.
@@ -199,89 +175,76 @@ fn add(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let (zfd, zread, zwrite) = (call.zval(1), call.zval(2), call.zval(3));
     if let Err(error) = loop_driver::check() {
         error.defer();
         return;
     }
+    let zfd = call.value(1);
     let fd = fd(zfd);
     if bailout::pending() {
         return;
     }
     let refused = if fd < 0 {
-        Some(Message::new(format_args!("unknown fd type")))
+        Some(message!("unknown fd type"))
     } else if fd == 0 && events & WRITE != 0 {
-        Some(Message::new(format_args!("invalid socket fd [{fd}]")))
-    } else if socket(fd).is_some() {
-        Some(Message::new(format_args!("already exist")))
+        Some(message!("invalid socket fd [{fd}]"))
+    } else if registered(fd) {
+        Some(message!("already exist"))
     } else if events & (WRITE | READ) == 0 {
-        Some(Message::new(format_args!("invalid events")))
+        Some(message!("invalid events"))
     } else {
         None
     };
     if let Some(message) = refused {
-        fatal_warning(message.as_ptr());
+        fatal_warning(message.as_cstr());
         call.set_bool(false);
         return;
     }
-    let readable = callable(zread, Some(c"readable_callback"), true);
+    let readable = callable(call.value(2), Some(c"readable_callback"), true);
     if bailout::pending() {
         return;
     }
-    if events & READ != 0 && readable.is_null() {
+    if events & READ != 0 && readable.is_none() {
         missing(fd, "readable");
         call.set_bool(false);
         return;
     }
-    let writable = callable(zwrite, Some(c"writable_callback"), true);
+    let writable = callable(call.value(3), Some(c"writable_callback"), true);
     if bailout::pending() {
-        if !readable.is_null() {
-            bailout::defer(release(readable));
-        }
         return;
     }
-    if events & WRITE != 0 && writable.is_null() {
+    if events & WRITE != 0 && writable.is_none() {
         missing(fd, "writable");
-        if !readable.is_null() {
-            bailout::defer(release(readable));
-        }
         call.set_bool(false);
         return;
     }
-    // SAFETY: argument 1 is passed and live; the object holds a reference.
-    unsafe { swr_zval_try_addref(zfd) };
-    let object = Box::into_raw(Box::new(EventObject {
-        // SAFETY: as above.
-        zsocket: unsafe { zfd.read() },
+    let socket = EventSocket::new(fd, FD_USER);
+    if socket.add(events_of(events)) < 0 {
+        fatal_warning(c"swoole_event_add failed");
+        socket.free(false);
+        call.set_bool(false);
+        return;
+    }
+    let object = zfd.map(|zfd| EventObject {
+        zsocket: zfd.copy(),
         readable,
         writable,
-    }));
-    let socket = native::socket_make(fd, object.cast());
-    // SAFETY: the socket just made, on the live reactor.
-    if unsafe { event_api::swoole_event_add(socket, events_of(events)) } < 0 {
-        fatal_warning(c"swoole_event_add failed".as_ptr());
-        // SAFETY: the reactor refused the socket; nothing else holds it.
-        unsafe { native::socket_free(socket) };
-        // SAFETY: the object made above, which nothing else holds.
-        bailout::raise(unsafe { free_object(object) });
-        call.set_bool(false);
-        return;
-    }
-    SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, socket as usize));
+    });
+    // Dropped outside the borrow: a destructor may call back in.
+    let id = ADDED.get() + 1;
+    ADDED.set(id);
+    let registered = Registered { id, socket, object };
+    drop(SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, registered)));
     call.set_long(fd.into());
 }
 
 /// "Swoole\Event: unable to find <kind> callback of fd [<fd>]".
 fn missing(fd: i32, kind: &str) {
-    let message = Message::new(format_args!(
-        "Swoole\\Event: unable to find {kind} callback of fd [{fd}]"
-    ));
-    fatal_warning(message.as_ptr());
+    fatal_warning(message!("Swoole\\Event: unable to find {kind} callback of fd [{fd}]").as_cstr());
 }
 
 fn not_found(fd: i32) {
-    let message = Message::new(format_args!("socket[{fd}] is not found in the reactor"));
-    fatal_warning(message.as_ptr());
+    fatal_warning(message!("socket[{fd}] is not found in the reactor").as_cstr());
 }
 
 /// `write(mixed $fd, string $data): bool`.
@@ -291,38 +254,36 @@ fn write(call: &Call) {
         return;
     };
     if data.is_empty() {
-        fatal_warning(c"data empty".as_ptr());
+        fatal_warning(c"data empty");
         call.set_bool(false);
         return;
     }
-    let fd = fd(call.zval(1));
+    let fd = fd(call.value(1));
     if bailout::pending() {
         return;
     }
     if fd < 0 {
-        fatal_warning(c"unknown type".as_ptr());
+        fatal_warning(c"unknown type");
         call.set_bool(false);
         return;
     }
-    let Some(socket) = socket(fd) else {
+    if !registered(fd) {
         not_found(fd);
         call.set_bool(false);
         return;
-    };
+    }
     if let Err(error) = loop_driver::check() {
         error.defer();
         return;
     }
-    // SAFETY: a registered socket and the argument's bytes.
-    let written =
-        unsafe { event_api::swoole_event_write(socket.as_ptr(), data.as_ptr().cast(), data.len()) };
-    call.set_bool(written >= 0);
+    let written = SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| r.socket.write(data)));
+    call.set_bool(written.is_some_and(|written| written >= 0));
 }
 
 /// `set(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = 0)`.
 fn set(call: &Call) {
     if !has_reactor() {
-        fatal_warning(c"reactor is not ready, cannot call swoole_event_set".as_ptr());
+        fatal_warning(c"reactor is not ready, cannot call swoole_event_set");
         call.set_bool(false);
         return;
     }
@@ -330,7 +291,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let fd = fd(call.zval(1));
+    let fd = fd(call.value(1));
     if bailout::pending() {
         return;
     }
@@ -338,51 +299,51 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(socket) = socket(fd) else {
+    if !SOCKETS.with_borrow(|sockets| sockets.get(&fd).is_some_and(|r| r.object.is_some())) {
         not_found(fd);
         call.set_bool(false);
         return;
-    };
-    let object = object_of(socket);
-    let readable = callable(call.zval(2), Some(c"readable_callback"), true);
+    }
+    let readable = callable(call.value(2), Some(c"readable_callback"), true);
     if bailout::pending() {
         return;
     }
-    let writable = callable(call.zval(3), Some(c"writable_callback"), true);
+    let writable = callable(call.value(3), Some(c"writable_callback"), true);
     if bailout::pending() {
-        if !readable.is_null() {
-            bailout::defer(release(readable));
-        }
         return;
     }
-    // SAFETY: the registered socket's live object.
-    let object = unsafe { &mut *object };
-    for (new, slot) in [
-        (readable, &mut object.readable),
-        (writable, &mut object.writable),
-    ] {
-        if new.is_null() {
-            continue;
-        }
-        if !slot.is_null() {
-            // The replaced callable: the reactor may still be in it.
-            native::defer(deferred_release, *slot, release_unrun);
-        }
-        *slot = new;
-    }
-    if events & READ != 0 && object.readable.is_null() {
+    // The replaced callables, which the reactor may still be in.
+    let (has, replaced) = SOCKETS.with_borrow_mut(|sockets| {
+        let Some(object) = sockets.get_mut(&fd).and_then(|r| r.object.as_mut()) else {
+            return ((false, false), [readable, writable]);
+        };
+        let replace = |new: Option<Rc<Callable>>, slot: &mut Option<Rc<Callable>>| {
+            new.and_then(|new| slot.replace(new))
+        };
+        let replaced = [
+            replace(readable, &mut object.readable),
+            replace(writable, &mut object.writable),
+        ];
+        (
+            (object.readable.is_some(), object.writable.is_some()),
+            replaced,
+        )
+    });
+    replaced.into_iter().flatten().for_each(later);
+    if events & READ != 0 && !has.0 {
         missing(fd, "readable");
         call.set_bool(false);
         return;
     }
-    if events & WRITE != 0 && object.writable.is_null() {
+    if events & WRITE != 0 && !has.1 {
         missing(fd, "writable");
         call.set_bool(false);
         return;
     }
-    // SAFETY: a registered socket.
-    if unsafe { event_api::swoole_event_set(socket.as_ptr(), events_of(events)) } < 0 {
-        fatal_warning(c"Swoole\\Event::set failed".as_ptr());
+    let status =
+        SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| r.socket.set(events_of(events))));
+    if status.is_none_or(|status| status < 0) {
+        fatal_warning(c"Swoole\\Event::set failed");
         call.set_bool(false);
         return;
     }
@@ -392,7 +353,7 @@ fn set(call: &Call) {
 /// `del(mixed $fd): bool`.
 fn del(call: &Call) {
     if !has_reactor() {
-        fatal_warning(c"reactor is not ready, cannot call swoole_event_del".as_ptr());
+        fatal_warning(c"reactor is not ready, cannot call swoole_event_del");
         call.set_bool(false);
         return;
     }
@@ -400,33 +361,50 @@ fn del(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let fd = fd(call.zval(1));
+    let fd = fd(call.value(1));
     if bailout::pending() {
         return;
     }
     if fd < 0 {
-        fatal_warning(c"unknown type".as_ptr());
+        fatal_warning(c"unknown type");
         call.set_bool(false);
         return;
     }
-    let Some(socket) = socket(fd) else {
+    let Some(registered) = SOCKETS.with_borrow_mut(|sockets| sockets.remove(&fd)) else {
         call.set_bool(false);
         return;
     };
     // Its object, freed once the loop is out of it.
-    native::defer(
-        deferred_free_object,
-        object_of(socket).cast(),
-        free_unrun_object,
-    );
-    // SAFETY: a registered socket.
-    let deleted = unsafe { event_api::swoole_event_del(socket.as_ptr()) };
-    SOCKETS.with_borrow_mut(|sockets| sockets.remove(&fd));
+    if let Some(object) = registered.object {
+        later(object);
+    }
+    let deleted = registered.socket.del();
     // The fd stays the user's.
-    socket.edit(|record| record.fd = -1);
-    // SAFETY: removed from the reactor and the registry.
-    unsafe { native::socket_free(socket.as_ptr()) };
+    registered.socket.free(true);
     call.set_bool(deleted == 0);
+}
+
+/// `Swoole\Event::defer`'s callable: run, then released, even when it bails out.
+struct Run(Rc<Callable>);
+
+impl Deferred for Run {
+    /// `event_defer_callback`.
+    fn run(self) {
+        let result = invoke(&self.0, None).and_then(|ok| {
+            if ok {
+                Ok(())
+            } else {
+                native::warning(c"Swoole\\Event::defer callback handler error")
+            }
+        });
+        drop(self);
+        bailout::raise(result);
+    }
+
+    /// The reactor was freed first: release it, leaving a bailout deferred.
+    fn dispose(self) {
+        drop(self);
+    }
 }
 
 /// `defer(callable $callback): true`.
@@ -439,13 +417,41 @@ fn defer(call: &Call) {
         error.defer();
         return;
     }
-    let callback = callable(call.zval(1), None, false);
-    if bailout::pending() {
+    let Some(callback) = callable(call.value(1), None, false) else {
+        call.set_bool(false);
         return;
-    }
+    };
     // The reactor runs and then frees it.
-    native::defer(run_deferred, callback, release_unrun);
+    if let Err(run) = event_api::swoole_event_defer_value(Run(callback)) {
+        run.dispose();
+    }
     call.set_bool(true);
+}
+
+/// The reactor's idle or future task: `event_cycle_callback` of its callable.
+struct Cycle(Rc<Callable>);
+
+impl CycleTask for Cycle {
+    fn run(&self) {
+        // Its own reference: the callback may clear this task.
+        let callable = Rc::clone(&self.0);
+        let result = invoke(&callable, None).and_then(|ok| {
+            if ok {
+                Ok(())
+            } else {
+                native::warning(c"Swoole\\Event::end callback handler error")
+            }
+        });
+        drop(callable);
+        bailout::raise(result);
+    }
+
+    /// Release the callable, then raise a destructor's bailout from this
+    /// frame, which owns nothing by then.
+    fn retire(self: Box<Self>) {
+        drop(self);
+        bailout::finish();
+    }
 }
 
 /// `cycle(?callable $callback, bool $before = false): bool`.
@@ -454,55 +460,38 @@ fn cycle(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let zcallback = call.zval(1);
     if let Err(error) = loop_driver::check() {
         error.defer();
         return;
     }
-    let task = *native::cycle_task(before);
-    if is_null(zcallback) {
-        if task.callback.is_none() {
+    let zcallback = call.value(1);
+    if zcallback.is_none_or(Value::is_null) {
+        if !event_api::swoole_event_cycle_isset(before) {
             call.set_bool(false);
             return;
         }
-        // The task's callable, released after the loop is out of it.
-        native::defer(deferred_release, task.data, release_unrun);
-        *native::cycle_task(before) = ReactorTask {
-            callback: None,
-            data: ptr::null_mut(),
-        };
+        event_api::swoole_event_cycle(before, None);
     } else {
-        if !task.data.is_null() {
-            native::defer(deferred_release, task.data, release_unrun);
-        }
+        event_api::swoole_event_cycle(before, None);
         let callback = callable(zcallback, None, false);
         if bailout::pending() {
             return;
         }
-        // The reactor holds the callable from now on.
-        *native::cycle_task(before) = ReactorTask {
-            callback: Some(run_cycle),
-            data: callback,
+        let Some(callback) = callback else {
+            call.set_bool(false);
+            return;
         };
+        event_api::swoole_event_cycle(before, Some(Box::new(Cycle(callback))));
     }
     call.set_bool(true);
 }
 
-/// Releases the cycle callables the reactor holds, as `wait` frees it: a loop left
-/// with one set (a callback that exited, or one never cleared) would lose it.
-fn release_cycle_tasks() -> Result<(), Bailout> {
-    let mut result = Ok(());
-    for before in [false, true] {
-        let unset = ReactorTask {
-            callback: None,
-            data: ptr::null_mut(),
-        };
-        let task = std::mem::replace(native::cycle_task(before), unset);
-        if !task.data.is_null() {
-            result = result.and(release(task.data));
-        }
-    }
-    result
+/// Clears the cycle tasks before `wait` frees the reactor, which then drops
+/// their callables: a loop left with one set (a callback that exited, or one
+/// never cleared) would lose it.
+fn release_cycle_tasks() {
+    event_api::swoole_event_cycle(false, None);
+    event_api::swoole_event_cycle(true, None);
 }
 
 /// `isset(mixed $fd, int $events = SWOOLE_EVENT_READ | SWOOLE_EVENT_WRITE): bool`.
@@ -515,46 +504,34 @@ fn isset(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let fd = fd(call.zval(1));
+    let fd = fd(call.value(1));
     if bailout::pending() {
         return;
     }
     if fd < 0 {
-        fatal_warning(c"unknown type".as_ptr());
+        fatal_warning(c"unknown type");
         call.set_bool(false);
         return;
     }
-    let Some(socket) = socket(fd) else {
-        call.set_bool(false);
-        return;
-    };
-    let (removed, registered) = socket.read(|record| (record.removed, record.events));
-    call.set_bool(removed == 0 && i64::from(registered) & events != 0);
+    let set = SOCKETS.with_borrow(|sockets| {
+        sockets
+            .get(&fd)
+            .is_some_and(|r| !r.socket.removed() && i64::from(r.socket.events()) & events != 0)
+    });
+    call.set_bool(set);
 }
 
-/// Call `callable` with `argv`: whether it succeeded.
-fn invoke(callable: *mut c_void, argv: *mut zval, argc: u32) -> Result<bool, Bailout> {
-    // SAFETY: keep an independent callback owner alive during self-replacement
-    // and coroutine suspension; no Rust borrow survives invocation.
-    let retained = unsafe { callable::copy(callable.cast()) };
-    // SAFETY: this owner is stable until release after the contained invocation.
-    let cache = unsafe { callable::cache(retained) };
-    // SAFETY: live cache/arguments; the coroutine leaf and C warning reporter
-    // are called inside Zend's C traps by the common Rust API.
-    let result = unsafe {
-        function_call(
-            cache,
-            argc,
-            argv,
-            ptr::null_mut(),
-            swoole_rs_phpprocess::enable_coroutine(),
-            swoole_rs_phpcoroutines::create_coroutine,
-            swr_zend_callable_warning,
-        )
-    };
-    // SAFETY: release the independent owner after invocation, including errors.
-    let released = unsafe { callable::release(retained) };
-    result.and_then(|value| released.map(|()| value))
+/// Call `callable` with `arg`: whether it succeeded. The caller holds its own
+/// reference, which keeps it through self-replacement and coroutine suspension.
+fn invoke(callable: &Callable, arg: Option<&Owned>) -> Result<bool, Bailout> {
+    let args = arg.map_or(&[][..], std::slice::from_ref);
+    let retval = Owned::default();
+    swoole_rs_phpcoroutines::call_handler(
+        callable,
+        args,
+        &retval,
+        swoole_rs_phpprocess::enable_coroutine(),
+    )
 }
 
 /// A reactor handler's result: a bailout is raised from its frame, which owns
@@ -566,64 +543,92 @@ fn handled(result: Result<c_int, Bailout>) -> c_int {
     })
 }
 
-/// The user socket of an event the reactor lends.
-/// # Safety
-/// `event` is a live `swoole::Event` of a user socket `add` registered.
-unsafe fn event_socket<'a>(event: *mut c_void) -> Option<Socket<'a>> {
-    // SAFETY: per the caller.
-    let socket = unsafe { (*event.cast::<Event>()).socket };
-    // SAFETY: per the caller, a live registered socket while the reactor lends its event.
-    unsafe { Socket::from_ptr(socket.cast()) }
-}
-
 /// The user fd type's read handler.
-pub(crate) unsafe extern "C" fn readable(_reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: the reactor lends the event of a user socket `add` registered.
-    handled(unsafe { ready(event, false) })
-}
-
+struct Readable;
 /// The user fd type's write handler.
-pub(crate) unsafe extern "C" fn writable(_reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: as above.
-    handled(unsafe { ready(event, true) })
+struct Writable;
+/// The user fd type's error handler.
+struct Error;
+
+impl FdHandler for Readable {
+    fn handle(fd: c_int) -> c_int {
+        handled(ready(fd, false))
+    }
 }
 
-/// The user fd type's error handler.
-pub(crate) unsafe extern "C" fn error(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: the reactor lends the event of a user socket `add` registered.
-    handled(unsafe { error_event(reactor, event) })
+impl FdHandler for Writable {
+    fn handle(fd: c_int) -> c_int {
+        handled(ready(fd, true))
+    }
+}
+
+impl FdHandler for Error {
+    fn handle(fd: c_int) -> c_int {
+        handled(error_event(fd))
+    }
+}
+
+/// The user fd type's read, write and error handlers, unless they are set.
+fn install_handlers() {
+    let read = EventType::SW_EVENT_READ as c_int;
+    if event_api::swoole_event_isset_handler(FD_USER, read) {
+        return;
+    }
+    event_api::swoole_event_set_fd_handler::<Readable>(FD_USER, read);
+    event_api::swoole_event_set_fd_handler::<Writable>(FD_USER, EventType::SW_EVENT_WRITE as c_int);
+    event_api::swoole_event_set_fd_handler::<Error>(FD_USER, EventType::SW_EVENT_ERROR as c_int);
+}
+
+/// The errno's description, as libc's `strerror`.
+pub(crate) fn errno_message(code: c_int) -> String {
+    let text = std::io::Error::from_raw_os_error(code).to_string();
+    match text.strip_suffix(&format!(" (os error {code})")) {
+        Some(description) => description.to_owned(),
+        None => text,
+    }
+}
+
+/// `apply` to `fd`'s registration `id`, unless PHP has since deleted or replaced it.
+fn registration<T>(fd: i32, id: u64, apply: impl FnOnce(&mut Registered) -> T) -> Option<T> {
+    SOCKETS.with_borrow_mut(|sockets| sockets.get_mut(&fd).filter(|r| r.id == id).map(apply))
 }
 
 /// The read (`write` false) or write handler of a user fd: run its callback;
 /// on failure warn, detach and delete the fd.
-/// # Safety
-/// `event` is a live event of a user socket `add` registered, carrying its object.
-unsafe fn ready(event: *mut c_void, write: bool) -> Result<c_int, Bailout> {
-    // SAFETY: per the caller.
-    let Some(socket) = (unsafe { event_socket(event) }) else {
-        return Ok(-1);
+fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
+    let found = SOCKETS.with_borrow(|sockets| {
+        let registered = sockets.get(&fd)?;
+        let object = registered.object.as_ref()?;
+        let callable = if write {
+            &object.writable
+        } else {
+            &object.readable
+        };
+        Some((registered.id, callable.clone()?, object.zsocket.copy()))
+    });
+    let Some((id, callable, zsocket)) = found else {
+        return Ok(0);
     };
-    let object = object_of(socket);
-    // SAFETY: per the caller, the live object.
-    let peo = unsafe { &*object };
-    let callable = if write { peo.writable } else { peo.readable };
-    // `argv[0] = peo->zsocket`: a borrowed copy.
-    let mut argv = peo.zsocket;
-    if invoke(callable, &raw mut argv, 1)? {
+    let called = invoke(&callable, Some(&zsocket));
+    drop(callable);
+    if called? {
         return Ok(0);
     }
-    let mut zsocket = peo.zsocket;
-    let fd = fd(&raw mut zsocket);
+    let reported = self::fd(Some(&zsocket));
+    drop(zsocket);
     let kind = if write { "writable" } else { "readable" };
-    let message = Message::new(format_args!(
-        "Swoole\\Event: {kind} callback handler error, fd [{fd}] will be removed from reactor"
-    ));
-    fatal_warning(message.as_ptr());
-    socket.edit(|record| record.object = ptr::null_mut());
+    fatal_warning(
+        message!(
+            "Swoole\\Event: {kind} callback handler error, fd [{reported}] will be removed from reactor"
+        )
+        .as_cstr(),
+    );
     // The detached object, freed once the loop is out of it.
-    native::defer(deferred_free_object, object.cast(), free_unrun_object);
-    // SAFETY: per the caller.
-    unsafe { event_api::swoole_event_del(socket.as_ptr()) };
+    let object = registration(fd, id, |r| r.object.take()).flatten();
+    if let Some(object) = object {
+        later(object);
+    }
+    registration(fd, id, |r| r.socket.del());
     if bailout::relay_to_c(Ok(())) {
         Err(Bailout)
     } else {
@@ -631,70 +636,33 @@ unsafe fn ready(event: *mut c_void, write: bool) -> Result<c_int, Bailout> {
     }
 }
 
-/// `event_object_free`: drop an fd's callbacks and PHP value.
-/// # Safety
-/// `object` is an `EventObject` from `add`, not used again.
-unsafe fn free_object(object: *mut EventObject) -> Result<(), Bailout> {
-    // SAFETY: per the caller.
-    let mut peo = unsafe { Box::from_raw(object) };
-    let mut bailed = false;
-    for callable in [peo.readable, peo.writable] {
-        if !callable.is_null() {
-            bailed |= release(callable).is_err();
+/// The error handler: dispatch to the read or write handler unless the socket
+/// reported an error; then warn, free the fd's object and delete it.
+fn error_event(fd: i32) -> Result<c_int, Bailout> {
+    let found = SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| (r.id, r.socket.events())));
+    let Some((id, events)) = found else {
+        return Ok(0);
+    };
+    if events & EventType::SW_EVENT_ERROR as i32 == 0 {
+        return ready(fd, events & EventType::SW_EVENT_READ as i32 == 0);
+    }
+    match swoole_rs_reactor::socket_error(fd) {
+        Ok(0) => {}
+        Ok(error) => {
+            let description = errno_message(error);
+            let message =
+                message!("swoole_event->onError[1]: socket error. Error: {description} [{error}]");
+            native::fatal_warning(message.as_cstr())?;
+        }
+        Err(code) => {
+            let message = message!("swoole_event->onError[1]: getsockopt[sock={fd}] failed");
+            native::system_error(code, E_WARNING, message.as_cstr())?;
         }
     }
-    // SAFETY: the object's reference to its PHP value.
-    bailed |= unsafe { trap(swr_zend_zval_release, (&raw mut peo.zsocket).cast()) }.is_err();
-    if bailed { Err(Bailout) } else { Ok(()) }
-}
-
-/// The deferred `event_object_free`.
-extern "C-unwind" fn deferred_free_object(object: *mut c_void) {
-    // SAFETY: the object `del` or a failed callback scheduled, freed once.
-    bailout::raise(unsafe { free_object(object.cast()) });
-}
-
-/// The deferred release of a replaced callable.
-extern "C-unwind" fn deferred_release(callable: *mut c_void) {
-    bailout::raise(release(callable));
-}
-
-/// The reactor was freed before a deferred release ran: release now, and leave a
-/// bailout to the handler that freed it rather than jump out of the reactor's drop.
-extern "C-unwind" fn release_unrun(callable: *mut c_void) {
-    bailout::defer(release(callable));
-}
-
-/// As [`release_unrun`], for a deferred `event_object_free`.
-extern "C-unwind" fn free_unrun_object(object: *mut c_void) {
-    // SAFETY: the object `del` or a failed callback scheduled, which never ran.
-    bailout::defer(unsafe { free_object(object.cast()) });
-}
-
-/// `event_defer_callback`: run and free a deferred callable, which is freed even when
-/// the callback bails out.
-extern "C-unwind" fn run_deferred(callable: *mut c_void) {
-    let result = invoke(callable, ptr::null_mut(), 0).and_then(|ok| {
-        if ok {
-            Ok(())
-        } else {
-            native::warning(c"Swoole\\Event::defer callback handler error")
-        }
-    });
-    let released = release(callable);
-    bailout::raise(result.and(released));
-}
-
-/// `event_cycle_callback`: run the cycle callable.
-extern "C-unwind" fn run_cycle(callable: *mut c_void) {
-    let result = invoke(callable, ptr::null_mut(), 0).and_then(|ok| {
-        if ok {
-            Ok(())
-        } else {
-            native::warning(c"Swoole\\Event::end callback handler error")
-        }
-    });
-    bailout::raise(result);
+    drop(registration(fd, id, |r| r.object.take()));
+    bailout::outcome(())?;
+    registration(fd, id, |r| r.socket.del());
+    Ok(0)
 }
 
 swoole_rs_zend::handlers! {
@@ -730,9 +698,10 @@ fn dispatch(call: &Call) {
     }
 }
 
-/// `php_swoole_reactor_init()`: 0, or -1 after an error.
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_reactor_init() -> i32 {
+/// `php_swoole_reactor_init()`: 0, or -1 after an error. Raises a bailout, so
+/// only an export C calls may call it last.
+#[must_use]
+pub fn reactor_init() -> i32 {
     let result = loop_driver::init().unwrap_or_else(|error| {
         error.defer();
         -1
@@ -740,94 +709,17 @@ pub extern "C" fn php_swoole_reactor_init() -> i32 {
     bailout::finish();
     result
 }
-/// # Safety
-/// The caller lends a live initialized descriptor candidate.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_convert_to_fd(value: *mut zval) -> i32 {
+
+/// `php_swoole_convert_to_fd(value)`, raising a bailout as [`reactor_init`].
+#[must_use]
+pub fn convert_to_fd(value: Option<&Value>) -> i32 {
     let result = fd(value);
     bailout::finish();
     result
 }
-/// Native lifecycle effect, completed before resuming a contained bailout.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpevents_wait() {
+
+/// `Swoole\Event::wait()`'s native lifecycle effect, completed before raising
+/// a contained bailout, as [`reactor_init`].
+pub fn wait_and_raise() {
     bailout::raise(loop_driver::wait());
-}
-
-/// The error handler: dispatch to the read or write handler unless the socket
-/// reported an error; then warn, free the fd's object and delete it.
-/// # Safety
-/// The reactor lends a live event of a user socket `add` registered.
-unsafe fn error_event(reactor: *mut c_void, event: *mut c_void) -> Result<c_int, Bailout> {
-    // SAFETY: per the caller.
-    let reported_fd = unsafe { (*event.cast::<Event>()).fd };
-    // SAFETY: per the caller.
-    let Some(socket) = (unsafe { event_socket(event) }) else {
-        return Ok(-1);
-    };
-    let (fd, fd_type, events) = socket.read(|record| (record.fd, record.fd_type, record.events));
-    if events & EventType::SW_EVENT_ERROR as i32 == 0 {
-        let kind = u32::from(events & EventType::SW_EVENT_READ as i32 == 0);
-        // SAFETY: the live reactor's handler tables.
-        let handlers = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.handlers;
-        // SAFETY: as above.
-        let handlers = unsafe { &*handlers };
-        // `get_handler` always finds one, as upstream calls it unchecked.
-        let Some(handler) =
-            swoole_rs_reactor::swr_v1_reactor_handlers_get(handlers, kind, fd_type, true)
-        else {
-            std::process::abort()
-        };
-        // SAFETY: the registered handler, with the reactor's own event.
-        return Ok(unsafe { handler(reactor, event) });
-    }
-    let mut error = 0_i32;
-    let mut length = 4 as libc::socklen_t;
-    // SAFETY: valid writable integer/length storage and a borrowed descriptor.
-    if unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_ERROR,
-            (&raw mut error).cast(),
-            &raw mut length,
-        )
-    } < 0
-    {
-        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        let message = Message::new(format_args!(
-            "swoole_event->onError[1]: getsockopt[sock={reported_fd}] failed"
-        ));
-        native::system_error(code, swoole_rs_zend::E_WARNING, message.as_cstr())?;
-    }
-    if error != 0 {
-        let description = native::strerror(error);
-        let message = Message::new(format_args!(
-            "swoole_event->onError[1]: socket error. Error: {} [{error}]",
-            description.to_string_lossy()
-        ));
-        native::fatal_warning(message.as_cstr())?;
-    }
-    // SAFETY: the error path consumes this object once before removing the socket.
-    unsafe { free_object(object_of(socket)) }?;
-    // SAFETY: the event still lends this socket until deletion completes.
-    unsafe { event_api::swoole_event_del(socket.as_ptr()) };
-    Ok(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn messages_are_cut_and_terminated() {
-        let message = Message::new(format_args!("socket[{}] is not found in the reactor", 7));
-        assert_eq!(
-            message.as_cstr(),
-            c"socket[7] is not found in the reactor",
-            "formatted"
-        );
-        let long = Message::new(format_args!("{}", "x".repeat(400)));
-        assert_eq!(long.as_cstr().count_bytes(), 159, "cut to the buffer");
-    }
 }

@@ -13,7 +13,7 @@ default = []
 # The PHP classes: Swoole\Timer and each module's php* crate. Only the extension's
 # archive has PHP; the native gates' archive leaves it off so it holds no Zend
 # references (docs/zend.md).
-php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
        "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phphelpers/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php", "swoole-rs-oci?/php", "swoole-rs-curl?/php"]
 # Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
 # --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
@@ -50,6 +50,7 @@ swoole-rs-locks = { path = "../locks" }
 swoole-rs-phplocks = { path = "../phplocks" }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
