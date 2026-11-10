@@ -11,7 +11,7 @@ use crate::ops::{
     OP_FACTORY_DISPATCH, OP_FIELD, OP_FORCE_CLOSE, OP_HAS_ON_CONNECT, OP_HAVE_DGRAM,
     OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_HEARTBEAT_TIMER_CLEAR, OP_INCOMING, OP_KILL_SELF,
     OP_MASTER_REACTOR_ID, OP_MAXFD, OP_MICROTIME, OP_MINFD, OP_MODE, OP_NOTIFY_CONNECT,
-    OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PEER_CERT, OP_PIPE_FD,
+    OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_PACKET_INIT, OP_PACKET_TASK, OP_PEER_CERT, OP_PIPE_FD,
     OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND, OP_PIPE_TYPE, OP_PORT_COUNT, OP_PORT_DEL,
     OP_PORT_DGRAM, OP_PORT_DTLS, OP_PORT_FD, OP_PORT_LISTEN, OP_PORT_READ, OP_PORT_REMOVED,
     OP_QUEUE_FULL, OP_REACTOR_BARRIER, OP_REACTOR_CLOSE, OP_REACTOR_DEL, OP_REACTOR_ID,
@@ -23,7 +23,7 @@ use crate::ops::{
     OP_VERIFY_PEER, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD,
     OP_WORKER_START, OP_WORKER_STOP,
 };
-use crate::{Host, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
+use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
 /// `swReturnCode` values.
 pub(crate) const SW_CONTINUE: i64 = 1;
@@ -82,7 +82,15 @@ pub(crate) fn packet_received<H: Host>(h: &mut H) -> crate::Effect<i64> {
         if h.is(OP_PORT_DTLS)? {
             return Ok(h.op(OP_DTLS_ACCEPT, length)?.cast_signed());
         }
-        if h.op(OP_PACKET_DISPATCH, length)? == 0 {
+        let task = h.op(OP_PACKET_TASK, length)?;
+        // Base mode hands it to this process's worker as it does a connection's data.
+        let dispatched = if h.get(OP_MODE)? == MODE_BASE {
+            let task = core::ptr::with_exposed_provenance_mut(usize::try_from(task).unwrap_or(0));
+            crate::base_factory::dispatch(h, task, true)?
+        } else {
+            h.get(OP_FACTORY_DISPATCH)? != 0
+        };
+        if !dispatched {
             return Ok(SW_ERR);
         }
     }
@@ -483,18 +491,38 @@ mod tests {
     fn datagrams_until_eagain() {
         let mut s = Script::with(&[
             (OP_ERRNO, libc::EAGAIN.cast_unsigned().into()),
-            (OP_PACKET_DISPATCH, 1),
+            (OP_FACTORY_DISPATCH, 1),
         ])
         .queue(OP_RECVFROM, &[10, 20, u64::MAX]);
         assert_eq!(packet_received(&mut s).unwrap(), SW_OK, "drained");
-        assert_eq!(s.args(OP_PACKET_DISPATCH), vec![10, 20], "each datagram");
+        assert_eq!(s.args(OP_PACKET_TASK), vec![10, 20], "each datagram");
+        assert_eq!(s.called(OP_FACTORY_DISPATCH), 2, "through the factory");
 
         let mut s = Script::with(&[(OP_ERRNO, 5)]).queue(OP_RECVFROM, &[u64::MAX]);
         assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "recvfrom failed");
         assert_eq!(s.called(LOG_RECVFROM), 1, "warned");
 
-        let mut s = Script::with(&[(OP_PACKET_DISPATCH, 0), (OP_RECVFROM, 3)]);
+        let mut s = Script::with(&[(OP_FACTORY_DISPATCH, 0), (OP_RECVFROM, 3)]);
         assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "dispatch failed");
+
+        // Base mode dispatches the task itself; with no worker here, through the bus.
+        let mut task = crate::base_factory::SendData {
+            info: swoole_rs_corebase::DataHead {
+                kind: 1, // SW_SERVER_EVENT_RECV_DGRAM
+                ..swoole_rs_corebase::DataHead::default()
+            },
+            data: core::ptr::null(),
+        };
+        let address = (&raw mut task).expose_provenance() as u64;
+        let mut s = Script::with(&[
+            (OP_ERRNO, libc::EAGAIN.cast_unsigned().into()),
+            (OP_MODE, MODE_BASE),
+            (OP_PACKET_TASK, address),
+        ])
+        .queue(OP_RECVFROM, &[5, u64::MAX]);
+        assert_eq!(packet_received(&mut s).unwrap(), SW_OK);
+        assert_eq!(s.called(OP_FACTORY_DISPATCH), 0, "not the factory");
+        assert_eq!(s.called(crate::ops::OP_BASE_PASS), 1, "the worker's bus");
     }
 
     #[test]
