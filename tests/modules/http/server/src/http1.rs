@@ -25,6 +25,8 @@ use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use crate::client::{Client, USER_AGENT};
 
 pub(super) mod case;
+/// lifecycle.rs: `core-tests/src/server/server.cpp`'s reload, kill and restart TESTs.
+pub(super) mod lifecycle;
 /// schedule.rs: `core-tests/src/server/server.cpp`'s `schedule*` TESTs.
 pub(super) mod schedule;
 pub(super) mod server;

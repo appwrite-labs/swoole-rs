@@ -63,7 +63,7 @@ struct TlsView {
 
 /// The head of `TimerNode`, through `destructor` (native/timer/swoole_timer.h).
 #[repr(C)]
-struct TimerNode {
+pub(super) struct TimerNode {
     id: c_long,
     kind: c_int,
     exec_msec: i64,
@@ -72,7 +72,7 @@ struct TimerNode {
     round: u64,
     removed: bool,
     callback: *const c_void,
-    data: *mut c_void,
+    pub(super) data: *mut c_void,
     destructor: Option<unsafe extern "C" fn(*mut TimerNode)>,
 }
 const _: () = assert!(
@@ -129,20 +129,20 @@ unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
     pub(super) fn make_socket(fd: c_int, fd_type: c_int) -> *mut SocketHead;
     #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_add(
+    pub(super) fn swoole_timer_add(
         ms: c_long,
         persistent: bool,
         callback: unsafe extern "C" fn(*mut c_void, *mut TimerNode),
         data: *mut c_void,
     ) -> *mut TimerNode;
     #[link_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_after(
+    pub(super) fn swoole_timer_after(
         ms: c_long,
         callback: unsafe extern "C" fn(*mut c_void, *mut TimerNode),
         data: *mut c_void,
     ) -> c_long;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut TimerNode) -> bool;
+    pub(super) fn swoole_timer_del(node: *mut TimerNode) -> bool;
     #[link_name = "_ZN6swoole9websocket16pack_close_frameEPNS_6StringEiPKcmh"]
     fn pack_close_frame(
         buffer: *mut CppString,

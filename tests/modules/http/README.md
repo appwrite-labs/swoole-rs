@@ -155,6 +155,22 @@ the `Address::assign` body (`swr_v1_clients_address_assign`).
 | `schedule_9` | `DISPATCH_CO_REQ_LB` (`Worker::coroutine_num`) |
 | `schedule_10` | `DISPATCH_CONCURRENT_LB` (`Worker::concurrency`) |
 
+The TESTs that reload, kill and restart a started Server's workers are
+`server/src/http1/lifecycle.rs`. Upstream's lambdas are `extern "C"` callbacks in the Rust
+slots, and what they captured is a static. `test::counter_*` is a shared anonymous mapping,
+made before the server forks, as core-tests' main makes it from `sw_mem_pool()`. Upstream's
+reload, kill and restart methods are crates/process's `workers::entry` functions, and `add_worker`
+is crates/server's.
+
+| Upstream TEST | What it drives |
+| --- | --- |
+| `reload_all_workers`, `reload_all_workers2` | `SIGUSR2` then `SIGUSR1` to the manager (to the master in `2`) from worker 1; `onBeforeReload`/`onAfterReload` twice each |
+| `kill_user_workers`, `force_kill_all_workers`, `kill_user_workers1` | stopping a server whose user, task or event workers never return, with `max_wait_time` 1 |
+| `create_task_worker_fail` | `create()` refusing coroutine task workers over a message queue (`SW_ERROR_WRONG_OPERATION`) |
+| `reload_single_process`, `reload_no_task_worker` | `reload(true)` in a single-process base server (`SW_ERROR_OPERATION_NOT_SUPPORT`), and `reload(false)` with no task workers |
+| `restart_worker_process` | `restart_worker_process` over a task worker registered under this pid |
+| `reload_all_from_worker_error`, `reload_tasks_from_worker_error` | a reload requested from `onWorkerError`, with upstream's five-second watchdog |
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.

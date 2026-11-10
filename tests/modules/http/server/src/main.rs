@@ -1063,6 +1063,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("http_server", CASES),
     ("server", http1::server::CASES),
     ("server", http1::schedule::CASES),
+    ("server", http1::lifecycle::CASES),
     ("protocol", protocol::CASES),
     ("redis", protocols::REDIS),
     ("mqtt", protocols::MQTT),
