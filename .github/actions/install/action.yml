@@ -19,8 +19,11 @@ runs:
     - uses: ./.github/actions/rustup
     - id: week
       shell: bash
-      run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+        echo "sources=$(cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
     # Weekly key: packages stay current, and a stale index is refreshed by install.sh.
+    # The apt sources' hash keeps one runner image's indexes from another's mirrors.
     # Only main saves (a PR's cache is visible to that PR alone), and any of main's caches
     # from this week holds the base set, so a job with other extras downloads just those.
     # Until main saves the new week's cache, last week's still holds most packages.
@@ -28,11 +31,11 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: .apt-cache
-        key: apt-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.packages }}
+        key: apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.packages }}
         restore-keys: |
-          apt-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-
-          apt-${{ runner.os }}-${{ steps.week.outputs.week }}-
-          apt-${{ runner.os }}-
+          apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-
+          apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-
+          apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-
     # The runner's first mirror, azure.archive.ubuntu.com, throttles some runners to ~40 kB/s
     # for many minutes while archive.ubuntu.com serves the same runner at 25 MB/s (#1522).
     # apt moves down its mirror list on errors, not on slow downloads, so drop Azure.
