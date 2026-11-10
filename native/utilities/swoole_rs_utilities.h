@@ -33,8 +33,6 @@ int32_t swr_v1_utils_wakeup(uint32_t *, int32_t n);
 #endif
 /* The local zone's current offset from UTC, in seconds. */
 long swr_v1_utils_timezone(void);
-/* First c in [p, last), or null. */
-char *swr_v1_utils_strlchr(char *p, const char *last, char c);
 /* Borrowed bytes and independent aligned outputs; returns a substring span, never allocates. */
 int32_t swr_v1_utils_pretty_range(const uint8_t *, size_t, uint8_t strip, size_t *, size_t *);
 /* Logging enum policy, returned strings are immutable static NUL-terminated storage. */

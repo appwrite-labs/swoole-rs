@@ -45,8 +45,6 @@ void swr_v1_os_file_read_content(const swr_v1_os_file_record *owner, void *conte
  * warnings; Rust owns and frees it. A message is
  * a QueueNode: its long type, then the payload. */
 typedef struct swr_v1_os_msg_queue swr_v1_os_msg_queue;
-bool swr_v1_os_msg_queue_push(const swr_v1_os_msg_queue *queue, const void *node, size_t length);
-ssize_t swr_v1_os_msg_queue_pop(const swr_v1_os_msg_queue *queue, void *node, size_t size);
 #ifdef __cplusplus
 }
 static_assert(sizeof(uintptr_t) == sizeof(void *), "opaque token width");
