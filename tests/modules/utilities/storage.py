@@ -56,7 +56,6 @@ def main():
     parser.add_argument('--engine', action='append', required=True)
     parser.add_argument('--build-manifest', type=Path, required=True, help="tools/build_ext.py's manifest of the selected engine")
     parser.add_argument('--archive', type=Path, required=True, help="tools/build_ext.py --native's SDK archive, whose patched tree supplies the selected SDK headers")
-    parser.add_argument('--source-ref', required=True)
     parser.add_argument('--output', type=Path, required=True)
     phase = parser.add_mutually_exclusive_group()
     phase.add_argument('--backtrace', action='store_true', help='Run normal enabled/filter/reset backtrace behavior instead of storage/concurrent reopen')
@@ -181,7 +180,7 @@ def main():
             if not report['google_test']['libraries']:
                 raise ValueError('GoogleTest library identity unavailable')
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
-        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parent, args.source, args.source_ref, ROOT),
+        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parents[1], args.source, PIN),
                                   'selected': dict(flags=hybrid_flags,
                                                    string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
         sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': hybrid_flags}

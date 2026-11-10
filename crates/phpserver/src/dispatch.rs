@@ -12,7 +12,7 @@ use std::{
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -29,8 +29,8 @@ use swoole_rs_zend::{
     class_name, long_zval, message, object_of, php_error, string,
     sys::{
         IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
-        swr_zend_stack_unlimit, zend_fcall_info_cache, zend_string, zend_update_property_long,
-        zval, zval_ptr_dtor,
+        swr_zend_stack_unlimit, zend_fcall_info_cache, zend_update_property_long, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{get_long, set_str},
@@ -136,7 +136,7 @@ pub(crate) fn invoke(
             args.as_mut_ptr(),
             retval,
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     };
@@ -249,8 +249,8 @@ fn prepare_worker(server: view::Server<'_>) {
     bus_uses_zend_strings(message_bus(server));
 }
 
-fn zserv(server: *mut c_void) -> zval {
-    let zserv = php_swoole_server_zval_ptr(server);
+pub(crate) fn zserv() -> zval {
+    let zserv = php_swoole_server_zval_ptr();
     // SAFETY: the server's live object zval; copied without a reference, as
     // upstream's `args[0] = *zserv`.
     unsafe { *zserv }
@@ -279,7 +279,7 @@ fn receive_args(
         props.double(c"dispatch_time", info.time);
         let mut data = undef();
         // SAFETY: a live server and request; `data` receives the payload.
-        unsafe { recv_data(server, &raw mut data, request) };
+        unsafe { recv_data(server.raw(), &raw mut data, request) };
         props.value(c"data", &mut data);
         dtor(&mut data);
         2
@@ -287,7 +287,7 @@ fn receive_args(
         args[1] = long_zval(fd);
         args[2] = long_zval(reactor_id);
         // SAFETY: as above.
-        unsafe { recv_data(server, &raw mut args[3], request) };
+        unsafe { recv_data(server.raw(), &raw mut args[3], request) };
         4
     }
 }
@@ -321,7 +321,7 @@ fn on_connection(
     time: f64,
 ) -> bool {
     let facts = facts(server);
-    let mut args = [zserv(server.raw()), undef(), undef()];
+    let mut args = [zserv(), undef(), undef()];
     let argc = if facts.event_object {
         let props = Props::init(&mut args[1], &DATA[EVENT]);
         props.long(c"fd", fd);
@@ -360,14 +360,14 @@ fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) ->
     if cb.is_null() {
         return false;
     }
-    let mut args = [zserv(server.raw()), long_zval(fd)];
+    let mut args = [zserv(), long_zval(fd)];
     call(cb, &mut args, false, event) == Called::Bailout
 }
 
 /// `php_swoole_server_onPacket`'s call, once the datagram is read.
 fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, time: f64) -> bool {
     let facts = facts(server);
-    let mut args = [zserv(server.raw()), undef(), undef()];
+    let mut args = [zserv(), undef(), undef()];
     let argc = if facts.event_object {
         let props = Props::init(&mut args[1], &DATA[PACKET]);
         props.long(c"server_socket", i64::from(server_fd));
@@ -433,9 +433,9 @@ fn on_pipe_message(
     source_worker_id: i64,
     time: f64,
 ) -> bool {
-    let cb = server_callback(server.raw(), ON_PIPE_MESSAGE);
+    let cb = crate::lifecycle::callback(ON_PIPE_MESSAGE);
     let facts = facts(server);
-    let mut args = [zserv(server.raw()), undef(), undef()];
+    let mut args = [zserv(), undef(), undef()];
     let argc = if facts.event_object {
         let props = Props::init(&mut args[1], &DATA[PIPE_MESSAGE]);
         props.long(c"worker_id", source_worker_id);
@@ -488,10 +488,10 @@ fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
     let Some((event, helper_name, coroutine)) = lifecycle(kind) else {
         return false;
     };
-    let cb = server_callback(server.raw(), kind);
+    let cb = crate::lifecycle::callback(kind);
     let facts = facts(server);
-    let mut args = [zserv(server.raw()), long_zval(worker_id)];
-    let props = Props::server(ServerObject::of(server.raw()));
+    let mut args = [zserv(), long_zval(worker_id)];
+    let props = Props::server(ServerObject::running());
     if matches!(kind, ON_START | ON_MANAGER_START | ON_WORKER_START) {
         props.long(c"master_pid", facts.master_pid);
         props.long(c"manager_pid", facts.manager_pid);
@@ -535,9 +535,9 @@ fn on_worker_error(
     code: i64,
     signal: i64,
 ) -> bool {
-    let cb = server_callback(server.raw(), ON_WORKER_ERROR);
+    let cb = crate::lifecycle::callback(ON_WORKER_ERROR);
     let facts = facts(server);
-    let mut args = [zserv(server.raw()), undef(), undef(), undef(), undef()];
+    let mut args = [zserv(), undef(), undef(), undef(), undef()];
     let argc = if facts.event_object {
         let props = Props::init(&mut args[1], &DATA[STATUS_INFO]);
         props.long(c"worker_id", worker_id);
@@ -744,8 +744,7 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, req: *mut c
 /// `php_swoole_server_onReceive` (crates/phphttp's fallback).
 /// # Safety
 /// `server` is the running server and `request` its `RecvData`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
+pub unsafe fn php_swoole_server_on_receive(
     server: view::Server<'_>,
     request: *mut c_void,
 ) -> c_int {
@@ -760,7 +759,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void) -> c_int {
         return SW_OK;
     }
     let config = server.config();
-    let mut args = [zserv(server.raw()), undef(), undef(), undef()];
+    let mut args = [zserv(), undef(), undef(), undef()];
     let argc = receive_args(server, request, info, config.event_object, &mut args);
     let called = invoke(
         cb,
@@ -880,9 +879,9 @@ extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: *mut DataHead) 
 /// Wake the coroutines `send_yield` parked on a session: resume them when
 /// its output drained, or cancel them when it closed (each leaves the queue
 /// as it wakes).
-fn send_wake(server: view::Server<'_>, session_id: i64, cancel: bool) {
+fn send_wake(session_id: i64, cancel: bool) {
     // Raw handles only: a woken coroutine may bail out across this frame.
-    let waiters = crate::lifecycle::send_waiters(server.raw(), session_id);
+    let waiters = crate::lifecycle::send_waiters(session_id);
     if waiters.is_null() {
         return;
     }
@@ -900,8 +899,7 @@ fn send_wake(server: view::Server<'_>, session_id: i64, cancel: bool) {
 /// `php_swoole_server_onClose` (crates/phphttp's fallback).
 /// # Safety
 /// `server` is the running server and `info` the closed session's.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_on_close(server: view::Server<'_>, info: *mut DataHead) {
+pub unsafe fn php_swoole_server_on_close(server: view::Server<'_>, info: *mut DataHead) {
     close(server, info);
 }
 
@@ -912,7 +910,7 @@ fn close(server: view::Server<'_>, info: *mut DataHead) {
     let session_id = info.fd;
     let config = server.config();
     if config.enable_coroutine && config.send_yield {
-        send_wake(server, session_id, true);
+        send_wake(session_id, true);
     }
     let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
     let Some(conn) = server.by_session(session_id).map(ptr::from_mut) else {
@@ -963,7 +961,7 @@ extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: *mut DataHe
 extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
     let info = head(info);
     if server.config().send_yield {
-        send_wake(server, info.fd, false);
+        send_wake(info.fd, false);
     }
     relay(on_buffer(
         server,
@@ -978,7 +976,7 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: *mut DataH
 extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
     let id = worker_id(worker);
     let config = server.config();
-    let server_object = crate::lifecycle::ServerObject::of(server.raw());
+    let server_object = crate::lifecycle::ServerObject::running();
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
         let index = id - i64::from(config.worker_num) - i64::from(config.task_worker_num);
         let index = usize::try_from(index).unwrap_or(usize::MAX);
@@ -1133,7 +1131,7 @@ fn call_unlimited(
             args.as_mut_ptr(),
             retval,
             false,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     };
@@ -1153,7 +1151,7 @@ extern "C" fn on_dispatch(
     let config = server.config();
     // SAFETY: as above.
     let cache = unsafe { callable::cache(config.private_data_3.cast()) };
-    let zserv = php_swoole_server_zval_ptr(server.raw());
+    let zserv = php_swoole_server_zval_ptr();
     // SAFETY: its live object, copied without a reference as upstream.
     let zserv = unsafe { zserv.read() };
     // SAFETY: null, or the event's live `SendData` (a head and its payload).
@@ -1256,42 +1254,9 @@ pub(crate) unsafe extern "C" fn length_func(
     result
 }
 
-/// `php_swoole_server_send_yield`, for `Server::send`.
-/// # Safety
-/// As `swr_v1_phpserver_send_yield`; `data` is a live string.
-pub(crate) unsafe fn php_swoole_server_send_yield(
-    server: *mut c_void,
-    session_id: c_long,
-    data: *mut zend_string,
-) -> bool {
-    // SAFETY: per the caller.
-    let text = unsafe { swoole_rs_zend::string::bytes(data) };
-    // SAFETY: per the caller; the string outlives the wait.
-    let sent = unsafe {
-        crate::lifecycle::swr_v1_phpserver_send_yield(
-            server,
-            session_id,
-            text.as_ptr().cast(),
-            text.len(),
-        )
-    };
-    relay(sent == 2);
-    sent == 1
-}
-
-/// The server's object zval, for task.rs's events.
-pub(crate) fn server_zval(server: *mut c_void) -> zval {
-    zserv(server)
-}
-
-/// `server_object->get_callback(kind)`: a callable, or null.
-pub(crate) fn server_callback(server: *mut c_void, kind: c_int) -> *mut c_void {
-    crate::lifecycle::callback(server, kind)
-}
-
 /// `*php_swoole_server_zval_ptr(serv) = *zserv`: no reference is taken.
-pub(crate) fn set_server_zval(server: *mut c_void, zserv: *mut zval) {
-    let slot = php_swoole_server_zval_ptr(server);
+pub(crate) fn set_server_zval(zserv: *mut zval) {
+    let slot = php_swoole_server_zval_ptr();
     // SAFETY: the live object zval.
     let value = unsafe { *zserv };
     // SAFETY: the server's instance slot.

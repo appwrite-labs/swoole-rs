@@ -6,7 +6,7 @@ use std::{
     ffi::{CString, c_char, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::sys::zval;
+use swoole_rs_zend::{Owned, Props, Value, sys::zval};
 
 /// `llhttp_t` (`thirdparty/llhttp/llhttp.h`, `llhttp__internal_s`).
 #[repr(C)]
@@ -41,6 +41,17 @@ pub(crate) struct Slot {
     pub(crate) value: zval,
 }
 
+impl Slot {
+    /// Property writes on the slot's object, under its own class; None
+    /// before the context sets the slot.
+    pub(crate) fn props(&self) -> Option<Props<'_>> {
+        // SAFETY: a set slot points at its own `value`, a live object zval.
+        let object = unsafe { Value::from_ptr(self.ptr) }?.object()?;
+        // SAFETY: the context's reference keeps the object live while the slot is borrowed.
+        Some(unsafe { Props::new(std::ptr::null_mut(), object) }.own())
+    }
+}
+
 /// `swoole::http::Request`.
 #[repr(C)]
 pub(crate) struct Request {
@@ -50,7 +61,8 @@ pub(crate) struct Request {
     pub(crate) ext: *const c_char,
     pub(crate) ext_len: u32,
     pub(crate) post_form_urlencoded: u8,
-    pub(crate) zdata: zval,
+    /// The request's bytes, a string once any arrive.
+    pub(crate) zdata: Owned,
     pub(crate) body_at: *const c_char,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
@@ -86,7 +98,7 @@ pub(crate) struct Parse {
     pub(crate) form_data_name: Option<Box<[u8]>>,
     pub(crate) input_name: Option<Box<[u8]>>,
     /// The current upload's `$_FILES` entry (`IS_UNDEF` when there is none).
-    pub(crate) multipart_header: zval,
+    pub(crate) multipart_header: Owned,
     #[expect(
         clippy::box_collection,
         reason = "all zeroes must be valid: a null Box is None"
@@ -134,7 +146,7 @@ pub(crate) struct State {
     pub(crate) detached: u8,
     pub(crate) http2: u8,
     /// The coroutine socket; `IS_NULL` once bound to a server.
-    pub(crate) zsocket: zval,
+    pub(crate) zsocket: Owned,
     /// The HTTP/2 stream, 0 once it is released.
     pub(crate) stream_id: u32,
     /// The `Server` or the coroutine `Socket`.

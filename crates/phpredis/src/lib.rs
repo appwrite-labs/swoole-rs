@@ -31,7 +31,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 use swoole_rs_corebase::log::set_last_error;
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
@@ -40,7 +40,6 @@ use swoole_rs_zend::{
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_callable_warning,
         swr_zend_try_facade_update, swr_zval_copy, zend_class_entry, zend_long, zend_read_property,
-        zval,
     },
 };
 
@@ -74,9 +73,6 @@ type Server = c_void;
 type RecvData = c_void;
 
 unsafe extern "C" {
-    /// `php_swoole_get_recv_data` (crates/phpserver).
-    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
-    fn recv_data(server: *mut Server, data: *mut zval, request: *mut RecvData);
     /// `Server::send` (crates/server).
     #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
     fn server_send(server: *mut Server, fd: zend_long, data: *const c_void, length: u32) -> bool;
@@ -293,7 +289,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
     let fd = unsafe { *request.cast::<zend_long>() };
     let zdata = Owned::default();
     // SAFETY: a live server and request; `zdata` takes the payload string.
-    unsafe { recv_data(server, zdata.as_ptr(), request) };
+    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
     // `php_swoole_get_recv_data` leaves a string.
     let data = zdata.bytes().unwrap_or_default();
     let mut params = OwnedArray::default();
@@ -356,7 +352,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
             args.as_ptr().cast_mut().cast(),
             retval.as_ptr(),
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     }?;

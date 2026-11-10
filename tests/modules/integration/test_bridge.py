@@ -5,7 +5,6 @@ Build the reference and the Cargo extension (tools/build_ext.py) first, then run
 All compilations write only to a temporary directory.
 """
 import argparse
-import json
 import os
 import re
 from pathlib import Path
@@ -17,7 +16,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import MODULES, headers_for  # noqa: E402
+from tools.build_ext import headers_for  # noqa: E402
+from tools.check_migration import MODULES  # noqa: E402
+
+OWNED = ROOT / 'native/swoole-src'
 
 
 def run(command, *, cwd=ROOT, check=True):
@@ -53,7 +55,7 @@ int main(void) {
                     run([str(executable)])
 
     def test_selected_abi_exports(self):
-        # The Cargo build has every module, so it declares every ABI header build_hybrid would.
+        # The Cargo build has every module, so it declares every ABI header the hybrid would.
         headers = [header for header in headers_for(MODULES)
                    # The hook headers rewrite libc calls with function-like macros for the
                    # sources that include them; they declare no ABI and break later headers.
@@ -63,18 +65,16 @@ int main(void) {
         source = ARGS.source
         includes = shlex.split(run([ARGS.php_config, '--includes']).stdout)
         directories = sorted({str(header.parent) for header in headers})
-        # stdext's declarations sit under config.h's SW_STDEXT, which only a build with
-        # crates/ext's stdext feature defines; build_ext.py's manifest names its features.
-        manifest = ARGS.extension.parent / 'build-manifest.json'
-        features = json.loads(manifest.read_text())['features'] if manifest.is_file() else []
-        defines = ['-DSW_STDEXT'] if 'stdext' in features else []
+        # Configure-gated declarations (SW_STDEXT, SW_THREAD, SW_USE_CURL, ...) follow the
+        # config.h the build used, which build_ext.py writes beside swoole.so.
         with tempfile.TemporaryDirectory(prefix='swoole-rs-export-inventory-') as directory:
             inventory = Path(directory) / 'headers.cc'
             inventory.write_text(''.join(f'#include "{header}"\n' for header in headers))
             text = run(shlex.split(os.environ.get('CXX', 'c++')) + [
-                '-E', '-P', '-x', 'c++', *defines, *[f'-I{path}' for path in directories], '-I', str(source),
-                '-I', str(source / 'include'), '-I', str(source / 'ext-src'),
-                '-I', str(source / 'thirdparty'), *includes, str(inventory)]).stdout
+                '-E', '-P', '-x', 'c++', '-include', str(ARGS.extension.parent / 'config.h'), *[f'-I{path}' for path in directories],
+                # crates/ext's order: native/swoole-src's copies ahead of the pin's files.
+                '-I', str(OWNED), '-I', str(source), '-I', str(source / 'ext-src'),
+                '-I', str(OWNED / 'thirdparty'), '-I', str(source / 'thirdparty'), *includes, str(inventory)]).stdout
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
         expected = set(re.findall(r'\b(swr_v[0-9]+_\w+)\s*\(', text))
         self.assertTrue(expected, 'No selected ABI declarations were checked')
@@ -141,7 +141,7 @@ if __name__ == '__main__':
     parser.add_argument('--php-config', default=os.environ.get('PHP_CONFIG', 'php-config'))
     parser.add_argument('--reference', type=Path, default=ROOT / 'target/upstream/src/modules/swoole.so')
     parser.add_argument('--extension', type=Path, default=ROOT / 'target/ext/swoole.so', help='The Cargo-built swoole.so')
-    parser.add_argument('--source', type=Path, default=ROOT / 'target/ext/src', help='The patched tree it was built from')
+    parser.add_argument('--source', type=Path, default=ROOT / 'target/ext/src', help='The pin it was built from')
     parser.add_argument('--archive', type=Path, help='A Zend-free libswoole_rs_ffi.a for the C and C++ consumers')
     parser.add_argument('--startup-only', action='store_true', help='Positive startup/flag gates; the C and C++ consumers remain integration-only')
     ARGS = parser.parse_args()

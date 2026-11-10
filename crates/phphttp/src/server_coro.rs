@@ -20,16 +20,13 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
-use swoole_rs_phpclients::{
-    php_swoole_get_socket, php_swoole_socket_is_closed, php_swoole_socket_set_protocol,
-};
+use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
 use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
-    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, bailout, declare_bool,
-    declare_long, declare_property_null, declare_string, handlers, method_table,
-    string::{self, bytes},
+    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, bailout, declare_bool,
+    declare_long, declare_property_null, declare_string, handlers, method_table, string,
     sys::{
         self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
@@ -197,11 +194,11 @@ impl HttpServer {
     fn context(&self, socket: Socket, zconn: *mut zval) -> *mut Context {
         let context = context::context_new(i64::from(record(socket).sock_fd));
         crate::parse::init_request_parser(context);
-        // SAFETY: the context's live response object.
-        let response = unsafe { value::obj_of(send::state(context).response.zobject.ptr) };
-        // SAFETY: as above; the property takes a copy.
-        unsafe {
-            swoole_rs_zend::update_property(crate::response::entry(), response, c"socket", zconn);
+        // SAFETY: the live connection object.
+        if let Some(zconn) = unsafe { Value::from_ptr(zconn) }
+            && let Some(response) = send::state(context).response.zobject.props()
+        {
+            response.value(c"socket", zconn);
         }
         // SAFETY: a new context and the live connection object.
         unsafe { context::bind(context, ptr::null_mut(), zconn) };
@@ -278,8 +275,8 @@ const EINVAL: zend_long = 22;
 /// The addresses `onAccept` puts in each request's `$server`: the strings
 /// are references the loop releases.
 struct Peer {
-    remote_addr: *mut z::zend_string,
-    server_addr: *mut z::zend_string,
+    remote_addr: ZString,
+    server_addr: ZString,
     remote_port: c_int,
     server_port: c_int,
 }
@@ -287,9 +284,6 @@ struct Peer {
 unsafe extern "C" {
     #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
     fn get_read_buffer(socket: Socket) -> *mut Buffer;
-    /// `php_swoole_create_dir(path, length)` (ext-src/swoole_server.cc).
-    #[link_name = "_Z21php_swoole_create_dirPKcm"]
-    fn create_dir(path: *const c_char, length: usize) -> c_int;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
     /// The HTTP/2 server (crates/phphttp2): a stream's reset, and a
@@ -351,8 +345,8 @@ fn request_data(context: *mut Context, buffer: &mut Buffer, length: usize) {
     // SAFETY: the zend string allocator's string, holding `length` bytes
     // and room for the NUL.
     unsafe { string::truncate(string, length) };
-    // SAFETY: the context's empty `zdata` takes the string.
-    unsafe { value::set_str(&raw mut send::state(context).request.zdata, string) };
+    // SAFETY: the string's one reference moves into `zdata`.
+    send::state(context).request.zdata = Owned::string(unsafe { ZString::from_raw(string) });
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
@@ -604,30 +598,22 @@ const ACCEPT_RETRY_TIME: c_int = 1;
 /// `start`'s `onAccept`: the callable and its cache, which outlive the
 /// accept loop.
 struct Accept {
-    callback: zval,
+    callback: Owned,
     cache: z::zend_fcall_info_cache,
-}
-
-impl Drop for Accept {
-    fn drop(&mut self) {
-        // SAFETY: the callable's name, released once.
-        unsafe { zval_ptr_dtor(&raw mut self.callback) };
-    }
 }
 
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
 fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
-    // SAFETY: plain data, filled below.
+    // SAFETY: plain data (an undefined name), filled below.
     let mut accept: Box<Accept> = Box::new(unsafe { std::mem::zeroed() });
-    // SAFETY: an empty slot takes a new string.
-    unsafe { value::set_str(&raw mut accept.callback, string::copy(b"onAccept")) };
+    accept.callback = Owned::string(ZString::new(b"onAccept"));
     let mut callable = false;
     // SAFETY: the name, `$this`, this method's frame and local outputs; the
     // shim traps what Zend raises.
     bailout::trapped(unsafe {
         z::swr_zend_try_facade_callable_frame(
-            &raw mut accept.callback,
+            accept.callback.as_ptr(),
             call.this(),
             call.frame(),
             0,
@@ -642,12 +628,11 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
     let mut name = ptr::null_mut();
     // SAFETY: as above; the name is a new string.
     bailout::trapped(unsafe {
-        z::swr_zend_try_facade_callable_name(&raw mut accept.callback, call.this(), &raw mut name)
+        z::swr_zend_try_facade_callable_name(accept.callback.as_ptr(), call.this(), &raw mut name)
     })?;
-    // SAFETY: a live string.
-    let text = String::from_utf8_lossy(nul_terminated(unsafe { bytes(name) })).into_owned();
-    // SAFETY: the name, released once.
-    unsafe { z::swr_zend_string_release(name) };
+    // SAFETY: the new string's reference.
+    let name = unsafe { ZString::from_raw(name) };
+    let text = String::from_utf8_lossy(nul_terminated(name.bytes())).into_owned();
     host::set_last_error(host::PHP_FATAL_ERROR);
     let message = CString::new(format!("function '{text}' is not callable")).unwrap_or_default();
     // SAFETY: a fatal error from a method.
@@ -798,8 +783,7 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
                 return Err(bailout::Bailout);
             }
             let text = dir.bytes();
-            // SAFETY: the directory's bytes.
-            let created = unsafe { create_dir(text.as_ptr().cast(), text.len()) } >= 0;
+            let created = swoole_rs_phpserver::php_swoole_create_dir(text);
             if created {
                 text_setting(server, kind, Some(text));
             }
@@ -854,10 +838,10 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
     if conn.is_null() {
         return 0;
     }
-    // SAFETY: plain data, filled below.
-    let mut zsocket = unsafe { std::mem::zeroed::<zval>() };
+    // The loop's reference to the connection object.
+    let zsocket = Owned::default();
     // SAFETY: an empty slot and the new connection.
-    if unsafe { swoole_rs_phpclients::init_socket_object(&raw mut zsocket, conn) }.is_err() {
+    if unsafe { swoole_rs_phpclients::init_socket_object(zsocket.as_ptr(), conn) }.is_err() {
         start.bailed.set(true);
         return 0;
     }
@@ -869,21 +853,22 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
     // name; the shim traps what the new coroutine raises.
     let bailed = bailout::trapped(unsafe {
         z::swr_zend_try_facade_coroutine(
-            Some(swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create),
+            Some(swoole_rs_phpcoroutines::create_coroutine),
             &raw mut accept.cache,
             1,
-            &raw mut zsocket,
-            &raw mut accept.callback,
+            zsocket.as_ptr(),
+            accept.callback.as_ptr(),
             &raw mut cid,
         )
     })
     .is_err();
     start.bailed.set(bailed);
     if bailed {
+        // As upstream, whose bailout jumps past the release: start() raises
+        // it and the request's shutdown frees the object.
+        let _kept = zsocket.into_zval();
         return 0;
     }
-    // SAFETY: the loop's reference to the connection object.
-    unsafe { zval_ptr_dtor(&raw mut zsocket) };
     cid
 }
 
@@ -1019,7 +1004,7 @@ unsafe extern "C" fn collect(
     out: *mut c_void,
 ) {
     // SAFETY: a socket object in the server's array.
-    let socket = unsafe { php_swoole_get_socket(connection) };
+    let socket = unsafe { get_socket(connection) };
     if network(socket).recv_wait != 0 {
         // SAFETY: `shutdown`'s vector, borrowed for the scan.
         unsafe { (*out.cast::<Vec<(z::zend_ulong, Socket)>>()).push((index, socket)) };
@@ -1087,7 +1072,7 @@ fn on_accept(call: &Call) {
     };
     let server = server(server_of(call));
     // SAFETY: a coroutine socket object.
-    let socket = unsafe { php_swoole_get_socket(zconn) };
+    let socket = unsafe { get_socket(zconn) };
     // The request allocator first.
     record(socket).buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
     // SAFETY: a live socket.
@@ -1107,14 +1092,14 @@ fn on_accept(call: &Call) {
     // SAFETY: as above.
     unsafe { z::zend_hash_index_add(server.clients(), cid.cast_unsigned(), zconn) };
     let (remote_addr, remote_port) = address(socket);
-    let remote_addr = string::copy(remote_addr.to_bytes());
+    let remote_addr = ZString::new(remote_addr.to_bytes());
     // The network socket's address becomes the local one.
     // SAFETY: a live socket.
     unsafe { co::getsockname(socket) };
     let (server_addr, _) = address(socket);
     let peer = Peer {
         remote_addr,
-        server_addr: string::copy(server_addr.to_bytes()),
+        server_addr: ZString::new(server_addr.to_bytes()),
         remote_port,
         server_port: address(server.socket).1,
     };
@@ -1125,10 +1110,7 @@ fn on_accept(call: &Call) {
         buffer,
     };
     let result = serve(&conn, &peer);
-    // SAFETY: the address strings made above.
-    unsafe { z::swr_zend_string_release(peer.remote_addr) };
-    // SAFETY: as above.
-    unsafe { z::swr_zend_string_release(peer.server_addr) };
+    drop(peer);
     if result.is_ok() {
         // SAFETY: the server's live array.
         unsafe { z::zend_hash_index_del(server.clients(), cid.cast_unsigned()) };
@@ -1140,15 +1122,18 @@ fn on_accept(call: &Call) {
 fn add_peer(context: *mut Context, peer: &Peer) {
     // SAFETY: the request's `server` array.
     let table = unsafe { value::table(send::state(context).request.zserver.ptr) };
-    // SAFETY: the loop's address string, referenced once more by the array.
-    crate::server::add(table, Key::RemoteAddr, unsafe {
-        z::swr_zend_string_copy(peer.remote_addr)
-    });
+    // The array takes a reference of its own to each of the loop's strings.
+    crate::server::add(
+        table,
+        Key::RemoteAddr,
+        peer.remote_addr.to_owned().into_raw(),
+    );
     crate::server::add_long(table, Key::RemotePort, peer.remote_port.into());
-    // SAFETY: as above.
-    crate::server::add(table, Key::ServerAddr, unsafe {
-        z::swr_zend_string_copy(peer.server_addr)
-    });
+    crate::server::add(
+        table,
+        Key::ServerAddr,
+        peer.server_addr.to_owned().into_raw(),
+    );
     crate::server::add_long(table, Key::ServerPort, peer.server_port.into());
 }
 
@@ -1291,7 +1276,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         context = ptr::null_mut();
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
-        if !running || !keep_alive || unsafe { php_swoole_socket_is_closed(conn.zconn) } {
+        if !running || !keep_alive || unsafe { is_socket_closed(conn.zconn) } {
             break;
         }
         header_completed = false;

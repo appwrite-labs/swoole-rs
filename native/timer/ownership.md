@@ -1,7 +1,6 @@
 # M03 timer ownership
 
-Frozen queue ABI: `docs/timer-abi-v1.md`. Module-local clock/backend helpers:
-`swoole_rs_timer_runtime.h`.
+Frozen queue ABI: `docs/timer-abi-v1.md`.
 
 ## Queue and timer
 
@@ -39,7 +38,7 @@ close/complete/end/drain path. Active self-deletion is still rejected. Tested by
 
 ## Clock and backend helpers
 
-Stateless helpers in `crates/timer/src/runtime.rs`.
+Stateless helpers in `crates/timer/src/runtime.rs`, called from Rust only (`owner.rs`).
 
 | Function | Caller |
 | --- | --- |

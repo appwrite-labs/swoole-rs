@@ -22,8 +22,7 @@ Mature third-party libraries (HTTP parsers, TLS, compression, database
 clients) are not rewritten unless doing so removes a dependency or fixes a
 demonstrated problem.
 
-See [migration modules](migration-modules.md), [ABI v1](abi-v1.md) and
-[hybrid build](hybrid-build.md).
+See [migration modules](migration-modules.md) and [ABI v1](abi-v1.md).
 
 ## Graduation
 
@@ -38,11 +37,11 @@ A module graduates when:
    micro-benchmarks and timings are reported but don't gate.
 4. It has no open `p0`/`p1` `kind:bug` issues.
 
-Every Rust build applies every module's patches, sets its feature bit and links
-its crate; no module has a configure switch, a `SWOOLE_RS_<MODULE>` guard or a
+Every build links every module's crate and owned C and C++ in `native/`;
+no module has a configure switch, a `SWOOLE_RS_<MODULE>` guard or a
 cargo feature. A graduated module is listed in `GRADUATED` in
-`tools/build_hybrid.py`, and `dev.py` runs its gates on every run. Reference builds (`tools/build_upstream.py`,
-`build_hybrid.py --backend upstream`) stay pristine: they are the oracle that
+`tools/check_migration.py`, and `dev.py` runs its gates on every run. Reference builds (`tools/build_upstream.py`)
+stay pristine: they are the oracle that
 differential tests compare against, not a fallback.
 
 Graduated: base64, buffer, corebase, crc32, error, framing, http, protocols, websocket, timer.
@@ -95,11 +94,9 @@ A use that must stay (output order PHP can see, a cold path) keeps the `expect`.
 
 ## Roadmap
 
-Progress is measured by the upstream first-party lines (`src/`, `ext-src/`,
-`include/`, excluding `thirdparty/` and the generated embedded library) that the
-all-modules patch set deletes (`tools/badges.py`). A pinned line a patch moves to
-another file is still compiled, so it counts as kept where it now lives. The
-migration is done when nothing remains apart from declared third-party code.
+`swoole.so` compiles no upstream first-party code (`src/`, `ext-src/`, `include/`):
+`crates/ext` builds Rust, `native/` and the pin's bundled `thirdparty/` C, with the
+thirdparty files the hybrid changed owned under `native/swoole-src/`.
 
 Phases 1 to 3 and 5 are done: green baseline ([#20](https://github.com/appwrite-labs/swoole-rs/issues/20)),
 wider oracle ([#58](https://github.com/appwrite-labs/swoole-rs/issues/58)), graduate and
@@ -115,8 +112,7 @@ delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)) and the Z
 
 ### Upstream files still in the build
 
-None, since #959 (2026-11-08): `tools/badges.py --source target/upstream/src --output
-target/badges --kept` lists no upstream first-party file. The last two headers left as owned
+None, since #959 (2026-11-08). The last two headers left as owned
 copies trimmed to what C++ still uses: `include/swoole_server.h` in #1465
 (`native/process/swoole_server.h`) and `include/swoole.h` in #959 (`native/corebase/swoole.h`).
 

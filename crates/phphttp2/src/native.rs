@@ -4,12 +4,9 @@
 use libc::{c_char, c_int, c_void, size_t, ssize_t};
 use std::ptr;
 use swoole_rs_phpruntime::co;
-use swoole_rs_zend::{
-    set_object,
-    sys::{
-        swr_zend_ecalloc, swr_zend_efree, swr_zend_emalloc, swr_zend_erealloc, zend_object,
-        zend_string, zval,
-    },
+use swoole_rs_zend::sys::{
+    swr_zend_ecalloc, swr_zend_efree, swr_zend_emalloc, swr_zend_erealloc, zend_object,
+    zend_string, zval,
 };
 
 /// A `SocketImpl *`.
@@ -100,20 +97,12 @@ unsafe extern "C" {
     ) -> ssize_t;
     fn nghttp2_hd_inflate_end_headers(inflater: *mut c_void) -> c_int;
     fn nghttp2_strerror(code: c_int) -> *const c_char;
-    /// crates/phpclients' Coroutine\Socket.
-    fn swr_v1_phpclients_socket_create(kind: c_int) -> *mut zend_object;
-    fn swr_v1_phpclients_socket_pointer(value: *const zval) -> *mut c_void;
+    /// crates/phpclients' Coroutine\Socket settings.
     fn swr_v1_phpclients_socket_settings(
         socket: *mut c_void,
         settings: *const zval,
         which: c_int,
     ) -> bool;
-    fn swr_v1_phpclients_parse_set_cookies(
-        at: *const c_char,
-        length: size_t,
-        cookies: *mut zval,
-        set_cookie_headers: *mut zval,
-    );
 }
 
 /// `php_swoole_create_socket(convert_to_type(host))`: the socket object, its
@@ -133,19 +122,14 @@ pub(crate) unsafe fn swoole_http2_client_coro_create_socket(
     let name = swoole_rs_zend::string::copy(name.get(kind.erase..).unwrap_or_default());
     // SAFETY: a writable out-parameter.
     unsafe { *converted = name };
-    // SAFETY: crates/phpclients' constructor.
-    let object = unsafe { swr_v1_phpclients_socket_create(kind.socket_type) };
+    let object = swoole_rs_phpclients::create_socket(kind.socket_type);
     if object.is_null() {
         // SAFETY: as above.
         unsafe { *error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) };
         return ptr::null_mut();
     }
-    // SAFETY: an all-zero zval is IS_UNDEF; set_object overwrites it.
-    let mut zsocket: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: a borrowed view of the new object.
-    unsafe { set_object(&raw mut zsocket, object) };
-    // SAFETY: a socket object.
-    let pointer = unsafe { swr_v1_phpclients_socket_pointer(&raw const zsocket) };
+    // SAFETY: the new object is a socket object.
+    let pointer = unsafe { swoole_rs_phpclients::socket_of(object) };
     // SAFETY: a writable out-parameter.
     unsafe { *socket = pointer };
     object
@@ -354,17 +338,6 @@ pub(crate) unsafe fn swoole_http2_client_coro_inflate_end(inflater: *mut c_void)
 pub(crate) unsafe fn swoole_http2_client_coro_strerror(code: c_int) -> *const c_char {
     // SAFETY: nghttp2's static text.
     unsafe { nghttp2_strerror(code) }
-}
-
-/// `php_swoole_http_parse_set_cookies`.
-pub(crate) unsafe fn swoole_http2_client_coro_set_cookies(
-    at: *const c_char,
-    length: size_t,
-    cookies: *mut zval,
-    set_cookie_headers: *mut zval,
-) {
-    // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_parse_set_cookies(at, length, cookies, set_cookie_headers) };
 }
 
 /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.

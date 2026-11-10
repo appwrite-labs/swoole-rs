@@ -326,11 +326,11 @@ pub(crate) fn set_preemptive(enable: bool) {
     CONFIG.with(|c| c.preemptive.set(enable));
 }
 
-/// `PHPCoroutine::create` for C++ callers.
+/// `PHPCoroutine::create`, the coroutine leaf the callers of
+/// `swoole_rs_phphelpers::function_call` and the zend-sys shims pass (C ABI).
 /// # Safety
 /// As `zend_call_function`'s callable; `bailout` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_create(
+pub unsafe extern "C" fn create_coroutine(
     fcc: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
@@ -341,4 +341,35 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_create(
     // SAFETY: per the caller.
     unsafe { bailout.write(u8::from(created.is_err())) };
     created.unwrap_or(ERR_INVALID)
+}
+
+/// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`
+/// (the bundled curl's `zend::Function::call`): `function_call` in a
+/// coroutine, warning as `sw_callable_warning`, with a bailout re-raised.
+/// # Safety
+/// As `function_call`, from a frame that owns nothing that needs a drop.
+#[cfg(not(test))]
+#[unsafe(export_name = "_ZN4zend8function4callEP22_zend_fcall_info_cachejP12_zval_structS4_b")]
+unsafe extern "C" fn zend_function_call(
+    cache: *mut zend_fcall_info_cache,
+    argc: u32,
+    argv: *mut zval,
+    retval: *mut zval,
+    coroutine: bool,
+) -> bool {
+    // SAFETY: per the caller.
+    let result = unsafe {
+        swoole_rs_phphelpers::function_call(
+            cache,
+            argc,
+            argv,
+            retval,
+            coroutine,
+            create_coroutine,
+            swoole_rs_zend::sys::swr_zend_callable_warning,
+        )
+    };
+    let called = matches!(result, Ok(true));
+    bailout::raise(result.map(drop));
+    called
 }

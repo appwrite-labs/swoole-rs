@@ -18,14 +18,14 @@ use std::{
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Props, Value, ZStr, declare_long, declare_property_null, handlers,
-    init_object, push_string, set_key,
+    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, declare_long, declare_property_null,
+    handlers, init_object, push_string, set_key,
     sys::{
         IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
         zend_string,
     },
     type_of,
-    value::{self, obj_of},
+    value::obj_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -66,7 +66,6 @@ unsafe extern "C" {
     ) -> bool;
     static swoole_server_ce: *mut zend_class_entry;
     static swoole_socket_coro_ce: *mut zend_class_entry;
-    fn swr_v1_phpclients_socket_pointer(value: *const z::zval) -> *mut c_void;
 }
 
 /// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
@@ -703,12 +702,10 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
 
 /// `Context::set_header(key, value, false)` of a string value. A warning's
 /// bailout waits for the caller's last step.
-pub fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) -> bool {
-    let mut value = websocket::zval_of(swoole_rs_zend::string::copy(value));
-    let set = set_header(ctx, key, &raw mut value, false);
-    // SAFETY: this frame's reference; the header array holds its own.
-    unsafe { z::zval_ptr_dtor(&raw mut value) };
-    set
+pub(crate) fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) {
+    // This frame's reference; the header array takes its own.
+    let value = Owned::string(ZString::new(value));
+    set_header(ctx, key, value.as_ptr(), false);
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -770,7 +767,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             socket = object.as_ptr();
             // SAFETY: a `Swoole\Coroutine\Socket`.
             fd = zend_long::from(websocket::sock_fd(unsafe {
-                swr_v1_phpclients_socket_pointer(socket)
+                swoole_rs_phpclients::get_socket(socket)
             }));
         } else {
             return refuse(
@@ -833,11 +830,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     if let Some(socket) = unsafe { Value::from_ptr(socket) } {
         props.value(c"socket", socket);
     }
-    if paired {
-        // SAFETY: the request object, which declares `fd`.
-        let request = unsafe { obj_of(send::state(ctx).request.zobject.ptr) };
-        // SAFETY: as above.
-        unsafe { value::update_long(crate::request::entry(), request, c"fd", fd) };
+    if paired && let Some(request) = send::state(ctx).request.zobject.props() {
+        request.long(c"fd", fd);
     }
 }
 

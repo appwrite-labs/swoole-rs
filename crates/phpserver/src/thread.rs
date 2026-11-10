@@ -172,8 +172,7 @@ fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
         return Ok(None);
     }
     let mut result = crate::dispatch::undef();
-    // SAFETY: all-zero is an empty call (no object, no arguments).
-    let mut fci: zend_fcall_info = unsafe { std::mem::zeroed() };
+    let mut fci = swoole_rs_zend::EMPTY_FCI;
     fci.size = size_of::<zend_fcall_info>();
     fci.function_name = callable;
     fci.retval = &raw mut result;

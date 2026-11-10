@@ -17,13 +17,12 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Class, Object, bailout, init_object,
+    Class, Object, Owned, Value, init_object,
     sys::{
-        IS_NULL, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree,
-        swr_zend_http_property_offset, swr_zend_string_release, zend_class_entry, zend_object,
-        zend_object_handlers, zend_string, zval, zval_ptr_dtor,
+        ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset, zend_class_entry,
+        zend_object, zend_object_handlers, zend_string, zval,
     },
-    type_of, unset_property_deny, value,
+    unset_property_deny,
     value::{obj_of, set_long},
 };
 
@@ -136,12 +135,6 @@ pub(crate) extern "C" fn context_new(fd: i64) -> *mut Context {
     ctx
 }
 
-unsafe extern "C" {
-    /// crates/phpclients' `php_swoole_socket_is_closed`.
-    #[link_name = "_Z27php_swoole_socket_is_closedPK12_zval_struct"]
-    fn php_swoole_socket_is_closed(socket: *const zval) -> bool;
-}
-
 /// `new Context()`: a value-initialised context, which
 /// `free` releases.
 #[must_use]
@@ -185,8 +178,7 @@ pub(crate) fn server(state: &State) -> view::Server<'_> {
 
 /// `Context::is_co_socket`: bound to a coroutine socket rather than a server.
 pub(crate) fn co_socket(state: &State) -> bool {
-    // SAFETY: the context's own zval.
-    unsafe { type_of(&raw const state.zsocket) != IS_NULL }
+    !state.zsocket.is_null()
 }
 
 /// `ctx->send`: the server's send to the session, or the coroutine socket's.
@@ -211,17 +203,6 @@ pub(crate) fn send_raw(ctx: *mut Context, data: *const c_char, length: usize) ->
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
 const OUTPUT_SEND_YIELD: c_int = 1010;
 
-unsafe extern "C" {
-    /// crates/phpserver's wait for the session's buffer to drain, then send:
-    /// 0 false, 1 true, 2 bailed out.
-    fn swr_v1_phpserver_send_yield(
-        server: *mut c_void,
-        session_id: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> c_int;
-}
-
 /// `Server::send` to `fd`, waiting in a coroutine while the socket's buffer
 /// is full. A bailout while waiting is left for the handler to raise.
 /// # Safety
@@ -242,14 +223,13 @@ pub(crate) unsafe fn server_send(
         return sent;
     }
     // SAFETY: per the caller.
-    match unsafe { swr_v1_phpserver_send_yield(server, fd, data, length) } {
-        1 => true,
-        2 => {
-            bailout::defer(Err(bailout::Bailout));
-            false
-        }
-        _ => false,
-    }
+    let server = unsafe { view::Server::from_raw(server) };
+    // SAFETY: per the caller, live while the coroutine waits.
+    let data = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    swoole_rs_phpserver::php_swoole_server_send_yield(server, fd, data).unwrap_or_else(|bailed| {
+        bailed.defer();
+        false
+    })
 }
 
 /// `ctx->sendfile`.
@@ -310,32 +290,14 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
 pub(crate) unsafe fn bind(ctx: *mut Context, server: *mut c_void, socket: *mut zval) {
     let state = send::state(ctx);
     if server.is_null() {
-        // SAFETY: per the caller; the context takes a reference.
-        unsafe { copy_zval(&raw mut state.zsocket, socket) };
         // SAFETY: per the caller.
-        state.private_data = unsafe { swoole_rs_phpclients::php_swoole_get_socket(socket) };
+        state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket) };
+        // SAFETY: per the caller; the context takes a reference.
+        state.zsocket = unsafe { Value::from_ptr(socket) }.map_or_else(Owned::default, Value::copy);
     } else {
         state.private_data = server;
-        // SAFETY: the context's own zval; a server's context holds no socket.
-        unsafe { set_null(&raw mut state.zsocket) };
-    }
-}
-
-/// `ZVAL_COPY`.
-/// # Safety
-/// `target` is writable and `source` live.
-unsafe fn copy_zval(target: *mut zval, source: *const zval) {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_zend::sys::swr_zval_copy(target, source) };
-}
-
-/// `ZVAL_NULL`.
-/// # Safety
-/// `target` is writable and holds nothing to release.
-unsafe fn set_null(target: *mut zval) {
-    // SAFETY: per the caller; the type carries no value.
-    unsafe {
-        (*target).u1 = swoole_rs_zend::sys::_zval_struct__bindgen_ty_1 { type_info: IS_NULL };
+        // A server's context holds no socket.
+        state.zsocket = Owned::null();
     }
 }
 
@@ -356,8 +318,7 @@ pub(crate) unsafe fn copy_settings(ctx: *mut Context, from: *const Context) {
     state.compression_types.clone_from(&from.compression_types);
     state.upload_tmp_dir.clone_from(&from.upload_tmp_dir);
     state.websocket_settings = from.websocket_settings;
-    // SAFETY: the copy holds one more reference to the socket (if any).
-    unsafe { copy_zval(&raw mut state.zsocket, &raw const from.zsocket) };
+    state.zsocket = from.zsocket.copy();
     state.private_data = from.private_data;
     state.before_request = from.before_request;
     state.after_response = from.after_response;
@@ -427,7 +388,7 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
     }
     if co_socket(state) {
         // SAFETY: the context's live socket zval.
-        return !unsafe { php_swoole_socket_is_closed(&raw const state.zsocket) };
+        return !unsafe { swoole_rs_phpclients::is_socket_closed(state.zsocket.as_ptr()) };
     }
     crate::context::server(state)
         .by_session(state.fd)
@@ -450,25 +411,14 @@ pub(crate) unsafe fn free(ctx: *mut Context) {
         // SAFETY: the path the parser copied into request memory.
         unsafe { swr_zend_efree(state.request.path.cast()) };
     }
-    // SAFETY: the context's own zval.
-    if unsafe { type_of(&raw const state.request.zdata) } == IS_STRING {
-        // SAFETY: a string zval.
-        let data = unsafe { value::str_of(&raw const state.request.zdata) };
-        // SAFETY: the received data the context holds.
-        unsafe { swr_zend_string_release(data) };
-    }
     if !state.response.reason.is_null() {
         // SAFETY: the reason `status()` copied into request memory.
         unsafe { swr_zend_efree(state.response.reason.cast()) };
     }
     // SAFETY: a live context.
     unsafe { parse::parse_free(ctx) };
-    let state = send::state(ctx);
-    if co_socket(state) {
-        // SAFETY: the context's reference to its socket.
-        unsafe { zval_ptr_dtor(&raw mut state.zsocket) };
-    }
-    // SAFETY: `alloc`'s, which nothing references any more.
+    // SAFETY: `alloc`'s, which nothing references any more; the drop
+    // releases the request's data, the socket and any unfinished upload.
     drop(unsafe { Box::from_raw(ctx.cast::<State>()) });
 }
 
@@ -494,8 +444,9 @@ mod tests {
 
     #[test]
     fn a_coroutine_servers_types_answer_without_the_server() {
-        // A value-initialised context: no socket bound, no server.
-        let mut state: State = unsafe { std::mem::zeroed() };
+        // A value-initialised context: no socket bound, no server. Not
+        // dropped: releasing its zvals needs Zend.
+        let mut state = std::mem::ManuallyDrop::new(unsafe { std::mem::zeroed::<State>() });
         assert!(!compression_type(&state, None));
         assert_eq!(*upload_tmp_dir(&state), *c"/tmp");
         state.compression_types = Some(Rc::new(HashSet::from([b"text/html".to_vec().into()])));

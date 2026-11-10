@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """The actual ABI export gate must reject missing newer-version ABI exports."""
 import importlib.util
-import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -14,11 +13,10 @@ spec.loader.exec_module(bridge)
 
 
 class SelectedExports(unittest.TestCase):
-    def check(self, symbols, conditional=False, features=None):
+    def check(self, symbols, conditional=False, config=''):
         with tempfile.TemporaryDirectory() as folder:
             build = Path(folder)
-            if features is not None:
-                (build / 'build-manifest.json').write_text(json.dumps({'features': features}))
+            (build / 'config.h').write_text(config)
             header = build / 'native/http/swoole_rs_http.h'
             header.parent.mkdir(parents=True)
             content = b'''uint32_t swr_v1_http_plan(void);
@@ -28,7 +26,7 @@ void *swr_v2_http_directory_new(void);
 '''
             if conditional:
                 content += b"\n#ifdef __linux__\nvoid swr_v3_linux_backend(void);\n#else\nvoid swr_v3_other_backend(void);\n#endif\n"
-            content += b"#ifdef SW_STDEXT\nvoid swr_v1_phpstdext_minit(void);\n#endif\n"
+            content += b"#ifdef SW_THREAD\nvoid swr_v1_phplocks_thread_atomic_minit(void);\n#endif\n"
             header.write_bytes(content)
             real_run = bridge.run
             def command(command, **kwargs):
@@ -58,12 +56,12 @@ void *swr_v2_http_directory_new(void);
         with self.assertRaisesRegex(AssertionError, 'swr_v3_'):
             self.check('T swr_v1_http_plan\nT swr_v2_http_directory_new\n', True)
 
-    def test_stdext_exports_are_required_of_a_stdext_build(self):
+    def test_configure_gated_exports_follow_the_builds_config_h(self):
         exports = '0000 T swr_v1_http_plan\n0001 T swr_v2_http_directory_new\n'
-        self.check(exports, features=['php'])
-        with self.assertRaisesRegex(AssertionError, 'swr_v1_phpstdext_minit'):
-            self.check(exports, features=['php', 'stdext'])
-        self.check(exports + 'T swr_v1_phpstdext_minit\n', features=['php', 'stdext'])
+        self.check(exports)
+        with self.assertRaisesRegex(AssertionError, 'swr_v1_phplocks_thread_atomic_minit'):
+            self.check(exports, config='#define SW_THREAD 1\n')
+        self.check(exports + 'T swr_v1_phplocks_thread_atomic_minit\n', config='#define SW_THREAD 1\n')
 
     def test_apple_symbol_prefix(self):
         self.check('0000 T _swr_v1_http_plan\n0001 T _swr_v2_http_directory_new\n')

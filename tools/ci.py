@@ -4,12 +4,15 @@
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main); a run
                              replaced by a newer push to main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
-  ci.py next                 the claimable issues in claim order (exit 2 when there are none)
+  ci.py next                 the claimable issues in claim order (exit 2 when there are none),
+                             without those whose title says they need workflow scope when gh's
+                             token lacks it
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
                              whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), oldest first (exit 2 when there are none)
-  ci.py phpt-baseline        `RUN SHA` of main's latest completed merge-tier run whose upstream
-                             PHPT shards all passed, the PR tier's upstream results (exit 2: none)
+  ci.py phpt-baseline [--variant NAME] [--php VERSION]
+                             `RUN SHA` of main's newest merge-tier run whose upstream PHPT reports
+                             still stand for upstream at HEAD, so it needn't run (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
                              didn't exist, in main's latest completed merge-tier run (exit 1 if any)
 
@@ -261,15 +264,19 @@ def phase_changes(result):
 SEARCH_TERMS = 5  # per failure: the search API allows 30 queries a minute
 
 
-def filed(failure):
-    """Open issues mentioning a new failure's phase, job or (for the PHPT gate) regressed tests,
-    so Red main's p0 is filed once; None when the search fails."""
+def search_terms(failure):
+    """What identifies a new failure in an issue: its phase, its job or the PHPT gate's regressed tests."""
     job = re.fullmatch(r'(.+) job(?: \((.+)\))?', failure)
-    terms = [test.removeprefix('tests/') for test in job.group(2).split(', ')] if job and job.group(2) else [
+    return [test.removeprefix('tests/') for test in job.group(2).split(', ')] if job and job.group(2) else [
         job.group(1) if job else failure]
+
+
+def filed(failure):
+    """Open issues mentioning the first SEARCH_TERMS of a new failure's search_terms, so Red main's
+    p0 is filed once; None when the search fails."""
     found = []
     try:
-        for term in terms[:SEARCH_TERMS]:
+        for term in search_terms(failure)[:SEARCH_TERMS]:
             query = urllib.parse.quote(f'"{term}" is:issue is:open repo:', safe=':')
             found += [number for number in json.loads(gh('api', f'search/issues?q={query}{{owner}}/{{repo}}',
                                                          '--jq', '[.items[].number]')) if number not in found]
@@ -313,9 +320,11 @@ def report(result, as_json):
     if 'previous_run' in result:
         issues = result.get('issues', {})
         def known(name):
-            numbers = issues.get(name, [])
+            numbers, terms = issues.get(name, []), len(search_terms(name))
+            # A gate failure with more regressed tests than were searched may have an issue naming a later one.
+            partial = f'; searched {SEARCH_TERMS} of {terms} tests' if terms > SEARCH_TERMS else ''
             return (' (issue search failed)' if numbers is None else
-                    f" (open: {', '.join(f'#{n}' for n in numbers)})" if numbers else ' (no open issue)')
+                    f" (open: {', '.join(f'#{n}' for n in numbers)}{partial})" if numbers else f' (no open issue{partial})')
         print(f"  since {result['previous_run']}: new failures: "
               f"{', '.join(name + known(name) for name in result['new_failures']) or 'none'}; "
               f"fixed: {', '.join(result['fixed']) or 'none'}")
@@ -328,6 +337,21 @@ def report(result, as_json):
         report(result['last_completed'], False)
 
 
+WORKFLOW_SCOPE = re.compile(r'needs (?:a token with )?workflow scope')
+
+
+def workflow_scope():
+    """False only when gh's token is a classic OAuth token without the workflow scope; others
+    (fine-grained, app) don't list scopes."""
+    for line in gh('api', '-i', 'user').splitlines():
+        name, _, value = line.partition(':')
+        if name.lower() == 'x-oauth-scopes':
+            return 'workflow' in {scope.strip() for scope in value.split(',')}
+        if not line.strip():
+            break
+    return True
+
+
 def claimable():
     """Open, ready, unblocked issues without needs:decision: p0, p1, p2, then unprioritised,
     oldest first within each (AGENTS.md's claim order)."""
@@ -338,6 +362,13 @@ def claimable():
         '--jq', '.[]').splitlines())
         if 'pull_request' not in issue and not issue.get('issue_dependencies_summary', {}).get('blocked_by')
         and not any(label['name'] == 'needs:decision' for label in issue['labels'])]
+    # Editing .github/workflows/ needs a token with workflow scope; such issues say so in their title.
+    if not workflow_scope():
+        workflows = [issue for issue in issues if WORKFLOW_SCOPE.search(issue['title'])]
+        if workflows:
+            say(f"hiding {len(workflows)} issues that need a workflow-scoped token: "
+                + ', '.join(f"#{issue['number']}" for issue in workflows))
+        issues = [issue for issue in issues if issue not in workflows]
     def priority(issue):
         names = {label['name'] for label in issue['labels']}
         return next((rank for rank, name in enumerate(('p0', 'p1', 'p2')) if name in names), 3)
@@ -346,17 +377,58 @@ def claimable():
             for issue in sorted(issues, key=lambda issue: (priority(issue), issue['created_at']))]
 
 
-def phpt_baseline():
-    """(run, head sha) of main's newest completed merge-tier run whose `phpt (n, upstream)` shards
-    all succeeded: its phpt-upstream-* reports and phpt-engines' upstream.so stand in for running
-    upstream on every PR."""
-    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
-                         '--limit', '30', '--json', 'databaseId,headSha'))
-    for run in runs:
-        shards = [conclusion for name, conclusion in job_conclusions(run['databaseId']).items()
-                  if re.fullmatch(r'(phpt / )?phpt \(\d+, upstream\)', name)]
-        if shards and all(conclusion == 'success' for conclusion in shards):
-            return run['databaseId'], run['headSha']
+# Upstream's PHPT results move only with what they depend on: the pin and its build, how the tests
+# are listed and run, and the packages around them (and the PHP release: --php). A baseline's
+# upstream report stands in for running upstream only while these paths are as at HEAD.
+UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expectations.py', 'corpus/upstream/run.py',
+                'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install')
+# Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that made
+# the reports (all must exist, an outage can drop one, and have succeeded) and the paths of its own
+# build and environment. `phpt` is the merge tier's six phpt.yml shards, whose upstream.so phpt-build
+# builds with build_upstream.py; each variant is one job that runs both engines.
+BASELINES = {
+    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)', 6,
+             ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
+              '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
+    **{variant: (f'phpt-{variant}', f'target/phpt/{variant}/upstream.json', rf'{variant} / phpt', 1,
+                 (f'.github/workflows/{variant}.yml', '.github/actions/upstream', 'corpus/upstream/baseline.sh',
+                  *(['.devcontainer/php.sh'] if variant == 'zts' else [])))
+       for variant in ('cares', 'iouring', 'threadcontext', 'zts')},
+}
+
+
+def unchanged(sha, paths):
+    """Whether `paths` are at sha as at HEAD; a shallow checkout fetches sha first."""
+    if subprocess.run(['git', 'cat-file', '-e', f'{sha}^{{commit}}'], capture_output=True).returncode:
+        subprocess.run(['git', 'fetch', '-q', '--depth', '1', 'origin', sha], check=True)
+    return subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', *paths]).returncode == 0
+
+
+def phpt_baseline(kind='phpt', php=None):
+    """(run, head sha) of main's newest merge-tier run whose upstream report for `kind` (BASELINES)
+    still stands for upstream at HEAD: the jobs that made it all succeeded, its key paths are
+    unchanged since, and with `php` it ran on that PHP_VERSION. Searched by artifact, not by run:
+    a run that reused another's reports made none, and the last that made them can be days back."""
+    artifact, report, jobs, count, paths = BASELINES[kind]
+    rows = [json.loads(line) for line in gh('api', f'repos/{{owner}}/{{repo}}/actions/artifacts?name={artifact}&per_page=100',
+                                            '--jq', '.artifacts[] | .workflow_run + {expired}').splitlines()]
+    # Only the merge tier runs on a push to main; a fork's pull request can name its branch main.
+    runs = dict.fromkeys((row['id'], row['head_sha']) for row in rows if not row['expired']
+                         and row['head_branch'] == 'main' and row['head_repository_id'] == row['repository_id'])
+    for run, sha in runs:
+        shards = [conclusion for name, conclusion in job_conclusions(run).items() if re.fullmatch(jobs, name)]
+        if shards.count('success') != count:
+            continue
+        # Runs further back are older: a key or PHP release that changed since stays changed.
+        if not unchanged(sha, UPSTREAM_KEY + paths):
+            return None
+        if php:
+            with tempfile.TemporaryDirectory() as directory:
+                gh('run', 'download', str(run), '-n', artifact, '-D', directory)
+                engines = json.loads((Path(directory) / report).read_text())['engines']
+            if any(engine.get('php') != php for engine in engines):
+                return None
+        return run, sha
     return None
 
 
@@ -421,12 +493,15 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
-    commands.add_parser('phpt-baseline')
+    baseline = commands.add_parser('phpt-baseline')
+    baseline.add_argument('--variant', choices=[kind for kind in BASELINES if kind != 'phpt'], default='phpt',
+                          help="a variant workflow's upstream report (default: phpt.yml's shards)")
+    baseline.add_argument('--php', help="the PHP_VERSION the baseline's upstream must have run on")
     commands.add_parser('new-failures').add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
     args = parser.parse_args(argv)
     if args.command == 'phpt-baseline':
         try:
-            baseline = phpt_baseline()
+            baseline = phpt_baseline(args.variant, args.php)
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         if baseline:
