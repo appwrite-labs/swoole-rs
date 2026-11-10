@@ -213,15 +213,19 @@ pub unsafe fn trap(
 }
 
 /// `zend_call_function(fci, fcc)` inside `zend_try`: whether the call
-/// succeeded.
+/// succeeded. Nothing is called, and the result slot is left as it was, while
+/// a bailout is pending: upstream never ran past it.
 /// # Errors
-/// The callable bailed out (`exit()`, a fatal error).
+/// The callable bailed out (`exit()`, a fatal error), or a bailout is pending.
 /// # Safety
 /// `fci` and `fcc` describe a live callable, as `zend_call_function` requires.
 pub unsafe fn call(
     fci: *mut zend_fcall_info,
     fcc: *mut zend_fcall_info_cache,
 ) -> Result<bool, Bailout> {
+    if pending() {
+        return Err(Bailout);
+    }
     let mut result = 0;
     // SAFETY: per the caller; Zend runs in the C shim's frame.
     if unsafe { swr_zend_try_call(fci, fcc, &raw mut result) } != 0 {
@@ -233,8 +237,9 @@ pub unsafe fn call(
 /// `zend_call_method(object, scope, NULL, method, ...)` with `args` (at most
 /// two) inside `zend_try`. A null `scope` is the object's class; otherwise the
 /// method is `scope`'s, called on `object`. A null `retval` discards the result.
+/// Nothing is called while a bailout is pending, as [`call`].
 /// # Errors
-/// The method bailed out.
+/// The method bailed out, or a bailout is pending.
 /// # Safety
 /// `object` is a live object, `scope` null or its class or an ancestor,
 /// `retval` null or writable and `args` live zvals.
@@ -249,6 +254,9 @@ pub unsafe fn call_method(
         args.len() <= 2,
         "zend_call_method takes at most two arguments"
     );
+    if pending() {
+        return Err(Bailout);
+    }
     let arg = |n: usize| args.get(n).copied().unwrap_or(core::ptr::null_mut());
     #[expect(clippy::cast_possible_truncation, reason = "at most two arguments")]
     let argc = args.len() as u32;

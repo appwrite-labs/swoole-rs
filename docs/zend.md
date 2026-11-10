@@ -99,6 +99,8 @@ calls PHP code directly where it could bail out:
 
 - `zend::bailout::call(fci, fcc)` runs `zend_call_function` inside a
   `zend_try` that lives in the C shim, and returns `Err(Bailout)` if it bailed.
+  It (and `call_method`) calls nothing once a bailout is pending: upstream
+  never ran a callback past the first bailout.
 - `zend::bailout::trap(body, arg)` does the same for any `body`: C or C++, or
   a Rust `unsafe extern "C" fn` whose frame owns nothing that needs a drop, so
   the bailout's jump to the shim's `setjmp` skips no destructor (crates/phpserver
