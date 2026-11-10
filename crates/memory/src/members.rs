@@ -450,7 +450,8 @@ pub mod pool {
         GlobalImpl, swr_v1_memory_global_memory_alloc, swr_v1_memory_global_memory_delete,
     };
     use std::ffi::c_void;
-    use std::ptr;
+    use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
+    use std::{ptr, slice};
 
     /// `new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`, `swoole_init`'s pool. Where
     /// upstream's constructor throws, the process aborts.
@@ -478,8 +479,7 @@ pub mod pool {
     /// pool `swoole_init` just made: a fatal error when it can't be had.
     pub fn wait_registry_init() {
         let size = u32::try_from(swoole_rs_utilities::swr_v1_utils_wait_registry_size());
-        // SAFETY: `swoole_init` has made the pool.
-        let registry = unsafe { alloc(size.unwrap_or(u32::MAX)) };
+        let registry = alloc(size.unwrap_or(u32::MAX));
         // SAFETY: null or that many shared bytes, for the program's life.
         if !unsafe { swoole_rs_utilities::swr_v1_utils_wait_registry_init(registry) } {
             let message = c"failed to allocate atomic wait registry";
@@ -488,20 +488,46 @@ pub mod pool {
         }
     }
 
-    /// `sw_mem_pool()->alloc(size)`.
-    ///
-    /// # Safety
-    /// `SwooleG.memory_pool` is a live pool.
+    /// `sw_mem_pool()->alloc(size)`: `size` zeroed bytes, 8-aligned and shared
+    /// with the processes forked after, which live as long as PHP runs
+    /// (`swoole_clean` deletes the pool after the last request); null before
+    /// `swoole_init` made the pool, or when it is full.
     #[must_use]
-    pub unsafe fn alloc(size: u32) -> *mut c_void {
-        let pool = swoole_rs_corebase::swr_v1_core_memory_pool().cast();
+    pub fn alloc(size: u32) -> *mut c_void {
+        let pool = swoole_rs_corebase::swr_v1_core_memory_pool().cast::<*mut GlobalImpl>();
         let mut block = ptr::null_mut();
-        // SAFETY: as the caller promises, `pool` is a live pool's `impl` slot.
+        if pool.is_null() {
+            return block;
+        }
+        // SAFETY: `swoole_init`'s live pool's `impl` slot.
         if unsafe { swr_v1_memory_global_memory_alloc(pool, size, &raw mut block) } != 0 {
             // A forked process's fresh pool failed: upstream's `alloc` throws.
             std::process::abort();
         }
         block
+    }
+
+    /// An atomic that is valid zeroed and needs no more than the pool's alignment.
+    pub trait Word: sealed::Sealed {}
+    impl Word for AtomicU32 {}
+    impl Word for AtomicI64 {}
+    impl Word for AtomicU64 {}
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for std::sync::atomic::AtomicU32 {}
+        impl Sealed for std::sync::atomic::AtomicI64 {}
+        impl Sealed for std::sync::atomic::AtomicU64 {}
+    }
+
+    /// `count` zero words from [`alloc`], as long as PHP runs: `Swoole\Atomic`'s
+    /// and `Swoole\Lock`'s.
+    #[must_use]
+    pub fn words<W: Word>(count: usize) -> Option<&'static [W]> {
+        let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
+        let block = alloc(size).cast::<W>();
+        // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
+        // for each `Word`), which the pool gives no one else.
+        (!block.is_null()).then(|| unsafe { slice::from_raw_parts(block, count) })
     }
 }
 
@@ -526,8 +552,7 @@ fn table_warning(message: &[u8]) {
 #[must_use]
 pub unsafe fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     #[expect(clippy::cast_possible_truncation, reason = "a sub-page header")]
-    // SAFETY: as the caller promises.
-    let table = unsafe { pool::alloc(mem::size_of::<Table>() as u32) }.cast::<Table>();
+    let table = pool::alloc(mem::size_of::<Table>() as u32).cast::<Table>();
     if table.is_null() {
         return table;
     }

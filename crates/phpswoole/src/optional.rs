@@ -3,18 +3,10 @@
 //! ext/sockets' `Socket` (the cargo features of the same names, which the
 //! hybrid turns on with their configure switches) and `Swoole\Thread`
 //! (`SW_THREAD`, [`built_with`]).
-use crate::module::{Families, PHP_FATAL_ERROR, Step, families};
-use std::ffi::{CStr, c_char, c_int, c_void};
-use swoole_rs_corebase::{Switch, built_with, log::set_last_error};
-use swoole_rs_zend::{E_ERROR, Value, bailout, php_error, sys::zval};
-
-// SAFETY: crates/phplocks' thread locks and atomics, linked into every extension.
-unsafe extern "C" {
-    fn swr_v1_phplocks_thread_atomic_minit();
-    fn swr_v1_phplocks_thread_lock_minit(
-        unconstructed: Option<unsafe extern "C" fn(*const c_char)>,
-    );
-}
+use crate::module::{Families, Step, families};
+use std::ffi::{c_int, c_void};
+use swoole_rs_corebase::{Switch, built_with};
+use swoole_rs_zend::{Value, sys::zval};
 
 #[cfg(feature = "stdext")]
 // SAFETY: crates/phpstdext's MINIT, linked with this feature.
@@ -189,7 +181,7 @@ pub(crate) fn minit() -> Vec<Step> {
         #[cfg(feature = "stdext")]
         Step::Hook(swr_v1_phpstdext_minit),
     ]);
-    let thread = built([(Switch::Thread, Step::Hook(thread_minit))]);
+    let thread = built([(Switch::Thread, Step::Minit(thread_minit))]);
     drivers.into_iter().chain(thread).chain(stdext).collect()
 }
 
@@ -280,29 +272,16 @@ extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
 
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
-extern "C" fn thread_minit() {
+extern "C" fn thread_minit(module_number: c_int) {
     let Some(families) = families() else {
         return;
     };
     // SAFETY: MINIT, before any PHP thread starts (as for each below).
     unsafe { (families.thread_minit)() };
-    // SAFETY: as above.
-    unsafe { swr_v1_phplocks_thread_atomic_minit() };
-    // SAFETY: as above, with a reporter that lives for the process.
-    unsafe { swr_v1_phplocks_thread_lock_minit(Some(unconstructed)) };
+    // SAFETY: as above, with the module's number.
+    unsafe { (families.locks_minit[3])(module_number) };
     for minit in families.thread_classes_minit {
         // SAFETY: as above.
         unsafe { minit() };
     }
-}
-
-/// `php_swoole_fatal_error(E_ERROR, "%s", message)` for `Thread\Lock`, which
-/// calls it under `zend_try`; the error's bailout continues there, through this
-/// frame, which owns nothing.
-unsafe extern "C" fn unconstructed(message: *const c_char) {
-    set_last_error(PHP_FATAL_ERROR);
-    // SAFETY: crates/phplocks' static, NUL-terminated message.
-    let message = unsafe { CStr::from_ptr(message) };
-    // SAFETY: a handler's error, as upstream raises it.
-    bailout::raise(unsafe { php_error(E_ERROR, message) });
 }

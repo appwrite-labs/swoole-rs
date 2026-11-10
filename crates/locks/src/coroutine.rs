@@ -2,7 +2,7 @@
 use std::{
     cell::Cell,
     ffi::c_void,
-    ptr::{self, NonNull},
+    ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
@@ -26,10 +26,8 @@ impl CoroutineOutcome {
 pub struct CoroutineHost {
     pub current: fn() -> *mut c_void,
     pub cid: fn(*mut c_void) -> i64,
-    /// Aligned process-shared storage for one word, or null.
-    pub alloc_shared: fn() -> *mut u32,
-    /// Frees a word `alloc_shared` returned.
-    pub free_shared: unsafe fn(*mut u32),
+    /// A process-shared word, for the program's life, or None.
+    pub alloc_shared: fn() -> Option<&'static AtomicU32>,
     pub sleep: Option<fn(f64) -> CoroutineOutcome>,
     pub wait: Option<fn(&AtomicU32) -> CoroutineOutcome>,
     pub wake: Option<fn(&AtomicU32) -> CoroutineOutcome>,
@@ -41,22 +39,15 @@ pub struct CoroutineHost {
 /// unlock can both hold the lock.
 pub struct CoroutineLock {
     host: &'static CoroutineHost,
-    word: NonNull<AtomicU32>,
+    word: Word,
     cookie: Cell<*mut c_void>,
     cid: Cell<i64>,
-    shared: bool,
 }
 
-impl Drop for CoroutineLock {
-    fn drop(&mut self) {
-        if self.shared {
-            // SAFETY: this record owns exactly one host allocation.
-            unsafe { (self.host.free_shared)(self.word.as_ptr().cast()) };
-        } else {
-            // SAFETY: the unshared word was allocated by Box in new.
-            drop(unsafe { Box::from_raw(self.word.as_ptr()) });
-        }
-    }
+/// A shared lock's word, which the host's storage keeps, or a private one.
+enum Word {
+    Shared(&'static AtomicU32),
+    Private(Box<AtomicU32>),
 }
 
 fn outside(host: &CoroutineHost) -> CoroutineOutcome {
@@ -80,28 +71,27 @@ impl CoroutineLock {
             std::process::abort();
         }
         let word = if shared {
-            let Some(word) = NonNull::new((host.alloc_shared)().cast::<AtomicU32>()) else {
+            let Some(word) = (host.alloc_shared)() else {
                 std::process::abort();
             };
-            // SAFETY: the host allocated aligned storage for one word; initialize it
-            // before publishing it.
-            unsafe { word.write(AtomicU32::new(0)) };
-            word
+            word.store(0, Ordering::Relaxed);
+            Word::Shared(word)
         } else {
-            NonNull::from(Box::leak(Box::new(AtomicU32::new(0))))
+            Word::Private(Box::new(AtomicU32::new(0)))
         };
         Box::new(Self {
             host,
             word,
             cookie: Cell::new(ptr::null_mut()),
             cid: Cell::new(0),
-            shared,
         })
     }
 
     fn word(&self) -> &AtomicU32 {
-        // SAFETY: the record owns the initialized word until it drops.
-        unsafe { self.word.as_ref() }
+        match &self.word {
+            Word::Shared(word) => word,
+            Word::Private(word) => word,
+        }
     }
 
     /// `CoroutineLock::lock_impl`: blocks (sleeping or on the futex) unless `blocking` is false.
@@ -206,7 +196,6 @@ mod tests {
         releases: bool,
         warnings: usize,
         allocated: usize,
-        freed: usize,
         wakes: usize,
     }
     thread_local! {
@@ -220,13 +209,10 @@ mod tests {
     fn cid(_: *mut c_void) -> i64 {
         STATE.with(|state| state.borrow().cid)
     }
-    fn allocate() -> *mut u32 {
+    #[expect(clippy::unnecessary_wraps, reason = "the host's signature")]
+    fn allocate() -> Option<&'static AtomicU32> {
         STATE.with(|state| state.borrow_mut().allocated += 1);
-        Box::into_raw(Box::new(0))
-    }
-    unsafe fn release(word: *mut u32) {
-        STATE.with(|state| state.borrow_mut().freed += 1);
-        drop(unsafe { Box::from_raw(word) });
+        Some(Box::leak(Box::new(AtomicU32::new(7))))
     }
     fn sleep(second: f64) -> CoroutineOutcome {
         let (lock, releases, result, bailed) = STATE.with(|state| {
@@ -272,7 +258,6 @@ mod tests {
         current,
         cid,
         alloc_shared: allocate,
-        free_shared: release,
         sleep: Some(sleep),
         wait: None,
         wake: None,
@@ -282,7 +267,6 @@ mod tests {
         current,
         cid,
         alloc_shared: allocate,
-        free_shared: release,
         sleep: None,
         wait: Some(wait),
         wake: Some(wake),
@@ -412,7 +396,7 @@ mod tests {
         STATE.with(|state| {
             let state = state.borrow();
             assert_eq!(state.sleeps, [SW_FILE_LOCK_DEFAULT_SECOND]);
-            assert_eq!((state.allocated, state.freed), (1, 1));
+            assert_eq!(state.allocated, 1);
         });
     }
     #[test]

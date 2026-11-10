@@ -110,6 +110,14 @@ pub fn exception() -> &'static Class {
     &EXCEPTION
 }
 
+/// `swoole_fatal_error(code, "%s", message)` from a handler: a `Swoole\Error`
+/// printed, then the process exits, or this PHP thread ends with a bailout, so
+/// the handler's frames own nothing that needs a drop.
+pub fn swoole_fatal_error(code: c_int, message: &CStr) {
+    // SAFETY: as above.
+    unsafe { swoole_rs_corebase::fatal_error(code, message) };
+}
+
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the
 /// global constants, then `Swoole\Exception` and `Swoole\Error`
 /// (`swoole_exception_ce` and `swoole_error_ce`),

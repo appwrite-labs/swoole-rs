@@ -192,17 +192,27 @@ pub unsafe fn swr_v1_utils_wait_registry_init(memory: *mut c_void) -> bool {
 }
 
 fn with<T>(
-    word: *mut u32,
+    word: &AtomicU32,
     run: impl FnOnce(&Registry, &AtomicU32) -> Result<T, c_int>,
 ) -> Result<T, c_int> {
     let registry = REGISTRY.load(Ordering::SeqCst);
-    if registry.is_null() || word.is_null() || !word.is_aligned() {
+    if registry.is_null() {
         return Err(libc::EINVAL);
     }
     // SAFETY: init adopted a registry that lives as long as its users.
-    let registry = unsafe { &*registry };
-    // SAFETY: the caller's live, atomic-only word, checked non-null and aligned.
-    run(registry, unsafe { AtomicU32::from_ptr(word) })
+    run(unsafe { &*registry }, word)
+}
+
+/// `word` as an atomic, or -1 with `EINVAL` recorded for null or misaligned.
+/// # Safety
+/// `word` is null, misaligned, or a u32 accessed only atomically while `'a` lasts.
+#[cfg(not(target_os = "linux"))]
+pub(crate) unsafe fn atomic<'a>(word: *mut u32) -> Result<&'a AtomicU32, c_int> {
+    if word.is_null() || !word.is_aligned() {
+        return Err(failed(libc::EINVAL));
+    }
+    // SAFETY: per the caller, checked non-null and aligned.
+    Ok(unsafe { AtomicU32::from_ptr(word) })
 }
 
 /// -1 with a nonzero error recorded as the last error.
@@ -217,20 +227,16 @@ fn failed(code: c_int) -> c_int {
 /// `sw_atomic_futex_wait` without futex: take the word's token (1 -> 0),
 /// polling every millisecond until a wakeup or `timeout` (seconds, <= 0 for
 /// none). Returns 0, or -1 with the error recorded as the last error.
-/// # Safety
-/// `word` is a live u32 accessed only atomically.
 #[cfg(not(target_os = "linux"))]
-pub(crate) unsafe fn registry_wait(word: *mut u32, timeout: f64) -> c_int {
+pub(crate) fn registry_wait(word: &AtomicU32, timeout: f64) -> c_int {
     with(word, |registry, word| registry.wait(word, timeout)).map_or_else(failed, |()| 0)
 }
 
 /// `sw_atomic_futex_wakeup` without futex: publish the token (0 -> 1) and
 /// notify up to `n` registered waiters. Returns the number notified, or -1
 /// with the error recorded as the last error.
-/// # Safety
-/// As [`registry_wait`].
 #[cfg(not(target_os = "linux"))]
-pub(crate) unsafe fn registry_wakeup(word: *mut u32, n: c_int) -> c_int {
+pub(crate) fn registry_wakeup(word: &AtomicU32, n: c_int) -> c_int {
     with(word, |registry, word| registry.wakeup(word, n)).unwrap_or_else(failed)
 }
 
@@ -248,14 +254,14 @@ mod tests {
     }
 
     fn wait(word: &AtomicU32, timeout: f64) -> (c_int, c_int) {
-        match with(word.as_ptr(), |registry, word| registry.wait(word, timeout)) {
+        match with(word, |registry, word| registry.wait(word, timeout)) {
             Ok(()) => (0, 0),
             Err(code) => (-1, code),
         }
     }
 
     fn wakeup(word: &AtomicU32, n: c_int) -> (c_int, c_int) {
-        match with(word.as_ptr(), |registry, word| registry.wakeup(word, n)) {
+        match with(word, |registry, word| registry.wakeup(word, n)) {
             Ok(notified) => (notified, 0),
             Err(code) => (-1, code),
         }
