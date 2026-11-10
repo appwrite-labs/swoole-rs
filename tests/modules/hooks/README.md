@@ -304,3 +304,27 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `async.misc` | `async.misc` |
 | `async.thread_starts_with_signals_blocked` | `pool::tests::thread_starts_with_signals_blocked` (crates/ossupport) |
 | `os.daemon` | `os.daemon` |
+
+`core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
+`hooks-system-rust`. The cases call crates/reactor's `signal_upstream` (`swoole_signal_set`,
+`_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and crates/process's `signal`
+(the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`, `_block_all`,
+`_unblock_all`, `_to_str`) and `signalfd::swoole_signalfd_init` by path. Each case runs in
+its own process, as the rest of the package does, so no handler outlives its case.
+`block` and `unblock` fork through `spawn_exec`, whose child `_exit(0)`s where upstream's
+`exit(0)`s; the SIGIO handler still `exit(255)`s. `signalfd` is `#ifdef HAVE_SIGNALFD`
+upstream and Linux-only here. `os_signal.restore_previous_mask` is crates/corebase's
+`signal_mask::tests::restore_previous_mask`, in a new thread rather than a forked child: the
+mask and the flag are per thread.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `os_signal.signalfd` | `os_signal.signalfd` |
+| `os_signal.block` | `os_signal.block` |
+| `os_signal.unblock` | `os_signal.unblock` |
+| `os_signal.restore_previous_mask` | `signal_mask::tests::restore_previous_mask` (crates/corebase) |
+| `os_signal.signal_to_str` | `os_signal.signal_to_str` |
+| `os_signal.set` | `os_signal.set` |
+| `os_signal.dispatch` | `os_signal.dispatch` |
+| `os_signal.nested` | `os_signal.nested` |
+| `os_signal.error` | `os_signal.error` |
