@@ -117,6 +117,14 @@ impl Value {
         (self.kind() == IS_OBJECT).then(|| unsafe { value::obj_of(self.as_ptr()) })
     }
 
+    /// The [`Custom`](crate::Custom) data of a `T` object.
+    #[must_use]
+    #[inline]
+    pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
+        // SAFETY: the zval holds the object while borrowed.
+        unsafe { crate::object::custom(self.object()?) }
+    }
+
     /// `Z_PTR_P` of a pointer (`IS_PTR`), as function and class tables hold.
     #[must_use]
     #[inline]
