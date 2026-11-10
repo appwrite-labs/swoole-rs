@@ -757,6 +757,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
         let (name, file_path) = path("put");
@@ -795,6 +796,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn failures_are_logged_after_the_state_changes() {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
         host();
@@ -867,6 +869,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no localtime")]
     fn rotation_names_the_real_file_by_date_and_reset_restores_defaults() {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
         let (name, _) = path("rotate");
@@ -901,6 +904,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn concurrent_puts_and_reopens_keep_every_line_whole() {
         struct Shared(*mut Logger);
         // SAFETY: the logger is thread-safe for put and reopen.

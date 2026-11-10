@@ -263,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no C stdio")]
     fn print_list_writes_one_line_each_newest_first() {
         let mut s = scheduler();
         let mut a = coroutine(0, STATE_WAITING);

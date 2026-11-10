@@ -1,11 +1,10 @@
-//! Same public-ABI workloads for baseline and candidate; no PHP/native runtime.
+//! Same workloads for baseline and candidate; no PHP/native runtime.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 use swoole_rs_buffer as buffer;
-use swoole_rs_memory as memory;
 use swoole_rs_timer as timer;
 
 static TRACK: AtomicBool = AtomicBool::new(false);
@@ -72,99 +71,45 @@ fn run(name: &str, rounds: usize) -> u64 {
                 }
                 assert_eq!(buffer::swr_v1_buffer_release(owner), 0);
             }
-            "heap-1" | "heap-128" | "heap-512" => {
-                let n = if name == "heap-1" {
-                    1
-                } else if name == "heap-128" {
-                    128
-                } else {
-                    512
-                };
-                let mut owner = ptr::null_mut();
-                assert_eq!(memory::swr_v1_memory_heap_create(n, 0, &mut owner), 0);
-                for _ in 0..rounds {
-                    for id in 1..=n {
-                        assert!(
-                            !memory::swr_v1_memory_heap_push(
-                                owner,
-                                (n - id) as u64,
-                                ptr::without_provenance_mut(id)
-                            )
-                            .is_null()
-                        );
-                    }
-                    for id in (1..=n).rev() {
-                        let value = memory::swr_v1_memory_heap_pop(owner).addr();
-                        assert_eq!(value, id);
-                        sum += value as u64;
-                    }
-                }
-                memory::swr_v1_memory_heap_release(owner);
-            }
             "timer-churn-512" => {
-                let mut owner = ptr::null_mut();
-                assert_eq!(timer::swr_v1_timer_create(&mut owner), 0);
-                let mut view = timer::TimerView::default();
+                let mut owner = timer::Timer::default();
                 for round in 0..rounds {
                     for id in 1..=512 {
-                        assert_eq!(
-                            timer::swr_v1_timer_add(
-                                owner,
-                                0,
-                                513 - id,
-                                0,
-                                ptr::without_provenance_mut(id as usize),
-                                &mut view
-                            ),
-                            0
-                        );
+                        let token = ptr::without_provenance_mut(id as usize);
+                        assert_eq!(owner.add(0, 513 - id, false, token).0, 0);
                     }
                     for id in 1..=512 {
-                        assert_eq!(
-                            timer::swr_v1_timer_remove(owner, (round * 512 + id) as i64, &mut view),
-                            3
-                        );
+                        let (status, view) = owner.remove((round * 512 + id) as i64);
+                        assert_eq!(status, 3);
                         assert_eq!(view.token.addr(), id);
                         sum += view.deadline as u64;
                     }
                 }
-                assert_eq!(timer::swr_v1_timer_release(owner), 0);
+                assert!(owner.idle());
             }
             "timer-512" | "timer-4096" => {
                 let n = if name == "timer-512" { 512 } else { 4096 };
-                let mut owner = ptr::null_mut();
-                assert_eq!(timer::swr_v1_timer_create(&mut owner), 0);
-                let mut view = timer::TimerView::default();
+                let mut owner = timer::Timer::default();
                 for id in 1..=n {
-                    assert_eq!(
-                        timer::swr_v1_timer_add(
-                            owner,
-                            0,
-                            id as i64,
-                            0,
-                            ptr::without_provenance_mut(id),
-                            &mut view
-                        ),
-                        0
-                    );
+                    let token = ptr::without_provenance_mut(id);
+                    assert_eq!(owner.add(0, id as i64, false, token).0, 0);
                 }
                 for round in 0..rounds {
                     for id in 1..=n {
                         let deadline = ((id * 7919 + round * 17) % (n * 4)) as i64;
-                        assert_eq!(
-                            timer::swr_v1_timer_update(owner, id as i64, deadline, &mut view),
-                            0
-                        );
+                        let (status, view) = owner.update(id as i64, deadline);
+                        assert_eq!(status, 0);
                         assert_eq!(view.id, id as i64);
                         assert_eq!(view.deadline, deadline);
                         sum = sum.wrapping_add(view.deadline as u64);
                     }
                 }
                 for id in 1..=n {
-                    assert_eq!(timer::swr_v1_timer_remove(owner, id as i64, &mut view), 3);
+                    let (status, view) = owner.remove(id as i64);
+                    assert_eq!(status, 3);
                     assert_eq!(view.token.addr(), id);
                 }
-                assert_eq!(timer::swr_v1_timer_release(owner), 0);
+                assert!(owner.idle());
             }
             _ => panic!("unknown workload"),
         }

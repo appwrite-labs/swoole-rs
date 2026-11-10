@@ -225,6 +225,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no kill")]
     fn the_real_kill_reports_errno() {
         let me = crate::os::getpid();
         assert_eq!(kill(me, 0), Ok(()));

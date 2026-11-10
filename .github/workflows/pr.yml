@@ -304,12 +304,23 @@ jobs:
     timeout-minutes: 30
     outputs:
       php: ${{ steps.build.outputs.php }}
+      shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         uses: ./.github/actions/phpt-build
         with:
           engines: ${{ join(fromJSON(needs.changes.outputs.engines), ' ') }}
+      # Each shard pays about 2 minutes of setup: one per 150 of the families' tests, up to 6.
+      # The pin is read from the Cargo build's checkout, which every PR run has; target/upstream
+      # is only here when upstream is built too.
+      - id: shards
+        env:
+          FAMILIES: ${{ needs.changes.outputs.families != 'all' && needs.changes.outputs.families || '' }}
+        run: |
+          modules=()
+          for family in $FAMILIES; do modules+=(--module "$family"); done
+          echo "shards=$(python3 corpus/upstream/inventory.py --source target/ext/src --plan "${modules[@]}")" >> "$GITHUB_OUTPUT"
 
   phpt:
     needs: [changes, phpt-build]
@@ -323,6 +334,7 @@ jobs:
       engines: ${{ needs.changes.outputs.engines }}
       families: ${{ needs.changes.outputs.families != 'all' && needs.changes.outputs.families || '' }}
       baseline: ${{ needs.changes.outputs.baseline }}
+      shards: ${{ needs.phpt-build.outputs.shards }}
 
   # The one check main's ruleset requires: every blocking job passed or was skipped.
   # A skipped reusable-workflow caller reports no check at all, so the ruleset can't

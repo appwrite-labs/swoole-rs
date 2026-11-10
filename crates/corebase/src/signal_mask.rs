@@ -157,6 +157,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn masks_all_once() {
         std::thread::spawn(|| {
             assert!(signal_block_all());
@@ -173,6 +174,7 @@ pub(crate) mod tests {
     /// core-tests/src/os/signal.cpp `TEST(os_signal, restore_previous_mask)`, in a new
     /// thread rather than a forked child: the mask and the flag are per thread.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigaddset")]
     fn restore_previous_mask() {
         std::thread::spawn(|| {
             for signo in [libc::SIGUSR1, libc::SIGUSR2] {

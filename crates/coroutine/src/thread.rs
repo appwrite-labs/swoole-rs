@@ -227,6 +227,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn a_thread_context_runs_one_side_at_a_time() {
         let mut log = Log {
             ctx: core::mem::MaybeUninit::uninit(),

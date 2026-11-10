@@ -47,9 +47,6 @@ enum swIPCMode {
     SW_IPC_SOCKET = 3,
 };
 
-SW_API swoole::WorkerId swoole_get_worker_id();
-SW_API pid_t swoole_get_worker_pid();
-SW_API int swoole_get_worker_type();
 SW_API void swoole_set_worker_id(swoole::WorkerId worker_id);
 SW_API void swoole_set_worker_type(int type);
 
@@ -100,7 +97,6 @@ struct Worker;
 
 struct Worker {
     SWR_WORKER_RECORD_FIELDS
-    bool has_exceeded_max_request() const;
     void set_max_request(uint32_t max_request, uint32_t max_request_grace);
     /**
      * Init global state for worker process.
@@ -125,14 +121,6 @@ struct ProcessPool {
     void set_max_packet_size(uint32_t _max_packet_size) {
         // SysV message queues have a fixed receive limit and ignore max_package_size.
         max_packet_size_ = use_msgqueue ? SW_MSGMAX : _max_packet_size;
-    }
-
-    bool is_master() const {
-        return swoole_get_worker_type() == SW_MASTER;
-    }
-
-    bool is_worker() const {
-        return swoole_get_worker_type() == SW_WORKER;
     }
 
     void set_protocol(ProtocolType _protocol_type);
@@ -161,7 +149,6 @@ struct ProcessPool {
     int push_message(uint8_t _type, const void *data, size_t length) const;
     int push_message(const EventData *msg) const;
     bool send_message(WorkerId worker_id, const char *message, size_t l_message) const;
-    int pop_message(void *data, size_t size) const;
     int listen(const char *socket_file, int backlog) const;
     int listen(const char *host, int port, int backlog) const;
 };

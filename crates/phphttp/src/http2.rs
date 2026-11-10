@@ -192,7 +192,7 @@ impl Ctx {
             Field::Status => state.response.status as u32,
             Field::ParseBody => state.parse_body.into(),
             Field::Form => state.request.post_form_urlencoded.into(),
-            Field::Multipart => u32::from(!state.mt_parser.is_null()),
+            Field::Multipart => u32::from(state.mt_parser.is_some()),
             Field::CoSocket => u32::from(context::co_socket(state)),
             Field::StreamId => state.stream_id,
             _ if !compression() => 0,
