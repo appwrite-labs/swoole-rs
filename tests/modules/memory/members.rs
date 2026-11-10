@@ -2,6 +2,7 @@ use super::*;
 use swoole_rs_corebase::log::last_error;
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn shared_mappings_are_zeroed_resized_protected_and_freed() {
     let memory = sw_shm_calloc(4, 25).cast::<u8>();
     assert!(!memory.is_null());
@@ -60,8 +61,8 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
         unsafe { swr_v1_memory_global_memory_new(4096, false, &raw mut pool) },
         0
     );
-    let object = [pool.cast::<c_void>()];
-    let this = object.as_ptr().cast();
+    let mut object = [pool.cast::<c_void>()];
+    let this = object.as_mut_ptr().cast_const().cast();
     let mut block = ptr::null_mut();
     assert_eq!(
         unsafe { swr_v1_memory_global_memory_alloc(&raw mut pool, 100, &raw mut block) },
@@ -86,6 +87,7 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
     swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
     for shared in [false, true] {
@@ -125,6 +127,7 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 /// `TEST(fixed_pool, alloc)`: 1200 random allocs (3 in 4) and frees (front or back
 /// of the live list) over a 1024 x 256-byte private pool.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no rand")]
 fn fixed_pool_alloc() {
     let mut pool = FixedPool::new(1024, 256, false).unwrap();
     let mut alloc_list = std::collections::VecDeque::new();
@@ -149,6 +152,7 @@ fn fixed_pool_alloc() {
 
 /// `TEST(fixed_pool, realloc)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn fixed_pool_realloc() {
     let memory = sw_shm_malloc(1024);
     let new_memory = sw_shm_realloc(memory, 2048);
@@ -166,8 +170,8 @@ fn global_memory_alloc() {
         unsafe { swr_v1_memory_global_memory_new(2 * 1024 * 1024, false, &raw mut pool) },
         0
     );
-    let object = [pool.cast::<c_void>()];
-    let this = object.as_ptr().cast();
+    let mut object = [pool.cast::<c_void>()];
+    let this = object.as_mut_ptr().cast_const().cast();
     let alloc = |pool: &mut *mut GlobalImpl, size| {
         let mut block = ptr::null_mut();
         assert_eq!(
