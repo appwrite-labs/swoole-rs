@@ -151,6 +151,8 @@ jobs:
   # tcp-length, tcp-eof and udp are Swoole\Server without HTTP (#2650).
   # https and wss are benchmarks/tls (#2648).
   # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
+  # http2-concurrent, websocket-64k, websocket-fragmented, upload and static are
+  # benchmarks/traffic (#2652).
   callgrind:
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
@@ -189,6 +191,8 @@ jobs:
           --workload tcp-length --workload tcp-eof --workload udp
           --workload https --workload wss
           --workload atomic --workload process-mode
+          --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented
+          --workload upload --workload static
           --php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
