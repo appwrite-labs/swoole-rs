@@ -295,6 +295,40 @@ mod tests {
         }
     }
     #[test]
+    fn a_writer_proceeds_while_a_reader_holds_the_snapshot_and_lent_bytes_survive() {
+        // Leaked: a writer stuck on the lock would outlive the test's frame.
+        let state: &'static ServerState = Box::leak(Box::new(ServerState::new()));
+        let address = std::ptr::from_ref(state) as usize;
+        let append = move |bytes: &'static [u8]| unsafe {
+            swr_v1_server_static_config(
+                address as *const ServerState,
+                1,
+                6,
+                bytes.as_ptr(),
+                bytes.len(),
+            )
+        };
+        append(b"index.php");
+        let mut length = 0;
+        let lent = unsafe { swr_v1_server_static_text(state, 1, 0, &raw mut length) };
+        strings(state, 1, |enabled, values| {
+            assert!(enabled);
+            let (done, wait) = std::sync::mpsc::channel();
+            std::thread::spawn(move || done.send(append(b"index.html")));
+            assert_eq!(
+                wait.recv_timeout(std::time::Duration::from_secs(10)),
+                Ok(2),
+                "the append doesn't wait for the reader"
+            );
+            assert_eq!(values.len(), 1, "the reader keeps its snapshot");
+        });
+        assert_eq!(append(b"default.htm"), 3);
+        assert_eq!(
+            unsafe { core::slice::from_raw_parts(lent, length) },
+            b"index.php"
+        );
+    }
+    #[test]
     fn rewrite_rules_rewrite_the_context_url() {
         let state = ServerState::new();
         let mut context = HttpStaticContext::new(b"/view/post/3", 128).unwrap();
