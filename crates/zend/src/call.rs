@@ -6,13 +6,14 @@ use crate::{
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_BOOL,
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
-        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_STRING,
-        _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_TRUE,
+        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
+        _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
+        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE,
         ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
         swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
-        zend_execute_data, zend_expected_type, zend_object, zend_string, zend_update_property_long,
-        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
-        zval_ptr_dtor,
+        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
+        zend_object, zend_string, zend_update_property_long, zend_value,
+        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval, zval_ptr_dtor,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -97,6 +98,17 @@ impl Call {
         let this = unsafe { (*self.frame).This };
         // SAFETY: a non-static method's `This` holds its object.
         unsafe { this.value.obj }
+    }
+
+    /// `GC_FLAGS(Z_OBJ_P(ZEND_THIS)) & IS_OBJ_DESTRUCTOR_CALLED`: Zend is running
+    /// `$this`'s destructor (`SW_PREVENT_USER_DESTRUCT`), not user code.
+    #[must_use]
+    #[inline]
+    pub fn destructor_called(&self) -> bool {
+        // SAFETY: a method's live `$this`.
+        let header = unsafe { (*self.this()).gc.u };
+        // SAFETY: a refcounted header always sets `type_info`.
+        unsafe { header.type_info & IS_OBJ_DESTRUCTOR_CALLED != 0 }
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,
@@ -294,6 +306,32 @@ impl Call {
         let arg = self.arg_value(n);
         arg.array()
             .ok_or_else(|| Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_ARRAY))
+    }
+
+    /// `Z_PARAM_RESOURCE` of argument `n` (1-based), which must be passed.
+    /// # Errors
+    /// The argument is not a resource; Zend has thrown.
+    #[inline]
+    pub fn resource(&self, n: u32) -> Result<&Value, Invalid> {
+        let arg = self.arg_value(n);
+        if arg.kind() == IS_RESOURCE {
+            return Ok(arg);
+        }
+        Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_RESOURCE))
+    }
+
+    /// `zend_argument_type_error(n, "%s", message)`: a `TypeError` naming argument `n`.
+    #[inline]
+    pub fn argument_type_error(&self, n: u32, message: &CStr) {
+        // SAFETY: from a handler; "%s" takes the message.
+        unsafe { zend_argument_type_error(n, c"%s".as_ptr(), message.as_ptr()) };
+    }
+
+    /// `zend_argument_value_error(n, "%s", message)`: a `ValueError` naming argument `n`.
+    #[inline]
+    pub fn argument_value_error(&self, n: u32, message: &CStr) {
+        // SAFETY: from a handler; "%s" takes the message.
+        unsafe { zend_argument_value_error(n, c"%s".as_ptr(), message.as_ptr()) };
     }
 
     /// `Z_PARAM_ZVAL_EX(.., 0, 1)` of argument `n` (1-based), which must be

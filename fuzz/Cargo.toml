@@ -226,5 +226,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "http_rewrite"
+path = "fuzz_targets/http_rewrite.rs"
+test = false
+doc = false
+bench = false
+
 # Built only by `cargo +nightly fuzz`, outside the pinned stable workspace.
 [workspace]

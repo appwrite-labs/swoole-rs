@@ -202,12 +202,12 @@ fn stats() -> (i64, i64, i64) {
     (worker_num, queue_size, task_num)
 }
 
-fn event_init() {
+pub(super) fn event_init() {
     // SAFETY: a fresh loop on this thread.
     unsafe { swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) };
 }
 
-fn event_wait() {
+pub(super) fn event_wait() {
     // SAFETY: the loop `event_init` made.
     unsafe { swoole_event_wait() };
 }

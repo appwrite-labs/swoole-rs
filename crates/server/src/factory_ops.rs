@@ -195,10 +195,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CREATE_WORKER_PIPE => u64::from(state.push_worker_pipe(ctx.worker_at(worker_id(arg)))),
-        OP_CREATE_PIPE_BUFFERS => {
-            // SAFETY: the live server.
-            signed(unsafe { crate::master_ops::create_pipe_buffers(serv) })
-        }
+        OP_CREATE_PIPE_BUFFERS => signed(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_WRITE_TO_WORKER => {
             // This reactor thread's bus, and its copy of the worker's pipe.
             let thread = tables

@@ -92,17 +92,25 @@ macro_rules! message {
 
 /// `php_error_docref(NULL, level, "%s", message)` inside `zend_try`: a user
 /// error handler runs PHP code, which can bail out (as `E_ERROR` always
-/// does). Nothing is reported while a bailout is pending.
+/// does). Nothing is reported while a bailout is pending. Like the values this
+/// crate makes, it runs on a PHP thread, from a handler or a callback Zend runs.
 /// # Errors
 /// It bailed out; defer it ([`crate::bailout::defer`]) or return it.
-/// # Safety
-/// Called from a handler or a callback Zend runs.
-pub unsafe fn php_error(level: i32, message: &CStr) -> Result<(), Bailout> {
+pub fn report(level: i32, message: &CStr) -> Result<(), Bailout> {
     if bailout::pending() {
         return Err(Bailout);
     }
-    // SAFETY: per the caller; the shim formats "%s" with the NUL-terminated message.
+    // SAFETY: on a PHP thread; the shim formats "%s" with the NUL-terminated message.
     bailout::trapped(unsafe { crate::sys::swr_zend_try_error(level, message.as_ptr()) })
+}
+
+/// [`report`], for callers that still wrap it in `unsafe`.
+/// # Errors
+/// It bailed out.
+/// # Safety
+/// Called from a handler or a callback Zend runs.
+pub unsafe fn php_error(level: i32, message: &CStr) -> Result<(), Bailout> {
+    report(level, message)
 }
 
 /// `zend_error(level, "%s", message)` (no function prefix), as [`php_error`].
