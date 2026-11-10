@@ -74,7 +74,8 @@ what the calls carry: socket options, socket and accept flags, `fcntl` and `ioct
 epoll registrations, send and receive flags, clone flags, signal dispositions, and each
 result's errno. Fds, addresses, ports, lengths and buffers are dropped. A signature every
 run of one engine made and no run of the other did is a difference; one only some runs
-make is timing, reported as unstable and not gated. Each difference needs a
+make is timing, reported as unstable and not gated, and so is a read that returns EAGAIN
+(it says when the peer's next bytes arrived; its count is still compared). Each difference needs a
 `syscalls.json` entry (`engine`, `signature` and optional `project` patterns, `reason`),
 or a `kind:bug` issue that the entry's reason names. A call both engines make, more than
 twice a run and a quarter more often on one, is listed as a count difference (extra or
