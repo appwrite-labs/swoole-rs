@@ -1,0 +1,58 @@
+name: ThreadSanitizer
+# The ZTS lane, PHP, upstream and the Cargo-built swoole.so, under ThreadSanitizer, with
+# the thread, atomic and lock PHPT families and exit_guard.py (tools/tsan.py). Nightly,
+# and from the PR tier when a PR touches this run. Any unsuppressed report fails the run;
+# rerun tools/tsan.py locally to read it and file it as a p0 kind:bug, or privately if
+# upstream code is at fault. Reports are never uploaded here.
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+  workflow_call:
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 500M
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tsan:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          packages: clang libclang-rt-dev llvm
+      # TSan's shadow memory sits at fixed addresses, which the runner kernel's 32 bits of
+      # mmap randomisation can map over.
+      - run: sudo sysctl vm.mmap_rnd_bits=28
+      # Restored only: the pinned reference is rebuilt instrumented below, never saved.
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+      - uses: actions/cache@v4
+        with:
+          path: target/tsan/php
+          key: php-tsan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/tsan.py') }}-${{ github.workspace }}
+      # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-tsan-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-tsan-${{ runner.os }}-
+      - run: cargo fetch --locked
+      - run: python3 tools/tsan.py
+      - if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-tsan-${{ runner.os }}-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsan
+          path: |
+            target/tsan/phpt/*.json

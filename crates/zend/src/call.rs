@@ -8,12 +8,12 @@ use crate::{
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
         _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
         _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
-        IS_LONG, IS_NULL, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG,
-        add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool, swr_zend_try_parse_double,
-        swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str, zend_argument_type_error,
-        zend_argument_value_error, zend_execute_data, zend_expected_type, zend_object, zend_string,
-        zend_update_property_long, zend_value, zend_wrong_parameter_error,
-        zend_wrong_parameters_count_error, zval, zval_ptr_dtor,
+        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE,
+        ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
+        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
+        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
+        zend_object, zend_string, zend_value, zend_wrong_parameter_error,
+        zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -98,6 +98,17 @@ impl Call {
         let this = unsafe { (*self.frame).This };
         // SAFETY: a non-static method's `This` holds its object.
         unsafe { this.value.obj }
+    }
+
+    /// `GC_FLAGS(Z_OBJ_P(ZEND_THIS)) & IS_OBJ_DESTRUCTOR_CALLED`: Zend is running
+    /// `$this`'s destructor (`SW_PREVENT_USER_DESTRUCT`), not user code.
+    #[must_use]
+    #[inline]
+    pub fn destructor_called(&self) -> bool {
+        // SAFETY: a method's live `$this`.
+        let header = unsafe { (*self.this()).gc.u };
+        // SAFETY: a refcounted header always sets `type_info`.
+        unsafe { header.type_info & IS_OBJ_DESTRUCTOR_CALLED != 0 }
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,
@@ -335,11 +346,11 @@ impl Call {
     /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
     #[inline]
     pub fn assign(&self, n: u32, value: crate::Owned) {
-        let slot = self.zval_deref(n);
+        let slot = self.arg_value(n).dereferenced();
         // SAFETY: a passed argument's live value, released here.
-        unsafe { zval_ptr_dtor(slot) };
+        unsafe { slot.release() };
         // SAFETY: as above; the slot takes over the value.
-        unsafe { slot.write(value.into_zval()) };
+        unsafe { slot.as_ptr().write(value.into_zval()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
@@ -457,11 +468,55 @@ impl Call {
     /// `scope` is the class whose view of the property to update (NULL if none).
     pub fn update_property_long(&self, scope: Option<&Class>, name: &CStr, value: i64) {
         let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        // SAFETY: a method's live `$this`; a registered class or null; Zend
-        // copies the name.
-        unsafe {
-            zend_update_property_long(scope, self.this(), name.as_ptr(), name.count_bytes(), value);
-        }
+        // SAFETY: a method's live `$this`; a registered class or null.
+        unsafe { crate::Props::new(scope, self.this()) }.long(name, value);
+    }
+
+    /// `zend_update_property(scope, Z_OBJ_P(ZEND_THIS), name, value)`: the
+    /// property takes a copy. A dynamic property's deprecation runs the user
+    /// error handler, so this traps its bailout.
+    /// # Errors
+    /// The error handler bailed out.
+    pub fn update_property(
+        &self,
+        scope: Option<&Class>,
+        name: &[u8],
+        value: &Value,
+    ) -> Result<(), crate::bailout::Bailout> {
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        // SAFETY: a method's live `$this`, a registered class or null and a
+        // live value; Zend copies the name and the value.
+        let bailed = unsafe {
+            crate::sys::swr_zend_try_facade_update(
+                scope,
+                self.this(),
+                name.as_ptr().cast(),
+                name.len(),
+                value.as_ptr(),
+            )
+        };
+        crate::bailout::trapped(bailed)
+    }
+
+    /// `RETURN_ZVAL(zend_read_property(scope, Z_OBJ_P(ZEND_THIS), name, 1, &rv), 1, 0)`:
+    /// a copy of the property, read silently.
+    pub fn set_property(&self, scope: Option<&Class>, name: &[u8]) {
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        let rv = crate::Owned::default();
+        // SAFETY: a method's live `$this`, a registered class or null, and a
+        // slot for a computed value, which outlives the copy below.
+        let property = unsafe {
+            crate::sys::zend_read_property(
+                scope,
+                self.this(),
+                name.as_ptr().cast(),
+                name.len(),
+                true,
+                rv.as_ptr(),
+            )
+        };
+        // SAFETY: the property's live value, copied with a reference.
+        unsafe { crate::sys::swr_zval_copy(self.value, property) };
     }
 
     /// `RETVAL_BOOL`.

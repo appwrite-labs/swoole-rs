@@ -34,6 +34,18 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Two measure compression against `benchmarks/compression` (#2649): `gzip` posts
+4 KiB of JSON with `Accept-Encoding: gzip` and checks the gzip-encoded echo, and
+`websocket-deflate` echoes 1 KiB of JSON with permessage-deflate negotiated, so
+both directions are compressed. Their records started 5% above an arm64 Linux
+run (0.99 each); the ratchet lowers them once two merge runs beat them.
+
+Three measure `Swoole\Server` without HTTP (#2650), each echoing 1 KiB on one
+connection: `tcp-length` (length-prefixed frames, `07-tcp-framing`), `tcp-eof`
+(`open_eof_split` on `\r\n`) and `udp` (a datagram listener), both against
+`benchmarks/framing`. Their records started 5% above an arm64 Linux run
+(0.97, 0.52 and 1.04); the ratchet lowers them once two merge runs beat them.
+
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
 (default `127.0.0.1`, root/root, database `test`) and `--php-extension mysqlnd

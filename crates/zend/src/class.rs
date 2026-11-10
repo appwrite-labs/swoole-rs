@@ -142,6 +142,41 @@ impl Class {
         .map(|_| ())
     }
 
+    /// `object_init_ex` of this class, then its `__construct(args)` (Swoole's
+    /// `sw_zend_call_method_with_N_params`, at most two): the new object.
+    /// # Errors
+    /// The constructor bailed out.
+    /// # Panics
+    /// The class is not registered.
+    pub fn instantiate(
+        &self,
+        args: &[&crate::Value],
+    ) -> Result<crate::Owned, crate::bailout::Bailout> {
+        let entry = self.entry();
+        assert!(!entry.is_null(), "instantiate a registered class");
+        let object = crate::Owned::default();
+        // SAFETY: a slot this owns and a registered class; Zend refuses one it
+        // cannot instantiate, leaving no object.
+        unsafe { crate::init_object(object.as_ptr(), entry) };
+        let Some(std) = object.object() else {
+            return Ok(object);
+        };
+        let args: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
+        // SAFETY: the new object, of this class, and live arguments.
+        unsafe { crate::bailout::call_method(std, entry, b"__construct", ptr::null_mut(), &args) }?;
+        Ok(object)
+    }
+
+    /// `zend_throw_exception(this class, message, code)`, from a handler.
+    /// # Panics
+    /// The class is not registered.
+    pub fn throw(&self, message: &CStr, code: zend_long) {
+        let entry = self.entry();
+        assert!(!entry.is_null(), "throw a registered class");
+        // SAFETY: a registered exception class; Zend copies the message.
+        unsafe { crate::throw_exception(entry, message, code) };
+    }
+
     /// The handlers this class's objects use (null before MINIT).
     #[must_use]
     pub fn handlers(&self) -> *const zend_object_handlers {

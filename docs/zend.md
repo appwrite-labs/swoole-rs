@@ -27,8 +27,11 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   borrowed forms too (`zstr`, `zstr_or_null`, `array_ref`, `bool_or_null`). A
   family crate reads values through these with no `unsafe` of its own
   (`crates/phpredis/src/format.rs`, `crates/phpswoole/src/options.rs`); a raw
-  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. Add
-  wrappers as callers need them.
+  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. A
+  family's MINIT is `minit!(name => body)`, whose `body(&Minit)` registers
+  constants, classes and function aliases safely; a callable that a C owner
+  such as a timer holds runs through `Callable::callbacks::<impl Holder>()`.
+  `crates/phptimer` uses no `unsafe` at all. Add wrappers as callers need them.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
   mechanism crate directly (Rust calls Rust).
 
@@ -130,6 +133,10 @@ reactor or timer callback), bails out. So every error Rust raises goes through
 - `Call`'s ZPP slow paths (null-to-scalar and float-to-int deprecations) and
   `zend::value::get_long`/`get_double`/`get_string` (`zval_get_*`: an object or
   array warns, `__toString` runs PHP).
+- `Props` writes (`zend_update_property`: a subclass's `__set` or property
+  hook runs PHP), skipped once a bailout is pending; and the release of an
+  object, array or reference (`Owned`'s drop, `Call::assign`, `ArrayMut::update`:
+  `__destruct`, or the cycle collector a possible root starts).
 
 Each returns (or, for the converters, defers) a `Bailout`. The one exception
 is an `E_ERROR` its caller relies on not returning (crates/phpserver's

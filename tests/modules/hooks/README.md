@@ -155,6 +155,46 @@ is `ssl_close_notify` in `crates/hooks/src/uring_tls.rs`, with the same exchange
 assertions over the ring's TLS transport; both sessions use an anonymous TLS 1.2 cipher
 in place of the pin's `tests/include/ssl_certs`, which the crate's tests cannot read.
 
+`core-tests/src/coroutine/iouring.cpp` is `crates/hooks/src/uring/ported.rs`, one test per
+TEST (upstream's names, inputs and expected values), run by `cargo test --all-features`
+(the `rust` lane, Linux). They call the engine (`crate::uring`) over its test host, which
+drives the ring where a coroutine would suspend. A second coroutine becomes a thread
+with its own ring, and the cases take turns as GoogleTest's did, since they share /tmp
+paths and `wait` collects any child. `Iouring::open` and `close` are `open_file` and
+`close_fd`. `System::sleep` is `uring::sleep`, as it is with io_uring.
+`sleep(tv_sec, tv_nsec)` is `sleep_timespec`, which `sleep(seconds)` converts to.
+Three calls have left the build, and only core-tests called them at the pin.
+`Iouring::socket` is gone, so the cases make their sockets with socket(2).
+`Iouring::wait(stat_loc, timeout)` is gone too; the cases call its body,
+`waitpid(-1, stat_loc, 0, timeout)`. `list_all_opcode` is the third. Upstream's `bind`
+and `listen` were already bind(2) and listen(2). `sendfile` sends a file of the pin's
+`examples/test.jpg` size (218787 bytes), which the crate's tests cannot read. It reads
+once the send has returned: the single read upstream asserts on needs the whole file
+to be in the socket's buffer. `wait_timeout` reaps its killed child, because `wait_success`
+may run after it.
+
+| Upstream TEST | Rust test (`uring::ported::`) or reason |
+| --- | --- |
+| `iouring.create` | `create` |
+| `iouring.list_all_opcode` | none: `list_all_opcode` is not in the build (only core-tests called it) |
+| `iouring.open_and_close` | `open_and_close` |
+| `iouring.mkdir_and_rmdir` | `mkdir_and_rmdir` |
+| `iouring.write_and_read` | `write_and_read` |
+| `iouring.rename` | `rename` |
+| `iouring.fstat_and_stat` | `fstat_and_stat` |
+| `iouring.fsync_and_fdatasync` | `fsync_and_fdatasync` |
+| `iouring.ftruncate` | `ftruncate` |
+| `iouring.connect` | `connect` (ignored: external DNS and network, www.gov.cn) |
+| `iouring.send_recv` | `send_recv` (ignored: external DNS and network, www.gov.cn) |
+| `iouring.sendfile` | `sendfile` |
+| `iouring.accept` | `accept` |
+| `iouring.sleep` | `sleep` |
+| `iouring.wait_success` | `wait_success` |
+| `iouring.wait_timeout` | `wait_timeout` |
+| `iouring.waitpid` | `waitpid` |
+| `iouring.poll` | `poll`, except `poll(fds, 2, 1000)` failing with `SW_ERROR_INVALID_PARAMS`: the engine's `poll` takes one pollfd, and the hooked `poll` (like upstream's hook) sends only `nfds == 1` to it |
+| `iouring.accept_timeout` | `accept_timeout` |
+
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures
@@ -304,3 +344,27 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `async.misc` | `async.misc` |
 | `async.thread_starts_with_signals_blocked` | `pool::tests::thread_starts_with_signals_blocked` (crates/ossupport) |
 | `os.daemon` | `os.daemon` |
+
+`core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
+`hooks-system-rust`. The cases call crates/reactor's `signal_upstream` (`swoole_signal_set`,
+`_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and crates/process's `signal`
+(the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`, `_block_all`,
+`_unblock_all`, `_to_str`) and `signalfd::swoole_signalfd_init` by path. Each case runs in
+its own process, as the rest of the package does, so no handler outlives its case.
+`block` and `unblock` fork through `spawn_exec`, whose child `_exit(0)`s where upstream's
+`exit(0)`s; the SIGIO handler still `exit(255)`s. `signalfd` is `#ifdef HAVE_SIGNALFD`
+upstream and Linux-only here. `os_signal.restore_previous_mask` is crates/corebase's
+`signal_mask::tests::restore_previous_mask`, in a new thread rather than a forked child: the
+mask and the flag are per thread.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `os_signal.signalfd` | `os_signal.signalfd` |
+| `os_signal.block` | `os_signal.block` |
+| `os_signal.unblock` | `os_signal.unblock` |
+| `os_signal.restore_previous_mask` | `signal_mask::tests::restore_previous_mask` (crates/corebase) |
+| `os_signal.signal_to_str` | `os_signal.signal_to_str` |
+| `os_signal.set` | `os_signal.set` |
+| `os_signal.dispatch` | `os_signal.dispatch` |
+| `os_signal.nested` | `os_signal.nested` |
+| `os_signal.error` | `os_signal.error` |

@@ -19,10 +19,11 @@ defaults:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
       # Main's release build: the dependencies; zend-sys and the crates above it rebuild
       # against this PHP (PHP_CONFIG). Build trees must start clean.
       - uses: Swatinem/rust-cache@v2
@@ -30,7 +31,6 @@ jobs:
           shared-key: release
           save-if: false
       - run: rm -rf target/ext target/upstream target/thirdparty
-      - uses: ./.github/actions/install
       # Restored only: the pinned reference is rebuilt against the debug PHP below, never saved.
       - uses: actions/cache/restore@v4
         with:
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/php-debug
-          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
       - run: .devcontainer/php.sh target/php-debug --enable-debug
       - run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
@@ -60,7 +60,7 @@ jobs:
 
   phpt:
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/php-debug
-          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -102,7 +102,7 @@ jobs:
   gate:
     needs: [build, phpt]
     if: always() && needs.build.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/php-debug
-          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:

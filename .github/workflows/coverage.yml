@@ -23,7 +23,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     outputs:
       php: ${{ steps.install.outputs.php }}
@@ -61,83 +61,21 @@ jobs:
 
   phpt:
     needs: build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         index: [1, 2, 3, 4, 5, 6]
-    # The merge tier's phpt services: what upstream's PHPTs expect, as in its
-    # scripts/docker-compose.yml, under the host names its tests/include/config.php uses on CI.
-    services:
-      httpbin:
-        image: kennethreitz/httpbin
-        ports: ['80:80']
-      pgsql:
-        image: postgres:14
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: root
-          POSTGRES_DB: test
-        ports: ['5432:5432']
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: test
-        ports: ['3306:3306']
-        options: --health-cmd "mysqladmin ping -proot" --health-interval 2s --health-retries 60
-      redis:
-        image: redis:7.4
-        ports: ['6379:6379']
-        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
-      # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
-      golang-h2demo:
-        image: phpswoole/golang-h2demo
-        ports: ['4430:4430']
-      # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
-      # image now refuses to start without credentials unless REQUIRE_AUTH is off.
-      tinyproxy:
-        image: kalaksi/tinyproxy
-        ports: ['8888:8888']
-      socks5:
-        image: serjs/go-socks5-proxy
-        env:
-          REQUIRE_AUTH: 'false'
-        ports: ['1080:1080']
-      # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
-      ftp:
-        image: teezily/ftpd
-        env:
-          FTP_USER: admin
-          FTP_PASSWORD: admin
-          PASV_MIN_PORT: 65000
-          PASV_MAX_PORT: 65009
-        ports: ['21:21', '65000-65009:65000-65009']
-      # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
-      firebirdsql:
-        image: firebirdsql/firebird
-        env:
-          FIREBIRD_ROOT_PASSWORD: root
-          FIREBIRD_USER: test
-          FIREBIRD_PASSWORD: test
-          FIREBIRD_DATABASE: test.fdb
-          FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
-        ports: ['3050:3050']
-      # Serves freepdb1, the service ORACLE_TNS names; the image's own healthcheck.sh
-      # reports healthy once the database opens (a minute or two).
-      oracle:
-        image: gvenzl/oracle-free:slim
-        env:
-          ORACLE_PASSWORD: oracle
-        ports: ['1521:1521']
-        options: --health-cmd healthcheck.sh --health-interval 5s --health-retries 60
     steps:
       - uses: actions/checkout@v4
+      # Every service upstream's PHPTs expect (corpus/upstream/services.yml).
+      - id: services
+        run: echo "names=$(python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/phpt-env
         with:
           php: ${{ needs.build.outputs.php }}
+          services: ${{ steps.services.outputs.names }}
       - run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
@@ -155,7 +93,7 @@ jobs:
   # PHPUnit suite, set up as the merge tier's library job sets it up.
   apps:
     needs: build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -204,10 +142,11 @@ jobs:
   report:
     needs: [build, phpt, apps]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/rustup
       - run: rustc --version && rustup component add llvm-tools
       - uses: actions/download-artifact@v4
         with:

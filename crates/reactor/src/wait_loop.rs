@@ -6,6 +6,7 @@ use crate::SocketRecord;
 use crate::handlers::{self, Handlers};
 use crate::reactor_state::{ReactorFields, ReactorState, before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
+use std::sync::OnceLock;
 use swoole_rs_corebase::log;
 
 pub const POLL: u32 = 0;
@@ -18,9 +19,29 @@ pub(crate) struct WaitOps {
     pub(crate) reactor: *mut c_void,
     pub(crate) begin: fn(*mut c_void),
     pub(crate) end: fn(*mut c_void, bool),
-    /// epoll with `io_uring` only: `interrupt` runs the EINTR handler when `interrupted`.
-    pub(crate) interrupted: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
-    pub(crate) interrupt: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+/// The `io_uring` engine's operations this crate calls. crates/hooks, which sits
+/// above it, registers them with [`register_uring`] when the build has the engine.
+pub struct UringOps {
+    /// The epoll wait failed with EINTR on a thread whose engine is running.
+    pub interrupted: fn() -> bool,
+    /// Harvest the engine's completions after that interruption.
+    pub interrupt: fn(),
+    /// `Iouring::waitpid`; `status` is writable.
+    pub waitpid: unsafe fn(libc::pid_t, *mut c_int, c_int, f64) -> libc::pid_t,
+}
+
+static URING: OnceLock<&'static UringOps> = OnceLock::new();
+
+/// Make `ops` the engine this crate calls: `swoole_init` registers it once.
+pub fn register_uring(ops: &'static UringOps) {
+    URING.get_or_init(|| ops);
+}
+
+/// The registered `io_uring` engine, if the build has one.
+pub(crate) fn uring() -> Option<&'static UringOps> {
+    URING.get().copied()
 }
 
 /// Upstream's `swoole::Event`.
@@ -124,14 +145,11 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
                     wait_failed(&run, entries);
                     return if run.backend == POLL { 0 } else { -1 };
                 }
-                if let (EPOLL, Some(interrupted), Some(interrupt)) =
-                    (run.backend, ops.interrupted, ops.interrupt)
+                if run.backend == EPOLL
+                    && let Some(uring) = uring()
+                    && (uring.interrupted)()
                 {
-                    // SAFETY: both native effects accept `reactor`.
-                    if unsafe { interrupted(reactor) } != 0 {
-                        // SAFETY: the native effect accepts `reactor`.
-                        unsafe { interrupt(reactor) };
-                    }
+                    (uring.interrupt)();
                 }
             }
             core::cmp::Ordering::Equal => {
@@ -605,8 +623,6 @@ mod tests {
             reactor: (&raw mut probe).cast(),
             begin,
             end,
-            interrupted: None,
-            interrupt: None,
         };
         assert_eq!(unsafe { wait(state.owner, &ops) }, 0);
         let removed = socket.removed != 0;

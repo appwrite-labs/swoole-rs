@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -28,6 +28,7 @@ jobs:
       PHP_SERIES: ${{ matrix.php }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
       # Main's release build: the dependencies; zend-sys and the crates above it rebuild
       # against this PHP (PHP_CONFIG). Build trees must start clean.
       - uses: Swatinem/rust-cache@v2
@@ -35,7 +36,6 @@ jobs:
           shared-key: release
           save-if: false
       - run: rm -rf target/ext target/upstream target/thirdparty
-      - uses: ./.github/actions/install
       # Restored only: the pinned reference is rebuilt for this PHP below, never saved.
       - uses: actions/cache/restore@v4
         with:
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/php
-          key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
       - run: .devcontainer/php.sh target/php
       - run: cargo fetch --locked
       - run: |
@@ -64,7 +64,7 @@ jobs:
   phpt:
     needs: build
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -85,7 +85,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/php
-          key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:

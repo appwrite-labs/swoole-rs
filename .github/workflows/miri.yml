@@ -21,12 +21,13 @@ concurrency:
 
 jobs:
   miri:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     env:
       TOOLCHAIN: nightly-2026-10-24
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/rustup
       - run: rustup toolchain install $TOOLCHAIN --profile minimal --component miri,rust-src
       - run: cargo +$TOOLCHAIN miri setup
       - run: >

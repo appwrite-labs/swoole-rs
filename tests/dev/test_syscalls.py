@@ -120,6 +120,9 @@ class Differences(unittest.TestCase):
         self.assertIsNone(explain('01-hello', 'upstream', 'prctl(PR_SET_NAME, ""...) = ok', allowed))
         self.assertIsNone(explain('03-notes', 'cargo', 'prctl(PR_SET_NAME, ""...) = ok', allowed))
         self.assertEqual(explain('03-notes', 'cargo', 'x', [{'engine': 'cargo', 'signature': '*', 'reason': 'r'}])['reason'], 'r')
+        for reason in ['', '  ']:
+            self.assertIsNone(explain('03-notes', 'cargo', 'x', [{'engine': 'cargo', 'signature': '*', 'reason': reason}]))
+        self.assertIsNone(explain('03-notes', 'cargo', 'x', [{'engine': 'cargo', 'signature': '*'}]))
 
 
 class Run(unittest.TestCase):
