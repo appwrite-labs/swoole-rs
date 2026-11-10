@@ -1400,7 +1400,8 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_compression(ws: *mut c_void)
     unsafe { client(ws) }.compression
 }
 
-/// Pack a frame and send it: 0, 1 if packing failed, 2 if sending did.
+/// Pack a frame and send it: 0, 1 if packing failed (a bailout may be
+/// pending, for the caller's handler to raise), 2 if sending did.
 /// # Safety
 /// `socket` and `ws` are live; `data` is a live zval.
 #[unsafe(no_mangle)]
@@ -1421,7 +1422,7 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_push(
     if compress {
         frame.flags |= FLAG_COMPRESS;
     }
-    let sent = pack(&frame).map_or(1, |packed| {
+    pack(&frame).map_or(1, |packed| {
         let packed = packed.bytes();
         // SAFETY: the live socket and the packed bytes.
         let written = unsafe { co::send_all(socket, packed.as_ptr().cast(), packed.len()) };
@@ -1430,12 +1431,11 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_push(
         } else {
             2
         }
-    });
-    bailout::finish();
-    sent
+    })
 }
 
-/// `websocket::recv_frame` on the client's socket.
+/// `websocket::recv_frame` on the client's socket; a bailout it defers is
+/// the caller's handler's to raise.
 /// # Safety
 /// `socket` and `ws` are live; `return_value` is writable.
 #[unsafe(no_mangle)]
@@ -1454,7 +1454,6 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_recv(
         return_value,
         timeout,
     );
-    bailout::finish();
 }
 
 /// `WebSocketSettings`' bits for [`recv`], and with `compression` a
