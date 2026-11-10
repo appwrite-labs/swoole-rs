@@ -172,6 +172,7 @@ is crates/server's.
 | `create_task_worker_fail` | `create()` refusing coroutine task workers over a message queue (`SW_ERROR_WRONG_OPERATION`) |
 | `reload_single_process`, `reload_no_task_worker` | `reload(true)` in a single-process base server (`SW_ERROR_OPERATION_NOT_SUPPORT`), and `reload(false)` with no task workers |
 | `restart_worker_process` | `restart_worker_process` over a task worker registered under this pid |
+| `reload_thread_2`, `reload_thread_3` | `MODE_THREAD`: the manager thread's 500 ms timer reloads every worker, and `onAfterReload` shuts down 500 ms later; `2` adds task workers and a user worker whose thread the manager respawns (its `lock` has no reader and is left out), `3` checks `reload(false)` is refused without task workers. Their `flags` are counters |
 | `reload_all_from_worker_error`, `reload_tasks_from_worker_error` | a reload requested from `onWorkerError`, with upstream's five-second watchdog |
 | `kill_worker_1`, `_2`, `_4`, `_5`, `worker_exit`, `shutdown_event` | `test_kill_worker` in base and process mode, with and without `reload_async`, `onWorkerExit`, and an `SW_SERVER_EVENT_SHUTDOWN` packet between workers |
 | `kill_self` | `test_kill_self`: a worker killing the worker that holds the connection |
@@ -192,10 +193,9 @@ Not yet run:
 
 - `clean_worker_1` (base mode) drives core-tests' `AsyncClient` from `onStart`'s timer in
   the master's reactor, and nothing here ports that client yet.
-- `thread`, `task_thread`, `reload_thread`, `reload_thread_2` and `reload_thread_3` are
-  `#ifdef SW_THREAD` upstream, and `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use
-  `MODE_THREAD`. None is ported yet. The binary is a `SW_THREAD` build (see the MODE_THREAD
-  TESTs below), so they can be.
+- `thread`, `task_thread` and `reload_thread` are `#ifdef SW_THREAD` upstream, and
+  `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use `MODE_THREAD`. None is ported
+  yet. The binary is a `SW_THREAD` build (see the MODE_THREAD TESTs below), so they can be.
 
 `core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
 `server`, in the same binary and phase, one function per TEST under its own name with the
