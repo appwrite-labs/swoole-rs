@@ -72,10 +72,11 @@ pub unsafe extern "C" fn php_swoole_odbc_minit(_module: c_int) -> c_int {
         };
         let Some((on, mode)) = pooling(value) else {
             let message = c"Error in pdo_odbc.connection_pooling configuration. Value must be one of \"strict\", \"relaxed\", or \"off\"";
-            // SAFETY: MINIT; E_CORE_ERROR bails out, raised from this outermost Rust frame.
-            swoole_rs_zend::bailout::raise(unsafe {
-                swoole_rs_zend::report(E_CORE_ERROR.cast_signed(), message)
-            });
+            // MINIT; E_CORE_ERROR bails out, raised from this outermost Rust frame.
+            swoole_rs_zend::bailout::raise(swoole_rs_zend::report(
+                E_CORE_ERROR.cast_signed(),
+                message,
+            ));
             return -1;
         };
         pdo_odbc_pool_on.store(on, Ordering::Relaxed);

@@ -240,12 +240,9 @@ fn local_mac(call: &Call) {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn local_mac(call: &Call) {
-    // SAFETY: a handler, with a literal message.
-    swoole_rs_zend::bailout::defer(unsafe {
-        report(
-            E_WARNING,
-            c"swoole_get_local_mac is not supported on this platform",
-        )
-    });
+    swoole_rs_zend::bailout::defer(report(
+        E_WARNING,
+        c"swoole_get_local_mac is not supported on this platform",
+    ));
     call.set_bool(false);
 }
