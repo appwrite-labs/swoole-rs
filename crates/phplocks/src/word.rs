@@ -139,16 +139,12 @@ mod futex {
     pub(super) use swoole_rs_locks::{swr_v1_locks_wait as wait, swr_v1_locks_wakeup as wakeup};
 }
 
-/// Without futexes upstream keeps a C++ wait registry (`src/core/misc.cc`);
-/// these are its C++ symbols.
+/// Without futexes, crates/utilities' wait registry (upstream's `src/core/misc.cc`).
 #[cfg(not(target_os = "linux"))]
 mod futex {
-    unsafe extern "C" {
-        #[link_name = "_Z20sw_atomic_futex_waitPVjd"]
-        pub(super) fn wait(word: *mut u32, timeout: f64) -> i32;
-        #[link_name = "_Z22sw_atomic_futex_wakeupPVji"]
-        pub(super) fn wakeup(word: *mut u32, count: i32) -> i32;
-    }
+    pub(super) use swoole_rs_utilities::misc::{
+        sw_atomic_futex_wait as wait, sw_atomic_futex_wakeup as wakeup,
+    };
 }
 
 /// Export Zend method handlers (`zim_<class>_<method>`, so upstream's `PHP_ME`
