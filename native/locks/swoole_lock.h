@@ -4,7 +4,7 @@
  * (swoole_rs_locks.h), with no C++ class. */
 #pragma once
 
-#include "swoole_memory.h"
+#include "swoole.h"
 
 #include <sys/file.h>
 

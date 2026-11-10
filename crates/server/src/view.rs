@@ -11,6 +11,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
+use std::sync::Arc;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -166,7 +167,7 @@ impl<'a> Server<'a> {
 
     /// `f` over the static handler's collection `kind` (0 locations, 1 index files):
     /// whether it is set, and its values, borrowed under the collection's lock.
-    pub fn static_strings<R>(self, kind: u32, f: impl FnOnce(bool, &[Vec<u8>]) -> R) -> R {
+    pub fn static_strings<R>(self, kind: u32, f: impl FnOnce(bool, &[Arc<[u8]>]) -> R) -> R {
         crate::static_config::strings(self.state(), kind, f)
     }
 

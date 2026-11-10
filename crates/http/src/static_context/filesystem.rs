@@ -92,7 +92,7 @@ impl HttpStaticContext {
     pub fn try_serve(
         &mut self,
         root: &[u8],
-        locations: &[Vec<u8>],
+        locations: &[impl AsRef<[u8]>],
         has_index: bool,
         autoindex: bool,
         effects: &impl StaticEffects,
@@ -109,7 +109,7 @@ impl HttpStaticContext {
                 1 => return true,
                 2 => {
                     for location in locations {
-                        if self.location(location).is_err() {
+                        if self.location(location.as_ref()).is_err() {
                             break;
                         }
                     }
