@@ -286,7 +286,19 @@ impl GlobalMemory {
             return Ok(found);
         }
         let fresh = GlobalImpl::new(found.page_size, true, pool)?;
-        self.pool.store(fresh, Ordering::SeqCst);
+        // Publish it only over the pool it replaces: a `delete` or another thread's
+        // replacement in between wins, and the unpublished pool goes, minus the
+        // inherited one it doesn't own.
+        let published = self
+            .pool
+            .compare_exchange(pool, fresh, Ordering::SeqCst, Ordering::SeqCst);
+        if published.is_err() {
+            // SAFETY: `GlobalImpl::new`'s box, never published, so only this frame holds it.
+            let mut unpublished = unsafe { Box::from_raw(fresh) };
+            unpublished.inherited = ptr::null_mut();
+            drop(unpublished);
+            return self.current();
+        }
         // SAFETY: the fresh pool, owned as above.
         Ok(unsafe { &*fresh })
     }

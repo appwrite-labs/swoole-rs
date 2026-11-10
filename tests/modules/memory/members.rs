@@ -91,6 +91,37 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
     }
 }
 
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+fn threads_racing_to_replace_a_forked_pool_all_get_the_one_published() {
+    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    for _ in 0..20 {
+        let pool = GlobalMemory::new(4096, true).unwrap();
+        let parent = pool.pool.load(Ordering::Relaxed);
+        // As if another process made it.
+        unsafe { (*parent).creator = std::process::id() + 1 };
+        let start = std::sync::Barrier::new(8);
+        let seen: Vec<usize> = std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        pool.with(|found| std::ptr::from_ref(found) as usize)
+                            .unwrap()
+                    })
+                })
+                .collect();
+            readers
+                .into_iter()
+                .map(|reader| reader.join().unwrap())
+                .collect()
+        });
+        let published = pool.pool.load(Ordering::Relaxed);
+        assert!(seen.iter().all(|&found| found == published as usize));
+        assert_eq!(unsafe { (*published).inherited }, parent);
+    }
+}
+
 // Upstream's core-tests/src/memory/{fixed_pool,global_memory}.cpp, one test per
 // TEST, with its inputs and expected values.
 
