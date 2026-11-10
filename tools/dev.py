@@ -169,6 +169,7 @@ def plan(args, reports):
         script('api-fuzz', 'tests/differential/fuzz.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
                '--seed', '0', '--programs', '500', '--jobs', args.jobs, '--cases', ROOT / 'tests/differential/cases',
                *report('api-fuzz'))
+        script('zend-bailout', 'tests/modules/zend/run.py', *php_for('curl', 'sockets'), *engines, *report('zend-bailout'))
     if integrate and {'base64', 'crc32'} & set(modules):
         reference_identity = reports / 'reference-identity.json'
         script('reference-identity', 'tools/extension_identity.py', '--source', ROOT / 'target/upstream/src',
