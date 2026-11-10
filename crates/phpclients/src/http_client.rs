@@ -1543,14 +1543,11 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT of module `module`, with upstream's static method
 /// table and Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    module: c_int,
-    features: u32,
-) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
+pub unsafe extern "C" fn http_client_minit(module: c_int) {
+    let exception = swoole_rs_phpswoole::exception_class();
+    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
+    let features = swoole_rs_phpswoole::codecs();
+    // SAFETY: MINIT of `module`, once.
     let result =
         unsafe { init_phpclients_http_client_minit(exception, shortname, module, features) };
     match result {

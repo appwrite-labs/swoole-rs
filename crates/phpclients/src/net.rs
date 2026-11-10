@@ -211,14 +211,15 @@ method_table! {
     ];
 }
 
-/// `Swoole\Client`, as C++ reads it (`php_swoole_client_check`); MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_client_ce: *mut zend_class_entry = ptr::null_mut();
+/// `swoole_client_ce`: `Swoole\Client`'s class entry, null before MINIT.
+#[must_use]
+pub fn client_class() -> *mut zend_class_entry {
+    CLIENT.entry()
+}
 
 /// `php_swoole_client_minit`.
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Exception` is registered.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
     let exception = swoole_rs_phpswoole::exception_class();
     let methods = if built_with(Switch::Sockets) {
@@ -273,8 +274,6 @@ pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
         unsafe { register_long_constant(name, value, module) };
     }
     EXCEPTION_PARENT.store(exception, Ordering::Release);
-    // SAFETY: MINIT, before any reader.
-    unsafe { swoole_client_ce = ce };
 }
 
 pub(crate) fn data<'a>(object: *mut zend_object) -> &'a mut Data {

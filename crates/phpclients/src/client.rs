@@ -95,15 +95,11 @@ method_table! {
 
 /// MINIT, as `php_swoole_client_coro_minit` did.
 /// # Safety
-/// Called once, at MINIT, with upstream's static method table and a writable
-/// class-entry slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_client_minit(
-    shortname: bool,
-    client_class: *mut *mut zend_class_entry,
-) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phpclients_client_minit(shortname, client_class) };
+/// Called once, at MINIT.
+pub unsafe extern "C" fn client_coro_minit(_module: c_int) {
+    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
+    // SAFETY: MINIT, once.
+    let result = unsafe { init_phpclients_client_minit(shortname) };
     match result {
         Ok(value) => value,
         Err(error) => {
@@ -115,7 +111,6 @@ pub unsafe extern "C" fn swr_v1_phpclients_client_minit(
 
 unsafe fn init_phpclients_client_minit(
     shortname: bool,
-    client_class: *mut *mut zend_class_entry,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: MINIT, with a static table.
     unsafe { CLIENT.register(c"Swoole\\Coroutine\\Client", METHODS.as_ptr(), configure) };
@@ -147,8 +142,6 @@ unsafe fn init_phpclients_client_minit(
         // SAFETY: as above.
         unsafe { CLIENT.constant_long(name, i64::from(value)) };
     }
-    // SAFETY: per the caller, a writable slot.
-    unsafe { *client_class = ce };
 
     Ok(())
 }

@@ -4,6 +4,7 @@
 //! The context and the resolver list are crates/corebase's (`NameResolverContext`,
 //! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup.
 use crate::socket::warn;
+pub use native::swoole_name_resolver_php_remove;
 use std::{
     ffi::{c_char, c_int, c_void},
     mem, ptr,
@@ -147,10 +148,7 @@ mod native {
     /// its kept zval, or null if there was none.
     /// # Safety
     /// `resolver` is null or a live object zval.
-    #[unsafe(no_mangle)]
-    pub(crate) unsafe extern "C" fn swoole_name_resolver_php_remove(
-        resolver: *mut zval,
-    ) -> *mut zval {
+    pub unsafe fn swoole_name_resolver_php_remove(resolver: *mut zval) -> *mut zval {
         // SAFETY: `php_same` reads only the kept zvals and `resolver`.
         unsafe { swoole_rs_corebase::swr_v1_core_name_resolver_remove(php_same, resolver.cast()) }
             .cast()
@@ -226,7 +224,6 @@ method_table! {
 /// MINIT: register `Swoole\NameResolver\Context`.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_name_resolver_minit(_module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe {
@@ -319,8 +316,7 @@ fn add(call: &Call) {
 /// `Swoole\NameResolver`, holding a reference to it.
 /// # Safety
 /// `resolver` is a live object zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
+pub unsafe fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
     // SAFETY: a request-allocated name, released below.
     let name =
         unsafe { swr_zend_string_init(RESOLVER_CLASS.as_ptr().cast(), RESOLVER_CLASS.len()) };
