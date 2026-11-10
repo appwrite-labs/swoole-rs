@@ -255,15 +255,10 @@ impl FlushEffects for Flush {
     }
 
     fn delete_timer(&self) {
-        // SAFETY: crates/timer's.
-        unsafe extern "C-unwind" {
-            #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-            fn swoole_timer_del(node: *mut c_void) -> bool;
-        }
         // SAFETY: the flush's live socket.
         let timer = unsafe { (*self.socket).output.send_timer };
         // SAFETY: `swoole_timer_del(socket->send_timer)`.
-        unsafe { swoole_timer_del(timer) };
+        unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
     }
 
     fn remove_write_event(&self) {

@@ -329,7 +329,7 @@ pub fn timer_uses_reactor() -> bool {
     }
 }
 
-extern "C-unwind" fn listening(_event_num: *mut usize) -> bool {
+extern "C-unwind" fn listening(_event_num: &mut usize) -> bool {
     swr_v1_core_signal_listener_num() == 0 || !swoole_rs_corebase::swr_v1_core_wait_signal()
 }
 

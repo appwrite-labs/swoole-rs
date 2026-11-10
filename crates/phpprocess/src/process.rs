@@ -660,8 +660,8 @@ fn alarm(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: `SwooleTG.timer != nullptr`.
-    if unsafe { worker::swoole_timer_is_available() } {
+    // `SwooleTG.timer != nullptr`.
+    if swoole_rs_timer::swoole_timer_is_available() {
         fatal(
             E_WARNING,
             &message!("cannot use both 'timer' and 'alarm' at the same time"),

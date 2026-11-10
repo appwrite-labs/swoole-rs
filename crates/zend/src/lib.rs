@@ -47,7 +47,7 @@ pub use helpers::{
     update_property,
 };
 pub use minit::{Minit, Parent};
-pub use object::{Object, Props, init_object, set_object};
+pub use object::{Custom, CustomClass, Object, Props, init_object, new_object, set_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use value::{
@@ -62,6 +62,20 @@ pub use zval::{Array, ArrayMut, Entries, Key, Owned, OwnedArray, UNDEF, Value, Z
 /// ([`bailout::finish`]).
 #[macro_export]
 macro_rules! handlers {
+    // Hot handlers whose bodies raise (`bailout::finish`) any bailout they defer.
+    (leaf: $($name:ident => $body:path;)*) => {$(
+        /// A Zend handler.
+        /// # Safety
+        /// Called by Zend with a live frame and return slot.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(
+            frame: *mut $crate::sys::zend_execute_data,
+            value: *mut $crate::sys::zval,
+        ) {
+            // SAFETY: per Zend's handler contract.
+            $body(&unsafe { $crate::Call::new(frame, value) });
+        }
+    )*};
     ($($name:ident => $body:path;)*) => {$(
         /// A Zend handler.
         /// # Safety

@@ -15,8 +15,3 @@ cc = "1.2"
 
 [lints]
 workspace = true
-
-# Upstream's core-tests over the bundled parsers (tests/modules/http/README.md).
-[[test]]
-name = "http_parser"
-path = "../../tests/modules/http/http_parser.rs"

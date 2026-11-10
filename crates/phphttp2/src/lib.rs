@@ -1,8 +1,8 @@
 //! `Swoole\Coroutine\Http2\Client`, `Swoole\Http2\Request` and
 //! `Swoole\Http2\Response` in Rust over the zend crate: registration, the
 //! client's connection, settings, flow control, stream table and send queue,
-//! frame parsing, request building and every method. The coroutine socket and
-//! nghttp2's HPACK codec stay C++ (`native`). `server` is the HTTP/2
+//! frame parsing, request building and every method, with crates/http2's HPACK.
+//! The coroutine socket stays C++ (`native`). `server` is the HTTP/2
 //! server's frames and responses over `session`'s sessions and streams. See
 //! docs/zend.md.
 //!

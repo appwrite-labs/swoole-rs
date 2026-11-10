@@ -1,20 +1,19 @@
 //! `Swoole\Lock`: a process-shared mutex, rwlock or spinlock in Swoole's global
 //! memory pool, over the locks crate. Like upstream, a lock outlives its object:
 //! forked workers may still hold it.
-use std::ffi::{c_int, c_void};
-use swoole_rs_locks::{
-    swr_v1_locks_align, swr_v1_locks_init, swr_v1_locks_lock, swr_v1_locks_size,
-    swr_v1_locks_unlock,
+use std::sync::atomic::AtomicU64;
+use std::{
+    cell::OnceCell,
+    ffi::{CStr, c_int},
 };
+use swoole_rs_locks::{Lock, swr_v1_locks_size};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
-    Call, Class, Object, method_table, register_long_constant,
-    sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
-        zend_object_handlers,
-    },
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    Call, Custom, CustomClass, Minit,
+    bailout::{self, Bailout},
+    method_table,
+    sys::ZEND_ACC_PUBLIC,
 };
 
 /// `swoole::Lock::Type`.
@@ -23,8 +22,6 @@ pub(crate) const MUTEX: i64 = 3;
 pub(crate) const SPIN_LOCK: i64 = 5;
 /// `LOCK_EX` from `<sys/file.h>` (Linux and macOS).
 pub(crate) const LOCK_EX: i64 = 2;
-/// `alignof(std::max_align_t)`: what the pool's allocations guarantee.
-const MAX_ALIGN: usize = 16;
 
 /// Bit `1 << type` for each lock type the build has: upstream's `HAVE_RWLOCK`
 /// (both platforms) and `HAVE_SPINLOCK` (Linux; macOS has no `pthread_spin_lock`).
@@ -35,46 +32,36 @@ pub(crate) const KINDS: u32 = 1 << MUTEX
     } else {
         0
     };
-/// The timed-lock capabilities `swr_v1_locks_lock` takes: `HAVE_MUTEX_TIMEDLOCK`
-/// (1) and `HAVE_RWLOCK_TIMEDRDLOCK` (2), which Linux has and macOS lacks.
+/// The timed-lock capabilities `Lock::lock` takes: `HAVE_MUTEX_TIMEDLOCK` (1)
+/// and `HAVE_RWLOCK_TIMEDRDLOCK` (2), which Linux has and macOS lacks.
 pub(crate) const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = 509;
-static LOCK: Class = Class::new();
+static LOCK: CustomClass<Held> = CustomClass::new();
 
-/// `struct LockObject { Lock *lock; zend_object std; }`: the lock's storage and
-/// type, null until `__construct`.
-#[repr(C)]
-struct Held {
-    storage: *mut c_void,
-    kind: i32,
-}
+/// `struct LockObject { Lock *lock; zend_object std; }`: unset until `__construct`.
+pub(crate) struct Held(OnceCell<Lock>);
 
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it;
-    // zeroed `Held` is the unconstructed lock.
-    unsafe { Object::<Held>::create(&LOCK, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    unsafe { Object::<Held>::dtor(std) };
-}
-
-fn held(call: &Call) -> &'static mut Held {
-    // SAFETY: Lock methods are non-static, so `$this` is one of our objects.
-    unsafe { Object::<Held>::data(call.this()) }
+impl Custom for Held {
+    fn class() -> &'static CustomClass<Self> {
+        &LOCK
+    }
+    fn new() -> Self {
+        Self(OnceCell::new())
+    }
 }
 
 /// The constructed lock, or Swoole's fatal error (which exits).
-fn constructed(call: &Call) -> Option<&'static mut Held> {
-    let held = held(call);
-    if held.storage.is_null() {
-        // SAFETY: Swoole's fatal error hook; the handler's frames own nothing.
-        unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
-        return None;
+fn constructed(call: &Call) -> Option<&Lock> {
+    let lock = call.custom::<Held>()?.0.get();
+    if lock.is_none() {
+        let message = c"must call constructor first";
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+            WRONG_OPERATION,
+            message,
+        ));
     }
-    Some(held)
+    lock
 }
 
 method_table! {
@@ -85,64 +72,53 @@ method_table! {
     ];
 }
 
-/// `php_swoole_lock_minit`: register the class and its constants.
-/// # Safety
-/// Called once, at MINIT, after Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_lock_minit(module_number: c_int) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { LOCK.register(c"Swoole\\Lock", METHODS.as_ptr(), configure) };
-    let types = [
+/// The lock types the build has, under their class and global constant names.
+fn types() -> impl Iterator<Item = (&'static CStr, &'static CStr, i64)> {
+    [
         (c"MUTEX", c"SWOOLE_MUTEX", MUTEX),
         (c"RWLOCK", c"SWOOLE_RWLOCK", RW_LOCK),
         (c"SPINLOCK", c"SWOOLE_SPINLOCK", SPIN_LOCK),
-    ];
-    let enabled = |kind: i64| KINDS & (1 << kind) != 0;
-    for (name, _, kind) in types.iter().filter(|(_, _, kind)| enabled(*kind)) {
-        // SAFETY: MINIT, after registration.
-        unsafe { LOCK.constant_long(name, *kind) };
-    }
-    // SAFETY: as above.
-    unsafe { LOCK.property_long(c"errCode", 0) };
-    for (_, name, kind) in types.iter().filter(|(_, _, kind)| enabled(*kind)) {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { register_long_constant(name, *kind, module_number) };
-    }
+    ]
+    .into_iter()
+    .filter(|(_, _, kind)| KINDS & (1 << kind) != 0)
 }
 
-/// Not serializable, clone and unset denied, custom object.
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Object::<Held>::install(entry, handlers, create, free);
+swoole_rs_zend::minit!(lock_minit => register);
+
+/// `php_swoole_lock_minit`: register the class and its constants.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "minit! raises the bailout a MINIT body returns"
+)]
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register_object::<Held>(c"Swoole\\Lock", &METHODS.0, 0);
+    for (name, _, kind) in types() {
+        minit.class_constant_long(&LOCK, name, kind);
+    }
+    minit.property_long(&LOCK, c"errCode", 0);
+    for (_, name, kind) in types() {
+        minit.long_constant(name, kind);
+    }
+    Ok(())
 }
 
 /// A shared lock of `kind` in the pool, as `new Mutex(true)` (and its `RWLock`
 /// and `SpinLock` twins) makes one. Upstream throws a C++ exception, which
 /// terminates the process, when the pool or the lock's init fails.
-fn new_lock(kind: i32) -> *mut c_void {
-    let size = swr_v1_locks_size(kind);
-    if size == 0 || swr_v1_locks_align(kind) > MAX_ALIGN {
-        std::process::abort();
-    }
-    let Ok(size) = u32::try_from(size) else {
-        std::process::abort();
-    };
-    let storage = pool::alloc(size);
-    // SAFETY: `size` fresh bytes, aligned to `MAX_ALIGN`, shared across forks.
-    if storage.is_null() || unsafe { swr_v1_locks_init(storage, kind, 1) } != 0 {
-        std::process::abort();
-    }
-    storage
+fn new_lock(kind: i32) -> Lock {
+    let words = swr_v1_locks_size(kind).div_ceil(size_of::<AtomicU64>());
+    pool::words(words)
+        .and_then(|storage| Lock::shared(kind, storage))
+        .unwrap_or_else(|| std::process::abort())
 }
 
 /// `__construct(int $type = SWOOLE_MUTEX)`.
 fn construct(call: &Call) {
-    let held = held(call);
-    if !held.storage.is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+    let Some(held) = call.custom::<Held>() else {
+        return;
+    };
+    if held.0.get().is_some() {
+        call.constructed_twice();
         call.set_bool(false);
         return;
     }
@@ -153,18 +129,11 @@ fn construct(call: &Call) {
     let supported = (0..32).contains(&kind) && KINDS & (1 << kind) != 0;
     let Some(kind) = i32::try_from(kind).ok().filter(|_| supported) else {
         // Upstream passes the format unformatted, with the type as the code.
-        let exception = swoole_rs_phpswoole::exception_class();
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(exception, c"lock type[%d] is not support", kind);
-        }
+        swoole_rs_phpswoole::exception().throw(c"lock type[%d] is not support", kind);
         call.set_bool(false);
         return;
     };
-    *held = Held {
-        storage: new_lock(kind),
-        kind,
-    };
+    held.0.get_or_init(|| new_lock(kind));
     call.set_bool(true);
 }
 
@@ -185,8 +154,8 @@ pub(crate) fn milliseconds(seconds: f64) -> i32 {
     (seconds * 1000.0) as i64 as i32
 }
 
-/// `lock(int $operation = LOCK_EX, float $timeout = -1): bool`.
-fn lock(call: &Call) {
+/// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`.
+pub(crate) fn lock_with(call: &Call, lock: impl FnOnce(&Call) -> Option<&Lock>) {
     let parsed = call
         .arity(0, 2)
         .and_then(|()| Ok((call.long(1, LOCK_EX)?, call.double(2, -1.0)?)));
@@ -194,30 +163,23 @@ fn lock(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(held) = constructed(call) else {
-        return;
-    };
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-    // SAFETY: a lock `new_lock` initialised in the pool.
-    let result = unsafe {
-        swr_v1_locks_lock(
-            held.storage,
-            held.kind,
-            operation as i32,
-            milliseconds(timeout),
-            CAPABILITIES,
-        )
-    };
-    check(call, result);
+    if let Some(lock) = lock(call) {
+        #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
+        check(
+            call,
+            lock.lock(operation as i32, milliseconds(timeout), CAPABILITIES),
+        );
+    }
+}
+
+fn lock(call: &Call) {
+    lock_with(call, constructed);
 }
 
 /// `unlock(): bool`.
 fn unlock(call: &Call) {
-    if let Some(held) = constructed(call) {
-        // SAFETY: as in `lock`.
-        check(call, unsafe {
-            swr_v1_locks_unlock(held.storage, held.kind)
-        });
+    if let Some(lock) = constructed(call) {
+        check(call, lock.unlock());
     }
 }
 
