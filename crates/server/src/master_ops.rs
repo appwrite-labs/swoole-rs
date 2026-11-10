@@ -2067,7 +2067,7 @@ static FORCED_EXIT_TIME: core::sync::atomic::AtomicI64 = core::sync::atomic::Ato
 
 /// The forced-termination exit condition: past `max_wait_time`, stop the loop.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-extern "C-unwind" fn forced_exit(_: *mut usize) -> bool {
+extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
     let serv = FORCED_EXIT_SERVER.load(Relaxed);
     // SAFETY: the server that is shutting down, live until its loop exits.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();

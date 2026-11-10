@@ -385,7 +385,7 @@ pub fn install_exit_condition() {
 
 /// The reactor's user exit condition: whether it may exit. A bailout is raised
 /// from here, as upstream's lambda raised it.
-pub(crate) extern "C-unwind" fn reactor_can_exit(_event_num: *mut usize) -> bool {
+pub(crate) extern "C-unwind" fn reactor_can_exit(_event_num: &mut usize) -> bool {
     match can_exit() {
         Ok(exit) => exit,
         Err(error) => {

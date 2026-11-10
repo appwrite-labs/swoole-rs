@@ -50,7 +50,7 @@ mod registry {
         unsafe { wait_reap(signo, resume) };
     }
 
-    extern "C-unwind" fn no_waiters(_event_num: *mut usize) -> bool {
+    extern "C-unwind" fn no_waiters(_event_num: &mut usize) -> bool {
         wait_count() == 0
     }
 
