@@ -16,12 +16,13 @@ use std::{
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, Class, Invalid, Object, OwnedArray, Value, declare_bool, declare_long,
-    declare_string, register_long_constant, set_object, string,
+    Array, Call, Class, Invalid, Object, OwnedArray, Value, ZString, declare_bool, declare_long,
+    declare_string, register_long_constant, set_object,
+    string::ZBuf,
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, module_registry,
         zend_class_entry, zend_get_type_by_const, zend_hash_str_find, zend_object,
-        zend_object_handlers, zend_string, zval, zval_ptr_dtor,
+        zend_object_handlers, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, unset_property_deny, value,
 };
@@ -341,40 +342,23 @@ fn pagesize() -> usize {
     size
 }
 
-/// `sw_zend_string_recycle`: shrink a buffer string to `used` bytes, giving the
+/// `sw_zend_string_recycle`: end the buffer at its written bytes, giving the
 /// memory back when it wasted more than half of a buffer over a page.
-/// # Safety
-/// `buffer` is an unshared string of `allocated` bytes, `used` of them filled.
-unsafe fn recycle(buffer: *mut zend_string, allocated: usize, used: usize) -> *mut zend_string {
-    let mut buffer = buffer;
+fn recycle(mut buffer: ZBuf) -> ZString {
+    let (allocated, used) = (buffer.capacity(), buffer.len());
     if allocated != used && allocated > pagesize() && allocated > used * 2 {
-        // SAFETY: per the caller.
-        buffer = unsafe { string::realloc(buffer, used) };
+        buffer.shrink_to_fit();
     }
-    // SAFETY: per the caller.
-    unsafe { string::truncate(buffer, used) };
-    buffer
+    buffer.into_zstring()
 }
 
-/// Return the first `bytes` of `buffer` (`length` allocated): false when
+/// Return what a transfer of `bytes` wrote into `buffer`: false when
 /// negative, '' when zero.
-fn set_received(call: &Call, buffer: *mut zend_string, length: usize, bytes: isize) {
-    match usize::try_from(bytes) {
-        Ok(used) if used > 0 => {
-            // SAFETY: an unshared buffer string the transfer filled `used` bytes of.
-            let buffer = unsafe { recycle(buffer, length, used) };
-            // SAFETY: the return value takes the buffer's only reference.
-            unsafe { call.set_string(buffer) };
-        }
-        result => {
-            // SAFETY: the buffer was never shared.
-            unsafe { string::free(buffer) };
-            if result.is_ok() {
-                call.set_empty_string();
-            } else {
-                call.set_bool(false);
-            }
-        }
+fn set_received(call: &Call, buffer: ZBuf, bytes: isize) {
+    match bytes {
+        1.. => call.set_zstring(recycle(buffer)),
+        0 => call.set_empty_string(),
+        _ => call.set_bool(false),
     }
 }
 
@@ -573,11 +557,10 @@ fn peek(call: &Call) {
 
 /// Fill a new string of `length` bytes with one transfer and return it.
 fn receive(call: &Call, socket: Co, op: Transfer, length: usize, timeout: f64) {
-    let buffer = string::alloc(length);
-    // SAFETY: a buffer of `length` bytes.
-    let bytes = unsafe { socket.transfer(op, string::val(buffer).cast(), length, timeout) };
+    let mut buffer = ZBuf::with_capacity(length);
+    let bytes = socket.receive(op, &mut buffer, timeout);
     sync(call, socket);
-    set_received(call, buffer, length, bytes);
+    set_received(call, buffer, bytes);
 }
 
 /// `recv`, `recvAll`, `recvLine` and `recvWithBuffer`:
@@ -624,17 +607,10 @@ fn recv_packet(call: &Call) {
     if length == 0 {
         return call.set_empty_string();
     }
-    let packet = socket.pop_packet();
-    if packet.is_null() {
-        return call.set_bool(false);
+    match socket.pop_packet(length) {
+        Some(packet) => call.set_zstring(packet),
+        None => call.set_bool(false),
     }
-    // `zend::assign_zend_string_by_val`: the packet is the value of a zend
-    // string of at least `length` bytes the caller now owns.
-    let packet = string::from_val(packet.cast());
-    // SAFETY: as above.
-    unsafe { string::truncate(packet, length) };
-    // SAFETY: as above.
-    unsafe { call.set_string(packet) };
 }
 
 /// `send` and `sendAll`: `(string $data, float $timeout = 0): int|false`.
@@ -762,14 +738,7 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
     let Some(count) = vector_count(socket, array) else {
         return call.set_bool(false);
     };
-    let mut vectors: Vec<iovec> = Vec::with_capacity(count);
-    let mut total = 0usize;
-    let release = |vectors: &[iovec]| {
-        for vector in vectors {
-            // SAFETY: each buffer is a string allocated below and never shared.
-            unsafe { string::free(string::from_val(vector.iov_base.cast())) };
-        }
-    };
+    let mut buffers: Vec<ZBuf> = Vec::with_capacity(count);
     for (index, (_, item)) in array.entries().enumerate() {
         let Some(length) = item.as_long() else {
             let given = type_name(item);
@@ -777,7 +746,6 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
                 libc::EINVAL,
                 &format!("Item #[{index}] must be of type int, {given} given"),
             );
-            release(&vectors);
             return call.set_bool(false);
         };
         let Ok(length) = usize::try_from(length) else {
@@ -785,57 +753,42 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
                 libc::EINVAL,
                 &format!("Item #[{index}] must be greater than 0"),
             );
-            release(&vectors);
             return call.set_bool(false);
         };
-        vectors.push(iovec {
-            iov_base: string::val(string::alloc(length)).cast(),
-            iov_len: length,
-        });
-        total += length;
+        buffers.push(ZBuf::with_capacity(length));
     }
+    let total: usize = buffers.iter().map(ZBuf::capacity).sum();
+    let vectors: Vec<iovec> = buffers
+        .iter_mut()
+        .map(|buffer| iovec {
+            iov_base: buffer.as_mut_ptr().cast(),
+            iov_len: buffer.capacity(),
+        })
+        .collect();
     // SAFETY: unshared buffers of the listed lengths.
     let (read, stopped, offset) = unsafe { socket.vector(op, &vectors, timeout) };
     let read = match usize::try_from(read) {
-        Ok(0) | Err(_) => {
-            release(&vectors);
-            return if read == 0 {
-                call.set_empty_array();
-            } else {
-                call.set_bool(false);
-            };
-        }
+        Ok(0) => return call.set_empty_array(),
+        Err(_) => return call.set_bool(false),
         Ok(read) => read,
     };
-    // SAFETY: the return slot is writable and holds nothing yet.
-    unsafe { value::array_init(call.return_value()) };
-    let mut filled = vectors.len();
-    if read < total {
-        // The read stopped `offset` bytes into vector `stopped`: keep that
-        // much of it and free the vectors after it.
-        let stopped = usize::try_from(stopped).unwrap_or(0);
-        if let Some(vector) = vectors.get_mut(stopped) {
-            filled = stopped + 1;
-            // SAFETY: a buffer string allocated above, `offset` bytes of it filled.
-            let kept = unsafe {
-                recycle(
-                    string::from_val(vector.iov_base.cast()),
-                    vector.iov_len,
-                    offset,
-                )
-            };
-            vector.iov_base = string::val(kept).cast();
-            vector.iov_len = offset;
-        }
-        release(vectors.get(filled..).unwrap_or_default());
+    // A short read stopped `offset` bytes into vector `stopped`: keep that much
+    // of it and drop the vectors after it.
+    let stopped = usize::try_from(stopped).unwrap_or(0);
+    let stopped = (read < total && stopped < buffers.len()).then_some(stopped);
+    buffers.truncate(stopped.map_or(buffers.len(), |stopped| stopped + 1));
+    let mut result = OwnedArray::default();
+    for (index, mut buffer) in buffers.into_iter().enumerate() {
+        let len = if stopped == Some(index) {
+            offset.min(buffer.capacity())
+        } else {
+            buffer.capacity()
+        };
+        // SAFETY: the read filled each vector before the one it stopped in.
+        unsafe { buffer.set_len(len) };
+        result.push(recycle(buffer).into());
     }
-    for vector in vectors.iter().take(filled) {
-        let buffer = string::from_val(vector.iov_base.cast());
-        // SAFETY: an unshared buffer string of at least `iov_len` bytes.
-        unsafe { string::truncate(buffer, vector.iov_len) };
-        // SAFETY: the array takes the buffer's only reference.
-        unsafe { value::push_str(call.return_value(), buffer) };
-    }
+    call.set_owned(result.into_owned());
 }
 
 fn read_vector_once(call: &Call) {
@@ -878,28 +831,18 @@ fn recvfrom(call: &Call) {
     };
     let Some(socket) = open(call) else { return };
     let length = buffer_length(BUFFER_SIZE_BIG);
-    let buffer = string::alloc(length);
-    // SAFETY: a buffer of `length` bytes.
-    let bytes = unsafe { socket.recvfrom(string::val(buffer).cast(), length, timeout) };
+    let mut buffer = ZBuf::with_capacity(length);
+    let bytes = socket.recvfrom(&mut buffer, timeout);
     sync(call, socket);
-    let Ok(used @ 1..) = usize::try_from(bytes) else {
-        // SAFETY: the buffer was never shared.
-        unsafe { string::free(buffer) };
-        return if bytes == 0 {
-            call.set_empty_string();
-        } else {
-            call.set_bool(false);
-        };
-    };
+    if bytes <= 0 {
+        return set_received(call, buffer, bytes);
+    }
     // SAFETY: the dereferenced by-reference argument: release what it held and
     // make it the peer's address.
     unsafe { zval_ptr_dtor(peer) };
     // SAFETY: as above, released.
     unsafe { peer.write(address(socket).into_owned().into_zval()) };
-    // SAFETY: an unshared buffer string `used` bytes of which were filled.
-    unsafe { string::truncate(buffer, used) };
-    // SAFETY: the return value takes the buffer's only reference.
-    unsafe { call.set_string(buffer) };
+    call.set_zstring(buffer.into_zstring());
 }
 
 /// `["address" => .., "port" => ..]` of the socket's last address.

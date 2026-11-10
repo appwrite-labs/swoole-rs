@@ -1,5 +1,7 @@
 [workspace]
-members = ["crates/*"]
+# The case packages are upstream's server and coroutine core-tests as Rust: they link the
+# crates and the C++ tests/modules/hooks/system.py builds, so only that script builds them.
+members = ["crates/*", "tests/modules/hooks/system", "tests/modules/reactor/base", "tests/modules/http/server"]
 resolver = "3"
 
 # A Rust panic must never unwind into PHP; tests still unwind.

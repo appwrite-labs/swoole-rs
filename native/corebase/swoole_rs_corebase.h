@@ -30,14 +30,7 @@ void swr_v1_core_swoole_init(void);
  * of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe
  * Socket *, the fatal-error and backtrace hooks) are native objects Rust only
- * holds. swr_v1_core_init returns false when already initialised; otherwise it
- * resets the record and sets running, enable_coroutine, the page size, the
- * file-content cap, the CPU count, DNS tries and the random() seed.
- * swr_v1_core_max_sockets: RLIMIT_NOFILE's soft limit as uint32_t, capped at
- * limit; -1 (errno kept) when getrlimit fails. */
-bool swr_v1_core_init(void);
-void swr_v1_core_reset(void);
-int64_t swr_v1_core_max_sockets(uint32_t limit);
+ * holds. */
 uint16_t swr_v1_core_cpu_num(void);
 bool swr_v1_core_running(void);
 void swr_v1_core_set_running(bool value);
@@ -88,11 +81,6 @@ static_assert(sizeof(NameResolver::Context) == 40 && offsetof(NameResolver::Cont
                   offsetof(NameResolver::Context, dtor) == 32,
               "crates/corebase/src/name_resolver.rs mirrors NameResolver::Context");
 }  // namespace swoole
-extern "C" {
-/* Asks each listed resolver; true when one answered (through assign) or ended the lookup. */
-bool swr_v1_core_name_resolver_resolve(const char *name, size_t length, swoole::NameResolver::Context *context,
-                                       void *out, void (*assign)(void *out, const char *text, size_t length));
-}
 /* Upstream's error and log API under its C++ symbols: Rust's (crates/error,
  * crates/utilities, crates/corebase). */
 const char *swoole_strerror(int code);

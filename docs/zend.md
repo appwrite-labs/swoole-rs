@@ -34,8 +34,8 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
 
 All three sit behind a `php` feature and are empty without it, so the
 workspace builds without PHP. `crates/ffi`'s `php` feature turns on each
-family crate's `php`. The hybrid build makes two archives: `libswoole_rs_php.a`
-with `php` for the extension (thin LTO outside `--dev`), and the Zend-free
+family crate's `php`. `crates/ext` builds `swoole.so` with `php` on (fat LTO under the benchmarks'
+`--profile release-lto`); `tools/build_ext.py --native` also builds the Zend-free
 `libswoole_rs_ffi.a` without it, which the native gates link into executables.
 
 ## Methods

@@ -10,7 +10,7 @@ use std::{
 };
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout, method_table, string,
+    Call, Class, Object, ZString, bailout, method_table, string,
     sys::{
         IS_ARRAY, IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_efree, swr_zend_emalloc, swr_zend_runtime_instanceof, swr_zend_string_init,
@@ -294,8 +294,7 @@ fn lookup(call: &Call) {
             (&raw mut run).cast(),
         )
     } {
-        // SAFETY: the return slot takes the new string.
-        Ok(()) => unsafe { call.set_string(string::copy(&result)) },
+        Ok(()) => call.set_zstring(ZString::new(&result)),
         Err(bailout) => bailout.defer(),
     }
 }

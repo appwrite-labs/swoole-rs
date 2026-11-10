@@ -28,7 +28,6 @@ const STREAM: c_int = 0;
 const LENGTH_L4: c_int = 1;
 const EOF_CRLF: c_int = 2;
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_ZN6swoole6StringD1Ev"]
     fn string_drop(this: *mut CppString);

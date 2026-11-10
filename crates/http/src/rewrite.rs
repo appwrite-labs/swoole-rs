@@ -54,11 +54,15 @@ impl RewriteRules {
 /// `std::regex_replace(url, regex, format)`, or `None` when nothing matches. After an empty
 /// match, libstdc++'s iterator first tries a non-empty match at the same place, then searches
 /// from the next byte; after any other match it searches from its end, empty matches included.
+/// Its first step doesn't pass `match_prev_avail` yet, so the non-empty try after a first,
+/// empty match sees the input begin there.
 fn replace_all(regex: &Regex, url: &[u8], format: &[u8]) -> Option<Vec<u8>> {
-    let mut caps = regex.search(url, 0, false)?;
+    let mut caps = regex.search(url, 0, 0, false)?;
     let mut out = Vec::new();
     let mut previous = 0;
+    let mut first = true;
     loop {
+        let first_step = std::mem::replace(&mut first, false);
         let std::ops::Range { start, end } = caps.group(0)?;
         out.extend_from_slice(url.get(previous..start)?);
         expand(&mut out, url, &caps, previous, format);
@@ -68,16 +72,14 @@ fn replace_all(regex: &Regex, url: &[u8], format: &[u8]) -> Option<Vec<u8>> {
             if from == url.len() {
                 break;
             }
-            if let Some(next) = regex
-                .search(url, from, true)
-                .filter(|next| next.group(0).is_some_and(|span| !span.is_empty()))
-            {
+            let begin = if first_step { from } else { 0 };
+            if let Some(next) = regex.search(url, begin, from, true) {
                 caps = next;
                 continue;
             }
             from += 1;
         }
-        match regex.search(url, from, false) {
+        match regex.search(url, 0, from, false) {
             Some(next) => caps = next,
             None => break,
         }
@@ -219,10 +221,13 @@ mod tests {
             Some(b"a<1_2>b".to_vec())
         );
         assert_eq!(rewrite("~[\\d.-]+~", b"v1.2-3"), Some(b"v<1.2-3>".to_vec()));
+        // libstdc++'s escapes: `\uHHHH` keeps its low byte, `\cX` is `X`, `\0` is NUL even
+        // before a digit, and any other letter is itself.
         assert_eq!(
-            rewrite("~\\x41\\u0042\\cJ~", b"AB\n"),
-            Some(b"<AB\n>".to_vec())
+            rewrite("~\\x41\\u0142\\cJ\\q\\A\\01~", b"ABJqA\x001"),
+            Some(b"<ABJqA\x001>".to_vec())
         );
+        assert_eq!(rewrite("~[[:DIGIT:]]+~", b"a12"), Some(b"a<12>".to_vec()));
         assert_eq!(rewrite("~[]~", b"ab"), None);
         assert_eq!(rewrite("~a[^]~", b"a\n"), Some(b"<a\n>".to_vec()));
         assert_eq!(rewrite("~\\Bb~", b"ab b"), Some(b"a<b> b".to_vec()));
@@ -236,12 +241,12 @@ mod tests {
             "[\\d-z]",
             "*a",
             "^*",
-            "\\q",
+            "\\c",
+            "[\\B]",
             "[[:word:]]",
             "(a)\\1",
             "a(?=b)",
             "(?i)a",
-            "\\u0100",
         ] {
             assert_eq!(rewrite(&format!("~{pattern}~"), b"ab"), None, "{pattern}");
         }
@@ -254,11 +259,10 @@ mod tests {
             None,
             "over the state limit"
         );
-        // A body with no states repeats to nothing, however large the count.
-        assert_eq!(
-            rewrite("~a(?:){4294967295}((?:){4294967295}){9}~", b"ba"),
-            Some(b"b<a>".to_vec())
-        );
+        // Every copy of a body adds states, `(?:)`'s too, and a count over INT_MAX throws.
+        for pattern in ["a(?:){100000}", "a(?:){4294967295}((?:){4294967295}){9}"] {
+            assert_eq!(rewrite(&format!("~{pattern}~"), b"ba"), None, "{pattern}");
+        }
     }
 
     #[test]
@@ -269,6 +273,14 @@ mod tests {
         assert_eq!(
             apply(&[(b"~a*~", b"X")], b"baaac"),
             Some(b"XbXXcX".to_vec())
+        );
+        // After an empty match, the first non-empty match at its end in priority order,
+        // which sees that end as the input's start when the empty match was the first.
+        assert_eq!(apply(&[(b"~a*?~", b"X")], b"aa"), Some(b"XXXXX".to_vec()));
+        assert_eq!(apply(&[(b"~|a~", b"X")], b"/a"), Some(b"X/XXX".to_vec()));
+        assert_eq!(
+            apply(&[(b"~\\B|^b~", b"X")], b"abab"),
+            Some(b"aXXXaXb".to_vec())
         );
         assert_eq!(
             apply(&[(b"~.~", b"-")], b"a\rb\n"),
