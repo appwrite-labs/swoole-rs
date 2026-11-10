@@ -311,13 +311,13 @@ pub mod exports {
             swoole_rs_websocket::frame_length(bytes).0
         }
         #[inline(always)]
-        fn dispatch(r: &Recv, b: &CppString, length: u64) -> c_int {
+        fn dispatch(r: &Recv, b: &CppString, start: usize) -> c_int {
             let frame = RecvData {
                 info: DataHead {
-                    len: u32::try_from(length).unwrap_or(u32::MAX),
+                    len: u32::try_from(b.offset).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
-                data: b.str,
+                data: b.str.wrapping_add(start).cast_const(),
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
             unsafe {
