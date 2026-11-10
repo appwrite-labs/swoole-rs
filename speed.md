@@ -33,6 +33,6 @@ Callgrind instructions per request (lower is better), measured by the merge tier
 | websocket-64k | 156,013 | 159,693 | 0.9770× | 0.62× | ✅ |
 | websocket-fragmented | 13,549 | 16,194 | 0.8367× | 0.78× | ✅ |
 | upload | 1,780,599 | 1,322,457 | 1.3464× | 1.05× | ❌ |
-| static | 39,209 | 40,981 | 0.9568× | 1.03× | ✅ |
+| static | 39,209 | 40,981 | 0.9568× | 1.0× | ✅ |
 
 Geometric mean 0.9911×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).
