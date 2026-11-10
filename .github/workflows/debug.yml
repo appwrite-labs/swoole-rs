@@ -40,7 +40,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/php-debug
-          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
       - run: .devcontainer/php.sh target/php-debug --enable-debug
       - run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/php-debug
-          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/php-debug
-          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
