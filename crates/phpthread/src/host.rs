@@ -59,7 +59,7 @@ pub(crate) fn is_co_socket(object: &Value) -> bool {
 /// `object` is a live Coroutine\Socket zval.
 pub(crate) unsafe fn co_socket_cast(object: *mut zval) -> (c_int, c_int) {
     // SAFETY: per the caller.
-    let socket = unsafe { swoole_rs_phpclients::php_swoole_get_socket(object) };
+    let socket = unsafe { swoole_rs_phpclients::get_socket(object) };
     if socket.is_null() {
         return (-1, 0);
     }
@@ -81,7 +81,7 @@ pub(crate) unsafe fn co_socket_cast(object: *mut zval) -> (c_int, c_int) {
 /// In a request; `out` is writable.
 pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) -> bool {
     // SAFETY: per the caller.
-    let object = unsafe { swoole_rs_phpclients::php_swoole_create_socket_from_fd(fd, kind) };
+    let object = unsafe { swoole_rs_phpclients::create_from_fd(fd, kind) };
     if object.is_null() {
         return false;
     }
