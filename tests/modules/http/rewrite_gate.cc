@@ -25,8 +25,10 @@ int main(){try{
   {{"~a*~","X"}},{{"~a|~","X"}},{{"~b*~","-"}},{{"~(a)|(b)~","[$1|$2]"}},{{"~a~","[$`|$&|$'|$$|$x|$9|$01|$10|$]"}},{{"~a~","$"}},
   {{"~^/view/post/(\\d+)$~","/static/$1.html"},{"/article/","/static/article/"}},{{"~\\w+~","<$&>"}},{{"~\\s~","_"}},{{"~.~","."}},{{"~\\b~","|"}},{{"~[^/]+$~","index"}},{{"~(/a)+~","$1"}},{{"~a{2}~","2"}},{{"~\\/~","\\"}},{{"~^~","^"}},{{"~$~","$"}},
   // Lazy quantifiers, alternation order, counted repeats and POSIX classes.
-  {{"~a+?~","<$&>"}},{{"~(a|ab)(c|bcd)(d*)~","[$1|$2|$3]"}},{{"~x{1,2}?~","y"}},{{"~(?:ab)+~","-"}},{{"~[a-c]+~","<$&>"}},{{"~\\d{2,}~","N"}},{{"~[^a-z/]~","_"}},{{"~[[:digit:]]+~","#"}},{{"~[[:alpha:]_]+$~","$&!"}} };
- std::vector<std::string> urls={"","/","/a","/a/b","/ab","/aa",std::string("/a\0tail",7),std::string(4096,'a'),"baaac","/view/post/3","/view/post/x","/article/settings.html","a b\r\nc","/a/a/a","abcd","/a1b22c333/_x"};
+  {{"~a+?~","<$&>"}},{{"~(a|ab)(c|bcd)(d*)~","[$1|$2|$3]"}},{{"~x{1,2}?~","y"}},{{"~(?:ab)+~","-"}},{{"~[a-c]+~","<$&>"}},{{"~\\d{2,}~","N"}},{{"~[^a-z/]~","_"}},{{"~[[:digit:]]+~","#"}},{{"~[[:alpha:]_]+$~","$&!"}},
+  // A non-empty match after an empty one, escapes as libstdc++ reads them, and the state limit.
+  {{"~a*?~","X"}},{{"~|a~","X"}},{{"~\\B|^b~","X"}},{{"~\\x41\\u0142\\cJ\\q\\A\\01~","<$&>"}},{{"~[[:DIGIT:]]+~","#"}},{{"~a(?:){100000}~","b"}},{{"~a(?:a{0}){100000}~","b"}},{{"~a(?:){4294967295}~","b"}} };
+ std::vector<std::string> urls={"","/","/a","/a/b","/ab","/aa",std::string("/a\0tail",7),std::string(4096,'a'),"baaac","/view/post/3","/view/post/x","/article/settings.html","a b\r\nc","/a/a/a","abcd","/a1b22c333/_x","abab",std::string("ABJqA\0" "1",7)};
  for(auto &url:urls)for(auto &r:rules)compare(url,r);
  {std::mt19937 rng(34129);for(unsigned i=0;i<2048;++i){std::string url;for(unsigned n=rng()%80;n--;)url.push_back(static_cast<char>(rng()%256));Rules r;for(unsigned n=rng()%8;n--;){std::string prefix=url.substr(0,url.empty()?0:rng()%(url.size()+1)),replacement;for(unsigned m=rng()%80;m--;)replacement.push_back(static_cast<char>(rng()%256));if(rng()%2)prefix="mismatch"+prefix;r.emplace_back(prefix,replacement);}compare(url,r);}}
  upstream_rewrite::Server a;if(a.apply_rewrite_rules(nullptr))throw std::runtime_error("null rules short circuit");
