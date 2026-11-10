@@ -47,7 +47,7 @@ pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
     }));
     let buffer = state.buffer.get_mut().as_mut();
     PreparedProxy {
-        buffer: buffer.map_or(ptr::null_mut(), |value| Box::as_mut_ptr(value).cast()),
+        buffer: buffer.map_or(ptr::null_mut(), |value| (&raw mut **value).cast()),
         fields: state.fields.get(),
         strings: state.strings.each_ref().map(ptr::from_ref),
         // Last, and with no call: a `&mut` reborrow, or moving a box, would end the views.
@@ -87,7 +87,7 @@ impl ProxyState {
             unsafe { swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len()) }
         })
     }
-    /// The packet, through `Box::as_mut_ptr`, which leaves the pointers handed out
+    /// The packet, through `&raw mut **box` (what `Box::as_mut_ptr` expands to; that method is unstable on the fuzz toolchain), which leaves the pointers handed out
     /// before valid.
     /// # Safety
     /// self is a SOCKS owner, exclusively lent for packet writes.
@@ -95,7 +95,7 @@ impl ProxyState {
         // SAFETY: the SOCKS owner contains the exclusive packet allocation.
         unsafe { &mut *self.buffer.get() }
             .as_mut()
-            .map_or(ptr::null_mut(), |value| Box::as_mut_ptr(value).cast())
+            .map_or(ptr::null_mut(), |value| (&raw mut **value).cast())
     }
 }
 #[repr(C)]
