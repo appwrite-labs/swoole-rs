@@ -32,6 +32,18 @@ class Ratchet(unittest.TestCase):
         self.assertEqual(callgrind.ratchet(results, limits), {'plaintext': 0.97})
         self.assertEqual(callgrind.lowest(0.94), 0.94)
 
+    def test_a_workload_over_its_limit_is_annotated(self):
+        from unittest import mock
+        import tempfile
+        counts = {'cargo': 1100, 'upstream': 1000}
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(callgrind, 'instructions', side_effect=lambda engine, *_: counts[engine.name]), \
+                mock.patch.object(callgrind, 'annotate') as annotate, \
+                mock.patch('sys.argv', ['callgrind.py', '--engine', 'cargo=/x', '--engine', 'upstream=/y',
+                                        '--max-ratio', '1.05', '--output', f'{temp}/r.json']):
+            self.assertEqual(callgrind.main(), 1)
+        annotate.assert_called_once_with('error', 'callgrind plaintext', 'ratio 1.1000 over limit 1.0500')
+
     def test_every_merge_tier_workload_is_recorded(self):
         limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
         workflow = (ROOT / '.github/workflows/merge.yml').read_text()
