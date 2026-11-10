@@ -476,8 +476,7 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         protocol.package_body_offset = 0;
         reader(readable_callback_http)
     } else if config.open_mqtt_protocol {
-        // SAFETY: the port's own protocol, borrowed for the call.
-        unsafe { swoole_rs_protocols_ffi::set_protocol(protocol) };
+        swoole_rs_protocols_ffi::set_protocol(protocol);
         protocol.on_package = callback(Callback::DispatchTask);
         reader(readable_callback_length)
     } else if config.open_redis_protocol {

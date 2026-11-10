@@ -188,8 +188,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
     if !mqtt {
         record.protocol.get_package_length = default_length_func as *mut c_void;
     } else if on {
-        // SAFETY: the client's own protocol.
-        unsafe { swoole_rs_protocols_ffi::set_protocol(&raw mut record.protocol) };
+        swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
     }
 }
 

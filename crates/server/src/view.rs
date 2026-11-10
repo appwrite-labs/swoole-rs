@@ -63,11 +63,6 @@ impl<'a> Server<'a> {
         self.raw
     }
 
-    /// The server's Rust-owned state, as a pointer.
-    pub(crate) fn state_ptr(self) -> *const ServerState {
-        self.fields().state
-    }
-
     /// The server's Rust-owned state.
     pub(crate) fn state(self) -> &'a ServerState {
         // SAFETY: the state lives as long as the server.

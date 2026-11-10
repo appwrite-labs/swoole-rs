@@ -273,7 +273,11 @@ unsafe extern "C" fn host(
             if address.is_null() {
                 break;
             }
-            let (version, length) = if family == libc::AF_INET { (4, 4) } else { (6, 16) };
+            let (version, length) = if family == libc::AF_INET {
+                (4, 4)
+            } else {
+                (6, 16)
+            };
             // SAFETY: the successful hostent supplies 4 or 16 initialized address bytes.
             let address = unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) };
             let text = swr_v1_clients_ip_text(version, address);

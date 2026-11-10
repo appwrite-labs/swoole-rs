@@ -510,7 +510,11 @@ mod tests {
         fn read(&self, count: usize) -> (crate::ReadPlan, Vec<u8>) {
             let mut bytes = vec![0x55; count];
             let result = unsafe {
-                swr_v1_tls_dtls_read(&mut *self.handle(), bytes.as_mut_ptr(), count.try_into().unwrap())
+                swr_v1_tls_dtls_read(
+                    &mut *self.handle(),
+                    bytes.as_mut_ptr(),
+                    count.try_into().unwrap(),
+                )
             };
             (result, bytes)
         }

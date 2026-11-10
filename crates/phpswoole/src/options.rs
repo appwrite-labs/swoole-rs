@@ -7,7 +7,6 @@ use crate::{
 };
 use std::{
     ffi::{CStr, CString, c_char, c_int},
-    ptr,
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::{
@@ -16,8 +15,8 @@ use swoole_rs_corebase::{
     swr_v1_core_set_trace_flags,
 };
 use swoole_rs_utilities::{
-    Logger, LoggerSetting, process_logger, swoole_set_log_file, swoole_set_log_level,
-    swr_v1_logger_set, swr_v1_logger_set_date_format,
+    LoggerSetting, process_logger, swoole_set_log_file, swoole_set_log_level, swr_v1_logger_set,
+    swr_v1_logger_set_date_format,
 };
 use swoole_rs_zend::{
     Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
@@ -131,11 +130,6 @@ const fn int(value: i64) -> c_int {
     value as c_int
 }
 
-/// `sw_logger()`, which exists from MINIT on.
-fn logger() -> *const Logger {
-    process_logger().map_or(ptr::null(), ptr::from_ref)
-}
-
 /// `php_swoole_set_global_option(options)`, after MINIT. A size that does not
 /// parse stops here with a fatal error.
 pub fn php_swoole_set_global_option(options: &Array) {
@@ -183,26 +177,20 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     });
     number(c"log_level", &|level| swoole_set_log_level(int(level)));
     text_option(options, c"log_date_format", |format, _| {
-        // SAFETY: the live logger.
-        let logger = unsafe { &*logger() };
-        // SAFETY: a NUL-terminated format.
-        unsafe { swr_v1_logger_set_date_format(logger, format) };
+        if let Some(logger) = process_logger() {
+            // SAFETY: a NUL-terminated format.
+            unsafe { swr_v1_logger_set_date_format(logger, format) };
+        }
     });
     flag(c"log_date_with_microseconds", &|on| {
-        // SAFETY: the live logger.
-        swr_v1_logger_set(
-            unsafe { &*logger() },
-            LoggerSetting::Microseconds,
-            c_int::from(on),
-        );
+        if let Some(logger) = process_logger() {
+            swr_v1_logger_set(logger, LoggerSetting::Microseconds, c_int::from(on));
+        }
     });
     number(c"log_rotation", &|rotation| {
-        // SAFETY: the live logger.
-        swr_v1_logger_set(
-            unsafe { &*logger() },
-            LoggerSetting::Rotation,
-            int(rotation),
-        );
+        if let Some(logger) = process_logger() {
+            swr_v1_logger_set(logger, LoggerSetting::Rotation, int(rotation));
+        }
     });
     if let Some(value) = get(options, c"display_errors") {
         globals().display_errors.set(truthy(value) != 0);

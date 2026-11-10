@@ -823,7 +823,7 @@ fn restart_worker_process() {
     unsafe {
         (*pool.add(1)).workers = serv.config().workers.cast();
         Worker::new(worker).set_pid(pid());
-        swoole_rs_process::methods::add_worker(pool, worker);
+        swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
         entry::restart_worker_process(serv.0, (&raw const fake_exit).cast());
     }
 
@@ -1556,7 +1556,7 @@ unsafe extern "C" fn process_on_start(_: *mut c_void, serv: *mut c_void) {
     // SAFETY: the server's state, the server and `message`'s bytes.
     unsafe {
         swoole_rs_server::swr_v1_server_command_result(
-            serv.state().cast(),
+            &*serv.state().cast::<swoole_rs_server::ServerState>(),
             serv.0,
             9999,
             message.as_ptr().cast(),

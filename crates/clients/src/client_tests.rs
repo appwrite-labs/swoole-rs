@@ -333,7 +333,12 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     let client = new_client(kind, is_async);
     if callbacks {
         // SAFETY: a live state.
-        swr_v1_clients_listen(unsafe { &*client }, core::ptr::null_mut(), 0b111_1110, listener);
+        swr_v1_clients_listen(
+            unsafe { &*client },
+            core::ptr::null_mut(),
+            0b111_1110,
+            listener,
+        );
     }
     taken();
     client

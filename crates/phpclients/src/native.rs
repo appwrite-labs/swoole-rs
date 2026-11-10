@@ -500,8 +500,7 @@ impl Co {
     pub(crate) fn protocol_preset(self, kind: c_int) {
         let protocol = &mut self.record().protocol;
         if kind == 0 {
-            // SAFETY: the socket's protocol.
-            unsafe { mqtt_set_protocol(protocol) };
+            mqtt_set_protocol(protocol);
         } else {
             protocol.get_package_length = default_length_func as *mut c_void;
         }

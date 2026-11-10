@@ -179,15 +179,8 @@ pub unsafe fn recv_buffered(socket: Co, out: *mut u8, size: usize) -> isize {
         offset: &raw mut ctx.view.offset,
     };
     // SAFETY: the exclusive buffer fields and output remain live for the receive.
-    let result = unsafe {
-        swr_v1_hook_recv_buffered(
-            &view,
-            record_recv,
-            (&raw mut ctx).cast(),
-            out,
-            size,
-        )
-    };
+    let result =
+        unsafe { swr_v1_hook_recv_buffered(&view, record_recv, (&raw mut ctx).cast(), out, size) };
     ctx.sync(1, 0);
     result
 }
