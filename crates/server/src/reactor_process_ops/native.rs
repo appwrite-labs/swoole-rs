@@ -114,8 +114,7 @@ fn timer() -> *mut c_void {
 pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_POOL_CREATE => create_pool(ctx),
-        // SAFETY: the context's live server.
-        OP_CREATE_PIPE_BUFFERS => sign(unsafe { crate::master_ops::create_pipe_buffers(ctx.serv) }),
+        OP_CREATE_PIPE_BUFFERS => sign(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_RUN_SINGLE_WORKER => {
             let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event pool, which has a worker.

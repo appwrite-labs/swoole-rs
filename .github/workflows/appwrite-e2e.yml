@@ -26,7 +26,7 @@ jobs:
 
   appwrite:
     needs: base
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -60,7 +60,7 @@ jobs:
 
   services:
     if: inputs.suite != 'bench'
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     outputs:
       services: ${{ steps.list.outputs.services }}
     steps:
@@ -72,7 +72,7 @@ jobs:
   e2e:
     name: e2e / ${{ matrix.service.name }} / ${{ matrix.variant }}
     needs: [appwrite, services]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -167,7 +167,7 @@ jobs:
   # Endpoint load on both images, alternating variants on one runner over three trials (#88).
   bench:
     needs: appwrite
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
     env:
       COMPOSE_FILE: docker-compose.yml:docker-compose.override.yml
@@ -225,7 +225,7 @@ jobs:
   compare:
     needs: e2e
     if: always() && contains(fromJSON('["success", "failure"]'), needs.e2e.result)
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

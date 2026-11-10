@@ -1333,7 +1333,9 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
             let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
-            unsafe { crate::worker_methods::destroy_worker(serv, worker) };
+            let worker = unsafe { &mut *worker };
+            // SAFETY: a worker `create_worker` set up; shutdown holds no lock of it.
+            unsafe { crate::worker_methods::destroy_worker(worker) };
             0
         }
         OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
@@ -2661,14 +2663,8 @@ pub(crate) fn server_message_bus(state: &ServerState) -> crate::objects::Bus {
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
-///
-/// # Safety
-/// `serv` is a live `Server`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-#[unsafe(export_name = "_ZN6swoole6Server19create_pipe_buffersEv")]
-pub(crate) unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { crate::view::Server::from_raw(serv) };
+pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
     let state = serv.state();
     let size = state.config_ref().ipc_max_size;
     if server_message_bus(state).alloc_buffer(size as usize) {
