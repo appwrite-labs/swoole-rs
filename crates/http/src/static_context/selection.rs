@@ -9,7 +9,7 @@ impl HttpStaticContext {
     /// one, serve only with `autoindex`. False to stop serving.
     pub fn try_serve_index_file(
         &mut self,
-        files: &[Vec<u8>],
+        files: &[impl AsRef<[u8]>],
         autoindex: bool,
         effects: &impl StaticEffects,
     ) -> bool {
@@ -22,6 +22,7 @@ impl HttpStaticContext {
         // `swoole::intersection`: the first configured name the directory holds.
         let mut found = None;
         for name in files {
+            let name = name.as_ref();
             match self.directory.contains(name) {
                 Ok(true) => {
                     found = Some(name);
@@ -208,7 +209,7 @@ mod tests {
         assert_eq!(owner.directory(&effects), 1);
         assert_eq!(*effects.lists.borrow(), 2);
         owner.index = b"existing".to_vec();
-        assert!(owner.try_serve_index_file(&[], false, &effects));
+        assert!(owner.try_serve_index_file(&[] as &[Vec<u8>], false, &effects));
         assert_eq!(owner.index, b"existing");
     }
 

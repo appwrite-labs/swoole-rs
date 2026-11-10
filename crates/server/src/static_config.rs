@@ -7,7 +7,9 @@ use swoole_rs_http::{HttpStaticContext, RewriteRules};
 
 #[derive(Default)]
 struct Strings {
-    values: Vec<Vec<u8>>,
+    /// Copy-on-write, so a request reads them without holding the lock, and each
+    /// value's bytes stay where `_static_text` lent them.
+    values: Arc<Vec<Arc<[u8]>>>,
     enabled: bool,
 }
 pub(crate) struct StaticConfig {
@@ -37,17 +39,20 @@ fn table(state: &ServerState, kind: usize) -> Arc<Mutex<Strings>> {
         .unwrap_or_default()
 }
 
-/// Collection `kind`: whether it is set, and a copy of its values.
+/// Collection `kind`: whether it is set, and its values, read after the lock is released.
 pub(crate) fn strings<R>(
     state: &ServerState,
     kind: u32,
-    f: impl FnOnce(bool, &[Vec<u8>]) -> R,
+    f: impl FnOnce(bool, &[Arc<[u8]>]) -> R,
 ) -> R {
     let table = table(state, usize::try_from(kind).unwrap_or(usize::MAX));
-    let strings = table
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    f(strings.enabled, &strings.values)
+    let (enabled, values) = {
+        let strings = table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (strings.enabled, Arc::clone(&strings.values))
+    };
+    f(enabled, &values)
 }
 
 /// Share the current collection identity. Replacing the Server's optional
@@ -107,7 +112,7 @@ pub unsafe extern "C" fn swr_v1_server_static_mime(
     }
     // SAFETY: the caller lends exactly this byte range.
     let bytes = unsafe { core::slice::from_raw_parts(data, length) };
-    strings.values.iter().any(|value| value == bytes)
+    strings.values.iter().any(|value| **value == *bytes)
 }
 
 /// 0 count, 1 enabled, 2 enable, 3 replace with absent, 4 insert unique,
@@ -154,11 +159,11 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
         4..=6 => {
             // SAFETY: these operations lend the specified input range.
             let bytes = unsafe { core::slice::from_raw_parts(data, length) };
-            let found = strings.values.iter().position(|value| value == bytes);
+            let found = strings.values.iter().position(|value| **value == *bytes);
             if operation == 4 || operation == 6 {
                 strings.enabled = true;
                 if operation == 6 || found.is_none() {
-                    strings.values.push(bytes.to_vec());
+                    Arc::make_mut(&mut strings.values).push(Arc::from(bytes));
                 }
             }
             found.unwrap_or(strings.values.len())
@@ -191,9 +196,9 @@ pub unsafe extern "C" fn swr_v1_server_static_text(
     let value = strings.values.get(index);
     // SAFETY: the caller supplies writable output length.
     unsafe {
-        length.write(value.map_or(0, Vec::len));
+        length.write(value.map_or(0, |value| value.len()));
     }
-    value.map_or(core::ptr::null(), Vec::as_ptr)
+    value.map_or(core::ptr::null(), |value| value.as_ptr())
 }
 
 /// `url_rewrite_rules`: add one rule (upstream's `Server::add_rewrite_rule`).
