@@ -564,7 +564,10 @@ impl SyncEffects for Call {
     }
 
     unsafe fn io(&self, buffer: *mut c_void, length: usize, flags: c_int) -> isize {
-        let (socket, fd) = (self.socket, self.fd);
+        let socket = self.socket;
+        // SAFETY: the call's live record, read on each call: a signal handler the wait
+        // dispatches may have changed its descriptor.
+        let fd = unsafe { (*socket).fd };
         match self.io {
             // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
             Io::Send => unsafe { socket_send(socket, buffer, length, flags) },
