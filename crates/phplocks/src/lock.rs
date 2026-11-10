@@ -138,6 +138,7 @@ fn construct(call: &Call) {
 }
 
 /// `SW_LOCK_CHECK_RETURN`: true on success, else false with `$this->errCode`.
+#[inline]
 pub(crate) fn check(call: &Call, result: i32) {
     if result != 0 {
         call.update_property_long(None, c"errCode", result.into());
