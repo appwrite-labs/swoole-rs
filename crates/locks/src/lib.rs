@@ -69,6 +69,11 @@ pub extern "C" fn swr_v1_locks_align(kind: i32) -> usize {
         _ => 0,
     }
 }
+/// Whether `storage` can be a `T`: not null, and aligned for it. With the kind's
+/// match this is [`valid`] in one branch, for the calls made per lock and unlock.
+fn holds<T>(storage: *mut c_void) -> bool {
+    !storage.is_null() && storage.cast::<T>().is_aligned()
+}
 fn valid(storage: *mut c_void, kind: i32) -> bool {
     let align = swr_v1_locks_align(kind);
     !storage.is_null() && align != 0 && (storage as usize).is_multiple_of(align)
@@ -216,13 +221,10 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
     timeout: i32,
     capabilities: u32,
 ) -> i32 {
-    if !valid(storage, kind) {
-        return EINVAL;
-    }
     #[cfg(not(target_os = "linux"))]
     let _ = capabilities;
     match kind {
-        3 => {
+        3 if holds::<Mutex>(storage) => {
             let (lock, _) = mutex(storage);
             if operation & LOCK_NB != 0 {
                 // SAFETY: `lock` is an initialized mutex.
@@ -240,7 +242,7 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
             // SAFETY: `lock` is an initialized mutex.
             unsafe { pthread_mutex_lock(lock) }
         }
-        1 => {
+        1 if holds::<RwLock>(storage) => {
             let (lock, _) = rwlock(storage);
             let read = operation & LOCK_SH != 0;
             let try_lock = || {
@@ -278,7 +280,7 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
             }
         }
         #[cfg(target_os = "linux")]
-        5 => {
+        5 if holds::<pthread_spinlock_t>(storage) => {
             let lock = storage.cast();
             if operation & LOCK_NB != 0 {
                 // SAFETY: `lock` is an initialized spinlock.
@@ -296,17 +298,14 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_locks_unlock(storage: *mut c_void, kind: i32) -> i32 {
-    if !valid(storage, kind) {
-        return EINVAL;
-    }
     match kind {
         // SAFETY: an initialized mutex that this thread holds.
-        3 => unsafe { pthread_mutex_unlock(mutex(storage).0) },
+        3 if holds::<Mutex>(storage) => unsafe { pthread_mutex_unlock(mutex(storage).0) },
         // SAFETY: an initialized rwlock that this thread holds.
-        1 => unsafe { pthread_rwlock_unlock(rwlock(storage).0) },
+        1 if holds::<RwLock>(storage) => unsafe { pthread_rwlock_unlock(rwlock(storage).0) },
         #[cfg(target_os = "linux")]
         // SAFETY: an initialized spinlock that this thread holds.
-        5 => unsafe { pthread_spin_unlock(storage.cast()) },
+        5 if holds::<pthread_spinlock_t>(storage) => unsafe { pthread_spin_unlock(storage.cast()) },
         _ => EINVAL,
     }
 }
@@ -707,6 +706,25 @@ mod tests {
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn lock_and_unlock_refuse_null_misaligned_and_unknown_storage() {
+        let mut words = [0u64; 16];
+        let misaligned = words
+            .as_mut_ptr()
+            .cast::<u8>()
+            .wrapping_add(1)
+            .cast::<c_void>();
+        for kind in [3, 1, 99] {
+            for storage in [ptr::null_mut(), misaligned] {
+                assert_eq!(unsafe { swr_v1_locks_lock(storage, kind, 0, 0, 0) }, EINVAL);
+                assert_eq!(unsafe { swr_v1_locks_unlock(storage, kind) }, EINVAL);
+            }
+        }
+        let aligned = words.as_mut_ptr().cast::<c_void>();
+        assert_eq!(unsafe { swr_v1_locks_lock(aligned, 99, 0, 0, 0) }, EINVAL);
+        assert_eq!(unsafe { swr_v1_locks_unlock(aligned, 99) }, EINVAL);
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_barrier_init")]

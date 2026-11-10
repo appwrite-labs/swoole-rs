@@ -408,6 +408,7 @@ fn teardown() {
 /// `fork_copy`: the `unix_fork_copy` topic. The child disposes of its copy; the parent's
 /// queue and token are untouched.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no fork")]
 fn fork_copy() {
     let a = Node::new("A");
     let q = Queue::new();
