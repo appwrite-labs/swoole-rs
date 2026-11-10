@@ -1,7 +1,7 @@
 //! Compile what the extension still needs of C and C++ (native/ and the bundled
 //! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
 //! phpize and configure. The thirdparty sources are native/swoole-src's, except
-//! llhttp, nghttp2 and `multipart_parser`, which are still the pin's (`SWOOLE_SRC`).
+//! llhttp and `multipart_parser`, which are still the pin's (`SWOOLE_SRC`).
 
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
