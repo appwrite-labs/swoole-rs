@@ -474,7 +474,9 @@ impl Client {
         let object = match native::swoole_http_client_coro_create_socket(self.socket_type) {
             Ok(object) => object,
             Err(error) => {
-                self.set_error(error, strerror(error), CONNECT_FAILED);
+                if !bailout::pending() {
+                    self.set_error(error, strerror(error), CONNECT_FAILED);
+                }
                 return false;
             }
         };
@@ -524,7 +526,7 @@ impl Client {
                 self.close(false);
             }
             let mut attempt = 0;
-            while attempt < u32::from(self.max_retries) + 1 {
+            while attempt < u32::from(self.max_retries) + 1 && !bailout::pending() {
                 if self.connect() {
                     return true;
                 }
@@ -1007,6 +1009,9 @@ impl Client {
         unsafe {
             native::swoole_http_client_coro_ws_recv(socket.as_ptr(), self.ws, value, timeout);
         }
+        if bailout::pending() {
+            return;
+        }
         // SAFETY: the return slot recv_frame filled, live for the handler.
         let Some(frame) = (unsafe { Value::from_ptr(value) }) else {
             return;
@@ -1099,6 +1104,7 @@ impl Client {
         };
         match result {
             0 => true,
+            1 if bailout::pending() => false,
             1 => {
                 swoole_rs_corebase::log::set_last_error(PACK_FAILED);
                 // SAFETY: a plain read of Swoole's thread error.
@@ -1921,7 +1927,8 @@ fn path_arg(call: &Call) -> Option<&[u8]> {
 }
 
 /// A method that can run PHP: its body says whether the `write_func`
-/// callback bailed out, which goes on once the body's frames are gone.
+/// callback bailed out, which goes on, as any other deferred bailout, once
+/// the body's frames are gone.
 macro_rules! calling {
     ($($name:ident => $body:ident;)*) => {$(
         /// A Zend handler.
@@ -1930,8 +1937,9 @@ macro_rules! calling {
         unsafe extern "C" fn $name(frame: *mut z::zend_execute_data, value: *mut zval) {
             // SAFETY: per Zend.
             if $body(&unsafe { Call::new(frame, value) }) {
-                bailout::raise(Err(bailout::Bailout));
+                bailout::Bailout.defer();
             }
+            bailout::finish();
         }
     )*};
 }

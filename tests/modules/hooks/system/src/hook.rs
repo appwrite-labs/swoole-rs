@@ -128,7 +128,6 @@ struct CoSocket {
     sock_fd: c_int,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     fn swoole_coroutine_sleep(sec: c_int);
     pub(super) fn swoole_coroutine_usleep(usec: c_int);

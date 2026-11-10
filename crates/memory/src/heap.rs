@@ -162,8 +162,7 @@ impl Drop for Heap {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_create(
+pub unsafe fn swr_v1_memory_heap_create(
     capacity: usize,
     max: u32,
     output: *mut *mut c_void,
@@ -202,8 +201,7 @@ pub unsafe extern "C" fn swr_v1_memory_heap_create(
     unsafe { output.write(result.cast()) };
     0
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_release(heap: *mut c_void) {
+pub unsafe fn swr_v1_memory_heap_release(heap: *mut c_void) {
     if !heap.is_null() {
         // SAFETY: a live heap from `heap_create`, released exactly once.
         unsafe { ptr::drop_in_place(heap.cast::<Heap>()) };
@@ -211,8 +209,8 @@ pub unsafe extern "C" fn swr_v1_memory_heap_release(heap: *mut c_void) {
         unsafe { dealloc(heap.cast(), Layout::new::<Heap>()) };
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_count(heap: *const c_void) -> usize {
+#[must_use]
+pub unsafe fn swr_v1_memory_heap_count(heap: *const c_void) -> usize {
     if heap.is_null() {
         0
     } else {
@@ -220,8 +218,8 @@ pub unsafe extern "C" fn swr_v1_memory_heap_count(heap: *const c_void) -> usize 
         unsafe { &*heap.cast::<Heap>() }.nodes.len()
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_at(heap: *const c_void, index: usize) -> *mut Node {
+#[must_use]
+pub unsafe fn swr_v1_memory_heap_at(heap: *const c_void, index: usize) -> *mut Node {
     if heap.is_null() {
         return ptr::null_mut();
     }
@@ -231,8 +229,7 @@ pub unsafe extern "C" fn swr_v1_memory_heap_at(heap: *const c_void, index: usize
         .get(index)
         .map_or(ptr::null_mut(), |node| node.as_ptr())
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_push(
+pub unsafe fn swr_v1_memory_heap_push(
     heap: *mut c_void,
     priority: u64,
     data: *mut c_void,
@@ -271,12 +268,7 @@ pub unsafe extern "C" fn swr_v1_memory_heap_push(
     }
     node.as_ptr()
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_update(
-    heap: *mut c_void,
-    priority: u64,
-    node: *mut Node,
-) -> i32 {
+pub unsafe fn swr_v1_memory_heap_update(heap: *mut c_void, priority: u64, node: *mut Node) -> i32 {
     if heap.is_null() {
         return -1;
     }
@@ -299,8 +291,7 @@ pub unsafe extern "C" fn swr_v1_memory_heap_update(
     }
     0
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_remove(heap: *mut c_void, node: *mut Node) -> i32 {
+pub unsafe fn swr_v1_memory_heap_remove(heap: *mut c_void, node: *mut Node) -> i32 {
     if heap.is_null() {
         return -1;
     }
@@ -315,8 +306,7 @@ pub unsafe extern "C" fn swr_v1_memory_heap_remove(heap: *mut c_void, node: *mut
     heap.remove(index);
     0
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_heap_pop(heap: *mut c_void) -> *mut c_void {
+pub unsafe fn swr_v1_memory_heap_pop(heap: *mut c_void) -> *mut c_void {
     if heap.is_null() {
         return ptr::null_mut();
     }

@@ -256,8 +256,7 @@ impl Drop for StreamState {
 /// # Safety
 /// `default_ctx` is a live context that outlives the session; `handle` may be
 /// called with a `SessionRequest`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
+pub(crate) unsafe fn session_new(
     fd: i64,
     default_ctx: Ctx,
     max_body_size: u32,
@@ -281,8 +280,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
 
 /// `swoole_http2_server_session_free`: forget connection `fd`'s session,
 /// removing its streams; each is released once nothing holds it.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp2_session_free(fd: i64) {
+pub(crate) fn session_free(fd: i64) {
     let Some(session) = SESSIONS.with_borrow(|sessions| sessions.get(&fd).cloned()) else {
         return;
     };

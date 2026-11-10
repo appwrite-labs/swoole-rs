@@ -7,7 +7,7 @@
 use crate::{Switch, optional};
 use std::{
     cell::Cell,
-    ffi::{CStr, CString, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::OnceLock,
 };
@@ -413,10 +413,8 @@ extern "C" fn core_startup() {
     // SAFETY: no preconditions.
     let version = unsafe { swr_zend_php_version() };
     // SAFETY: PHP_VERSION, a static string.
-    let version = unsafe { CStr::from_ptr(version) }.to_string_lossy();
-    let line = CString::new(format!("PHP_VERSION : {version}\n")).unwrap_or_default();
-    // SAFETY: a NUL-terminated line, which the report copies.
-    unsafe { swoole_rs_corebase::swr_v1_core_bug_report_append(line.as_ptr()) };
+    let version = unsafe { CStr::from_ptr(version) }.to_bytes();
+    swoole_rs_corebase::bug_report_append(&[b"PHP_VERSION : ", version, b"\n"].concat());
 }
 
 /// MINIT's end: the ini's socket buffer size, macOS's `pcre.jit` and the known

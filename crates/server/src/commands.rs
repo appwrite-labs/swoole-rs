@@ -114,8 +114,7 @@ pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandFn> {
 /// # Safety
 /// `state` is live, `serv` its server, and `message` holds `length` bytes. The
 /// callback may resume a coroutine: this frame owns nothing that needs a drop then.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_command_result(
+pub unsafe fn swr_v1_server_command_result(
     state: *const ServerState,
     serv: *mut c_void,
     request_id: i64,

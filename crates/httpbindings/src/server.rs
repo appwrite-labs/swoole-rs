@@ -7,8 +7,8 @@ use core::ffi::{CStr, c_char, c_void};
 /// Spans contain initialized readable bytes for the call. Native container order
 /// and default callback identity remain authoritative; default entries are skipped
 /// by the native custody guard before observing a potentially absent context path.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_handler(path: Text, pattern: Text) -> i32 {
+#[must_use]
+pub unsafe fn swr_v1_httpbindings_handler(path: Text, pattern: Text) -> i32 {
     // SAFETY: `path` spans `length` initialized bytes (null only when empty) for this call.
     let path = unsafe { bytes(path) };
     // SAFETY: `pattern` spans `length` initialized bytes (null only when empty) for this call.
@@ -53,8 +53,8 @@ pub struct AcceptHost {
 /// # Safety
 /// `host` and `errors` are null or valid for the call, and each callback may be
 /// called with `host.data`; `error` leaves a NUL-terminated message.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_accept_loop(
+#[must_use]
+pub unsafe fn swr_v1_httpbindings_accept_loop(
     host: *const AcceptHost,
     errors: *const AcceptErrors,
 ) -> i32 {

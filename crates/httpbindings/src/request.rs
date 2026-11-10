@@ -106,8 +106,7 @@ pub fn request_key(name: &[u8]) -> Option<usize> {
 /// # Safety
 /// Read spans are initialized; mode1 additionally requires writable data with a
 /// terminator at data[length]. Value is readable through its native C-string terminator on scan paths, or for the bounded comparison on fast paths. `fast_extent` preserves the native pointer-size expression.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_tokens(
+pub unsafe fn swr_v1_httpbindings_tokens(
     data: *mut u8,
     length: usize,
     value: *const u8,
@@ -213,11 +212,7 @@ pub struct UrlParts {
 
 /// # Safety
 /// Input contains initialized bytes and output is a disjoint writable object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_request_url(
-    input: Text,
-    output: *mut UrlParts,
-) -> i32 {
+pub unsafe fn swr_v1_httpbindings_request_url(input: Text, output: *mut UrlParts) -> i32 {
     // SAFETY: `input` spans `length` initialized bytes (null only when empty) for this call.
     let input = unsafe { bytes(input) };
     // SAFETY: `output` is null or aligned, writable and exclusively lent for this call.
@@ -249,8 +244,7 @@ pub struct Trimmed {
 /// # Safety
 /// Data is initialized/writable for length bytes and output is disjoint. The
 /// original shrinking left-loop bound is intentional; this is not `trim_matches`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_trim_quotes(
+pub unsafe fn swr_v1_httpbindings_trim_quotes(
     data: *mut u8,
     length: usize,
     output: *mut Trimmed,

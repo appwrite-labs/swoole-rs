@@ -19,7 +19,7 @@ static_assert(sizeof(void *) != 8 || (sizeof(swr_v1_coroutine) == 96 && sizeof(s
               "crates/coroutine layout");
 
 namespace swoole {
-// A coroutine's record (a swr_v1_coroutine, then its swr_v1_context), which C++
+// A coroutine's record (a swr_v1_coroutine, then crates/coroutine's Context), which C++
 // only points to.
 class Coroutine {
   public:

@@ -26,7 +26,6 @@ use crate::view;
 
 // SAFETY: crates/timer's bodies.
 unsafe extern "C-unwind" {
-    fn swr_v1_core_timer_slot() -> *mut *mut c_void;
     fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
 }
@@ -108,9 +107,7 @@ pub(super) fn port_config<'a>(port: *mut c_void) -> &'a crate::port_config::Port
 /// This thread's timer, or null.
 fn timer() -> *mut c_void {
     // SAFETY: this thread's timer slot.
-    let slot = unsafe { swr_v1_core_timer_slot() };
-    // SAFETY: as above.
-    unsafe { *slot }
+    unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
 }
 
 /// The ops on native objects.

@@ -74,8 +74,7 @@ fn advance(cursor: &mut SettingsCursor) {
 /// preserving original short-circuit aliases and fresh conversion/reentry order.
 /// # Safety
 /// Cursor/action are initialized, disjoint writable objects for this call only.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_settings(
+pub unsafe fn swr_v1_httpbindings_settings(
     cursor: *mut SettingsCursor,
     compression: u32,
     found: u32,
@@ -143,8 +142,7 @@ pub unsafe extern "C" fn swr_v1_httpbindings_settings(
 }
 
 /// Zend conversion remains native; preserve the original unsigned-byte clamp.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_httpbindings_server_level(level: i64) -> u32 {
+pub fn swr_v1_httpbindings_server_level(level: i64) -> u32 {
     u8::try_from(level.clamp(0, 255)).map_or(0, u32::from)
 }
 
@@ -337,7 +335,7 @@ mod tests {
     fn level_clamps_to_an_unsigned_byte() {
         let levels = [i64::MIN, -1, 0, 1, 255, 256, i64::MAX];
         assert_eq!(
-            levels.map(|level| swr_v1_httpbindings_server_level(level)),
+            levels.map(swr_v1_httpbindings_server_level),
             [0, 0, 0, 1, 255, 255, 255]
         );
     }
