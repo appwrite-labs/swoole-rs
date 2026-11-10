@@ -1,7 +1,8 @@
 # Timer queue ABI v1
 
 Declarations: `native/include/swoole_rs_timer.h` (15 exports). Feature value 4.
-Each export wraps the `Timer` method of the same name. Callers:
+Except `create`, `release` and `ids`, each export wraps a `Timer` method: the
+same name, but `select_next` for `next` and `stats` for `stats_get`. Callers:
 `tests/modules/timer/kernel.cc` and `native/timer/swoole_timer.h`'s reads;
 `swoole::Timer` (`crates/timer/src/owner.rs`, see
 [ownership.md](../native/timer/ownership.md)) calls the methods.
