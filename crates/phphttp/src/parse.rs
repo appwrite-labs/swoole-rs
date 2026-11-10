@@ -319,6 +319,7 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
 }
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
+#[inline(always)]
 pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
     if let Some(server) = state.request.zserver.array_mut()
         && let Some(key) = key(key_)
