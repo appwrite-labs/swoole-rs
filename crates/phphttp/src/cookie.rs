@@ -8,10 +8,9 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_zend::{
-    Call, Class, Object, ZStr, ZString,
+    Call, Class, Object, Owned, OwnedArray, ZStr, ZString,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_str_ex,
-        add_assoc_string_ex, php_format_date, php_time, php_url_encode, zend_class_entry,
+        ZEND_ACC_NOT_SERIALIZABLE, php_format_date, php_time, php_url_encode, zend_class_entry,
         zend_object, zend_object_handlers, zval,
     },
     throw_constructed_twice, unset_property_deny,
@@ -168,41 +167,20 @@ impl Cookie {
     }
 
     /// `Cookie::toArray`, each string field with its own reference.
-    /// # Safety
-    /// `array` is an initialised array zval.
-    unsafe fn to_array(&self, array: *mut zval) {
+    fn to_array(&self) -> OwnedArray {
+        let mut array = OwnedArray::default();
         for (key, field) in KEYS.iter().zip(&self.fields) {
-            if let Some(field) = field {
-                // SAFETY: per the caller; the array takes the new reference.
-                unsafe {
-                    add_assoc_str_ex(
-                        array,
-                        key.as_ptr(),
-                        key.count_bytes(),
-                        ZStr::to_owned(field).into_raw(),
-                    );
-                };
-            } else {
-                // SAFETY: per the caller; Zend copies key and value.
-                unsafe {
-                    add_assoc_string_ex(array, key.as_ptr(), key.count_bytes(), c"".as_ptr());
-                };
+            match field {
+                Some(field) => array.insert(key.to_bytes(), Owned::string(ZStr::to_owned(field))),
+                None => array.insert_bytes(key.to_bytes(), Some(b"")),
             }
         }
-        let key = c"encode";
-        // SAFETY: per the caller.
-        unsafe { add_assoc_bool_ex(array, key.as_ptr(), key.count_bytes(), self.encode) };
-        let key = c"expires";
-        // SAFETY: per the caller.
-        unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), self.expires) };
-        for (key, value) in [
-            (c"secure", self.secure),
-            (c"httpOnly", self.http_only),
-            (c"partitioned", self.partitioned),
-        ] {
-            // SAFETY: per the caller.
-            unsafe { add_assoc_bool_ex(array, key.as_ptr(), key.count_bytes(), value) };
-        }
+        array.insert_bool(b"encode", self.encode);
+        array.insert_long(b"expires", self.expires);
+        array.insert_bool(b"secure", self.secure);
+        array.insert_bool(b"httpOnly", self.http_only);
+        array.insert_bool(b"partitioned", self.partitioned);
+        array
     }
 }
 
@@ -382,9 +360,7 @@ fn to_string(call: &Call) {
 /// `toArray(): array`.
 fn to_array(call: &Call) {
     if let Some(cookie) = cookie(call.this()) {
-        call.set_array();
-        // SAFETY: the return value is an array.
-        unsafe { cookie.to_array(call.return_value()) };
+        call.set_owned(cookie.to_array().into_owned());
     }
 }
 
