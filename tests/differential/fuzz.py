@@ -266,8 +266,10 @@ class Gen:
         for _ in range(self.rng.randint(1, 5)):
             op = self.pick('after', 'after', 'tick', 'clear', 'exists', 'stats', 'list', 'clearAll')
             if op == 'after':
-                # 10 ms or more: past a tick's two fires (at most 6 ms), so their order never races.
-                out.append(f"$id = s('timer.after', fn() => Swoole\\Timer::after({self.pick('10', '0', '-1', '30', "'10'", '0.5')}, "
+                # Far past a tick's two fires (due by 6 ms). A tick re-arms past the pass that fired
+                # it, so a first pass that comes late enough to find a one-shot due as well puts the
+                # one-shot between the two fires, on every engine; only a stall of ~200 ms can.
+                out.append(f"$id = s('timer.after', fn() => Swoole\\Timer::after({self.pick('200', '0', '-1', '300', "'200'", '0.5')}, "
                            "static function () { echo \"  fired after\\n\"; }));")
             elif op == 'tick':
                 out.append(f"$id = s('timer.tick', fn() => Swoole\\Timer::tick({self.pick('1', '0', '-1', '3')}, "

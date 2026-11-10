@@ -187,6 +187,11 @@ THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
                        'it, printing a third "co 2 running" on both engines with the same diff '
                        '(merge tier: upstream 4 of 7 runs, hybrid 11 of 13, #1864)',
+                       'tests/swoole_coroutine/eval.phpt':
+                       "two coroutines sleep 0.5 s with equal deadlines; while activation's 1 ms "
+                       'keep-alive timer is still queued, its removal moves the second sleep to '
+                       "the heap's root, so it wakes first on both engines with the same diff "
+                       '(merge tier: upstream failed 4 of 9 re-runs, cargo 10 of 10, #2791)',
                        'tests/swoole_coroutine/stats.phpt':
                        "two coroutines both sleep 0.5 s and assert who wakes first, which varies on "
                        'both engines with the same diff (merge tier: upstream failed 21 of 27 runs, '
