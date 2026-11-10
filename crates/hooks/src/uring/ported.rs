@@ -487,7 +487,7 @@ fn wait_success() {
     let _serial = serial();
     let pid = spawn_exec(1);
 
-    with_engine(|| unsafe {
+    with_engine(|| {
         let mut status = 0;
         assert_eq!(wait(&mut status, 5.0), pid, "waited");
         assert_eq!(status, 0, "status");
@@ -499,7 +499,7 @@ fn wait_timeout() {
     let _serial = serial();
     let pid = spawn_exec(2000);
 
-    with_engine(|| unsafe {
+    with_engine(|| {
         let mut status = 0x9501;
         assert_eq!(wait(&mut status, 0.5), -1, "timed out");
         assert_eq!(uring::errno(), libc::ETIMEDOUT, "ETIMEDOUT");
