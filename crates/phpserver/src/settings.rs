@@ -252,10 +252,12 @@ impl Settings<'_> {
         i64::from(value.truthy())
     }
 
-    /// `zend::String(value)`, handed to `each` and released.
+    /// `zend::String(value)`, handed to `each` and released; `each` doesn't run
+    /// after the conversion's bailout, as upstream's code after it didn't.
     pub(crate) fn string<R>(value: &Value, each: impl FnOnce(&[u8]) -> R) -> Result<R, Stop> {
-        let result = each(value.string().bytes());
-        checked().map(|()| result)
+        let string = value.string();
+        checked()?;
+        Ok(each(string.bytes()))
     }
 
     /// `serv-><text> = value` (`view::set_text`'s `index`).
