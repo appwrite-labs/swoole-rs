@@ -30,6 +30,8 @@ jobs:
         # Gates compare against accepted patch states at older commits (git show <sha>:...).
         with:
           fetch-depth: 0
+      - id: install
+        uses: ./.github/actions/install
       # Saved from main under a key the PR tier's ext and gates jobs restore.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -37,8 +39,6 @@ jobs:
       # rust-cache restores all of target/, with git checkouts that lack a usable .git.
       # Those trees come from their own caches or a fresh clone instead.
       - run: rm -rf target/upstream target/upstream-builds target/thirdparty
-      - id: install
-        uses: ./.github/actions/install
       # Caches are saved as soon as they are built, so a failing gate later does not discard
       # them; PR branches can only restore caches saved on main.
       - id: upstream

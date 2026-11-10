@@ -16,6 +16,7 @@ outputs:
 runs:
   using: composite
   steps:
+    - uses: ./.github/actions/rustup
     - id: week
       shell: bash
       run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
