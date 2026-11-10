@@ -18,23 +18,16 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::net_types::Protocol;
-use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
+use swoole_rs_tls::{self as tls, OwnedTlsContext, Text};
 use swoole_rs_zend::{
-    Call,
+    Array, Call, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
     php_error, set_object,
-    string::bytes,
     sys::{
-        _zend_expected_type_Z_EXPECTED_RESOURCE, E_ERROR, E_WARNING, HashTable, IS_ARRAY, IS_NULL,
-        IS_OBJECT, IS_RESOURCE, IS_STRING, ZPP_ERROR_WRONG_ARG, php_stream, swr_zend_is_true,
-        swr_zend_object_properties, swr_zend_object_release, swr_zend_stream_socketd,
-        swr_zend_stream_unbuffer, swr_zend_string_release, swr_zend_zval_value_name,
-        zend_argument_type_error, zend_argument_value_error, zend_hash_next_index_insert,
-        zend_hash_str_find, zend_ini_parse_quantity, zend_object, zend_string,
-        zend_wrong_parameter_error, zval,
+        E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer,
+        zend_object, zval,
     },
-    throw_exception, type_of,
-    value::{self, get_double, get_long, get_string, table},
+    throw_exception,
 };
 
 /// `SW_TIMEOUT_*`.
@@ -51,7 +44,7 @@ const SOCK_UDP6: c_int = 4;
 const EOF_MAXLEN: usize = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const OPERATION_NOT_SUPPORT: i64 = 507;
-/// `swr_v1_phpclients_socket_settings`'s `which`.
+/// `socket_settings`'s `which`.
 pub(crate) const ALL: c_int = 0;
 pub(crate) const PROTOCOL: c_int = 1;
 pub(crate) const SSL: c_int = 2;
@@ -130,74 +123,36 @@ fn fatal(level: u32, message: &[u8]) -> Result<(), Stop> {
     checked()
 }
 
-/// The settings array.
-struct Settings(*mut HashTable);
-
-impl Settings {
-    /// `php_swoole_array_get_value`: present and not null.
-    fn get(&self, key: &CStr) -> Option<*mut zval> {
-        // SAFETY: a live table and a NUL-terminated key.
-        let found = unsafe { zend_hash_str_find(self.0, key.as_ptr(), key.count_bytes()) };
-        // SAFETY: a found value is live.
-        (!found.is_null() && unsafe { type_of(found) } != IS_NULL).then_some(found)
-    }
+pub(crate) fn long(value: &Value) -> Result<i64, Stop> {
+    value.applied_long().ok_or(Stop)
 }
 
-fn truth(value: *mut zval) -> bool {
-    // SAFETY: a live setting.
-    unsafe { swr_zend_is_true(value) }
-}
-
-pub(crate) fn long(value: *mut zval) -> Result<i64, Stop> {
-    // SAFETY: a live setting.
-    let long = unsafe { get_long(value) };
-    checked().map(|()| long)
-}
-
-fn double(value: *mut zval) -> Result<f64, Stop> {
-    // SAFETY: a live setting.
-    let double = unsafe { get_double(value) };
-    checked().map(|()| double)
+fn double(value: &Value) -> Result<f64, Stop> {
+    value.applied_double().ok_or(Stop)
 }
 
 /// `zend::String(value)`'s bytes.
-pub(crate) fn string(value: *mut zval) -> Result<Vec<u8>, Stop> {
-    // SAFETY: a live setting; an owned reference, released below.
-    let string = unsafe { get_string(value) };
-    // SAFETY: live until released.
-    let copy = unsafe { bytes(string) }.to_vec();
-    // SAFETY: the reference taken above.
-    unsafe { swr_zend_string_release(string) };
+pub(crate) fn string(value: &Value) -> Result<Vec<u8>, Stop> {
+    let copy = value.string().bytes().to_vec();
     checked().map(|()| copy)
 }
 
-/// `php_swoole_parse_to_size`.
-fn size(value: *mut zval) -> Result<i64, Stop> {
-    // SAFETY: a live setting.
-    if unsafe { type_of(value) } != IS_STRING {
+/// `php_swoole_parse_to_size`. A string that does not parse is an `E_ERROR`,
+/// which always bails out, so the size upstream returned with it is never read.
+fn size(value: &Value) -> Result<i64, Stop> {
+    let Some(string) = value.str() else {
         return long(value);
-    }
-    let mut error: *mut zend_string = ptr::null_mut();
-    // SAFETY: a string zval holds a live string.
-    let string = unsafe { value::str_of(value) };
-    // SAFETY: a live string; Zend leaves an error string or null.
-    let size = unsafe { zend_ini_parse_quantity(string, &raw mut error) };
-    if !error.is_null() {
-        // SAFETY: both strings are live.
+    };
+    string.parse_quantity().or_else(|error| {
         let message = [
             b"failed to parse '".as_slice(),
-            &text(unsafe { bytes(string) }).into_bytes(),
+            string.c_str().to_bytes(),
             b"' to size, Error: ",
-            // SAFETY: as above.
-            &text(unsafe { bytes(error) }).into_bytes(),
+            error.c_str().to_bytes(),
         ]
         .concat();
-        let reported = fatal(E_ERROR, &message);
-        // SAFETY: Zend's error string, owned here.
-        unsafe { swr_zend_string_release(error) };
-        reported?;
-    }
-    Ok(size)
+        fatal(E_ERROR, &message).map(|()| 0)
+    })
 }
 
 /// The socket's `Protocol`, edited by `f`.
@@ -208,81 +163,68 @@ fn edit(socket: Co, f: impl FnOnce(&mut Protocol)) {
 /// The settings `which` names applied to `socket` (`ALL`, `PROTOCOL`, `SSL`):
 /// whether they all applied. Stops at a pending bailout, for the caller's
 /// handler to raise.
-pub(crate) fn apply(socket: Co, settings: *const zval, which: c_int) -> bool {
-    // SAFETY: an array zval.
-    let s = Settings(unsafe { table(settings) });
+pub(crate) fn apply(socket: Co, settings: &Array, which: c_int) -> bool {
     let applied = match which {
-        ALL => set(&s, socket),
-        PROTOCOL => set_protocol(&s, socket),
-        _ => set_ssl(&s, socket),
+        ALL => set(settings, socket),
+        PROTOCOL => set_protocol(settings, socket),
+        _ => set_ssl(settings, socket),
     };
     applied.unwrap_or(false)
 }
 
-/// [`apply`] for C++ callers, which raise no bailout of their own.
+/// [`apply`] for callers that raise no bailout of their own: it raises one.
 /// # Safety
 /// `socket` is a live coroutine socket and `settings` a live array zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
+pub unsafe extern "C" fn socket_settings(
     socket: *mut c_void,
     settings: *const zval,
     which: c_int,
 ) -> bool {
     // SAFETY: per the caller.
-    let applied = apply(unsafe { Co::new(socket) }, settings, which);
+    let settings = unsafe { Value::from_ptr(settings) }.and_then(Value::array);
+    // SAFETY: as above.
+    let socket = unsafe { Co::new(socket) };
+    let applied = settings.is_some_and(|settings| apply(socket, settings, which));
     bailout::finish();
     applied
 }
 
-/// `php_swoole_socket_set(socket, settings)`.
-/// # Safety
-/// As [`swr_v1_phpclients_socket_settings`].
-#[unsafe(export_name = "_Z21php_swoole_socket_setPN6swoole9coroutine6SocketEPK12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_socket_set(
-    socket: native::Socket,
-    settings: *const zval,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_settings(socket, settings, ALL) }
-}
-
 /// `php_swoole_socket_set_protocol(socket, settings)`.
 /// # Safety
-/// As [`swr_v1_phpclients_socket_settings`].
-#[unsafe(export_name = "_Z30php_swoole_socket_set_protocolPN6swoole9coroutine6SocketEPK12_zval_struct")]
+/// As [`socket_settings`].
 pub unsafe extern "C" fn php_swoole_socket_set_protocol(
     socket: native::Socket,
     settings: *const zval,
 ) -> bool {
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_settings(socket, settings, PROTOCOL) }
+    unsafe { socket_settings(socket, settings, PROTOCOL) }
 }
 
 /// `php_swoole_socket_set_protocol`.
-fn set_protocol(s: &Settings, socket: Co) -> Result<bool, Stop> {
+fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
     let mut ret = true;
-    if let Some(v) = s.get(c"open_ssl")
-        && truth(v)
+    if let Some(v) = s.get(b"open_ssl")
+        && v.truthy()
     {
         enable_ssl(socket);
     }
-    if let Some(v) = s.get(c"open_http2_protocol") {
-        socket.set_flag(FLAG_HTTP2, truth(v));
+    if let Some(v) = s.get(b"open_http2_protocol") {
+        socket.set_flag(FLAG_HTTP2, v.truthy());
     }
     if !socket.ssl_context().is_null() && !set_ssl(s, socket)? {
         ret = false;
     }
-    if let Some(v) = s.get(c"open_eof_check") {
-        socket.set_flag(FLAG_EOF, truth(v));
+    if let Some(v) = s.get(b"open_eof_check") {
+        socket.set_flag(FLAG_EOF, v.truthy());
     }
-    if let Some(v) = s.get(c"open_eof_split") {
-        let split = truth(v);
+    if let Some(v) = s.get(b"open_eof_split") {
+        let split = v.truthy();
         edit(socket, |p| p.split_by_eof = split);
         if split {
             socket.set_flag(FLAG_EOF, true);
         }
     }
-    if let Some(v) = s.get(c"package_eof") {
+    if let Some(v) = s.get(b"package_eof") {
         let eof = string(v)?;
         if eof.is_empty() {
             fatal(E_ERROR, b"package_eof cannot be an empty string")?;
@@ -302,8 +244,8 @@ fn set_protocol(s: &Settings, socket: Co) -> Result<bool, Stop> {
             });
         }
     }
-    if let Some(v) = s.get(c"open_fastcgi_protocol") {
-        socket.set_flag(FLAG_LENGTH, truth(v));
+    if let Some(v) = s.get(b"open_fastcgi_protocol") {
+        socket.set_flag(FLAG_LENGTH, v.truthy());
         edit(socket, |p| {
             p.package_length_size = 8;
             p.package_length_offset = 0;
@@ -311,18 +253,18 @@ fn set_protocol(s: &Settings, socket: Co) -> Result<bool, Stop> {
             p.get_package_length = fastcgi_length as *mut c_void;
         });
     }
-    if let Some(v) = s.get(c"open_mqtt_protocol") {
-        let mqtt = truth(v);
+    if let Some(v) = s.get(b"open_mqtt_protocol") {
+        let mqtt = v.truthy();
         socket.set_flag(FLAG_LENGTH, mqtt);
         if mqtt {
             socket.protocol_preset(0);
         }
     }
-    if let Some(v) = s.get(c"open_length_check") {
-        socket.set_flag(FLAG_LENGTH, truth(v));
+    if let Some(v) = s.get(b"open_length_check") {
+        socket.set_flag(FLAG_LENGTH, v.truthy());
         socket.protocol_preset(1);
     }
-    if let Some(v) = s.get(c"package_length_type") {
+    if let Some(v) = s.get(b"package_length_type") {
         let kind = string(v)?.first().copied().unwrap_or(0);
         let width = type_size(kind);
         edit(socket, |p| {
@@ -340,19 +282,19 @@ fn set_protocol(s: &Settings, socket: Co) -> Result<bool, Stop> {
             ret = false;
         }
     }
-    if let Some(v) = s.get(c"package_length_offset") {
+    if let Some(v) = s.get(b"package_length_offset") {
         let offset = clamp_u16(long(v)?);
         edit(socket, |p| p.package_length_offset = offset);
     }
-    if let Some(v) = s.get(c"package_body_offset") {
+    if let Some(v) = s.get(b"package_body_offset") {
         let offset = clamp_u16(long(v)?);
         edit(socket, |p| p.package_body_offset = offset);
     }
-    if let Some(v) = s.get(c"package_length_func") {
-        native::length_callable(socket, v);
+    if let Some(v) = s.get(b"package_length_func") {
+        native::length_callable(socket, v.as_ptr());
         checked()?;
     }
-    if let Some(v) = s.get(c"package_max_length") {
+    if let Some(v) = s.get(b"package_max_length") {
         let max = u32::try_from(size(v)?.clamp(0, i64::from(u32::MAX))).unwrap_or(u32::MAX);
         edit(socket, |p| p.package_max_length = max);
     }
@@ -368,30 +310,30 @@ fn clamp_u8(value: i64) -> u8 {
 }
 
 /// `php_swoole_socket_set`.
-fn set(s: &Settings, socket: Co) -> Result<bool, Stop> {
+fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     let mut ret = true;
     for (key, kind) in [
-        (c"timeout", TIMEOUT_ALL),
-        (c"connect_timeout", TIMEOUT_CONNECT),
-        (c"read_timeout", TIMEOUT_READ),
-        (c"write_timeout", TIMEOUT_WRITE),
+        (b"timeout".as_slice(), TIMEOUT_ALL),
+        (b"connect_timeout", TIMEOUT_CONNECT),
+        (b"read_timeout", TIMEOUT_READ),
+        (b"write_timeout", TIMEOUT_WRITE),
     ] {
         if let Some(v) = s.get(key) {
             socket.set_timeout(double(v)?, kind);
         }
     }
     let mut bind_port = 0;
-    if let Some(v) = s.get(c"bind_port") {
+    if let Some(v) = s.get(b"bind_port") {
         bind_port = i64::from(clamp_u16(long(v)?));
     }
     let mut bind_address = Vec::new();
-    if let Some(v) = s.get(c"bind_address") {
+    if let Some(v) = s.get(b"bind_address") {
         bind_address = string(v)?;
     }
     if !bind_address.is_empty() {
         ret &= socket.bind(&bind_address, bind_port);
     }
-    if let Some(v) = s.get(c"socket_buffer_size") {
+    if let Some(v) = s.get(b"socket_buffer_size") {
         let size = size(v)?;
         if size <= 0 {
             let message = format!("socket buffer size must be greater than 0, got {size}");
@@ -408,11 +350,11 @@ fn set(s: &Settings, socket: Co) -> Result<bool, Stop> {
         }
     }
     let kind = socket.kind();
-    if let Some(v) = s.get(c"open_tcp_nodelay")
+    if let Some(v) = s.get(b"open_tcp_nodelay")
         // Upstream's test: every type but TCP6.
         && (kind == SOCK_TCP || kind != SOCK_TCP6)
     {
-        let on = truth(v);
+        let on = v.truthy();
         let nodelay = c_int::from(on);
         if let Some(record) = socket.net()
             && swoole_rs_reactor::swr_v1_socket_tcp_nodelay(record.fd, nodelay)
@@ -424,21 +366,21 @@ fn set(s: &Settings, socket: Co) -> Result<bool, Stop> {
         ret = false;
     }
     let inet = matches!(kind, SOCK_TCP | SOCK_UDP | SOCK_TCP6 | SOCK_UDP6);
-    if let Some(host) = s.get(c"socks5_host") {
+    if let Some(host) = s.get(b"socks5_host") {
         if !inet {
             throw_unsupported(c"Only tcp socket supports socks5 proxy settings");
             return Ok(false);
         }
         let host = string(host)?;
-        let Some(port) = s.get(c"socks5_port") else {
+        let Some(port) = s.get(b"socks5_port") else {
             fatal(E_WARNING, b"socks5_port should not be null")?;
             return Ok(false);
         };
         let port = long(port)?;
         let (mut user, mut password) = (Vec::new(), Vec::new());
-        if let Some(v) = s.get(c"socks5_username") {
+        if let Some(v) = s.get(b"socks5_username") {
             user = string(v)?;
-            match s.get(c"socks5_password") {
+            match s.get(b"socks5_password") {
                 Some(v) if !user.is_empty() => password = string(v)?,
                 _ => {
                     fatal(E_WARNING, b"socks5_password should not be null")?;
@@ -447,24 +389,24 @@ fn set(s: &Settings, socket: Co) -> Result<bool, Stop> {
             }
         }
         socket.proxy(false, &host, port, &user, &password);
-    } else if let Some(host) = s.get(c"http_proxy_host") {
+    } else if let Some(host) = s.get(b"http_proxy_host") {
         if !inet {
             throw_unsupported(c"Only tcp socket supports http proxy settings");
             return Ok(false);
         }
         let host = string(host)?;
-        let Some(port) = s.get(c"http_proxy_port") else {
+        let Some(port) = s.get(b"http_proxy_port") else {
             fatal(E_WARNING, b"http_proxy_port should not be null")?;
             return Ok(false);
         };
         let port = long(port)?;
         let (mut user, mut password) = (Vec::new(), Vec::new());
         if let Some(v) = s
-            .get(c"http_proxy_username")
-            .or_else(|| s.get(c"http_proxy_user"))
+            .get(b"http_proxy_username")
+            .or_else(|| s.get(b"http_proxy_user"))
         {
             user = string(v)?;
-            match s.get(c"http_proxy_password") {
+            match s.get(b"http_proxy_password") {
                 Some(v) if !user.is_empty() => password = string(v)?,
                 _ => {
                     fatal(E_WARNING, b"socks5_password should not be null")?;
@@ -484,7 +426,7 @@ fn throw_unsupported(message: &CStr) {
 }
 
 /// `php_swoole_socket_set_ssl`.
-fn set_ssl(s: &Settings, socket: Co) -> Result<bool, Stop> {
+fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     let owner = socket.ssl_context().cast::<OwnedTlsContext>();
     if owner.is_null() {
         return Ok(true);
@@ -493,19 +435,19 @@ fn set_ssl(s: &Settings, socket: Co) -> Result<bool, Stop> {
     let set = |value| unsafe { tls::set_value(owner, value) };
     // SAFETY: as above.
     let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
-    let text = |which, v| -> Result<bool, Stop> { Ok(set_text(which, &string(v)?)) };
-    if let Some(v) = s.get(c"ssl_protocols") {
-        set(Value::Protocols(long(v)?));
+    let text = |which, v: &Value| -> Result<bool, Stop> { Ok(set_text(which, &string(v)?)) };
+    if let Some(v) = s.get(b"ssl_protocols") {
+        set(tls::Value::Protocols(long(v)?));
     }
     if let Some(v) = s
-        .get(c"ssl_compress")
-        .or_else(|| s.get(c"ssl_disable_compression"))
+        .get(b"ssl_compress")
+        .or_else(|| s.get(b"ssl_disable_compression"))
     {
-        set(Value::DisableCompress(!truth(v)));
+        set(tls::Value::DisableCompress(!v.truthy()));
     }
     for (key, which, what) in [
-        (c"ssl_cert_file", Text::CertFile, "cert"),
-        (c"ssl_key_file", Text::KeyFile, "key"),
+        (b"ssl_cert_file".as_slice(), Text::CertFile, "cert"),
+        (b"ssl_key_file", Text::KeyFile, "key"),
     ] {
         if let Some(v) = s.get(key) {
             let file = string(v)?;
@@ -527,39 +469,39 @@ fn set_ssl(s: &Settings, socket: Co) -> Result<bool, Stop> {
         (false, true) => fatal(E_WARNING, b"ssl require cert file")?,
         _ => {}
     }
-    if let Some(v) = s.get(c"ssl_passphrase") {
+    if let Some(v) = s.get(b"ssl_passphrase") {
         text(Text::Passphrase, v)?;
     }
     if native::ssl_supports(SSL_HOST_NAME)
-        && let Some(v) = s.get(c"ssl_host_name")
+        && let Some(v) = s.get(b"ssl_host_name")
     {
         text(Text::HostName, v)?;
     }
-    if let Some(v) = s.get(c"ssl_verify_peer") {
-        set(Value::VerifyPeer(truth(v)));
+    if let Some(v) = s.get(b"ssl_verify_peer") {
+        set(tls::Value::VerifyPeer(v.truthy()));
     }
-    if let Some(v) = s.get(c"ssl_allow_self_signed") {
-        set(Value::AllowSelfSigned(truth(v)));
+    if let Some(v) = s.get(b"ssl_allow_self_signed") {
+        set(tls::Value::AllowSelfSigned(v.truthy()));
     }
-    if let Some(v) = s.get(c"ssl_cafile") {
+    if let Some(v) = s.get(b"ssl_cafile") {
         text(Text::Cafile, v)?;
     }
-    if let Some(v) = s.get(c"ssl_capath") {
+    if let Some(v) = s.get(b"ssl_capath") {
         text(Text::Capath, v)?;
     }
-    if let Some(v) = s.get(c"ssl_verify_depth") {
-        set(Value::VerifyDepth(clamp_u8(long(v)?)));
+    if let Some(v) = s.get(b"ssl_verify_depth") {
+        set(tls::Value::VerifyDepth(clamp_u8(long(v)?)));
     }
-    if let Some(v) = s.get(c"ssl_ciphers") {
+    if let Some(v) = s.get(b"ssl_ciphers") {
         text(Text::Ciphers, v)?;
     }
-    if let Some(v) = s.get(c"ssl_ecdh_curve") {
+    if let Some(v) = s.get(b"ssl_ecdh_curve") {
         text(Text::EcdhCurve, v)?;
     }
     if native::ssl_supports(SSL_GREASE)
-        && let Some(v) = s.get(c"ssl_grease")
+        && let Some(v) = s.get(b"ssl_grease")
     {
-        set(Value::Grease(clamp_u8(long(v)?)));
+        set(tls::Value::Grease(clamp_u8(long(v)?)));
     }
     Ok(true)
 }
@@ -690,38 +632,25 @@ fn get_option(call: &Call) {
 
 /// The array (or object properties) of a `setOption` value, or `None` after
 /// the type error upstream throws.
-fn option_table(value: *mut zval, name: &str) -> Option<*mut HashTable> {
-    // SAFETY: a live argument.
-    match unsafe { type_of(value) } {
-        // SAFETY: an array argument.
-        IS_ARRAY => Some(unsafe { table(value) }),
-        // SAFETY: an object argument.
-        IS_OBJECT => Some(unsafe { swr_zend_object_properties(value) }),
-        _ => {
-            // SAFETY: a live argument.
-            let given = unsafe { swr_zend_zval_value_name(value) };
-            // SAFETY: Zend returns a static name.
-            let given = unsafe { CStr::from_ptr(given) };
-            let message = format!(
-                "must be of type array|object when argument $opt_name is {name}, {} given",
-                given.to_string_lossy()
-            );
-            let message = CString::new(message).unwrap_or_default();
-            // SAFETY: from a handler; "%s" takes the message.
-            unsafe { zend_argument_type_error(3, c"%s".as_ptr(), message.as_ptr()) };
-            None
-        }
+fn option_table<'a>(call: &Call, value: &'a Value, name: &str) -> Option<&'a Array> {
+    let table = value.array().or_else(|| value.properties());
+    if table.is_none() {
+        let message = format!(
+            "must be of type array|object when argument $opt_name is {name}, {} given",
+            value.value_name().to_string_lossy()
+        );
+        call.argument_type_error(3, &CString::new(message).unwrap_or_default());
     }
+    table
 }
 
 /// The two longs a `setOption` array holds under `keys`: `Err(false)` after
 /// the missing-key warning, `Err(true)` when the call must stop (a bailout).
-fn option_pair(table: *mut HashTable, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
-    let mut found = [ptr::null_mut(); 2];
+fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
+    let mut found = [None; 2];
     for (slot, key) in found.iter_mut().zip(keys) {
-        // SAFETY: a live table and a NUL-terminated key.
-        *slot = unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) };
-        if slot.is_null() {
+        *slot = table.find(key.to_bytes());
+        if slot.is_none() {
             let message = format!("no key \"{}\" passed in optval", key.to_string_lossy());
             let message = CString::new(message).unwrap_or_default();
             #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
@@ -731,7 +660,7 @@ fn option_pair(table: *mut HashTable, keys: [&CStr; 2]) -> Result<[i64; 2], bool
         }
     }
     let mut values = [0; 2];
-    for (value, item) in values.iter_mut().zip(found) {
+    for (value, item) in values.iter_mut().zip(found.into_iter().flatten()) {
         *value = long(item).map_err(|Stop| true)?;
     }
     Ok(values)
@@ -741,8 +670,8 @@ fn option_pair(table: *mut HashTable, keys: [&CStr; 2]) -> Result<[i64; 2], bool
 fn set_option(call: &Call) {
     let parsed = call
         .arity(3, 3)
-        .and_then(|()| Ok((call.long(1, 0)?, call.long(2, 0)?, call.zval(3))));
-    let Ok((level, name, value)) = parsed else {
+        .and_then(|()| Ok((call.long(1, 0)?, call.long(2, 0)?)));
+    let (Ok((level, name)), Some(value)) = (parsed, call.value(3)) else {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
@@ -768,7 +697,7 @@ fn set_option(call: &Call) {
     let linger;
     let int;
     let (option, length): (*const c_void, usize) = if !plain && name == i64::from(libc::SO_LINGER) {
-        let Some(table) = option_table(value, "SO_LINGER") else {
+        let Some(table) = option_table(call, value, "SO_LINGER") else {
             return;
         };
         let [on, wait] = match option_pair(table, [c"l_onoff", c"l_linger"]) {
@@ -779,9 +708,7 @@ fn set_option(call: &Call) {
         for (value, key) in [(on, "l_onoff"), (wait, "l_linger")] {
             if !(0..=i64::from(u16::MAX)).contains(&value) {
                 let message = format!("\"{key}\" must be between 0 and {}", u16::MAX);
-                let message = CString::new(message).unwrap_or_default();
-                // SAFETY: from a handler; "%s" takes the message.
-                unsafe { zend_argument_value_error(3, c"%s".as_ptr(), message.as_ptr()) };
+                call.argument_value_error(3, &CString::new(message).unwrap_or_default());
                 return;
             }
         }
@@ -795,7 +722,7 @@ fn set_option(call: &Call) {
     {
         let read = name == i64::from(libc::SO_RCVTIMEO);
         let label = if read { "SO_RCVTIMEO" } else { "SO_SNDTIMEO" };
-        let Some(table) = option_table(value, label) else {
+        let Some(table) = option_table(call, value, label) else {
             return;
         };
         let [sec, usec] = match option_pair(table, [c"sec", c"usec"]) {
@@ -816,16 +743,8 @@ fn set_option(call: &Call) {
         socket.set_timeout(timeout, kind);
         return call.set_bool(true);
     } else if !plain && bind_to_device(name) {
-        // SAFETY: a live argument.
-        if unsafe { type_of(value) } == IS_STRING {
-            // SAFETY: a string argument.
-            let device = unsafe { value::str_of(value) };
-            // SAFETY: live for the call.
-            let device = unsafe { bytes(device) };
-            (device.as_ptr().cast(), device.len())
-        } else {
-            (c"".as_ptr().cast(), 0)
-        }
+        let device = value.bytes().unwrap_or_default();
+        (device.as_ptr().cast(), device.len())
     } else {
         let Ok(number) = long(value) else { return };
         #[expect(
@@ -928,57 +847,25 @@ fn socketpair(call: &Call) {
     // SAFETY: from a function handler.
     unsafe { native::swoole_rs_check_reactor() };
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
-    let first = match from_fd(pair[0], kind) {
-        Ok(object) if !object.is_null() => object,
-        Ok(_) => return call.set_bool(false),
-        Err(bailout) => return bailout.defer(),
-    };
-    let second = match from_fd(pair[1], kind) {
-        Ok(object) if !object.is_null() => object,
-        result => {
-            // SAFETY: the first object, not yet shared.
-            unsafe { swr_zend_object_release(first) };
-            return match result {
-                Err(bailout) => bailout.defer(),
-                Ok(_) => call.set_bool(false),
-            };
+    let mut sockets = OwnedArray::default();
+    for fd in pair {
+        match from_fd(fd, kind) {
+            // SAFETY: a new object; the value takes its only reference.
+            Ok(object) if !object.is_null() => sockets.push(unsafe { Owned::object(object) }),
+            // The first socket, if made, goes with the array.
+            Ok(_) => return call.set_bool(false),
+            Err(bailout) => return bailout.defer(),
         }
-    };
-    // SAFETY: the return slot is writable and holds nothing yet.
-    unsafe { value::array_init(call.return_value()) };
-    // SAFETY: the array just made.
-    let array = unsafe { table(call.return_value()) };
-    for object in [first, second] {
-        // SAFETY: an all-zero zval is undefined; it is given the object's only reference.
-        let mut item: zval = unsafe { std::mem::zeroed() };
-        // SAFETY: as above.
-        unsafe { set_object(&raw mut item, object) };
-        // SAFETY: the array takes the reference.
-        unsafe { zend_hash_next_index_insert(array, &raw mut item) };
     }
+    call.set_owned(sockets.into_owned());
 }
 
 /// `static import($stream): Socket|false`.
 fn import(call: &Call) {
-    if call.arity(1, 1).is_err() {
+    let Ok(stream_zval) = call.arity(1, 1).and_then(|()| call.resource(1)) else {
         return;
-    }
-    let stream_zval = call.zval(1);
-    // SAFETY: a passed argument.
-    if unsafe { type_of(stream_zval) } != IS_RESOURCE {
-        #[expect(clippy::cast_possible_wrap, reason = "ZPP error codes are small")]
-        // SAFETY: from a handler, as ZPP reports a wrong argument.
-        unsafe {
-            zend_wrong_parameter_error(
-                ZPP_ERROR_WRONG_ARG as c_int,
-                1,
-                ptr::null_mut(),
-                _zend_expected_type_Z_EXPECTED_RESOURCE,
-                stream_zval,
-            );
-        }
-        return;
-    }
+    };
+    let stream_zval = stream_zval.as_ptr();
     let mut stream: *mut php_stream = ptr::null_mut();
     let mut fd: c_int = -1;
     // SAFETY: a resource argument and writable locals.

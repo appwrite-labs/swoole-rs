@@ -44,8 +44,7 @@ pub(crate) unsafe fn unserialize(data: &[u8], out: *mut zval) {
 
 /// `sw_zval_is_co_socket`.
 pub(crate) fn is_co_socket(object: &Value) -> bool {
-    // SAFETY: written once by MINIT.
-    let socket = unsafe { swoole_rs_phpclients::swoole_socket_coro_ce };
+    let socket = swoole_rs_phpclients::socket_class();
     let Some(ce) = object.class() else {
         return false;
     };

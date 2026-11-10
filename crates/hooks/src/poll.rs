@@ -187,29 +187,10 @@ fn poll_sockets(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps) -> bool {
     task.success.get()
 }
 
-/// `System::socket_poll` over `fds` (distinct fds), storing each one's `revents`.
-pub(crate) fn socket_poll(fds: &mut [PollFd], timeout: f64, ops: &PollOps) -> bool {
+/// `System::socket_poll` over `fds` (distinct fds), storing each one's `revents`: in a
+/// coroutine unless `timeout` is 0.
+pub fn socket_poll(fds: &mut [PollFd], timeout: f64, ops: &PollOps) -> bool {
     poll_sockets(Cell::from_mut(fds).as_slice_of_cells(), timeout, ops)
-}
-
-/// `System::socket_poll` for C callers (upstream's takes an `unordered_map`): polls
-/// `fds[..count]`, storing each one's `revents`; the hooks-system-rust cases call it.
-///
-/// # Safety
-/// `fds` holds `count` entries with distinct fds; in a coroutine unless `timeout` is 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_poll(
-    fds: *mut PollFd,
-    count: usize,
-    timeout: f64,
-) -> bool {
-    let fds: &mut [PollFd] = if count == 0 {
-        &mut []
-    } else {
-        // SAFETY: the caller passes `count` entries.
-        unsafe { std::slice::from_raw_parts_mut(fds, count) }
-    };
-    socket_poll(fds, timeout, &NATIVE)
 }
 
 /// The bucket counts a libstdc++ `std::unordered_map<int, _>` grows through: the

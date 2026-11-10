@@ -4,8 +4,6 @@ use std::{ffi::CStr, ptr};
 use swoole_rs_zend::{bailout::Bailout, sys as z, type_of, value};
 
 unsafe extern "C" {
-    static mut swoole_socket_coro_ce: *mut z::zend_class_entry;
-    static mut swoole_client_ce: *mut z::zend_class_entry;
     static mut swoole_process_ce: *mut z::zend_class_entry;
 }
 
@@ -59,11 +57,11 @@ pub(super) unsafe fn convert(value: *mut z::zval) -> Result<i32, Bailout> {
             let object = unsafe { value::obj_of(value) };
             // SAFETY: a live object publishes its class entry.
             let class = unsafe { (*object).ce };
-            // SAFETY: these immutable module class entries are initialized before user code.
-            let co_socket = unsafe { swoole_socket_coro_ce };
-            // SAFETY: as above, the registered Client class.
-            let client = unsafe { swoole_client_ce };
-            // SAFETY: as above, the registered Process class.
+            let (co_socket, client) = swoole_rs_phpswoole::families()
+                .map_or((ptr::null_mut(), ptr::null_mut()), |families| {
+                    ((families.socket_class)(), (families.client_class)())
+                });
+            // SAFETY: an immutable module class entry, initialized before user code.
             let process = unsafe { swoole_process_ce };
             let mut property = None;
             for (index, parent) in [(0_u8, co_socket), (1, client), (2, process)] {
