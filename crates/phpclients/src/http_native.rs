@@ -3,10 +3,12 @@
 //! callables. WebSocket framing is crates/phphttp's, which registers it here
 //! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::native::{Co, Socket};
-use libc::{c_char, c_int, c_void, mode_t, off_t, size_t, ssize_t};
+use libc::{c_char, c_int, c_void, mode_t, off_t, size_t};
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, swr_string_drop};
 use swoole_rs_corebase::{ProxyState, log};
+use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
+use swoole_rs_hooks::socket_members::{get_read_buffer, get_write_buffer};
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
 use swoole_rs_zend::{
     Array, Call, Value, bailout, set_object, string,
@@ -54,19 +56,13 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
 }
 
 unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
-    fn get_read_buffer(socket: Socket) -> *mut CppString;
-    #[link_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv"]
-    fn get_write_buffer(socket: Socket) -> *mut CppString;
     #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
     fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
     fn swoole_coroutine_open(path: *const c_char, flags: c_int, mode: mode_t) -> c_int;
-    fn swoole_coroutine_write(fd: c_int, data: *const c_void, length: size_t) -> ssize_t;
     fn swoole_coroutine_ftruncate(fd: c_int, length: off_t) -> c_int;
     fn swoole_coroutine_lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t;
-    fn swoole_coroutine_close(fd: c_int) -> c_int;
 }
 
 /// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_READ`.
@@ -227,7 +223,7 @@ impl Co {
     /// `get_write_buffer()`, made on first use.
     pub(crate) fn write_buffer<'a>(self) -> &'a mut CppString {
         // SAFETY: a live socket.
-        let buffer = unsafe { get_write_buffer(self.as_ptr()) };
+        let buffer = unsafe { get_write_buffer(self.as_ptr()) }.cast::<CppString>();
         // SAFETY: its write buffer, which lives as long.
         unsafe { &mut *buffer }
     }
@@ -235,7 +231,7 @@ impl Co {
     /// `get_read_buffer()`, made on first use.
     pub(crate) fn input<'a>(self) -> &'a mut CppString {
         // SAFETY: a live socket.
-        let buffer = unsafe { get_read_buffer(self.as_ptr()) };
+        let buffer = unsafe { get_read_buffer(self.as_ptr()) }.cast::<CppString>();
         // SAFETY: its read buffer, which lives as long.
         unsafe { &mut *buffer }
     }
@@ -318,8 +314,8 @@ pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool
 /// `AsyncFile::close()`. It can yield, so a caller lets go of the descriptor
 /// (and anything that refers to it) before calling it.
 pub(crate) fn swoole_http_client_coro_file_close(fd: c_int) {
-    // SAFETY: a plain close of a descriptor nothing else holds.
-    unsafe { swoole_coroutine_close(fd) };
+    // A plain close of a descriptor nothing else holds.
+    swoole_coroutine_close(fd);
 }
 
 pub(crate) unsafe fn swoole_http_client_coro_callable_free(callable: *mut c_void) {

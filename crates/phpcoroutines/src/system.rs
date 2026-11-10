@@ -21,33 +21,11 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// Copies one C++ string out to `out`.
-type Put = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: usize);
+use swoole_rs_hooks::resolve::{swr_v1_system_getaddrinfo, swr_v1_system_gethostbyname};
+use swoole_rs_hooks::sleep::system_sleep;
+use swoole_rs_hooks::wait_event::system_wait_event;
 
 unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
-    fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
-
-    fn swr_v1_system_gethostbyname(
-        host: *const c_char,
-        length: usize,
-        family: c_long,
-        timeout: f64,
-        put: Put,
-        out: *mut c_void,
-    ) -> bool;
-    fn swr_v1_system_getaddrinfo(
-        host: *const c_char,
-        family: c_long,
-        socktype: c_long,
-        protocol: c_long,
-        service: *const c_char,
-        timeout: f64,
-        put: Put,
-        out: *mut c_void,
-    ) -> bool;
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
 
