@@ -1,8 +1,1 @@
-[
-  {"engine": "upstream", "project": "11-buffer-lifecycle", "signature": "recvfrom(0) = ECONNRESET",
-   "reason": "#2744: upstream finds a queued-output peer's reset on read; the Cargo build stops reading and finds it on send"},
-  {"engine": "cargo", "project": "11-buffer-lifecycle", "signature": "sendto(0) = ECONNRESET",
-   "reason": "#2744: the Cargo build drops EPOLLIN while output is queued and finds the peer's reset on send"},
-  {"engine": "cargo", "project": "11-buffer-lifecycle", "signature": "sendfile() = ECONNRESET",
-   "reason": "#2744: the Cargo build drops EPOLLIN while output is queued and finds the peer's reset on sendfile"}
-]
+[]

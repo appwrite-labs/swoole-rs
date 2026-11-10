@@ -2048,7 +2048,11 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let socket = unsafe { &mut *(arg as *mut SocketRecord) };
             // SAFETY: its live output buffer.
             unsafe { swr_cpp_buffer_typed_close(socket.output.out_buffer.cast()) };
-            u64::from(crate::reactor_handle::Reactor::thread().interest(socket, 4, 0) == 0)
+            // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
+            u64::from(
+                !cfg!(feature = "halfclose")
+                    || crate::reactor_handle::Reactor::thread().interest(socket, 4, 0) == 0,
+            )
         }
         op => return sends(o, op, arg),
     })
