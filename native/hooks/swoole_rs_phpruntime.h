@@ -17,8 +17,6 @@ extern "C" {
 #endif
 /* RINIT: 1 on the main thread (the plain wrapper then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
-/* PHPCoroutine::enable_hook(flags), 0 disabling every hook; a trapped bailout is raised last. */
-bool swr_v1_phpruntime_enable_hook(uint32_t flags);
 /* The hook flags that select C++'s PDO drivers and native curl (crates/phpruntime's flags). */
 enum {
     SWR_HOOK_NATIVE_CURL = 1u << 12,

@@ -20,18 +20,6 @@ extern "C" {
 #endif
 
 typedef struct swr_v1_server_state swr_v1_server_state;
-/* Commands (crates/server/src/commands.rs). A handler is `void (*)(void *ctx, void *serv,
-   const char *message, size_t length, swr_v1_server_command_reply reply, void *out)`, a callback
-   `void (*)(void *ctx, void *serv, const char *message, size_t length)`; the context's owner keeps
-   it alive while the server can call it. */
-typedef void (*swr_v1_server_command_reply)(void *out, const char *data, size_t length);
-typedef struct { void (*invoke)(void); void *ctx; } swr_v1_server_command_fn;
-/* What OP_ST_CMD_SEND writes to the target process. */
-typedef struct { int32_t action; uint32_t process_id; int32_t command_id; int64_t request_id; const char *message; size_t length; } swr_v1_server_command_send;
-void swr_v1_server_command_result(const swr_v1_server_state *, void *serv, int64_t request_id, const char *, size_t);
-bool swr_v1_server_add_command(void *serv, const char *name, size_t, int accepted_types, swr_v1_server_command_fn handler);
-bool swr_v1_server_command(void *serv, uint32_t process_id, int process_type, const char *name, size_t,
-                           const char *message, size_t, swr_v1_server_command_fn callback);
 const void *swr_v1_server_static_owner(const swr_v1_server_state *, uint32_t);
 const void *swr_v1_server_static_owner_clone(const void *);
 void swr_v1_server_static_owner_free(const void *);
@@ -42,18 +30,12 @@ const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, 
 void swr_v1_server_static_rewrite_add(const swr_v1_server_state *, const uint8_t *, size_t, const uint8_t *, size_t);
 struct swr_v2_http_context;
 bool swr_v1_server_static_rewrite(const swr_v1_server_state *, struct swr_v2_http_context *);
-/* Server::select_static_handler(request, conn) (crates/server/src/static_select.rs). */
-bool swr_v1_server_static_select(void *server, const void *request, const void *conn);
-/* upload_tmp_dir's bytes and their length (crates/server/src/state.rs). */
-const uint8_t *swr_v1_server_upload_tmp_dir(const swr_v1_server_state *, size_t *);
 /* Server's text members, which Rust owns (crates/server/src/state.rs). */
 enum {
     SWR_SERVER_TEXT_CHROOT, SWR_SERVER_TEXT_USER, SWR_SERVER_TEXT_GROUP, SWR_SERVER_TEXT_PID_FILE,
     SWR_SERVER_TEXT_DOCUMENT_ROOT,
 };
-const struct swr_v1_core_string *swr_v1_server_text_slot(const swr_v1_server_state *, size_t);
 void swr_v1_server_port_shared_init(void *storage);
-size_t swr_v1_server_port_connections(const void *storage, uint32_t workers);
 bool swr_v1_server_record_layout(uint32_t kind, size_t size, size_t alignment, const size_t *offsets, size_t count);
 /* One of the server's callbacks (crates/server/src/callbacks.rs). Rust owns the slot and
    calls `drop(ctx)` when the slot is cleared or the state freed. */

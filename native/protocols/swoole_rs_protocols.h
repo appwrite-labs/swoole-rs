@@ -59,10 +59,8 @@ typedef struct {
     int (*dispatch)(void *context, size_t length);
 } swr_resp_io;
 int swr_v1_resp_recv(const swr_resp_io *, void *buffer, swr_resp_request **request, uint32_t maximum, size_t page);
-/* MessageBus (crates/bus), for crates/process' send_message.
- * socket is a swoole::network::Socket. */
+/* MessageBus (crates/bus), for crates/process' send_message. */
 typedef struct swr_bus swr_bus;
-bool swr_v1_bus_write(const swr_bus *, void *socket, void *head, const char *data);
 #ifdef __cplusplus
 }
 #endif

@@ -35,11 +35,8 @@ double swr_v1_locks_coroutine_backoff(double second, double initial, double maxi
  * (crates/phplocks), MINITs included. */
 #ifdef SW_THREAD /* config.h: ZTS builds with thread support */
 /* Swoole\Thread\Atomic, Atomic\Long and Lock, whose resources Thread\Map,
- * ArrayList and Queue share. Thread\Lock takes Swoole\Lock's types;
- * `unconstructed` is
- * php_swoole_fatal_error(E_ERROR, "%s", message). */
+ * ArrayList and Queue share. */
 void swr_v1_phplocks_thread_atomic_minit(void);
-void swr_v1_phplocks_thread_lock_minit(void (*unconstructed)(const char *message));
 #endif
 #ifdef __cplusplus
 }
