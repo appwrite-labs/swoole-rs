@@ -21,7 +21,7 @@ libc = "=0.2.191"
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-ossupport = { path = "../ossupport" }

@@ -15,11 +15,6 @@ use swoole_rs_zend::{
     sys::{self as z, swr_zend_callable_warning},
 };
 
-unsafe extern "C-unwind" {
-    // crates/coroutine.
-    fn swoole_coroutine_is_in() -> u8;
-}
-
 // crates/phphelpers' `SW_ZSTR_KNOWN` table.
 use swoole_rs_phphelpers::sw_zend_known_strings;
 
@@ -89,8 +84,7 @@ pub(crate) fn fatal_error() -> bool {
 
 /// `Coroutine::get_current() != nullptr`.
 pub(crate) fn in_coroutine() -> bool {
-    // SAFETY: no preconditions.
-    unsafe { swoole_coroutine_is_in() != 0 }
+    swoole_rs_phpswoole::in_coroutine()
 }
 
 pub(crate) fn bailed() -> bool {

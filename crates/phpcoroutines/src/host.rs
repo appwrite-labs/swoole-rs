@@ -32,15 +32,7 @@ type Co = *mut c_void;
 unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    // crates/coroutine, crates/process and crates/hooks.
-    #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-    fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
-    #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
-    fn coroutine_cancel(co: Co) -> bool;
-    #[link_name = "_ZN6swoole9Coroutine8activateEv"]
-    fn coroutine_activate();
-    #[link_name = "_ZN6swoole9Coroutine10deactivateEv"]
-    fn coroutine_deactivate();
+    // crates/hooks.
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(seconds: f64) -> c_int;
 
@@ -414,7 +406,7 @@ pub unsafe fn yield_cancelable(
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
 pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
     // SAFETY: as above.
-    unsafe { coroutine_yield_ex(co, timeout) }
+    unsafe { swoole_rs_coroutine::yield_ex(co.cast(), timeout) }
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
@@ -482,7 +474,7 @@ pub unsafe fn park(slot: &std::cell::Cell<Co>) {
 
 pub(crate) fn cancel(co: Co) -> bool {
     // SAFETY: a live coroutine.
-    unsafe { coroutine_cancel(co) }
+    unsafe { swoole_rs_coroutine::cancel(co.cast()) }
 }
 
 /// `co->is_canceled()` of a live coroutine.
@@ -575,8 +567,8 @@ pub(crate) fn attach(
     on_close: unsafe extern "C" fn(*mut c_void),
 ) {
     reactor_push(true, deactivate_on_free, std::ptr::null_mut());
-    // SAFETY: the core's activation, on a running loop.
-    unsafe { coroutine_activate() };
+    // The core's activation, on a running loop.
+    swoole_rs_coroutine::activate();
     set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
 }
 
@@ -602,8 +594,8 @@ unsafe extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
 }
 
 pub(crate) fn deactivate() {
-    // SAFETY: the core is active.
-    unsafe { coroutine_deactivate() };
+    // The core is active.
+    swoole_rs_coroutine::deactivate();
 }
 
 /// The runtime hooks (when `flags`) and the unsafe functions disabled.

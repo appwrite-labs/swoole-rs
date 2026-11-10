@@ -23,9 +23,8 @@ type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
 /// `SW_TIMEOUT_ALL`.
 const TIMEOUT_ALL: c_int = 15;
 
-// SAFETY: crates/coroutine's.
+// SAFETY: the extension archive's.
 unsafe extern "C" {
-    fn swoole_coroutine_is_in() -> u8;
     /// `async::dispatch` (`async_threads.rs`, in the extension archive).
     #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
     fn async_dispatch(request: *const c_void) -> *mut c_void;
@@ -149,11 +148,10 @@ pub unsafe fn name_resolver_lookup(
     }
     // SAFETY: as the caller promises.
     let name = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) };
-    // SAFETY: no preconditions.
-    let address = if unsafe { swoole_coroutine_is_in() } != 0 {
-        system_gethostbyname(name, ctx.kind, ctx.timeout)
-    } else {
+    let address = if swoole_rs_coroutine::current().is_null() {
         resolver::gethostbyname(ctx.kind, name)
+    } else {
+        system_gethostbyname(name, ctx.kind, ctx.timeout)
     };
     // SAFETY: `assign` copies the address.
     unsafe { assign(out, address.as_ptr().cast(), address.len()) };

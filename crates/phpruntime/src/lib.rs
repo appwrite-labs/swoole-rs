@@ -92,12 +92,6 @@ pub mod flags {
     }
 }
 
-// SAFETY: crates/coroutine's check, linked into every extension, with no
-// preconditions.
-unsafe extern "C" {
-    safe fn swoole_coroutine_is_in() -> u8;
-}
-
 /// `PHPCoroutine::get_hook_flags()` (crates/phpcoroutines').
 fn hook_flags() -> u32 {
     swoole_rs_phpswoole::families().map_or(0, |families| (families.hook_flags)())
@@ -638,7 +632,7 @@ fn log_warning(message: &CStr) {
 }
 
 fn in_coroutine() -> bool {
-    swoole_coroutine_is_in() != 0
+    swoole_rs_phpswoole::in_coroutine()
 }
 
 /// `PHPCoroutine::disable_unsafe_function()`.
