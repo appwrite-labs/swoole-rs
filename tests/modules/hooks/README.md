@@ -41,7 +41,19 @@ Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `statvfs` reads `/proc` where upstream reads `/tmp`: the free counts of the filesystem
 `/tmp` sits on change whenever anything on the host writes to it between the two calls.
-`sendmsg_and_recvmsg` stays excluded (below).
+`sendmsg_and_recvmsg` stays excluded (below). `core-tests/src/coroutine/accept.cpp`'s one
+TEST, `coroutine_hook.accept`, is `hook.rs`'s `accept`, in the same suite and phase.
+
+`core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
+(`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
+`System::gethostbyname` is `swr_v1_system_gethostbyname` and the DNS cache calls
+(`set_dns_cache_capacity`, `_expire`, `clear_dns_cache`, `get_dns_cache_hit_ratio`) are
+crates/hooks' `dns_cache.rs` under their upstream symbols. `resolve_cache`,
+`resolve_cache_inet4_and_inet6` and `dns_expire` look up public names (www.baidu.com,
+ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `dns.lookup1`
+(external DNS and network). `impl_async` has no case: `gethostbyname_impl_with_async` returns a
+`std::string` and the hybrid exports no symbol for it (it is crates/hooks `resolve.rs`'s
+`gethostbyname_with_async`, which `System::gethostbyname` runs on a cache miss without c-ares).
 
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports

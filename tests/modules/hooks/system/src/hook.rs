@@ -172,6 +172,7 @@ unsafe extern "C" {
     fn swoole_coroutine_recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
     fn swoole_coroutine_recvmsg(fd: c_int, msg: *mut MsgHdr, flags: c_int) -> isize;
     fn swoole_coroutine_connect(fd: c_int, addr: *const SockAddrIn, len: u32) -> c_int;
+    fn swoole_coroutine_accept(fd: c_int, addr: *mut SockAddrIn, len: *mut u32) -> c_int;
     fn swoole_coroutine_poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
     fn swoole_coroutine_poll_fake(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
     fn swoole_coroutine_socket_set_timeout(fd: c_int, which: c_int, timeout: f64) -> c_int;
@@ -188,7 +189,7 @@ unsafe extern "C" {
     fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut CoSocket;
     #[link_name = "_Z37swoole_coroutine_get_socket_object_exi"]
     fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut CoSocket;
-    fn swr_v1_system_gethostbyname(
+    pub(super) fn swr_v1_system_gethostbyname(
         host: *const c_char,
         length: usize,
         family: c_long,
@@ -213,6 +214,9 @@ unsafe extern "C" {
     fn readdir(dir: *mut c_void) -> *const c_char;
     fn closedir(dir: *mut c_void) -> c_int;
     fn freeaddrinfo(ai: *mut AddrInfo);
+    fn bind(fd: c_int, addr: *const SockAddrIn, len: u32) -> c_int;
+    fn listen(fd: c_int, backlog: c_int) -> c_int;
+    fn getsockname(fd: c_int, addr: *mut SockAddrIn, len: *mut u32) -> c_int;
     fn __h_errno_location() -> *mut c_int;
 }
 
@@ -516,7 +520,7 @@ fn dir() {
     test_hook_dir();
 }
 
-unsafe extern "C" fn put_ip(out: *mut c_void, data: *const c_char, length: usize) {
+pub(super) unsafe extern "C" fn put_ip(out: *mut c_void, data: *const c_char, length: usize) {
     // SAFETY: `out` is the caller's String; `data` holds `length` bytes.
     unsafe {
         let bytes = std::slice::from_raw_parts(data.cast(), length);
@@ -1267,6 +1271,70 @@ pub fn prepare() {
 }
 
 /// `coroutine_hook.<name>`, in upstream's order.
+/// `core-tests/src/coroutine/accept.cpp`'s one TEST, `coroutine_hook.accept`.
+fn accept() {
+    run(|| {
+        // SAFETY: plain socket calls on the case's own descriptors and locals.
+        unsafe {
+            let server_sock = swoole_coroutine_socket(AF_INET, SOCK_STREAM, 0);
+            assert!(server_sock > 0);
+
+            let server_addr = SockAddrIn {
+                family: AF_INET as u16,
+                port: 0,
+                addr: [127, 0, 0, 1],
+                zero: [0; 8],
+            };
+            let size = size_of::<SockAddrIn>() as u32;
+            assert_eq!(bind(server_sock, &raw const server_addr, size), 0);
+            assert_eq!(listen(server_sock, 128), 0);
+
+            go(move || {
+                std::thread::sleep(std::time::Duration::from_micros(10000));
+
+                let client_sock = swoole_coroutine_socket(AF_INET, SOCK_STREAM, 0);
+                assert!(client_sock > 0);
+
+                let mut actual_server_addr = std::mem::zeroed::<SockAddrIn>();
+                let mut addr_len = size_of::<SockAddrIn>() as u32;
+                assert_eq!(
+                    getsockname(server_sock, &raw mut actual_server_addr, &raw mut addr_len),
+                    0
+                );
+                assert_eq!(
+                    swoole_coroutine_connect(client_sock, &raw const actual_server_addr, addr_len),
+                    0
+                );
+
+                let test_message = b"test_data";
+                let sent_bytes =
+                    swoole_coroutine_send(client_sock, test_message.as_ptr().cast(), 9, 0);
+                assert_eq!(sent_bytes, 9);
+
+                swoole_coroutine_close(client_sock);
+            });
+
+            let mut client_addr = std::mem::zeroed::<SockAddrIn>();
+            let mut client_addr_len = size_of::<SockAddrIn>() as u32;
+            let client_sock = swoole_coroutine_accept(
+                server_sock,
+                &raw mut client_addr,
+                &raw mut client_addr_len,
+            );
+            assert!(client_sock > 0);
+
+            let mut buffer = [0u8; 256];
+            let received_bytes =
+                swoole_coroutine_recv(client_sock, buffer.as_mut_ptr().cast(), buffer.len() - 1, 0);
+            assert!(received_bytes > 0);
+            assert_eq!(CStr::from_bytes_until_nul(&buffer).unwrap(), c"test_data");
+
+            swoole_coroutine_close(client_sock);
+            swoole_coroutine_close(server_sock);
+        }
+    });
+}
+
 pub const CASES: super::Cases = &[
     ("file", file),
     ("gethostbyname", gethostbyname),
@@ -1294,4 +1362,6 @@ pub const CASES: super::Cases = &[
     ("ftruncate", ftruncate),
     ("get_socket_fail", get_socket_fail),
     ("create_socket_fail", create_socket_fail),
+    // core-tests/src/coroutine/accept.cpp
+    ("accept", accept),
 ];
