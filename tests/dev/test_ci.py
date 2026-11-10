@@ -348,6 +348,32 @@ class Ci(unittest.TestCase):
         code, _, _ = self.ci('new-failures', runs={}, flags=())
         self.assertEqual(code, 1)
 
+    def test_phpt_baseline_answers_from_the_saved_cache_without_the_api(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as cache:
+            def commit(path, text):
+                (Path(repo) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(repo) / path).write_text(text)
+                for args in (['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', path]):
+                    subprocess.run(['git', '-C', repo, *args], check=True, capture_output=True)
+                return subprocess.run(['git', '-C', repo, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
+            subprocess.run(['git', 'init', '-q', repo], check=True)
+            sha = commit('tools/build_upstream.py', 'pin 1')
+            commit('README.md', 'unrelated')
+            (Path(cache) / 'meta.json').write_text(json.dumps({'run': '77', 'sha': sha}))
+            (Path(cache) / 'upstream-1.json').write_text(json.dumps({'engines': [{'name': 'upstream', 'php': '8.3.6'}]}))
+            code, _, _ = self.ci('phpt-baseline', '--saved', cache, '--php', '8.3.6', runs={}, flags=(), cwd=repo)
+            self.assertEqual((code, self.out.split(), self.gh_calls), (0, ['77', sha], []))
+            # Another PHP release, or a key path changed since, and upstream runs again.
+            code, _, _ = self.ci('phpt-baseline', '--saved', cache, '--php', '8.3.7', runs={}, flags=(), cwd=repo)
+            self.assertEqual((code, self.gh_calls), (2, []))
+            commit('corpus/upstream/services.yml', 'another image')
+            code, _, _ = self.ci('phpt-baseline', '--saved', cache, runs={}, flags=(), cwd=repo)
+            self.assertEqual((code, self.gh_calls), (2, []))
+            # A cache saved before meta.json existed falls back to the API.
+            (Path(cache) / 'meta.json').unlink()
+            self.ci('phpt-baseline', '--saved', cache, runs={}, flags=(), cwd=repo)
+            self.assertTrue(self.gh_calls)
+
     def test_phpt_baseline_is_the_newest_run_whose_upstream_shards_passed_while_its_key_holds(self):
         with tempfile.TemporaryDirectory() as repo:
             def git(*args):
