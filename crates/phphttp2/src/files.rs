@@ -11,7 +11,7 @@ use swoole_rs_hooks::offload::async_job;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
-use swoole_rs_zend::{Value as Zval, bailout, string, sys::zend_string};
+use swoole_rs_zend::{Value as Zval, bailout};
 
 /// `sw_rs_http2_file_mode`'s modes.
 const MODE_EMPTY: u32 = 0;
@@ -103,11 +103,8 @@ fn body(ctx: Ctx, data: &[u8], end_stream: bool) -> bool {
 }
 
 /// `http2_server_is_static_file`: answer the request from the document root
-/// when the static handler serves it (true).
-/// # Safety
-/// `server` is the live server and `ctx` a live HTTP/2 stream context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: Ctx) -> bool {
+/// when the static handler serves it (true). `server` is the live server.
+pub(crate) fn static_file(server: *mut c_void, ctx: Ctx) -> bool {
     let served = serve(server, ctx);
     bailout::finish();
     served
@@ -238,21 +235,11 @@ fn send_ranges(ctx: Ctx, handler: &StaticHandler) -> bool {
 
 /// `swoole_http2_server_send_file`: `Response::sendfile` over HTTP/2, the
 /// stream held while a coroutine reads the file.
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context and `file` a live string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_send_file(
-    ctx: Ctx,
-    file: *mut zend_string,
-    offset: i64,
-    length: usize,
-) -> bool {
+pub(crate) fn send_file(ctx: Ctx, path: &[u8], offset: i64, length: usize) -> bool {
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
     set(ctx, Field::AcceptCompression, 0);
-    // SAFETY: a live string.
-    let path = unsafe { string::bytes(file) };
     let Some(content) = content(path) else {
         return false;
     };

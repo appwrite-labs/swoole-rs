@@ -10,7 +10,7 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
@@ -56,13 +56,6 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 unsafe extern "C" {
     /// `sw_reactor()`.
     fn swr_v1_event_reactor() -> *mut c_void;
-    /// The HTTP/2 server's (crates/phphttp2).
-    fn swr_v1_phphttp2_server_goaway(
-        ctx: *mut Context,
-        code: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
     static swoole_socket_coro_ce: *mut zend_class_entry;
 }
 
@@ -547,15 +540,15 @@ fn goaway(call: &Call) {
             .and_then(|()| Ok((call.long(1, 0)?, call.str_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
         let debug = nullable(debug);
-        let (data, length) = if debug.is_null() {
-            (ptr::null(), 0)
+        let debug = if debug.is_null() {
+            &[][..]
         } else {
             // SAFETY: a live string argument.
-            let debug = unsafe { bytes(debug) };
-            (debug.as_ptr().cast(), debug.len())
+            unsafe { bytes(debug) }
         };
-        // SAFETY: a live HTTP/2 context and the debug data's span.
-        call.set_bool(unsafe { swr_v1_phphttp2_server_goaway(ctx, code, data, length) });
+        let server = crate::http2::server();
+        let ctx = crate::http2::Ctx::of(ctx);
+        call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
         Some(())
     };
     or_false(call, run());

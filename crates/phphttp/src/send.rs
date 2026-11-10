@@ -32,23 +32,6 @@ const HTTP2_WRITE: c_int = 1;
 const HTTP2_SEND_FILE: c_int = 2;
 pub(crate) const HTTP2_PING: c_int = 3;
 
-// The HTTP/2 server's (crates/phphttp2): a bailout waits for the caller.
-unsafe extern "C" {
-    fn swr_v1_phphttp2_server_respond(
-        ctx: *mut Context,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    fn swr_v1_phphttp2_server_write(ctx: *mut Context, data: *const c_char, length: usize) -> bool;
-    fn swr_v1_phphttp2_server_ping(ctx: *mut Context) -> bool;
-    fn swr_v1_phphttp2_server_send_file(
-        ctx: *mut Context,
-        file: *mut zend_string,
-        offset: i64,
-        length: usize,
-    ) -> bool;
-}
-
 /// The context's `ContextState`, its first base.
 pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
     // SAFETY: a live `swoole::http::Context`, which starts with its
@@ -67,17 +50,13 @@ pub(crate) fn http2(
     length: usize,
 ) -> Result<bool, Bailout> {
     let body = of(data);
-    let (body, size) = (body.as_ptr().cast(), body.len());
-    let done = match op {
-        // SAFETY: a live HTTP/2 context and the body's span.
-        HTTP2_END => unsafe { swr_v1_phphttp2_server_respond(ctx, body, size) },
-        // SAFETY: as above.
-        HTTP2_WRITE => unsafe { swr_v1_phphttp2_server_write(ctx, body, size) },
-        // SAFETY: a live HTTP/2 context.
-        HTTP2_PING => unsafe { swr_v1_phphttp2_server_ping(ctx) },
-        // SAFETY: a live HTTP/2 stream context and file name.
-        _ => unsafe { swr_v1_phphttp2_server_send_file(ctx, data, offset, length) },
-    };
+    let (server, ctx) = (crate::http2::server(), crate::http2::Ctx::of(ctx));
+    let done = server.is_some_and(|server| match op {
+        HTTP2_END => (server.respond)(ctx, body),
+        HTTP2_WRITE => (server.write)(ctx, body),
+        HTTP2_PING => (server.ping)(ctx),
+        _ => (server.send_file)(ctx, body, offset, length),
+    });
     if bailout::pending() {
         return Err(Bailout);
     }
