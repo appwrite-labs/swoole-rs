@@ -334,6 +334,8 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
+               *[arg for name in ['max_request_2', 'heartbeat_check_3', 'close_3', 'close_7']
+                 for arg in ['--exclude', f'server.{name}=MODE_THREAD fails over the crates (#2636)']],
                *report('http-server-rust'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',

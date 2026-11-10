@@ -163,7 +163,9 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`) need
 upstream's `enable_thread` build (`SW_THREAD`). The crates have thread mode when the
 extension's MINIT sets `swoole_rs_server::THREAD_SUPPORTED`, as it does under ZTS, so these
-cases set it.
+cases set it. They still fail over the crates (`max_request_2` counts fewer than 8 worker
+starts; the other three time out waiting for the server), so `http-server-rust` excludes
+all four until #2636 fixes thread mode; an exclusion never counts as passed.
 
 `server_conn.rs` keeps core-tests' shared counters (`test::counter_*`) and the
 process-shared `Mutex(true)` its clients wait on in anonymous shared memory mapped
