@@ -433,7 +433,13 @@ impl Regex {
                     None => (min.saturating_sub(1), u32::from(*min == 0)),
                 };
                 for _ in 0..copies {
+                    let before = self.program.len();
                     self.emit(node)?;
+                    // A body with no states, such as `(?:)`, repeats to nothing: stop
+                    // rather than count to a `{4294967295}` the state limit never sees.
+                    if self.program.len() == before {
+                        break;
+                    }
                 }
                 let mut splits = Vec::new();
                 for _ in 0..optional {
