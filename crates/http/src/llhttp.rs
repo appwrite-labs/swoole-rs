@@ -265,9 +265,11 @@ pub struct Parser {
     error_pos: usize,
     header_state: u8,
     state: State,
-    /// Bytes of the word being matched, and which word.
+    /// Bytes of the word being matched, which word, and (past the first byte)
+    /// the words that still match.
     index: u8,
     word: u8,
+    candidates: u64,
     span: Span,
     span_start: usize,
     pending: (i32, Option<&'static &'static str>),
@@ -472,19 +474,24 @@ enum Word {
 /// Match `c` against `words`, after the parser's `index` bytes of word `word`.
 fn next_word(words: &[&str], parser: &mut Parser, c: u8) -> Word {
     let index = usize::from(parser.index);
-    let current = words
-        .get(usize::from(parser.word))
-        .copied()
-        .unwrap_or_default();
-    let prefix = current.as_bytes().get(..index).unwrap_or_default();
-    let (mut whole, mut longer) = (None, None);
-    for (i, word) in words.iter().enumerate() {
-        let word = word.as_bytes();
-        if word.starts_with(prefix) && word.get(index) == Some(&c) {
+    // Past the first byte only the words matched so far can match, so each byte
+    // tests those alone, and only at `index`.
+    let mut left = if index == 0 {
+        u64::MAX >> (64 - words.len())
+    } else {
+        parser.candidates
+    };
+    let (mut whole, mut longer, mut next) = (None, None, 0);
+    while left != 0 {
+        let i = left.trailing_zeros() as usize;
+        left &= left - 1;
+        let word = words.get(i).map(|word| word.as_bytes()).unwrap_or_default();
+        if word.get(index) == Some(&c) {
             if word.len() == index + 1 {
                 whole = Some(i);
             } else {
                 longer.get_or_insert(i);
+                next |= 1 << i;
             }
         }
     }
@@ -496,11 +503,16 @@ fn next_word(words: &[&str], parser: &mut Parser, c: u8) -> Word {
         }
         (whole, Some(longer)) => {
             parser.word = byte(whole.unwrap_or(longer));
+            parser.candidates = next;
             parser.index += 1;
             Word::Partial
         }
         (None, None) => Word::Mismatch,
     }
+}
+
+fn path_char(c: u8) -> bool {
+    matches!(c, 0x21 | 0x22 | 0x24..=0x3e | 0x40..=0x7e)
 }
 
 fn url_ws(c: u8) -> bool {
@@ -573,6 +585,20 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     fn eat(&mut self, next: State) -> Next {
         self.p += 1;
         Ok(next)
+    }
+
+    /// Consume `c` and the bytes after it while they are `accept`ed, as llhttp's
+    /// span states do in one loop: the first byte left, or `None` at the end.
+    #[inline]
+    fn skip(&mut self, c: u8, accept: impl Fn(u8) -> bool) -> Option<u8> {
+        if !accept(c) {
+            return Some(c);
+        }
+        self.p += 1;
+        let rest = self.data.get(self.p..).unwrap_or_default();
+        let run = rest.iter().position(|&c| !accept(c)).unwrap_or(rest.len());
+        self.p += run;
+        rest.get(run).copied()
     }
 
     /// Stop with `error`, resuming at `resume` if it is a pause.
@@ -1046,10 +1072,10 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 _ if server_char(c) => self.eat(S::UrlServer),
                 _ => self.fail(7, &"Unexpected char in url server"),
             },
-            S::UrlPath => match c {
-                9 | 12 => self.eat_fail(7, &"Invalid characters in url"),
-                0x21 | 0x22 | 0x24..=0x3e | 0x40..=0x7e => self.eat(S::UrlPath),
-                _ => Ok(S::UrlQueryOrFragment),
+            S::UrlPath => match self.skip(c, path_char) {
+                None => Ok(S::UrlPath),
+                Some(9 | 12) => self.eat_fail(7, &"Invalid characters in url"),
+                Some(_) => Ok(S::UrlQueryOrFragment),
             },
             S::UrlQueryOrFragment | S::UrlQuery | S::UrlFragment => match c {
                 9 | 12 => self.eat_fail(7, &"Invalid characters in url"),
@@ -1205,10 +1231,10 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     Ok(S::HeaderFieldGeneral)
                 }
             },
-            S::HeaderFieldGeneral => match c {
-                _ if token(c) => self.eat(S::HeaderFieldGeneral),
-                b':' => self.close(true, S::FieldComplete),
-                _ => self.fail(10, &"Invalid header token"),
+            S::HeaderFieldGeneral => match self.skip(c, token) {
+                None => Ok(S::HeaderFieldGeneral),
+                Some(b':') => self.close(true, S::FieldComplete),
+                Some(_) => self.fail(10, &"Invalid header token"),
             },
             S::DiscardWs => match c {
                 9 | b' ' => self.eat(S::DiscardWs),
@@ -1233,12 +1259,10 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 self.open(Span::Value);
                 self.close(false, S::HeaderFieldStart)
             }
-            S::HeaderValue => {
-                if value_char(c) {
-                    return self.eat(S::HeaderValue);
-                }
-                Ok(S::ValueOtherwise)
-            }
+            S::HeaderValue => Ok(match self.skip(c, value_char) {
+                None => S::HeaderValue,
+                Some(_) => S::ValueOtherwise,
+            }),
             S::ValueOtherwise => match c {
                 10 => self.close_fail(false, 25, &"Missing expected CR after header value"),
                 13 => self.close(true, S::ValueAlmostDone),
