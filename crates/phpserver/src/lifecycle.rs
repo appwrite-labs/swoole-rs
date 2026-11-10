@@ -148,14 +148,8 @@ unsafe extern "C" {
     /// `E_ERROR` for an unconstructed one.
     static swoole_process_ce: *mut zend_class_entry;
     fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void;
-    /// `Swoole\Http\Server` and `Swoole\WebSocket\Server` (crates/phphttp).
-    static swoole_http_server_ce: *mut zend_class_entry;
-    static swoole_websocket_server_ce: *mut zend_class_entry;
     /// `Swoole\Redis\Server` (crates/phpredis).
     static swoole_redis_server_ce: *mut zend_class_entry;
-    /// crates/phphttp's `swoole_http_server_can_cache_session_addr(serv)`.
-    #[link_name = "_Z41swoole_http_server_can_cache_session_addrPKN6swoole6ServerE"]
-    fn can_cache_session_addr(serv: *const c_void) -> bool;
     /// native/error/error.cc's `swoole_get_last_error_msg()`: `sw_error`.
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
@@ -170,14 +164,11 @@ fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
 fn kind(object: ServerObject) -> c_int {
     let ce = object.class();
-    // SAFETY: classes registered at MINIT, read-only since.
-    let (redis, websocket, http) = unsafe {
-        (
-            swoole_redis_server_ce,
-            swoole_websocket_server_ce,
-            swoole_http_server_ce,
-        )
-    };
+    // SAFETY: a class registered at MINIT, read-only since.
+    let redis = unsafe { swoole_redis_server_ce };
+    let http = swoole_rs_phpswoole::families().map(|families| &families.http);
+    let websocket = http.map_or(ptr::null_mut(), |http| (http.websocket_class)());
+    let http = http.map_or(ptr::null_mut(), |http| (http.server_class)());
     if instance_of(ce, redis) {
         KIND_REDIS
     } else if instance_of(ce, websocket) {
@@ -198,7 +189,7 @@ fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
         // SAFETY: `start_server`'s record, live across the trap.
         let start = unsafe { &mut *start.cast::<Start>() };
         // SAFETY: a live server.
-        start.1 = unsafe { server_methods::start(start.0) };
+        start.1 = server_methods::start(unsafe { view::Server::from_raw(start.0) });
     }
     let mut start = Start(serv, 0);
     // SAFETY: as above.
@@ -303,8 +294,10 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         // SAFETY: a live server.
         fact::MAX_CONNECTION => i64::from(serv.max_connection()),
-        // SAFETY: a live server.
-        fact::CACHE_SESSION_ADDR => i64::from(unsafe { can_cache_session_addr(serv.raw()) }),
+        fact::CACHE_SESSION_ADDR => i64::from(swoole_rs_phpswoole::families().is_some_and(
+            // SAFETY: a live server.
+            |families| unsafe { (families.http.can_cache_session_addr)(serv.raw()) },
+        )),
         _ => 0,
     }
 }
@@ -814,13 +807,14 @@ fn construct(call: &Call) {
             unsafe { throw_error(c"failed to add systemd socket") };
             return call.set_bool(false);
         }
-    // SAFETY: a new server and the NUL-terminated `Z_PARAM_STRING` bytes.
-    } else if unsafe {
+    } else if {
+        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
+        let host = unsafe { CStr::from_ptr(address.as_ptr().cast()) };
         #[expect(
             clippy::cast_possible_truncation,
             reason = "add_port((SocketType) type, host, (int) port), as upstream"
         )]
-        server_methods::add_port(serv, kind as c_int, address.as_ptr().cast(), port as c_int)
+        server_methods::add_port(server, kind as c_int, host, port as c_int)
     }
     .is_null()
     {
@@ -1186,8 +1180,7 @@ fn has_key(setting: *mut zval, key: &CStr) -> bool {
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
-    // SAFETY: a live server.
-    if unsafe { server_methods::create(serv.raw()) } < 0 {
+    if server_methods::create(serv) < 0 {
         // SAFETY: the calling thread's `sw_error`.
         let reason = unsafe { swoole_get_last_error_msg() };
         // SAFETY: always NUL-terminated.
@@ -1452,15 +1445,7 @@ pub fn php_swoole_server_send_yield(
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
             return Ok(false);
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Server::send takes a uint32_t length, as upstream's ZSTR_LEN narrowing"
-        )]
-        let narrowed = data.len() as u32;
-        // SAFETY: a live server and the caller's bytes.
-        let sent = unsafe {
-            server_methods::send(server.raw(), session_id, data.as_ptr().cast(), narrowed)
-        };
+        let sent = server_methods::send(server, session_id, data);
         let yielded = !sent && swoole_rs_corebase::log::last_error() == SW_ERROR_OUTPUT_SEND_YIELD;
         if yielded && fact(server, fact::SEND_YIELD) {
             continue;

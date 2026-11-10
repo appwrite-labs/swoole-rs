@@ -7,7 +7,7 @@
 //! owner, and its TLS state (`PortConfig::tls`) what upstream's `ListenPort` kept
 //! in C++ containers: the SNI contexts (`sni_contexts`) and the DTLS sessions
 //! (`dtls_sessions`), each with a reference to its context.
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_int, c_void};
 use core::ptr;
 use std::collections::HashMap;
 
@@ -100,8 +100,7 @@ pub(crate) fn tls_free(config: &mut PortConfig) {
 ///
 /// # Safety
 /// `port` is a live `ListenPort` with a context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_context_dup(port: *const c_void) -> *const OwnedTlsContext {
+pub unsafe fn context_dup(port: *const c_void) -> *const OwnedTlsContext {
     // SAFETY: as the caller guarantees; only read.
     let source = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
     let copy = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
@@ -117,17 +116,10 @@ pub unsafe extern "C" fn swr_v1_ports_context_dup(port: *const c_void) -> *const
 /// caller's reference to `context`.
 ///
 /// # Safety
-/// `port` is a live `ListenPort`, `name` covers `length` bytes, and `context` is
-/// a live owner the caller holds a reference to.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_sni_add(
-    port: *mut c_void,
-    name: *const c_char,
-    length: usize,
-    context: *const OwnedTlsContext,
-) -> bool {
-    // SAFETY: as the caller guarantees.
-    let mut key = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) }.to_vec();
+/// `port` is a live `ListenPort`, and `context` a live owner the caller holds a
+/// reference to.
+pub unsafe fn sni_add(port: *mut c_void, name: &[u8], context: *const OwnedTlsContext) -> bool {
+    let mut key = name.to_vec();
     key.push(0);
     let mut run = Run::new(port);
     run.target = context;

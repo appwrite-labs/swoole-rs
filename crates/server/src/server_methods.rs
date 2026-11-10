@@ -4,7 +4,7 @@
 //! this crate (`upstream-symbols`). Each method fills the context the way its C++
 //! forward did and runs over it in Rust.
 
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
 
 use crate::base_factory::{SEND_DATA, SendData};
@@ -91,21 +91,9 @@ fn run_on(serv: view::Server<'_>, op: u32, arg: u64) -> i64 {
     unsafe { run(op, arg, &mut NativeContext::new(serv.raw())) }
 }
 
-/// Each method that is one operation over the server alone: its symbol when the C++ test
-/// fixtures call it (then it takes the raw `Server *`), Rust name, return type and
-/// operation. `bool` and `int` returns narrow like C++.
+/// Each method that is one operation over the server alone: its Rust name, return type
+/// and operation. `bool` and `int` returns narrow like C++.
 macro_rules! plain_methods {
-    ($($symbol:literal fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
-        #[doc = concat!("`Server::", stringify!($name), "`.")]
-        ///
-        /// # Safety
-        /// `serv` is a live `Server`.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        pub unsafe extern "C-unwind" fn $name(serv: *mut c_void) -> $r {
-            // SAFETY: as the caller guarantees.
-            Narrow::narrow(run_on(unsafe { view::Server::from_raw(serv) }, $op, 0))
-        }
-    )*};
     ($(fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
         #[doc = concat!("`Server::", stringify!($name), "`.")]
         pub fn $name(serv: view::Server<'_>) -> $r {
@@ -151,12 +139,9 @@ impl Narrow for u32 {
 }
 
 plain_methods! {
-    "_ZN6swoole6Server8shutdownEv" fn shutdown() -> bool = RUN_SHUTDOWN;
-    "_ZNK6swoole6Server19get_idle_worker_numEv" fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
-    "_ZN6swoole6Server5startEv" fn start() -> c_int = RUN_START;
-}
-
-plain_methods! {
+    fn shutdown() -> bool = RUN_SHUTDOWN;
+    fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
+    fn start() -> c_int = RUN_START;
     fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
     fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
@@ -179,16 +164,8 @@ pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
 const HOOK_BEFORE_SERVER_CREATE: c_int = 10;
 
 /// `Server::create()`: `SW_ERR` once created, else the hook and then startup's create.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server6createEv")
-)]
-pub unsafe extern "C-unwind" fn create(serv: *mut c_void) -> c_int {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+#[must_use]
+pub fn create(serv: view::Server<'_>) -> c_int {
     if !serv.config().factory_.is_null() {
         return -1;
     }
@@ -365,27 +342,6 @@ pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_v
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
 }
 
-/// `Server::is_healthy_connection(now, conn)`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `conn` one of its connections.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server21is_healthy_connectionEdPKNS_10ConnectionE")
-)]
-pub unsafe extern "C" fn is_healthy_connection(
-    serv: *mut c_void,
-    now: f64,
-    conn: *const ConnectionRecord,
-) -> bool {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: as the caller guarantees.
-    let conn = unsafe { &*conn };
-    // SAFETY: as the caller guarantees.
-    serv.healthy(now, conn)
-}
-
 unsafe extern "C" {
     /// native/error/error.cc's `swoole_get_last_error_msg()`.
     #[link_name = "_Z25swoole_get_last_error_msgv"]
@@ -405,36 +361,15 @@ pub extern "C" fn get_startup_error_message(_serv: *mut c_void) -> *const c_char
 }
 
 /// `Server::set_max_connection(max)`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server18set_max_connectionEj")
-)]
-pub unsafe extern "C" fn set_max_connection(serv: *mut c_void, max: u32) {
-    // SAFETY: as the caller guarantees.
-    unsafe {
-        run(
-            RUN_SET_MAX_CONNECTION,
-            max.into(),
-            &mut NativeContext::new(serv),
-        )
-    };
+pub fn set_max_connection(serv: view::Server<'_>, max: u32) {
+    run_on(serv, RUN_SET_MAX_CONNECTION, max.into());
 }
 
-/// `Server::feedback(conn, event)`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `conn` one of its connections.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server8feedbackEPNS_10ConnectionENS_15ServerEventTypeE")
-)]
-pub unsafe extern "C" fn feedback(serv: *mut c_void, conn: *mut c_void, event: c_int) -> bool {
-    let mut ctx = NativeContext::new(serv);
-    ctx.conn = conn;
-    // SAFETY: as the caller guarantees.
+/// `Server::feedback(conn, event)`, over one of `serv`'s connections.
+pub fn feedback(serv: view::Server<'_>, conn: &mut ConnectionRecord, event: c_int) -> bool {
+    let mut ctx = NativeContext::new(serv.raw());
+    ctx.conn = ptr::from_mut(conn).cast();
+    // SAFETY: the live server and its connection, lent for the call.
     unsafe { run(RUN_FEEDBACK, i64::from(event).cast_unsigned(), &mut ctx) != 0 }
 }
 
@@ -462,24 +397,18 @@ pub unsafe extern "C" fn schedule_worker(serv: *mut c_void, fd: c_int, data: *mu
 }
 
 /// `Server::add_port(type, host, port)`: the new port, or null.
-///
-/// # Safety
-/// `serv` is a live `Server`; `host` a NUL-terminated string.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server8add_portE12swSocketTypePKci")
-)]
-pub unsafe extern "C" fn add_port(
-    serv: *mut c_void,
+#[must_use]
+pub fn add_port(
+    serv: view::Server<'_>,
     socket_type: c_int,
-    host: *const c_char,
+    host: &CStr,
     port: c_int,
 ) -> *mut c_void {
-    let mut ctx = NativeContext::new(serv);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.socket_type = socket_type;
-    ctx.host = host;
+    ctx.host = host.as_ptr();
     ctx.number = port;
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live server and the host, which lives for the call.
     if unsafe { run(RUN_ADD_PORT, 0, &mut ctx) } != 0 {
         ctx.port
     } else {
@@ -540,19 +469,18 @@ pub unsafe extern "C" fn add_connection(
 }
 
 /// `Server::send(session_id, data, length)`: the operation reads the `SendData` it lends.
-///
-/// # Safety
-/// `serv` is a live `Server`; `data` holds `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server4sendElPKvj")
+/// The length narrows to `uint32_t`, as the C++ callers' `ZSTR_LEN` did.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
 )]
-pub unsafe extern "C" fn send(
-    serv: *mut c_void,
-    session_id: c_long,
-    data: *const c_void,
-    length: u32,
-) -> bool {
+pub fn send(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::send's uint32_t length, as upstream's callers narrow it"
+    )]
+    let length = data.len() as u32;
+    let data: *const c_void = data.as_ptr().cast();
     let mut send = SendData {
         info: DataHead {
             fd: session_id,
@@ -562,13 +490,13 @@ pub unsafe extern "C" fn send(
         },
         data: data.cast(),
     };
-    let mut ctx = NativeContext::new(serv);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.send = (&raw mut send).cast();
     ctx.session_id = session_id;
     ctx.data = data;
     ctx.length = length;
     let arg = ctx.send.expose_provenance() as u64;
-    // SAFETY: as the caller guarantees; the SendData lives for the call.
+    // SAFETY: the live server; the data and the SendData live for the call.
     unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
 }
 
@@ -685,36 +613,38 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 #[repr(C, align(8))]
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
-/// `Server::sendfile(session_id, file, l_file, offset, length)`.
-///
-/// # Safety
-/// `serv` is a live `Server`; `file` holds `l_file` bytes.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_ZNK6swoole6Server8sendfileElPKcjxm")
+/// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the name's
+/// length narrowed to `uint32_t`, as upstream's callers do. The task copies the name up to
+/// its first NUL (`swoole_strlcpy`), so it goes over a terminated copy.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
 )]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_ZNK6swoole6Server8sendfileElPKcjlm")
-)]
-pub unsafe extern "C" fn sendfile(
-    serv: *mut c_void,
+pub fn sendfile(
+    serv: view::Server<'_>,
     session_id: c_long,
-    file: *const c_char,
-    l_file: u32,
+    file: &[u8],
     offset: libc::off_t,
     length: usize,
 ) -> bool {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::sendfile's uint32_t name length, as upstream's callers narrow it"
+    )]
+    let l_file = file.len() as u32;
+    let mut name = Vec::with_capacity(file.len() + 1);
+    name.extend_from_slice(file);
+    name.push(0);
     let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
     // `SendfileTask::length` follows its `off_t offset` (server.cc asserts it).
     buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
-    let mut ctx = NativeContext::new(serv);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.session_id = session_id;
-    ctx.data = file.cast();
+    ctx.data = name.as_ptr().cast();
     ctx.length = l_file;
     ctx.buffer = buffer.0.as_mut_ptr().cast();
     ctx.offset = offset;
-    // SAFETY: as the caller guarantees; the buffer lives for the call.
+    // SAFETY: the live server; the name and the buffer live for the call.
     unsafe { run(RUN_SENDFILE, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
 
@@ -787,18 +717,15 @@ const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
 
 /// `Server::close(session_id, reset)`: the factory ends the session, actively.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server5closeElb")
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
 )]
-pub unsafe extern "C" fn close(serv: *mut c_void, session_id: c_long, reset: bool) -> bool {
-    let mut ctx = NativeContext::new(serv);
+pub fn close(serv: view::Server<'_>, session_id: c_long, reset: bool) -> bool {
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.session_id = session_id;
     ctx.number = CLOSE_ACTIVELY | if reset { CLOSE_RESET } else { 0 };
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live server.
     unsafe { native_op(OP_FACTORY_END, &mut ctx) }
 }
 
@@ -920,6 +847,8 @@ mod tests {
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
     /// The worker or flags and the `DataHead` of each native op that takes one.
     static HEADS: Mutex<Vec<(c_int, DataHead)>> = Mutex::new(Vec::new());
+    /// The name the last sendfile lent, read as the task's `swoole_strlcpy` reads it.
+    static SENDFILE_NAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
     pub(super) unsafe fn fake(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
         // SAFETY: the methods pass their own live context.
@@ -936,6 +865,13 @@ mod tests {
                 ctx.number,
                 ctx.host.addr(),
             ));
+        if op == RUN_SENDFILE {
+            // SAFETY: sendfile lends a terminated name.
+            let name = unsafe { core::ffi::CStr::from_ptr(ctx.data.cast()) };
+            *SENDFILE_NAME
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = name.to_bytes().to_vec();
+        }
         let task_length = if ctx.buffer.is_null() {
             0
         } else {
@@ -1014,12 +950,12 @@ mod tests {
         let serv = fake_serv();
         let sv = serv.addr();
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
+        assert!(shutdown(server()), "shutdown's 1 is true");
+        assert_eq!(last().0, RUN_SHUTDOWN, "shutdown op");
+        assert_eq!(get_idle_worker_num(server()), u32::MAX, "(uint32_t) -1");
+        set_max_connection(server(), 7);
+        assert_eq!(last().1, 7, "max connection arg");
         unsafe {
-            assert!(shutdown(serv), "shutdown's 1 is true");
-            assert_eq!(last().0, RUN_SHUTDOWN, "shutdown op");
-            assert_eq!(get_idle_worker_num(serv), u32::MAX, "(uint32_t) -1");
-            set_max_connection(serv, 7);
-            assert_eq!(last().1, 7, "max connection arg");
             assert_eq!(
                 schedule_worker(serv, -2, ptr::null_mut()),
                 0,
@@ -1031,7 +967,7 @@ mod tests {
                 "fd sign-extends like (uint64_t)(int64_t) fd"
             );
             assert_eq!(
-                add_port(serv, 1, c"h".as_ptr(), 9).addr(),
+                add_port(server(), 1, c"h", 9).addr(),
                 0x50,
                 "nonzero yields the port"
             );
@@ -1049,7 +985,9 @@ mod tests {
                 (RUN_ADD_CONNECTION, 0, sv, 0x20, 0x30, 0, 0, 0),
                 "add_connection context"
             );
-            assert!(!feedback(serv, at(0x60), 5), "feedback result");
+            // SAFETY: a zeroed record is a valid connection.
+            let mut conn: ConnectionRecord = core::mem::zeroed();
+            assert!(!feedback(server(), &mut conn, 5), "feedback result");
             assert_eq!(last().1, 5, "event arg");
             send_family_and_base_factory(serv);
         }
@@ -1060,10 +998,22 @@ mod tests {
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
             let data = at(0x80);
-            assert!(send(serv, 9, data, 4), "send's 1 is true");
+            let bytes = [0u8; 4];
+            let at_bytes = bytes.as_ptr().addr();
+            assert!(send(server(), 9, &bytes), "send's 1 is true");
             assert_eq!(
                 sent(),
-                (RUN_ST_SEND, sent().3 as u64, sv, sent().3, 0x80, 4, 9, 0, 0),
+                (
+                    RUN_ST_SEND,
+                    sent().3 as u64,
+                    sv,
+                    sent().3,
+                    at_bytes,
+                    4,
+                    9,
+                    0,
+                    0
+                ),
                 "send context, with its SendData lent"
             );
             assert_ne!(sent().3, 0, "a SendData is lent");
@@ -1072,8 +1022,15 @@ mod tests {
             assert!(!has_kernel_nobufs_error(server(), 11), "nobufs result");
             assert_eq!(sent().1, 11, "nobufs passes the session");
             assert!(
-                !sendfile(serv, 12, c"f".as_ptr(), 1, 3, 99),
+                !sendfile(server(), 12, &b"fx"[..1], 3, 99),
                 "sendfile result"
+            );
+            assert_eq!(
+                *SENDFILE_NAME
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                b"f",
+                "the name ends at its length, not past it"
             );
             let (op, arg, _, _, _, length, session, offset, task_length) = sent();
             assert!(
@@ -1143,14 +1100,14 @@ mod tests {
 
     unsafe fn close_notify_and_pipe_messages(serv: *mut c_void) {
         unsafe {
-            assert!(close(serv, 21, true), "close result");
+            assert!(close(server(), 21, true), "close result");
             let (op, arg, _, _, _, _, session, ..) = sent();
             assert!(
                 op == RUN_NATIVE_OP && arg == u64::from(OP_FACTORY_END) && session == 21,
                 "close ends the session"
             );
             assert_eq!(head().0, CLOSE_ACTIVELY | CLOSE_RESET, "reset flags");
-            close(serv, 21, false);
+            close(server(), 21, false);
             assert_eq!(head().0, CLOSE_ACTIVELY, "active flags");
 
             // SAFETY: a zeroed record is a valid connection.

@@ -6,9 +6,7 @@
 
 #include "swoole_socket.h"
 #include "swoole_rs_process.h"
-#define SWR_PROCESS_NATIVE_VIEW_CONTEXT
 #include "swoole_rs_process_views.h"
-#undef SWR_PROCESS_NATIVE_VIEW_CONTEXT
 
 enum swPipe_close_which {
     SW_PIPE_CLOSE_MASTER = 1,

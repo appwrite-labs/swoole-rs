@@ -164,8 +164,7 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::TASK_IPC_MODE => c.task_ipc_mode = v as u8,
         f::TASK_MAX_REQUEST => c.task_max_request = v as u32,
         f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
-        // SAFETY: per the caller.
-        f::MAX_CONNECTION => unsafe { server_methods::set_max_connection(serv.raw(), v as u32) },
+        f::MAX_CONNECTION => server_methods::set_max_connection(serv, v as u32),
         f::START_SESSION_ID => {
             // SAFETY: per the caller, as above.
             let counters = unsafe { serv.counters_mut() };

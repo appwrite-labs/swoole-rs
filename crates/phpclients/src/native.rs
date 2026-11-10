@@ -17,7 +17,7 @@ use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
-    ZString,
+    Owned, ZString,
     bailout::{self, Bailout},
     string::{self, ZBuf},
     sys::zval,
@@ -778,7 +778,7 @@ pub(crate) fn invoke(
 
 /// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which
 /// makes one whatever the import's result. `None` without ext/sockets.
-pub(crate) fn export_socket(cli: Cli) -> Option<zval> {
+pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
     if !built_with(Switch::Sockets) {
         return None;
     }
@@ -787,9 +787,9 @@ pub(crate) fn export_socket(cli: Cli) -> Option<zval> {
     if fd < 0 {
         return None;
     }
-    let mut socket = swoole_rs_zend::long_zval(0);
-    // SAFETY: a writable zval and a descriptor it takes.
-    unsafe { swoole_rs_phpswoole::socket_create(&raw mut socket, fd) };
+    let socket = Owned::default();
+    // SAFETY: an undefined slot this owns, and a descriptor it takes.
+    unsafe { swoole_rs_phpswoole::socket_create(socket.as_ptr(), fd) };
     Some(socket)
 }
 

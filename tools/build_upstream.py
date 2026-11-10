@@ -165,6 +165,16 @@ def clone(pin, url='https://github.com/swoole/swoole-src.git'):
     partial.rename(pin)
 
 
+def prepare_pin(pin, url='https://github.com/swoole/swoole-src.git'):
+    """The pin's checkout at `pin`, cloned unless there is one. A tree there without its own
+    .git is no checkout (a CI cache can restore build outputs alone): git would answer for the
+    enclosing repository, so it goes and the pin is cloned."""
+    if pin.exists() and not (pin / '.git').exists():
+        shutil.rmtree(pin)
+    if not pin.exists():
+        clone(pin, url)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_build_arguments(parser)
@@ -172,8 +182,7 @@ def main():
     require_build_space(ROOT)
     pin = ROOT / 'target/upstream/src'
     pin.parent.mkdir(parents=True, exist_ok=True)
-    if not pin.exists():
-        clone(pin)
+    prepare_pin(pin)
     actual = subprocess.check_output(['git', '-C', str(pin), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != COMMIT:
         raise RuntimeError(f'Upstream checkout is {actual}; expected {COMMIT}. Refusing to alter it.')

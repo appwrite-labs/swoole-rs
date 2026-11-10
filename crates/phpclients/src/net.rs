@@ -25,17 +25,16 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Object, ZString,
+    Call, Class, E_ERROR, E_WARNING, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
-    declare_bool, declare_long, long_zval, register_long_constant,
-    string::{self, ZBuf},
+    declare_bool, declare_long, register_long_constant,
+    string::ZBuf,
     sys::{
-        IS_ARRAY, IS_NULL, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        get_active_class_name, get_active_function_name, swr_zend_property_not_null,
-        swr_zend_property_slot, swr_zval_try_addref, zend_class_entry, zend_object,
-        zend_object_handlers, zend_type_error, zval, zval_ptr_dtor,
+        IS_ARRAY, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
+        get_active_function_name, zend_class_entry, zend_object, zend_object_handlers,
+        zend_type_error, zval,
     },
-    throw_error, throw_exception, type_of, unset_property_deny, update_property, value,
+    throw_error, throw_exception, type_of, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -43,7 +42,7 @@ use swoole_rs_zend::{method_table, sys as z};
 const FLAG_ASYNC: i64 = 1 << 10;
 const FLAG_SYNC: i64 = 1 << 11;
 const FLAG_KEEP: i64 = 1 << 12;
-const SOCK_SSL: i64 = 1 << 9;
+pub(crate) const SOCK_SSL: i64 = 1 << 9;
 /// `SW_SOCK_*`.
 pub(crate) const SOCK_TCP: i64 = 1;
 pub(crate) const SOCK_TCP6: i64 = 3;
@@ -144,8 +143,8 @@ impl Conn {
 #[repr(C)]
 pub(crate) struct Data {
     pub(crate) conn: *mut Conn,
-    /// `getSocket()`'s socket (`IS_UNDEF`: none).
-    zsocket: zval,
+    /// `getSocket()`'s socket (`IS_UNDEF`: none); zeroed bytes are `IS_UNDEF`.
+    zsocket: Owned,
     /// The async callbacks (callables, by [`crate::async_net`] slot).
     pub(crate) callbacks: *mut [*mut c_void; 7],
 }
@@ -289,6 +288,18 @@ pub(crate) fn this<'a>(call: &Call) -> &'a mut Data {
     data(call.this())
 }
 
+/// Property writes on a client object (or an async one), under its own class.
+fn props<'a>(object: *mut zend_object) -> Props<'a> {
+    // SAFETY: a live client object; the client class declares every name written.
+    unsafe { Props::new(CLIENT.entry(), object) }.own()
+}
+
+/// The declared property `name` of a client object (or an async one).
+fn property<'a>(object: *mut zend_object, name: &CStr) -> &'a Value {
+    // SAFETY: a live client object; the client class declares `name`.
+    unsafe { swoole_rs_zend::property(object, name) }
+}
+
 /// The object's connection.
 pub(crate) fn conn<'a>(call: &Call) -> Option<&'a mut Conn> {
     // SAFETY: the object owns its connection while it holds it.
@@ -346,10 +357,7 @@ pub(crate) fn last_error() -> c_int {
 
 /// `errCode = code`.
 pub(crate) fn set_err_code(object: *mut zend_object, code: c_int) {
-    // SAFETY: a live client object.
-    let ce = unsafe { (*object).ce };
-    // SAFETY: as above.
-    unsafe { value::update_long(ce, object, c"errCode", i64::from(code)) };
+    props(object).long(c"errCode", i64::from(code));
 }
 
 pub(crate) fn errno() -> c_int {
@@ -396,12 +404,8 @@ pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), B
     }
     let destroyed = native::destroy(conn.cli);
     let data = data(object);
-    // SAFETY: the object's own zval.
-    if unsafe { type_of(&raw const data.zsocket) } != IS_UNDEF {
-        // SAFETY: the reference the object took in getSocket().
-        unsafe { zval_ptr_dtor(&raw mut data.zsocket) };
-        data.zsocket.u1.type_info = IS_UNDEF;
-    }
+    // The reference the object took in getSocket().
+    drop(std::mem::take(&mut data.zsocket));
     data.conn = ptr::null_mut();
     destroyed
 }
@@ -476,10 +480,8 @@ pub(crate) fn check_type(kind: i64) -> bool {
 
 /// The object's `type` property, or None after upstream's fatal error.
 pub(crate) fn type_property(object: *mut zend_object, async_message: bool) -> Option<i64> {
-    // SAFETY: a live object with a declared `type` property.
-    let ztype = unsafe { swr_zend_property_slot(object, c"type".as_ptr(), 4) };
-    // SAFETY: Zend's property slot.
-    if ztype.is_null() || unsafe { type_of(ztype) } == IS_NULL {
+    let ztype = property(object, c"type");
+    if ztype.is_null() {
         let message = if async_message {
             "failed to get client type"
         } else {
@@ -488,16 +490,13 @@ pub(crate) fn type_property(object: *mut zend_object, async_message: bool) -> Op
         report(ErrorKind::Fatal, E_ERROR, message);
         return None;
     }
-    // SAFETY: `Z_LVAL_P`, as upstream reads it.
-    Some(unsafe { value::long_of(ztype) })
+    Some(ztype.long())
 }
 
 /// The `setting` property when it is an array.
 pub(crate) fn settings(object: *mut zend_object) -> Option<*mut zval> {
-    // SAFETY: a live object with a declared `setting` property.
-    let zset = unsafe { swr_zend_property_slot(object, c"setting".as_ptr(), 7) };
-    // SAFETY: Zend's property slot.
-    (!zset.is_null() && unsafe { type_of(zset) } == IS_ARRAY).then_some(zset)
+    let zset = property(object, c"setting");
+    (zset.kind() == IS_ARRAY).then(|| zset.as_ptr())
 }
 
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.
@@ -510,15 +509,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    // SAFETY: a live object with a declared `id` property.
-    let zid = unsafe { swr_zend_property_not_null(object, c"id".as_ptr(), 2) };
-    // SAFETY: a live property zval when not null.
-    let id = (!zid.is_null() && unsafe { type_of(zid) } == IS_STRING).then(|| {
-        // SAFETY: a string zval.
-        let id = unsafe { value::str_of(zid) };
-        // SAFETY: a live string the property holds.
-        unsafe { string::bytes(id) }
-    });
+    let id = property(object, c"id").str().map(ZStr::bytes);
     let key = match id {
         Some(id) if !id.is_empty() => id.to_vec(),
         _ => {
@@ -537,12 +528,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
             let pooled = unsafe { &mut *conn };
             if pooled.alive() {
                 pooled.reuse_count += 1;
-                // SAFETY: a live client object.
-                let ce = unsafe { (*object).ce };
-                // SAFETY: as above.
-                unsafe {
-                    value::update_long(ce, object, c"reuseCount", i64::from(pooled.reuse_count));
-                };
+                props(object).long(c"reuseCount", i64::from(pooled.reuse_count));
             } else {
                 bailed(pooled.call(Op::Close).run())?;
                 bailed(release(object, conn))?;
@@ -566,10 +552,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
     }
     // SAFETY: the connection just taken or made.
     let connection = unsafe { &mut *conn };
-    // SAFETY: a live client object.
-    let ce = unsafe { (*object).ce };
-    // SAFETY: as above.
-    unsafe { value::update_long(ce, object, c"sock", i64::from(connection.fd())) };
+    props(object).long(c"sock", i64::from(connection.fd()));
     if kind & FLAG_KEEP != 0 {
         connection.keep = true;
     }
@@ -604,18 +587,10 @@ fn construct(call: &Call) {
     if !check_type(kind) {
         return call.set_bool(false);
     }
-    let object = call.this();
-    // SAFETY: `$this` is a live instance of the registered class.
-    unsafe { value::update_long(CLIENT.entry(), object, c"type", kind) };
+    let props = props(call.this());
+    props.long(c"type", kind);
     if let Some(id) = id {
-        let id = string::copy(id);
-        let mut zid = long_zval(0);
-        // SAFETY: a fresh string; the zval takes its reference.
-        unsafe { value::set_str(&raw mut zid, id) };
-        // SAFETY: `$this` is live; Zend copies the value.
-        unsafe { update_property(CLIENT.entry(), object, c"id", &raw mut zid) };
-        // SAFETY: our reference.
-        unsafe { zval_ptr_dtor(&raw mut zid) };
+        props.bytes(c"id", id);
     }
     call.set_bool(true);
 }
@@ -701,8 +676,7 @@ fn connect(call: &Call) {
     // SAFETY: the object's connection.
     let conn = unsafe { &mut *conn };
     if conn.keep && conn.flag(state::ACTIVE) {
-        // SAFETY: `$this` is a live client.
-        unsafe { value::update_bool(CLIENT.entry(), object, c"reuse", true) };
+        props(object).bool(c"reuse", true);
         return call.set_bool(true);
     } else if conn.flag(state::ACTIVE) {
         warn(
@@ -1132,10 +1106,10 @@ fn getsockname(call: &Call) {
 
 /// `['port' => $port, 'host' => $host]`.
 fn address_array(call: &Call, port: c_int, host: &CStr) {
-    call.set_array();
-    call.add_assoc_long(c"port", i64::from(port));
-    // SAFETY: the return slot is an array.
-    unsafe { value::add_string(call.return_value(), c"host", host) };
+    let mut array = OwnedArray::default();
+    array.insert_long(b"port", i64::from(port));
+    array.insert_bytes(b"host", Some(host.to_bytes()));
+    call.set_owned(array.into_owned());
 }
 
 /// `getpeername(): array|false`.
@@ -1158,13 +1132,10 @@ fn getpeername(call: &Call) {
 
 /// `getSocket()`: the client's socket as an ext/sockets `Socket`.
 fn get_socket(call: &Call) {
-    let data = this(call);
-    // SAFETY: the object's own zval.
-    if unsafe { type_of(&raw const data.zsocket) } != IS_UNDEF {
-        let mut socket = data.zsocket;
-        // SAFETY: `RETURN_ZVAL(zsocket, 1, 0)`: a new reference for the return.
-        unsafe { swr_zval_try_addref(&raw mut socket) };
-        return call.set_value(socket);
+    let zsocket = &this(call).zsocket;
+    if zsocket.kind() != IS_UNDEF {
+        // `RETURN_ZVAL(zsocket, 1, 0)`: a new reference for the return.
+        return call.set_owned(zsocket.copy());
     }
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
@@ -1176,12 +1147,11 @@ fn get_socket(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let Some(mut socket) = native::export_socket(conn.cli) else {
+    let Some(socket) = native::export_socket(conn.cli) else {
         return call.set_bool(false);
     };
-    call.set_value(socket);
-    // SAFETY: the object keeps a second reference, as upstream's dup does.
-    unsafe { swr_zval_try_addref(&raw mut socket) };
+    // The object keeps a second reference, as upstream's dup does.
+    call.set_owned(socket.copy());
     this(call).zsocket = socket;
 }
 

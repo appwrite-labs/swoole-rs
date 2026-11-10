@@ -1,14 +1,11 @@
 //! Upstream's `core-tests/src/coroutine/socket.cpp`, one function per TEST with the
-//! same inputs and expected values, over the hybrid's coroutine `Socket`.
+//! same inputs and expected values, over the hooks crate's coroutine socket.
 //!
-//! A `Socket` is the hooks crate's `Co`, reached by symbol: its members are
-//! exported under their upstream symbols, and the rest as `swr_v1_hook_co_socket_*`,
-//! only for this package (crates/hooks/src/socket_symbols.rs, built with
-//! `upstream-symbols`). Fields are read through the hybrid's record layout
-//! (native/hooks/swoole_rs_co_socket.h). The TLS setters write the socket's
-//! `SSLContext` owner (crates/tls/src/owned.rs) as `enable_ssl_encrypt` and the
-//! `set_ssl_*` members did; `TimeoutSetter` and `TimeoutController` are the
-//! `swr_v1_hook_timeout_scope` and `swr_v1_hook_co_socket_timed_out` they became.
+//! A `Socket` is the hooks crate's `Co`, whose methods the cases call (`Sock::co`).
+//! Fields are read through the record layout (native/hooks/swoole_rs_co_socket.h).
+//! The TLS setters write the socket's `SSLContext` owner (crates/tls/src/owned.rs) as
+//! `enable_ssl_encrypt` and the `set_ssl_*` members did; `TimeoutSetter` and
+//! `TimeoutController` are the crate's `TimeoutScope` and its `timed_out`.
 //! The two `Server` fixtures (`recv_success`, `recv_fail`) are a forked std echo
 //! and close server: the cases assert only on the client.
 
@@ -22,6 +19,8 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
+use swoole_rs_hooks::co_socket::{self, Co};
+use swoole_rs_hooks::{TimeoutScope, co_io, packet};
 
 // glibc's values (the core-tests build is Linux).
 pub(super) const ECONNREFUSED: c_int = 111;
@@ -147,16 +146,6 @@ struct CppString {
     allocator: *const c_void,
 }
 
-/// crates/hooks' `TimeoutScope`: `Socket::TimeoutSetter` and `TimeoutController`.
-#[repr(C)]
-struct TimeoutScope {
-    socket: *mut Record,
-    timeout: f64,
-    kind: c_int,
-    original: [f64; 4],
-    startup: f64,
-}
-
 /// `OwnedTlsPrepared` (crates/tls/src/owned.rs).
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -227,131 +216,21 @@ struct IovPrepared {
 }
 
 unsafe extern "C" {
-    fn swr_v1_hook_co_socket_make(
-        fd: c_int,
-        domain: c_int,
-        kind: c_int,
-        protocol: c_int,
-        family: bool,
-    ) -> *mut c_void;
-    fn swr_v1_hook_co_socket_free(socket: *mut c_void);
     fn swr_v1_hook_co_socket_connect_host(
         socket: *mut Record,
         host: *const c_char,
         length: usize,
         port: c_int,
     ) -> bool;
-    fn swr_v1_hook_co_socket_proxy(
-        socket: *mut Record,
-        http: bool,
-        host: Text,
-        port: c_int,
-        user: Text,
-        password: Text,
-    );
 
     fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: c_int) -> IovPrepared;
     fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
-    #[link_name = "_ZN6swoole9coroutine6Socket5readvEPNS_7network8IOVectorE"]
-    fn socket_readv(this: *mut c_void, vector: *mut c_void) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket9readv_allEPNS_7network8IOVectorE"]
-    fn socket_readv_all(this: *mut c_void, vector: *mut c_void) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket6writevEPNS_7network8IOVectorE"]
-    fn socket_writev(this: *mut c_void, vector: *mut c_void) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket10writev_allEPNS_7network8IOVectorE"]
-    fn socket_writev_all(this: *mut c_void, vector: *mut c_void) -> isize;
-
-    #[link_name = "_ZN6swoole9coroutine6Socket4recvEPvm"]
-    fn socket_recv(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket4sendEPKvm"]
-    fn socket_send(this: *mut c_void, buf: *const c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket8recv_allEPvm"]
-    fn socket_recv_all(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket8send_allEPKvm"]
-    fn socket_send_all(this: *mut c_void, buf: *const c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket4readEPvm"]
-    fn socket_read(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket5writeEPKvm"]
-    fn socket_write(this: *mut c_void, buf: *const c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket4peekEPvm"]
-    fn socket_peek(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket7recvmsgEP6msghdri"]
-    fn socket_recvmsg(this: *mut c_void, msg: *mut MsgHdr, flags: c_int) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket7sendmsgEPK6msghdri"]
-    fn socket_sendmsg(this: *mut c_void, msg: *const MsgHdr, flags: c_int) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket9recv_lineEPvm"]
-    fn socket_recv_line(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket11recv_packetEd"]
-    fn socket_recv_packet(this: *mut c_void, timeout: f64) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket4bindEPKci"]
-    fn socket_bind(this: *mut c_void, address: *const c_char, port: c_int) -> bool;
-    #[link_name = "_ZN6swoole9coroutine6Socket6listenEi"]
-    fn socket_listen(this: *mut c_void, backlog: c_int) -> bool;
-    #[link_name = "_ZN6swoole9coroutine6Socket6acceptEd"]
-    fn socket_accept(this: *mut c_void, timeout: f64) -> *mut c_void;
     #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
     fn socket_get_read_buffer(this: *mut c_void) -> *mut CppString;
     #[link_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv"]
     fn socket_get_write_buffer(this: *mut c_void) -> *mut CppString;
-    #[link_name = "_ZN6swoole9coroutine6Socket8sendfileEPKclm"]
-    fn socket_sendfile(this: *mut c_void, file: *const c_char, offset: i64, length: usize) -> bool;
-    #[link_name = "_ZN6swoole9coroutine6Socket6sendtoEPKciPKvm"]
-    fn socket_sendto(
-        this: *mut c_void,
-        host: *const c_char,
-        port: c_int,
-        buf: *const c_void,
-        n: usize,
-    ) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket8recvfromEPvm"]
-    fn socket_recvfrom(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole9coroutine6Socket8recvfromEPvmP8sockaddrPj"]
-    fn socket_recvfrom_addr(
-        this: *mut c_void,
-        buf: *mut c_void,
-        n: usize,
-        addr: *mut SockAddrIn,
-        len: *mut u32,
-    ) -> isize;
-    #[link_name = "_ZNK6swoole9coroutine6Socket11getsocknameEv"]
-    fn socket_getsockname(this: *const c_void) -> bool;
-    #[link_name = "_ZNK6swoole9coroutine6Socket11set_timeoutEdi"]
-    fn socket_set_timeout(this: *const c_void, timeout: f64, kind: c_int);
-    #[link_name = "_ZNK6swoole9coroutine6Socket11get_timeoutE13swTimeoutType"]
-    fn socket_get_timeout(this: *const c_void, kind: c_int) -> f64;
-    #[link_name = "_ZNK6swoole9coroutine6Socket10get_optionEiiPi"]
-    fn socket_get_option(this: *const c_void, level: c_int, name: c_int, value: *mut c_int)
-    -> bool;
-    #[link_name = "_ZNK6swoole9coroutine6Socket10set_optionEiii"]
-    fn socket_set_option(this: *const c_void, level: c_int, name: c_int, value: c_int) -> bool;
-    #[link_name = "_ZN6swoole9coroutine6Socket13ssl_handshakeEv"]
-    fn socket_ssl_handshake(this: *mut c_void) -> bool;
-    #[link_name = "_ZN6swoole9coroutine6Socket10ssl_verifyEb"]
-    fn socket_ssl_verify(this: *mut c_void, allow_self_signed: bool) -> bool;
     #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPcm"]
     fn network_peer_certificate(socket: *const NetHead, buf: *mut c_char, n: usize) -> c_int;
-
-    fn swr_v1_hook_co_socket_close(socket: *mut Record) -> bool;
-    fn swr_v1_hook_co_socket_shutdown(socket: *mut Record, how: c_int) -> bool;
-    fn swr_v1_hook_co_socket_cancel(socket: *mut Record, event: u32) -> bool;
-    fn swr_v1_hook_co_socket_check_liveness(socket: *mut Record) -> bool;
-    fn swr_v1_hook_co_socket_owned_err(
-        socket: *mut Record,
-        error: c_int,
-        bytes: *const c_char,
-        length: usize,
-    ) -> c_int;
-    fn swr_v1_hook_co_socket_event_str(socket: *const Record, event: u32) -> *const c_char;
-    fn swr_v1_hook_co_socket_timed_out(
-        socket: *mut Record,
-        timeout: f64,
-        startup: *mut f64,
-        now: f64,
-        kind: c_int,
-    ) -> bool;
-
-    fn swr_v1_hook_timeout_scope(socket: *mut Record, timeout: f64, kind: c_int) -> TimeoutScope;
-    fn swr_v1_hook_timeout_restore(scope: *const TimeoutScope);
 
     pub(super) safe fn swr_v1_tls_owner_new(warn: Warn) -> TlsPrepared;
     fn swr_v1_tls_owner_set_path(
@@ -399,22 +278,6 @@ pub(super) extern "C" fn tls_warning(function: *const c_char, message: *const c_
         function.to_string_lossy(),
         message.to_string_lossy()
     );
-}
-
-/// `swr_v1_core_string_view_t`: borrowed bytes.
-#[repr(C)]
-struct Text {
-    data: *const c_char,
-    length: usize,
-}
-
-impl Text {
-    fn of(text: &str) -> Self {
-        Self {
-            data: text.as_ptr().cast(),
-            length: text.len(),
-        }
-    }
 }
 
 /// `microtime()`.
@@ -471,8 +334,7 @@ struct Sock {
 
 impl Sock {
     fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool) -> Self {
-        // SAFETY: Rust's constructor, which never returns null.
-        let socket = unsafe { swr_v1_hook_co_socket_make(fd, domain, kind, protocol, family) };
+        let socket = co_socket::make(fd, domain, kind, protocol, family).this();
         assert!(!socket.is_null());
         Self::wrap(socket)
     }
@@ -503,6 +365,12 @@ impl Sock {
         self.ptr.cast()
     }
 
+    /// The crate's handle on this socket.
+    fn co(&self) -> Co {
+        // SAFETY: the live socket `make` or `accept` made, which outlives the handle's use.
+        unsafe { Co::of(self.ptr) }
+    }
+
     fn record(&self) -> &mut Record {
         // SAFETY: the live socket's record; no other Rust reference to it is held
         // across a call.
@@ -526,60 +394,52 @@ impl Sock {
     }
 
     fn bind(&self, address: &str, port: c_int) -> bool {
-        let address = cstring(address);
-        // SAFETY: the live socket and a NUL-terminated address.
-        unsafe { socket_bind(self.ptr, address.as_ptr(), port) }
+        self.co().bind(address.as_bytes(), port)
     }
 
     fn listen(&self, backlog: c_int) -> bool {
-        // SAFETY: the live socket.
-        unsafe { socket_listen(self.ptr, backlog) }
+        self.co().listen(backlog)
     }
 
     /// `accept()`: the connection, which a C++ caller deletes or leaks.
     fn accept(&self) -> ManuallyDrop<Sock> {
-        // SAFETY: the live socket, in a coroutine.
-        ManuallyDrop::new(Sock::wrap(unsafe { socket_accept(self.ptr, 0.0) }))
+        let conn = self.co().accept(0.0).map_or(ptr::null_mut(), Co::this);
+        ManuallyDrop::new(Sock::wrap(conn))
     }
 
     fn send(&self, buf: &[u8]) -> isize {
-        // SAFETY: the live socket and `buf`'s bytes.
-        unsafe { socket_send(self.ptr, buf.as_ptr().cast(), buf.len()) }
+        self.co().send(buf)
     }
 
     fn recv(&self, buf: &mut [u8]) -> isize {
-        // SAFETY: the live socket and `buf`'s bytes.
-        unsafe { socket_recv(self.ptr, buf.as_mut_ptr().cast(), buf.len()) }
+        self.co().recv(buf)
     }
 
     fn send_all(&self, buf: &[u8]) -> isize {
-        // SAFETY: as `send`.
-        unsafe { socket_send_all(self.ptr, buf.as_ptr().cast(), buf.len()) }
+        self.co().send_all(buf)
     }
 
     fn recv_all(&self, buf: *mut u8, n: usize) -> isize {
-        // SAFETY: the live socket; `buf` holds `n` writable bytes.
-        unsafe { socket_recv_all(self.ptr, buf.cast(), n) }
+        // SAFETY: `buf` holds `n` writable bytes.
+        self.co()
+            .recv_all(unsafe { std::slice::from_raw_parts_mut(buf, n) })
     }
 
     fn write(&self, buf: &[u8]) -> isize {
-        // SAFETY: as `send`.
-        unsafe { socket_write(self.ptr, buf.as_ptr().cast(), buf.len()) }
+        self.co().write(buf)
     }
 
     fn read(&self, buf: &mut [u8]) -> isize {
-        // SAFETY: as `recv`.
-        unsafe { socket_read(self.ptr, buf.as_mut_ptr().cast(), buf.len()) }
+        self.co().read(buf)
     }
 
     fn recv_line(&self, buf: *mut u8, n: usize) -> isize {
-        // SAFETY: the live socket; `buf` holds `n` writable bytes.
-        unsafe { socket_recv_line(self.ptr, buf.cast(), n) }
+        // SAFETY: `buf` holds `n` writable bytes and one more.
+        unsafe { self.co().recv_line(buf.cast(), n) }
     }
 
     fn recv_packet(&self, timeout: f64) -> isize {
-        // SAFETY: the live socket, in a coroutine.
-        unsafe { socket_recv_packet(self.ptr, timeout) }
+        packet::recv_packet(self.co(), timeout)
     }
 
     fn read_buffer(&self) -> &mut CppString {
@@ -605,18 +465,15 @@ impl Sock {
     }
 
     fn shutdown(&self, how: c_int) -> bool {
-        // SAFETY: the live record.
-        unsafe { swr_v1_hook_co_socket_shutdown(self.rec(), how) }
+        self.co().shutdown(how)
     }
 
     fn close(&self) -> bool {
-        // SAFETY: the live record.
-        unsafe { swr_v1_hook_co_socket_close(self.rec()) }
+        self.co().close()
     }
 
     fn cancel(&self, event: c_int) -> bool {
-        // SAFETY: the live record.
-        unsafe { swr_v1_hook_co_socket_cancel(self.rec(), event.cast_unsigned()) }
+        self.co().cancel(event.cast_unsigned())
     }
 
     fn is_closed(&self) -> bool {
@@ -624,18 +481,15 @@ impl Sock {
     }
 
     fn check_liveness(&self) -> bool {
-        // SAFETY: the live record.
-        unsafe { swr_v1_hook_co_socket_check_liveness(self.rec()) }
+        self.co().check_liveness()
     }
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {
-        // SAFETY: the live socket.
-        unsafe { socket_set_timeout(self.ptr, timeout, kind) }
+        self.co().set_timeout(timeout, kind);
     }
 
     fn get_timeout(&self, kind: c_int) -> f64 {
-        // SAFETY: the live socket.
-        unsafe { socket_get_timeout(self.ptr, kind) }
+        self.co().timeout(kind)
     }
 
     fn network(&self) -> &mut NetHead {
@@ -693,17 +547,8 @@ impl Sock {
     }
 
     fn set_proxy(&self, http: bool, host: &str, port: c_int, user: &str, pwd: &str) {
-        // SAFETY: the live socket and the three strings' bytes.
-        unsafe {
-            swr_v1_hook_co_socket_proxy(
-                self.rec(),
-                http,
-                Text::of(host),
-                port,
-                Text::of(user),
-                Text::of(pwd),
-            );
-        }
+        let (host, user, pwd) = (host.as_bytes(), user.as_bytes(), pwd.as_bytes());
+        self.co().set_proxy(http, host, port, user, pwd);
     }
 
     /// The socket's `SSLContext` owner slot, its extra record's first field
@@ -735,13 +580,11 @@ impl Sock {
     }
 
     fn ssl_handshake(&self) -> bool {
-        // SAFETY: the live socket with an SSLContext, in a coroutine.
-        unsafe { socket_ssl_handshake(self.ptr) }
+        self.co().ssl_handshake()
     }
 
     fn ssl_verify(&self, allow_self_signed: bool) -> bool {
-        // SAFETY: the live socket with a TLS session.
-        unsafe { socket_ssl_verify(self.ptr, allow_self_signed) }
+        self.co().ssl_verify(allow_self_signed)
     }
 
     /// `ssl_get_peer_cert()`: the peer certificate's PEM, or empty.
@@ -765,13 +608,14 @@ impl Sock {
         assert_eq!(prepared.status, 0);
         let mut owner = prepared.owner;
         let vector = (&raw mut owner).cast::<c_void>();
-        // SAFETY: the live socket over the live vector.
+        let co = self.co();
+        // SAFETY: the live vector.
         let result = unsafe {
             match op {
-                READV => socket_readv(self.ptr, vector),
-                READV_ALL => socket_readv_all(self.ptr, vector),
-                WRITEV => socket_writev(self.ptr, vector),
-                _ => socket_writev_all(self.ptr, vector),
+                READV => co.readv(vector),
+                READV_ALL => co.readv_all(vector),
+                WRITEV => co.writev(vector),
+                _ => co.writev_all(vector),
             }
         };
         // SAFETY: the owner prepare made, released once.
@@ -783,7 +627,7 @@ impl Sock {
 impl Drop for Sock {
     fn drop(&mut self) {
         // SAFETY: the socket `make` or `accept` made, deleted once.
-        unsafe { swr_v1_hook_co_socket_free(self.ptr) };
+        unsafe { co_socket::swr_v1_hook_co_socket_free(self.ptr) };
     }
 }
 
@@ -852,30 +696,12 @@ struct TimeoutSetter(TimeoutScope);
 
 impl TimeoutSetter {
     fn new(sock: &Sock, timeout: f64, kind: c_int) -> Self {
-        // SAFETY: the live record, which outlives the setter.
-        Self(unsafe { swr_v1_hook_timeout_scope(sock.rec(), timeout, kind) })
+        Self(TimeoutScope::new(sock.co(), timeout, kind))
     }
 
     /// `TimeoutController::has_timedout(kind)`.
     fn has_timedout(&mut self, kind: c_int) -> bool {
-        let scope = &mut self.0;
-        // SAFETY: the scope's live record and its controller clock.
-        unsafe {
-            swr_v1_hook_co_socket_timed_out(
-                scope.socket,
-                scope.timeout,
-                &raw mut scope.startup,
-                microtime(),
-                kind,
-            )
-        }
-    }
-}
-
-impl Drop for TimeoutSetter {
-    fn drop(&mut self) {
-        // SAFETY: the scope `new` made, over a live record.
-        unsafe { swr_v1_hook_timeout_restore(&raw const self.0) };
+        self.0.timed_out(kind, microtime())
     }
 }
 
@@ -1623,8 +1449,7 @@ fn getsockname() {
     run(|| {
         let sock = Sock::new(SW_SOCK_TCP);
         assert!(sock.connect(HOST, 80, 0));
-        // SAFETY: the live, open socket.
-        assert!(unsafe { socket_getsockname(sock.ptr) });
+        assert!(sock.co().getsockname());
         sock.close();
     });
 }
@@ -1835,8 +1660,7 @@ fn sendfile() {
                 &(std::env::current_dir().unwrap().display().to_string() + "/examples/test.jpg"),
             );
             let sock = Sock::with_fd(pairs[0], SW_SOCK_UNIX_STREAM);
-            // SAFETY: the live socket and a NUL-terminated path.
-            let result = unsafe { socket_sendfile(sock.ptr, file.as_ptr(), 0, 0) };
+            let result = sock.co().sendfile(&file, 0, 0);
             sock.close();
             assert!(result);
         });
@@ -1871,16 +1695,9 @@ fn test_sendto_recvfrom(sock_type: c_int) {
         sock_server.bind(ip, port);
         sock_client.bind(ip, port + 1);
 
-        // SAFETY: the live socket, a NUL-terminated host and the text.
-        unsafe {
-            socket_sendto(
-                sock_server.ptr,
-                ip_c.as_ptr(),
-                port + 1,
-                server_text.as_ptr().cast(),
-                server_length,
-            )
-        };
+        let _ = sock_server
+            .co()
+            .sendto(ip_c.to_bytes(), port + 1, &server_text[..server_length]);
 
         let mut data_from_server = [0_u8; 128];
         // `inet_addr(ip)`: the IPv4 address, or INADDR_NONE for "::1".
@@ -1896,13 +1713,12 @@ fn test_sendto_recvfrom(sock_type: c_int) {
         let mut addr_length = u32::try_from(size_of::<SockAddrIn>()).unwrap();
 
         // receive data from server
-        // SAFETY: the live socket, the buffer and the address storage.
+        // SAFETY: the buffer and the address storage.
         let result = unsafe {
-            socket_recvfrom_addr(
-                sock_client.ptr,
+            sock_client.co().recvfrom(
                 data_from_server.as_mut_ptr().cast(),
                 server_length,
-                &raw mut serveraddr,
+                (&raw mut serveraddr).cast(),
                 &raw mut addr_length,
             )
         };
@@ -1915,24 +1731,12 @@ fn test_sendto_recvfrom(sock_type: c_int) {
 
         // receive data from client
         let mut data_from_client = [0_u8; 128];
-        // SAFETY: as above.
-        unsafe {
-            socket_sendto(
-                sock_client.ptr,
-                local.as_ptr(),
-                port,
-                client_text.as_ptr().cast(),
-                client_length,
-            )
-        };
-        // SAFETY: the live socket and the buffer.
-        let result = unsafe {
-            socket_recvfrom(
-                sock_server.ptr,
-                data_from_client.as_mut_ptr().cast(),
-                client_length,
-            )
-        };
+        let _ = sock_client
+            .co()
+            .sendto(local.to_bytes(), port, &client_text[..client_length]);
+        let result = sock_server
+            .co()
+            .recvfrom_peer(&mut data_from_client[..client_length]);
         assert_eq!(
             result,
             client_length.cast_signed(),
@@ -2134,8 +1938,7 @@ fn peek() {
 
         let mut data = [0_u8; 128];
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
-        // SAFETY: the live socket and the buffer.
-        let result = unsafe { socket_peek(sock.ptr, data.as_mut_ptr().cast(), 5) };
+        let result = sock.co().peek(&mut data[..5]);
         sock.close();
         assert_eq!(result, 5);
         assert_eq!(&data[..size(result)], b"Hello");
@@ -2167,8 +1970,8 @@ fn sendmsg_and_recvmsg() {
             };
             let msg = msghdr(&mut ivec);
 
-            // SAFETY: the live socket and the message.
-            let ret = unsafe { socket_sendmsg(sock.ptr, &raw const msg, 0) };
+            // SAFETY: the message, over the live vector.
+            let ret = unsafe { sock.co().sendmsg((&raw const msg).cast(), 0) };
             sock.close();
             assert_eq!(size(ret), length);
         });
@@ -2181,8 +1984,8 @@ fn sendmsg_and_recvmsg() {
         };
         let mut msg = msghdr(&mut ivec);
 
-        // SAFETY: the live socket and the message.
-        let ret = unsafe { socket_recvmsg(sock.ptr, &raw mut msg, 0) };
+        // SAFETY: the message, over the live vector.
+        let ret = unsafe { sock.co().recvmsg((&raw mut msg).cast(), 0) };
         sock.close();
         assert_eq!(&buf[..size(ret)], HELLO);
     });
@@ -2265,15 +2068,7 @@ fn cancel() {
 
 fn get_event_str() {
     let sock = Sock::new(SW_SOCK_TCP);
-    let event_str = |event: c_int| {
-        // SAFETY: the live record; a static string.
-        unsafe {
-            CStr::from_ptr(swr_v1_hook_co_socket_event_str(
-                sock.rec(),
-                event.cast_unsigned(),
-            ))
-        }
-    };
+    let event_str = |event: c_int| co_io::event_str(sock.co(), event.cast_unsigned());
     assert_eq!(event_str(SW_EVENT_READ), c"reading");
     assert_eq!(event_str(SW_EVENT_WRITE), c"writing");
 }
@@ -2282,13 +2077,11 @@ fn option() {
     let sock = Sock::new(SW_SOCK_TCP);
     let mut optval: c_int = 0;
 
-    // SAFETY: the live socket and a writable int.
-    assert!(unsafe { socket_get_option(sock.ptr, SOL_SOCKET, SO_RCVBUF, &raw mut optval) });
+    assert!(sock.co().get_int_option(SOL_SOCKET, SO_RCVBUF, &mut optval));
     assert!(optval > 65536);
 
     optval *= 2;
-    // SAFETY: the live socket.
-    assert!(unsafe { socket_set_option(sock.ptr, SOL_SOCKET, SO_RCVBUF, optval) });
+    assert!(sock.co().set_int_option(SOL_SOCKET, SO_RCVBUF, optval));
 }
 
 fn test_ssl_verify() {
@@ -2361,10 +2154,7 @@ fn recv_packet() {
 
 fn set_error() {
     let sock = Sock::new(SW_SOCK_TCP);
-    // SAFETY: the live record and the text's bytes.
-    let status = unsafe {
-        swr_v1_hook_co_socket_owned_err(sock.rec(), 1000, TEST_STR.as_ptr().cast(), TEST_STR.len())
-    };
+    let status = sock.co().set_error(1000, TEST_STR);
     assert_eq!(status, 0);
 
     assert_eq!(sock.err_code(), 1000);

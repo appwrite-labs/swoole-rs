@@ -130,6 +130,7 @@ pub extern "C" fn swr_v1_phpswoole_module() -> *mut std::ffi::c_void {
 #[cfg(feature = "php")]
 static FAMILIES: swoole_rs_phpswoole::Families = {
     use swoole_rs_phpcoroutines as co;
+    use swoole_rs_phphttp as http;
     use swoole_rs_phpthread as thread;
     swoole_rs_phpswoole::Families {
         coroutine_minit: [
@@ -162,5 +163,25 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
         set_hook_flags: co::set_hook_flags,
         active_threads: thread::sw_active_thread_count,
         server_class: swoole_rs_phpserver::server_class_entry,
+        http: swoole_rs_phpswoole::Http {
+            minit: [
+                http::request_minit,
+                http::response_minit,
+                http::php_swoole_http_cookie_minit,
+                http::server_minit,
+                http::server_coro_minit,
+                http::websocket_minit,
+                swoole_rs_phphttp2::client_minit,
+            ],
+            server_rinit: http::server_rinit,
+            server_rshutdown: http::server_rshutdown,
+            response_rshutdown: http::response_rshutdown,
+            on_receive: http::http_server_on_receive,
+            on_close: http::http_server_on_close,
+            http2_on_close: swoole_rs_phphttp2::server_on_close,
+            can_cache_session_addr: http::can_cache_session_addr,
+            server_class: http::server_class,
+            websocket_class: http::websocket_class,
+        },
     }
 };

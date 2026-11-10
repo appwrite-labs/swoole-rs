@@ -230,8 +230,7 @@ pub unsafe extern "C" fn swr_v1_os_msg_queue_push(
 /// `queue->pop(node, size)`.
 /// # Safety
 /// `queue` is live; `node` as [`QueueRecord::pop`] requires.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_pop(
+pub unsafe fn swr_v1_os_msg_queue_pop(
     queue: *const QueueRecord,
     node: *mut c_void,
     size: usize,

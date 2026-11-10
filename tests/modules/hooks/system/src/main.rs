@@ -2,8 +2,8 @@
 //! network/client.cpp in tests/modules/clients/client.rs, network/dns.cpp in dns.rs,
 //! network/address.cpp in address.rs, network/socket.cpp in network_socket.rs,
 //! coroutine/gethostbyname.cpp in gethostbyname.rs, coroutine/accept.cpp in hook.rs, os/timer.cpp
-//! in timer.rs, os/pipe.cpp in pipe.rs, os/process_pool.cpp in process_pool.rs and
-//! protocol/ssl.cpp in ssl.rs), one
+//! in timer.rs, coroutine/async.cpp in co_async.rs, os/pipe.cpp in pipe.rs,
+//! os/process_pool.cpp in process_pool.rs and protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -37,6 +37,7 @@ mod gethostbyname;
 // for the same reason.
 #[path = "../../../coroutine/base.rs"]
 mod base;
+mod co_async;
 mod hook;
 mod network_socket;
 mod pipe;
@@ -916,6 +917,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("ssl", ssl::CASES),
     ("pipe", pipe::CASES),
     ("process_pool", process_pool::CASES),
+    ("coroutine_async", co_async::CASES),
 ];
 
 fn main() {

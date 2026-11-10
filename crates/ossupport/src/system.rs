@@ -473,15 +473,34 @@ mod tests {
         assert_eq!(set(&ori_affinity), 0);
     }
 
-    /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn.
+    /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs
+    /// in this test binary re-run for it alone, so that on a host where a name resolves or
+    /// the directory exists the credentials and root it changes are never the test
+    /// process's. A fork of the multithreaded harness can block on a lock another test
+    /// thread held at the fork.
     #[test]
     fn os_set_isolation() {
-        unsafe {
-            swr_v1_os_set_isolation(
-                c"not-exists-group".as_ptr(),
-                c"not-exists-user".as_ptr(),
-                c"/tmp/not-exists-dir".as_ptr(),
-            );
+        const CHILD: &str = "SWR_OS_SET_ISOLATION_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            unsafe {
+                swr_v1_os_set_isolation(
+                    c"not-exists-group".as_ptr(),
+                    c"not-exists-user".as_ptr(),
+                    c"/tmp/not-exists-dir".as_ptr(),
+                );
+            }
+            return;
         }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "system::tests::os_set_isolation"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && stdout.contains("1 passed"),
+            "{}\n{stdout}",
+            child.status
+        );
     }
 }

@@ -283,7 +283,7 @@ def plan(args, reports):
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
+        # core-tests/src/coroutine/{system,hook,socket,base,file,async}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
@@ -294,6 +294,7 @@ def plan(args, reports):
                '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
                             'completes first (SIGSEGV in ~15% of runs upstream)',
                '--exclude', 'coroutine_socket.tcp6=needs IPv6',
+               '--exclude', 'coroutine_async.gethostbyname=' + NETWORK,
                *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
                  for arg in ['--exclude', f'dns.{name}={reason}']],
                # core-tests/src/coroutine/gethostbyname.cpp (system/src/gethostbyname.rs) resolves public names.
