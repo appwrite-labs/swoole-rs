@@ -23,18 +23,14 @@ use swoole_rs_zend::{method_table, sys as z};
 
 use swoole_rs_hooks::resolve::{swr_v1_system_getaddrinfo, swr_v1_system_gethostbyname};
 use swoole_rs_hooks::sleep::system_sleep;
+use swoole_rs_hooks::stdio::swoole_coroutine_statvfs;
 use swoole_rs_hooks::wait_event::system_wait_event;
+// `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
+pub(crate) use swoole_rs_phpswoole::zif_swoole_async_dns_lookup_coro;
 
 unsafe extern "C" {
-    fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
     // crates/phpevents': declared, since crates/phpevents depends on this crate.
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
-
-    // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
-    pub(crate) fn zif_swoole_async_dns_lookup_coro(
-        frame: *mut z::zend_execute_data,
-        value: *mut z::zval,
-    );
 }
 
 /// `SW_EVENT_READ`.
