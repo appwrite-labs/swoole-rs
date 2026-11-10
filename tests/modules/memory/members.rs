@@ -70,11 +70,11 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
     swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
     for shared in [false, true] {
         let pool = GlobalMemory::new(4096, shared).unwrap();
-        let parent = pool.0.load(Ordering::Relaxed);
+        let parent = pool.pool.load(Ordering::Relaxed);
         // As if another process made it.
         unsafe { (*parent).creator = if shared { std::process::id() + 1 } else { 0 } };
         assert_eq!(pool.capacity(), 4096);
-        let child = pool.0.load(Ordering::Relaxed);
+        let child = pool.pool.load(Ordering::Relaxed);
         assert_eq!(child == parent, !shared);
         if shared {
             assert_eq!(unsafe { (*child).inherited }, parent);
@@ -82,7 +82,7 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
         }
         assert!(!pool.alloc(8).unwrap().is_null());
         assert_eq!(
-            pool.0.load(Ordering::Relaxed),
+            pool.pool.load(Ordering::Relaxed),
             child,
             "the fresh pool is this process's"
         );

@@ -16,7 +16,7 @@ use crate::table::Table;
 use std::ffi::{c_int, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::{sw_free, sw_malloc};
@@ -225,12 +225,21 @@ impl Drop for GlobalImpl {
 /// a no-op. It holds its pool, which a forked process replaces (see `current`). Errors
 /// are upstream's constructor's throws: `INVALID` for
 /// `Exception(SW_ERROR_INVALID_PARAMS)` and `NO_MEMORY` for `std::bad_alloc`.
-pub struct GlobalMemory(AtomicPtr<GlobalImpl>);
+///
+/// Every read of the pool counts itself in `users` first, so `delete` frees the pool only
+/// when nothing reads it; a pool a reader still holds is left mapped instead.
+pub struct GlobalMemory {
+    pool: AtomicPtr<GlobalImpl>,
+    users: AtomicUsize,
+}
 
 impl GlobalMemory {
     /// A memory with no pool yet, `SwooleG.memory_pool` before `swoole_init`.
     const fn empty() -> Self {
-        Self(AtomicPtr::new(ptr::null_mut()))
+        Self {
+            pool: AtomicPtr::new(ptr::null_mut()),
+            users: AtomicUsize::new(0),
+        }
     }
 
     /// `GlobalMemory(pagesize, shared)`.
@@ -247,16 +256,29 @@ impl GlobalMemory {
             pagesize >= MIN_PAGE_SIZE,
             "a page of at least SW_MIN_PAGE_SIZE"
         );
-        GlobalImpl::new(pagesize, shared, ptr::null_mut()).map(|pool| Self(AtomicPtr::new(pool)))
+        let pool = GlobalImpl::new(pagesize, shared, ptr::null_mut())?;
+        Ok(Self {
+            pool: AtomicPtr::new(pool),
+            users: AtomicUsize::new(0),
+        })
     }
 
-    /// This process's pool. In a process forked from the one that made a shared pool, a
-    /// fresh pool replaces it first, without taking the inherited lock a parent thread
-    /// may have held at the fork, and keeps it.
+    /// Runs `read` over this process's pool, counted in `users` while it runs. In a
+    /// process forked from the one that made a shared pool, a fresh pool replaces it
+    /// first, without taking the inherited lock a parent thread may have held at the
+    /// fork, and keeps it.
+    fn with<R>(&self, read: impl FnOnce(&GlobalImpl) -> R) -> Result<R, i32> {
+        self.users.fetch_add(1, Ordering::SeqCst);
+        let result = self.current().map(read);
+        self.users.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    /// The pool, for `with`, which counts the caller as a user.
     fn current(&self) -> Result<&GlobalImpl, i32> {
-        let pool = self.0.load(Ordering::Acquire);
-        // SAFETY: null or a pool this memory owns; only `drop` and `pool::delete` free
-        // it, and neither runs while `&self` is lent.
+        let pool = self.pool.load(Ordering::SeqCst);
+        // SAFETY: null or a pool this memory owns. `delete` takes it out before it frees
+        // it, and frees it only when no `with` is running; `drop` has `&mut self`.
         let Some(found) = (unsafe { pool.as_ref() }) else {
             return Err(INVALID);
         };
@@ -264,7 +286,7 @@ impl GlobalMemory {
             return Ok(found);
         }
         let fresh = GlobalImpl::new(found.page_size, true, pool)?;
-        self.0.store(fresh, Ordering::Release);
+        self.pool.store(fresh, Ordering::SeqCst);
         // SAFETY: the fresh pool, owned as above.
         Ok(unsafe { &*fresh })
     }
@@ -273,28 +295,32 @@ impl GlobalMemory {
     /// upstream's warning.
     ///
     /// # Errors
-    /// What `GlobalMemory::new` returns, when a forked process's fresh pool can't be had.
+    /// `INVALID` once the pool is deleted, or what `GlobalMemory::new` returns when a
+    /// forked process's fresh pool can't be had.
     pub fn alloc(&self, size: u32) -> Result<*mut c_void, i32> {
-        self.current().map(|pool| alloc(&mut pool.pages(), size))
+        self.with(|pool| alloc(&mut pool.pages(), size))
     }
 
-    /// `size_t GlobalMemory::capacity() const`: zero if a fresh pool can't be had.
+    /// `size_t GlobalMemory::capacity() const`: zero without a pool.
     #[must_use]
     pub fn capacity(&self) -> usize {
-        self.current().map_or(0, |pool| pool.pages().capacity())
+        self.with(|pool| pool.pages().capacity()).unwrap_or(0)
     }
 
     /// `size_t GlobalMemory::get_memory_size() const`, as `capacity`.
     #[must_use]
     pub fn memory_size(&self) -> usize {
-        self.current().map_or(0, |pool| pool.pages().memory_size())
+        self.with(|pool| pool.pages().memory_size()).unwrap_or(0)
     }
 
-    /// Frees the pool, every page and then the registry.
+    /// Takes the pool out and frees it, every page and then the registry, unless a
+    /// reader still holds it.
     fn delete(&self) {
-        let pool = self.0.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !pool.is_null() {
-            // SAFETY: `GlobalImpl::new`'s box, taken out of this memory, freed once.
+        let pool = self.pool.swap(ptr::null_mut(), Ordering::SeqCst);
+        if !pool.is_null() && self.users.load(Ordering::SeqCst) == 0 {
+            // SAFETY: `GlobalImpl::new`'s box, taken out of this memory, freed once. A
+            // `with` that counted itself before this load holds it, so none does; one that
+            // counts itself after it loads null.
             drop(unsafe { Box::from_raw(pool) });
         }
     }
@@ -431,25 +457,30 @@ pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_vo
 pub mod pool {
     use super::GlobalMemory;
     use std::ffi::c_void;
+    use std::ptr;
+    use std::sync::atomic::Ordering::SeqCst;
 
     static POOL: GlobalMemory = GlobalMemory::empty();
 
     /// `SwooleG.memory_pool = new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`,
-    /// `swoole_init`'s pool. Where upstream's constructor throws, the process aborts.
+    /// `swoole_init`'s pool. Where upstream's constructor throws, the process aborts. A
+    /// pool that is already there stays.
     pub fn init() {
         let page = swoole_rs_corebase::constants::SW_GLOBAL_MEMORY_PAGESIZE;
         let Ok(fresh) = GlobalMemory::new(page, true) else {
             std::process::abort();
         };
-        let pages = fresh
-            .0
-            .swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-        let old = POOL.0.swap(pages, std::sync::atomic::Ordering::AcqRel);
-        // A second `swoole_init` without `swoole_clean` frees the first pool.
-        drop(GlobalMemory(old.into()));
+        let pool = fresh.pool.swap(ptr::null_mut(), SeqCst);
+        let installed = POOL
+            .pool
+            .compare_exchange(ptr::null_mut(), pool, SeqCst, SeqCst);
+        if installed.is_err() {
+            // Not installed: `fresh` frees it.
+            fresh.pool.store(pool, SeqCst);
+        }
     }
 
-    /// `delete SwooleG.memory_pool`.
+    /// `delete SwooleG.memory_pool`. A thread still reading the pool keeps it mapped.
     pub fn delete() {
         POOL.delete();
     }
