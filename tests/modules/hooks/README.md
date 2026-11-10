@@ -252,3 +252,17 @@ inet_ntop's output exactly when that output is a dotted quad.
 | `coroutine_async.error` | `coroutine_async.error` |
 | `coroutine_async.cancel` | `coroutine_async.cancel` |
 | `coroutine_async.timeout` | `coroutine_async.timeout` |
+
+`core-tests/src/coroutine/http_server.cpp`'s two TESTs have no Rust case. Their
+assertions are status 200 and the bodies of core-tests' own coroutine httplib server
+(`core-tests/include/httplib_server.h`, test-library code), as an httplib client thread
+sees them, so a port would test a Rust rewrite of that server and nothing in the
+build. The Swoole operations the server runs on already have cases:
+`coroutine_socket.bind_success`, `listen`, `accept`, `recv_success`,
+`write_and_read` and `cancel` (`SW_EVENT_READ`, which the server's `stop()` cancels its
+accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
+
+| Upstream TEST | Rust case or reason |
+| --- | --- |
+| `coroutine_http_server.get` | none: it asserts the test library's httplib server, whose Swoole operations are the cases above |
+| `coroutine_http_server.post` | none: as `get` |
