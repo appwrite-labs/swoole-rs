@@ -140,6 +140,8 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             co::php_swoole_coroutine_scheduler_minit,
         ],
         server_minit: swoole_rs_phpserver::php_swoole_server_minit,
+        timer_minit: swoole_rs_phptimer::minit,
+        timer_rshutdown: swoole_rs_phptimer::rshutdown,
         tracer_minit: co::tracer_minit,
         thread_minit: thread::thread_minit,
         thread_classes_minit: [

@@ -22,6 +22,7 @@ use crate::worker_record::Worker as Record;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use swoole_rs_corebase::sys::set_errno;
 
 use crate::worker_record::WorkerRecord;
 
@@ -173,17 +174,6 @@ static RAISE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// The hook bailed out.
 pub struct Bailed;
-
-fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: the slot is this thread's live errno.
-    unsafe { *slot = value };
-}
 
 /// `catch_system_error`: whether `error` ends a loop.
 fn fatal(error: c_int) -> bool {

@@ -13,7 +13,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::{socket_set_fd_option, socket_wait_event};
 use swoole_rs_reactor::{
-    Event, FlushOps, SocketOutput, SocketRecord, WriteOps, WritePayload, swr_v1_socket_defaults,
+    Event, FlushEffects, SocketOutput, SocketRecord, WriteEffects, WritePayload,
+    swr_v1_socket_defaults,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
@@ -24,19 +25,20 @@ const SW_EVENT_WRITE: c_int = 1 << 10;
 const ADD_WRITE: u32 = 3;
 const REMOVE_WRITE: u32 = 5;
 
-/// One write or flush: the reactor, the socket and, for a flush, its event.
-struct Context {
+/// One write: the reactor, the socket and the payload. Only [`write`], whose caller
+/// promises a live reactor and socket, builds one, so both stay live while it does.
+struct Write<'a> {
+    reactor: *mut c_void,
+    socket: *mut SocketRecord,
+    payload: &'a WritePayload,
+}
+
+/// One flush or drain: the reactor, the socket and its event. Only the writable
+/// callback and the drain, whose callers promise all three live, build one.
+struct Flush {
     reactor: *mut c_void,
     socket: *mut SocketRecord,
     event: *mut Event,
-    payload: *const WritePayload,
-}
-
-/// # Safety
-/// `context` is a live write's or flush's.
-unsafe fn context<'a>(context: *mut c_void) -> &'a Context {
-    // SAFETY: as the caller promises.
-    unsafe { &*context.cast::<Context>() }
 }
 
 /// The socket's output block and queue (null without an output buffer).
@@ -55,49 +57,43 @@ unsafe fn output(socket: *mut SocketRecord) -> (*mut SocketOutput, *mut Buffer) 
     (&raw mut record.output, queue)
 }
 
-unsafe extern "C" fn write_nonblock(context: *mut c_void) {
-    // SAFETY: a live write.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    socket_set_fd_option(unsafe { &mut *socket }, 1, -1);
-}
-
-unsafe extern "C" fn write_send(context: *mut c_void) -> isize {
-    // SAFETY: a live write.
-    let context = unsafe { self::context(context) };
-    // SAFETY: its live payload.
-    let payload = unsafe { &*context.payload };
-    if !payload.data.is_null() {
-        // SAFETY: `socket->send(buf, n, 0)` over the payload's bytes.
-        return unsafe { socket_send(context.socket, payload.data.cast(), payload.length, 0) };
+impl WriteEffects for Write<'_> {
+    fn set_nonblock(&self) {
+        // SAFETY: the write's live socket.
+        socket_set_fd_option(unsafe { &mut *self.socket }, 1, -1);
     }
-    // SAFETY: its live socket.
-    let fd = unsafe { (*context.socket).fd };
-    let count = c_int::try_from(payload.count).unwrap_or(c_int::MAX);
-    // SAFETY: `socket->writev(iov, iovcnt)` over the payload's vector.
-    unsafe { libc::writev(fd, payload.iov, count) }
-}
 
-unsafe extern "C" fn write_buffer(context: *mut c_void) -> *mut Buffer {
-    // SAFETY: a live write.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    let chunk_size = unsafe { (*socket).chunk_size };
-    let buffer = swoole_rs_buffer::cpp::new_buffer(chunk_size);
-    // SAFETY: `socket->out_buffer = new Buffer(socket->chunk_size)`.
-    unsafe { (*socket).output.out_buffer = buffer.cast() };
-    // SAFETY: the buffer just made.
-    unsafe { out_queue(socket) }
-}
+    fn send(&self) -> isize {
+        let payload = self.payload;
+        if !payload.data.is_null() {
+            // SAFETY: `socket->send(buf, n, 0)` over the payload's bytes.
+            return unsafe { socket_send(self.socket, payload.data.cast(), payload.length, 0) };
+        }
+        // SAFETY: the write's live socket.
+        let fd = unsafe { (*self.socket).fd };
+        let count = c_int::try_from(payload.count).unwrap_or(c_int::MAX);
+        // SAFETY: `socket->writev(iov, iovcnt)` over the payload's vector.
+        unsafe { libc::writev(fd, payload.iov, count) }
+    }
 
-unsafe extern "C" fn write_watch(context: *mut c_void) {
-    // SAFETY: a live write.
-    let context = unsafe { self::context(context) };
-    // SAFETY: its live socket.
-    let events = unsafe { (*context.socket).events };
-    if events & SW_EVENT_WRITE == 0 {
-        // SAFETY: `reactor->add_write_event(socket)` on the live reactor.
-        unsafe { reactor_interest(context.reactor, context.socket, ADD_WRITE, 0) };
+    fn create_buffer(&self) -> *mut Buffer {
+        let socket = self.socket;
+        // SAFETY: the write's live socket.
+        let chunk_size = unsafe { (*socket).chunk_size };
+        let buffer = swoole_rs_buffer::cpp::new_buffer(chunk_size);
+        // SAFETY: `socket->out_buffer = new Buffer(socket->chunk_size)`.
+        unsafe { (*socket).output.out_buffer = buffer.cast() };
+        // SAFETY: the buffer just made.
+        unsafe { out_queue(socket) }
+    }
+
+    fn watch_writable(&self) {
+        // SAFETY: the write's live socket.
+        let events = unsafe { (*self.socket).events };
+        if events & SW_EVENT_WRITE == 0 {
+            // SAFETY: `reactor->add_write_event(socket)` on the live reactor.
+            unsafe { reactor_interest(self.reactor, self.socket, ADD_WRITE, 0) };
+        }
     }
 }
 
@@ -106,18 +102,10 @@ unsafe extern "C" fn write_watch(context: *mut c_void) {
 /// # Safety
 /// `reactor` is a live `Reactor`, `socket` a live record and `payload` valid.
 unsafe fn write(reactor: *mut c_void, socket: *mut SocketRecord, payload: &WritePayload) -> isize {
-    let mut context = Context {
+    let ops = Write {
         reactor,
         socket,
-        event: std::ptr::null_mut(),
         payload,
-    };
-    let ops = WriteOps {
-        context: (&raw mut context).cast(),
-        set_nonblock: write_nonblock,
-        send: write_send,
-        create_buffer: write_buffer,
-        watch_writable: write_watch,
     };
     // SAFETY: as the caller promises.
     let (output, queue) = unsafe { output(socket) };
@@ -127,14 +115,7 @@ unsafe fn write(reactor: *mut c_void, socket: *mut SocketRecord, payload: &Write
     let nobufs = unsafe { &raw mut (*socket).kernel_nobufs };
     // SAFETY: the socket's output block, flag and queue, the payload and the ops.
     let result = unsafe {
-        swoole_rs_reactor::swr_v1_reactor_write(
-            output,
-            nobufs,
-            queue,
-            default_size,
-            payload,
-            &raw const ops,
-        )
+        swoole_rs_reactor::swr_v1_reactor_write(output, nobufs, queue, default_size, payload, &ops)
     };
     let origin = c"Reactor::write_func";
     match result.outcome {
@@ -237,107 +218,74 @@ pub unsafe extern "C-unwind" fn reactor_writev(
     unsafe { write(reactor, socket, &payload) }
 }
 
-unsafe extern "C" fn flush_front_kind(context: *mut c_void) -> c_int {
-    // SAFETY: a live flush.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its socket has queued output.
-    let queue = unsafe { out_queue(socket) };
-    let mut front = swoole_rs_buffer::TypedFront::default();
-    // SAFETY: the live queue and a local view.
-    buffer_check(unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front) });
-    front.kind.cast_signed()
-}
-
-unsafe extern "C" fn flush_send(context: *mut c_void) -> c_int {
-    // SAFETY: a live flush.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    unsafe { socket_handle_send(socket) }
-}
-
-unsafe extern "C" fn flush_sendfile(context: *mut c_void) -> c_int {
-    // SAFETY: a live flush.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    unsafe { socket_handle_sendfile(socket) }
-}
-
-unsafe extern "C" fn flush_close(context: *mut c_void) -> c_int {
-    // SAFETY: a live flush.
-    let context = unsafe { self::context(context) };
-    // SAFETY: its live reactor.
-    let fields = unsafe { prepared(context.reactor) }.fields;
-    // SAFETY: `reactor->close`, set at construction.
-    let Some(close) = (unsafe { (*fields).close }) else {
-        return -1;
-    };
-    // SAFETY: `reactor->close(reactor, socket)`.
-    unsafe { close(context.reactor, context.socket) }
-}
-
-unsafe extern "C" fn flush_trigger_close(context: *mut c_void) -> c_int {
-    // SAFETY: a live flush.
-    let context = unsafe { self::context(context) };
-    // SAFETY: its live reactor and event.
-    unsafe { trigger_close_event(context.reactor, context.event.cast()) }
-}
-
-unsafe extern "C" fn flush_delete_timer(context: *mut c_void) {
-    // SAFETY: crates/timer's.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-        fn swoole_timer_del(node: *mut c_void) -> bool;
+impl FlushEffects for Flush {
+    fn front_kind(&self) -> c_int {
+        // SAFETY: the flush's socket has queued output.
+        let queue = unsafe { out_queue(self.socket) };
+        let mut front = swoole_rs_buffer::TypedFront::default();
+        // SAFETY: the live queue and a local view.
+        buffer_check(unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front) });
+        front.kind.cast_signed()
     }
-    // SAFETY: a live flush.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    let timer = unsafe { (*socket).output.send_timer };
-    // SAFETY: `swoole_timer_del(socket->send_timer)`.
-    unsafe { swoole_timer_del(timer) };
-}
 
-unsafe extern "C" fn flush_remove_write(context: *mut c_void) {
-    // SAFETY: a live flush.
-    let context = unsafe { self::context(context) };
-    // SAFETY: `reactor->remove_write_event(socket)`.
-    unsafe { reactor_interest(context.reactor, context.socket, REMOVE_WRITE, 0) };
-}
+    fn handle_send(&self) -> c_int {
+        // SAFETY: the flush's live socket.
+        unsafe { socket_handle_send(self.socket) }
+    }
 
-unsafe extern "C" fn flush_wait_writable(context: *mut c_void) -> c_int {
-    // SAFETY: `Socket::default_write_timeout`, which only the main thread sets.
-    let timeout = unsafe { swr_v1_socket_defaults.timeouts.write };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's static_cast<int>(sec2msec(...))"
-    )]
-    let timeout = (timeout * 1000.0) as c_int;
-    // SAFETY: a live flush.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    socket_wait_event(unsafe { &*socket }, timeout, SW_EVENT_WRITE)
-}
+    fn handle_sendfile(&self) -> c_int {
+        // SAFETY: the flush's live socket.
+        unsafe { socket_handle_sendfile(self.socket) }
+    }
 
-unsafe extern "C" fn flush_removed(context: *mut c_void) -> bool {
-    // SAFETY: a live flush.
-    let socket = unsafe { self::context(context) }.socket;
-    // SAFETY: its live socket.
-    unsafe { (*socket).removed != 0 }
-}
+    fn close(&self) -> c_int {
+        // SAFETY: the flush's live reactor.
+        let fields = unsafe { prepared(self.reactor) }.fields;
+        // SAFETY: `reactor->close`, set at construction.
+        let Some(close) = (unsafe { (*fields).close }) else {
+            return -1;
+        };
+        // SAFETY: `reactor->close(reactor, socket)`.
+        unsafe { close(self.reactor, self.socket) }
+    }
 
-/// The flush effects; the drain adds the blocking wait.
-fn flush_ops(context: &mut Context, drain: bool) -> FlushOps {
-    FlushOps {
-        context: std::ptr::from_mut(context).cast(),
-        front_kind: flush_front_kind,
-        handle_send: flush_send,
-        handle_sendfile: flush_sendfile,
-        close: flush_close,
-        trigger_close: flush_trigger_close,
-        delete_timer: flush_delete_timer,
-        remove_write_event: flush_remove_write,
-        wait_writable: drain
-            .then_some(flush_wait_writable as unsafe extern "C" fn(*mut c_void) -> c_int),
-        removed: drain.then_some(flush_removed as unsafe extern "C" fn(*mut c_void) -> bool),
+    fn trigger_close(&self) -> c_int {
+        // SAFETY: the flush's live reactor and event.
+        unsafe { trigger_close_event(self.reactor, self.event.cast()) }
+    }
+
+    fn delete_timer(&self) {
+        // SAFETY: crates/timer's.
+        unsafe extern "C-unwind" {
+            #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+            fn swoole_timer_del(node: *mut c_void) -> bool;
+        }
+        // SAFETY: the flush's live socket.
+        let timer = unsafe { (*self.socket).output.send_timer };
+        // SAFETY: `swoole_timer_del(socket->send_timer)`.
+        unsafe { swoole_timer_del(timer) };
+    }
+
+    fn remove_write_event(&self) {
+        // SAFETY: `reactor->remove_write_event(socket)` on the flush's live reactor.
+        unsafe { reactor_interest(self.reactor, self.socket, REMOVE_WRITE, 0) };
+    }
+
+    fn wait_writable(&self) -> c_int {
+        // SAFETY: `Socket::default_write_timeout`, which only the main thread sets.
+        let timeout = unsafe { swr_v1_socket_defaults.timeouts.write };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream's static_cast<int>(sec2msec(...))"
+        )]
+        let timeout = (timeout * 1000.0) as c_int;
+        // SAFETY: the flush's live socket.
+        socket_wait_event(unsafe { &*self.socket }, timeout, SW_EVENT_WRITE)
+    }
+
+    fn removed(&self) -> bool {
+        // SAFETY: the flush's live socket.
+        unsafe { (*self.socket).removed != 0 }
     }
 }
 
@@ -355,17 +303,15 @@ pub unsafe extern "C-unwind" fn reactor_writable_callback(
 ) -> c_int {
     // SAFETY: as the caller promises.
     let socket = unsafe { (*event).socket }.cast::<SocketRecord>();
-    let mut context = Context {
+    let flush = Flush {
         reactor,
         socket,
         event,
-        payload: std::ptr::null(),
     };
-    let ops = flush_ops(&mut context, false);
     // SAFETY: as the caller promises.
     let (output, queue) = unsafe { output(socket) };
-    // SAFETY: the socket's output block and queue, and the ops over them.
-    unsafe { swoole_rs_reactor::swr_v1_reactor_flush(output, queue, &raw const ops) }
+    // SAFETY: the socket's output block and queue.
+    unsafe { swoole_rs_reactor::swr_v1_reactor_flush(output, queue, &flush) }
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`.
@@ -387,17 +333,15 @@ pub unsafe extern "C-unwind" fn reactor_drain_write_buffer(
         fd_type: 0,
         socket: socket.cast(),
     };
-    let mut context = Context {
+    let flush = Flush {
         reactor,
         socket,
         event: &raw mut event,
-        payload: std::ptr::null(),
     };
-    let ops = flush_ops(&mut context, true);
     // SAFETY: as the caller promises.
     let (output, queue) = unsafe { output(socket) };
-    // SAFETY: the socket's output block and queue, and the ops over them.
-    unsafe { swoole_rs_reactor::swr_v1_reactor_drain(output, queue, &raw const ops) };
+    // SAFETY: the socket's output block and queue.
+    unsafe { swoole_rs_reactor::swr_v1_reactor_drain(output, queue, &flush) };
 }
 
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.

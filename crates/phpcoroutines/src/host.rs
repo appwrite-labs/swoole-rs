@@ -178,8 +178,7 @@ pub(crate) fn fatal_error(level: c_int, message: &CStr) {
 /// [`fatal_error`], returning its bailout.
 pub(crate) fn try_fatal_error(level: c_int, message: &CStr) -> Result<(), bailout::Bailout> {
     set_last_error(SW_ERROR_PHP_FATAL_ERROR);
-    // SAFETY: a warning or error, printed through "%s".
-    unsafe { swoole_rs_zend::php_error(level, message) }
+    swoole_rs_zend::report(level, message)
 }
 
 /// `php_swoole_error_ex(level, code, "%s", message)`. A bailout of the
@@ -187,8 +186,7 @@ pub(crate) fn try_fatal_error(level: c_int, message: &CStr) -> Result<(), bailou
 pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
     set_last_error(code);
     if swoole_rs_phpswoole::display_errors() || level == E_ERROR {
-        // SAFETY: as in `fatal_error`.
-        bailout::defer(unsafe { swoole_rs_zend::php_error(level, message) });
+        bailout::defer(swoole_rs_zend::report(level, message));
     }
 }
 
