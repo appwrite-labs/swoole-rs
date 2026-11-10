@@ -31,9 +31,8 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
 - `--benchmark` runs benchmarks after the correctness phases (and implies
   `--compare`); skipped if any phase failed. Stop other builds first.
 - `--php-extension NAME` passes dynamic PHP modules through to runners.
-- `--ccache PATH`, `--fix-halfclose`, `--match-child-php` and the build
-  profile switches (`--stdext`, `--php-sockets`) are forwarded to the builder or
-  runners.
+- `--fix-halfclose`, `--match-child-php` and the build profile switches
+  (`--stdext`, `--php-sockets`) are forwarded to the builder or runners.
 
 Edit and candidate stop at the first failure; integrate runs every phase and
 fails if any failed. Each run writes logs, exit codes, phase durations,
@@ -52,11 +51,9 @@ the unpatched pin built by `tools/build_upstream.py` (`reference-build`).
 
 ## Caches
 
-Plain ccache and cargo, with their usual settings (`CCACHE_DIR`, `CCACHE_MAXSIZE`,
-`CARGO_HOME`). The extension builders and C/C++ test harnesses compile through
-`ccache` when it is installed; `--no-ccache` disables it for a build.
-`native/phphelpers/host.c` always misses because it embeds `__DATE__`/`__TIME__`. CI keeps
-the cache in `.ccache`.
+Cargo caches the extension build. `tools/build_upstream.py` and the C/C++ test
+harnesses compile through `ccache` when it is installed on the host (the dev image
+has none); `build_upstream.py --no-ccache` disables it for the oracle.
 
 ## PHPT runner
 
