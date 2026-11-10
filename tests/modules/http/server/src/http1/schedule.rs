@@ -105,13 +105,17 @@ fn schedule_worker(serv: Server, fd: c_int, data: *mut c_void) -> usize {
     usize::try_from(worker_id).unwrap()
 }
 
+use swoole_rs_process::worker_record::WorkerRecord;
+
 type Worker = swoole_rs_process::worker_record::Worker<'static>;
 
-/// `serv.workers[i]`.
+/// `serv.workers[i]`: the event worker array, which `get_worker` reaches only once the
+/// event pool holds it at start.
 fn worker(serv: Server, id: usize) -> Worker {
-    serv.view()
-        .worker_record(u16::try_from(id).unwrap())
-        .unwrap()
+    assert!(id < serv.config().worker_num as usize);
+    let workers = serv.config().workers.cast::<WorkerRecord>();
+    // SAFETY: the created server's `worker_num` event workers.
+    unsafe { Worker::new(workers.add(id)) }
 }
 
 /// A process-mode Server of `worker_num` workers and `dispatch_mode`, listening on
