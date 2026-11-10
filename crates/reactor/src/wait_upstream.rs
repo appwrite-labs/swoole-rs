@@ -31,12 +31,6 @@ mod registry {
     /// `Reactor::EXIT_CONDITION_WAIT_PID`.
     const EXIT_CONDITION_WAIT_PID: c_int = 2;
 
-    // SAFETY: crates/reactor's and crates/coroutine's.
-    unsafe extern "C" {
-        #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-        fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
-    }
-
     /// SIGCHLD's handler, exit condition and destroy callback are installed.
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
 
@@ -111,7 +105,7 @@ mod registry {
 
     unsafe extern "C" fn yield_for(co: *mut c_void, timeout: f64) {
         // SAFETY: the current coroutine.
-        let _ = unsafe { coroutine_yield_ex(co, timeout) };
+        let _ = unsafe { swoole_rs_coroutine::yield_ex(co, timeout) };
     }
 
     unsafe extern "C" fn timed_out(co: *mut c_void) -> bool {

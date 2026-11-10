@@ -1097,6 +1097,7 @@ dependencies = [
  "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-framing",
