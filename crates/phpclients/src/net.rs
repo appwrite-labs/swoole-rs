@@ -25,14 +25,15 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Object,
+    Call, Class, E_ERROR, E_WARNING, Object, ZString,
     bailout::{self, Bailout},
-    declare_bool, declare_long, long_zval, register_long_constant, string,
+    declare_bool, declare_long, long_zval, register_long_constant,
+    string::{self, ZBuf},
     sys::{
         IS_ARRAY, IS_NULL, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         get_active_class_name, get_active_function_name, swr_zend_property_not_null,
         swr_zend_property_slot, swr_zval_try_addref, zend_class_entry, zend_object,
-        zend_object_handlers, zend_string, zend_type_error, zval, zval_ptr_dtor,
+        zend_object_handlers, zend_type_error, zval, zval_ptr_dtor,
     },
     throw_error, throw_exception, type_of, unset_property_deny, update_property, value,
 };
@@ -875,6 +876,13 @@ fn receive(conn: &Conn, buffer: *mut u8, length: usize, flags: i64) -> Result<i6
     conn.run(&mut recv)
 }
 
+/// [`receive`] of at most `length` bytes into `buffer`'s room.
+fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
+    let (at, room) = native::room(buffer);
+    let read = receive(conn, at.cast(), room.min(length), flags)?;
+    Ok(native::filled(buffer, read))
+}
+
 /// `recv()` failed (`error`): warn, errCode and false.
 fn recv_failed(call: &Call, error: c_int) {
     warn_sys("recv() failed", error);
@@ -923,7 +931,7 @@ fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
         find = false;
         if let Some(at) = position(&conn.buffer, eof) {
             let end = at + eof.len();
-            let package = string::copy(conn.buffer.get(..end).unwrap_or_default());
+            let package = ZString::new(conn.buffer.get(..end).unwrap_or_default());
             if conn.buffer.len() > end {
                 conn.buffer.drain(..end);
                 conn.buffer_size = BUFFER_SIZE_BIG;
@@ -931,8 +939,7 @@ fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
                 conn.buffer.clear();
                 conn.buffer_size = 0;
             }
-            // SAFETY: a fresh string whose reference the return slot takes.
-            return unsafe { call.set_string(package) };
+            return call.set_zstring(package);
         }
         if conn.buffer.len() == max {
             warn(ErrorKind::Error, "no package eof");
@@ -961,7 +968,7 @@ fn recv_length(
     conn: &mut Conn,
     framing: &Protocol,
     mut length: i64,
-) -> Option<(*mut zend_string, i64)> {
+) -> Option<(ZBuf, i64)> {
     if conn.buffer_size == 0 {
         conn.buffer_size = BUFFER_SIZE_STD;
     }
@@ -1004,9 +1011,7 @@ fn recv_length(
         return None;
     } else if length == header_length {
         conn.buffer.resize(header.max(buffered), 0);
-        let package = string::copy(conn.buffer.get(..header).unwrap_or_default());
-        // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(package) };
+        call.set_zstring(ZString::new(conn.buffer.get(..header).unwrap_or_default()));
         return None;
     } else if length > i64::from(framing.package_max_length) {
         #[expect(
@@ -1017,33 +1022,21 @@ fn recv_length(
         call.set_empty_string();
         return None;
     } else if length == have {
-        // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(string::copy(&conn.buffer)) };
+        call.set_zstring(ZString::new(&conn.buffer));
         return None;
     } else if length < have {
         let end = usize::try_from(length).unwrap_or(0);
-        let package = conn.buffer.get(..end).unwrap_or_default();
-        // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(string::copy(package)) };
+        call.set_zstring(ZString::new(conn.buffer.get(..end).unwrap_or_default()));
         conn.buffer.drain(..end);
         return None;
     }
     let total = usize::try_from(length).unwrap_or(0);
-    let package = string::alloc(total.max(header));
-    let target = string::val(package);
-    // SAFETY: `package` has room for the buffered bytes (fewer than `length`).
-    unsafe { ptr::copy_nonoverlapping(conn.buffer.as_ptr(), target, buffered) };
+    let mut package = ZBuf::with_capacity(total.max(header));
+    package.extend_from_slice(&conn.buffer);
     set_last_error(0);
     let rest = total.saturating_sub(buffered);
-    let read = receive(
-        conn,
-        target.wrapping_add(header),
-        rest,
-        i64::from(libc::MSG_WAITALL),
-    );
+    let read = receive_into(conn, &mut package, rest, i64::from(libc::MSG_WAITALL));
     let Some(mut read) = bailed(read) else {
-        // SAFETY: our unshared string.
-        unsafe { string::free(package) };
         call.set_bool(false);
         return None;
     };
@@ -1091,28 +1084,21 @@ fn recv(call: &Call) {
         }
         // A negative size reads nothing.
         let size = usize::try_from(length).unwrap_or(0);
-        let package = string::alloc(size);
+        let mut package = ZBuf::with_capacity(size);
         set_last_error(0);
-        let Some(read) = bailed(receive(conn, string::val(package), size, flags)) else {
-            // SAFETY: our unshared string.
-            unsafe { string::free(package) };
+        let Some(read) = bailed(receive_into(conn, &mut package, size, flags)) else {
             return call.set_bool(false);
         };
         (package, read)
     };
     if read <= 0 {
         let error = errno();
-        // SAFETY: our unshared string.
-        unsafe { string::free(package) };
         if read < 0 {
             return recv_failed(call, error);
         }
         return call.set_empty_string();
     }
-    // SAFETY: our string holds at least `read` bytes.
-    unsafe { string::truncate(package, usize::try_from(read).unwrap_or(0)) };
-    // SAFETY: the return slot takes our reference.
-    unsafe { call.set_string(package) };
+    call.set_zstring(package.into_zstring());
 }
 
 /// `isConnected(): bool`.
@@ -1297,12 +1283,10 @@ fn get_peer_cert(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live client with TLS.
-    let cert = unsafe { native::peer_cert(conn.socket()) };
-    if cert.is_null() {
-        return call.set_bool(false);
+    match unsafe { native::peer_cert(conn.socket()) } {
+        Some(cert) => call.set_zstring(cert),
+        None => call.set_bool(false),
     }
-    // SAFETY: a fresh string whose reference the return slot takes.
-    unsafe { call.set_string(cert) };
 }
 
 /// `verifyPeerCert(bool $allow_self_signed = false): bool`.
