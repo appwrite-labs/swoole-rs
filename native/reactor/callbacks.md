@@ -15,8 +15,8 @@ refusal.
 The C++ members (`set_end_callback`, `erase_end_callback`, `set_exit_condition`,
 `remove_exit_condition`, `isset_exit_condition`) are inline calls to
 `swr_v1_reactor_set_end`, `_set_exit` and `_isset_exit`; Rust callers use the
-`swr_v1_event_*` forms over the thread's reactor. `Reactor::if_exit` and
-`Reactor::wait` are Rust under their upstream symbols.
+`swr_v1_event_*` forms over the thread's reactor, by path (they have no symbol).
+`Reactor::if_exit` and `Reactor::wait` are Rust under their upstream symbols.
 
 The constructor's built-ins, set after the create hook
 (`install_builtins`): the deferred queue's end callback and exit
