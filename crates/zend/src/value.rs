@@ -3,8 +3,7 @@ use crate::Value;
 use crate::sys::{
     _zval_struct__bindgen_ty_1, HashTable, IS_LONG, add_assoc_long_ex, add_assoc_string_ex,
     zend_class_entry, zend_empty_array, zend_empty_string, zend_long, zend_object, zend_string,
-    zend_update_property_bool, zend_update_property_long, zend_update_property_string, zend_value,
-    zval,
+    zend_value, zval,
 };
 use std::ffi::CStr;
 
@@ -106,8 +105,8 @@ pub unsafe fn update_long(
     name: &CStr,
     value: zend_long,
 ) {
-    // SAFETY: per the caller; Zend copies the name.
-    unsafe { zend_update_property_long(ce, object, name.as_ptr(), name.count_bytes(), value) };
+    // SAFETY: per the caller.
+    unsafe { crate::Props::new(ce, object) }.long(name, value);
 }
 
 /// `zend_update_property_bool(ce, object, name, value)`.
@@ -120,16 +119,8 @@ pub unsafe fn update_bool(
     name: &CStr,
     value: bool,
 ) {
-    // SAFETY: per the caller; Zend copies the name.
-    unsafe {
-        zend_update_property_bool(
-            ce,
-            object,
-            name.as_ptr(),
-            name.count_bytes(),
-            zend_long::from(value),
-        );
-    }
+    // SAFETY: per the caller.
+    unsafe { crate::Props::new(ce, object) }.bool(name, value);
 }
 
 /// `zend_update_property_string(ce, object, name, value)`.
@@ -142,16 +133,8 @@ pub unsafe fn update_string(
     name: &CStr,
     value: &CStr,
 ) {
-    // SAFETY: per the caller; Zend copies both strings.
-    unsafe {
-        zend_update_property_string(
-            ce,
-            object,
-            name.as_ptr(),
-            name.count_bytes(),
-            value.as_ptr(),
-        );
-    }
+    // SAFETY: per the caller.
+    unsafe { crate::Props::new(ce, object) }.bytes(name, value.to_bytes());
 }
 
 /// The two stores of Zend's `ZVAL_*` setters: the value and its type info,

@@ -40,6 +40,12 @@ Two measure compression against `benchmarks/compression` (#2649): `gzip` posts
 both directions are compressed. Their records started 5% above an arm64 Linux
 run (0.99 each); the ratchet lowers them once two merge runs beat them.
 
+Three measure `Swoole\Server` without HTTP (#2650), each echoing 1 KiB on one
+connection: `tcp-length` (length-prefixed frames, `07-tcp-framing`), `tcp-eof`
+(`open_eof_split` on `\r\n`) and `udp` (a datagram listener), both against
+`benchmarks/framing`. Their records started 5% above an arm64 Linux run
+(0.97, 0.52 and 1.04); the ratchet lowers them once two merge runs beat them.
+
 Two measure TLS against `benchmarks/tls` (#2648), which serves the pin's test
 certificate (`tests/include/ssl_certs/server.crt`, RSA 4096) so it needs
 `target/upstream/src`: `https` (GETs on one kept-alive connection: the record

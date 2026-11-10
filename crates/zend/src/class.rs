@@ -167,6 +167,16 @@ impl Class {
         Ok(object)
     }
 
+    /// `zend_throw_exception(this class, message, code)`, from a handler.
+    /// # Panics
+    /// The class is not registered.
+    pub fn throw(&self, message: &CStr, code: zend_long) {
+        let entry = self.entry();
+        assert!(!entry.is_null(), "throw a registered class");
+        // SAFETY: a registered exception class; Zend copies the message.
+        unsafe { crate::throw_exception(entry, message, code) };
+    }
+
     /// The handlers this class's objects use (null before MINIT).
     #[must_use]
     pub fn handlers(&self) -> *const zend_object_handlers {
