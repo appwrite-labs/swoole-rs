@@ -342,8 +342,7 @@ impl Exchange for Wire {
 /// # Safety
 /// `server` is the live server and `request` the live request of `conn`, one
 /// of its connections.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_static_select(
+pub unsafe fn swr_v1_server_static_select(
     server: *mut c_void,
     request: *const swoole_rs_http_ffi::HttpRequest,
     conn: *const crate::ConnectionRecord,

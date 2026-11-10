@@ -110,7 +110,6 @@ pub fn exception_class() -> *mut zend_class_entry {
 /// (`module::startup`).
 /// # Safety
 /// Zend's MINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_int) -> c_int {
     begin(kind, module_number);
     let mut flags = constants::flags();

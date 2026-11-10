@@ -122,7 +122,7 @@ def main():
                     result = run_isolated([binary, name], timeout=args.timeout, cwd=tree)
                 except subprocess.TimeoutExpired as error:
                     result = subprocess.CompletedProcess(name, 124, '', f'Timed out: {error}')
-                (logs / (name + '.log')).write_text(result.stdout + result.stderr)
+                (logs / (name + '.log')).write_text(f'{result.stdout}{result.stderr}\nexit {result.returncode}\n')
                 status = 'failed' if result.returncode else 'passed'
             report['results'].append({'name': name, 'status': status})
             write_report(args.output, report)
@@ -131,6 +131,11 @@ def main():
         report['error'] = str(error)
     write_report(args.output, report)
     failed = [row['name'] for row in report['results'] if row['status'] not in ('passed', 'excluded')]
+    # A failed case's own output (its assertion, its exit), which the phase's log tail keeps;
+    # a sanitizer writes its reports to its log_path instead (tools/asan.py).
+    for name in failed:
+        lines = [line for line in (logs / (name + '.log')).read_text(errors='replace').splitlines() if line.strip()]
+        print(f'--- {name}', *lines[-8:], sep='\n')
     print(json.dumps({'passed': report['passed'], 'cases': len(report['results']), 'failed': failed, 'error': report.get('error')}))
     return int(not report['passed'])
 

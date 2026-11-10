@@ -131,6 +131,12 @@ unseen, as gtest's did.
 | `test_http_server` (forked, or base mode for `chunked`) | `heartbeat`, `overflow`, `process`, `process1`, `redundant_callback`, `pause`, `bad_request`, `chunked`, `max_queued_bytes`, `dispatch_func_return_error_worker_id`, `http_range`, `http_range2` |
 | none | `fail` |
 
+`core-tests/src/server/buffer.cpp`'s one TEST, `server.send_buffer` (crates/server's send
+buffer: a 16 MiB response to one packet, then a close), is `server/src/http1/server.rs`
+in the same binary and phase, over the same records. Upstream's client thread waits on a
+mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
+a blocking `TcpStream`.
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.

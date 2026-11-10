@@ -24,9 +24,20 @@ try {
     $chunks = [];
     $client = new Swoole\Async\Client(SWOOLE_SOCK_TCP);
     $weak = WeakReference::create($client);
-    $client->on('connect', static function ($connection) use (&$trace, $mode): void {
+    $socketWeak = null;
+    $client->on('connect', static function ($connection) use (&$trace, $mode, &$socketWeak): void {
         $trace[] = 'connect';
         check($connection->isConnected(), 'connected in callback');
+        if (method_exists($connection, 'getSocket')) {
+            // ext/sockets builds: the client holds one Socket, returns it each
+            // time, and releases it when it closes.
+            $socket = $connection->getSocket();
+            check($socket instanceof Socket, 'getSocket returns a Socket');
+            check($connection->getSocket() === $socket, 'getSocket returns the socket it holds');
+            $socketWeak = WeakReference::create($socket);
+            $socket = null;
+            check($socketWeak->get() !== null, 'the client keeps its socket');
+        }
         if ($mode === 'connect') {
             check($connection->close(), 'close from connect');
             $trace[] = 'connect-return';
@@ -62,6 +73,7 @@ try {
     Swoole\Event::wait();
     gc_collect_cycles();
     check($weak->get() === null, 'PHP Client collected after callback/loop');
+    check($socketWeak === null || $socketWeak->get() === null, 'closed client released its socket');
     check($warnings === [], 'no warnings: ' . json_encode($warnings));
     $peerOutput = stream_get_contents($pipes[1]);
     $peerError = stream_get_contents($pipes[2]);

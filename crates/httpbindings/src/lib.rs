@@ -182,12 +182,11 @@ fn illegal(bytes: &[u8], name: bool) -> bool {
 /// # Safety
 /// Input/output/phase must be initialized, valid, disjoint objects; each nonempty
 /// field spans initialized readable bytes for this call. No pointer is retained.
-#[unsafe(no_mangle)]
 #[expect(
     clippy::too_many_lines,
     reason = "a decision table, one arm per state; it goes when the operation moves into Rust whole"
 )]
-pub unsafe extern "C" fn swr_v1_httpbindings_cookie(
+pub unsafe fn swr_v1_httpbindings_cookie(
     input: *const CookieInput,
     phase: *mut u32,
     output: *mut Action,

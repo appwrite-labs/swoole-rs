@@ -169,8 +169,8 @@ fn default_protocol() -> Protocol {
 }
 
 /// Allocates settings before the native port acquires any resources.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
+#[must_use]
+pub fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
     Box::into_raw(PortConfig::boxed(buffer_size))
 }
 
@@ -234,8 +234,7 @@ impl PortConfig {
 
 /// # Safety
 /// `config` is a unique live allocation from `config_new`; no views remain.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_port_config_free(config: *mut PortConfig) {
+pub unsafe fn swr_v1_port_config_free(config: *mut PortConfig) {
     if !config.is_null() {
         // SAFETY: the native base releases its unique allocation after all derived members.
         drop(unsafe { Box::from_raw(config) });

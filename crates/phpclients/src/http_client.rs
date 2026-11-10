@@ -474,7 +474,9 @@ impl Client {
         let object = match native::swoole_http_client_coro_create_socket(self.socket_type) {
             Ok(object) => object,
             Err(error) => {
-                self.set_error(error, strerror(error), CONNECT_FAILED);
+                if !bailout::pending() {
+                    self.set_error(error, strerror(error), CONNECT_FAILED);
+                }
                 return false;
             }
         };
@@ -524,7 +526,7 @@ impl Client {
                 self.close(false);
             }
             let mut attempt = 0;
-            while attempt < u32::from(self.max_retries) + 1 {
+            while attempt < u32::from(self.max_retries) + 1 && !bailout::pending() {
                 if self.connect() {
                     return true;
                 }

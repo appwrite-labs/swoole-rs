@@ -112,15 +112,9 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// Elsewhere: the HTTP/2 `onReceive` (crates/phphttp2), the connection's
-// addresses and its peer's port and loopback check (crates/clients).
+// Elsewhere: the connection's addresses and its peer's port and loopback
+// check (crates/clients).
 unsafe extern "C" {
-    #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
-    fn swoole_http2_server_onReceive(
-        server: *mut c_void,
-        conn: *mut ConnectionRecord,
-        request: *mut c_void,
-    ) -> c_int;
     fn swr_v1_clients_address_host(
         address: *const swoole_rs_corebase::net_types::SocketAddress,
     ) -> *const c_char;
@@ -241,8 +235,11 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
             let conn = server
                 .verified(info.fd)
                 .map_or(ptr::null_mut(), ptr::from_mut);
+            let Some(http2) = crate::http2::server() else {
+                return -1;
+            };
             // SAFETY: as above, with the session's connection.
-            unsafe { swoole_http2_server_onReceive(server.raw(), conn, request) }
+            unsafe { (http2.on_receive)(server.raw(), conn.cast(), request) }
         }
         _ => 0,
     }
@@ -583,18 +580,6 @@ const HTTP_VERSION_2: c_int = 3;
 const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
 const HTTP2_INTERNAL_ERROR: u32 = 2;
 
-unsafe extern "C" {
-    /// The HTTP/2 server's (crates/phphttp2): the static handler, a whole
-    /// response and a stream reset.
-    fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: *mut Context) -> bool;
-    fn swr_v1_phphttp2_server_respond(
-        ctx: *mut Context,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    fn swr_v1_phphttp2_server_reset(ctx: *mut Context, stream_id: u32, code: u32);
-}
-
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
 /// connection, answered by the static handler or the port's `onRequest`.
 /// A bailout in the handler is raised last, over this frame only.
@@ -614,8 +599,11 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
         return Ok(());
     };
     state(ctx).request.version = HTTP_VERSION_2;
-    // SAFETY: the live server and stream context.
-    if facts.static_handler && unsafe { swr_v1_phphttp2_server_static(server, ctx) } {
+    let Some(http2) = crate::http2::server() else {
+        context::release_objects(ctx);
+        return Ok(());
+    };
+    if facts.static_handler && (http2.static_file)(server, crate::http2::Ctx::of(ctx)) {
         context::release_objects(ctx);
         return Ok(());
     }
@@ -645,8 +633,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     if state.before_request != 0 {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
-            // SAFETY: a live stream context; an empty body.
-            unsafe { swr_v1_phphttp2_server_respond(ctx, ptr::null(), 0) };
+            (http2.respond)(crate::http2::Ctx::of(ctx), &[]);
             context::release_objects(ctx);
             return Ok(());
         }
@@ -661,8 +648,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
         Err(bailout) => return Err(bailout),
         Ok(false) => {
             let stream_id = self::state(ctx).stream_id;
-            // SAFETY: the stream's live context.
-            unsafe { swr_v1_phphttp2_server_reset(ctx, stream_id, HTTP2_INTERNAL_ERROR) };
+            (http2.reset)(crate::http2::Ctx::of(ctx), stream_id, HTTP2_INTERNAL_ERROR);
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
         Ok(true) => {}
