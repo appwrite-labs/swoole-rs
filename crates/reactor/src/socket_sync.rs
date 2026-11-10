@@ -19,27 +19,27 @@ pub const SYNC_ONCE: c_int = 2;
 /// `sendfile`: until `length` bytes are sent; a zero return is an error.
 pub const SYNC_SENDFILE: c_int = 3;
 
-/// What a blocking call needs from its native `Socket`.
-#[repr(C)]
-pub struct SyncHooks {
-    pub socket: *mut c_void,
-    pub fd: c_int,
-    pub dont_restart: bool,
-    /// `Socket::kernel_nobufs`, which `catch_error` sets on ENOBUFS.
-    pub kernel_nobufs: *mut bool,
+/// What a blocking call needs from its `Socket` (`crates/tls`'s `upstream.rs`).
+pub trait SyncEffects {
+    /// The socket's descriptor and `dont_restart`, and the signal dispatch a wait runs.
+    fn fd(&self) -> c_int;
+    fn dont_restart(&self) -> bool;
+    fn dispatch(&self) -> Option<unsafe extern "C" fn()>;
     /// `set_nonblock` when blocking and `ssl_clear_error` when TLS.
-    pub prepare: unsafe extern "C" fn(socket: *mut c_void),
+    fn prepare(&self);
     /// `what_event_want(event)` as poll bits.
-    pub events: unsafe extern "C" fn(socket: *mut c_void, event: c_int) -> i16,
-    /// One native I/O call on `length` bytes at `buffer`.
-    pub io: unsafe extern "C" fn(
-        socket: *mut c_void,
-        buffer: *mut c_void,
-        length: usize,
-        flags: c_int,
-    ) -> isize,
-    pub set_last_error: unsafe extern "C" fn(error: c_int),
-    pub dispatch: Option<unsafe extern "C" fn()>,
+    fn events(&self, event: c_int) -> i16;
+    /// One I/O call on `length` bytes at `buffer`.
+    ///
+    /// # Safety
+    /// `buffer` denotes `length` bytes valid for the call's I/O.
+    unsafe fn io(&self, buffer: *mut c_void, length: usize, flags: c_int) -> isize;
+    /// `catch_error(error)` over the socket's `kernel_nobufs`, which it sets on ENOBUFS.
+    fn catch_error(&self, error: c_int) -> c_int;
+    /// `has_kernel_nobufs()`: reads and clears the flag.
+    fn take_nobufs(&self) -> bool;
+    /// `swoole_set_last_error`.
+    fn set_last_error(&self, error: c_int);
 }
 
 enum Step {
@@ -57,10 +57,9 @@ pub(crate) use swoole_rs_corebase::sys::set_errno;
 /// Returns the bytes moved, or -1 with the last error and errno set.
 ///
 /// # Safety
-/// `hooks` is valid for this call: its functions are callable with its socket, and
-/// `kernel_nobufs` is writable. `buffer` denotes `length` bytes valid for `io`.
+/// `buffer` denotes `length` bytes valid for `hooks`' I/O.
 pub unsafe fn swr_v1_socket_sync(
-    hooks: *const SyncHooks,
+    hooks: &impl SyncEffects,
     kind: c_int,
     buffer: *mut c_void,
     length: usize,
@@ -68,11 +67,8 @@ pub unsafe fn swr_v1_socket_sync(
     event: c_int,
     mut timeout_ms: c_int,
 ) -> isize {
-    // SAFETY: the caller lends its hooks for this call.
-    let hooks = unsafe { &*hooks };
     let began = Instant::now();
-    // SAFETY: the caller's socket.
-    unsafe { (hooks.prepare)(hooks.socket) };
+    hooks.prepare();
     let mut bytes: usize = 0;
     loop {
         let (at, rest, call_flags) = match kind {
@@ -84,19 +80,16 @@ pub unsafe fn swr_v1_socket_sync(
             ),
             _ => (buffer.wrapping_byte_add(bytes), length - bytes, flags),
         };
-        // SAFETY: the caller's I/O call on the rest of its buffer.
-        let n = unsafe { (hooks.io)(hooks.socket, at, rest, call_flags) };
+        // SAFETY: the rest of the caller's buffer.
+        let n = unsafe { hooks.io(at, rest, call_flags) };
         let step = match n.cmp(&0) {
             core::cmp::Ordering::Less => {
                 let error = errno();
-                let retry = error == libc::EINTR
-                // SAFETY: the caller's kernel_nobufs flag.
-                || unsafe { crate::catch_error(error, &mut *hooks.kernel_nobufs) } == WAIT;
+                let retry = error == libc::EINTR || hooks.catch_error(error) == WAIT;
                 if retry {
                     Step::Continue
                 } else {
-                    // SAFETY: native swoole_set_last_error.
-                    unsafe { (hooks.set_last_error)(error) };
+                    hooks.set_last_error(error);
                     Step::Error
                 }
             }
@@ -115,21 +108,19 @@ pub unsafe fn swr_v1_socket_sync(
             Step::Error => return -1,
             Step::Ready => return bytes.cast_signed(),
             Step::Continue => {
-                // SAFETY: the caller's kernel_nobufs flag; has_kernel_nobufs reads and clears it.
-                if unsafe { std::mem::replace(&mut *hooks.kernel_nobufs, false) } {
+                if hooks.take_nobufs() {
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
             }
         }
-        // SAFETY: the caller's socket.
-        let events = unsafe { (hooks.events)(hooks.socket, event) };
+        let events = hooks.events(event);
         let waited = crate::fd_wait(
-            hooks.fd,
+            hooks.fd(),
             events,
             timeout_ms,
-            hooks.dont_restart,
-            hooks.dispatch,
+            hooks.dont_restart(),
+            hooks.dispatch(),
         );
         let failed = match waited.status {
             1 => Some((POLL_TIMEOUT, libc::EAGAIN)),
@@ -137,8 +128,7 @@ pub unsafe fn swr_v1_socket_sync(
             _ => None,
         };
         if let Some((last, error)) = failed {
-            // SAFETY: native swoole_set_last_error.
-            unsafe { (hooks.set_last_error)(last) };
+            hooks.set_last_error(last);
             set_errno(error);
             return -1;
         }
@@ -150,8 +140,7 @@ pub unsafe fn swr_v1_socket_sync(
             let elapsed = began.elapsed().as_millis() as c_int;
             timeout_ms -= elapsed;
             if timeout_ms <= 0 {
-                // SAFETY: native swoole_set_last_error.
-                unsafe { (hooks.set_last_error)(libc::ETIMEDOUT) };
+                hooks.set_last_error(libc::ETIMEDOUT);
                 set_errno(libc::ETIMEDOUT);
                 return -1;
             }
@@ -164,48 +153,67 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    /// A socket over `fd` whose I/O is `io` and whose wanted events are `events`.
+    #[derive(Clone, Copy)]
+    struct SyncHooks {
+        fd: c_int,
+        kernel_nobufs: *mut bool,
+        events: fn() -> i16,
+        io: fn(usize, c_int) -> isize,
+    }
+
+    impl SyncEffects for SyncHooks {
+        fn fd(&self) -> c_int {
+            self.fd
+        }
+        fn dont_restart(&self) -> bool {
+            false
+        }
+        fn dispatch(&self) -> Option<unsafe extern "C" fn()> {
+            None
+        }
+        fn prepare(&self) {}
+        fn events(&self, _: c_int) -> i16 {
+            (self.events)()
+        }
+        unsafe fn io(&self, _: *mut c_void, length: usize, flags: c_int) -> isize {
+            (self.io)(length, flags)
+        }
+        fn catch_error(&self, error: c_int) -> c_int {
+            crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
+        }
+        fn take_nobufs(&self) -> bool {
+            unsafe { std::mem::replace(&mut *self.kernel_nobufs, false) }
+        }
+        fn set_last_error(&self, error: c_int) {
+            LAST_ERROR.with(|last| *last.borrow_mut() = error);
+        }
+    }
+
     thread_local! {
         static CALLS: RefCell<Vec<(usize, c_int)>> = const { RefCell::new(Vec::new()) };
         static LAST_ERROR: RefCell<c_int> = const { RefCell::new(0) };
     }
 
-    unsafe extern "C" fn prepare(_: *mut c_void) {}
-    unsafe extern "C" fn events(_: *mut c_void, _: c_int) -> i16 {
+    fn events() -> i16 {
         libc::POLLOUT
     }
-    unsafe extern "C" fn set_last_error(error: c_int) {
-        LAST_ERROR.with(|last| *last.borrow_mut() = error);
-    }
     /// Moves at most 3 bytes per call.
-    unsafe extern "C" fn three(
-        _: *mut c_void,
-        _: *mut c_void,
-        length: usize,
-        flags: c_int,
-    ) -> isize {
+    fn three(length: usize, flags: c_int) -> isize {
         CALLS.with(|calls| calls.borrow_mut().push((length, flags)));
         length.min(3).cast_signed()
     }
-    unsafe extern "C" fn fails(_: *mut c_void, _: *mut c_void, _: usize, _: c_int) -> isize {
+    fn fails(_: usize, _: c_int) -> isize {
         set_errno(libc::ECONNRESET);
         -1
     }
 
-    fn hooks(
-        fd: c_int,
-        nobufs: &mut bool,
-        io: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, c_int) -> isize,
-    ) -> SyncHooks {
+    fn hooks(fd: c_int, nobufs: &mut bool, io: fn(usize, c_int) -> isize) -> SyncHooks {
         SyncHooks {
-            socket: std::ptr::null_mut(),
             fd,
-            dont_restart: false,
             kernel_nobufs: nobufs,
-            prepare,
             events,
             io,
-            set_last_error,
-            dispatch: None,
         }
     }
 
@@ -273,11 +281,11 @@ mod tests {
 
     #[test]
     fn times_out_waiting() {
-        unsafe extern "C" fn again(_: *mut c_void, _: *mut c_void, _: usize, _: c_int) -> isize {
+        fn again(_: usize, _: c_int) -> isize {
             set_errno(libc::EAGAIN);
             -1
         }
-        unsafe extern "C" fn readable(_: *mut c_void, _: c_int) -> i16 {
+        fn readable() -> i16 {
             libc::POLLIN
         }
         let mut fds = [0; 2];
@@ -294,15 +302,7 @@ mod tests {
         let mut buffer = [0_u8; 4];
         // SAFETY: local hooks and buffer.
         let result = unsafe {
-            swr_v1_socket_sync(
-                &raw const hooks,
-                SYNC_ONCE,
-                buffer.as_mut_ptr().cast(),
-                4,
-                0,
-                1,
-                20,
-            )
+            swr_v1_socket_sync(&hooks, SYNC_ONCE, buffer.as_mut_ptr().cast(), 4, 0, 1, 20)
         };
         assert_eq!((result, errno()), (-1, libc::EAGAIN));
         assert_eq!(LAST_ERROR.with(|last| *last.borrow()), POLL_TIMEOUT);

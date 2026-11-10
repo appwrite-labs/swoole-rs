@@ -38,53 +38,18 @@ fn shared_mappings_are_zeroed_resized_protected_and_freed() {
 
 #[test]
 fn a_fixed_pool_hands_out_each_slice_once() {
-    let mut pool = ptr::null_mut();
-    assert_eq!(
-        unsafe { swr_v1_memory_fixed_pool_new(1, 16, false, &raw mut pool) },
-        INVALID
-    );
-    assert_eq!(
-        unsafe { swr_v1_memory_fixed_pool_new(4, 16, false, &raw mut pool) },
-        0
-    );
-    // A `swoole::FixedPool`: its vtable pointer, then `impl`.
-    let object = [ptr::null_mut(), pool.cast::<c_void>()];
-    let this = object.as_ptr().cast();
-    assert_eq!(
-        unsafe { (swr_fixed_pool_total(this), swr_fixed_pool_slice_size(this)) },
-        (4, 16)
-    );
-    let slices: Vec<_> = (0..4)
-        .map(|_| unsafe { swr_v1_memory_fixed_pool_alloc(pool) })
-        .collect();
+    assert_eq!(FixedPool::new(1, 16, false).err(), Some(INVALID));
+    let mut pool = FixedPool::new(4, 16, false).unwrap();
+    assert_eq!((pool.total(), pool.slice_size()), (4, 16));
+    let slices: Vec<_> = (0..4).map(|_| pool.alloc()).collect();
     assert!(slices.iter().all(|slice| !slice.is_null()));
-    assert!(unsafe { swr_v1_memory_fixed_pool_alloc(pool) }.is_null());
+    assert!(pool.alloc().is_null());
     assert_eq!(last_error(), MALLOC_FAIL);
-    assert_eq!(unsafe { swr_fixed_pool_spare(this) }, 0);
+    assert_eq!(pool.spare(), 0);
     for slice in slices {
-        unsafe { swr_v1_memory_fixed_pool_free(pool, slice) };
+        pool.free(slice);
     }
-    assert_eq!(unsafe { swr_fixed_pool_spare(this) }, 4);
-    unsafe { swr_v1_memory_fixed_pool_delete(pool) };
-}
-
-#[test]
-fn a_ring_buffer_reuses_freed_records() {
-    let mut ring = ptr::null_mut();
-    assert_eq!(
-        unsafe { swr_v1_memory_ring_buffer_new(8, false, &raw mut ring) },
-        INVALID
-    );
-    assert_eq!(
-        unsafe { swr_v1_memory_ring_buffer_new(256, true, &raw mut ring) },
-        0
-    );
-    for _ in 0..64 {
-        let record = unsafe { swr_v1_memory_ring_buffer_alloc(ring, 40) };
-        assert!(!record.is_null());
-        unsafe { swr_v1_memory_ring_buffer_free(ring, record) };
-    }
-    unsafe { swr_v1_memory_ring_buffer_delete(ring) };
+    assert_eq!(pool.spare(), 4);
 }
 
 #[test]
@@ -154,27 +119,20 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 }
 
 // Upstream's core-tests/src/memory/{fixed_pool,global_memory}.cpp, one test per
-// TEST, with its inputs and expected values (ringbuffer.cpp is ringbuffer_thread.rs).
-// `this` is a stand-in C++ object: a FixedPool's vtable pointer, then `impl`, or a
-// GlobalMemory's `impl`.
+// TEST, with its inputs and expected values.
+// `this` is a stand-in C++ object: a GlobalMemory's `impl`.
 
 /// `TEST(fixed_pool, alloc)`: 1200 random allocs (3 in 4) and frees (front or back
 /// of the live list) over a 1024 x 256-byte private pool.
 #[test]
 fn fixed_pool_alloc() {
-    let mut pool = ptr::null_mut();
-    assert_eq!(
-        unsafe { swr_v1_memory_fixed_pool_new(1024, 256, false, &raw mut pool) },
-        0
-    );
-    let object = [ptr::null_mut(), pool.cast::<c_void>()];
-    let this = object.as_ptr().cast();
+    let mut pool = FixedPool::new(1024, 256, false).unwrap();
     let mut alloc_list = std::collections::VecDeque::new();
-    assert_eq!(unsafe { swr_fixed_pool_slice_size(this) }, 256);
+    assert_eq!(pool.slice_size(), 256);
     for _ in 0..1200 {
         let j = unsafe { libc::rand() };
         if j % 4 < 3 {
-            let mem = unsafe { swr_v1_memory_fixed_pool_alloc(pool) };
+            let mem = pool.alloc();
             assert!(!mem.is_null());
             alloc_list.push_back(mem);
         } else if !alloc_list.is_empty() {
@@ -183,11 +141,10 @@ fn fixed_pool_alloc() {
             } else {
                 alloc_list.pop_back()
             };
-            unsafe { swr_v1_memory_fixed_pool_free(pool, mem.unwrap()) };
+            pool.free(mem.unwrap());
         }
     }
-    unsafe { swr_fixed_pool_debug(this, 1) };
-    unsafe { swr_v1_memory_fixed_pool_delete(pool) };
+    pool.debug(1);
 }
 
 /// `TEST(fixed_pool, realloc)`.

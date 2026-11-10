@@ -7,10 +7,13 @@
 //! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
 //! `swr_v1_port_config *` heads a `ListenPort` (swoole_rs_port_state.h). Each new server
 //! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
-//! cases call are Rust under their upstream symbols. The fixtures read the request line
+//! cases call are crates/server's `server_methods`. The fixtures read the request line
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
 //! frames, so it records the failure, which the case asserts on once the server stops.
+//!
+//! server.rs holds `core-tests/src/server/buffer.cpp`'s TEST, and server_config.rs
+//! `server/server.cpp`'s connection and configuration TESTs, over the same records.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::mem::offset_of;
@@ -26,6 +29,8 @@ use crate::client::{Client, USER_AGENT};
 
 pub(super) mod case;
 pub(super) mod server;
+pub(super) mod server_config;
+pub(super) mod server_ssl;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;

@@ -15,13 +15,8 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
-    bailout, php_error,
-    sys::{
-        E_WARNING, HashTable, IS_LONG, swr_zend_convert_to_array, swr_zend_is_numeric_string,
-        swr_zend_is_true, zend_hash_str_find, zval,
-    },
-    type_of,
-    value::long_of,
+    Array, Value, bailout, php_error,
+    sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array, swr_zend_is_numeric_string, zval},
 };
 
 const SUCCESS: c_int = 0;
@@ -161,17 +156,6 @@ fn apply<T>(s: Sock, level: c_int, name: c_int, value: &T) -> Result<c_int, Stop
     Ok(SUCCESS)
 }
 
-fn find(table: *mut HashTable, key: &CStr) -> Option<*mut zval> {
-    // SAFETY: a live table and a NUL-terminated key.
-    let found = unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) };
-    (!found.is_null()).then_some(found)
-}
-
-fn truth(value: *mut zval) -> bool {
-    // SAFETY: a live argument.
-    unsafe { swr_zend_is_true(value) }
-}
-
 /// `php_string_to_if_index`.
 fn index_by_name(name: &[u8]) -> Result<Option<c_uint>, Stop> {
     let name = text(name);
@@ -191,11 +175,8 @@ fn index_by_name(name: &[u8]) -> Result<Option<c_uint>, Stop> {
 }
 
 /// `php_get_if_index_from_zval`.
-fn interface(value: *mut zval) -> Result<Option<c_uint>, Stop> {
-    // SAFETY: a live value.
-    if unsafe { type_of(value) } == IS_LONG {
-        // SAFETY: a long.
-        let index = unsafe { long_of(value) };
+fn interface(value: &Value) -> Result<Option<c_uint>, Stop> {
+    if let Some(index) = value.as_long() {
         if let Ok(index) = c_uint::try_from(index) {
             return Ok(Some(index));
         }
@@ -337,12 +318,8 @@ fn family(domain: c_int) -> libc::sa_family_t {
 }
 
 /// `php_get_address_from_array`.
-fn address(
-    s: Sock,
-    table: *mut HashTable,
-    key: &CStr,
-) -> Result<Option<libc::sockaddr_storage>, Stop> {
-    let Some(value) = find(table, key) else {
+fn address(s: Sock, table: &Array, key: &CStr) -> Result<Option<libc::sockaddr_storage>, Stop> {
+    let Some(value) = table.find(key.to_bytes()) else {
         warn(&[b"no key \"", key.to_bytes(), b"\" passed in optval"].concat())?;
         return Ok(None);
     };
@@ -355,10 +332,15 @@ fn membership(
     level: c_int,
     name: c_int,
     source: bool,
-    value: *mut zval,
+    value: &Value,
 ) -> Result<c_int, Stop> {
-    // SAFETY: the live argument, converted in place as upstream does.
-    let table = unsafe { swr_zend_convert_to_array(value) };
+    // SAFETY: the live argument, converted in place as upstream does; nothing
+    // borrows what it held before.
+    let table = unsafe { swr_zend_convert_to_array(value.as_ptr()) };
+    // SAFETY: the argument's array now, live for the call.
+    let Some(table) = (unsafe { Array::from_ptr(table) }) else {
+        return Ok(FAILURE);
+    };
     let Some(group) = address(s, table, c"group")? else {
         return Ok(FAILURE);
     };
@@ -371,7 +353,7 @@ fn membership(
         None
     };
     let mut index = 0;
-    if let Some(value) = find(table, c"interface") {
+    if let Some(value) = table.find(b"interface") {
         let Some(found) = interface(value)? else {
             return Ok(FAILURE);
         };
@@ -571,12 +553,7 @@ pub(crate) fn interface_index(address: in_addr) -> Result<Option<c_uint>, Stop> 
 }
 
 /// `php_do_setsockopt_ip_mcast`.
-pub(crate) fn set_ip(
-    socket: Co,
-    level: c_int,
-    name: c_int,
-    value: *mut zval,
-) -> Result<c_int, Stop> {
+pub(crate) fn set_ip(socket: Co, level: c_int, name: c_int, value: &Value) -> Result<c_int, Stop> {
     let s = Sock::of(socket);
     if let Some(&(_, source)) = MEMBERSHIP.iter().find(|(option, _)| *option == name) {
         return membership(s, level, name, source, value);
@@ -591,7 +568,7 @@ pub(crate) fn set_ip(
             };
             apply(s, level, name, &address)
         }
-        libc::IP_MULTICAST_LOOP => apply(s, level, name, &u8::from(truth(value))),
+        libc::IP_MULTICAST_LOOP => apply(s, level, name, &u8::from(value.truthy())),
         libc::IP_MULTICAST_TTL => {
             let Ok(ttl) = u8::try_from(long(value)?) else {
                 warn(b"Expected a value between 0 and 255")?;
@@ -609,7 +586,7 @@ pub(crate) fn set_ipv6(
     socket: Co,
     level: c_int,
     name: c_int,
-    value: *mut zval,
+    value: &Value,
 ) -> Result<c_int, Stop> {
     let s = Sock::of(socket);
     if let Some(&(_, source)) = MEMBERSHIP.iter().find(|(option, _)| *option == name) {
@@ -622,7 +599,7 @@ pub(crate) fn set_ipv6(
             };
             apply(s, level, name, &index)
         }
-        libc::IPV6_MULTICAST_LOOP => apply(s, level, name, &c_int::from(truth(value))),
+        libc::IPV6_MULTICAST_LOOP => apply(s, level, name, &c_int::from(value.truthy())),
         libc::IPV6_MULTICAST_HOPS => {
             let hops = long(value)?;
             if !(-1..=255).contains(&hops) {
@@ -640,7 +617,7 @@ pub(crate) fn set_ipv6(
 
 /// `IPV6_PKTINFO` (RFC 3542), which Apple's headers leave out by default.
 #[cfg(not(target_vendor = "apple"))]
-fn set_pktinfo(s: Sock, level: c_int, name: c_int, value: *mut zval) -> Result<c_int, Stop> {
+fn set_pktinfo(s: Sock, level: c_int, name: c_int, value: &Value) -> Result<c_int, Stop> {
     if name != libc::IPV6_PKTINFO {
         return Ok(UNHANDLED);
     }
@@ -667,15 +644,12 @@ fn conversion_error(path: &str, message: &[u8]) -> Result<Option<libc::in6_pktin
 
 /// `from_zval_write_in6_pktinfo`: `["addr" => string, "ifindex" => int|string]`.
 #[cfg(not(target_vendor = "apple"))]
-fn pktinfo(s: Sock, value: *mut zval) -> Result<Option<libc::in6_pktinfo>, Stop> {
-    // SAFETY: a live argument.
-    if unsafe { type_of(value) } != swoole_rs_zend::sys::IS_ARRAY {
+fn pktinfo(s: Sock, value: &Value) -> Result<Option<libc::in6_pktinfo>, Stop> {
+    let Some(table) = value.array() else {
         return conversion_error("in6_pktinfo", b"expected an array here");
-    }
-    // SAFETY: an array.
-    let table = unsafe { swoole_rs_zend::value::table(value) };
+    };
     let mut info: libc::in6_pktinfo = zeroed();
-    let Some(addr) = find(table, c"addr") else {
+    let Some(addr) = table.find(b"addr") else {
         return conversion_error("in6_pktinfo", b"The key 'addr' is required");
     };
     let host = string(addr)?;
@@ -690,13 +664,10 @@ fn pktinfo(s: Sock, value: *mut zval) -> Result<Option<libc::in6_pktinfo>, Stop>
         return conversion_error("in6_pktinfo > addr", &message);
     };
     info.ipi6_addr = resolved.sin6_addr;
-    let Some(ifindex) = find(table, c"ifindex") else {
+    let Some(ifindex) = table.find(b"ifindex") else {
         return conversion_error("in6_pktinfo", b"The key 'ifindex' is required");
     };
-    // SAFETY: a live value.
-    if unsafe { type_of(ifindex) } == IS_LONG {
-        // SAFETY: a long.
-        let index = unsafe { long_of(ifindex) };
+    if let Some(index) = ifindex.as_long() {
         let Ok(index) = c_uint::try_from(index) else {
             let max = c_uint::MAX;
             let message = format!(

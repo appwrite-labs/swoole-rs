@@ -137,6 +137,43 @@ in the same binary and phase, over the same records. Upstream's client thread wa
 mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
 a blocking `TcpStream`.
 
+`core-tests/src/server/server.cpp`'s TLS TESTs that start a server are
+`server/src/http1/server_ssl.rs`, in the same binary and phase, one function per TEST
+under its own name: `ssl`, `ssl_error`, `ssl_write`, `dtls`, `dtls2`, `ssl_client_cert_1`
+(base mode), `ssl_client_cert_2` (process) and `ssl_client_cert_3` (thread), with upstream's
+modes, certificates, packets and expected values. `server.ssl_matches_wildcard_name`
+starts no server and is a crates/ports unit test (tests/modules/ports/README.md).
+
+- `SyncClient` is crates/clients' `network::Client` through its `swr_v1_clients_*` exports,
+  with `SyncClient`'s `connected`/`created` bookkeeping; `get_client()->set_ssl_cert_file`
+  writes the client's `SSLContext` slot as the setter does.
+- The `Mutex(true)` the client thread waits on and `onWorkerStart` unlocks is a socket
+  pair, and `test::counter_*`'s counter is `sw_shm_malloc` memory, as upstream's is: in
+  process mode the worker is another process. `EXPECT`s are recorded in that memory too,
+  so unlike the cases above a process-mode worker's failure fails the case.
+- An `ASSERT` in the client thread fails the case and signals the master down, where
+  upstream's returned from the thread and left the server running.
+- `ssl_write`'s 4 MiB of random bytes (`append_random_bytes`) are read from `/dev/urandom`.
+- `ssl_client_cert`'s `test::dump_cert_info` prints the certificate's subject and issuer
+  entries and the subject's one-line form; its validity and public-key lines, which the
+  `organizationName: swoole` search can't match, are left out.
+- `dtls2` reaps its forked client, which must exit 0.
+- `ssl_client_cert_3` is excluded: `MODE_THREAD` needs thread support (`SW_THREAD`, a ZTS
+  build), and this binary is NTS, so `create()` fails with "Thread support is not enabled"
+  (#2633).
+
+`core-tests/src/server/server.cpp`'s connection and configuration TESTs (#2536) are
+`server/src/http1/server_config.rs`, in the same binary, phase and records, under the
+`server` suite with upstream's names. `server.protocols` needs only its port, so it is
+crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md).
+
+| Upstream TEST | Rust case | Notes |
+| --- | --- | --- |
+| `max_connection`, `min_connection`, `worker_num` | same names | `SwooleG.max_sockets` is read and set through the `SwooleG` symbol, whose first member it is |
+| `reactor_num_base`, `reactor_num_large`, `reactor_num_large2`, `reactor_num_zero` | same names | `SW_CPU_NUM` is `swr_v1_core_cpu_num()`, which `swoole_init` sets |
+| `startup_error` | same name | its `new` Server leaks, as upstream's |
+| `protocols` | crates/ports `methods::tests::server_protocols` | |
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.

@@ -30,8 +30,8 @@ pub struct Context {
 }
 
 /// A `swoole::Coroutine`: its scheduler state, then its context. The
-/// extension allocates and frees it (facade.rs); `Coroutine::native` points
-/// back at it.
+/// extension allocates (facade.rs) and frees (scheduler.rs) it;
+/// `Coroutine::native` points back at it.
 #[repr(C)]
 pub struct Native {
     pub co: Coroutine,

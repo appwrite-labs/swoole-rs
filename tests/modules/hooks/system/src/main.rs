@@ -3,7 +3,8 @@
 //! network/address.cpp in address.rs, network/socket.cpp in network_socket.rs,
 //! coroutine/gethostbyname.cpp in gethostbyname.rs, coroutine/accept.cpp in hook.rs, os/timer.cpp
 //! in timer.rs, coroutine/async.cpp in co_async.rs, os/pipe.cpp in pipe.rs,
-//! os/process_pool.cpp in process_pool.rs and protocol/ssl.cpp in ssl.rs), one
+//! os/process_pool.cpp in process_pool.rs, os/wait.cpp, os/async.cpp and os/os.cpp's
+//! os.daemon in os.rs, os/signal.cpp in signal.rs and protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -25,6 +26,8 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
+use swoole_rs_hooks::file_io::read_file;
+use swoole_rs_hooks::poll::PollFd;
 
 mod address;
 // Upstream's core-tests/src/network/client.cpp: a clients test, built here to share this
@@ -40,8 +43,10 @@ mod base;
 mod co_async;
 mod hook;
 mod network_socket;
+mod os;
 mod pipe;
 mod process_pool;
+mod signal;
 mod socket;
 mod ssl;
 mod timer;
@@ -95,14 +100,6 @@ const GREETING: &[u8] = b"hello world, hello swoole";
 
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
 type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct PollFd {
-    fd: i32,
-    events: i32,
-    revents: i32,
-}
 
 /// `swoole::String`.
 #[repr(C)]
@@ -167,8 +164,6 @@ unsafe extern "C-unwind" {
         buffer: *const SharedPtr,
         status: *mut c_int,
     ) -> bool;
-    fn swr_v1_system_read_file(file: *const c_char, lock: bool, put: Put, out: *mut c_void)
-    -> bool;
     fn swr_v1_system_getaddrinfo(
         host: *const c_char,
         family: c_long,
@@ -179,8 +174,6 @@ unsafe extern "C-unwind" {
         put: Put,
         out: *mut c_void,
     ) -> bool;
-    fn swr_v1_system_wait_signal(signals: *const c_long, count: usize, timeout: f64) -> c_int;
-    fn swr_v1_hook_socket_poll(fds: *mut PollFd, count: usize, timeout: f64) -> bool;
 }
 
 unsafe extern "C" {
@@ -259,9 +252,7 @@ fn wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int {
 }
 
 fn wait_signal(signal: c_int, timeout: f64) -> c_int {
-    let signals = [c_long::from(signal)];
-    // SAFETY: one signal.
-    unsafe { swr_v1_system_wait_signal(signals.as_ptr(), 1, timeout) }
+    swoole_rs_hooks::wait_signal::system_wait_signal(&[c_long::from(signal)], timeout)
 }
 
 fn waitpid(pid: c_int, status: &mut c_int, options: c_int, timeout: f64) -> c_int {
@@ -279,15 +270,6 @@ unsafe extern "C" fn put_bytes(out: *mut c_void, data: *const c_char, length: us
     unsafe {
         (*out.cast::<Vec<Vec<u8>>>()).push(std::slice::from_raw_parts(data.cast(), length).to_vec())
     };
-}
-
-/// `System::read_file`: the content, or None.
-fn read_file(file: &CStr, lock: bool) -> Option<Vec<u8>> {
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    // SAFETY: `put_bytes` appends to `out`.
-    let read =
-        unsafe { swr_v1_system_read_file(file.as_ptr(), lock, put_bytes, (&raw mut out).cast()) };
-    read.then(|| out.pop().unwrap_or_default())
 }
 
 /// `System::getaddrinfo`.
@@ -320,8 +302,7 @@ fn getaddrinfo(
 
 /// `System::socket_poll` over core-tests' one-entry map.
 fn socket_poll(fds: &mut [PollFd], timeout: f64) -> bool {
-    // SAFETY: `fds` is writable, with distinct fds.
-    unsafe { swr_v1_hook_socket_poll(fds.as_mut_ptr(), fds.len(), timeout) }
+    swoole_rs_hooks::poll::socket_poll(fds, timeout, &swoole_rs_hooks::poll::NATIVE)
 }
 
 /// core-tests' `UnixSocket`: socketpair(2); the master (socks[1]) writes, the worker
@@ -918,6 +899,10 @@ const SUITES: &[(&str, Cases)] = &[
     ("pipe", pipe::CASES),
     ("process_pool", process_pool::CASES),
     ("coroutine_async", co_async::CASES),
+    ("os_wait", os::WAIT_CASES),
+    ("async", os::ASYNC_CASES),
+    ("os", os::OS_CASES),
+    ("os_signal", signal::CASES),
 ];
 
 fn main() {
