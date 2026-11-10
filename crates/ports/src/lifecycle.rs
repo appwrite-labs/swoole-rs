@@ -471,4 +471,82 @@ mod tests {
             "flags"
         );
     }
+
+    /// `TEST(server, ssl_matches_wildcard_name)`: upstream's 44 live `EXPECT`s, in its
+    /// order (its commented-out ones stay out), each as `(subject, cert, expected)`.
+    #[test]
+    fn server_ssl_matches_wildcard_name() {
+        let cases = [
+            // Test exact match
+            ("example.com", "example.com", true),
+            ("test.example.com", "test.example.com", true),
+            ("EXAMPLE.COM", "example.com", true),
+            ("example.com", "EXAMPLE.COM", true),
+            // Test no match
+            ("example.com", "example.org", false),
+            ("test.example.com", "test.example.org", false),
+            ("sub.example.com", "example.com", false),
+            ("example.com", "sub.example.com", false),
+            // Test wildcard in leftmost component
+            ("test.example.com", "*.example.com", true),
+            ("sub.example.com", "*.example.com", true),
+            ("TEST.example.com", "*.example.com", true),
+            ("test.example.com", "*.EXAMPLE.COM", true),
+            // Test wildcard with prefix
+            ("subtest.example.com", "sub*.example.com", true),
+            ("subthing.example.com", "sub*.example.com", true),
+            ("wrongtest.example.com", "sub*.example.com", false),
+            ("test.example.com", "sub*.example.com", false),
+            // Test wildcard in non-leftmost component (should fail)
+            ("test.example.com", "test.*.com", false),
+            ("test.sub.example.com", "test.*.example.com", false),
+            ("example.com", "example.*", false),
+            // Test wildcard with dot in prefix (should fail)
+            ("test.example.com", "test.*.com", false),
+            ("sub.test.example.com", "sub.*.example.com", false),
+            // Test multiple wildcards (only first one should be considered)
+            ("test.sub.example.com", "*.*example.com", false),
+            ("test.example.com", "*.*", false),
+            // Test wildcard matching with dots between prefix and suffix
+            ("test.sub.example.com", "*.example.com", false),
+            ("a.b.c.example.com", "*.example.com", false),
+            ("testexample.com", "*example.com", true),
+            // Test suffix length conditions
+            ("test.com", "*.example.com", false),
+            ("short", "*.verylongdomain.com", false),
+            ("example.com", "*.example.com", false),
+            // Test empty strings and edge cases
+            ("example.com", "", false),
+            ("", "example.com", false),
+            ("*", "*", true),
+            ("test", "*est", true),
+            // Test wildcard at beginning with no prefix
+            ("test.example.com", "*.example.com", true),
+            ("example.com", "*example.com", true),
+            // Test wildcard at end with no suffix
+            ("example.com", "example*", false),
+            ("example.com", "example.*", false),
+            // Test practical examples from real-world scenarios
+            ("www.example.com", "*.example.com", true),
+            ("api.example.com", "*.example.com", true),
+            ("login.example.com", "*.example.com", true),
+            ("sub.api.example.com", "*.example.com", false),
+            ("sub.api.example.com", "*.api.example.com", true),
+            ("dev-server.example.com", "dev-*.example.com", true),
+            ("staging-server.example.com", "*-server.example.com", true),
+        ];
+        let failed: Vec<_> = cases
+            .iter()
+            .filter(|&&(subject, cert, expected)| {
+                let (subject, cert) = (
+                    std::ffi::CString::new(subject).unwrap(),
+                    std::ffi::CString::new(cert).unwrap(),
+                );
+                // SAFETY: two NUL-terminated strings, live for the call.
+                let matched = unsafe { ssl_matches_wildcard_name(subject.as_ptr(), cert.as_ptr()) };
+                matched != expected
+            })
+            .collect();
+        assert!(failed.is_empty(), "{failed:?}");
+    }
 }
