@@ -130,6 +130,10 @@ reactor or timer callback), bails out. So every error Rust raises goes through
 - `Call`'s ZPP slow paths (null-to-scalar and float-to-int deprecations) and
   `zend::value::get_long`/`get_double`/`get_string` (`zval_get_*`: an object or
   array warns, `__toString` runs PHP).
+- `Props` writes (`zend_update_property`: a subclass's `__set` or property
+  hook runs PHP), skipped once a bailout is pending; and the release of an
+  object, array or reference (`Owned`'s drop, `Call::assign`, `ArrayMut::update`:
+  `__destruct`, or the cycle collector a possible root starts).
 
 Each returns (or, for the converters, defers) a `Bailout`. The one exception
 is an `E_ERROR` its caller relies on not returning (crates/phpserver's

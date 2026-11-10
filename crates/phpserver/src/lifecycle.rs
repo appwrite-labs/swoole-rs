@@ -19,16 +19,14 @@ use swoole_rs_server::{
     swr_v1_server_command, view,
 };
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Message, Object, Value, ZString, bailout, class_name,
+    Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout, class_name,
     init_object, message, object_of, php_error,
     sys::{
         IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
         swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array, swr_zend_property_slot,
         swr_zend_separate_array, swr_zend_try_json_encode, swr_zval_copy, swr_zval_stringl,
         zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find, zend_object,
-        zend_object_std_dtor, zend_update_property, zend_update_property_bool,
-        zend_update_property_double, zend_update_property_long, zend_update_property_string,
-        zend_update_property_stringl, zval, zval_ptr_dtor,
+        zend_object_std_dtor, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of,
     value::table,
@@ -564,92 +562,49 @@ impl<'a> Props<'a> {
         self.1
     }
 
-    pub(crate) fn long(self, name: &CStr, value: i64) {
+    /// The same handle as crates/zend's, whose writes defer a bailout.
+    fn zend(self) -> swoole_rs_zend::Props<'a> {
         // SAFETY: the handle's live object and class.
-        unsafe {
-            zend_update_property_long(self.0, self.1, name.as_ptr(), name.count_bytes(), value);
-        }
+        unsafe { swoole_rs_zend::Props::new(self.0, self.1) }
+    }
+
+    pub(crate) fn long(self, name: &CStr, value: i64) {
+        self.zend().long(name, value);
     }
 
     pub(crate) fn double(self, name: &CStr, value: f64) {
-        // SAFETY: as above.
-        unsafe {
-            zend_update_property_double(self.0, self.1, name.as_ptr(), name.count_bytes(), value);
-        }
+        self.zend().value(name, &Owned::double(value));
     }
 
     pub(crate) fn string(self, name: &CStr, value: &CStr) {
-        // SAFETY: as above.
-        unsafe {
-            zend_update_property_string(
-                self.0,
-                self.1,
-                name.as_ptr(),
-                name.count_bytes(),
-                value.as_ptr(),
-            );
-        }
+        self.zend().bytes(name, value.to_bytes());
     }
 
     pub(crate) fn bytes(self, name: &CStr, value: &[u8]) {
-        // SAFETY: as above.
-        unsafe {
-            zend_update_property_stringl(
-                self.0,
-                self.1,
-                name.as_ptr(),
-                name.count_bytes(),
-                value.as_ptr().cast(),
-                value.len(),
-            );
-        }
+        self.zend().bytes(name, value);
     }
 
     pub(crate) fn bool(self, name: &CStr, value: bool) {
-        // SAFETY: as above.
-        unsafe {
-            zend_update_property_bool(
-                self.0,
-                self.1,
-                name.as_ptr(),
-                name.count_bytes(),
-                value.into(),
-            );
-        }
+        self.zend().bool(name, value);
     }
 
     /// The property takes a copy of a live value.
     pub(crate) fn set(self, name: &CStr, value: &Value) {
-        // SAFETY: as above.
-        unsafe {
-            zend_update_property(
-                self.0,
-                self.1,
-                name.as_ptr(),
-                name.count_bytes(),
-                value.as_ptr(),
-            );
-        }
+        self.zend().value(name, value);
     }
 
     pub(crate) fn value(self, name: &CStr, value: &mut zval) {
-        // SAFETY: as above, and a live value.
-        unsafe { zend_update_property(self.0, self.1, name.as_ptr(), name.count_bytes(), value) };
+        // SAFETY: a live value, borrowed for the write.
+        if let Some(value) = unsafe { Value::from_ptr(value) } {
+            self.set(name, value);
+        }
     }
 
     /// `host`, `port`, `type`, `sock` (with `fd`) and `ssl` from `info`.
     fn port_info(self, info: &PortInfo, fd: Option<i64>) {
-        // SAFETY: as above; the view's bytes live with its port.
-        unsafe {
-            zend_update_property_stringl(
-                self.0,
-                self.1,
-                c"host".as_ptr(),
-                4,
-                info.host.data,
-                info.host.length,
-            );
-        }
+        // SAFETY: the view's bytes live with its port.
+        let host = unsafe { std::slice::from_raw_parts(info.host.data.cast(), info.host.length) };
+        self.bytes(c"host", host);
         self.long(c"port", info.port);
         self.long(c"type", info.kind);
         if let Some(fd) = fd {
@@ -874,7 +829,7 @@ fn add_process(call: &Call) {
             // SAFETY: a live process object.
             let process = unsafe { object_of(copy) };
             // SAFETY: `Swoole\Process` and its object.
-            unsafe { zend_update_property_long(process_ce, process, c"id".as_ptr(), 2, id) };
+            unsafe { swoole_rs_zend::Props::new(process_ce, process) }.long(c"id", id);
             call.set_long(id);
         }
     }

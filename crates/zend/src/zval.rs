@@ -8,15 +8,16 @@ use crate::{
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
-        IS_DOUBLE, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR, IS_REFERENCE, IS_STRING, IS_UNDEF,
-        add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
-        add_next_index_long, add_next_index_null, add_next_index_stringl,
-        swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
-        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_separate_array,
-        swr_zend_string_copy, swr_zend_string_release, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zval_is_true, swr_zval_str,
+        IS_ARRAY_EX, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_OBJECT_EX, IS_PTR,
+        IS_REFERENCE, IS_REFERENCE_EX, IS_STRING, IS_TRUE, IS_UNDEF, add_assoc_bool_ex,
+        add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex, add_next_index_long,
+        add_next_index_null, add_next_index_stringl, swr_zend_array_add_or_merge,
+        swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
+        swr_zend_separate_array, swr_zend_string_copy, swr_zend_string_release,
+        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
+        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zval_is_true, swr_zval_str,
         swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find, zend_hash_update,
+        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
         zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
         zend_value, zval, zval_ptr_dtor,
     },
@@ -557,6 +558,15 @@ impl Owned {
         Self(Value(UnsafeCell::new(zval)))
     }
 
+    /// `ZVAL_BOOL`.
+    #[must_use]
+    #[inline]
+    pub fn bool(value: bool) -> Self {
+        let mut zval = UNDEF;
+        zval.u1.type_info = if value { IS_TRUE } else { IS_FALSE };
+        Self(Value(UnsafeCell::new(zval)))
+    }
+
     /// `ZVAL_NULL`.
     #[must_use]
     #[inline]
@@ -756,13 +766,15 @@ impl ArrayMut {
     }
 
     /// `zend_hash_update`: the array takes over `value` under `key`, releasing
-    /// what was there, and references the key itself.
+    /// what was there (as [`release`] does), and references the key itself.
     #[inline]
     pub fn update(&mut self, key: &ZStr, value: Owned) {
         let Some(array) = self.0.array() else { return };
         let mut value = value.into_zval();
         // SAFETY: as `add_new`.
-        unsafe { zend_hash_update(array.as_ptr(), key.as_ptr(), &raw mut value) };
+        bailout::defer(bailout::trapped(unsafe {
+            swr_zend_try_hash_update(array.as_ptr(), key.as_ptr(), &raw mut value)
+        }));
     }
 
     /// `swr_zend_array_add_or_merge`: `value` under `key`, or appended to what
@@ -841,6 +853,27 @@ impl Drop for Owned {
     #[inline]
     fn drop(&mut self) {
         // SAFETY: the zval this owns, destroyed once.
-        unsafe { zval_ptr_dtor(self.as_ptr()) };
+        unsafe { release(self.as_ptr()) };
+    }
+}
+
+/// `zval_ptr_dtor`. A counted object, or an array or reference that may hold one,
+/// can run PHP code there (`__destruct` on the last reference, or the cycle
+/// collector a possible root starts), so it is released inside `zend_try` and a
+/// bailout is deferred; anything else (an immutable array too) runs none.
+/// # Safety
+/// `value` is a live zval the caller gives up.
+#[inline]
+pub(crate) unsafe fn release(value: *mut zval) {
+    // SAFETY: a live zval.
+    let zv = unsafe { *value };
+    // SAFETY: every zval sets `u1.type_info`.
+    let info = unsafe { zv.u1.type_info };
+    if matches!(info, IS_OBJECT_EX | IS_ARRAY_EX | IS_REFERENCE_EX) {
+        // SAFETY: as the caller promises.
+        bailout::defer(bailout::trapped(unsafe { swr_zend_try_ptr_dtor(value) }));
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { zval_ptr_dtor(value) };
     }
 }

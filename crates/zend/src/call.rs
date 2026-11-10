@@ -10,9 +10,8 @@ use crate::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_TRUE,
         ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
         swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
-        zend_execute_data, zend_expected_type, zend_object, zend_string, zend_update_property_long,
-        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
-        zval_ptr_dtor,
+        zend_execute_data, zend_expected_type, zend_object, zend_string, zend_value,
+        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -310,7 +309,7 @@ impl Call {
     pub fn assign(&self, n: u32, value: crate::Owned) {
         let slot = self.zval_deref(n);
         // SAFETY: a passed argument's live value, released here.
-        unsafe { zval_ptr_dtor(slot) };
+        unsafe { crate::zval::release(slot) };
         // SAFETY: as above; the slot takes over the value.
         unsafe { slot.write(value.into_zval()) };
     }
@@ -430,11 +429,8 @@ impl Call {
     /// `scope` is the class whose view of the property to update (NULL if none).
     pub fn update_property_long(&self, scope: Option<&Class>, name: &CStr, value: i64) {
         let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        // SAFETY: a method's live `$this`; a registered class or null; Zend
-        // copies the name.
-        unsafe {
-            zend_update_property_long(scope, self.this(), name.as_ptr(), name.count_bytes(), value);
-        }
+        // SAFETY: a method's live `$this`; a registered class or null.
+        unsafe { crate::Props::new(scope, self.this()) }.long(name, value);
     }
 
     /// `RETVAL_BOOL`.
