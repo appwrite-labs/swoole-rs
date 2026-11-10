@@ -63,15 +63,15 @@ def main():
     # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
     build = {**compilers, **rust, 'CARGO_BUILD_TARGET': host, 'CARGO_UNSTABLE_BUILD_STD': 'std,panic_abort'}
     config = ['--php-config', str(php / 'bin/php-config'), '--configure=--enable-swoole-thread']
-    upstream = ROOT / 'target/upstream/src'
-    if (upstream / 'Makefile').exists():
-        # Configure leaves objects alone when only the compiler flags change.
-        subprocess.run(['make', 'clean'], cwd=upstream, stdout=subprocess.DEVNULL, check=True)
-    subprocess.run([sys.executable, 'tools/build_upstream.py', *config, '--phpize', str(php / 'bin/phpize')],
-                   cwd=ROOT, env=build, check=True)
+    # A configured build gets its own tree, rebuilt when the compiler flags change; it prints its library.
+    built = subprocess.run([sys.executable, 'tools/build_upstream.py', *config, '--phpize', str(php / 'bin/phpize')],
+                           cwd=ROOT, env=build, check=True, stdout=subprocess.PIPE, text=True).stdout
+    print(built, end='')
+    upstream = Path(next(line.split(': ', 1)[1] for line in built.splitlines()
+                         if line.startswith(('Built upstream: ', 'Cached upstream: '))))
     subprocess.run([sys.executable, 'tools/build_ext.py', *config], cwd=ROOT, env=build, check=True)
     engines = {'upstream': OUT / 'upstream.so', 'cargo': OUT / 'cargo.so'}
-    shutil.copy2(upstream / 'modules/swoole.so', engines['upstream'])
+    shutil.copy2(upstream, engines['upstream'])
     shutil.copy2(ROOT / 'target/ext/swoole.so', engines['cargo'])
     reports = OUT / 'reports'
     shutil.rmtree(reports, ignore_errors=True)

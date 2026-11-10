@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   tsan:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/tsan/php
-          key: php-tsan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/tsan.py') }}
+          key: php-tsan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/tsan.py') }}-${{ github.workspace }}
       # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
       - uses: actions/cache/restore@v4
         with:
