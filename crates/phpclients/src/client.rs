@@ -497,9 +497,11 @@ fn recvfrom(call: &Call) {
         return call.set_bool(false);
     }
     let (peer, peer_port) = socket.address();
-    call.assign(2, Owned::string(ZString::new(peer.to_bytes())));
+    // SAFETY: nothing borrows arguments 2 and 3.
+    unsafe { call.assign(2, Owned::string(ZString::new(peer.to_bytes()))) };
     if call.num_args() >= 3 {
-        call.assign(3, Owned::long(i64::from(peer_port)));
+        // SAFETY: as above.
+        unsafe { call.assign(3, Owned::long(i64::from(peer_port))) };
     }
     call.set_zstring(buffer.into_zstring());
 }

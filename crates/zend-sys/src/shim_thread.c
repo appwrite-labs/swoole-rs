@@ -24,12 +24,28 @@ void swr_zend_hash_foreach_kv(const HashTable *table,
     ZEND_HASH_FOREACH_END();
 }
 
+/* ZEND_HASH_FOREACH's walk, one element per call: the next defined slot at or
+ * after *position, which then points past it. */
 zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index) {
-    zval *value = zend_hash_get_current_data_ex((HashTable *) table, position);
-    if (!value) return NULL;
-    if (zend_hash_get_current_key_ex((HashTable *) table, key, index, position) != HASH_KEY_IS_STRING) *key = NULL;
-    zend_hash_move_forward_ex((HashTable *) table, position);
-    return value;
+    for (uint32_t at = *position; at < table->nNumUsed; at++) {
+        zval *value;
+        if (HT_IS_PACKED(table)) {
+            value = table->arPacked + at;
+            *key = NULL;
+            *index = at;
+        } else {
+            Bucket *bucket = table->arData + at;
+            value = &bucket->val;
+            *key = bucket->key;
+            *index = bucket->h;
+        }
+        if (Z_TYPE_P(value) != IS_UNDEF) {
+            *position = at + 1;
+            return value;
+        }
+    }
+    *position = table->nNumUsed;
+    return NULL;
 }
 
 bool swr_zend_handle_numeric_str(const char *key, size_t length, zend_ulong *index) {

@@ -3,9 +3,8 @@
 use crate::{
     Call, Class,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_UNDEF, add_assoc_bool_ex, swr_zend_class_set_create_object,
-        zend_class_entry, zend_function_entry, zend_internal_arg_info, zend_object,
-        zend_object_handlers, zval,
+        _zval_struct__bindgen_ty_1, IS_UNDEF, swr_zend_class_set_create_object, zend_class_entry,
+        zend_function_entry, zend_internal_arg_info, zend_object, zend_object_handlers, zval,
     },
 };
 use std::{ffi::CStr, mem::offset_of, ptr};
@@ -74,10 +73,14 @@ impl Class {
 }
 
 impl Call {
-    /// `add_assoc_bool_ex(return_value, key, value)`, after `set_array`.
+    /// `add_assoc_bool_ex(return_value, key, value)`, after `set_array`
+    /// (nothing unless the return slot holds an array).
     pub fn add_assoc_bool(&self, key: &CStr, value: bool) {
-        // SAFETY: the return slot holds an array; Zend copies the key.
-        unsafe { add_assoc_bool_ex(self.return_value(), key.as_ptr(), key.count_bytes(), value) };
+        // SAFETY: as in `add_assoc_long`.
+        let slot = unsafe { &mut *self.return_value().cast::<crate::Owned>() };
+        if let Some(array) = slot.array_mut() {
+            array.insert_bool(key.to_bytes(), value);
+        }
     }
 }
 
