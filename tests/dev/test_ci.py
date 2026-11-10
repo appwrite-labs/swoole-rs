@@ -21,7 +21,7 @@ with open(os.environ['FAKE_GH_LOG'], 'a') as log:
 def save():
     state.write_text(json.dumps(data))
 call = ' '.join(args)
-if call == 'api rate_limit --jq .resources.core.reset':
+if call.startswith('api rate_limit --jq .resources.'):
     import time
     print(int(time.time()) + data.get('reset_in', 3600))
     sys.exit(0)
@@ -325,9 +325,11 @@ class Ci(unittest.TestCase):
             # Another PHP release, or a changed key path since the baseline: upstream runs again.
             code, _, _ = self.ci('phpt-baseline', '--php', '8.3.7', **state)
             self.assertEqual((code, self.out), (2, ''))
-            commit('tools/build_upstream.py', 'pin 2')
-            code, _, _ = self.ci('phpt-baseline', **state)
-            self.assertEqual((code, self.out), (2, ''))
+            for path, text in [('.github/actions/upstream/action.yml', 'builds upstream'), ('tools/build_upstream.py', 'pin 2')]:
+                git('checkout', '-q', base)
+                commit(path, text)
+                code, _, _ = self.ci('phpt-baseline', **state)
+                self.assertEqual((code, self.out), (2, ''), path)
             # A variant's own workflow is part of its key, and its one job makes its report.
             variant = {**state, 'jobs': {'8': [['cares / phpt', 'success']]}, 'report': 'target/phpt/cares/upstream.json'}
             git('checkout', '-q', base)
