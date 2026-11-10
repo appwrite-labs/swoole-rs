@@ -302,6 +302,14 @@ impl Owner {
             warning(c"add", format_args!("msec value[{msec}] is invalid"));
             return std::ptr::null_mut();
         }
+        // `now` is floored, so `now + msec` can fall due up to 1 ms before `msec` has
+        // passed, and a socket's timeout would wake before its deadline (#2799). A
+        // one-shot counts from the next millisecond; a repeat keeps its interval.
+        let msec = if persistent {
+            msec
+        } else {
+            msec.saturating_add(1)
+        };
         let node = Box::into_raw(Box::new(node));
         let now = self.relative_msec();
         let (status, view) = self
