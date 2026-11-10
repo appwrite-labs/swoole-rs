@@ -22,16 +22,7 @@ const EVENT_READ: c_int = 1 << 9;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
-// SAFETY: crates/coroutine's and crates/reactor's.
-unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_native_resume(co: *mut c_void);
-    fn swr_v1_coroutine_yield_with_cancel(
-        co: *mut c_void,
-        cancel: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-        data: *mut c_void,
-    );
-}
-// SAFETY: as above.
+// SAFETY: crates/reactor's.
 unsafe extern "C" {
     fn swr_v1_event_set_exit_condition(
         id: c_int,
@@ -89,12 +80,12 @@ unsafe extern "C" fn suspend(co: *mut c_void, event: *mut c_void) {
         unsafe { uring::cancel(&HOST, event) }
     }
     // SAFETY: the current coroutine, suspended in `event`'s operation.
-    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, event) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, event) };
 }
 
 unsafe extern "C" fn resume(co: *mut c_void) {
     // SAFETY: a coroutine suspended in a request.
-    unsafe { swr_v1_coroutine_native_resume(co) };
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 unsafe extern "C" fn event_running() -> bool {

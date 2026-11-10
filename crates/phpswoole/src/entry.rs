@@ -3,7 +3,7 @@
 //! dependencies, and the tail of `SwooleG.fatal_error`.
 use crate::{constants, info, module, optional, table};
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     io::Write,
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
@@ -21,11 +21,6 @@ const CONFLICTS: u8 = 2;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 static ENTRY: AtomicPtr<zend_module_entry> = AtomicPtr::new(ptr::null_mut());
-
-unsafe extern "C" {
-    /// This thread's coroutine scheduler (crates/coroutine).
-    safe fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
-}
 
 fn dep(name: &'static CStr, kind: u8) -> zend_module_dep {
     zend_module_dep {
@@ -102,7 +97,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
     if code == CO_HAS_BEEN_BOUND {
-        let scheduler = swr_v1_coroutine_scheduler_get().cast::<swoole_rs_coroutine::Scheduler>();
+        let scheduler = swoole_rs_coroutine::scheduler();
         // SAFETY: this thread's scheduler, live for the thread.
         let cid = unsafe { (*scheduler).socket_bound_cid };
         let rule = "-------------------------------------------------------------------";

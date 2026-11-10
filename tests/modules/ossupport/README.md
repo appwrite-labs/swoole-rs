@@ -17,7 +17,7 @@ values (`cargo test -p swoole-rs-ossupport --all-features os_`):
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
-| `os.daemon` | not yet: it needs `swoole_init`, so it goes to `tests/modules/hooks/system` (#2531) |
+| `os.daemon` | `os.daemon` in `tests/modules/hooks/system/src/os.rs` (`hooks-system-rust`), since it needs `swoole_init` |
 | `os.cpu_affinity` | `system::tests::os_cpu_affinity` (Linux). `swoole_set_cpu_affinity` left the build (crates/process `affinity.rs` pins workers), so the case sets through its body, `sched_setaffinity(getpid())` |
 | `os.thread_name` | `system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
 | `os.thread_id` | none: `swoole_thread_id_to_str` left the build with its one caller, the async-thread warnings, so there is no function to test |
