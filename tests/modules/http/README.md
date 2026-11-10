@@ -155,6 +155,18 @@ runs in thread mode, which needs `SW_THREAD`: upstream's CMake defines it for co
 under `enable_thread`, and the extension's MINIT sets crates/server's `THREAD_SUPPORTED`
 for a ZTS PHP. This binary has no MINIT, so the case sets it.
 
+`core-tests/src/server/server.cpp`'s connection and configuration TESTs (#2536) are
+`server/src/http1/server_config.rs`, in the same binary, phase and records, under the
+`server` suite with upstream's names. `server.protocols` needs only its port, so it is
+crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md).
+
+| Upstream TEST | Rust case | Notes |
+| --- | --- | --- |
+| `max_connection`, `min_connection`, `worker_num` | same names | `SwooleG.max_sockets` is read and set through the `SwooleG` symbol, whose first member it is |
+| `reactor_num_base`, `reactor_num_large`, `reactor_num_large2`, `reactor_num_zero` | same names | `SW_CPU_NUM` is `swr_v1_core_cpu_num()`, which `swoole_init` sets |
+| `startup_error` | same name | its `new` Server leaks, as upstream's |
+| `protocols` | crates/ports `methods::tests::server_protocols` | |
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.
