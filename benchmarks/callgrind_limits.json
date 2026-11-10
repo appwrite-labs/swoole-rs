@@ -11,6 +11,8 @@
   "channel": 0.89,
   "task": 0.94,
   "mysql": 0.97,
+  "gzip": 1.04,
+  "websocket-deflate": 1.04,
   "tcp-length": 1.02,
   "tcp-eof": 0.57,
   "udp": 1.09
