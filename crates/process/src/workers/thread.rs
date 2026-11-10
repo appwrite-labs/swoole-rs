@@ -248,6 +248,12 @@ fn restart<H: Host>(h: &mut H, worker: u64) {
         h.get(OP_CALL_WORKER_ERROR);
     }
     h.op(OP_JOIN_THREAD, id);
+    // A worker that exits once the server is stopping stays down: the master is
+    // joining every thread, and a new one could block it forever (a user process
+    // re-run waits on input its first run consumed).
+    if !h.is(OP_RUNNING) {
+        return;
+    }
     match h.get(OP_WORKER_TYPE) {
         kind @ (EVENT_WORKER | TASK_WORKER | USER_WORKER) => {
             h.op(OP_SPAWN_THREAD, thread_arg(id, kind))
@@ -637,6 +643,7 @@ mod tests {
             (OP_WORKER_TYPE, TASK_WORKER),
             (OP_THREAD_EXIT_STATUS, 1),
             (OP_HAS_TIMER, 1),
+            (OP_RUNNING, 1),
         ]);
         run_op(&mut h, RUN_THREAD_MANAGER_WAIT, 0);
         assert_eq!(h.args(OP_SELECT_WORKER), vec![0x1000]);
@@ -644,6 +651,21 @@ mod tests {
         assert_eq!(h.args(OP_JOIN_THREAD), vec![3]);
         assert_eq!(h.args(OP_SPAWN_THREAD), vec![thread_arg(3, TASK_WORKER)]);
         assert_eq!(h.called(OP_TIMER_SELECT), 1);
+    }
+
+    #[test]
+    fn a_worker_exiting_while_the_server_stops_is_joined_not_respawned() {
+        let manager = ThreadManager::default();
+        manager.push(Wake::Exited(0x1000));
+        manager.push(Wake::Exit);
+        let mut h = Script::with(&[
+            (OP_THREAD_MANAGER, handle(&manager)),
+            (OP_WORKER_ID, 5),
+            (OP_WORKER_TYPE, USER_WORKER),
+        ]);
+        run_op(&mut h, RUN_THREAD_MANAGER_WAIT, 0);
+        assert_eq!(h.args(OP_JOIN_THREAD), vec![5], "joined");
+        assert_eq!(h.called(OP_SPAWN_THREAD), 0, "not respawned");
     }
 
     #[test]

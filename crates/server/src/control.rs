@@ -31,6 +31,11 @@ pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
     if mode == MODE_PROCESS {
         return h.is(OP_SEND_SHUTDOWN);
     }
+    // A worker thread that asks may exit before the master sees the signal; with
+    // the server marked stopping now, the manager does not respawn it.
+    if mode == MODE_THREAD {
+        h.op(OP_SET_RUNNING, 0)?;
+    }
     let manager = h.signed(OP_MANAGER_PID)?;
     let pid = if mode == MODE_BASE && manager != 0 {
         manager
@@ -230,6 +235,19 @@ mod tests {
         ]);
         assert!(shutdown(&mut s).unwrap(), "master thread stops itself");
         assert_eq!(s.called(OP_REACTOR_WAIT_EXIT), 1, "stopped");
+
+        let mut s = Script::with(&[
+            (OP_IS_STARTED, 1),
+            (OP_MODE, MODE_THREAD),
+            (OP_MASTER_PID, 7),
+        ]);
+        assert!(shutdown(&mut s).unwrap(), "a worker thread signals");
+        assert_eq!(
+            s.args(OP_SET_RUNNING),
+            vec![0],
+            "stopping before the signal"
+        );
+        assert_eq!(s.args(OP_KILL_TERM), vec![7], "master signalled");
     }
 
     #[test]
