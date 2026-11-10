@@ -2,13 +2,6 @@
 //! fd registry and loop admission, dispatch and shutdown policy over the
 //! thread's reactor. Its reactor handlers and deferred tasks raise a contained
 //! Zend bailout only after Rust cleanup has completed.
-#![cfg_attr(
-    feature = "php",
-    expect(
-        clippy::disallowed_types,
-        reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-    )
-)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
@@ -25,19 +18,20 @@ mod native;
 use native::has_reactor;
 use std::{
     cell::RefCell,
-    collections::HashMap,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     fmt,
     io::Write,
     ptr,
 };
 use swoole_rs_corebase::constants::EventType;
+use swoole_rs_memory::flat::Table;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::event;
 use swoole_rs_reactor::{Event, ReactorTask, Socket, event_api};
 use swoole_rs_zend::{
     Call, Class, Minit,
     bailout::{self, Bailout, trap},
+    php_local,
     sys::{IS_NULL, swr_zend_callable_warning, swr_zend_zval_release, swr_zval_try_addref, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -55,9 +49,11 @@ const WRITE: i64 = EventType::SW_EVENT_WRITE as i64;
 
 static EVENT: Class = Class::new();
 
-thread_local! {
-    /// `event_socket_map`: fd to `Socket *`.
-    static SOCKETS: RefCell<HashMap<i32, usize>> = RefCell::new(HashMap::new());
+php_local! {
+    /// `event_socket_map`: fd to `Socket *`. One process map on a non-thread-safe
+    /// PHP, as upstream's static: a thread-context coroutine's callback runs on
+    /// its own thread and must find the fds the loop's thread added.
+    static SOCKETS: RefCell<Table<usize>> = RefCell::new(Table::new());
 }
 
 /// The global functions `SW_FUNCTION_ALIAS` registers, in upstream's order.
@@ -114,18 +110,12 @@ impl Message {
         Self(buffer)
     }
 
-    fn as_ptr(&self) -> *const c_char {
-        self.0.as_ptr().cast()
-    }
-
     fn as_cstr(&self) -> &CStr {
         CStr::from_bytes_until_nul(&self.0).unwrap_or(c"")
     }
 }
 
-fn fatal_warning(message: *const c_char) {
-    // SAFETY: a NUL-terminated message.
-    let message = unsafe { CStr::from_ptr(message) };
+fn fatal_warning(message: &CStr) {
     bailout::defer(native::fatal_warning(message));
 }
 
@@ -142,9 +132,9 @@ fn fd(zsocket: *mut zval) -> i32 {
 
 /// The user socket `add` registered for `fd`.
 fn socket<'a>(fd: i32) -> Option<Socket<'a>> {
-    let socket = SOCKETS.with_borrow(|sockets| sockets.get(&fd).copied())?;
-    // SAFETY: the registry holds records `add` made, on this thread, until `del` removes and
-    // frees them.
+    let socket = SOCKETS.with_borrow(|sockets| sockets.get(usize::try_from(fd).ok()?).copied())?;
+    // SAFETY: the registry holds records `add` made by this PHP's threads, until `del` removes
+    // and frees them.
     unsafe { Socket::from_ptr(socket as *mut _) }
 }
 
@@ -220,7 +210,7 @@ fn add(call: &Call) {
         None
     };
     if let Some(message) = refused {
-        fatal_warning(message.as_ptr());
+        fatal_warning(message.as_cstr());
         call.set_bool(false);
         return;
     }
@@ -259,7 +249,7 @@ fn add(call: &Call) {
     let socket = native::socket_make(fd, object.cast());
     // SAFETY: the socket just made, on the live reactor.
     if unsafe { event_api::swoole_event_add(socket, events_of(events)) } < 0 {
-        fatal_warning(c"swoole_event_add failed".as_ptr());
+        fatal_warning(c"swoole_event_add failed");
         // SAFETY: the reactor refused the socket; nothing else holds it.
         unsafe { native::socket_free(socket) };
         // SAFETY: the object made above, which nothing else holds.
@@ -267,7 +257,14 @@ fn add(call: &Call) {
         call.set_bool(false);
         return;
     }
-    SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, socket as usize));
+    let key = usize::try_from(fd).unwrap_or(usize::MAX);
+    if SOCKETS
+        .with_borrow_mut(|sockets| sockets.insert(key, socket as usize))
+        .is_err()
+    {
+        // Out of memory: abort, as upstream's map insert.
+        std::process::abort();
+    }
     call.set_long(fd.into());
 }
 
@@ -276,12 +273,12 @@ fn missing(fd: i32, kind: &str) {
     let message = Message::new(format_args!(
         "Swoole\\Event: unable to find {kind} callback of fd [{fd}]"
     ));
-    fatal_warning(message.as_ptr());
+    fatal_warning(message.as_cstr());
 }
 
 fn not_found(fd: i32) {
     let message = Message::new(format_args!("socket[{fd}] is not found in the reactor"));
-    fatal_warning(message.as_ptr());
+    fatal_warning(message.as_cstr());
 }
 
 /// `write(mixed $fd, string $data): bool`.
@@ -291,7 +288,7 @@ fn write(call: &Call) {
         return;
     };
     if data.is_empty() {
-        fatal_warning(c"data empty".as_ptr());
+        fatal_warning(c"data empty");
         call.set_bool(false);
         return;
     }
@@ -300,7 +297,7 @@ fn write(call: &Call) {
         return;
     }
     if fd < 0 {
-        fatal_warning(c"unknown type".as_ptr());
+        fatal_warning(c"unknown type");
         call.set_bool(false);
         return;
     }
@@ -322,7 +319,7 @@ fn write(call: &Call) {
 /// `set(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = 0)`.
 fn set(call: &Call) {
     if !has_reactor() {
-        fatal_warning(c"reactor is not ready, cannot call swoole_event_set".as_ptr());
+        fatal_warning(c"reactor is not ready, cannot call swoole_event_set");
         call.set_bool(false);
         return;
     }
@@ -382,7 +379,7 @@ fn set(call: &Call) {
     }
     // SAFETY: a registered socket.
     if unsafe { event_api::swoole_event_set(socket.as_ptr(), events_of(events)) } < 0 {
-        fatal_warning(c"Swoole\\Event::set failed".as_ptr());
+        fatal_warning(c"Swoole\\Event::set failed");
         call.set_bool(false);
         return;
     }
@@ -392,7 +389,7 @@ fn set(call: &Call) {
 /// `del(mixed $fd): bool`.
 fn del(call: &Call) {
     if !has_reactor() {
-        fatal_warning(c"reactor is not ready, cannot call swoole_event_del".as_ptr());
+        fatal_warning(c"reactor is not ready, cannot call swoole_event_del");
         call.set_bool(false);
         return;
     }
@@ -405,7 +402,7 @@ fn del(call: &Call) {
         return;
     }
     if fd < 0 {
-        fatal_warning(c"unknown type".as_ptr());
+        fatal_warning(c"unknown type");
         call.set_bool(false);
         return;
     }
@@ -421,7 +418,7 @@ fn del(call: &Call) {
     );
     // SAFETY: a registered socket.
     let deleted = unsafe { event_api::swoole_event_del(socket.as_ptr()) };
-    SOCKETS.with_borrow_mut(|sockets| sockets.remove(&fd));
+    SOCKETS.with_borrow_mut(|sockets| usize::try_from(fd).ok().and_then(|fd| sockets.remove(fd)));
     // The fd stays the user's.
     socket.edit(|record| record.fd = -1);
     // SAFETY: removed from the reactor and the registry.
@@ -520,7 +517,7 @@ fn isset(call: &Call) {
         return;
     }
     if fd < 0 {
-        fatal_warning(c"unknown type".as_ptr());
+        fatal_warning(c"unknown type");
         call.set_bool(false);
         return;
     }
@@ -618,7 +615,7 @@ unsafe fn ready(event: *mut c_void, write: bool) -> Result<c_int, Bailout> {
     let message = Message::new(format_args!(
         "Swoole\\Event: {kind} callback handler error, fd [{fd}] will be removed from reactor"
     ));
-    fatal_warning(message.as_ptr());
+    fatal_warning(message.as_cstr());
     socket.edit(|record| record.object = ptr::null_mut());
     // The detached object, freed once the loop is out of it.
     native::defer(deferred_free_object, object.cast(), free_unrun_object);

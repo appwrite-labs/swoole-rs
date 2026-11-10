@@ -43,8 +43,7 @@ pub(super) unsafe fn convert(value: *mut z::zval) -> Result<i32, Bailout> {
             let fd = native_fd(unsafe { value::long_of(value) });
             if fd < 0 {
                 let message = Message::new(format_args!("invalid file descriptor#{fd} passed"));
-                // SAFETY: the message is NUL-terminated and remains live during the report.
-                warning(unsafe { CStr::from_ptr(message.as_ptr()) })?;
+                warning(message.as_cstr())?;
                 return Ok(-1);
             }
             Ok(fd)

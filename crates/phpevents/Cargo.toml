@@ -14,11 +14,12 @@ crate-type = ["rlib"]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-corebase", "dep:libc",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phptimer", "swoole-rs-phptimer/php",
-       "dep:swoole-rs-reactor", "dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-server", "dep:swoole-rs-tls", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php"]
+       "dep:swoole-rs-reactor", "dep:swoole-rs-memory", "dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-server", "dep:swoole-rs-tls", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
+swoole-rs-memory = { path = "../memory", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
