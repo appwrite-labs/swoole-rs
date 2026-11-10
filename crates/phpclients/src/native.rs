@@ -17,8 +17,10 @@ use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
+    ZString,
     bailout::{self, Bailout},
-    sys::{zend_string, zval},
+    string::{self, ZBuf},
+    sys::zval,
 };
 
 /// `SW_LOG_WARNING`.
@@ -387,18 +389,21 @@ impl Co {
         }
     }
 
-    /// `pop_packet()`: the `ZSTR_VAL` of the packet's string, or null after
-    /// `set_err(ENOMEM)`.
-    pub(crate) fn pop_packet(self) -> *mut c_char {
+    /// `pop_packet()`: the `length`-byte packet [`Co::recv_packet`] returned,
+    /// or None after `set_err(ENOMEM)`.
+    pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
         let init_size = self.record().buffer_init_size;
-        let packet: *mut c_char = match self.read_buffer() {
-            Some(buffer) if buffer.offset != 0 => buffer.pop(init_size).cast(),
-            _ => std::ptr::null_mut(),
+        let packet = match self.read_buffer() {
+            Some(buffer) if buffer.offset != 0 => buffer.pop(init_size),
+            _ => ptr::null_mut(),
         };
         if packet.is_null() {
             self.set_err(libc::ENOMEM);
+            return None;
         }
-        packet
+        // SAFETY: `zend::assign_zend_string_by_val`: the packet is the value of
+        // an unshared zend string holding its `length` bytes, now ours.
+        Some(unsafe { ZBuf::from_raw(string::from_val(packet), length) }.into_zstring())
     }
 
     /// `readv`/`readv_all`/`writev`/`writev_all` (`op` 0..=3) over `vectors`
@@ -426,18 +431,19 @@ impl Co {
         unsafe { co::sendfile(self.0, file, offset, length) }
     }
 
-    /// `recvfrom(buffer, length)` under a read timeout of `timeout`.
-    /// # Safety
-    /// `buffer` holds `length` writable bytes.
-    pub(crate) unsafe fn recvfrom(
-        self,
-        buffer: *mut c_char,
-        length: size_t,
-        timeout: f64,
-    ) -> ssize_t {
+    /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
+    pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
         let _timeout = self.timeout(timeout, TIMEOUT_READ);
-        // SAFETY: per the caller.
-        unsafe { co::recvfrom(self.0, buffer, length) }
+        let (at, room) = room(buffer);
+        // SAFETY: `room` writable bytes at `at`.
+        filled(buffer, unsafe { co::recvfrom(self.0, at, room) })
+    }
+
+    /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
+    pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
+        let (at, room) = room(buffer);
+        // SAFETY: `room` writable bytes at `at`.
+        filled(buffer, unsafe { self.transfer(op, at, room, timeout) })
     }
 
     /// `get_addr()` and `get_port()`; the text lives until this thread's next
@@ -579,8 +585,8 @@ impl Co {
         self.net().is_some_and(|record| !record.ssl.is_null())
     }
 
-    /// The peer certificate as a new string, or null; the socket has TLS.
-    pub(crate) fn peer_cert(self) -> *mut zend_string {
+    /// The peer certificate; the socket has TLS.
+    pub(crate) fn peer_cert(self) -> Option<ZString> {
         // SAFETY: a live record with TLS, as the callers check.
         unsafe { peer_cert(self.socket_record()) }
     }
@@ -787,9 +793,9 @@ pub(crate) fn export_socket(cli: Cli) -> Option<zval> {
     Some(socket)
 }
 
-/// The peer certificate of `socket`, a live record with TLS, as a new string,
-/// or null: `ssl_get_peer_certificate` into a buffer of `sw_tg_buffer()`'s size.
-pub(crate) unsafe fn peer_cert(socket: *mut SocketRecord) -> *mut zend_string {
+/// The peer certificate of `socket`, a live record with TLS:
+/// `ssl_get_peer_certificate` into a buffer of `sw_tg_buffer()`'s size.
+pub(crate) unsafe fn peer_cert(socket: *mut SocketRecord) -> Option<ZString> {
     let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     // SAFETY: a live record with TLS and a writable buffer.
     let length = unsafe {
@@ -799,10 +805,25 @@ pub(crate) unsafe fn peer_cert(socket: *mut SocketRecord) -> *mut zend_string {
             buffer.len(),
         )
     };
-    match usize::try_from(length) {
-        Ok(length) => swoole_rs_zend::string::copy(buffer.get(..length).unwrap_or(&buffer)),
-        Err(_) => std::ptr::null_mut(),
+    let length = usize::try_from(length).ok()?;
+    Some(ZString::new(buffer.get(..length).unwrap_or(&buffer)))
+}
+
+/// The unwritten room of `buffer`.
+pub(crate) fn room(buffer: &mut ZBuf) -> (*mut c_char, size_t) {
+    let written = buffer.len();
+    let at = buffer.as_mut_ptr().wrapping_add(written);
+    (at.cast(), buffer.capacity() - written)
+}
+
+/// Count the `received` bytes a transfer wrote into `buffer`'s [`room`].
+pub(crate) fn filled<T: Copy + TryInto<usize>>(buffer: &mut ZBuf, received: T) -> T {
+    if let Ok(count) = received.try_into() {
+        let len = buffer.capacity().min(buffer.len() + count);
+        // SAFETY: the transfer wrote `count` bytes of the room it was given.
+        unsafe { buffer.set_len(len) };
     }
+    received
 }
 
 /// The address and port of `address`: `get_addr()` and `get_port()`.

@@ -35,7 +35,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     let config = unsafe { &mut *fresh.config() };
     config.init_defaults(
         u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
-        swoole_rs_utilities::swr_v1_utils_timezone(),
+        swoole_rs_utilities::timezone(),
         (&raw const crate::pool_native::STD_ALLOCATOR).cast(),
     );
     // SAFETY: as above, its tables.

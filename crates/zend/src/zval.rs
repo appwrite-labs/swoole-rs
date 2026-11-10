@@ -15,9 +15,10 @@ use crate::{
         swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_separate_array,
         swr_zend_string_copy, swr_zend_string_release, swr_zend_try_get_double,
         swr_zend_try_get_long, swr_zend_try_get_string, swr_zval_is_true, swr_zval_str,
-        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_index_find,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
-        zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_add_new,
+        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find, zend_hash_update,
+        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
+        zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -366,19 +367,40 @@ pub struct Entries<'a> {
     position: HashPosition,
 }
 
+impl<'a> Entries<'a> {
+    /// The next element with its key, a string or an integer.
+    pub fn next_keyed(&mut self) -> Option<(Key<'a>, &'a Value)> {
+        let (mut key, mut index) = (ptr::null_mut(), 0);
+        // SAFETY: a live table and our position in it; `key` and `index` are
+        // writable locals.
+        let found = unsafe {
+            swr_zend_hash_next(
+                self.table.as_ptr(),
+                &raw mut self.position,
+                &raw mut key,
+                &raw mut index,
+            )
+        };
+        // SAFETY: null or an element of the borrowed table.
+        let value = unsafe { Value::from_ptr(found) }?;
+        if key.is_null() {
+            return Some((Key::Index(index), value));
+        }
+        // SAFETY: the table keeps its key strings alive.
+        Some((Key::Name(unsafe { bytes(key) }), value))
+    }
+}
+
 impl<'a> Iterator for Entries<'a> {
     type Item = (Option<&'a [u8]>, &'a Value);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut key = ptr::null_mut();
-        // SAFETY: a live table and our position in it; `key` is a writable local.
-        let found = unsafe {
-            swr_zend_hash_next(self.table.as_ptr(), &raw mut self.position, &raw mut key)
+        let (key, value) = self.next_keyed()?;
+        let name = match key {
+            Key::Name(name) => Some(name),
+            Key::Index(_) => None,
         };
-        // SAFETY: null or an element of the borrowed table.
-        let value = unsafe { Value::from_ptr(found) }?;
-        // SAFETY: the table keeps its key strings alive.
-        Some(((!key.is_null()).then(|| unsafe { bytes(key) }), value))
+        Some((name, value))
     }
 }
 
@@ -721,6 +743,26 @@ impl ArrayMut {
                 &raw mut value,
             );
         };
+    }
+
+    /// `zend_hash_add_new`: the array takes over `value` under `key`, which the
+    /// caller knows is absent, and references the key itself.
+    #[inline]
+    pub fn add_new(&mut self, key: &ZStr, value: Owned) {
+        let Some(array) = self.0.array() else { return };
+        let mut value = value.into_zval();
+        // SAFETY: a live table and key; the table takes the value.
+        unsafe { zend_hash_add_new(array.as_ptr(), key.as_ptr(), &raw mut value) };
+    }
+
+    /// `zend_hash_update`: the array takes over `value` under `key`, releasing
+    /// what was there, and references the key itself.
+    #[inline]
+    pub fn update(&mut self, key: &ZStr, value: Owned) {
+        let Some(array) = self.0.array() else { return };
+        let mut value = value.into_zval();
+        // SAFETY: as `add_new`.
+        unsafe { zend_hash_update(array.as_ptr(), key.as_ptr(), &raw mut value) };
     }
 
     /// `swr_zend_array_add_or_merge`: `value` under `key`, or appended to what

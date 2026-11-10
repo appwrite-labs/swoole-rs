@@ -58,8 +58,7 @@ pub extern "C" fn swr_v1_core_resolver_new(
 }
 
 /// The record's fields and string slots, from its handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_resolver_view(owner: &ResolverRequest) -> PreparedResolver {
+pub fn swr_v1_core_resolver_view(owner: &ResolverRequest) -> PreparedResolver {
     let [name, service, address] = &owner.strings;
     PreparedResolver {
         owner: ptr::from_ref(owner).cast_mut(),
@@ -71,8 +70,7 @@ pub extern "C" fn swr_v1_core_resolver_view(owner: &ResolverRequest) -> Prepared
 }
 
 /// Takes another reference to `owner`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_resolver_retain(owner: &ResolverRequest) {
+pub fn swr_v1_core_resolver_retain(owner: &ResolverRequest) {
     owner.refs.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -264,11 +262,7 @@ pub struct ResolverText {
 /// Formats one actual address without entering a C++ vector callback.
 /// # Safety
 /// owner is live/synchronized and index names one address in its current vector.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_format(
-    owner: &ResolverRequest,
-    index: usize,
-) -> ResolverText {
+unsafe fn swr_v1_core_resolver_format(owner: &ResolverRequest, index: usize) -> ResolverText {
     // SAFETY: read its family without retaining a borrow across libc.
     let family = unsafe { (*owner.fields.get()).family };
     let storage = owner.results.get();

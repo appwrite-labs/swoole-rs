@@ -203,12 +203,13 @@ pub(crate) fn try_fatal_error(level: c_int, message: &CStr) -> Result<(), bailou
     unsafe { swoole_rs_zend::php_error(level, message) }
 }
 
-/// `php_swoole_error_ex(level, code, "%s", message)`.
+/// `php_swoole_error_ex(level, code, "%s", message)`. A bailout of the
+/// error's handler is deferred for the caller's handler to raise.
 pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
     set_last_error(code);
     if swoole_rs_phpswoole::display_errors() || level == E_ERROR {
         // SAFETY: as in `fatal_error`.
-        bailout::raise(unsafe { swoole_rs_zend::php_error(level, message) });
+        bailout::defer(unsafe { swoole_rs_zend::php_error(level, message) });
     }
 }
 

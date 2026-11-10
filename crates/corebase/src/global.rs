@@ -20,11 +20,13 @@ unsafe extern "C" {
 /// Upstream's `SW_MAX_FILE_CONTENT` (`include/swoole_config.h`).
 const MAX_FILE_CONTENT: u32 = crate::constants::SW_MAX_FILE_CONTENT;
 
-/// The record, one atomic per field, with a getter and setter exported for each
-/// (`$get`, `$set`). Every field starts at, and `swr_v1_core_reset` returns it
-/// to, `$zero`: upstream's `SwooleG = {}`.
+/// The record, one atomic per field, with a getter and setter for each (`$get`,
+/// `$set`); `#[unsafe(no_mangle)]` exports the ones native code calls. Every
+/// field starts at, and `swr_v1_core_reset` returns it to, `$zero`: upstream's
+/// `SwooleG = {}`.
 macro_rules! record {
-    ($($field:ident: $store:ty, $value:ty = $zero:expr, $get:ident, $set:ident;)*) => {
+    ($($field:ident: $store:ty, $value:ty = $zero:expr,
+        $(#[$get_attr:meta])* $get:ident, $(#[$set_attr:meta])* $set:ident;)*) => {
         struct Record {
             init: AtomicBool,
             cpu_num: AtomicU16,
@@ -47,12 +49,12 @@ macro_rules! record {
         }
 
         $(
-            #[unsafe(no_mangle)]
+            $(#[$get_attr])*
             pub extern "C" fn $get() -> $value {
                 RECORD.$field.load(Ordering::Acquire)
             }
 
-            #[unsafe(no_mangle)]
+            $(#[$set_attr])*
             pub extern "C" fn $set(value: $value) {
                 RECORD.$field.store(value, Ordering::Release);
             }
@@ -61,10 +63,13 @@ macro_rules! record {
 }
 
 record! {
-    running: AtomicBool, bool = false, swr_v1_core_running, swr_v1_core_set_running;
-    enable_signalfd: AtomicBool, bool = false, swr_v1_core_enable_signalfd, swr_v1_core_set_enable_signalfd;
+    running: AtomicBool, bool = false,
+        #[unsafe(no_mangle)] swr_v1_core_running, #[unsafe(no_mangle)] swr_v1_core_set_running;
+    enable_signalfd: AtomicBool, bool = false,
+        #[unsafe(no_mangle)] swr_v1_core_enable_signalfd, #[unsafe(no_mangle)] swr_v1_core_set_enable_signalfd;
     enable_kqueue: AtomicBool, bool = false, swr_v1_core_enable_kqueue, swr_v1_core_set_enable_kqueue;
-    enable_coroutine: AtomicBool, bool = false, swr_v1_core_enable_coroutine, swr_v1_core_set_enable_coroutine;
+    enable_coroutine: AtomicBool, bool = false,
+        #[unsafe(no_mangle)] swr_v1_core_enable_coroutine, #[unsafe(no_mangle)] swr_v1_core_set_enable_coroutine;
     print_backtrace_on_error: AtomicBool, bool = false,
         swr_v1_core_print_backtrace_on_error, swr_v1_core_set_print_backtrace_on_error;
     wait_signal: AtomicBool, bool = false, swr_v1_core_wait_signal, swr_v1_core_set_wait_signal;
@@ -72,13 +77,17 @@ record! {
         swr_v1_core_dns_lookup_random, swr_v1_core_set_dns_lookup_random;
     current_task_id: AtomicI64, c_long = 0, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id;
     signal_fd: AtomicI32, c_int = 0, swr_v1_core_signal_fd, swr_v1_core_set_signal_fd;
-    signal_alarm: AtomicBool, bool = false, swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
+    signal_alarm: AtomicBool, bool = false,
+        #[unsafe(no_mangle)] swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
     signal_listener_num: AtomicU32, u32 = 0,
-        swr_v1_core_signal_listener_num, swr_v1_core_set_signal_listener_num;
+        #[unsafe(no_mangle)] swr_v1_core_signal_listener_num,
+        #[unsafe(no_mangle)] swr_v1_core_set_signal_listener_num;
     signal_async_listener_num: AtomicU32, u32 = 0,
-        swr_v1_core_signal_async_listener_num, swr_v1_core_set_signal_async_listener_num;
-    trace_flags: AtomicI64, c_long = 0, swr_v1_core_trace_flags, swr_v1_core_set_trace_flags;
-    pagesize: AtomicU32, u32 = 0, swr_v1_core_pagesize, swr_v1_core_set_pagesize;
+        #[unsafe(no_mangle)] swr_v1_core_signal_async_listener_num,
+        #[unsafe(no_mangle)] swr_v1_core_set_signal_async_listener_num;
+    trace_flags: AtomicI64, c_long = 0, #[unsafe(no_mangle)] swr_v1_core_trace_flags, swr_v1_core_set_trace_flags;
+    pagesize: AtomicU32, u32 = 0,
+        #[unsafe(no_mangle)] swr_v1_core_pagesize, #[unsafe(no_mangle)] swr_v1_core_set_pagesize;
     max_file_content: AtomicU32, u32 = 0, swr_v1_core_max_file_content, swr_v1_core_set_max_file_content;
     aio_core_worker_num: AtomicU32, u32 = 0,
         swr_v1_core_aio_core_worker_num, swr_v1_core_set_aio_core_worker_num;
@@ -90,13 +99,18 @@ record! {
         swr_v1_core_aio_max_wait_time_bits, swr_v1_core_set_aio_max_wait_time_bits;
     aio_max_idle_time: AtomicU64, u64 = 0,
         swr_v1_core_aio_max_idle_time_bits, swr_v1_core_set_aio_max_idle_time_bits;
-    memory_pool: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_memory_pool, swr_v1_core_set_memory_pool;
-    stdout: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_stdout, swr_v1_core_set_stdout;
-    logger: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_logger, swr_v1_core_set_logger;
-    server: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_server, swr_v1_core_set_server;
+    memory_pool: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
+        #[unsafe(no_mangle)] swr_v1_core_memory_pool, swr_v1_core_set_memory_pool;
+    stdout: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
+        #[unsafe(no_mangle)] swr_v1_core_stdout, swr_v1_core_set_stdout;
+    logger: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
+        #[unsafe(no_mangle)] swr_v1_core_logger, swr_v1_core_set_logger;
+    server: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
+        #[unsafe(no_mangle)] swr_v1_core_server, #[unsafe(no_mangle)] swr_v1_core_set_server;
     aio_default_socket: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         swr_v1_core_aio_default_socket, swr_v1_core_set_aio_default_socket;
-    fatal_error: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_fatal_error, swr_v1_core_set_fatal_error;
+    fatal_error: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
+        #[unsafe(no_mangle)] swr_v1_core_fatal_error, swr_v1_core_set_fatal_error;
     print_backtrace: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         swr_v1_core_print_backtrace, swr_v1_core_set_print_backtrace;
 }
@@ -121,13 +135,11 @@ pub unsafe fn fatal_error(code: c_int, message: &std::ffi::CStr) {
 /// no float atomics; these are the `double` views native code calls.
 macro_rules! doubles {
     ($($get:ident, $set:ident => $get_bits:ident, $set_bits:ident;)*) => {$(
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $get() -> f64 {
+        pub fn $get() -> f64 {
             f64::from_bits($get_bits())
         }
 
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $set(value: f64) {
+        pub fn $set(value: f64) {
             $set_bits(value.to_bits());
         }
     )*};
@@ -149,7 +161,8 @@ fn bug_report() -> std::sync::MutexGuard<'static, Vec<u8>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn bug_report_push(text: &[u8]) {
+/// `SwooleG.bug_report_message += text`.
+pub fn bug_report_append(text: &[u8]) {
     let mut message = bug_report();
     message.pop();
     message.extend_from_slice(text);
@@ -157,8 +170,7 @@ fn bug_report_push(text: &[u8]) {
 }
 
 /// Zero every field, as upstream's `SwooleG = {}` does.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_reset() {
+pub fn swr_v1_core_reset() {
     reset_record();
     bug_report().clear();
 }
@@ -167,8 +179,7 @@ pub extern "C" fn swr_v1_core_reset() {
 /// the record, publishes the guard, then sets the defaults upstream set: running,
 /// coroutines on, the page size, the file-content cap, the CPU count, DNS tries
 /// and the `random()` seed.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_init() -> bool {
+pub fn swr_v1_core_init() -> bool {
     if RECORD.init.load(Ordering::Relaxed) {
         return false;
     }
@@ -206,8 +217,8 @@ pub extern "C" fn swr_v1_core_init() -> bool {
 /// The descriptor limit upstream derives from `RLIMIT_NOFILE`: the soft limit,
 /// truncated to `uint32_t` as upstream does, capped at `limit`. -1 (errno kept)
 /// when getrlimit fails.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_max_sockets(limit: u32) -> i64 {
+#[must_use]
+pub fn swr_v1_core_max_sockets(limit: u32) -> i64 {
     let mut rlimit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -224,8 +235,7 @@ pub extern "C" fn swr_v1_core_max_sockets(limit: u32) -> i64 {
     i64::from(current.min(limit))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_initialized() -> bool {
+pub fn swr_v1_core_initialized() -> bool {
     RECORD.init.load(Ordering::Relaxed)
 }
 
@@ -234,28 +244,18 @@ pub extern "C" fn swr_v1_core_cpu_num() -> u16 {
     RECORD.cpu_num.load(Ordering::Relaxed)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_dns_tries() -> c_int {
+pub fn swr_v1_core_dns_tries() -> c_int {
     RECORD.dns_tries.load(Ordering::Relaxed)
 }
 
 /// `SwooleG.bug_report_message.c_str()`: valid until the message next changes.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_bug_report_message() -> *const c_char {
+#[must_use]
+pub fn swr_v1_core_bug_report_message() -> *const c_char {
     let message = bug_report();
     if message.is_empty() {
         return c"".as_ptr();
     }
     message.as_ptr().cast()
-}
-
-/// `SwooleG.bug_report_message += text`.
-/// # Safety
-/// `text` is a valid NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_bug_report_append(text: *const c_char) {
-    // SAFETY: the caller passes a valid NUL-terminated string.
-    bug_report_push(unsafe { std::ffi::CStr::from_ptr(text) }.to_bytes());
 }
 
 unsafe extern "C" {
@@ -295,7 +295,7 @@ fn bug_report_lines(banner: &CStr, compiler: &CStr, ssl: &CStr) {
     message.extend(compiler.to_bytes());
     message.push(b'\n');
     message.extend(ssl.to_bytes());
-    bug_report_push(&message);
+    bug_report_append(&message);
 }
 
 /// `swoole_set_print_backtrace_on_error(bool enable = true)`.
@@ -363,6 +363,14 @@ mod tests {
     use super::*;
     use std::ffi::CStr;
 
+    /// Upstream's `time.get_seconds`: the wall clock's seconds against `time(NULL)`.
+    #[test]
+    fn time_get_seconds() {
+        let sec1 = time_now();
+        let sec2 = unsafe { libc::time(ptr::null_mut()) };
+        assert!(sec1 == sec2 || sec1 == sec2 - 1);
+    }
+
     // One test owns the process-wide record, so parallel tests never race on it.
     #[test]
     fn record_lifecycle() {
@@ -401,8 +409,7 @@ mod tests {
         assert_eq!(swr_v1_core_trace_flags(), 0x7fff_ffff);
 
         bug_report_lines(c"Banner", c"cc 1", c"SSL\n");
-        // SAFETY: a literal is NUL-terminated.
-        unsafe { swr_v1_core_bug_report_append(c"PHP_VERSION : 8\n".as_ptr()) };
+        bug_report_append(b"PHP_VERSION : 8\n");
         // SAFETY: the message is NUL-terminated and unchanged while read.
         let message = unsafe { CStr::from_ptr(swr_v1_core_bug_report_message()) }
             .to_str()

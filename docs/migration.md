@@ -1,7 +1,7 @@
 # Migration approach
 
-Upstream Swoole is replaced one subsystem at a time by Rust code linked as a
-static library into the pinned extension build. PHP classes and module startup
+Upstream Swoole is replaced one subsystem at a time by Rust code; Cargo builds
+`swoole.so` (`crates/ext`). PHP classes and module startup
 are Rust over `crates/zend`; what is still compiled from upstream is listed
 under [Upstream files still in the build](#upstream-files-still-in-the-build).
 
@@ -14,7 +14,7 @@ wrappers rather than bindgen over C++ headers. At every boundary:
 - No Rust panic or C++ exception crosses the ABI.
 - PHP values stay on their owning thread. No async runtime drives Swoole
   descriptors (`deny.toml` bans them).
-- Build and test only the all-modules hybrid; the pinned upstream build is the
+- Build and test only the all-modules Cargo build; the pinned upstream build is the
   oracle. Delete an upstream body once its replacement passes the corpus,
   upstream tests and benchmarks.
 
@@ -107,7 +107,7 @@ delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)) and the Z
   Process, hooks, coroutine, reactor and clients move from Rust policy over
   C++ mechanisms to Rust mechanisms.
 - **Phase 6, speed** ([#366](https://github.com/appwrite-labs/swoole-rs/issues/366)). The
-  all-modules hybrid is within 5% of upstream on every callgrind workload;
+  Cargo build is within 5% of upstream on every callgrind workload;
   `benchmarks/callgrind_limits.json` records where it stands.
 
 ### Upstream files still in the build

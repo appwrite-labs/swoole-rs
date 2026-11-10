@@ -26,17 +26,18 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Owned, Props, Value, ZString, bailout, declare_long, declare_property_null,
-    declare_string, handlers, init_object, method_table, register_long_constant,
+    Array, Call, Class, Owned, Props, Value, ZStr, ZString, bailout, declare_long,
+    declare_property_null, declare_string, handlers, init_object, method_table,
+    register_long_constant,
     string::{self, bytes},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
         ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset, swr_zend_instanceof,
-        swr_zend_string_release, swr_zend_ws_property_not_null, swr_zval_copy, swr_zval_is_true,
-        swr_zval_str, zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long,
-        zend_object, zend_string, zend_value, zval, zval_ptr_dtor,
+        swr_zend_ws_property_not_null, swr_zval_copy, swr_zval_is_true, swr_zval_str,
+        zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long, zend_object,
+        zend_string, zend_value, zval, zval_ptr_dtor,
     },
-    value::{self, empty_string, get_long, get_string, obj_of},
+    value::{self, empty_string, get_long, obj_of},
 };
 
 static SERVER: Class = Class::new();
@@ -500,33 +501,6 @@ fn not_null(object: *mut zend_object, name: &CStr) -> Option<*mut zval> {
     (!found.is_null()).then_some(found)
 }
 
-/// An owned `zend_string` reference, released on drop.
-pub(crate) struct Str(*mut zend_string);
-
-impl Str {
-    pub(crate) fn bytes(&self) -> &[u8] {
-        if self.0.is_null() {
-            return &[];
-        }
-        // SAFETY: a live string this value holds a reference to.
-        unsafe { bytes(self.0) }
-    }
-
-    /// The reference, which the caller now owns.
-    fn take(mut self) -> *mut zend_string {
-        std::mem::replace(&mut self.0, ptr::null_mut())
-    }
-}
-
-impl Drop for Str {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the reference this value owns.
-            unsafe { swr_zend_string_release(self.0) };
-        }
-    }
-}
-
 /// `"%s(): message"` from `swoole_warning` in `func`.
 fn warning(func: &CStr, message: &str) {
     host::log(0, 0, func, message);
@@ -538,11 +512,10 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         host::fatal("the maximum value of opcode is 10");
         return None;
     }
-    // SAFETY: null or a live zval; the new reference is released on drop.
-    let data = match unsafe { Value::from_ptr(frame.data) }.filter(|data| !data.is_null()) {
-        Some(data) => Str(data.string().into_raw()),
-        None => Str(ptr::null_mut()),
-    };
+    // SAFETY: null or a live zval.
+    let data = unsafe { Value::from_ptr(frame.data) }.filter(|data| !data.is_null());
+    let data = data.map(Value::string);
+    let data = data.as_deref().map_or(&[][..], ZStr::bytes);
     if bailout::pending() {
         return None;
     }
@@ -553,18 +526,18 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         );
         return None;
     }
-    let policy = pack_policy(frame.opcode, frame.flags, data.bytes().len());
+    let policy = pack_policy(frame.opcode, frame.flags, data.len());
     let mut flags = policy.to_le_bytes()[0];
     let compressed = if policy & 0x100 == 0 {
         None
-    } else if let Some(compressed) = compress(data.bytes()) {
+    } else if let Some(compressed) = compress(data) {
         flags |= FLAG_RSV1;
         Some(compressed)
     } else {
         flags &= !FLAG_RSV1;
         None
     };
-    let payload = compressed.as_deref().unwrap_or(data.bytes());
+    let payload = compressed.as_deref().unwrap_or(data);
     if frame.opcode == OPCODE_CLOSE {
         close_frame(i32::from(frame.code), payload, flags)
     } else {
@@ -595,7 +568,7 @@ const INLINE: usize = 128;
 /// An encoded frame, on the stack when it fits.
 pub(crate) enum Frame {
     Inline([MaybeUninit<u8>; INLINE], usize),
-    Heap(Str),
+    Heap(ZString),
 }
 
 impl Frame {
@@ -613,7 +586,7 @@ impl Frame {
     fn into_string(self) -> *mut zend_string {
         match self {
             Self::Inline(..) => string::copy(self.bytes()),
-            Self::Heap(string) => string.take(),
+            Self::Heap(string) => string.into_raw(),
         }
     }
 }
@@ -638,7 +611,8 @@ fn encoded(size: usize, write: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize) -> 
     }
     // SAFETY: as above, now holding `size` bytes.
     unsafe { string::truncate(out, size) };
-    Some(Frame::Heap(Str(out)))
+    // SAFETY: the fresh string's one reference, which the frame takes.
+    Some(Frame::Heap(unsafe { ZString::from_raw(out) }))
 }
 
 /// Upstream's encoders fail a masked header-only frame after writing it.
@@ -1133,18 +1107,15 @@ fn set_header(context: *mut Context, key: &[u8], value: &[u8]) -> Result<(), bai
 }
 
 fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
-    let header = send::state(context).request.zheader.ptr;
-    let key = crate::parse::find(header, b"sec-websocket-key");
-    let key = if key.is_null() {
-        None
-    } else {
-        // SAFETY: a live header value; the reference is released on drop.
-        let key = Str(unsafe { get_string(key) });
-        if bailout::pending() {
-            return Err(bailout::Bailout);
-        }
-        (key.bytes().len() == SEC_KEY_LENGTH).then_some(key)
-    };
+    let header = send::state(context).request.zheader.get();
+    let key = header
+        .and_then(Value::array)
+        .and_then(|header| header.find(b"sec-websocket-key"));
+    let key = key.map(Value::string);
+    if key.is_some() && bailout::pending() {
+        return Err(bailout::Bailout);
+    }
+    let key = key.filter(|key| key.bytes().len() == SEC_KEY_LENGTH);
     let Some(key) = key else {
         send::state(context).response.status = 400;
         send::end(context, ptr::null_mut())?;
@@ -1171,10 +1142,8 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
         let state = send::state(context);
         let mut args = [
             server_zval(),
-            // SAFETY: the context's live request and response objects.
-            unsafe { *state.request.zobject.ptr },
-            // SAFETY: as above.
-            unsafe { *state.response.zobject.ptr },
+            state.request.zobject.value,
+            state.response.zobject.value,
         ];
         dispatch(
             server,
@@ -1210,9 +1179,7 @@ fn on_open(server: *mut Server, context: *mut Context) -> Result<(), bailout::Ba
         closed(c"swoole_websocket_onOpen", fd);
         return Ok(());
     };
-    // SAFETY: the context's live request object.
-    let request = unsafe { *send::state(context).request.zobject.ptr };
-    let mut args = [server_zval(), request];
+    let mut args = [server_zval(), send::state(context).request.zobject.value];
     dispatch(server, conn.server_fd, ON_OPEN, &mut args, fd)
 }
 
@@ -1426,7 +1393,8 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_compression(ws: *mut c_void)
     unsafe { client(ws) }.compression
 }
 
-/// Pack a frame and send it: 0, 1 if packing failed, 2 if sending did.
+/// Pack a frame and send it: 0, 1 if packing failed (a bailout may be
+/// pending, for the caller's handler to raise), 2 if sending did.
 /// # Safety
 /// `socket` and `ws` are live; `data` is a live zval.
 #[unsafe(no_mangle)]
@@ -1447,7 +1415,7 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_push(
     if compress {
         frame.flags |= FLAG_COMPRESS;
     }
-    let sent = pack(&frame).map_or(1, |packed| {
+    pack(&frame).map_or(1, |packed| {
         let packed = packed.bytes();
         // SAFETY: the live socket and the packed bytes.
         let written = unsafe { co::send_all(socket, packed.as_ptr().cast(), packed.len()) };
@@ -1456,12 +1424,11 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_push(
         } else {
             2
         }
-    });
-    bailout::finish();
-    sent
+    })
 }
 
-/// `websocket::recv_frame` on the client's socket.
+/// `websocket::recv_frame` on the client's socket; a bailout it defers is
+/// the caller's handler's to raise.
 /// # Safety
 /// `socket` and `ws` are live; `return_value` is writable.
 #[unsafe(no_mangle)]
@@ -1480,7 +1447,6 @@ pub unsafe extern "C" fn swoole_http_client_coro_ws_recv(
         return_value,
         timeout,
     );
-    bailout::finish();
 }
 
 /// `WebSocketSettings`' bits for [`recv`], and with `compression` a

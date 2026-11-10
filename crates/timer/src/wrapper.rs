@@ -12,19 +12,9 @@ use swoole_rs_corebase::{log, swoole_print_backtrace};
 const ERR: c_long = -1;
 const MIN_SEC: f64 = 0.001;
 
-// SAFETY: crates/corebase's (lifecycle.rs).
-#[expect(
-    improper_ctypes,
-    reason = "the slot holds an address C++ never dereferences"
-)]
-unsafe extern "C" {
-    fn swr_v1_core_timer_slot() -> *mut *mut Timer;
-}
-
 /// `SwooleTG.timer`.
 fn slot() -> *mut *mut Timer {
-    // SAFETY: the address of this thread's slot.
-    unsafe { swr_v1_core_timer_slot() }
+    swoole_rs_corebase::swr_v1_core_timer_slot().cast()
 }
 
 fn timer() -> *mut Timer {
