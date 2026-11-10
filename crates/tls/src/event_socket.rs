@@ -2,12 +2,11 @@
 //! `Swoole\Event`'s user sockets.
 use crate::upstream::socket_free;
 use std::ffi::c_int;
-use std::ptr::NonNull;
-use swoole_rs_reactor::{SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{Socket, event_api, socket_upstream};
 
 /// `make_socket(fd, fd_type)`, non-blocking, which this owns until [`EventSocket::free`].
 /// Its event calls do nothing, and fail, without a reactor.
-pub struct EventSocket(NonNull<SocketRecord>);
+pub struct EventSocket(Socket<'static>);
 
 fn reactor() -> bool {
     !swoole_rs_corebase::thread_reactor().is_null()
@@ -16,32 +15,24 @@ fn reactor() -> bool {
 impl EventSocket {
     #[must_use]
     pub fn new(fd: c_int, fd_type: c_int) -> Self {
-        let Some(socket) = NonNull::new(socket_upstream::make_socket_fd(fd, fd_type)) else {
+        let record = socket_upstream::make_socket_fd(fd, fd_type);
+        // SAFETY: the new record, which this owns until `free`; the reactor reaches it only
+        // through the calls below.
+        let Some(socket) = (unsafe { Socket::from_ptr(record) }) else {
             std::process::abort()
         };
-        let mut this = Self(socket);
-        socket_upstream::socket_set_fd_option(this.record_mut(), 1, -1);
-        this
-    }
-
-    fn record(&self) -> &SocketRecord {
-        // SAFETY: the record this owns; the reactor writes it only inside the calls below.
-        unsafe { self.0.as_ref() }
-    }
-
-    fn record_mut(&mut self) -> &mut SocketRecord {
-        // SAFETY: as above.
-        unsafe { self.0.as_mut() }
+        socket.edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
+        Self(socket)
     }
 
     #[must_use]
     pub fn events(&self) -> c_int {
-        self.record().events
+        self.0.read(|record| record.events)
     }
 
     #[must_use]
     pub fn removed(&self) -> bool {
-        self.record().removed != 0
+        self.0.read(|record| record.removed != 0)
     }
 
     /// `swoole_event_add(socket, events)`.
@@ -86,12 +77,12 @@ impl EventSocket {
 
     /// `socket->free()`, which closes the fd unless `keep_fd` (`socket->fd = -1`
     /// first, once the reactor no longer holds it).
-    pub fn free(mut self, keep_fd: bool) {
+    pub fn free(self, keep_fd: bool) {
         if keep_fd {
             if !self.removed() {
                 let _deleted = self.del();
             }
-            self.record_mut().fd = -1;
+            self.0.edit(|record| record.fd = -1);
         }
         // SAFETY: the record this owned, which nothing uses afterwards; a reactor
         // still holding it is told by `free` itself.

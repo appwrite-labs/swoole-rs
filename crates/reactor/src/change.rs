@@ -2,10 +2,10 @@
 //! `ReactorEpoll`, `ReactorKqueue` and `ReactorPoll` methods over the Rust reactor
 //! state, the checks, kernel calls and registry update included. Native code only
 //! logs the warnings, under the upstream function each one names.
-use crate::SocketRecord;
 use crate::reactor_state::{Backend, ReactorState};
 use crate::registration;
 use crate::socket_sync::set_errno;
+use crate::{Socket, SocketRecord};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
@@ -26,15 +26,24 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-struct Change<'a> {
+/// The socket's fields a change reads, as they were before it.
+struct Seen {
+    fd: c_int,
+    fd_type: c_int,
+    events: c_int,
+    removed: u8,
+    silent_remove: u8,
+}
+
+struct Change {
     log: ChangeLog,
-    socket: &'a SocketRecord,
+    socket: Seen,
     id: u16,
     op: u32,
     events: c_int,
 }
 
-impl Change<'_> {
+impl Change {
     /// One warning, with `errno` set to `error` for a system warning's text.
     fn warn(&self, origin: &CStr, code: c_int, error: c_int, message: String) {
         let message = CString::new(message).unwrap_or_default();
@@ -45,7 +54,7 @@ impl Change<'_> {
 
     /// `ReactorImpl::after_removal_failure`.
     fn removal_failed(&self, error: c_int) {
-        let socket = self.socket;
+        let socket = &self.socket;
         if socket.silent_remove == 0 {
             self.warn(
                 c"ReactorImpl::after_removal_failure",
@@ -62,7 +71,7 @@ impl Change<'_> {
     /// `ReactorEpoll::add`, `set` and `del` before the registry update.
     #[cfg(target_os = "linux")]
     fn epoll(&self, epfd: c_int, token: *mut c_void) -> bool {
-        let (socket, id) = (self.socket, self.id);
+        let (socket, id) = (&self.socket, self.id);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
         if self.op > SET && socket.removed != 0 {
             self.warn(
@@ -126,7 +135,7 @@ impl Change<'_> {
         target_os = "dragonfly"
     ))]
     fn kqueue(&self, kq: c_int, token: *mut c_void) -> bool {
-        let (socket, id) = (self.socket, self.id);
+        let (socket, id) = (&self.socket, self.id);
         let fd = socket.fd;
         match self.op {
             ADD => {
@@ -193,7 +202,7 @@ impl Change<'_> {
 
     /// `ReactorPoll::add`, `set` and `del` before the registry update.
     fn poll(&self, state: &ReactorState) -> bool {
-        let (socket, id, events) = (self.socket, self.id, self.events);
+        let (socket, id, events) = (&self.socket, self.id, self.events);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
         let exists = !state.registry.get(fd).is_null();
         let (origin, code, message) = match self.op {
@@ -242,7 +251,8 @@ impl Change<'_> {
 }
 
 /// `Reactor::add` (op 0), `set` (1) or `del` (2) of `socket` with `events` on the state's
-/// backend: 0, -1 after logging the failure through `log`, or -2 when add cannot allocate.
+/// backend: 0, -1 after logging the failure through `log` (or for a null socket), or -2 when
+/// add cannot allocate.
 ///
 /// # Safety
 /// `owner` is a live state with an open backend and `socket` a live record distinct from it,
@@ -257,15 +267,24 @@ pub unsafe extern "C" fn swr_v1_reactor_change(
 ) -> c_int {
     // SAFETY: as the caller promises.
     let state = unsafe { &mut *owner };
+    // SAFETY: as the caller promises.
+    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+        return -1;
+    };
     let change = Change {
         log,
-        // SAFETY: as the caller promises; this view ends before the registry update.
-        socket: unsafe { &*socket },
+        socket: socket.read(|record| Seen {
+            fd: record.fd,
+            fd_type: record.fd_type,
+            events: record.events,
+            removed: record.removed,
+            silent_remove: record.silent_remove,
+        }),
         id: state.fields.id,
         op,
         events,
     };
-    let token = socket.cast::<c_void>();
+    let token = socket.as_ptr().cast::<c_void>();
     let done = match state.backend {
         Backend::None => false,
         Backend::Poll(_) => change.poll(state),
@@ -283,8 +302,7 @@ pub unsafe extern "C" fn swr_v1_reactor_change(
     if !done {
         return -1;
     }
-    // SAFETY: as the caller promises; no other view of the socket is live.
-    state.record(unsafe { &mut *socket }, socket, op, events)
+    state.record(socket, op, events)
 }
 
 const SW_EVENT_READ: c_int = 1 << 9;
@@ -305,8 +323,11 @@ pub unsafe extern "C" fn swr_v1_reactor_interest(
     event: c_int,
     log: ChangeLog,
 ) -> c_int {
-    // SAFETY: as the caller promises; the view ends before the change.
-    let events = unsafe { (*socket).events };
+    // SAFETY: as the caller promises.
+    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    let events = record.read(|record| record.events);
     let (other, own) = if kind.is_multiple_of(2) {
         (SW_EVENT_WRITE, SW_EVENT_READ)
     } else {
@@ -323,8 +344,7 @@ pub unsafe extern "C" fn swr_v1_reactor_interest(
     };
     if op == SET && kind >= 2 {
         // Upstream writes the socket's events before the set, so they stay when it fails.
-        // SAFETY: as above.
-        unsafe { (*socket).events = events };
+        record.edit(|record| record.events = events);
     }
     // SAFETY: as the caller promises.
     unsafe { swr_v1_reactor_change(owner, socket, op, events, log) }

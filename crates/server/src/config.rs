@@ -4,7 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket;
 
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
@@ -278,7 +278,7 @@ pub(crate) unsafe fn native_fact(
             // SAFETY: a listed port is live, and no native callback runs while it is borrowed.
             let port = unsafe { crate::port_config::of(*port?) };
             // SAFETY: a port's socket is null or live.
-            let socket = unsafe { port.socket.cast::<SocketRecord>().as_ref() };
+            let socket = unsafe { Socket::from_ptr(port.socket.cast()) };
             match op {
                 OP_PORT_DGRAM => u64::from(matches!(port.r#type, 2 | 4 | 6)),
                 OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
@@ -289,8 +289,8 @@ pub(crate) unsafe fn native_fact(
                     port.heartbeat_idle_time = config.heartbeat_check_interval.wrapping_mul(2);
                     0
                 }
-                OP_PORT_REMOVED => u64::from(socket?.removed),
-                _ => i64::from(socket.map_or(-1, |socket| socket.fd)).cast_unsigned(),
+                OP_PORT_REMOVED => u64::from(socket?.read(|s| s.removed)),
+                _ => i64::from(socket.map_or(-1, Socket::fd)).cast_unsigned(),
             }
         }
         OP_SET_MAX_CONNECTION => {
@@ -383,7 +383,7 @@ mod tests {
             OP_PORT_IDLE, OP_PORT_REMOVED, OP_PORT_STREAM,
         };
         let state = swr_v1_server_state_new();
-        let mut socket = SocketRecord::new();
+        let mut socket = swoole_rs_reactor::SocketRecord::new();
         socket.fd = 7;
         socket.removed = 1;
         let ports: Vec<_> = [1, 2]

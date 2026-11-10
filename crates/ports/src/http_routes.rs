@@ -321,7 +321,11 @@ pub mod exports {
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
             unsafe {
-                websocket_dispatch_frame(r.protocol.cast(), r.socket, (&raw const frame).cast())
+                websocket_dispatch_frame(
+                    r.protocol.cast(),
+                    r.socket.as_ptr(),
+                    (&raw const frame).cast(),
+                )
             }
         }
     }

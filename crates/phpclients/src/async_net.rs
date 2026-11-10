@@ -567,7 +567,9 @@ fn enable_ssl(call: &Call) {
     unsafe { update_property(ASYNC.entry(), object.as_ptr(), c"onSSLReady", zcallback) };
     replace(object, SSL_READY, callable);
     conn.ssl_wait = true;
-    conn.cli.socket_mut().tls.state = SSL_STATE_WAIT_STREAM;
+    if let Some(socket) = conn.cli.net() {
+        socket.edit(|record| record.tls.state = SSL_STATE_WAIT_STREAM);
+    }
     call.set_bool(true);
 }
 

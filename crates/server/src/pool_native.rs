@@ -19,6 +19,7 @@ use core::mem::MaybeUninit;
 use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
+use crate::objects::socket;
 use core::sync::atomic::AtomicU64;
 use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
 use swoole_rs_corebase::CoreAllocator;
@@ -56,8 +57,7 @@ use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
     swoole_event_write, swr_v1_event_current,
 };
-use swoole_rs_reactor::socket_upstream::socket_wait_event;
-use swoole_rs_reactor::{Event, SocketRecord};
+use swoole_rs_reactor::{Event, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select, swr_v1_timer_add_plain, swr_v1_timer_owner_reinit,
@@ -149,9 +149,9 @@ fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
     unsafe { &mut *worker }
 }
 
-fn socket<'a>(socket: *mut c_void) -> &'a mut SocketRecord {
-    // SAFETY: every caller passes a live socket.
-    unsafe { &mut *socket.cast::<SocketRecord>() }
+/// A live socket's fd, or -1 for none.
+fn fd(socket: *mut c_void) -> c_int {
+    crate::objects::socket(socket).map_or(-1, Socket::fd)
 }
 
 fn errno() -> c_int {
@@ -179,7 +179,7 @@ fn bus_of(pool: Pool) -> crate::objects::Bus {
 
 /// `MessageBus::read(sock)`.
 fn bus_read(pool: Pool, sock: *mut c_void) -> isize {
-    bus_of(pool).read(socket(sock))
+    socket(sock).map_or(-1, |sock| bus_of(pool).read(sock))
 }
 
 /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
@@ -187,7 +187,7 @@ fn bus_read(pool: Pool, sock: *mut c_void) -> isize {
 pub(crate) fn read_bus(
     bus: &mut MessageBus,
     allocator: *const CoreAllocator,
-    sock: &mut SocketRecord,
+    sock: Socket<'_>,
     dgram: bool,
 ) -> isize {
     let mut state = BusRead {
@@ -200,8 +200,10 @@ pub(crate) fn read_bus(
         event: 0,
     };
     loop {
-        // SAFETY: a bus whose buffer is set, and its pipe's descriptor and flag.
-        let n = unsafe { bus.receive(sock.fd, dgram, &mut sock.kernel_nobufs, &mut state) };
+        let n = sock.edit(|sock| {
+            // SAFETY: a bus whose buffer is set, and its pipe's descriptor and flag.
+            unsafe { bus.receive(sock.fd, dgram, &mut sock.kernel_nobufs, &mut state) }
+        });
         if state.event != BUS_ALLOCATE {
             return n;
         }
@@ -438,7 +440,9 @@ unsafe extern "C" fn recv_packet(reactor: *mut c_void, event: *mut c_void) -> c_
     let packet = unsafe { pool_ipc_packet(record(pool).ipc.cast()) };
     let size = record(pool).max_packet_size as usize;
     // SAFETY: the packet buffer holds `max_packet_size` bytes.
-    let n = unsafe { libc::read(socket(event.socket).fd, packet.cast(), size) };
+    let fd = fd(event.socket.cast());
+    // SAFETY: as above.
+    let n = unsafe { libc::read(fd, packet.cast(), size) };
     if n < 0 && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",
@@ -527,7 +531,7 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_SNDBUF => {
             let mut size: c_int = 0;
             let mut length = size_of::<c_int>() as libc::socklen_t;
-            let fd = socket(worker_of(worker).pipe_master).fd;
+            let fd = fd(worker_of(worker).pipe_master);
             // SAFETY: an int option into a local.
             let failed = unsafe {
                 libc::getsockopt(
@@ -565,8 +569,8 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
     Some(match op {
         OP_UNLIMIT_PIPES => {
             for end in [worker_of(worker).pipe_worker, worker_of(worker).pipe_master] {
-                if !end.is_null() {
-                    socket(end).output.buffer_size = u32::MAX;
+                if let Some(end) = socket(end) {
+                    end.edit(|end| end.output.buffer_size = u32::MAX);
                 }
             }
             0
@@ -603,7 +607,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_REMOVE_PIPE => {
             // arg: only when the pipe is still in the reactor.
             let pipe = worker_of(worker).pipe_worker;
-            if arg == 0 || (!pipe.is_null() && socket(pipe).removed == 0) {
+            if arg == 0 || socket(pipe).is_some_and(|pipe| pipe.read(|pipe| pipe.removed == 0)) {
                 // SAFETY: the worker's pipe, in this thread's loop.
                 unsafe { swoole_event_del(pipe.cast()) };
             }
@@ -616,8 +620,8 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         }
         OP_DONT_RESTART => {
             let pipe = worker_of(worker).pipe_worker;
-            if !pipe.is_null() {
-                socket(pipe).dont_restart = 1;
+            if let Some(pipe) = socket(pipe) {
+                pipe.edit(|pipe| pipe.dont_restart = 1);
             }
             0
         }
@@ -843,8 +847,11 @@ unsafe extern "C" fn accept(arg: *mut c_void) {
     let c = call_of(arg);
     // SAFETY: the pool's stream listener.
     let listener = unsafe { swr_v1_process_pool_ipc_listener(record(c.pool.cast()).ipc.cast()) };
-    // SAFETY: as above.
-    c.socket = unsafe { (*listener.cast::<SocketRecord>()).accept() }.cast();
+    c.socket = socket(listener.cast())
+        .map_or(ptr::null_mut(), |listener| {
+            listener.edit(swoole_rs_reactor::SocketRecord::accept)
+        })
+        .cast();
     c.error = errno();
 }
 
@@ -869,26 +876,24 @@ unsafe extern "C" fn close(sock: *mut c_void) {
 
 unsafe extern "C" fn pipe_read(arg: *mut c_void) {
     io(arg, |c| {
-        let pipe = worker_of(c.worker.cast())
-            .pipe_worker
-            .cast::<SocketRecord>();
+        let Some(pipe) = socket(worker_of(c.worker.cast()).pipe_worker) else {
+            return -1;
+        };
         let next = swoole_timer_get_next_msec();
         #[expect(clippy::cast_precision_loss, reason = "msec2sec's (double) conversion")]
         let timeout = next as f64 / 1000.0;
-        // SAFETY: the worker's pipe.
-        unsafe { (*pipe).timeouts.set(timeout, TIMEOUT_READ) };
+        pipe.edit(|pipe| pipe.timeouts.set(timeout, TIMEOUT_READ));
         // SAFETY: the worker's pipe and the call's buffer.
-        unsafe { socket_read_sync(pipe, c.data, c.length) }
+        unsafe { socket_read_sync(pipe.as_ptr(), c.data, c.length) }
     });
 }
 
 unsafe extern "C" fn pipe_wait(arg: *mut c_void) {
     io(arg, |c| {
         let next = swoole_timer_get_next_msec();
-        // SAFETY: the worker's pipe.
-        let pipe = unsafe { &*worker_of(c.worker.cast()).pipe_worker.cast() };
-        let ready = socket_wait_event(pipe, next as c_int, EVENT_READ);
-        ready as isize
+        socket(worker_of(c.worker.cast()).pipe_worker).map_or(-1, |pipe| {
+            pipe.wait_event(next as c_int, EVENT_READ) as isize
+        })
     });
 }
 
@@ -978,11 +983,11 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
             let listener = unsafe { swr_v1_process_pool_ipc_listener(record(pool).ipc.cast()) };
             log::sys_warning(
                 origin,
-                format_args!("[Worker#{id}] accept({}) failed", socket(listener).fd),
+                format_args!("[Worker#{id}] accept({}) failed", fd(listener.cast())),
             );
         }
         WARN_READ => {
-            let fd = socket(worker_of(worker).pipe_worker).fd;
+            let fd = fd(worker_of(worker).pipe_worker);
             log::sys_warning(origin, format_args!("[Worker#{id}] read({fd}) failed"));
         }
         WARN_BAD_PACKET => log::error_log(

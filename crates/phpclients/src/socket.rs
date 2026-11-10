@@ -807,7 +807,7 @@ fn recvfrom(call: &Call) {
 /// `["address" => .., "port" => ..]` of the socket's last address.
 fn address(socket: Co) -> OwnedArray {
     let (address, port) = socket.address();
-    endpoint(address, port)
+    endpoint(&address, port)
 }
 
 /// `["address" => address, "port" => port]`.

@@ -12,8 +12,8 @@ use swoole_rs_clients::address::{
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
-use swoole_rs_reactor::SocketRecord;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
+use swoole_rs_reactor::{Socket, SocketRecord};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -175,9 +175,12 @@ fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int
 pub(crate) fn listen(port: *mut c_void) -> c_int {
     // SAFETY: a live port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
-    let socket = config.socket.cast::<SocketRecord>();
-    // SAFETY: the port's live socket.
-    if !config.listening && unsafe { (*socket).listen(c_int::from(config.backlog)) } < 0 {
+    // SAFETY: the port's live socket, which only this thread touches.
+    let Some(socket) = (unsafe { Socket::from_ptr(config.socket.cast()) }) else {
+        return -1;
+    };
+    let backlog = c_int::from(config.backlog);
+    if !config.listening && socket.edit(|s| s.listen(backlog)) < 0 {
         log::sys_warning(
             c"ListenPort::listen",
             format_args!(
@@ -190,8 +193,7 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
         return -1;
     }
     config.listening = true;
-    // SAFETY: as above.
-    let fd = unsafe { (*socket).fd };
+    let fd = socket.fd();
     let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
     for (level, option, name, value) in listen_options(config) {
         // SAFETY: `value` is a live c_int of `size` bytes.
@@ -253,13 +255,13 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     } else {
         FD_STREAM_SERVER
     };
-    let socket = make_socket_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
-    if socket.is_null() {
+    let made = make_socket_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    // SAFETY: the record just made, null or live, which only this function holds.
+    let Some(socket) = (unsafe { Socket::from_ptr(made) }) else {
         log::set_last_error(errno());
         return -1;
-    }
-    // SAFETY: the live record just made.
-    let fd = unsafe { (*socket).fd };
+    };
+    let fd = socket.fd();
     let kqueue = cfg!(any(
         target_os = "macos",
         target_os = "freebsd",
@@ -273,7 +275,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     let fail = || {
         log::set_last_error(errno());
         // SAFETY: the record just made, freed once, on this failure path.
-        unsafe { socket_free(socket) };
+        unsafe { socket_free(made) };
         -1
     };
     if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
@@ -319,19 +321,15 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
             format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
         );
     }
-    // SAFETY: the live record and the address assigned above.
-    let bound = unsafe { (*socket).bind(&address) };
-    // SAFETY: the live record.
-    if bound < 0 || unsafe { (*socket).get_name() } < 0 {
+    if socket.edit(|s| s.bind(&address)) < 0 || socket.edit(SocketRecord::get_name) < 0 {
         return fail();
     }
-    // SAFETY: the live record.
-    let info = unsafe { &raw const (*socket).info };
+    let info = socket.read(|s| s.info);
     // SAFETY: get_name filled the record's address.
-    config.port = unsafe { swr_v1_clients_address_port(info) };
+    config.port = unsafe { swr_v1_clients_address_port(&raw const info) };
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
-    config.socket = socket.cast();
+    config.socket = made.cast();
     0
 }
 
@@ -345,7 +343,9 @@ pub(crate) fn close_socket(port: *mut c_void) {
     let config = unsafe { port_config::of(port) };
     let socket = config.socket.cast::<SocketRecord>();
     // SAFETY: the port's live socket, which nothing else uses.
-    let fd = unsafe { (*socket).fd };
+    let Some(fd) = (unsafe { Socket::from_ptr(socket) }).map(Socket::fd) else {
+        return;
+    };
     // SAFETY: close(2) has no memory preconditions.
     if unsafe { libc::close(fd) } < 0 {
         log::sys_warning(

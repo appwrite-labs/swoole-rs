@@ -13,7 +13,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_add
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{Registry, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Registry, Socket as Handle, SocketRecord, reactor_upstream};
 use swoole_rs_timer::{TimerStats, swr_v1_timer_owner_queue, swr_v1_timer_stats_get};
 use swoole_rs_tls::socket_pair::SocketPair;
 
@@ -130,10 +130,10 @@ fn nth<T>(items: &[*mut T], index: u64) -> *mut T {
 }
 
 /// A live socket of the server's.
-fn live<'a>(socket: *mut c_void) -> &'a SocketRecord {
+fn live<'a>(socket: *mut c_void) -> Handle<'a> {
     // SAFETY: sockets the server, its pools and its reactor hold are live while
     // a command runs.
-    unsafe { &*socket.cast::<SocketRecord>() }
+    unsafe { Handle::from_ptr(socket.cast()) }.unwrap_or_else(|| std::process::abort())
 }
 
 /// This thread's reactor's sockets, if it has a reactor.
@@ -222,7 +222,7 @@ impl Facts for Live<'_> {
         } else {
             pipe.worker_socket
         };
-        socket(live(end.cast()))
+        live(end.cast()).read(socket)
     }
 
     fn has_reactor(&mut self) -> bool {
@@ -235,13 +235,11 @@ impl Facts for Live<'_> {
     }
 
     fn socket(&mut self, index: u64) -> Socket {
-        socket(live(nth(&self.sockets, index)))
+        live(nth(&self.sockets, index)).read(socket)
     }
 
     fn socket_name(&mut self, index: u64) {
-        let sock = nth(&self.sockets, index);
-        // SAFETY: one of the reactor's live sockets.
-        unsafe { (*sock.cast::<SocketRecord>()).get_name() };
+        live(nth(&self.sockets, index)).edit(SocketRecord::get_name);
     }
 
     fn commands(&mut self) -> Vec<Command> {
@@ -275,7 +273,7 @@ impl Facts for Live<'_> {
                 // SAFETY: this worker's live record.
                 !worker.is_null() && owner != i64::from(unsafe { &*worker }.id())
             };
-            if live(conn.socket).fd_type != FD_SESSION
+            if live(conn.socket).read(|s| s.fd_type) != FD_SESSION
                 || (mode == MODE_PROCESS && owner != reactor_id)
                 || (mode == MODE_BASE && other_worker())
             {
@@ -296,25 +294,25 @@ impl Facts for Live<'_> {
         let conn = self.connection_record(index);
         let listener = self.serv.port_by_server_fd(conn.server_fd);
         // SAFETY: the connection's live port.
-        let listener = live(unsafe { view::port(listener) }.socket);
-        let sock = live(conn.socket);
+        let listener = live(unsafe { view::port(listener) }.socket).read(|s| s.info);
+        let (received, sent) = live(conn.socket).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
             session_id: conn.session_id,
             reactor_id: conn.reactor_id.into(),
             fd: conn.fd.into(),
-            server_port: port(&listener.info),
+            server_port: port(&listener),
             port: port(&conn.info),
             overflow: conn.overflow.into(),
             recv_queued_bytes: conn.recv_queued_bytes.load(Relaxed).into(),
             send_queued_bytes: conn.send_queued_bytes.into(),
-            total_recv_bytes: sock.total_recv_bytes as u64,
-            total_send_bytes: sock.total_send_bytes as u64,
+            total_recv_bytes: received as u64,
+            total_send_bytes: sent as u64,
             uid: conn.uid.into(),
             connect_time: conn.connect_time,
             last_recv_time: conn.last_recv_time,
             last_send_time: conn.last_send_time,
             last_dispatch_time: conn.last_dispatch_time,
-            server_address: address(&listener.info),
+            server_address: address(&listener),
             address: address(&conn.info),
         }
     }
@@ -356,7 +354,10 @@ impl Facts for Live<'_> {
         // SAFETY: null, or this thread's live buffer.
         let thread_buffer = unsafe { buffer.as_ref() }.map_or(0, |buffer| buffer.size);
         let sockets = registry().map(Registry::sockets).unwrap_or_default();
-        let out_buffers = sockets.iter().map(|&s| out_buffer_length(live(s))).sum();
+        let out_buffers = sockets
+            .iter()
+            .map(|&s| live(s).read(out_buffer_length))
+            .sum();
         let php = PHP_MEMORY.get().map_or(0, |usage| usage());
         // The server's own records stand for upstream's `sizeof(Server)`.
         let server =

@@ -50,11 +50,16 @@ pub extern "C" fn socket_wait_event(
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
+    wait_event(socket.fd, socket.dont_restart != 0, timeout_ms, events)
+}
+
+/// [`socket_wait_event`] over a socket's `fd` and `dont_restart`.
+pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, events: c_int) -> c_int {
     let result = crate::fd_wait(
-        socket.fd,
+        fd,
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
-        socket.dont_restart != 0,
+        dont_restart,
         signal_dispatch(),
     );
     match result.status {
@@ -87,17 +92,30 @@ pub fn socket_connect_async(socket: &mut SocketRecord, address: &SocketAddress) 
 }
 
 /// `int Socket::connect_sync(const Address &sa)`.
+/// # Safety
+/// `socket` is null or a live socket on this thread.
+#[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket12connect_syncERKNS0_7AddressE")
 )]
-pub extern "C" fn socket_connect_sync(socket: &mut SocketRecord, address: &SocketAddress) -> c_int {
-    match socket_connect_async(socket, address) {
+pub unsafe extern "C" fn socket_connect_sync(
+    socket: *mut SocketRecord,
+    address: &SocketAddress,
+) -> c_int {
+    // SAFETY: as the caller promises: `this`, a live socket.
+    unsafe { crate::Socket::from_ptr(socket) }.map_or(ERR, |socket| connect_sync(socket, address))
+}
+
+/// [`socket_connect_sync`] over a socket's handle; it waits outside any borrow.
+#[must_use]
+pub fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddress) -> c_int {
+    match socket.edit(|record| socket_connect_async(record, address)) {
         WAIT => {}
         READY => return OK,
         _ => return ERR,
     }
-    let timeout = socket.timeouts.connect;
+    let timeout = socket.read(|record| record.timeouts.connect);
     // Upstream's `timeout > 0 ? sec2msec(timeout) : timeout` is a double.
     #[expect(
         clippy::cast_possible_truncation,
@@ -108,16 +126,16 @@ pub extern "C" fn socket_connect_sync(socket: &mut SocketRecord, address: &Socke
     } else {
         timeout as c_int
     };
-    if socket_wait_event(socket, timeout_ms, EVENT_WRITE) < 0 {
+    if socket.wait_event(timeout_ms, EVENT_WRITE) < 0 {
         log::set_last_error(libc::ETIMEDOUT);
         return ERR;
     }
-    let pending = crate::fd_pending_error(socket.fd);
+    let pending = crate::fd_pending_error(socket.fd());
     if pending.status != 0 {
         log::set_last_error(pending.error);
         return ERR;
     }
-    socket_set_fd_option(socket, 0, -1);
+    socket.edit(|record| socket_set_fd_option(record, 0, -1));
     OK
 }
 

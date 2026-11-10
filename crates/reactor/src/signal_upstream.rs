@@ -150,9 +150,10 @@ fn report(kind: u8, signo: i32, error: i32) {
 #[cfg(target_os = "linux")]
 mod descriptor {
     use super::{
-        EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK,
-        SocketRecord, c_int, c_void, current, socket_free, swoole_event_add, swoole_event_del,
+        EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK, c_int,
+        c_void, current, socket_free, swoole_event_add, swoole_event_del,
     };
+    use crate::Socket;
     use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
     use crate::socket_upstream::make_socket_fd;
     use swoole_rs_process::signal_loop::DescriptorOps;
@@ -165,18 +166,21 @@ mod descriptor {
     /// # Safety
     /// `socket` is the loop's live signalfd wrapper.
     pub(super) unsafe fn free(socket: *mut c_void) {
-        let socket = socket.cast::<SocketRecord>();
         // SAFETY: the loop's live signalfd wrapper.
-        unsafe { (*socket).fd = -1 };
+        let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+            return;
+        };
+        socket.edit(|record| record.fd = -1);
         // SAFETY: as above; nothing uses it afterwards.
-        unsafe { socket_free(socket) };
+        unsafe { socket_free(socket.as_ptr()) };
     }
 
     /// # Safety
     /// `socket` is the loop's live signalfd wrapper.
     pub(super) unsafe fn events(socket: *mut c_void) -> i32 {
         // SAFETY: the loop's live signalfd wrapper.
-        unsafe { (*socket.cast::<SocketRecord>()).events }
+        unsafe { Socket::from_ptr(socket.cast()) }
+            .map_or(0, |socket| socket.read(|record| record.events))
     }
 
     /// # Safety

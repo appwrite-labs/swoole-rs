@@ -1048,8 +1048,7 @@ fn set_timeout(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: a worker with a pipe.
-    call.set_bool(unsafe { worker::pipe_timeout(worker, seconds) });
+    call.set_bool(worker::pipe_timeout(worker, seconds));
 }
 
 fn set_blocking(call: &Call) {
@@ -1064,8 +1063,7 @@ fn set_blocking(call: &Call) {
         return;
     }
     process.blocking = blocking;
-    // SAFETY: a worker with a pipe.
-    call.set_bool(unsafe { worker::pipe_blocking(process.worker, blocking) });
+    call.set_bool(worker::pipe_blocking(process.worker, blocking));
 }
 
 /// `SW_CHECK_PRIORITY_WHO`: a null `$who` means this process for

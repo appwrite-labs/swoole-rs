@@ -9,8 +9,8 @@ use crate::upstream::{socket_free, socket_read_sync, socket_write_sync};
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::socket_upstream::{make_socket_fd, socket_set_fd_option, socket_wait_event};
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_defaults};
+use swoole_rs_reactor::socket_upstream::{make_socket_fd, socket_set_fd_option};
+use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_defaults};
 
 /// `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_ALL` and `SW_OK`.
 const FD_PIPE: c_int = 3;
@@ -144,6 +144,17 @@ pub unsafe extern "C" fn unix_socket_new_base(
     unsafe { unix_socket_new(this, blocking, protocol) }
 }
 
+/// The two ends, master first (None once closed).
+///
+/// # Safety
+/// `this` is a live pair whose open ends are live sockets while the handles are used.
+unsafe fn ends<'a>(this: *const SocketPair) -> [Option<Socket<'a>>; 2] {
+    // SAFETY: as the caller promises.
+    let pair = unsafe { &*this };
+    // SAFETY: as the caller promises.
+    [pair.master_socket, pair.worker_socket].map(|end| unsafe { Socket::from_ptr(end) })
+}
+
 /// `bool UnixSocket::set_buffer_size(size_t) const`: the master's kernel buffers, then
 /// the worker's; false at the first that fails.
 ///
@@ -161,14 +172,9 @@ pub unsafe extern "C" fn unix_socket_set_buffer_size(this: *const SocketPair, si
     )]
     let size = size as u32;
     // SAFETY: as the caller promises.
-    let pair = unsafe { &*this };
-    [pair.master_socket, pair.worker_socket]
-        .into_iter()
-        .all(|socket| {
-            // SAFETY: as the caller promises.
-            let fd = unsafe { (*socket).fd };
-            swr_v1_socket_buffer_size(fd, true, true, size)
-        })
+    unsafe { ends(this) }.into_iter().all(|socket| {
+        socket.is_some_and(|socket| swr_v1_socket_buffer_size(socket.fd(), true, true, size))
+    })
 }
 
 /// `void SocketPair::set_timeout(double)`: the pair's, then each end's every timeout.
@@ -181,11 +187,10 @@ pub unsafe extern "C" fn unix_socket_set_buffer_size(this: *const SocketPair, si
 )]
 pub unsafe extern "C" fn set_timeout(this: *mut SocketPair, timeout: f64) {
     // SAFETY: as the caller promises.
-    let pair = unsafe { &mut *this };
-    pair.timeout = timeout;
-    for socket in [pair.master_socket, pair.worker_socket] {
-        // SAFETY: as the caller promises, the end's live timeout group.
-        unsafe { (*socket).timeouts.set(timeout, TIMEOUT_ALL) };
+    unsafe { (*this).timeout = timeout };
+    // SAFETY: as the caller promises.
+    for socket in unsafe { ends(this) }.into_iter().flatten() {
+        socket.edit(|record| record.timeouts.set(timeout, TIMEOUT_ALL));
     }
 }
 
@@ -199,12 +204,12 @@ pub unsafe extern "C" fn set_timeout(this: *mut SocketPair, timeout: f64) {
 )]
 pub unsafe extern "C" fn set_blocking(this: *mut SocketPair, blocking: bool) {
     // SAFETY: as the caller promises.
-    let pair = unsafe { &mut *this };
-    for socket in [pair.worker_socket, pair.master_socket] {
-        // SAFETY: as the caller promises.
-        socket_set_fd_option(unsafe { &mut *socket }, c_int::from(!blocking), -1);
+    let [master, worker] = unsafe { ends(this) };
+    for socket in [worker, master].into_iter().flatten() {
+        socket.edit(|record| socket_set_fd_option(record, c_int::from(!blocking), -1));
     }
-    pair.blocking = blocking;
+    // SAFETY: as the caller promises.
+    unsafe { (*this).blocking = blocking };
 }
 
 /// `ssize_t SocketPair::read(void *, size_t) const`: from the worker end, waiting for
@@ -230,7 +235,10 @@ pub unsafe extern "C" fn read(
         unsafe { socket_read_sync(socket, buffer, length) }
     } else {
         // SAFETY: as the caller promises.
-        let fd = unsafe { (*socket).fd };
+        let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+            return -1;
+        };
+        let fd = socket.fd();
         // SAFETY: as the caller promises.
         unsafe { libc::read(fd, buffer, length) }
     }
@@ -258,7 +266,10 @@ pub unsafe extern "C" fn write(
         unsafe { socket_write_sync(socket, buffer, length) }
     } else {
         // SAFETY: as the caller promises.
-        let fd = unsafe { (*socket).fd };
+        let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+            return -1;
+        };
+        let fd = socket.fd();
         // SAFETY: as the caller promises.
         unsafe { libc::write(fd, buffer, length) }
     }
@@ -274,13 +285,13 @@ pub unsafe extern "C" fn write(
 )]
 pub unsafe extern "C" fn clean(this: *const SocketPair) {
     // SAFETY: as the caller promises.
-    let socket = unsafe { (*this).worker_socket };
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &*socket };
+    let [_, Some(socket)] = (unsafe { ends(this) }) else {
+        return;
+    };
     let mut buffer = [0_u8; 1024];
-    while socket_wait_event(socket, 0, EVENT_READ) == OK {
+    while socket.wait_event(0, EVENT_READ) == OK {
         // SAFETY: a local buffer of that size.
-        if unsafe { libc::read(socket.fd, buffer.as_mut_ptr().cast(), buffer.len()) } <= 0 {
+        if unsafe { libc::read(socket.fd(), buffer.as_mut_ptr().cast(), buffer.len()) } <= 0 {
             break;
         }
     }

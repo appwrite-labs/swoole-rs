@@ -309,13 +309,9 @@ pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_v
     let event_record = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
     ctx.reactor = reactor;
     ctx.event = event;
-    // SAFETY: a listening socket's object is its port.
-    ctx.port = unsafe {
-        (*event_record
-            .socket
-            .cast::<swoole_rs_reactor::SocketRecord>())
-        .object
-    };
+    // SAFETY: as the caller guarantees, the event's live listening socket, whose object is its port.
+    let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(event_record.socket.cast()) };
+    ctx.port = listener.map_or(core::ptr::null_mut(), |s| s.read(|s| s.object));
     ctx.server_fd = event_record.fd;
     // SAFETY: as the caller guarantees.
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })

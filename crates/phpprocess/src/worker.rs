@@ -8,7 +8,7 @@ use swoole_rs_process::{
     worker_record::WorkerRecord,
 };
 use swoole_rs_reactor::{
-    SocketRecord,
+    Socket, SocketRecord,
     socket_upstream::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
     },
@@ -111,32 +111,27 @@ pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
         unsafe { delete_pair(pair) };
         return -1;
     }
-    let worker = record(worker);
-    worker.pipe_master = master.cast();
-    worker.pipe_worker = end.cast();
-    worker.pipe_object = pair.cast();
-    worker.pipe_current = master.cast();
-    fd(master)
+    let record = record(worker);
+    record.pipe_master = master.cast();
+    record.pipe_worker = end.cast();
+    record.pipe_object = pair.cast();
+    record.pipe_current = master.cast();
+    pipe(worker).map_or(-1, Socket::fd)
 }
 
-fn pipe(worker: *mut c_void) -> *mut SocketRecord {
-    record(worker).pipe_current.cast()
-}
-
-/// A live socket's descriptor.
-fn fd(socket: *const SocketRecord) -> c_int {
-    // SAFETY: callers pass a live socket.
-    unsafe { (*socket).fd }
+/// The worker's current pipe end, while it has one.
+fn pipe<'a>(worker: *mut c_void) -> Option<Socket<'a>> {
+    // SAFETY: a worker's current pipe end is null or a live socket of its pair.
+    unsafe { Socket::from_ptr(record(worker).pipe_current.cast()) }
 }
 
 pub(crate) fn view(worker: *mut c_void) -> WorkerView {
-    let socket = pipe(worker);
+    let pipe = pipe(worker).map_or(-1, Socket::fd);
     let record = record(worker);
     WorkerView {
         id: record.id(),
         pid: record.pid(),
-        // A worker's current pipe end is null or a live socket.
-        pipe: if socket.is_null() { -1 } else { fd(socket) },
+        pipe,
         pipe_object: !record.pipe_object.is_null(),
         redirect_stdin: record.redirect_stdin,
         redirect_stdout: record.redirect_stdout,
@@ -176,13 +171,15 @@ pub(crate) unsafe fn pipe_read(
     length: usize,
     blocking: bool,
 ) -> isize {
-    let socket = pipe(worker);
+    let Some(socket) = pipe(worker) else {
+        return -1;
+    };
     if blocking {
         // SAFETY: as the caller promises.
-        unsafe { socket_read_sync(socket, buffer.cast(), length) }
+        unsafe { socket_read_sync(socket.as_ptr(), buffer.cast(), length) }
     } else {
         // SAFETY: as the caller promises.
-        unsafe { libc::read(fd(socket), buffer.cast(), length) }
+        unsafe { libc::read(socket.fd(), buffer.cast(), length) }
     }
 }
 
@@ -194,14 +191,16 @@ pub(crate) unsafe fn pipe_write(
     length: usize,
     blocking: bool,
 ) -> isize {
-    let socket = pipe(worker);
+    let Some(socket) = pipe(worker) else {
+        return -1;
+    };
     // SAFETY: the event loop's state.
     if !blocking && unsafe { swoole_event_is_available() } {
         // SAFETY: as the caller promises.
-        return unsafe { swoole_event_write(socket, data.cast(), length) };
+        return unsafe { swoole_event_write(socket.as_ptr(), data.cast(), length) };
     }
     // SAFETY: as the caller promises.
-    unsafe { socket_send_sync(socket, data.cast(), length, 0) }
+    unsafe { socket_send_sync(socket.as_ptr(), data.cast(), length, 0) }
 }
 
 /// Shut one direction of the pipe, or close the pair's `which` end (0: both,
@@ -209,13 +208,13 @@ pub(crate) unsafe fn pipe_write(
 /// # Safety
 /// The worker owns a pipe object.
 pub(crate) unsafe fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
-    let socket = pipe(worker);
+    let fd = pipe(worker).map_or(-1, Socket::fd);
     let worker = record(worker);
     let ret = match which {
-        // SAFETY: as the caller promises.
-        CLOSE_READ => unsafe { libc::shutdown(fd(socket), libc::SHUT_RD) },
-        // SAFETY: as the caller promises.
-        CLOSE_WRITE => unsafe { libc::shutdown(fd(socket), libc::SHUT_WR) },
+        // SAFETY: shutdown(2) has no memory preconditions.
+        CLOSE_READ => unsafe { libc::shutdown(fd, libc::SHUT_RD) },
+        // SAFETY: as above.
+        CLOSE_WRITE => unsafe { libc::shutdown(fd, libc::SHUT_WR) },
         #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
         // SAFETY: as the caller promises.
         _ => c_int::from(unsafe { socket_pair::close(worker.pipe_object.cast(), which as c_int) }),
@@ -229,21 +228,22 @@ pub(crate) unsafe fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
     ret
 }
 
-/// # Safety
-/// The worker has a pipe.
-pub(crate) unsafe fn pipe_timeout(worker: *mut c_void, seconds: f64) -> bool {
-    // SAFETY: as the caller promises, the live socket.
-    let socket = unsafe { &mut *pipe(worker) };
-    socket.timeouts.set(seconds, TIMEOUT_ALL);
-    socket_set_kernel_read_timeout(socket, seconds)
-        && socket_set_kernel_write_timeout(socket, seconds)
+/// The pipe's timeouts and kernel timeouts; false without a pipe.
+pub(crate) fn pipe_timeout(worker: *mut c_void, seconds: f64) -> bool {
+    pipe(worker).is_some_and(|socket| {
+        socket.edit(|record| {
+            record.timeouts.set(seconds, TIMEOUT_ALL);
+            socket_set_kernel_read_timeout(record, seconds)
+                && socket_set_kernel_write_timeout(record, seconds)
+        })
+    })
 }
 
-/// # Safety
-/// The worker has a pipe.
-pub(crate) unsafe fn pipe_blocking(worker: *mut c_void, blocking: bool) -> bool {
-    // SAFETY: as the caller promises.
-    socket_set_fd_option(unsafe { &mut *pipe(worker) }, c_int::from(!blocking), -1)
+/// The pipe's `O_NONBLOCK`; false without a pipe.
+pub(crate) fn pipe_blocking(worker: *mut c_void, blocking: bool) -> bool {
+    pipe(worker).is_some_and(|socket| {
+        socket.edit(|record| socket_set_fd_option(record, c_int::from(!blocking), -1))
+    })
 }
 
 /// `daemon(pipes:)`: `dup2(from, to)`, warning on failure.

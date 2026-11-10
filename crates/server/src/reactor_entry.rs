@@ -279,8 +279,14 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let serv = unsafe { (*proto).private_data_2 };
     // SAFETY: per the caller, a live server's.
     let state = unsafe { state(serv) };
-    // SAFETY: a session socket's object is its live connection.
-    let conn = unsafe { (*socket).object }.cast::<crate::records::ConnectionRecord>();
+    // SAFETY: per the caller, a live session socket.
+    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    // A session socket's object is its live connection.
+    let conn = socket
+        .read(|s| s.object)
+        .cast::<crate::records::ConnectionRecord>();
     // SAFETY: per the caller.
     let rdata = unsafe { &*rdata };
     let len = rdata.info.len;
@@ -309,7 +315,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         crate::factory::dispatch(state, (&raw mut task).cast())
     } else {
         let mut ctx = ReactorContext::new(serv, ptr::null_mut());
-        ctx.sock = socket;
+        ctx.sock = socket.as_ptr();
         ctx.conn = conn;
         let task = &raw mut task;
         let base = mode == crate::MODE_BASE;

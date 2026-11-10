@@ -15,7 +15,7 @@ use swoole_rs_reactor::event_api::{
     swoole_event_is_available, swoole_event_is_running, swr_v1_event_current,
 };
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_change};
-use swoole_rs_reactor::{SocketRecord, UringOps, swr_v1_reactor_deferred_push};
+use swoole_rs_reactor::{Socket, SocketRecord, UringOps, swr_v1_reactor_deferred_push};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
 const EVENT_READ: c_int = 1 << 9;
@@ -160,9 +160,11 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
     }
     // SAFETY: the engine opened.
     let fd = unsafe { &*opened.uring }.fd();
-    let socket = SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int).into_raw();
-    // SAFETY: the new record.
-    unsafe { (*socket).object = iouring.cast() };
+    let socket = SocketRecord {
+        object: iouring.cast(),
+        ..SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int)
+    }
+    .into_raw();
     // SAFETY: the new instance, not yet shared.
     unsafe { (*iouring).socket = socket };
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
@@ -217,12 +219,14 @@ unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
     let iouring = unsafe { Box::from_raw(iouring) };
     let socket = iouring.socket;
     // SAFETY: the record `create` registered on the closing reactor.
-    if unsafe { (*socket).removed } == 0 {
-        // SAFETY: as above.
-        unsafe { reactor_change(iouring.reactor, socket, 2, 0) };
+    if let Some(record) = unsafe { Socket::from_ptr(socket) } {
+        if record.read(|record| record.removed) == 0 {
+            // SAFETY: as above.
+            unsafe { reactor_change(iouring.reactor, socket, 2, 0) };
+        }
+        // The engine closes the fd.
+        record.edit(|record| record.fd = -1);
     }
-    // SAFETY: the record, whose fd the engine closes.
-    unsafe { (*socket).fd = -1 };
     // SAFETY: as above; nothing uses it afterwards.
     unsafe { swoole_rs_tls::upstream::socket_free(socket) };
     // SAFETY: the engine, with nothing in flight as the loop has ended.

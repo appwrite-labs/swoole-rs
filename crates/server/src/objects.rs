@@ -4,7 +4,7 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::{CoreAllocator, DataHead};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket;
 
 use swoole_rs_bus::{BusPacket, MessageBus};
 
@@ -19,9 +19,9 @@ unsafe extern "C-unwind" {
 }
 
 /// A live socket, or `None` for null.
-pub(crate) fn socket<'a>(socket: *mut c_void) -> Option<&'a mut SocketRecord> {
+pub(crate) fn socket<'a>(socket: *mut c_void) -> Option<Socket<'a>> {
     // SAFETY: the native objects hand out null or live sockets, each used by one thread.
-    unsafe { socket.cast::<SocketRecord>().as_mut() }
+    unsafe { Socket::from_ptr(socket.cast()) }
 }
 
 /// `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the thread
@@ -40,8 +40,9 @@ pub(crate) fn in_worker_bus(
 }
 
 /// `sock->set_nonblock()`.
-pub(crate) fn set_nonblock(sock: &mut SocketRecord) {
-    let _ = swoole_rs_reactor::socket_upstream::socket_set_fd_option(sock, 1, -1);
+pub(crate) fn set_nonblock(sock: Socket<'_>) {
+    let set = swoole_rs_reactor::socket_upstream::socket_set_fd_option;
+    let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
 /// A `MessageBus`: its Rust bus and the allocator of its packets.
@@ -107,15 +108,15 @@ impl Bus {
         self.rust().clear();
     }
     /// `MessageBus::read(sock)`.
-    pub(crate) fn read(self, sock: &mut SocketRecord) -> isize {
+    pub(crate) fn read(self, sock: Socket<'_>) -> isize {
         read_bus(self.rust(), self.allocator, sock, false)
     }
     /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
     /// whether the whole message went.
-    pub(crate) fn write(self, sock: &mut SocketRecord, head: &mut DataHead, data: &[u8]) -> bool {
+    pub(crate) fn write(self, sock: Socket<'_>, head: &mut DataHead, data: &[u8]) -> bool {
         head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         // SAFETY: a live socket, and `head.len` readable bytes.
-        unsafe { self.rust().send(sock, head, data.as_ptr()) }
+        unsafe { self.rust().send(sock.as_ptr(), head, data.as_ptr()) }
     }
     /// `MessageBus::set_always_chunked_transfer()`.
     pub(crate) fn set_always_chunked(self) {
@@ -152,8 +153,8 @@ impl Bus {
         unsafe { self.rust().set_buffer(core::ptr::null_mut()) };
     }
     /// `get_pipe_socket(sock)`: this bus's own end of the pipe `sock`.
-    pub(crate) fn pipe_socket(self, sock: &SocketRecord) -> *mut c_void {
-        self.pipe_fd(sock.fd)
+    pub(crate) fn pipe_socket(self, sock: Socket<'_>) -> *mut c_void {
+        self.pipe_fd(sock.fd())
     }
     /// This bus's own end of the pipe `fd`.
     pub(crate) fn pipe_fd(self, fd: c_int) -> *mut c_void {
@@ -165,9 +166,9 @@ pub(crate) use crate::reactor_handle::{EVENT_READ, Reactor};
 
 impl Reactor {
     /// `reactor->drain_write_buffer(sock)`.
-    pub(crate) fn drain(self, sock: &mut SocketRecord) {
+    pub(crate) fn drain(self, sock: Socket<'_>) {
         // SAFETY: as above.
-        unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock) };
+        unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock.as_ptr()) };
     }
     pub(crate) fn if_exit(self) -> bool {
         // SAFETY: a live reactor.

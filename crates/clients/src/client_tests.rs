@@ -251,7 +251,7 @@ pub(super) unsafe fn socket_ssl_create(
     log(format!("ssl session {flags}"));
     OK
 }
-pub(super) unsafe fn socket_ssl_connect(_: *mut SocketRecord) -> c_int {
+pub(super) fn socket_ssl_connect(_: Socket<'_>) -> c_int {
     log("ssl connect");
     if mock(|m| m.ssl_connect_ready) {
         sock().tls.state = SSL_STATE_READY;
@@ -266,7 +266,7 @@ pub(super) unsafe fn socket_ssl_check_host(_: *const SocketRecord, _: *const c_c
     log("ssl host");
     true
 }
-pub(super) unsafe fn socket_ssl_close(_: *mut SocketRecord) {
+pub(super) fn socket_ssl_close(_: Socket<'_>) {
     log("ssl close");
 }
 // crates/protocols-ffi's and OpenSSL's, which the hybrid links.
