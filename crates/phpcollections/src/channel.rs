@@ -63,7 +63,7 @@ unsafe fn wake(wait: *mut c_void, timeout: bool) {
     unsafe { co::wake(parked, false) };
 }
 
-unsafe extern "C" fn on_timeout(wait: *mut c_void) {
+unsafe extern "C-unwind" fn on_timeout(wait: *mut c_void) {
     // SAFETY: the wait deletes its timer before it ends.
     unsafe { wake(wait, true) };
 }

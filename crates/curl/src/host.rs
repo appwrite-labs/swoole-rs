@@ -22,15 +22,8 @@ const EVENT_ERROR: c_int = 1 << 11;
 const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
-// SAFETY: native/timer/timer.cc's,
-// crates/coroutine's and crates/timer's upstream functions.
+// SAFETY: crates/coroutine's and crates/timer's upstream functions.
 unsafe extern "C-unwind" {
-    fn swr_v1_timer_add_plain(
-        msec: c_long,
-        persistent: bool,
-        callback: extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> *mut c_void;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     fn swoole_timer_del(node: *mut c_void) -> bool;
     #[link_name = "_Z25swoole_timer_is_availablev"]
@@ -147,7 +140,7 @@ pub(crate) fn timer_available() -> bool {
 }
 
 /// The multi's timer fired.
-extern "C" fn on_timer(multi: *mut c_void) {
+extern "C-unwind" fn on_timer(multi: *mut c_void) {
     // SAFETY: the multi deletes its timer before it is freed.
     let multi = unsafe { &*multi.cast::<Multi>() };
     multi.timer.set(std::ptr::null_mut());
@@ -158,8 +151,8 @@ extern "C" fn on_timer(multi: *mut c_void) {
 /// fired, before it is freed.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> *mut c_void {
     let multi = ptr::from_ref(multi).cast_mut().cast();
-    // SAFETY: `on_timer` takes the multi, which outlives the timer.
-    unsafe { swr_v1_timer_add_plain(ms, false, on_timer, multi) }
+    // `on_timer` takes the multi, which outlives the timer.
+    swoole_rs_timer::swr_v1_timer_add_plain(ms, false, on_timer, multi)
 }
 
 /// # Safety

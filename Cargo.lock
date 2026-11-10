@@ -397,6 +397,7 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
@@ -437,6 +438,7 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -554,6 +556,7 @@ dependencies = [
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-uring-sys",
 ]
@@ -744,6 +747,7 @@ dependencies = [
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-zend",
 ]
 
@@ -943,6 +947,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-firebird",
  "swoole-rs-framing",
+ "swoole-rs-hooks",
  "swoole-rs-http2",
  "swoole-rs-memory",
  "swoole-rs-oci",
@@ -1081,6 +1086,7 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-utilities",
 ]

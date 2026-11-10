@@ -23,7 +23,7 @@ use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 #[cfg(feature = "upstream-symbols")]
-pub use wrapper::php;
+pub use wrapper::{php, swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec};
 
 const OK: i32 = 0;
 const EMPTY: i32 = 1;

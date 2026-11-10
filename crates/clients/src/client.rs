@@ -667,14 +667,14 @@ impl Handle {
     }
 }
 
-// crates/timer's, under their upstream symbols.
+// The unit tests log timers instead.
+#[cfg(not(test))]
+use swoole_rs_timer::swr_v1_timer_add_plain_sec;
+#[cfg(test)]
+use tests::swr_v1_timer_add_plain_sec;
+
+// crates/timer's, under its upstream symbol.
 unsafe extern "C-unwind" {
-    fn swr_v1_timer_add_plain_sec(
-        timeout: f64,
-        persistent: bool,
-        callback: extern "C-unwind" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> *mut c_void;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     fn swoole_timer_del(node: *mut c_void) -> bool;
 }
@@ -1534,10 +1534,8 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
             // A finished connect needs no timeout timer; either way the write
             // handler runs the proxy and TLS handshakes.
             if ret < 0 && timeout > 0.0 {
-                // SAFETY: a timer over the live client, which deletes it first.
-                let timer = unsafe {
-                    swr_v1_timer_add_plain_sec(timeout, false, on_timeout, this.0.cast())
-                };
+                // A timer over the live client, which deletes it first.
+                let timer = swr_v1_timer_add_plain_sec(timeout, false, on_timeout, this.0.cast());
                 this.get().timer.set(timer);
                 if timer.is_null() {
                     return ERR;

@@ -107,31 +107,33 @@ extern "C-unwind" fn swoole_timer_add(
     add(ms, persistent, TimerNode::new(callback, data))
 }
 
-/// `swoole_timer_add(ms, persistent, ...)` of a callback of `data` alone.
+/// `swoole_timer_add(ms, persistent, ...)` of a callback of `data` alone: the
+/// node, or null.
 #[unsafe(no_mangle)]
-extern "C-unwind" fn swr_v1_timer_add_plain(
+pub extern "C-unwind" fn swr_v1_timer_add_plain(
     ms: c_long,
     persistent: bool,
     callback: Plain,
     data: *mut c_void,
-) -> *mut TimerNode {
-    add(ms, persistent, TimerNode::plain(callback, data))
+) -> *mut c_void {
+    add(ms, persistent, TimerNode::plain(callback, data)).cast()
 }
 
 /// `swoole_timer_add(timeout, persistent, ...)`, in seconds, of a callback of
-/// `data` alone.
+/// `data` alone: the node, or null.
 #[unsafe(no_mangle)]
-extern "C-unwind" fn swr_v1_timer_add_plain_sec(
+pub extern "C-unwind" fn swr_v1_timer_add_plain_sec(
     timeout: f64,
     persistent: bool,
     callback: Plain,
     data: *mut c_void,
-) -> *mut TimerNode {
+) -> *mut c_void {
     add(
         sec2msec(timeout),
         persistent,
         TimerNode::plain(callback, data),
     )
+    .cast()
 }
 
 /// The id of a node the timer just added, or none.

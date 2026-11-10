@@ -58,6 +58,7 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::socket_upstream::socket_wait_event;
 use swoole_rs_reactor::{Event, SocketRecord};
+use swoole_rs_timer::swr_v1_timer_add_plain;
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
 
@@ -91,12 +92,6 @@ unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_createb"]
     fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
-    pub(crate) fn swr_v1_timer_add_plain(
-        msec: c_long,
-        persistent: bool,
-        callback: unsafe extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> *mut c_void;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     fn swr_v1_event_set_end_callback(id: c_int, callback: unsafe extern "C" fn());
@@ -403,24 +398,14 @@ pub(crate) fn free_message_box(pool: Pool) {
 
 // ---------------------------------------------------------------- timers and loop
 
-/// `swoole_timer_add(ms, false, callback, data)`.
-fn timer_after(
-    msec: c_long,
-    callback: unsafe extern "C" fn(*mut c_void),
-    data: *mut c_void,
-) -> *mut c_void {
-    // SAFETY: a one-shot timer of this thread's.
-    unsafe { swr_v1_timer_add_plain(msec, false, callback, data) }
-}
-
-unsafe extern "C" fn reload_timeout(task: *mut c_void) {
+unsafe extern "C-unwind" fn reload_timeout(task: *mut c_void) {
     // SAFETY: the pool's live reload task.
     let task = unsafe { &mut *task.cast::<ReloadTask>() };
     task.kill_all(libc::SIGKILL, reload_warn);
     task.set_timer(ptr::null_mut());
 }
 
-unsafe extern "C" fn kill_timeout(pool: *mut c_void) {
+unsafe extern "C-unwind" fn kill_timeout(pool: *mut c_void) {
     // SAFETY: the live pool the timer was set for.
     unsafe { kill_all_workers(pool.cast(), libc::SIGKILL) };
 }
@@ -672,8 +657,9 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_RELOAD_TIMER => {
             let task = record(pool).reload_task;
-            let timer = timer_after(
+            let timer = swr_v1_timer_add_plain(
                 c_long::from(record(pool).max_wait_time) * 1000,
+                false,
                 reload_timeout,
                 task.cast(),
             );
@@ -749,8 +735,9 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             }
         }
         OP_KILL_TIMER => {
-            timer_after(
+            swr_v1_timer_add_plain(
                 c_long::from(record(pool).max_wait_time) * 1000,
+                false,
                 kill_timeout,
                 pool.cast(),
             );
