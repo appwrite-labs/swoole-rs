@@ -38,11 +38,11 @@ python3 tools/build_ext.py
 php -n -d extension="$PWD/target/ext/swoole.so" -r 'echo SWOOLE_VERSION, "\n";'
 ```
 
-Do not load the hybrid alongside another Swoole extension: both register the same classes.
+Do not load this swoole.so alongside another Swoole extension: both register the same classes.
 
 ## Verify
 
-For edit/candidate loops, incremental hybrid builds and the reusable Linux toolchain,
+For edit/candidate loops, incremental Cargo builds and the reusable Linux toolchain,
 see [local development](docs/development.md).
 
 ```sh
@@ -51,7 +51,7 @@ python3 tools/dev.py integrate --module timer   # the timer gates, on the all-mo
 ```
 
 CI has two tiers. [PR](.github/workflows/pr.yml) runs Rust tests, tooling tests and the
-application corpus against a cached hybrid build. [Merge](.github/workflows/merge.yml)
+application corpus against the Cargo-built swoole.so. [Merge](.github/workflows/merge.yml)
 runs every gate and original PHPT for all modules on `main`.
 
 ## Modules, corpus and benchmarks
@@ -64,6 +64,6 @@ The [project corpus](corpus/README.md) runs application projects against any eng
 and the [original upstream PHPT selection](corpus/upstream/README.md) runs pinned
 Swoole tests with their original assertions. Missing APIs are reported as
 unsupported; behavioral failures fail the run. The [benchmark harness](benchmarks/README.md)
-compares optimized hybrid and upstream builds. The [validation layers](docs/validation-suite.md)
+compares optimized Cargo and upstream builds. The [validation layers](docs/validation-suite.md)
 add lifecycle scenarios, an Autobahn RFC profile and an
 unchanged pinned Hyperf app.
