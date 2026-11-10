@@ -419,20 +419,6 @@ pub unsafe extern "C" fn swr_v1_worker_shutdown(worker: *mut WorkerRecord) {
     unsafe { Worker::new(worker) }.shutdown();
 }
 
-/// `Worker::has_exceeded_max_request()` for the native symbol.
-///
-/// # Safety
-/// As [`Worker::new`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Worker24has_exceeded_max_requestEv")
-)]
-#[must_use]
-pub unsafe extern "C" fn swr_v1_worker_exceeded_max_requests(worker: *const WorkerRecord) -> bool {
-    // SAFETY: as the caller guarantees.
-    unsafe { Worker::new(worker) }.exceeded_max_request()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

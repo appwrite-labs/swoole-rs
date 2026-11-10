@@ -241,6 +241,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fcntl for these flags")]
     fn fd_options_set_and_clear_each_flag() {
         let fd = tcp();
         assert_eq!(
@@ -284,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no setsockopt")]
     fn cork_round_trip() {
         let fd = tcp();
         let mut state = CorkState {
@@ -311,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no setsockopt")]
     fn buffers_and_timeouts() {
         let fd = tcp();
         assert!(swr_v1_socket_buffer_size(fd, true, true, 65536));

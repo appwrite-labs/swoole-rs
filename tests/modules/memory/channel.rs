@@ -259,6 +259,7 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn record_locks_signals_and_prints_like_native_channel() {
     for flags in [0, LOCK, NOTIFY, LOCK | NOTIFY] {
         let bytes = swr_v1_memory_channel_bytes(128, 32);
@@ -420,6 +421,7 @@ const SW_CHAN_NOTIFY: i32 = 4;
 /// 4000..7999-byte records through a 128 KiB channel, one thread pushing, one popping
 /// and comparing each record with the one pushed.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn channel_push() {
     const N: usize = 10_000_000;
     let c = Native::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
@@ -467,6 +469,7 @@ fn channel_push() {
 
 /// `TEST(channel, peek)`.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn channel_peek() {
     let mut buf = [0u8; 8000];
     let c = Native::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
@@ -479,6 +482,7 @@ fn channel_peek() {
 /// `TEST(channel, notify)`. Upstream's `sleep(0.02)` truncates to `sleep(0)`, and its
 /// `while (c->wait())` pops only when `wait` fails; both are kept as they are.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn channel_notify() {
     let c = Native::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
     std::thread::scope(|scope| {

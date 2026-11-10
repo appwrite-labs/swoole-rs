@@ -33,11 +33,6 @@ unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C" fn(*mut usize) -> bool,
-    );
-    fn swr_v1_event_remove_exit_condition(id: c_int);
     // crates/coroutine, crates/timer, crates/reactor,
     // crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
@@ -760,16 +755,12 @@ pub(crate) fn set_exit_condition(set: bool) {
         return;
     }
     if set {
-        // SAFETY: the thread's live reactor keeps a plain function.
-        unsafe {
-            swr_v1_event_set_exit_condition(
-                EXIT_CONDITION_USER_AFTER_DEFAULT,
-                crate::scheduler::reactor_can_exit,
-            );
-        };
+        swoole_rs_reactor::swr_v1_event_set_exit_condition(
+            EXIT_CONDITION_USER_AFTER_DEFAULT,
+            crate::scheduler::reactor_can_exit,
+        );
     } else {
-        // SAFETY: as above.
-        unsafe { swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT) };
+        swoole_rs_reactor::swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT);
     }
 }
 
