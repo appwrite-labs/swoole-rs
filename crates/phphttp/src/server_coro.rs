@@ -33,7 +33,7 @@ use swoole_rs_zend::{
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
         zval,
     },
-    throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
+    throw_constructed_twice, throw_exception, type_of, unset_property_deny,
 };
 
 static SERVER: Class = Class::new();
@@ -932,15 +932,15 @@ fn handle(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a passed array.
-    if unsafe { value::count(settings) } == 0 {
+    if settings.count() == 0 {
         call.set_bool(false);
         return;
     }
+    let settings = call.zval(1);
     // SAFETY: a live object of the class and the passed array.
     unsafe {
         swr_zend_property_merge(

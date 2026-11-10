@@ -143,8 +143,9 @@ fn create_request(call: &Call) {
     // SAFETY: the context's own zval and the registered class.
     unsafe { init_object(&raw mut slot.value, entry()) };
     slot.ptr = &raw mut slot.value;
-    // The return slot takes the reference; the context borrows it, as upstream's does.
-    call.set_value(slot.value);
+    // SAFETY: the object just made. The return slot takes the reference; the
+    // context borrows it, as upstream's does.
+    unsafe { call.set_value(slot.value) };
     if let Some(std) = slot.object() {
         // SAFETY: one of our objects.
         unsafe { context::set_context(std, ctx) };
