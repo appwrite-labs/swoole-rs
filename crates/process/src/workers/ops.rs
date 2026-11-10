@@ -310,6 +310,8 @@ pub const OP_KILL_TASK_WORKERS: u32 = 246;
 pub const OP_KILL_USER_WORKERS: u32 = 247;
 pub const OP_ON_MANAGER_STOP: u32 = 248;
 pub const OP_RUNNING: u32 = 249;
+/// Whether a worker thread asked the server to shut down (`OP_SET_STOPPING`).
+pub const OP_STOPPING: u32 = 1216;
 pub const OP_RELOAD_INIT: u32 = 250;
 pub const OP_RELOAD_TASK: u32 = 251;
 pub const OP_REAP_WAIT: u32 = 252;

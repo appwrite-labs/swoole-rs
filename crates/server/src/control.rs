@@ -4,9 +4,9 @@ use crate::ops::{
     OP_IS_MASTER_THREAD, OP_IS_STARTED, OP_KILL_TERM, OP_KILL_WINCH, OP_MANAGER_PID, OP_MASTER_PID,
     OP_MAX_WAIT_TIME, OP_MODE, OP_PIPE_COMMAND_DEL, OP_PORT_COUNT, OP_PORT_DGRAM,
     OP_PORT_REACTOR_DEL, OP_PORT_REMOVED, OP_REACTOR_STOP, OP_REACTOR_WAIT_EXIT, OP_RUNNING,
-    OP_SEND_SHUTDOWN, OP_SET_MINFD, OP_SET_RUNNING, OP_SIGNAL_ACTIVE, OP_SIGNAL_FD,
-    OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN,
-    OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
+    OP_SEND_SHUTDOWN, OP_SET_MINFD, OP_SET_RUNNING, OP_SET_STOPPING, OP_SIGNAL_ACTIVE,
+    OP_SIGNAL_FD, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE, OP_SIGNAL_RELOAD,
+    OP_SIGNAL_REOPEN, OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
     OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD};
@@ -31,10 +31,11 @@ pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
     if mode == MODE_PROCESS {
         return h.is(OP_SEND_SHUTDOWN);
     }
-    // A worker thread that asks may exit before the master sees the signal; with
-    // the server marked stopping now, the manager does not respawn it.
+    // A worker thread that asks may exit before the master sees the signal; marked
+    // stopping now, the manager does not respawn it. `running` stays set until the
+    // master handles the SIGTERM, which it ignores once the server is not running.
     if mode == MODE_THREAD {
-        h.op(OP_SET_RUNNING, 0)?;
+        h.op(OP_SET_STOPPING, 0)?;
     }
     let manager = h.signed(OP_MANAGER_PID)?;
     let pid = if mode == MODE_BASE && manager != 0 {
@@ -242,10 +243,11 @@ mod tests {
             (OP_MASTER_PID, 7),
         ]);
         assert!(shutdown(&mut s).unwrap(), "a worker thread signals");
+        assert_eq!(s.called(OP_SET_STOPPING), 1, "stopping before the signal");
         assert_eq!(
-            s.args(OP_SET_RUNNING),
-            vec![0],
-            "stopping before the signal"
+            s.called(OP_SET_RUNNING),
+            0,
+            "running until the master handles it"
         );
         assert_eq!(s.args(OP_KILL_TERM), vec![7], "master signalled");
     }
