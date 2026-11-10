@@ -365,9 +365,7 @@ mod native {
     }
 
     pub(super) fn ssl_shutdown(socket: Co) {
-        if let Some(network) = socket.network() {
-            swoole_rs_tls::upstream::socket_ssl_shutdown(network);
-        }
+        socket.with_network(swoole_rs_tls::upstream::socket_ssl_shutdown);
     }
 
     pub(super) fn liveness(socket: Co) -> bool {

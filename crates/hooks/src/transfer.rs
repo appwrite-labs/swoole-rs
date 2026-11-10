@@ -9,6 +9,7 @@ use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::wait;
 use core::ffi::c_void;
 use swoole_rs_corebase::net_types::AddressStorage;
+use swoole_rs_reactor::Socket;
 
 /// The transfer of `length` bytes at `buffer`; sets errno when it fails. A native
 /// call must not throw.
@@ -169,9 +170,16 @@ pub(crate) fn recvfrom_peer(
     if !available(socket, READ) {
         return -1;
     }
-    let Some(network) = socket.network() else {
-        return -1;
-    };
+    socket
+        .with_network(|network| recvfrom_into(network, call))
+        .unwrap_or(-1)
+}
+
+/// [`recvfrom_peer`] over the socket's handle.
+fn recvfrom_into(
+    network: Socket<'_>,
+    call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
+) -> isize {
     // The pointers outlive the borrow: `call` fills them, and nothing else touches the
     // record until it returns.
     let (local, addr, addrlen) = network.edit(|network| {

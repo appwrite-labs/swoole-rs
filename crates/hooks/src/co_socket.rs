@@ -216,11 +216,11 @@ impl Co {
         unsafe { self.socket().as_mut() }.map(f)
     }
 
-    /// The `network::Socket`, `None` before the socket opens.
-    #[must_use]
-    pub fn network(self) -> Option<Socket<'static>> {
-        // SAFETY: `new`'s contract: null or a live network::Socket.
-        unsafe { Socket::from_ptr(self.socket()) }
+    /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
+    /// handle lives only for the call, so it cannot outlive the record.
+    pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
+        // SAFETY: `new`'s contract: null or a live network::Socket, for the call.
+        unsafe { Socket::from_ptr(self.socket()) }.map(f)
     }
 
     /// `f` over the whole record. `f` is immediate: it neither yields nor reaches the
