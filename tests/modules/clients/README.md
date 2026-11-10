@@ -41,6 +41,10 @@ www.baidu.com:80 has a 1 s timeout the round trip sometimes exceeds), the nine p
 ~730 KB page fills the 64 KB buffer with reads no larger than a TLS record, so
 the bytes the assertion finds "baidu.com" in are overwritten and the rest were
 never written (uninitialised upstream, zeroed here).
+`connect_timeout` and `async_connect_timeout` connect to a local listener whose
+accept queue is full, not to the address upstream assumes drops the SYN
+(19.168.0.99, 192.168.1.199): a network that rejects the route answers
+`ENETUNREACH` instead of letting the connect time out.
 
 `http_format_gate.py` compiles the pinned request formatter calls and
 `sw_snprintf` next to `swr_v1_clients_http_format` from the hybrid build's archive

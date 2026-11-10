@@ -414,8 +414,8 @@ pub const OP_RECVFROM: u32 = 260;
 /// `onPacketReceived`'s result.
 pub const OP_PORT_DTLS: u32 = 261;
 pub const OP_DTLS_ACCEPT: u32 = 262;
-/// Dispatches the datagram of arg bytes; whether it was dispatched.
-pub const OP_PACKET_DISPATCH: u32 = 263;
+/// Fills the task for the datagram of arg bytes; the task's address.
+pub const OP_PACKET_TASK: u32 = 263;
 pub const OP_HAVE_DGRAM: u32 = 264;
 /// Port arg's fd.
 pub const OP_PORT_FD: u32 = 265;
@@ -643,6 +643,8 @@ pub const OP_CLOSE_SOCKET: u32 = 513;
 pub const OP_QUEUE_CLOSE: u32 = 514;
 /// `send_to_connection` of the context send, the result.
 pub const OP_SEND_HERE: u32 = 515;
+/// `onPacket` of the `RecvData` at arg: whether it returned `SW_OK`.
+pub const OP_ON_PACKET: u32 = 516;
 
 pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;

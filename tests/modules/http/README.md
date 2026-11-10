@@ -175,10 +175,12 @@ is crates/server's.
 | `reload_all_from_worker_error`, `reload_tasks_from_worker_error` | a reload requested from `onWorkerError`, with upstream's five-second watchdog |
 | `kill_worker_1`, `_2`, `_4`, `_5`, `worker_exit`, `shutdown_event` | `test_kill_worker` in base and process mode, with and without `reload_async`, `onWorkerExit`, and an `SW_SERVER_EVENT_SHUTDOWN` packet between workers |
 | `kill_self` | `test_kill_self`: a worker killing the worker that holds the connection |
+| `clean_worker_1` | `test_clean_worker(MODE_BASE)`: a worker's `onConnect` defers `clean_worker_connections`, shuts the client's socket down and stops itself, so no `onReceive`, `onClose` or client receive, and three worker starts. The `AsyncClient` is crates/clients' client, made before the server forks and connected from `onStart`'s timer, as upstream's |
 | `base`, `process`, `process_single_thread` | `test_base` and `test_process`: one request through each mode, the methods that must refuse (`shutdown` before start, `add_port` and `add_worker` after `create`, an unknown session, an unknown command), and the start, shutdown and manager callbacks |
 
-The lock upstream's client thread waits on is a condition variable when `onStart` unlocks
-it in the same process, and a pipe in `test_process`, whose forked worker 0 unlocks it.
+The lock upstream's client thread waits on (a process-shared `Mutex`) is a slot in the shared
+counter mapping, since `onStart` and `onWorkerStart` may run in a forked process, and a pipe
+in `test_process`, whose forked worker 0 unlocks it.
 Three upstream assertions have no code left to test, so the cases leave them out:
 
 - `base`'s `Server::HOOK_WORKER_START` hook (`is_started()`), and `process`'s
@@ -190,8 +192,6 @@ Three upstream assertions have no code left to test, so the cases leave them out
 
 Not yet run:
 
-- `clean_worker_1` (base mode) drives core-tests' `AsyncClient` from `onStart`'s timer in
-  the master's reactor, and nothing here ports that client yet.
 - `thread`, `task_thread`, `reload_thread`, `reload_thread_2` and `reload_thread_3` are
   `#ifdef SW_THREAD` upstream. `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use
   `MODE_THREAD`. The package links the NTS Cargo build's libswoole, where thread mode isn't

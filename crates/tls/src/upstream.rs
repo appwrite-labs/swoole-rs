@@ -1387,10 +1387,8 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
 pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     {
-        // SAFETY: crates/timer's, src/core/buffer.cc's and the C++ runtime's.
+        // SAFETY: src/core/buffer.cc's and the C++ runtime's.
         unsafe extern "C-unwind" {
-            #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-            fn swoole_timer_del(node: *mut c_void) -> bool;
             #[link_name = "_ZN6swoole6BufferD1Ev"]
             fn buffer_drop(buffer: *mut c_void);
             #[link_name = "_ZdlPv"]
@@ -1401,7 +1399,7 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
         for timer in [record.recv_timer, record.output.send_timer] {
             if !timer.is_null() {
                 // SAFETY: the socket's live timer.
-                unsafe { swoole_timer_del(timer) };
+                unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
             }
         }
         for buffer in [record.in_buffer, record.output.out_buffer] {

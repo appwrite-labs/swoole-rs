@@ -10,7 +10,7 @@
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
 //! carries.
 
-use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
+use crate::fixed::{self, DebugCursor, Fixed, Layout};
 use crate::global::{self, Global};
 use crate::table::Table;
 use std::ffi::{c_int, c_void};
@@ -103,12 +103,9 @@ impl FixedPool {
         );
         // The same address, from the arena: nothing is read through the caller's pointer.
         let slice = memory.wrapping_add(data.addr() - memory.addr());
-        // SAFETY: inside the arena, since the 48-byte header precedes `memory` and
-        // `slice` lies past it (asserted above): the byte `lock` would be at.
-        let lock = unsafe { slice.wrapping_sub(mem::size_of::<Slice>()).read() };
-        // assert(slice->lock == 1);
-        assert_eq!(lock, 1, "an allocated slice");
-        // SAFETY: a constructed pool; `free` checks the range and stride itself.
+        // SAFETY: a constructed pool; `free` checks the stride before it reads a
+        // slice header, then upstream's `slice->lock == 1`, so a pointer into a
+        // slice's (maybe uninitialized) data is refused unread.
         let freed = unsafe { fixed::free(self.0.as_ptr(), slice.cast()) };
         assert!(freed, "a live slice of this pool");
     }

@@ -45,14 +45,19 @@ fn available<'a>(origin: &CStr) -> Option<&'a Timer> {
 
 /// `bool swoole_timer_is_available()`.
 #[unsafe(export_name = "_Z25swoole_timer_is_availablev")]
-extern "C" fn swoole_timer_is_available() -> bool {
+#[must_use]
+pub extern "C" fn swoole_timer_is_available() -> bool {
     !timer().is_null()
 }
 
 /// `Timer *swoole_timer_create(bool manually_trigger)`: a new timer, published
 /// as this thread's.
 #[unsafe(export_name = "_Z19swoole_timer_createb")]
-extern "C-unwind" fn swoole_timer_create(manually_trigger: bool) -> *mut c_void {
+#[expect(
+    clippy::must_use_candidate,
+    reason = "a caller that only wants the thread's timer created ignores it"
+)]
+pub extern "C-unwind" fn swoole_timer_create(manually_trigger: bool) -> *mut c_void {
     let timer = Timer::create(manually_trigger);
     publish(timer);
     timer.cast()
@@ -60,7 +65,7 @@ extern "C-unwind" fn swoole_timer_create(manually_trigger: bool) -> *mut c_void 
 
 /// `int64_t swoole_timer_get_next_msec()`: -1 without a timer.
 #[unsafe(export_name = "_Z26swoole_timer_get_next_msecv")]
-extern "C" fn swoole_timer_get_next_msec() -> i64 {
+pub extern "C" fn swoole_timer_get_next_msec() -> i64 {
     current().map_or(-1, Timer::next_msec)
 }
 
@@ -195,7 +200,7 @@ extern "C-unwind" fn swoole_timer_tick(
 /// # Safety
 /// `node` is null or one of this thread's live nodes.
 #[unsafe(export_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE")]
-unsafe extern "C-unwind" fn swoole_timer_del(node: *mut TimerNode) -> bool {
+pub unsafe extern "C-unwind" fn swoole_timer_del(node: *mut TimerNode) -> bool {
     let Some(timer) = available(c"swoole_timer_del") else {
         return false;
     };
@@ -208,7 +213,7 @@ unsafe extern "C-unwind" fn swoole_timer_del(node: *mut TimerNode) -> bool {
 /// # Safety
 /// `node` is null or one of this thread's live nodes.
 #[unsafe(export_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl")]
-unsafe extern "C-unwind" fn swoole_timer_delay(node: *mut TimerNode, delay_ms: c_long) {
+pub unsafe extern "C-unwind" fn swoole_timer_delay(node: *mut TimerNode, delay_ms: c_long) {
     let Some(timer) = available(c"swoole_timer_delay") else {
         return;
     };
@@ -240,7 +245,7 @@ extern "C" fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
 
 /// `void swoole_timer_free()`: `delete SwooleTG.timer`, then clear the slot.
 #[unsafe(export_name = "_Z17swoole_timer_freev")]
-pub(crate) extern "C-unwind" fn swoole_timer_free() {
+pub extern "C-unwind" fn swoole_timer_free() {
     let timer = timer();
     if timer.is_null() {
         swoole_print_backtrace();
@@ -254,7 +259,7 @@ pub(crate) extern "C-unwind" fn swoole_timer_free() {
 
 /// `void swoole_timer_select()`: runs due timers, if there is a timer.
 #[unsafe(export_name = "_Z19swoole_timer_selectv")]
-pub(crate) extern "C-unwind" fn swoole_timer_select() {
+pub extern "C-unwind" fn swoole_timer_select() {
     if let Some(timer) = current() {
         timer.select();
     }

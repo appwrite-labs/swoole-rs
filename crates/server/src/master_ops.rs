@@ -1618,20 +1618,18 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SSL_CREATE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL,
         OP_TIMER_DETACHED, OP_TIMER_REINIT,
     };
-    use core::ffi::c_void;
+    use swoole_rs_timer::{
+        swoole_timer_del, swr_v1_timer_owner_reactor, swr_v1_timer_owner_reinit,
+    };
     /// `SW_FD_PIPE`.
     const SW_FD_PIPE: c_int = 3;
-    // SAFETY: native/reactor's, crates/timer's, src/core/error.cc's and
-    // crates/reactor's, under their upstream symbols.
+    // SAFETY: native/reactor's, src/core/error.cc's and crates/reactor's, under
+    // their upstream symbols.
     unsafe extern "C-unwind" {
         #[link_name = "_Z17swoole_event_freev"]
         fn swoole_event_free() -> c_int;
         #[link_name = "_Z17swoole_event_waitv"]
         fn swoole_event_wait() -> c_int;
-        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-        fn swoole_timer_del(node: *mut c_void) -> bool;
-        fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
-        fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
         #[link_name = "_Z27swoole_clear_last_error_msgv"]
         fn swoole_clear_last_error_msg();
         #[link_name = "_Z17swoole_signal_setiPFviEb"]
@@ -1661,11 +1659,13 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TIMER_DETACHED => {
             let timer = timer();
             // SAFETY: this thread's live timer.
-            u64::from(!timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer) }.is_null())
+            u64::from(
+                !timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer.cast()) }.is_null(),
+            )
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            unsafe { swr_v1_timer_owner_reinit(timer(), false) };
+            unsafe { swr_v1_timer_owner_reinit(timer().cast(), false) };
             0
         }
         OP_ST_TIMER_DEL => {
@@ -1675,7 +1675,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 _ => &mut o.tables().enable_accept_timer,
             };
             // SAFETY: null or one of this thread's live timer nodes.
-            unsafe { swoole_timer_del(*node) };
+            unsafe { swoole_timer_del((*node).cast()) };
             *node = core::ptr::null_mut();
             0
         }

@@ -17,12 +17,21 @@ pub use runtime::*;
 mod owner;
 #[cfg(feature = "upstream-symbols")]
 mod wrapper;
+#[cfg(feature = "upstream-symbols")]
+pub use owner::{
+    Owner, TimerNode, swr_v1_timer_owner_queue, swr_v1_timer_owner_reactor,
+    swr_v1_timer_owner_reinit,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 #[cfg(feature = "upstream-symbols")]
-pub use wrapper::{php, swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec};
+pub use wrapper::{
+    php, swoole_timer_create, swoole_timer_del, swoole_timer_delay, swoole_timer_free,
+    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
+    swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec,
+};
 
 const OK: i32 = 0;
 const EMPTY: i32 = 1;
