@@ -320,6 +320,7 @@ mod tests {
     // Darwin's default msgmnb (2048) is below its 8192, and raising it needs root.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn msg_queue_rbac() {
         let mut q = QueueRecord::new(0x0095_0001, true, 0);
         assert!(q.ready());
@@ -374,6 +375,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_private_queue_round_trips_reports_empty_quietly_and_is_removed_on_drop() {
         let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
         assert_eq!(queue.perms, 0o666, "default permissions");

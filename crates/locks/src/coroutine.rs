@@ -327,7 +327,9 @@ mod tests {
     fn three_coroutines(operation: i32) {
         reset();
         switch(0, 0);
-        let lock: &'static CoroutineLock = Box::leak(CoroutineLock::new(false, &SLEEP));
+        let owner = Box::into_raw(CoroutineLock::new(false, &SLEEP));
+        // A shared borrow can't free the lock, so `owner` keeps the box's own pointer.
+        let lock: &'static CoroutineLock = unsafe { &*owner };
         assert_eq!(self::lock(lock, operation), OUT_OF_COROUTINE);
         if operation == libc::LOCK_EX {
             assert_eq!(unlock(lock), OUT_OF_COROUTINE);
@@ -354,7 +356,7 @@ mod tests {
         if operation == libc::LOCK_EX {
             assert_eq!(unlock(lock), 0);
         }
-        drop(unsafe { Box::from_raw(ptr::from_ref(lock).cast_mut()) });
+        drop(unsafe { Box::from_raw(owner) });
     }
 
     #[test]

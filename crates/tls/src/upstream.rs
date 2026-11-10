@@ -1171,7 +1171,7 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
     }
     let result = request.sent(&hooks, rv, requested);
     // SAFETY: as the caller promises; the effects returned.
-    result.publish(unsafe { &mut *socket });
+    result.publish(unsafe { &mut (*socket).output });
     if result.warn == 2 {
         let at = request.fields().begin;
         let name = String::from_utf8_lossy(request.path());

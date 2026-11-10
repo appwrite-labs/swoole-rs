@@ -12,10 +12,6 @@ namespace swoole {
 typedef void (*SignalHandler)(int);
 }  // namespace swoole
 
-#ifdef HAVE_SIGNALFD
-void swoole_signalfd_init();
-#endif
-
 /* `safety` defers the handler to swoole_signal_dispatch(), outside the signal frame. */
 SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, bool safety = false);
 SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, int restart, int mask);

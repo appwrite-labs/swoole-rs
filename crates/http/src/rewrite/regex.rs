@@ -280,9 +280,13 @@ impl Parser<'_> {
             let (member, low) = self.class_atom()?;
             if self.rest.first() == Some(&b'-') && self.rest.get(1).is_some_and(|&b| b != b']') {
                 self.skip();
-                // A range's ends are single bytes: `[\d-z]` is an error. libstdc++ compares
-                // the ends, and each byte with them, as `char`, which is signed on x86_64:
-                // there `[a-\xff]` is an error and `[\xff-a]` holds 0xff and 0x00-0x61.
+                // A range's ends are single bytes: `[\d-z]` is an error, and so is a
+                // collating element after the dash (`_M_try_char` takes none). libstdc++
+                // compares the ends, and each byte with them, as `char`, which is signed on
+                // x86_64: there `[a-\xff]` is an error and `[\xff-a]` holds 0xff and 0x00-0x61.
+                if self.rest.starts_with(b"[.") {
+                    return None;
+                }
                 let char = |byte: u8| c_char::from_ne_bytes([byte]);
                 let (low, high) = (char(low?), char(self.class_atom()?.1?));
                 if low > high {
@@ -305,9 +309,24 @@ impl Parser<'_> {
             self.rest = rest.get(end + 2..)?;
             return Some((Set::named(name)?, None));
         }
-        // Collating elements and equivalence classes are not supported.
-        if self.rest.starts_with(b"[.") || self.rest.starts_with(b"[=") {
-            return None;
+        // `[.name.]` is the byte of that name; `[=name=]` also its other case, which is what
+        // libstdc++'s `transform_primary` (tolower, then the C locale's strxfrm) equates.
+        if let [b'[', close @ (b'.' | b'='), rest @ ..] = self.rest {
+            let end = rest.iter().position(|byte| byte == close)?;
+            let byte = collating(rest.get(..end)?)?;
+            if rest.get(end + 1) != Some(&b']') {
+                return None;
+            }
+            self.rest = rest.get(end + 2..)?;
+            let set = Set::default().byte(byte);
+            return Some(match close {
+                b'.' => (set, Some(byte)),
+                _ => (
+                    set.byte(byte.to_ascii_lowercase())
+                        .byte(byte.to_ascii_uppercase()),
+                    None,
+                ),
+            });
         }
         let byte = self.next()?;
         if byte != b'\\' {
@@ -321,6 +340,25 @@ impl Parser<'_> {
         };
         Some((set, byte))
     }
+}
+
+/// libstdc++'s `regex_traits::lookup_collatename`: the byte below 0x80 with this POSIX
+/// name. A letter is its own name; a digit or other symbol is not (`one`, `hyphen`).
+fn collating(name: &[u8]) -> Option<u8> {
+    const NAMES: &str = "NUL SOH STX ETX EOT ENQ ACK alert backspace tab newline vertical-tab \
+        form-feed carriage-return SO SI DLE DC1 DC2 DC3 DC4 NAK SYN ETB CAN EM SUB ESC IS4 IS3 \
+        IS2 IS1 space exclamation-mark quotation-mark number-sign dollar-sign percent-sign \
+        ampersand apostrophe left-parenthesis right-parenthesis asterisk plus-sign comma hyphen \
+        period slash zero one two three four five six seven eight nine colon semicolon \
+        less-than-sign equals-sign greater-than-sign question-mark commercial-at \
+        A B C D E F G H I J K L M N O P Q R S T U V W X Y Z left-square-bracket backslash \
+        right-square-bracket circumflex underscore grave-accent \
+        a b c d e f g h i j k l m n o p q r s t u v w x y z left-curly-bracket vertical-line \
+        right-curly-bracket tilde DEL";
+    let index = NAMES
+        .split(' ')
+        .position(|known| known.as_bytes() == name)?;
+    u8::try_from(index).ok()
 }
 
 #[derive(Clone, Copy)]

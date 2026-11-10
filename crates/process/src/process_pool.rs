@@ -1700,6 +1700,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
     fn a_socket_pool_sends_a_dispatch_length_prefixed() {
         use std::io::Read;
         let path = std::env::temp_dir().join(format!("swr-pool-sync-{}.sock", std::process::id()));
