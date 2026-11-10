@@ -321,7 +321,7 @@ mod tests {
         }
     }
 
-    fn hooks(socket: *mut c_void, nobufs: &mut bool) -> OutputHooks {
+    fn hooks(socket: *mut c_void, nobufs: *mut bool) -> OutputHooks {
         OutputHooks {
             socket,
             kernel_nobufs: nobufs,
@@ -356,7 +356,7 @@ mod tests {
                 swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"hello".as_ptr(), 5),
                 0
             );
-            let hooks = hooks(socket.cast(), &mut (*socket).kernel_nobufs);
+            let hooks = hooks(socket.cast(), &raw mut (*socket).kernel_nobufs);
             let handle = crate::Socket::from_ptr(socket).unwrap();
             reset(2, 0, false);
             let sent = handle_send_owned(handle, queue, &hooks);
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn handle_send_rules() {
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let data = [0_u8; 10];
         let run = |each, errno, length: u32, offset| {
             reset(each, errno, false);
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn handle_sendfile_rules() {
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let mut corked: i8 = 0;
         reset(0, 0, true);
         // 100,000 bytes from 0 corks once; a partial send keeps the request.
@@ -522,7 +522,7 @@ mod tests {
     fn ordinary_data_positive_matrix() {
         let data = b"abcdef\0ghijklmnop";
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let mut cases = 0;
         for remaining in [1_u32, 7, 13] {
             for sent in 1..=remaining {
@@ -593,7 +593,7 @@ mod tests {
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"0123456789012345678901234567890").unwrap();
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let mut cases = 0;
         for existing in [false, true] {
             for length in [0_usize, 1, 7, 19] {
