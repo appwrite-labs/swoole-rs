@@ -7,7 +7,7 @@ use crate::{
         object_properties_init, swr_zend_class_set_create_object, swr_zend_object_alloc,
         swr_zend_property_array, swr_zend_try_facade_update, zend_class_entry, zend_long,
         zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_update_property, zend_value, zval,
+        zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -146,6 +146,15 @@ pub trait Custom: Sized + 'static {
     fn class() -> &'static CustomClass<Self>;
     /// A new object's data, before its constructor runs.
     fn new() -> Self;
+    /// Whether [`Custom::destruct`] does anything: only then does the class get
+    /// a `dtor_obj` handler, which Zend otherwise skips for classes without
+    /// `__destruct`.
+    const DESTRUCTS: bool = false;
+    /// The object's `dtor_obj` step after `__destruct` ran (Zend runs it once,
+    /// on the last reference or at shutdown, before the object is freed). PHP
+    /// code it runs sees a live object; a bailout it defers is raised after it,
+    /// unless one was already pending.
+    fn destruct(&self) {}
 }
 
 /// A class whose objects embed a `T`, which only
@@ -251,8 +260,27 @@ unsafe extern "C" fn free<T: Custom>(std: *mut zend_object) {
     unsafe { zend_object_std_dtor(std) };
 }
 
+/// `T`'s `dtor_obj` handler: `__destruct`, then [`Custom::destruct`].
+/// # Safety
+/// Zend calls it once, with one of `T`'s live objects.
+unsafe extern "C" fn destruct<T: Custom>(std: *mut zend_object) {
+    // SAFETY: per Zend; a bailout from `__destruct` crosses only this frame,
+    // which owns nothing yet.
+    unsafe { zend_objects_destroy_object(std) };
+    // A bailout pending before is its deferrer's to raise.
+    let pending = bailout::pending();
+    // SAFETY: a live object of `T`'s class, which outlives this call.
+    if let Some(data) = unsafe { custom::<T>(std) } {
+        data.destruct();
+    }
+    if !pending {
+        bailout::finish();
+    }
+}
+
 /// The handlers [`Minit::register_object`](crate::Minit::register_object)
-/// installs for `T`: not cloneable, `unset` denied, `T`'s create and free.
+/// installs for `T`: not cloneable, `unset` denied, `T`'s create and free, and
+/// its destructor when it has one.
 pub(crate) fn install_custom<T: Custom>(
     entry: &mut zend_class_entry,
     handlers: &mut zend_object_handlers,
@@ -260,6 +288,9 @@ pub(crate) fn install_custom<T: Custom>(
     handlers.clone_obj = None;
     handlers.unset_property = Some(crate::unset_property_deny);
     Object::<T>::install(entry, handlers, create::<T>, free::<T>);
+    if T::DESTRUCTS {
+        handlers.dtor_obj = Some(destruct::<T>);
+    }
 }
 
 /// Property writes on a live object, under a class that sees them (Zend's

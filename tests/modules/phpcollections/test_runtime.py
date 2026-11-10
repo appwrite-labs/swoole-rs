@@ -16,7 +16,7 @@ runtime=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(runtime)
 
 
 class AttestedPair(unittest.TestCase):
-    def run_pair(self, bits=None, attestation_error=False, warning=False, mismatch=False, checks=324, profile=None):
+    def run_pair(self, bits=None, attestation_error=False, warning=False, mismatch=False, checks=330, profile=None):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
             for name in ['native.so','selected.so','build.json']:

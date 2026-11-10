@@ -199,7 +199,7 @@ mod rt {
 struct Chan(usize);
 
 /// The test runtime's effects, as Swoole's: a timer for a positive timeout and a
-/// cancel function, each removing the waiter before resuming it.
+/// cancel function, each resuming the waiter.
 struct Rt {
     timeout: f64,
 }
@@ -209,27 +209,21 @@ impl Effects for Rt {
         rt::me() as *mut c_void
     }
 
-    unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32 {
+    fn wait(&mut self) -> u32 {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
         };
-        let (co, addr) = (rt::me(), ch as usize);
+        let co = rt::me();
         let timedout = Arc::new(AtomicBool::new(false));
         let fired = Arc::clone(&timedout);
         let timer = (self.timeout > 0.0).then(|| {
             rt::timer_add(self.timeout, move || {
                 fired.store(true, Ordering::Relaxed);
-                // SAFETY: the waiter's channel is live while it waits.
-                unsafe { (*(addr as *mut Channel)).remove(role, co as *mut c_void) };
                 rt::resume(co);
             })
         });
-        rt::suspend(Some(Box::new(move || {
-            // SAFETY: as above.
-            unsafe { (*(addr as *mut Channel)).remove(role, co as *mut c_void) };
-            rt::resume(co);
-        })));
+        rt::suspend(Some(Box::new(move || rt::resume(co))));
         if let Some(timer) = timer {
             rt::timer_del(timer);
         }
@@ -248,28 +242,29 @@ impl Effects for Rt {
 
 impl Chan {
     fn new(capacity: usize) -> Self {
-        Self(Box::into_raw(Box::new(Channel::new(capacity))) as usize)
+        Self(Box::into_raw(Box::new(Channel::<*mut c_void>::new(capacity))) as usize)
     }
-    fn ptr(self) -> *mut Channel {
-        self.0 as *mut Channel
+    fn ptr(self) -> *mut Channel<*mut c_void> {
+        self.0 as *mut Channel<*mut c_void>
+    }
+    fn cell(self) -> &'static std::cell::UnsafeCell<Channel<*mut c_void>> {
+        // SAFETY: live until `delete`; `UnsafeCell` is a transparent `Channel`.
+        unsafe { &*self.ptr().cast() }
     }
     fn push(self, data: *mut c_void) -> bool {
         self.push_for(data, -1.0)
     }
     fn push_for(self, data: *mut c_void, timeout: f64) -> bool {
-        // SAFETY: live until `delete`.
-        unsafe { push(self.ptr(), &mut Rt { timeout }, data) }
+        push(self.cell(), &mut Rt { timeout }, data).is_ok()
     }
     fn pop(self) -> *mut c_void {
         self.pop_for(-1.0)
     }
     fn pop_for(self, timeout: f64) -> *mut c_void {
-        // SAFETY: as above.
-        unsafe { pop(self.ptr(), &mut Rt { timeout }) }
+        pop(self.cell(), &mut Rt { timeout }).unwrap_or(null_mut())
     }
     fn close(self) -> bool {
-        // SAFETY: as above.
-        unsafe { close(self.ptr(), &mut Rt { timeout: 0.0 }) }
+        close(self.cell(), &mut Rt { timeout: 0.0 })
     }
     fn get_error(self) -> i32 {
         // SAFETY: as above.
@@ -465,9 +460,7 @@ impl Effects for Log {
     fn current(&self) -> *mut c_void {
         9 as *mut c_void
     }
-    unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32 {
-        // SAFETY: the test's live channel.
-        unsafe { (*ch).remove(role, self.current()) };
+    fn wait(&mut self) -> u32 {
         self.flags
     }
     fn resume(&mut self, co: *mut c_void) {
@@ -477,40 +470,38 @@ impl Effects for Log {
 
 #[test]
 fn cancel_wins_over_timeout() {
-    let mut ch = Channel::new(1);
+    let mut ch = std::cell::UnsafeCell::new(Channel::<*mut c_void>::new(1));
     let mut fx = Log {
         flags: CANCELED | TIMEDOUT,
         resumed: vec![],
     };
-    // SAFETY: a live channel.
-    unsafe {
-        assert_eq!(pop(&raw mut ch, &mut fx), null_mut());
-        assert_eq!(ch.error(), ERROR_CANCELED);
-        fx.flags = TIMEDOUT;
-        assert_eq!(pop(&raw mut ch, &mut fx), null_mut());
-        assert_eq!(ch.error(), ERROR_TIMEOUT);
-    }
-    assert_eq!(ch.consumer_num(), 0);
+    assert_eq!(pop(&ch, &mut fx), None);
+    assert_eq!(ch.get_mut().error(), ERROR_CANCELED);
+    fx.flags = TIMEDOUT;
+    assert_eq!(pop(&ch, &mut fx), None);
+    assert_eq!(ch.get_mut().error(), ERROR_TIMEOUT);
+    assert_eq!(ch.get_mut().consumer_num(), 0);
 }
 
 #[test]
 fn close_wakes_producers_then_consumers() {
-    let mut ch = Channel::new(0);
-    ch.producers.extend([1, 2].map(|n| n as *mut c_void));
-    ch.consumers.push_back(3 as *mut c_void);
+    let mut ch = std::cell::UnsafeCell::new(Channel::<*mut c_void>::new(0));
+    ch.get_mut()
+        .producers
+        .extend([1, 2].map(|n| n as *mut c_void));
+    ch.get_mut().consumers.push_back(3 as *mut c_void);
     let mut fx = Log {
         flags: 0,
         resumed: vec![],
     };
-    // SAFETY: a live channel.
-    assert!(unsafe { close(&raw mut ch, &mut fx) });
+    assert!(close(&ch, &mut fx));
     assert_eq!(fx.resumed, [1, 2, 3]);
 }
 
 #[test]
 fn remove_drops_every_entry_of_a_waiter() {
     let t = |n: usize| n as *mut c_void;
-    let mut ch = Channel::new(1);
+    let mut ch = Channel::<*mut c_void>::new(1);
     ch.consumers.extend([t(1), t(2), t(1)]);
     ch.producers.push_back(t(1));
     ch.remove(CONSUMER, t(1));
@@ -518,5 +509,5 @@ fn remove_drops_every_entry_of_a_waiter() {
     // Any role but CONSUMER removes from the producers.
     ch.remove(0, t(1));
     assert_eq!(ch.producer_num(), 0);
-    assert_eq!(ch.pop_data(), null_mut());
+    assert_eq!(ch.pop_data(), None);
 }

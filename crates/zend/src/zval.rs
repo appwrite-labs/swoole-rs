@@ -200,6 +200,14 @@ impl Value {
         (!bailout::pending()).then_some(double)
     }
 
+    /// [`Value::string`], as [`Value::applied_long`].
+    #[must_use]
+    #[inline]
+    pub fn applied_string(&self) -> Option<ZString> {
+        let string = self.string();
+        (!bailout::pending()).then_some(string)
+    }
+
     /// `zval_is_true`.
     #[must_use]
     #[inline]
