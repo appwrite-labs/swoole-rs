@@ -24,7 +24,9 @@ mod framing_native;
 use swoole_rs_protocols_ffi as _;
 
 mod network;
-pub use network::{dns_reply, http_chunked, http2_frame, http2_hpack, multipart, resp_server};
+pub use network::{
+    dns_reply, http_chunked, http_rewrite, http2_frame, http2_hpack, multipart, resp_server,
+};
 use swoole_rs_websocket::{decode_in_place, frame_length, mask};
 
 const RED_ZONE: usize = 17;

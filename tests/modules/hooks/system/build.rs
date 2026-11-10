@@ -10,5 +10,6 @@ fn main() {
     println!("cargo:rerun-if-changed={dir}/libswoole.a");
     println!("cargo:rustc-link-search=native={dir}");
     println!("cargo:rustc-link-lib=static:+whole-archive=swoole");
-    println!("cargo:rustc-link-lib=stdc++");
+    // After every rlib: the crates call operator new too, and --as-needed drops an earlier -lstdc++.
+    println!("cargo:rustc-link-arg=-lstdc++");
 }

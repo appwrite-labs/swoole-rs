@@ -23,6 +23,7 @@ mod error;
 mod frame;
 mod function;
 mod helpers;
+mod minit;
 mod object;
 pub mod registration;
 pub mod string;
@@ -31,20 +32,21 @@ mod zval;
 
 pub use access::{key_ptr, set_key, string_of, value_of};
 pub use call::{Call, Invalid, type_of};
-pub use callable::Callable;
+pub use callable::{Callable, Callback, Holder};
 pub use class::{
     Class, class_name, declare_bool, declare_long, declare_string, register_double_constant,
     register_long_constant, unset_property_deny,
 };
 pub use error::{
-    E_ERROR, E_WARNING, Message, php_error, throw_constructed_twice, throw_error, throw_exception,
-    zend_error,
+    E_ERROR, E_WARNING, Message, php_error, report, throw_constructed_twice, throw_error,
+    throw_exception, zend_error,
 };
 pub use function::create_object_deny;
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, declare_property_null, each_value, long_zval, module_loaded, property,
     update_property,
 };
+pub use minit::{Minit, Parent};
 pub use object::{Object, Props, init_object, set_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;

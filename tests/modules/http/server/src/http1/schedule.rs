@@ -152,7 +152,7 @@ fn schedule() {
     assert_eq!(worker_id_set.len(), worker_num - 2);
 
     // SAFETY: the created server, destroyed once.
-    unsafe { server_methods::destroy(serv.0) };
+    unsafe { server_methods::destroy(serv.view()) };
     serv.delete();
 }
 

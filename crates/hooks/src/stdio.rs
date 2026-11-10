@@ -121,6 +121,8 @@ pub fn swr_v1_hook_install() {
         uring_futex: built_with(Switch::IouringFutex),
         uring_socket: built_with(Switch::UringSocket),
     }));
+    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    swoole_rs_reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
 }
 

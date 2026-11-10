@@ -101,6 +101,15 @@ impl<T> Object<T> {
         handlers.offset = c_int::try_from(Self::OFFSET).unwrap_or(c_int::MAX);
     }
 
+    /// Where the data of the object around `std` sits, for callers that keep
+    /// no reference to it across PHP code (cells, or raw field access).
+    #[must_use]
+    #[inline]
+    pub fn data_ptr(std: *mut zend_object) -> *mut T {
+        // `data` leads the `repr(C)` struct, `OFFSET` bytes before `std`.
+        std.wrapping_byte_sub(Self::OFFSET).cast()
+    }
+
     /// The data of the object around `std` (`fetch_object(std)->data`).
     /// # Safety
     /// `std` is the `std` of a live `Object<T>`, and no other reference to its

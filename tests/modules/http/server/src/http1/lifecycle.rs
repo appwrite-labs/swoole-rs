@@ -214,7 +214,7 @@ fn sleep_forever() -> ! {
 fn add_user_worker(serv: Server) -> *mut WorkerRecord {
     let worker = Box::into_raw(WorkerRecord::boxed());
     // SAFETY: the server before `create`, and a live worker it keeps.
-    let id = unsafe { worker_methods::add_worker(serv.0, worker) };
+    let id = unsafe { worker_methods::add_worker(serv.view(), worker) };
     assert_eq!(id, worker_id(worker).cast_signed());
     worker
 }
@@ -1419,7 +1419,7 @@ fn test_process(single_thread: bool) {
     let fake_worker = Box::into_raw(WorkerRecord::boxed());
     // SAFETY: the created server, and a live worker it refuses.
     assert_eq!(
-        unsafe { worker_methods::add_worker(serv.0, fake_worker) },
+        unsafe { worker_methods::add_worker(serv.view(), fake_worker) },
         SW_ERR
     );
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
