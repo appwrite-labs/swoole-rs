@@ -4,7 +4,7 @@
 //! (crates/phpthread) share between threads through [`shared`] and
 //! [`shared_object`].
 use crate::{
-    lock::{KINDS, MUTEX, RW_LOCK, SPIN_LOCK, check, lock_with},
+    lock::{KINDS, MUTEX, RW_LOCK, SPIN_LOCK, checked, lock_with},
     word::{self, Holder},
 };
 use std::{
@@ -290,8 +290,9 @@ fn lock(call: &Call) {
 
 /// `unlock(): bool`.
 fn unlock(call: &Call) {
-    if let Some(lock) = constructed(call) {
-        check(call, lock.unlock());
+    match constructed(call) {
+        Some(lock) => checked(call, lock.unlock()),
+        None => bailout::finish(),
     }
 }
 
@@ -299,12 +300,12 @@ swoole_rs_zend::handlers! {
     zim_swoole_thread_atomic___construct => construct_atomic;
     zim_swoole_thread_atomic_long___construct => construct_long;
     zim_swoole_thread_lock___construct => lock_construct;
-    zim_swoole_thread_lock_lock => lock;
-    zim_swoole_thread_lock_unlock => unlock;
 }
 
 swoole_rs_zend::handlers! {
     leaf:
+    zim_swoole_thread_lock_lock => lock;
+    zim_swoole_thread_lock_unlock => unlock;
     zim_swoole_thread_atomic_add => word::add::<ThreadAtomic>;
     zim_swoole_thread_atomic_sub => word::sub::<ThreadAtomic>;
     zim_swoole_thread_atomic_get => word::get::<ThreadAtomic>;

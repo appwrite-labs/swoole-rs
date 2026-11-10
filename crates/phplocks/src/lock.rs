@@ -146,6 +146,23 @@ pub(crate) fn check(call: &Call, result: i32) {
     call.set_bool(result == 0);
 }
 
+/// [`check`] for a leaf handler: a failure's `errCode` write may leave a bailout,
+/// which this raises (no frame here owns anything that needs a drop).
+pub(crate) fn checked(call: &Call, result: i32) {
+    check(call, result);
+    if result != 0 {
+        bailout::finish();
+    }
+}
+
+/// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)` in a leaf handler: raise a bailout
+/// a user error handler left in a coercion.
+#[cold]
+fn failed(call: &Call) {
+    call.set_bool(false);
+    bailout::finish();
+}
+
 /// `swoole::sec2msec(double)`, narrowed to the `int` `Lock::lock` takes.
 #[expect(
     clippy::cast_possible_truncation,
@@ -155,21 +172,22 @@ pub(crate) fn milliseconds(seconds: f64) -> i32 {
     (seconds * 1000.0) as i64 as i32
 }
 
-/// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`.
+/// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`, for
+/// a leaf handler: `lock` defers the fatal error of an unconstructed object.
 pub(crate) fn lock_with(call: &Call, lock: impl FnOnce(&Call) -> Option<&Lock>) {
     let parsed = call
         .arity(0, 2)
         .and_then(|()| Ok((call.long(1, LOCK_EX)?, call.double(2, -1.0)?)));
     let Ok((operation, timeout)) = parsed else {
-        call.set_bool(false);
-        return;
+        return failed(call);
     };
-    if let Some(lock) = lock(call) {
+    match lock(call) {
         #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-        check(
+        Some(lock) => checked(
             call,
             lock.lock(operation as i32, milliseconds(timeout), CAPABILITIES),
-        );
+        ),
+        None => bailout::finish(),
     }
 }
 
@@ -179,13 +197,19 @@ fn lock(call: &Call) {
 
 /// `unlock(): bool`.
 fn unlock(call: &Call) {
-    if let Some(lock) = constructed(call) {
-        check(call, lock.unlock());
+    match constructed(call) {
+        Some(lock) => checked(call, lock.unlock()),
+        None => bailout::finish(),
     }
 }
 
 swoole_rs_zend::handlers! {
     zim_swoole_lock___construct => construct;
+}
+
+// Each raises the bailout its failures can leave; the hot path has none.
+swoole_rs_zend::handlers! {
+    leaf:
     zim_swoole_lock_lock => lock;
     zim_swoole_lock_unlock => unlock;
 }

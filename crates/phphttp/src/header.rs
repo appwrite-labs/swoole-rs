@@ -559,12 +559,8 @@ fn zlib(state: &mut State, input: &[u8], method: i32, level: i32) -> Result<Vec<
     let level = swr_v1_httpbindings_codec_level(method, level, 0, 0);
     // zlib's clamp lands in -1..=9, which fits int8_t.
     state.compression_level = i8::try_from(level).unwrap_or(-1);
-    let mut out = vec![0; bound(input.len())];
-    match deflate(input, &mut out, window_bits, level, ZEND_ZLIB) {
-        Ok(compressed) => {
-            out.truncate(compressed);
-            Ok(out)
-        }
+    match deflate(input, bound(input.len()), window_bits, level, ZEND_ZLIB) {
+        Ok(out) => Ok(out),
         Err(Failure::Init(status)) => Err(format!("deflateInit2() failed, Error: [{status}]")),
         Err(Failure::Deflate(status)) => Err(format!("deflate() failed, Error: [{status}]")),
     }

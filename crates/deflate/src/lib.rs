@@ -39,20 +39,21 @@ pub fn bound(length: usize) -> usize {
     scaled + 10 + 8 + 4 + 1
 }
 
-/// Deflate `data` into `out` at `level` with `window_bits` (`GZIP` or
-/// `DEFLATE`); the compressed length.
+/// Deflate `data` at `level` with `window_bits` (`GZIP` or `DEFLATE`) into at
+/// most `capacity` bytes ([`bound`] for upstream's), which zlib writes without
+/// their being zeroed first.
 /// # Errors
 /// `deflateInit2` or `deflate` did not succeed; the status says which.
 pub fn compress(
     data: &[u8],
-    out: &mut [u8],
+    capacity: usize,
     window_bits: c_int,
     level: c_int,
     allocator: Allocator,
-) -> Result<usize, Failure> {
+) -> Result<Vec<u8>, Failure> {
     let mut stream =
         Stream::deflate(level, window_bits, MEM_LEVEL, allocator).map_err(Failure::Init)?;
-    let (mut data, mut written) = (data, 0);
+    let (mut data, mut out) = (data, Vec::with_capacity(capacity));
     loop {
         // One Z_FINISH over the whole body, as upstream; a body past zlib's
         // `uInt` goes in with Z_NO_FLUSH first rather than being cut off.
@@ -61,10 +62,8 @@ pub fn compress(
         } else {
             Z_NO_FLUSH
         };
-        let step = stream.run(&mut data, out.get_mut(written..).unwrap_or_default(), flush);
-        written += step.written;
-        match step.status {
-            Z_STREAM_END => return Ok(written),
+        match stream.run_into(&mut data, &mut out, flush).status {
+            Z_STREAM_END => return Ok(out),
             Z_OK if flush == Z_NO_FLUSH => {}
             status => return Err(Failure::Deflate(status)),
         }
@@ -135,8 +134,8 @@ mod tests {
 
     fn round_trip(window_bits: c_int) {
         let data = b"hello hello hello hello swoole ".repeat(40);
-        let mut out = vec![0; bound(data.len())];
-        let length = compress(&data, &mut out, window_bits, 1, MALLOC).unwrap();
+        let out = compress(&data, bound(data.len()), window_bits, 1, MALLOC).unwrap();
+        let length = out.len();
         assert!(length < data.len(), "compressible input shrinks");
         if window_bits == GZIP {
             assert_eq!(&out[..2], &[0x1f, 0x8b], "gzip magic");
@@ -191,10 +190,9 @@ mod tests {
     #[test]
     fn a_full_buffer_fails_like_upstream() {
         let data = vec![7u8; 1000];
-        let mut out = vec![0; 4];
         assert!(
             matches!(
-                compress(&data, &mut out, GZIP, 1, MALLOC),
+                compress(&data, 4, GZIP, 1, MALLOC),
                 Err(Failure::Deflate(_))
             ),
             "Z_BUF_ERROR or Z_OK, not Z_STREAM_END"
