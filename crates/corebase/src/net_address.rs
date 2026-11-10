@@ -43,30 +43,30 @@ pub fn format_into<'a>(buffer: &'a mut [u8], args: std::fmt::Arguments<'_>) -> O
 }
 
 #[must_use]
-pub fn ipv4(text: &str, allow_zeroes: bool) -> Option<Ipv4Addr> {
+pub fn ipv4(text: &[u8], allow_zeroes: bool) -> Option<Ipv4Addr> {
+    // One pass over the bytes, as inet_pton4's: four dotted decimals of at most 255,
+    // without leading zeroes unless `allow_zeroes`.
     let mut octets = [0u8; 4];
-    let mut parts = text.split('.');
-    for octet in &mut octets {
-        let part = parts.next()?;
-        if part.is_empty() || (!allow_zeroes && part.len() > 1 && part.starts_with('0')) {
+    let (mut index, mut digits) = (0, 0u32);
+    for &byte in text {
+        if byte == b'.' {
+            if digits == 0 || index == 3 {
+                return None;
+            }
+            index += 1;
+            digits = 0;
+        } else if byte.is_ascii_digit() {
+            let octet = octets.get_mut(index)?;
+            if digits == 1 && *octet == 0 && !allow_zeroes {
+                return None;
+            }
+            *octet = octet.checked_mul(10)?.checked_add(byte - b'0')?;
+            digits = digits.saturating_add(1);
+        } else {
             return None;
         }
-        let mut value = 0u16;
-        for byte in part.bytes() {
-            if !byte.is_ascii_digit() {
-                return None;
-            }
-            value = value.checked_mul(10)?.checked_add(u16::from(byte - b'0'))?;
-            if value > 255 {
-                return None;
-            }
-        }
-        *octet = u8::try_from(value).ok()?;
     }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(Ipv4Addr::from(octets))
+    (digits > 0 && index == 3).then(|| Ipv4Addr::from(octets))
 }
 
 #[must_use]
@@ -75,7 +75,7 @@ pub fn ipv6(text: &str, allow_zeroes: bool) -> Option<Ipv6Addr> {
         return text.parse().ok();
     }
     let colon = text.rfind(':')?;
-    let [a, b, c, d] = ipv4(text.get(colon + 1..)?, allow_zeroes)?.octets();
+    let [a, b, c, d] = ipv4(text.get(colon + 1..)?.as_bytes(), allow_zeroes)?.octets();
     // Replace the dotted tail with two hex groups in bounded caller-local
     // storage. This preserves native Apple decimal-leading-zero grammar without
     // introducing an allocation effect into numeric parsing.
@@ -105,13 +105,12 @@ fn literal(family: c_int, host: &[u8]) -> Option<[u8; 16]> {
     if platform_parses(family, host) {
         return None;
     }
-    let text = std::str::from_utf8(host).ok()?;
     let allow_zeroes = cfg!(target_os = "macos");
     let mut bytes = [0; 16];
     if family == libc::AF_INET {
-        bytes[..4].copy_from_slice(&ipv4(text, allow_zeroes)?.octets());
+        bytes[..4].copy_from_slice(&ipv4(host, allow_zeroes)?.octets());
     } else {
-        bytes = ipv6(text, allow_zeroes)?.octets();
+        bytes = ipv6(std::str::from_utf8(host).ok()?, allow_zeroes)?.octets();
     }
     Some(bytes)
 }
@@ -174,5 +173,34 @@ pub fn assign(
             0
         }
         _ => BAD_SOCKET_TYPE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ipv4;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn ipv4_reads_four_dotted_decimals_as_inet_pton4() {
+        for (text, strict, zeroes) in [
+            ("127.0.0.1", Some([127, 0, 0, 1]), Some([127, 0, 0, 1])),
+            ("0.0.0.0", Some([0; 4]), Some([0; 4])),
+            ("255.255.255.255", Some([255; 4]), Some([255; 4])),
+            ("01.2.3.4", None, Some([1, 2, 3, 4])),
+            ("1.2.3.00", None, Some([1, 2, 3, 0])),
+            ("256.0.0.1", None, None),
+            ("1.2.3", None, None),
+            ("1.2.3.4.5", None, None),
+            ("1..2.3", None, None),
+            (".1.2.3", None, None),
+            ("1.2.3.", None, None),
+            ("1.2.3.a", None, None),
+            ("1.2.3.4 ", None, None),
+            ("", None, None),
+        ] {
+            assert_eq!(ipv4(text.as_bytes(), false), strict.map(Ipv4Addr::from), "{text}");
+            assert_eq!(ipv4(text.as_bytes(), true), zeroes.map(Ipv4Addr::from), "{text} with zeroes");
+        }
     }
 }
