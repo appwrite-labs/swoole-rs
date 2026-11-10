@@ -220,17 +220,18 @@ def send(port, workload, count):
         send_h2(port, path, expected, count, *((payload, 16) if method == 'H2C' else ()))
         return
     if method == 'GET1':
+        request = f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'.encode()
         for _ in range(count):
-            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
-            conn.request('GET', path, headers={'Connection': 'close'})
-            response = conn.getresponse()
-            body = response.read()
-            # Wait for the server's close, so the connection's teardown falls in this request.
-            if conn.sock and conn.sock.recv(1):
-                raise RuntimeError('server kept the connection open')
-            conn.close()
-            if response.status != 200 or body != expected:
-                raise RuntimeError(f'unexpected response {response.status}: {body[:80]!r}')
+            # A raw socket read to EOF: http.client drops its socket on Connection: close and
+            # stops at Content-Length, so the server's close could fall after the request.
+            with socket.create_connection(('127.0.0.1', port), timeout=60) as sock:
+                sock.sendall(request)
+                reply = b''
+                while chunk := sock.recv(65536):
+                    reply += chunk
+            head, _, body = reply.partition(b'\r\n\r\n')
+            if not head.startswith(b'HTTP/1.1 200 ') or body != expected:
+                raise RuntimeError(f'unexpected response: {reply[:80]!r}')
         return
     if method in ('TCP', 'UDP'):
         if method == 'TCP':
