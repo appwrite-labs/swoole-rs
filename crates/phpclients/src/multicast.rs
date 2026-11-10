@@ -15,7 +15,7 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
-    Array, Value, bailout, php_error,
+    Array, Value, bailout, report,
     sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array, swr_zend_is_numeric_string, zval},
 };
 
@@ -96,8 +96,7 @@ fn zeroed<T: Copy>() -> T {
 fn warn(message: &[u8]) -> Result<(), Stop> {
     let message = text(message);
     #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    // SAFETY: from a method handler.
-    bailout::defer(unsafe { php_error(E_WARNING as i32, &message) });
+    bailout::defer(report(E_WARNING as i32, &message));
     checked()
 }
 

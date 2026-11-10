@@ -15,13 +15,12 @@ use std::{
 };
 use swoole_rs_phpstubs::thread;
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Message, Object, bailout, message,
+    Call, Class, E_WARNING, Message, Minit, Object, bailout, message,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        add_assoc_long_ex, swr_zend_array_init, zend_class_entry, zend_declare_property_long,
-        zend_object,
+        add_assoc_long_ex, swr_zend_array_init, zend_class_entry, zend_object,
     },
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -106,32 +105,17 @@ method_table! {
 }
 
 /// `php_swoole_thread_minit`'s class registration, then `Swoole\Thread\Error`.
-/// # Safety
-/// MINIT, with a static method table.
-pub(crate) unsafe fn register() -> *mut zend_class_entry {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        THREAD.register(c"Swoole\\Thread", METHODS.as_ptr(), |entry, handlers| {
-            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-            handlers.clone_obj = None;
-            handlers.unset_property = Some(unset_property_deny);
-            ThreadObject::install(entry, handlers, create, free);
-        });
-    }
-    #[expect(clippy::cast_possible_wrap, reason = "small flags")]
-    // SAFETY: MINIT, after `register`; Zend copies the name.
-    unsafe {
-        zend_declare_property_long(
-            THREAD.entry(),
-            c"id".as_ptr(),
-            2,
-            0,
-            (ZEND_ACC_PUBLIC | ZEND_ACC_READONLY) as i32,
-        );
-    }
-    // SAFETY: MINIT, after Swoole\Thread, as upstream's order has it.
-    unsafe { crate::request::error_minit() };
-    THREAD.entry()
+pub(crate) fn register(minit: &Minit) -> &'static Class {
+    minit.register(&THREAD, c"Swoole\\Thread", &METHODS.0, |entry, handlers| {
+        entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+        handlers.clone_obj = None;
+        handlers.unset_property = Some(unset_property_deny);
+        ThreadObject::install(entry, handlers, create, free);
+    });
+    minit.property_long(&THREAD, c"id", 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
+    // After Swoole\Thread, as upstream's order has it.
+    crate::request::error_minit(minit);
+    &THREAD
 }
 
 fn this(call: &Call) -> &'static mut PhpThread {
@@ -174,19 +158,15 @@ fn construct(call: &Call) {
     };
     let thread = this(call);
     if thread.constructed {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         return;
     }
     if file.is_empty() {
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                host::exception(),
-                c"exec file name is empty",
-                INVALID_PARAMS,
-            );
-        }
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            c"exec file name is empty",
+            INVALID_PARAMS,
+        );
         return;
     }
     let argv = if call.num_args() > 1 {
@@ -217,8 +197,7 @@ fn construct(call: &Call) {
         drop(unsafe { Box::from_raw(boxed) });
         // `std::system_error::what()`: the OS message.
         let text = std::ffi::CString::new(strerror(errno)).unwrap_or_default();
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe { throw_exception(host::exception(), &text, SYSTEM_CALL_FAIL) };
+        call.throw(swoole_rs_phpswoole::exception(), &text, SYSTEM_CALL_FAIL);
         return;
     }
     // SAFETY: `pthread_create` succeeded, so it wrote the id.

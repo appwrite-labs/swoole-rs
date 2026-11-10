@@ -1,8 +1,9 @@
 //! Throwing from a handler; the handler then returns and Zend unwinds.
 use crate::{
+    Call, Class,
     bailout::{self, Bailout},
     class_name,
-    sys::{zend_class_entry, zend_long, zend_object, zend_throw_error, zend_throw_exception},
+    sys::{zend_class_entry, zend_long, zend_throw_error, zend_throw_exception},
 };
 use std::{
     ffi::{CStr, CString},
@@ -17,12 +18,40 @@ pub unsafe fn throw_exception(ce: *mut zend_class_entry, message: &CStr, code: z
     unsafe { zend_throw_exception(ce, message.as_ptr(), code) };
 }
 
-/// `zend_throw_error(NULL, "%s", message)`: an `Error`.
-/// # Safety
-/// Called from a handler.
-pub unsafe fn throw_error(message: &CStr) {
-    // SAFETY: per the caller; "%s" takes the NUL-terminated message.
-    unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
+impl Call {
+    /// `zend_throw_error(NULL, "%s", message)`: an `Error`, from this handler.
+    pub fn throw_error(&self, message: &CStr) {
+        // SAFETY: a handler's frame is executing; "%s" takes the NUL-terminated message.
+        unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
+    }
+
+    /// `zend_throw_exception(class, message, code)`, from this handler.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn throw(&self, class: &Class, message: &CStr, code: zend_long) {
+        let entry = class.entry();
+        assert!(!entry.is_null(), "throw a registered class");
+        // SAFETY: a handler's frame is executing, and the class is registered; Zend
+        // copies the message.
+        unsafe { zend_throw_exception(entry, message.as_ptr(), code) };
+    }
+
+    /// Swoole's "Constructor of %s can only be called once" `Error`, for `$this`.
+    /// # Panics
+    /// The handler has no `$this`.
+    pub fn throw_constructed_twice(&self) {
+        let object = self.this();
+        assert!(!object.is_null(), "a constructor's $this");
+        // SAFETY: `$this` of the executing handler is live.
+        let name = unsafe { class_name(object) };
+        let message = [
+            b"Constructor of ",
+            name.to_bytes(),
+            b" can only be called once",
+        ]
+        .concat();
+        self.throw_error(&CString::new(message).unwrap_or_default());
+    }
 }
 
 /// `E_WARNING`.
@@ -104,40 +133,13 @@ pub fn report(level: i32, message: &CStr) -> Result<(), Bailout> {
     bailout::trapped(unsafe { crate::sys::swr_zend_try_error(level, message.as_ptr()) })
 }
 
-/// [`report`], for callers that still wrap it in `unsafe`.
+/// `zend_error(level, "%s", message)` (no function prefix), as [`report`].
 /// # Errors
 /// It bailed out.
-/// # Safety
-/// Called from a handler or a callback Zend runs.
-pub unsafe fn php_error(level: i32, message: &CStr) -> Result<(), Bailout> {
-    report(level, message)
-}
-
-/// `zend_error(level, "%s", message)` (no function prefix), as [`php_error`].
-/// # Errors
-/// It bailed out.
-/// # Safety
-/// As [`php_error`].
-pub unsafe fn zend_error(level: i32, message: &CStr) -> Result<(), Bailout> {
+pub fn zend_error(level: i32, message: &CStr) -> Result<(), Bailout> {
     if bailout::pending() {
         return Err(Bailout);
     }
-    // SAFETY: per the caller.
+    // SAFETY: on a PHP thread, inside `zend_try`; "%s" takes the NUL-terminated message.
     bailout::trapped(unsafe { crate::sys::swr_zend_try_zend_error(level, message.as_ptr()) })
-}
-
-/// Swoole's "Constructor of %s can only be called once" `Error`.
-/// # Safety
-/// Called from a handler, with a live object.
-pub unsafe fn throw_constructed_twice(object: *const zend_object) {
-    // SAFETY: per the caller.
-    let name = unsafe { class_name(object) };
-    let message = [
-        b"Constructor of ",
-        name.to_bytes(),
-        b" can only be called once",
-    ]
-    .concat();
-    // SAFETY: per the caller.
-    unsafe { throw_error(&CString::new(message).unwrap_or_default()) };
 }

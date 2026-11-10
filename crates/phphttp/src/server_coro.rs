@@ -16,7 +16,7 @@ use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
     rc::Rc,
-    sync::atomic::{AtomicPtr, Ordering::Relaxed},
+    sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
@@ -26,18 +26,17 @@ use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, bailout, declare_bool,
-    declare_long, declare_property_null, declare_string, handlers, method_table, string,
+    Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString, bailout, handlers,
+    method_table, string,
     sys::{
         self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
         zval,
     },
-    throw_constructed_twice, throw_exception, type_of, unset_property_deny,
+    type_of, unset_property_deny,
 };
 
 static SERVER: Class = Class::new();
-static EXCEPTION: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 /// `SW_HAVE_COMPRESSION`.
 static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -400,54 +399,39 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 /// # Safety
-/// Called once, at MINIT, with Swoole's exception class.
+/// Called once, at MINIT.
 pub unsafe fn server_coro_minit(args: &MinitArgs) {
-    let (exception, short_name, compression) = (args.exception, args.shortname, args.compression);
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phphttp_server_coro_minit(exception, short_name, compression) };
-    if let Err(error) = result {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
+    if let Err(error) = register(&minit, args.shortname, args.compression) {
         error.defer();
         swoole_rs_zend::bailout::finish();
     }
 }
 
-unsafe fn init_phphttp_server_coro_minit(
-    exception: *mut zend_class_entry,
-    short_name: bool,
-    compression: bool,
-) -> Result<*mut zend_class_entry, swoole_rs_zend::bailout::Bailout> {
-    EXCEPTION.store(exception, Relaxed);
+fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), bailout::Bailout> {
     COMPRESSION.store(compression, Relaxed);
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        SERVER.register(
-            c"Swoole\\Coroutine\\Http\\Server",
-            METHODS.as_ptr(),
-            configure,
-        );
-    }
+    minit.register(
+        &SERVER,
+        c"Swoole\\Coroutine\\Http\\Server",
+        &METHODS.0,
+        configure,
+    );
     if short_name {
-        // SAFETY: MINIT, after registration.
-        unsafe { SERVER.alias(c"Co\\Http\\Server") }?;
+        minit.alias(&SERVER, c"Co\\Http\\Server")?;
     }
-    let ce = SERVER.entry();
     for (name, value) in [(c"fd", -1), (c"port", -1)] {
         if name == c"port" {
-            // SAFETY: MINIT, with the class just registered; upstream's order.
-            unsafe { declare_property_null(ce, c"host", ZEND_ACC_PUBLIC) };
+            // Upstream's order.
+            minit.property_null(&SERVER, c"host", ZEND_ACC_PUBLIC);
         }
-        // SAFETY: as above.
-        unsafe { declare_long(ce, name, value, ZEND_ACC_PUBLIC) };
+        minit.property_long(&SERVER, name, value, ZEND_ACC_PUBLIC);
     }
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"ssl", false, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_property_null(ce, c"settings", ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"errCode", 0, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"errMsg", c"", ZEND_ACC_PUBLIC) };
-    Ok(ce)
+    minit.property_bool(&SERVER, c"ssl", false, ZEND_ACC_PUBLIC);
+    minit.property_null(&SERVER, c"settings", ZEND_ACC_PUBLIC);
+    minit.property_long(&SERVER, c"errCode", 0, ZEND_ACC_PUBLIC);
+    minit.property_string(&SERVER, c"errMsg", c"", ZEND_ACC_PUBLIC);
+    Ok(())
 }
 
 fn server_of(call: &Call) -> *mut HttpServer {
@@ -471,10 +455,9 @@ fn set_error(props: Props<'_>, socket: Socket) -> zend_long {
     zend_long::from(code)
 }
 
-fn exception(code: zend_long, message: &str) {
+fn exception(call: &Call, code: zend_long, message: &str) {
     let message = std::ffi::CString::new(message).unwrap_or_default();
-    // SAFETY: Swoole's exception class, registered at MINIT.
-    unsafe { throw_exception(EXCEPTION.load(Relaxed), &message, code) };
+    call.throw(swoole_rs_phpswoole::exception(), &message, code);
 }
 
 fn construct(call: &Call) {
@@ -490,14 +473,13 @@ fn construct(call: &Call) {
         let (host, port, ssl, reuse_port) = parsed.ok()?;
         let object = call.this();
         if !server_of(call).is_null() {
-            // SAFETY: a live object.
-            unsafe { throw_constructed_twice(object) };
+            call.throw_constructed_twice();
             return None;
         }
         props(call).bytes(c"host", host);
         props(call).bool(c"ssl", ssl);
         if host.is_empty() {
-            exception(EINVAL, "host is empty");
+            exception(call, EINVAL, "host is empty");
             return None;
         }
         // SAFETY: the host's bytes.
@@ -520,6 +502,7 @@ fn construct(call: &Call) {
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
             let port = port as i32;
             exception(
+                call,
                 code,
                 &format!(
                     "bind({}:{port}) failed",
@@ -544,7 +527,7 @@ fn construct(call: &Call) {
         // SAFETY: a live socket.
         if !unsafe { co::listen(socket, 0) } {
             let code = set_error(props(call), socket);
-            exception(code, "listen() failed");
+            exception(call, code, "listen() failed");
             return None;
         }
         let fd = record(socket).sock_fd;
@@ -615,8 +598,7 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
     let text = String::from_utf8_lossy(nul_terminated(name.bytes())).into_owned();
     host::set_last_error(host::PHP_FATAL_ERROR);
     let message = CString::new(format!("function '{text}' is not callable")).unwrap_or_default();
-    // SAFETY: a fatal error from a method.
-    unsafe { swoole_rs_zend::php_error(z::E_CORE_ERROR.cast_signed(), &message) }?;
+    swoole_rs_zend::report(z::E_CORE_ERROR.cast_signed(), &message)?;
     Ok(None)
 }
 
@@ -728,8 +710,7 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
     let fatal = |message: String| {
         host::set_last_error(host::PHP_FATAL_ERROR);
         let message = CString::new(message).unwrap_or_default();
-        // SAFETY: a fatal error from a method.
-        unsafe { swoole_rs_zend::php_error(swoole_rs_zend::E_ERROR, &message) }
+        swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message)
     };
     let compression = COMPRESSION.load(Relaxed);
     let result = match kind {

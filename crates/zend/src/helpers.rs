@@ -4,11 +4,11 @@ use crate::{
     Value,
     sys::{
         module_registry, swr_zend_hash_foreach, swr_zend_property_slot, zend_array,
-        zend_class_entry, zend_declare_property_null, zend_fcall_info, zend_fcall_info_cache,
-        zend_hash_str_find, zend_object, zval,
+        zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find, zend_object,
+        zval,
     },
 };
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::{CStr, c_void};
 
 /// An empty `zend_fcall_info` (no function, object or arguments), for a
 /// parser or the caller to fill.
@@ -73,20 +73,6 @@ pub unsafe fn update_property(
     if let Some(value) = unsafe { Value::from_ptr(value) } {
         props.value(name, value);
     }
-}
-
-/// `zend_declare_property_null(class, name, access)`, at MINIT; `access` is a
-/// `ZEND_ACC_*` visibility.
-/// # Safety
-/// `class` is a class being registered.
-pub unsafe fn declare_property_null(class: *mut zend_class_entry, name: &CStr, access: u32) {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "ZEND_ACC_* visibilities are small"
-    )]
-    let access = access as c_int;
-    // SAFETY: per the caller.
-    unsafe { zend_declare_property_null(class, name.as_ptr(), name.count_bytes(), access) };
 }
 
 /// `ZVAL_LONG`: a zval holding `value`.

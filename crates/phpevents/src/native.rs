@@ -10,7 +10,7 @@ use swoole_rs_reactor::{
 use swoole_rs_zend::{
     E_ERROR, E_WARNING, Message,
     bailout::{self, Bailout, trap},
-    php_error,
+    report,
     sys::{self as z, swr_zend_callable_warning},
 };
 
@@ -273,8 +273,7 @@ pub(crate) fn fatal_warning(message: &CStr) -> Result<(), Bailout> {
 /// `php_swoole_fatal_error(level, "%s", message)`.
 pub(crate) fn fatal(level: i32, message: &CStr) -> Result<(), Bailout> {
     swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-    // SAFETY: a NUL-terminated message, reported inside Zend's C trap.
-    unsafe { php_error(level, message) }
+    report(level, message)
 }
 
 /// `php_swoole_error(E_WARNING, "%s", message)`.
@@ -283,8 +282,7 @@ pub(crate) fn warning(message: &CStr) -> Result<(), Bailout> {
     if !swoole_rs_phpswoole::display_errors() {
         return Ok(());
     }
-    // SAFETY: as above.
-    unsafe { php_error(E_WARNING, message) }
+    report(E_WARNING, message)
 }
 
 /// `php_swoole_sys_error(level, "%s", message)` with `errno` `code`.
@@ -298,8 +296,7 @@ pub(crate) fn system_error(code: c_int, level: i32, message: &CStr) -> Result<()
     full.push(b", Error: ");
     full.push(strerror(code).to_bytes());
     full.push(format!("[{code}]").as_bytes());
-    // SAFETY: as above.
-    unsafe { php_error(level, full.as_cstr()) }
+    report(level, full.as_cstr())
 }
 
 /// `strerror(code)`.

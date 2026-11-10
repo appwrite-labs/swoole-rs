@@ -85,8 +85,15 @@ swoole_rs_zend::minit!(redis_minit => register);
 )]
 fn register(minit: &Minit) -> Result<(), bailout::Bailout> {
     let parent = minit.parent(swoole_rs_phpserver::server_class_ref());
-    let flags = ZEND_ACC_NOT_SERIALIZABLE;
-    minit.register_child(&SERVER, c"Swoole\\Redis\\Server", &METHODS.0, parent, flags);
+    minit.register_child(
+        &SERVER,
+        c"Swoole\\Redis\\Server",
+        &METHODS.0,
+        parent,
+        |entry, _| {
+            entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+        },
+    );
     for (name, value) in REPLY_TYPES {
         minit.class_constant_long(&SERVER, name, value);
     }

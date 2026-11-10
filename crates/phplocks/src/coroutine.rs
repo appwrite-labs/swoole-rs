@@ -4,12 +4,12 @@ use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock, CoroutineOutcome}
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout, method_table,
+    Call, Class, Minit, Object, bailout, method_table,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
         zend_object_handlers,
     },
-    throw_constructed_twice, unset_property_deny,
+    unset_property_deny,
 };
 
 /// `SW_ERROR_WRONG_OPERATION`.
@@ -139,16 +139,15 @@ method_table! {
 /// # Safety
 /// MINIT, once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_coroutine_lock_minit(_module_number: c_int) {
-    // SAFETY: MINIT installs a static method table.
-    unsafe { CLASS.register(c"Swoole\\Coroutine\\Lock", METHODS.as_ptr(), configure) };
-    // SAFETY: the newly registered class owns this public default property.
-    unsafe { CLASS.property_long(c"errCode", 0) };
+pub unsafe extern "C" fn php_swoole_coroutine_lock_minit(module_number: c_int) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register(&CLASS, c"Swoole\\Coroutine\\Lock", &METHODS.0, configure);
+    minit.property_long(&CLASS, c"errCode", 0, ZEND_ACC_PUBLIC);
 }
 fn construct(call: &Call) {
     if !owner(call).is_null() {
-        // SAFETY: Zend supplies a live object of this class.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }

@@ -14,7 +14,7 @@ impl Class {
     /// (`SW_INIT_CLASS_ENTRY` then `SW_SET_CLASS_CREATE(.., sw_zend_create_object_deny)`).
     /// # Safety
     /// As `register`.
-    pub unsafe fn register_static(&self, name: &CStr, methods: *const zend_function_entry) {
+    pub(crate) unsafe fn register_static(&self, name: &CStr, methods: *const zend_function_entry) {
         // SAFETY: per the caller.
         unsafe { self.register(name, methods, deny) };
     }
@@ -25,7 +25,7 @@ impl Class {
     /// At MINIT, after `register` with `methods`.
     /// # Errors
     /// Stops at a contained allocation or registration bailout.
-    pub unsafe fn function_aliases(
+    pub(crate) unsafe fn function_aliases(
         &self,
         methods: *const zend_function_entry,
         aliases: &[(&CStr, &CStr)],

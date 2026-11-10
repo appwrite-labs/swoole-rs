@@ -9,7 +9,7 @@ use crate::{
 };
 use std::{
     alloc::{Layout, alloc_zeroed, dealloc},
-    ffi::{c_char, c_void},
+    ffi::{c_char, c_int, c_void},
     ptr,
     sync::{
         Arc, OnceLock,
@@ -22,12 +22,12 @@ use swoole_rs_locks::{
 };
 use swoole_rs_phpstubs::{thread_atomic, thread_lock};
 use swoole_rs_zend::{
-    Call, Class, Object, bailout, method_table, set_object,
+    Call, Class, Minit, Object, bailout, method_table, set_object,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
         zend_object_handlers, zval,
     },
-    throw_constructed_twice, unset_property_deny,
+    unset_property_deny,
 };
 
 static ATOMIC: Class = Class::new();
@@ -281,27 +281,25 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phplocks_thread_atomic_minit() {
-    // SAFETY: MINIT, with static tables.
-    unsafe {
-        ATOMIC.register(
-            c"Swoole\\Thread\\Atomic",
-            ATOMIC_METHODS.as_ptr(),
-            |e, h| {
-                configure(e, h, create_atomic);
-            },
-        );
-    }
-    // SAFETY: as above.
-    unsafe {
-        LONG.register(
-            c"Swoole\\Thread\\Atomic\\Long",
-            LONG_METHODS.as_ptr(),
-            |e, h| {
-                configure(e, h, create_long);
-            },
-        );
-    }
+pub unsafe extern "C" fn swr_v1_phplocks_thread_atomic_minit(module_number: c_int) {
+    // SAFETY: per the caller: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register(
+        &ATOMIC,
+        c"Swoole\\Thread\\Atomic",
+        &ATOMIC_METHODS.0,
+        |e, h| {
+            configure(e, h, create_atomic);
+        },
+    );
+    minit.register(
+        &LONG,
+        c"Swoole\\Thread\\Atomic\\Long",
+        &LONG_METHODS.0,
+        |e, h| {
+            configure(e, h, create_long);
+        },
+    );
 }
 
 /// `__construct(int $value = 0)`: make the resource, once.
@@ -313,8 +311,7 @@ fn construct<W: Kind>(call: &Call, _word: *mut W) {
     // SAFETY: as in `this_word`.
     let shared = unsafe { ThreadObject::data(call.this()) };
     if !shared.resource.is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         // Upstream's Long constructor returns false here, Atomic's nothing.
         if W::IS_LONG {
             call.set_bool(false);
@@ -367,17 +364,17 @@ method_table! {
 /// Called once, at MINIT, with C++'s fatal-error reporter.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phplocks_thread_lock_minit(
+    module_number: c_int,
     unconstructed: Option<unsafe extern "C" fn(*const c_char)>,
 ) {
     if let Some(unconstructed) = unconstructed {
         UNCONSTRUCTED.get_or_init(|| unconstructed);
     }
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        LOCK.register(c"Swoole\\Thread\\Lock", LOCK_METHODS.as_ptr(), |e, h| {
-            configure(e, h, create_lock);
-        });
-    }
+    // SAFETY: per the caller: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register(&LOCK, c"Swoole\\Thread\\Lock", &LOCK_METHODS.0, |e, h| {
+        configure(e, h, create_lock);
+    });
     let types = [
         (c"MUTEX", MUTEX),
         (c"RWLOCK", RW_LOCK),
@@ -385,12 +382,10 @@ pub unsafe extern "C" fn swr_v1_phplocks_thread_lock_minit(
     ];
     for (name, kind) in types {
         if KINDS & (1 << kind) != 0 {
-            // SAFETY: MINIT, after registration.
-            unsafe { LOCK.constant_long(name, kind) };
+            minit.class_constant_long(&LOCK, name, kind);
         }
     }
-    // SAFETY: as above.
-    unsafe { LOCK.property_long(c"errCode", 0) };
+    minit.property_long(&LOCK, c"errCode", 0, ZEND_ACC_PUBLIC);
 }
 
 /// `$this`'s lock.
@@ -421,8 +416,7 @@ fn constructed(call: &Call) -> Option<&'static ThreadLock> {
 fn lock_construct(call: &Call) {
     let shared = this_lock(call);
     if !shared.resource.is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }

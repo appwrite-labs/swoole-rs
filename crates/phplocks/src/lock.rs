@@ -9,12 +9,12 @@ use swoole_rs_locks::{
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
-    Call, Class, Object, method_table, register_long_constant,
+    Call, Class, Minit, Object, method_table,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
         zend_object_handlers,
     },
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 
 /// `swoole::Lock::Type`.
@@ -90,8 +90,9 @@ method_table! {
 /// Called once, at MINIT, after Swoole's exception class.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_lock_minit(module_number: c_int) {
-    // SAFETY: MINIT, with a static table.
-    unsafe { LOCK.register(c"Swoole\\Lock", METHODS.as_ptr(), configure) };
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register(&LOCK, c"Swoole\\Lock", &METHODS.0, configure);
     let types = [
         (c"MUTEX", c"SWOOLE_MUTEX", MUTEX),
         (c"RWLOCK", c"SWOOLE_RWLOCK", RW_LOCK),
@@ -99,14 +100,11 @@ pub unsafe extern "C" fn php_swoole_lock_minit(module_number: c_int) {
     ];
     let enabled = |kind: i64| KINDS & (1 << kind) != 0;
     for (name, _, kind) in types.iter().filter(|(_, _, kind)| enabled(*kind)) {
-        // SAFETY: MINIT, after registration.
-        unsafe { LOCK.constant_long(name, *kind) };
+        minit.class_constant_long(&LOCK, name, *kind);
     }
-    // SAFETY: as above.
-    unsafe { LOCK.property_long(c"errCode", 0) };
+    minit.property_long(&LOCK, c"errCode", 0, ZEND_ACC_PUBLIC);
     for (_, name, kind) in types.iter().filter(|(_, _, kind)| enabled(*kind)) {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { register_long_constant(name, *kind, module_number) };
+        minit.long_constant(name, *kind);
     }
 }
 
@@ -141,8 +139,7 @@ fn new_lock(kind: i32) -> *mut c_void {
 fn construct(call: &Call) {
     let held = held(call);
     if !held.storage.is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }
@@ -153,11 +150,11 @@ fn construct(call: &Call) {
     let supported = (0..32).contains(&kind) && KINDS & (1 << kind) != 0;
     let Some(kind) = i32::try_from(kind).ok().filter(|_| supported) else {
         // Upstream passes the format unformatted, with the type as the code.
-        let exception = swoole_rs_phpswoole::exception_class();
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(exception, c"lock type[%d] is not support", kind);
-        }
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            c"lock type[%d] is not support",
+            kind,
+        );
         call.set_bool(false);
         return;
     };

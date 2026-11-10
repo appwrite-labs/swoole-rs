@@ -26,7 +26,7 @@ use swoole_rs_server::callbacks::{
 use swoole_rs_zend::{
     E_WARNING, OwnedArray,
     bailout::{self, Bailout},
-    class_name, long_zval, message, object_of, php_error, string,
+    class_name, long_zval, message, object_of, report, string,
     sys::{
         IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
@@ -156,8 +156,7 @@ fn failed(server: &zval, event: &str) -> Called {
         // SAFETY: a live object.
         let name = unsafe { class_name(object) };
         let text = message!("{}->{event} handler error", name.to_string_lossy());
-        // SAFETY: a warning, from a callback Zend runs.
-        if unsafe { php_error(E_WARNING, text.as_cstr()) }.is_err() {
+        if report(E_WARNING, text.as_cstr()).is_err() {
             return Called::Bailout;
         }
     }

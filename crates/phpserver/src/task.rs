@@ -30,7 +30,7 @@ use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Value,
     bailout::Bailout,
-    long_zval, message, php_error,
+    long_zval, message, report,
     string::bytes,
     sys::{
         IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
@@ -737,8 +737,7 @@ swoole_rs_zend::handlers! {
 /// `php_swoole_fatal_error(E_WARNING, ...)` from an event.
 fn event_warning(text: &CStr) -> Result<(), Bailout> {
     set_last_error(SW_ERROR_PHP_FATAL_ERROR);
-    // SAFETY: a warning, from an event Zend runs.
-    unsafe { php_error(E_WARNING, text) }
+    report(E_WARNING, text)
 }
 
 /// Unpack `req` into a value, or `None` (`Err` for a trapped bailout).

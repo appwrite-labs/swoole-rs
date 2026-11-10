@@ -70,8 +70,7 @@ pub(crate) fn report(code: c_int, always: bool, message: impl Into<Vec<u8>>) {
     set_last_error(code);
     if always || swoole_rs_phpswoole::display_errors() {
         let message = CString::new(message).unwrap_or_default();
-        // SAFETY: a warning, printed through "%s".
-        bailout::defer(unsafe { swoole_rs_zend::php_error(E_WARNING, &message) });
+        bailout::defer(swoole_rs_zend::report(E_WARNING, &message));
     }
 }
 

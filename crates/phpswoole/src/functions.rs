@@ -11,7 +11,7 @@ use std::{
 use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
-    Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, php_error,
+    Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, report,
     sys::{swr_zend_try_json_decode_ex, zend_array, zend_hash_func, zval},
 };
 
@@ -271,10 +271,10 @@ fn shutdown_begin(call: &Call) {
         status.set(CALL_USER_SHUTDOWNFUNC_BEGIN);
         call.set_bool(true);
     } else {
-        // SAFETY: a handler, with a literal message.
-        swoole_rs_zend::bailout::defer(unsafe {
-            php_error(E_WARNING, c"can not call this function in user level")
-        });
+        swoole_rs_zend::bailout::defer(report(
+            E_WARNING,
+            c"can not call this function in user level",
+        ));
         call.set_bool(false);
     }
 }
@@ -383,8 +383,7 @@ fn substr_json_decode(call: &Call) {
         Window::Before => c"Offset must be not less than the negative length of the string",
         Window::Past => c"Offset must be less than the length of the string",
     };
-    // SAFETY: a handler, with a literal message.
-    swoole_rs_zend::bailout::defer(unsafe { php_error(E_WARNING, warning) });
+    swoole_rs_zend::bailout::defer(report(E_WARNING, warning));
     call.set_null();
 }
 

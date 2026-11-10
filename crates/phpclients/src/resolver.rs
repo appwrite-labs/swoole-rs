@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
-    Call, Class, Object, Value, ZString, bailout, method_table,
+    Call, Class, Minit, Object, Value, ZString, bailout, method_table,
     sys::{
         IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_efree,
         swr_zend_emalloc, swr_zend_runtime_instanceof, swr_zend_string_init,
@@ -221,18 +221,18 @@ method_table! {
     ];
 }
 
+swoole_rs_zend::minit!(php_swoole_name_resolver_minit => register);
+
 /// MINIT: register `Swoole\NameResolver\Context`.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe extern "C" fn php_swoole_name_resolver_minit(_module_number: c_int) {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        CONTEXT.register(
-            c"Swoole\\NameResolver\\Context",
-            METHODS.as_ptr(),
-            configure,
-        );
-    }
+#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
+fn register(minit: &Minit) -> Result<(), bailout::Bailout> {
+    minit.register(
+        &CONTEXT,
+        c"Swoole\\NameResolver\\Context",
+        &METHODS.0,
+        configure,
+    );
+    Ok(())
 }
 
 /// Not serializable, clone and unset denied, custom object.

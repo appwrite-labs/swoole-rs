@@ -26,14 +26,14 @@ use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Object, Owned, OwnedArray, Props, Value, ZStr, ZString, bailout,
-    declare_bool, declare_long, declare_string, register_long_constant,
+    Array, ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
+    bailout::{self, Bailout},
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, php_url_encode,
         swr_zend_http_build_query, swr_zend_property_merge, swr_zend_sensitive_parameter,
         zend_class_entry, zend_object, zend_object_handlers, zval,
     },
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -1563,65 +1563,33 @@ method_table! {
     ];
 }
 
+swoole_rs_zend::minit!(http_client_minit => register);
+
 /// MINIT, as `php_swoole_http_client_coro_minit` did: the class (and short
 /// name), the `SensitiveParameter` on `setBasicAuth`'s password, the
 /// properties, the exception class and the error-status constants.
-/// # Safety
-/// Called once, at MINIT of module `module`, with upstream's static method
-/// table and Swoole's exception class.
-pub unsafe extern "C" fn http_client_minit(module: c_int) {
-    let exception = swoole_rs_phpswoole::exception_class();
+fn register(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
-    let features = swoole_rs_phpswoole::codecs();
-    // SAFETY: MINIT of `module`, once.
-    let result =
-        unsafe { init_phpclients_http_client_minit(exception, shortname, module, features) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
-    }
-}
-
-unsafe fn init_phpclients_http_client_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    module: c_int,
-    features: u32,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    FEATURES.store(features, Ordering::Relaxed);
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        CLIENT.register(
-            c"Swoole\\Coroutine\\Http\\Client",
-            METHODS.as_ptr(),
-            configure,
-        );
-    }
+    FEATURES.store(swoole_rs_phpswoole::codecs(), Ordering::Relaxed);
+    minit.register(
+        &CLIENT,
+        c"Swoole\\Coroutine\\Http\\Client",
+        &METHODS.0,
+        configure,
+    );
     if shortname {
-        // SAFETY: MINIT, after `register`.
-        unsafe { CLIENT.alias(c"Co\\Http\\Client") }?;
+        minit.alias(&CLIENT, c"Co\\Http\\Client")?;
     }
-    let ce = CLIENT.entry();
-    // SAFETY: MINIT, with the method the table declares.
-    unsafe { swr_zend_sensitive_parameter(ce, c"setbasicauth".as_ptr(), 12, 1) };
+    // SAFETY: MINIT, with the class just registered and the method its table declares.
+    unsafe { swr_zend_sensitive_parameter(CLIENT.entry(), c"setbasicauth".as_ptr(), 12, 1) };
     let public = ZEND_ACC_PUBLIC;
-    // SAFETY: MINIT, with the class just registered (each declaration below too).
-    unsafe { CLIENT.property_null(c"socket") };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"errCode", 0, public) };
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"errMsg", c"", public) };
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"connected", false, public) };
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"host", c"", public) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"port", 0, public) };
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"ssl", false, public) };
+    minit.property_null(&CLIENT, c"socket", public);
+    minit.property_long(&CLIENT, c"errCode", 0, public);
+    minit.property_string(&CLIENT, c"errMsg", c"", public);
+    minit.property_bool(&CLIENT, c"connected", false, public);
+    minit.property_string(&CLIENT, c"host", c"", public);
+    minit.property_long(&CLIENT, c"port", 0, public);
+    minit.property_bool(&CLIENT, c"ssl", false, public);
     for name in [
         c"setting",
         c"requestMethod",
@@ -1630,31 +1598,23 @@ unsafe fn init_phpclients_http_client_minit(
         c"uploadFiles",
         c"downloadFile",
     ] {
-        // SAFETY: as above.
-        unsafe { CLIENT.property_null(name) };
+        minit.property_null(&CLIENT, name, public);
     }
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"downloadOffset", 0, public) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"statusCode", 0, public) };
+    minit.property_long(&CLIENT, c"downloadOffset", 0, public);
+    minit.property_long(&CLIENT, c"statusCode", 0, public);
     for name in [c"headers", c"set_cookie_headers", c"cookies"] {
-        // SAFETY: as above.
-        unsafe { CLIENT.property_null(name) };
+        minit.property_null(&CLIENT, name, public);
     }
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"body", c"", public) };
-    // SAFETY: MINIT, extending Swoole's registered exception class.
-    unsafe {
-        EXCEPTION.register_child(
-            c"Swoole\\Coroutine\\Http\\Client\\Exception",
-            ptr::null(),
-            exception,
-            |_, _| {},
-        );
-    }
+    minit.property_string(&CLIENT, c"body", c"", public);
+    minit.register_child(
+        &EXCEPTION,
+        c"Swoole\\Coroutine\\Http\\Client\\Exception",
+        &[],
+        minit.parent(swoole_rs_phpswoole::exception()),
+        |_, _| {},
+    );
     if shortname {
-        // SAFETY: as above.
-        unsafe { EXCEPTION.alias(c"Co\\Http\\Client\\Exception") }?;
+        minit.alias(&EXCEPTION, c"Co\\Http\\Client\\Exception")?;
     }
     for (name, status) in [
         (c"SWOOLE_HTTP_CLIENT_ESTATUS_CONNECT_FAILED", CONNECT_FAILED),
@@ -1665,10 +1625,8 @@ unsafe fn init_phpclients_http_client_minit(
         (c"SWOOLE_HTTP_CLIENT_ESTATUS_SERVER_RESET", SERVER_RESET),
         (c"SWOOLE_HTTP_CLIENT_ESTATUS_SEND_FAILED", SEND_FAILED),
     ] {
-        // SAFETY: MINIT of `module`.
-        unsafe { register_long_constant(name, status, module) };
+        minit.long_constant(name, status);
     }
-
     Ok(())
 }
 
@@ -1699,16 +1657,14 @@ fn construct(call: &Call) {
     };
     let object = call.this();
     if !this(call).client.is_null() {
-        // SAFETY: from a handler, with `$this`.
-        unsafe { throw_constructed_twice(object) };
+        call.throw_constructed_twice();
         return call.set_bool(false);
     }
     props::this(call).bytes(c"host", host);
     props::this(call).long(c"port", port);
     props::this(call).bool(c"ssl", ssl);
     if host.is_empty() {
-        // SAFETY: from a handler, with the registered exception class.
-        unsafe { throw_exception(EXCEPTION.entry(), c"host is empty", i64::from(libc::EINVAL)) };
+        call.throw(&EXCEPTION, c"host is empty", i64::from(libc::EINVAL));
         return call.set_bool(false);
     }
     this(call).client = Box::into_raw(Client::new(object, host, port, ssl));

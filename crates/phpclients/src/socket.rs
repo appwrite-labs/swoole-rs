@@ -16,15 +16,16 @@ use std::{
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, Class, Invalid, Object, OwnedArray, Value, ZString, declare_bool, declare_long,
-    declare_string, register_long_constant, set_object,
+    Array, Call, Class, Invalid, Minit, Object, OwnedArray, Value, ZString,
+    bailout::Bailout,
+    set_object,
     string::ZBuf,
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, module_registry,
         zend_class_entry, zend_get_type_by_const, zend_hash_str_find, zend_object,
         zend_object_handlers, zval,
     },
-    throw_constructed_twice, unset_property_deny, value,
+    unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -132,87 +133,52 @@ pub fn socket_class() -> *mut zend_class_entry {
     SOCKET.entry()
 }
 
-/// MINIT, as `php_swoole_socket_coro_minit` did: both classes, their short
-/// names when `shortname`, the properties (with the `ext/sockets` bridge ones
-/// when the build has it), and the socket constants unless `ext/sockets` is
-/// loaded (the `AI_*` ones that configure found).
-/// # Safety
-/// Called once, at MINIT of module `module`, after `Swoole\Exception`.
-pub unsafe extern "C" fn socket_minit(module: c_int) {
-    let exception = swoole_rs_phpswoole::exception_class();
-    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
-    let sockets = built_with(Switch::Sockets);
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phpclients_socket_minit(exception, shortname, sockets, module) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
-    }
-}
+swoole_rs_zend::minit!(socket_minit => register);
 
-unsafe fn init_phpclients_socket_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    sockets: bool,
-    module: c_int,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe { SOCKET.register(c"Swoole\\Coroutine\\Socket", METHODS.as_ptr(), configure) };
-    let ce = SOCKET.entry();
+/// MINIT, as `php_swoole_socket_coro_minit` did, after `Swoole\Exception`: both
+/// classes, their short names when `shortname`, the properties (with the
+/// `ext/sockets` bridge ones when the build has it), and the socket constants
+/// unless `ext/sockets` is loaded (the `AI_*` ones that configure found).
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
+    minit.register(&SOCKET, c"Swoole\\Coroutine\\Socket", &METHODS.0, configure);
     if shortname {
-        // SAFETY: MINIT, with the class just registered.
-        unsafe { SOCKET.alias(c"Co\\Socket") }?;
+        minit.alias(&SOCKET, c"Co\\Socket")?;
     }
     let readonly = ZEND_ACC_PUBLIC | ZEND_ACC_READONLY;
     for name in [c"fd", c"domain", c"type", c"protocol"] {
         let default = if name == c"fd" { -1 } else { 0 };
-        // SAFETY: as above.
-        unsafe { declare_long(ce, name, default, readonly) };
+        minit.property_long(&SOCKET, name, default, readonly);
     }
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"errCode", 0, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"errMsg", c"", ZEND_ACC_PUBLIC) };
-    if sockets {
-        // SAFETY: as above.
-        unsafe { declare_bool(ce, c"__ext_sockets_nonblock", false, ZEND_ACC_PUBLIC) };
-        // SAFETY: as above.
-        unsafe { declare_long(ce, c"__ext_sockets_timeout", 0, ZEND_ACC_PUBLIC) };
+    minit.property_long(&SOCKET, c"errCode", 0, ZEND_ACC_PUBLIC);
+    minit.property_string(&SOCKET, c"errMsg", c"", ZEND_ACC_PUBLIC);
+    if built_with(Switch::Sockets) {
+        minit.property_bool(&SOCKET, c"__ext_sockets_nonblock", false, ZEND_ACC_PUBLIC);
+        minit.property_long(&SOCKET, c"__ext_sockets_timeout", 0, ZEND_ACC_PUBLIC);
     }
-    // SAFETY: MINIT, extending Swoole's registered exception class.
-    unsafe {
-        EXCEPTION.register_child(
-            c"Swoole\\Coroutine\\Socket\\Exception",
-            ptr::null(),
-            exception,
-            |_, _| {},
-        );
-    }
+    minit.register_child(
+        &EXCEPTION,
+        c"Swoole\\Coroutine\\Socket\\Exception",
+        &[],
+        minit.parent(swoole_rs_phpswoole::exception()),
+        |_, _| {},
+    );
     if shortname {
-        // SAFETY: as above.
-        unsafe { EXCEPTION.alias(c"Co\\Socket\\Exception") }?;
+        minit.alias(&EXCEPTION, c"Co\\Socket\\Exception")?;
     }
     // SAFETY: the module registry is complete before any MINIT runs.
     let loaded = unsafe { zend_hash_str_find(&raw const module_registry, c"sockets".as_ptr(), 7) };
     if loaded.is_null() {
-        // SAFETY: MINIT of `module`.
-        unsafe { register_constants(module) };
+        register_constants(minit);
     }
     for (name, value) in constants::ALWAYS {
-        // SAFETY: as above.
-        unsafe { register_long_constant(name, i64::from(*value), module) };
+        minit.long_constant(name, i64::from(*value));
     }
-    crate::net::EXCEPTION_PARENT.store(exception, std::sync::atomic::Ordering::Release);
     Ok(())
 }
 
 /// `socket_coro_register_constants`.
-/// # Safety
-/// MINIT of `module`.
-unsafe fn register_constants(module: c_int) {
+fn register_constants(minit: &Minit) {
     let ai = [
         built_with(Switch::AiV4mapped).then_some(constants::AI_V4MAPPED),
         built_with(Switch::AiAll).then_some(constants::AI_ALL),
@@ -232,8 +198,7 @@ unsafe fn register_constants(module: c_int) {
         .chain(idn.iter().copied())
         .chain([constants::AI_NUMERICSERV]);
     for (name, value) in all {
-        // SAFETY: per the caller.
-        unsafe { register_long_constant(name, i64::from(value), module) };
+        minit.long_constant(name, i64::from(value));
     }
 }
 
@@ -322,7 +287,7 @@ fn throw(code: c_int, message: &str) {
     if unsafe { z::swr_zend_try_facade_throw(EXCEPTION.entry(), message.as_ptr(), i64::from(code)) }
         != 0
     {
-        swoole_rs_zend::bailout::Bailout.defer();
+        Bailout.defer();
     }
 }
 
@@ -372,8 +337,7 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     if !this(call).socket.is_null() {
-        // SAFETY: from a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         return call.set_bool(false);
     }
     // SAFETY: the native constructor arguments are parsed and no mutable object borrow spans effects.
@@ -398,7 +362,7 @@ fn construct(call: &Call) {
 /// domain, type and protocol properties.
 /// # Safety
 /// `object` is a live socket object holding its socket.
-unsafe fn init(object: *mut zend_object) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+unsafe fn init(object: *mut zend_object) -> Result<(), Bailout> {
     // SAFETY: per the caller.
     let socket = unsafe { SocketObject::data(object) }.socket;
     // SAFETY: as above.
@@ -422,10 +386,7 @@ unsafe fn init(object: *mut zend_object) -> Result<(), swoole_rs_zend::bailout::
 /// # Safety
 /// `zobject` is writable and `socket` a live coroutine socket; called after
 /// MINIT, from PHP's thread.
-pub unsafe fn init_socket_object(
-    zobject: *mut zval,
-    socket: Socket,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+pub unsafe fn init_socket_object(zobject: *mut zval, socket: Socket) -> Result<(), Bailout> {
     // SAFETY: per the caller.
     let object = unsafe { owner::make_object(socket) }?;
     // SAFETY: per the caller.
@@ -996,7 +957,7 @@ swoole_rs_zend::handlers! {
 
 /// A created object, or null. Null with a bailout pending is one the caller
 /// stops on, leaving the raise to its handler's last step.
-fn created(result: Result<*mut zend_object, swoole_rs_zend::bailout::Bailout>) -> *mut zend_object {
+fn created(result: Result<*mut zend_object, Bailout>) -> *mut zend_object {
     result.unwrap_or_else(|error| {
         error.defer();
         ptr::null_mut()

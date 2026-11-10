@@ -19,14 +19,13 @@ use swoole_rs_http2::{
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    ArrayMut, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool,
-    declare_long, declare_string, register_long_constant, string,
+    ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString, string,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, add_assoc_stringl_ex,
         swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge, zend_class_entry,
         zend_object, zend_object_handlers, zend_wrong_parameter_class_error, zval,
     },
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -484,14 +483,7 @@ impl Client {
             let frame = frame.clone();
             if !Self::send_all(socket, &frame) {
                 self.io_error(socket);
-                // SAFETY: from a handler, with the registered exception class.
-                unsafe {
-                    throw_exception(
-                        EXCEPTION.entry(),
-                        c"failed to send control frame",
-                        SEND_CONTROL_FRAME_FAILED,
-                    );
-                };
+                EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
                 return false;
             }
             self.queue.pop_front();
@@ -1181,129 +1173,89 @@ method_table! {
 
 /// MINIT, as `php_swoole_http2_client_coro_minit` did.
 /// # Safety
-/// Called once, at MINIT of module `module`, with upstream's static method
-/// table and Swoole's exception class.
+/// Called once, at MINIT.
 pub unsafe fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
-    let (exception, shortname, module) = (args.exception, args.shortname, args.module);
     // phphttp2's one MINIT entry also hands its server to phphttp.
     swoole_rs_phphttp::http2::register(&crate::server::HOOKS);
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phphttp2_client_minit(exception, shortname, module) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
+    if let Err(error) = register(&minit, args.shortname) {
+        error.defer();
+        swoole_rs_zend::bailout::finish();
     }
 }
 
-unsafe fn init_phphttp2_client_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    module: c_int,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        CLIENT.register(
-            c"Swoole\\Coroutine\\Http2\\Client",
-            METHODS.as_ptr(),
-            |entry, handlers| {
-                deny(entry, handlers);
-                ClientObject::install(entry, handlers, create, free);
-            },
-        );
-    }
+fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    minit.register(
+        &CLIENT,
+        c"Swoole\\Coroutine\\Http2\\Client",
+        &METHODS.0,
+        |entry, handlers| {
+            deny(entry, handlers);
+            ClientObject::install(entry, handlers, create, free);
+        },
+    );
     if shortname {
-        // SAFETY: MINIT, after `register`.
-        unsafe { CLIENT.alias(c"Co\\Http2\\Client") }?;
+        minit.alias(&CLIENT, c"Co\\Http2\\Client")?;
     }
-    // SAFETY: MINIT, extending Swoole's registered exception class.
-    unsafe {
-        EXCEPTION.register_child(
-            c"Swoole\\Coroutine\\Http2\\Client\\Exception",
-            ptr::null(),
-            exception,
-            |_, _| {},
-        );
-    }
+    let exception = minit.parent(swoole_rs_phpswoole::exception());
+    minit.register_child(
+        &EXCEPTION,
+        c"Swoole\\Coroutine\\Http2\\Client\\Exception",
+        &[],
+        exception,
+        |_, _| {},
+    );
     if shortname {
-        // SAFETY: as above.
-        unsafe { EXCEPTION.alias(c"Co\\Http2\\Client\\Exception") }?;
+        minit.alias(&EXCEPTION, c"Co\\Http2\\Client\\Exception")?;
     }
-    // SAFETY: MINIT, without METHODS.as_ptr().
-    unsafe {
-        REQUEST.register(c"Swoole\\Http2\\Request", ptr::null(), |entry, handlers| {
+    minit.register(
+        &REQUEST,
+        c"Swoole\\Http2\\Request",
+        &[],
+        |entry, handlers| {
             deny(entry, handlers);
             PlainObject::install(entry, handlers, create_request, free_plain);
-        });
-    }
-    // SAFETY: as above.
-    unsafe {
-        RESPONSE.register(
-            c"Swoole\\Http2\\Response",
-            ptr::null(),
-            |entry, handlers| {
-                deny(entry, handlers);
-                PlainObject::install(entry, handlers, create_response, free_plain);
-            },
-        );
-    }
+        },
+    );
+    minit.register(
+        &RESPONSE,
+        c"Swoole\\Http2\\Response",
+        &[],
+        |entry, handlers| {
+            deny(entry, handlers);
+            PlainObject::install(entry, handlers, create_response, free_plain);
+        },
+    );
     let public = ZEND_ACC_PUBLIC;
-    let ce = CLIENT.entry();
-    // SAFETY: MINIT, with the classes just registered (each declaration below too).
-    unsafe { declare_long(ce, c"errCode", 0, public) };
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"errMsg", c"", public) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"sock", -1, public) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"type", 0, public) };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"setting") };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"socket") };
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"connected", false, public) };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"host") };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"port", 0, public) };
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"ssl", false, public) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"serverLastStreamId", 0, public) };
-    let request = REQUEST.entry();
-    // SAFETY: as above.
-    unsafe { declare_string(request, c"path", c"/", public) };
-    // SAFETY: as above.
-    unsafe { declare_string(request, c"method", c"GET", public) };
-    // SAFETY: as above.
-    unsafe { REQUEST.property_null(c"headers") };
-    // SAFETY: as above.
-    unsafe { REQUEST.property_null(c"cookies") };
-    // SAFETY: as above.
-    unsafe { declare_string(request, c"data", c"", public) };
-    // SAFETY: as above.
-    unsafe { declare_bool(request, c"pipeline", false, public) };
-    // SAFETY: as above.
-    unsafe { declare_bool(request, c"usePipelineRead", false, public) };
-    let response = RESPONSE.entry();
+    minit.property_long(&CLIENT, c"errCode", 0, public);
+    minit.property_string(&CLIENT, c"errMsg", c"", public);
+    minit.property_long(&CLIENT, c"sock", -1, public);
+    minit.property_long(&CLIENT, c"type", 0, public);
+    minit.property_null(&CLIENT, c"setting", public);
+    minit.property_null(&CLIENT, c"socket", public);
+    minit.property_bool(&CLIENT, c"connected", false, public);
+    minit.property_null(&CLIENT, c"host", public);
+    minit.property_long(&CLIENT, c"port", 0, public);
+    minit.property_bool(&CLIENT, c"ssl", false, public);
+    minit.property_long(&CLIENT, c"serverLastStreamId", 0, public);
+    minit.property_string(&REQUEST, c"path", c"/", public);
+    minit.property_string(&REQUEST, c"method", c"GET", public);
+    minit.property_null(&REQUEST, c"headers", public);
+    minit.property_null(&REQUEST, c"cookies", public);
+    minit.property_string(&REQUEST, c"data", c"", public);
+    minit.property_bool(&REQUEST, c"pipeline", false, public);
+    minit.property_bool(&REQUEST, c"usePipelineRead", false, public);
     for name in [c"streamId", c"errCode", c"statusCode"] {
-        // SAFETY: as above.
-        unsafe { declare_long(response, name, 0, public) };
+        minit.property_long(&RESPONSE, name, 0, public);
     }
-    // SAFETY: as above.
-    unsafe { declare_bool(response, c"pipeline", false, public) };
+    minit.property_bool(&RESPONSE, c"pipeline", false, public);
     for name in [c"headers", c"set_cookie_headers", c"cookies", c"data"] {
-        // SAFETY: as above.
-        unsafe { RESPONSE.property_null(name) };
+        minit.property_null(&RESPONSE, name, public);
     }
     for (name, number) in CONSTANTS {
-        // SAFETY: MINIT of `module`.
-        unsafe { register_long_constant(name, number, module) };
+        minit.long_constant(name, number);
     }
-
     Ok(())
 }
 
@@ -1339,13 +1291,11 @@ fn construct(call: &Call) {
     };
     let object = call.this();
     if !this(call).client.is_null() {
-        // SAFETY: from a handler, with `$this`.
-        unsafe { throw_constructed_twice(object) };
+        call.throw_constructed_twice();
         return call.set_bool(false);
     }
     if host.is_empty() {
-        // SAFETY: from a handler, with the registered exception class.
-        unsafe { throw_exception(EXCEPTION.entry(), c"host is empty", INVALID_PARAMS) };
+        call.throw(&EXCEPTION, c"host is empty", INVALID_PARAMS);
         return call.set_bool(false);
     }
     let client = Client::new(object, host, port, ssl);

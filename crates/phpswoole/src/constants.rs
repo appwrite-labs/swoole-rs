@@ -2,10 +2,7 @@
 //! (`get_defined_constants()` and reflection list them so). Values are the
 //! pinned headers' enums and macros; `flags` stands for the `#ifdef`s.
 use std::ffi::CStr;
-use swoole_rs_zend::{
-    register_long_constant,
-    sys::{CONST_PERSISTENT, zend_register_bool_constant, zend_register_string_constant},
-};
+use swoole_rs_zend::Minit;
 
 /// `swr_v1_phpswoole_minit` flags: which `#ifdef`s the build has.
 pub(crate) const DEBUG: u32 = 1 << 0;
@@ -349,24 +346,12 @@ fn selected(flags: u32) -> impl Iterator<Item = (&'static CStr, Value)> {
 }
 
 /// `SW_REGISTER_*_CONSTANT` of every constant the build's `flags` select.
-/// # Safety
-/// At MINIT, with the extension's module number.
-pub(crate) unsafe fn register(module: i32, flags: u32) {
-    #[expect(clippy::cast_possible_wrap, reason = "a small flag")]
-    let persistent = CONST_PERSISTENT as i32;
+pub(crate) fn register(minit: &Minit, flags: u32) {
     for (name, value) in selected(flags) {
-        let (text, length) = (name.as_ptr(), name.count_bytes());
         match value {
-            // SAFETY: per the caller; Zend copies the name.
-            Long(long) => unsafe { register_long_constant(name, long, module) },
-            // SAFETY: as above.
-            Bool(on) => unsafe {
-                zend_register_bool_constant(text, length, on, persistent, module);
-            },
-            // SAFETY: as above; Zend copies the value.
-            Str(string) => unsafe {
-                zend_register_string_constant(text, length, string.as_ptr(), persistent, module);
-            },
+            Long(long) => minit.long_constant(name, long),
+            Bool(on) => minit.bool_constant(name, on),
+            Str(string) => minit.string_constant(name, string),
             Flag(_) => {}
         }
     }

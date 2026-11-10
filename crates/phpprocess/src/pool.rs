@@ -24,16 +24,14 @@ use swoole_rs_process::{
 };
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Object, class_name, handlers, long_zval, message, object_of,
-    string,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, class_name, handlers, long_zval, message,
+    object_of, string,
     sys::{
         IS_ARRAY, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, object_init_ex,
-        swr_zend_array_init, zend_class_entry, zend_declare_property_bool, zend_hash_index_find,
-        zend_hash_index_update, zend_object, zend_object_handlers, zend_read_property, zval,
-        zval_ptr_dtor,
+        swr_zend_array_init, zend_class_entry, zend_hash_index_find, zend_hash_index_update,
+        zend_object, zend_object_handlers, zend_read_property, zval, zval_ptr_dtor,
     },
-    throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
-    update_property_long, value,
+    type_of, unset_property_deny, update_property_long, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -80,8 +78,9 @@ static POOL: Class = Class::new();
 static CURRENT: AtomicPtr<PoolRecord> = AtomicPtr::new(ptr::null_mut());
 static CURRENT_WORKER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
-fn exception() -> *mut zend_class_entry {
-    host::exception()
+/// Swoole\\Exception.
+fn exception() -> &'static Class {
+    swoole_rs_phpswoole::exception()
 }
 
 /// The fields of a pool this module created.
@@ -264,29 +263,19 @@ unsafe extern "C" fn raise() {
 /// # Safety
 /// Called once, at MINIT, after the Process MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_process_pool_minit(_module: c_int) {
+pub unsafe extern "C" fn php_swoole_process_pool_minit(module: c_int) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module) };
     // SAFETY: a `zend_try` trap and Zend's bailout.
     unsafe { swoole_rs_process::pool::set_bailout(trap, raise) };
-    // SAFETY: MINIT, with a static table.
-    unsafe { POOL.register(c"Swoole\\Process\\Pool", METHODS.as_ptr(), configure) };
+    minit.register(&POOL, c"Swoole\\Process\\Pool", &METHODS.0, configure);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
-        // SAFETY: MINIT, after `register`.
-        unsafe { POOL.property_long(name, -1) };
+        minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
     }
-    // SAFETY: as above.
-    unsafe { POOL.property_null(c"workers") };
+    minit.property_null(&POOL, c"workers", ZEND_ACC_PUBLIC);
+    // Upstream declares the bools with -1 (true).
     for name in [c"workerRunning", c"running"] {
-        #[expect(clippy::cast_possible_wrap, reason = "a small flag")]
-        // SAFETY: as above; upstream declares the bools with -1 (true).
-        unsafe {
-            zend_declare_property_bool(
-                POOL.entry(),
-                name.as_ptr(),
-                name.count_bytes(),
-                -1,
-                ZEND_ACC_PUBLIC as c_int,
-            );
-        }
+        minit.property_bool(&POOL, name, true, ZEND_ACC_PUBLIC);
     }
 }
 
@@ -502,8 +491,7 @@ fn construct(call: &Call) {
     let object = call.this();
     let refuse = |text: String| {
         set_last_error(OPERATION_NOT_SUPPORT);
-        // SAFETY: in a handler.
-        unsafe { throw_error(message!("{text}").as_cstr()) };
+        call.throw_error(message!("{text}").as_cstr());
         call.set_bool(false);
     };
     // SAFETY: a live object.
@@ -522,14 +510,11 @@ fn construct(call: &Call) {
     }
     if !host::main_thread() {
         set_last_error(OPERATION_NOT_SUPPORT);
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                exception(),
-                c"This operation is only allowed in the main thread",
-                -1,
-            );
-        }
+        call.throw(
+            exception(),
+            c"This operation is only allowed in the main thread",
+            -1,
+        );
         call.set_bool(false);
         return;
     }
@@ -547,13 +532,11 @@ fn construct(call: &Call) {
     };
     let pool = this(call);
     let fail = |text: &std::ffi::CStr| {
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe { throw_exception(exception(), text, i64::from(crate::report::errno())) };
+        call.throw(exception(), text, i64::from(crate::report::errno()));
         call.set_bool(false);
     };
     if !pool.pool.is_null() {
-        // SAFETY: in a handler, with `$this`.
-        unsafe { throw_constructed_twice(object) };
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }
@@ -564,12 +547,9 @@ fn construct(call: &Call) {
         return fail(c"the parameter $msgqueue_key is out of range");
     }
     if coroutine && ipc_type > 0 && ipc_type != IPC_UNIXSOCK {
-        // SAFETY: in a handler.
-        unsafe {
-            throw_error(
-                c"the parameter $ipc_type must be SWOOLE_IPC_UNIXSOCK when enable coroutine",
-            );
-        };
+        call.throw_error(
+            c"the parameter $ipc_type must be SWOOLE_IPC_UNIXSOCK when enable coroutine",
+        );
         call.set_bool(false);
         return;
     }
@@ -652,14 +632,11 @@ fn on(call: &Call) {
         b"workerstart" => &mut this.on_worker_start,
         b"message" => {
             if i64::from(view.ipc_mode) == IPC_NONE {
-                // SAFETY: in a handler, with Swoole's exception class.
-                unsafe {
-                    throw_exception(
-                        exception(),
-                        c"cannot set `onMessage` event with ipc_type=0",
-                        i64::from(INVALID_PARAMS),
-                    );
-                }
+                call.throw(
+                    exception(),
+                    c"cannot set `onMessage` event with ipc_type=0",
+                    i64::from(INVALID_PARAMS),
+                );
                 call.set_bool(false);
                 return;
             }
@@ -862,14 +839,11 @@ fn start(call: &Call) {
         }
     }
     if !this.on_worker_exit.is_null() && !this.enable_coroutine {
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                exception(),
-                c"cannot set `onWorkerExit` without enable_coroutine",
-                i64::from(INVALID_PARAMS),
-            );
-        }
+        call.throw(
+            exception(),
+            c"cannot set `onWorkerExit` without enable_coroutine",
+            i64::from(INVALID_PARAMS),
+        );
         call.set_bool(false);
         return;
     }
@@ -1050,14 +1024,11 @@ fn stop(_call: &Call) {
 fn shutdown(call: &Call) {
     let pool = CURRENT.load(Ordering::Acquire);
     if pool.is_null() {
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                exception(),
-                c"The process pool is not started",
-                i64::from(INVALID_PARAMS),
-            );
-        }
+        call.throw(
+            exception(),
+            c"The process pool is not started",
+            i64::from(INVALID_PARAMS),
+        );
         call.set_bool(false);
         return;
     }

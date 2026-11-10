@@ -112,8 +112,7 @@ pub(crate) unsafe fn php_socket_create(out: *mut zval, fd: c_int) -> bool {
 pub(crate) fn error(level: c_int, message: &CStr) -> Result<(), Bailout> {
     swoole_rs_corebase::log::set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE as c_int);
     if swoole_rs_phpswoole::display_errors() || level == E_ERROR {
-        // SAFETY: a warning, printed through "%s".
-        return unsafe { swoole_rs_zend::php_error(level, message) };
+        return swoole_rs_zend::report(level, message);
     }
     Ok(())
 }
@@ -136,8 +135,7 @@ pub(crate) fn sys_error(level: c_int, message: &CStr) -> Result<(), Bailout> {
         text.to_string_lossy()
     ))
     .unwrap_or_default();
-    // SAFETY: as in `error`.
-    unsafe { swoole_rs_zend::php_error(level, &full) }
+    swoole_rs_zend::report(level, &full)
 }
 
 /// What the outermost Rust frame must raise once everything it holds is
@@ -170,8 +168,7 @@ pub(crate) fn unconstructed(list: bool) {
         unsafe { swoole_rs_corebase::fatal_error(SW_ERROR_WRONG_OPERATION as c_int, message) };
     } else {
         swoole_rs_corebase::log::set_last_error(SW_ERROR_PHP_FATAL_ERROR as c_int);
-        // SAFETY: an error printed through "%s".
-        bailout::raise(unsafe { swoole_rs_zend::php_error(E_ERROR, message) });
+        bailout::raise(swoole_rs_zend::report(E_ERROR, message));
     }
 }
 

@@ -6,12 +6,13 @@
 use crate::module::{Families, PHP_FATAL_ERROR, Step, families};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with, log::set_last_error};
-use swoole_rs_zend::{E_ERROR, Value, bailout, php_error, sys::zval};
+use swoole_rs_zend::{E_ERROR, Value, bailout, report, sys::zval};
 
 // SAFETY: crates/phplocks' thread locks and atomics, linked into every extension.
 unsafe extern "C" {
-    fn swr_v1_phplocks_thread_atomic_minit();
+    fn swr_v1_phplocks_thread_atomic_minit(module_number: c_int);
     fn swr_v1_phplocks_thread_lock_minit(
+        module_number: c_int,
         unconstructed: Option<unsafe extern "C" fn(*const c_char)>,
     );
 }
@@ -189,7 +190,7 @@ pub(crate) fn minit() -> Vec<Step> {
         #[cfg(feature = "stdext")]
         Step::Hook(swr_v1_phpstdext_minit),
     ]);
-    let thread = built([(Switch::Thread, Step::Hook(thread_minit))]);
+    let thread = built([(Switch::Thread, Step::Minit(thread_minit))]);
     drivers.into_iter().chain(thread).chain(stdext).collect()
 }
 
@@ -280,19 +281,21 @@ extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
 
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
-extern "C" fn thread_minit() {
+/// # Safety
+/// Zend's MINIT of this module, numbered `module_number`.
+unsafe extern "C" fn thread_minit(module_number: c_int) {
     let Some(families) = families() else {
         return;
     };
-    // SAFETY: MINIT, before any PHP thread starts (as for each below).
-    unsafe { (families.thread_minit)() };
-    // SAFETY: as above.
-    unsafe { swr_v1_phplocks_thread_atomic_minit() };
+    // SAFETY: per the caller; the token lives for this call.
+    let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
+    (families.thread_minit)(&minit);
+    // SAFETY: MINIT, with the module's number, before any PHP thread starts.
+    unsafe { swr_v1_phplocks_thread_atomic_minit(module_number) };
     // SAFETY: as above, with a reporter that lives for the process.
-    unsafe { swr_v1_phplocks_thread_lock_minit(Some(unconstructed)) };
-    for minit in families.thread_classes_minit {
-        // SAFETY: as above.
-        unsafe { minit() };
+    unsafe { swr_v1_phplocks_thread_lock_minit(module_number, Some(unconstructed)) };
+    for register in families.thread_classes_minit {
+        register(&minit);
     }
 }
 
@@ -303,6 +306,5 @@ unsafe extern "C" fn unconstructed(message: *const c_char) {
     set_last_error(PHP_FATAL_ERROR);
     // SAFETY: crates/phplocks' static, NUL-terminated message.
     let message = unsafe { CStr::from_ptr(message) };
-    // SAFETY: a handler's error, as upstream raises it.
-    bailout::raise(unsafe { php_error(E_ERROR, message) });
+    bailout::raise(report(E_ERROR, message));
 }

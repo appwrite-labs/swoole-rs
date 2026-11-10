@@ -11,10 +11,7 @@ use std::{
     ffi::{CStr, CString},
     marker::PhantomData,
     ptr,
-    sync::{
-        Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicPtr, Ordering},
-    },
+    sync::{Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_clients::{
     client::{self as state, Call as ClientCall, Op},
@@ -27,16 +24,15 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
-    declare_bool, declare_long, register_long_constant,
     string::ZBuf,
     sys::{
         IS_ARRAY, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
         get_active_function_name, zend_class_entry, zend_object, zend_object_handlers,
         zend_type_error, zval,
     },
-    throw_error, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -281,42 +277,31 @@ pub fn client_class() -> *mut zend_class_entry {
     CLIENT.entry()
 }
 
-/// `php_swoole_client_minit`.
-/// # Safety
-/// Called once, at MINIT, after `Swoole\Exception` is registered.
-pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
-    let exception = swoole_rs_phpswoole::exception_class();
+swoole_rs_zend::minit!(php_swoole_client_minit => register);
+
+/// `php_swoole_client_minit`, after `Swoole\Exception` is registered.
+#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
+fn register(minit: &Minit) -> Result<(), Bailout> {
     let methods = if built_with(Switch::Sockets) {
-        METHODS.as_ptr()
+        &METHODS.0
     } else {
         METHODS.without(&[c"getSocket"])
     };
-    // SAFETY: MINIT, with a table that lives for the process.
-    unsafe { CLIENT.register(c"Swoole\\Client", methods, configure) };
-    // SAFETY: MINIT; the parent is registered.
-    unsafe {
-        EXCEPTION.register_child(
-            c"Swoole\\Client\\Exception",
-            ptr::null(),
-            exception,
-            |_, _| {},
-        );
-    }
-    let ce = CLIENT.entry();
-    // SAFETY: MINIT, with the class just registered (each call below too).
-    unsafe { declare_long(ce, c"errCode", 0, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"sock", -1, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"reuse", false, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"reuseCount", 0, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"type", 0, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"id") };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"setting") };
+    minit.register(&CLIENT, c"Swoole\\Client", methods, configure);
+    minit.register_child(
+        &EXCEPTION,
+        c"Swoole\\Client\\Exception",
+        &[],
+        minit.parent(swoole_rs_phpswoole::exception()),
+        |_, _| {},
+    );
+    minit.property_long(&CLIENT, c"errCode", 0, ZEND_ACC_PUBLIC);
+    minit.property_long(&CLIENT, c"sock", -1, ZEND_ACC_PUBLIC);
+    minit.property_bool(&CLIENT, c"reuse", false, ZEND_ACC_PUBLIC);
+    minit.property_long(&CLIENT, c"reuseCount", 0, ZEND_ACC_PUBLIC);
+    minit.property_long(&CLIENT, c"type", 0, ZEND_ACC_PUBLIC);
+    minit.property_null(&CLIENT, c"id", ZEND_ACC_PUBLIC);
+    minit.property_null(&CLIENT, c"setting", ZEND_ACC_PUBLIC);
     for (name, value) in [
         (c"MSG_OOB", libc::MSG_OOB),
         (c"MSG_PEEK", libc::MSG_PEEK),
@@ -326,18 +311,16 @@ pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
         (c"SHUT_RD", libc::SHUT_RD),
         (c"SHUT_WR", libc::SHUT_WR),
     ] {
-        // SAFETY: as above.
-        unsafe { CLIENT.constant_long(name, i64::from(value)) };
+        minit.class_constant_long(&CLIENT, name, i64::from(value));
     }
     for (name, value) in [
         (c"SWOOLE_SYNC", FLAG_SYNC),
         (c"SWOOLE_ASYNC", FLAG_ASYNC),
         (c"SWOOLE_KEEP", FLAG_KEEP),
     ] {
-        // SAFETY: MINIT, with the extension's module number.
-        unsafe { register_long_constant(name, value, module) };
+        minit.long_constant(name, value);
     }
-    EXCEPTION_PARENT.store(exception, Ordering::Release);
+    Ok(())
 }
 
 pub(crate) fn this(call: &Call) -> &Data {
@@ -621,13 +604,11 @@ fn construct(call: &Call) {
         Ok((kind, is_async, id))
     });
     let Ok((kind, is_async, id)) = parsed else {
-        // SAFETY: from a handler.
-        unsafe { throw_error(c"socket type param is required") };
+        call.throw_error(c"socket type param is required");
         return call.set_bool(false);
     };
     if is_async {
-        // SAFETY: from a handler.
-        unsafe { throw_error(c"The $async parameter is not supported") };
+        call.throw_error(c"The $async parameter is not supported");
         return call.set_bool(false);
     }
     if !check_type(kind) {
@@ -1259,14 +1240,11 @@ fn enable_ssl_method(call: &Call) {
         return call.set_bool(false);
     }
     if !call.zval(1).is_null() {
-        // SAFETY: from a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                EXCEPTION_PARENT.load(Ordering::Acquire),
-                c"sync client does not support `onSslReady` callback",
-                i64::from(INVALID_PARAMS),
-            );
-        }
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            c"sync client does not support `onSslReady` callback",
+            i64::from(INVALID_PARAMS),
+        );
         return call.set_bool(false);
     }
     let Some(conn) = connected(call) else {
@@ -1277,9 +1255,6 @@ fn enable_ssl_method(call: &Call) {
     }
     call.set_bool(bailed(conn.call(Op::SslHandshake).run()) == Some(0));
 }
-
-/// `swoole_exception_ce`.
-pub(crate) static EXCEPTION_PARENT: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 
 /// `getPeerCert(): string|false`.
 fn get_peer_cert(call: &Call) {

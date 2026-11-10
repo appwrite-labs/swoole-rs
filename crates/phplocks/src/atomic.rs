@@ -5,9 +5,9 @@ use std::ffi::c_int;
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::atomic;
 use swoole_rs_zend::{
-    Call, Class, Object, method_table,
+    Call, Class, Minit, Object, method_table,
     sys::{ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
-    throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 
 /// `SW_ERROR_MALLOC_FAIL`.
@@ -42,11 +42,7 @@ unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_obj
     #[expect(clippy::cast_possible_truncation, reason = "a word is 4 or 8 bytes")]
     let word = pool::alloc(size_of::<W>() as u32);
     if word.is_null() {
-        let exception = swoole_rs_phpswoole::exception_class();
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL);
-        }
+        swoole_rs_phpswoole::exception().throw(c"global memory allocation failure", MALLOC_FAIL);
     }
     // SAFETY: `std` is the object just created.
     unsafe { *Atomic::<W>::data(std) = word.cast() };
@@ -92,17 +88,21 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_atomic_minit(_module_number: c_int) {
-    // SAFETY: MINIT, with static tables.
-    unsafe { ATOMIC.register(c"Swoole\\Atomic", ATOMIC_METHODS.as_ptr(), configure::<u32>) };
-    // SAFETY: as above.
-    unsafe {
-        LONG.register(
-            c"Swoole\\Atomic\\Long",
-            LONG_METHODS.as_ptr(),
-            configure::<i64>,
-        );
-    }
+pub unsafe extern "C" fn php_swoole_atomic_minit(module_number: c_int) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module_number) };
+    minit.register(
+        &ATOMIC,
+        c"Swoole\\Atomic",
+        &ATOMIC_METHODS.0,
+        configure::<u32>,
+    );
+    minit.register(
+        &LONG,
+        c"Swoole\\Atomic\\Long",
+        &LONG_METHODS.0,
+        configure::<i64>,
+    );
 }
 
 /// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.

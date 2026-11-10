@@ -36,7 +36,7 @@ double swr_v1_locks_coroutine_backoff(double second, double initial, double maxi
 #ifdef SW_THREAD /* config.h: ZTS builds with thread support */
 /* Swoole\Thread\Atomic, Atomic\Long and Lock, whose resources Thread\Map,
  * ArrayList and Queue share. */
-void swr_v1_phplocks_thread_atomic_minit(void);
+void swr_v1_phplocks_thread_atomic_minit(int module_number);
 #endif
 #ifdef __cplusplus
 }
