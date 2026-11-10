@@ -857,3 +857,43 @@ fn table_lock_race() {
     unsafe { unlock(lock) };
     assert_eq!(wait(child), 0);
 }
+
+/// The guards: a new row's flag, typed reads and writes, the unlock on drop,
+/// the iterator's copy, and another table's column reading as empty rather
+/// than past the row.
+#[test]
+fn guards_read_and_write_locked_rows() {
+    let table = three_columns(64, 0.2);
+    let t = table.get();
+    let column = |name: &[u8]| t.column(name).unwrap();
+    let (id, name, score) = (column(b"id"), column(b"name"), column(b"score"));
+    let row = t.lock_set(b"k").unwrap();
+    assert!(row.found() && row.is_new());
+    row.set_number(id, 7);
+    row.set_bytes(name, b"seven");
+    row.set_number(score, 1.5f64.to_bits());
+    row.set_bytes(id, b"ignored");
+    drop(row);
+    let row = t.lock_set(b"k").unwrap();
+    assert!(!row.is_new());
+    assert_eq!((row.number(id), row.bytes(name)), (7, &b"seven"[..]));
+    assert_eq!(f64::from_bits(row.number(score)), 1.5);
+    row.clear_row();
+    assert_eq!((row.number(id), row.bytes(name)), (0, &b""[..]));
+    drop(row);
+    assert!(!t.lock_get(b"none").unwrap().found());
+    let mut wide = Owned::new(64, 0.2);
+    assert!(wide.get_mut().add_column(b"pad", TYPE_STRING, 512));
+    assert!(wide.get_mut().add_column(b"far", TYPE_STRING, 64));
+    let far = wide.get().column(b"far").unwrap();
+    assert_eq!(t.lock_get(b"k").unwrap().bytes(far), b"");
+    // Every guard above unlocked its bucket, or this would spin until forced.
+    assert!(t.lock_set(b"k").unwrap().found());
+    assert_eq!(warnings(), Vec::<String>::new());
+    t.rewind();
+    t.forward();
+    let current = t.current_row().unwrap();
+    assert_eq!((current.key(), current.number(id)), (&b"k"[..], 0));
+    t.forward();
+    assert_eq!(t.current_row().unwrap().key(), b"");
+}
