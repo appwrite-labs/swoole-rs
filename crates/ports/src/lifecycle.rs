@@ -308,14 +308,7 @@ fn close(n: &Native) {
 /// # Safety
 /// Both are NUL-terminated strings, live for the call.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10ListenPort25ssl_matches_wildcard_nameEPKcS2_")
-)]
-pub unsafe extern "C" fn ssl_matches_wildcard_name(
-    subject: *const c_char,
-    cert: *const c_char,
-) -> bool {
+pub unsafe fn ssl_matches_wildcard_name(subject: *const c_char, cert: *const c_char) -> bool {
     // SAFETY: a live C string, by the caller's contract.
     let subject = unsafe { CStr::from_ptr(subject) };
     // SAFETY: a live C string, by the caller's contract.

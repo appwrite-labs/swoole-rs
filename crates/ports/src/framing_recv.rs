@@ -2,9 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 src/protocol/base.cc (Swoole contributors).
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
 //! `recv_split_by_eof`: [`swoole_rs_framing::recv::recv`] with each effect on the socket,
-//! the buffer and the protocol's callbacks; and `default_length_func`,
-//! `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`, under their upstream
-//! symbols. Logs name the upstream function that wrote them.
+//! the buffer and the protocol's callbacks; `default_length_func`, under its upstream
+//! symbol; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
+//! upstream function that wrote them.
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::marker::PhantomData;
 use core::ptr;
@@ -22,7 +22,7 @@ use swoole_rs_framing::recv::{
     OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT, OP_SSL_PENDING, RECV_CLOSE,
     RECV_DONE,
 };
-use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack, width};
+use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_websocket_ffi::frame_api::PacketLength;
@@ -504,24 +504,11 @@ fn invalid_format(format: u8) {
     );
 }
 
-/// `int64_t swoole_unpack(char, const void *)`: -1 (logged) for an unknown format.
-///
-/// # Safety
-/// `data` holds the format's width of readable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z13swoole_unpackcPKv")
-)]
+/// `int64_t swoole_unpack(char, const void *)` over `data`'s first bytes: -1 for too few
+/// and -1 (logged) for an unknown format.
 #[must_use]
-pub unsafe extern "C" fn swoole_unpack(format: u8, data: *const c_void) -> i64 {
-    let width = width(format);
-    let bytes = if data.is_null() || width == 0 {
-        &[][..]
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { core::slice::from_raw_parts(data.cast::<u8>(), width) }
-    };
-    match unpack(format, bytes) {
+pub fn swoole_unpack(format: u8, data: &[u8]) -> i64 {
+    match unpack(format, data) {
         Ok(value) => value,
         Err(UnpackError::Format) => {
             invalid_format(format);
@@ -532,30 +519,14 @@ pub unsafe extern "C" fn swoole_unpack(format: u8, data: *const c_void) -> i64 {
 }
 
 /// `uint64_t swoole_hton64(uint64_t)`.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_Z13swoole_hton64y")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_Z13swoole_hton64m")
-)]
 #[must_use]
-pub extern "C" fn swoole_hton64(value: u64) -> u64 {
+pub const fn swoole_hton64(value: u64) -> u64 {
     value.to_be()
 }
 
 /// `uint64_t swoole_ntoh64(uint64_t)`.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_Z13swoole_ntoh64y")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_Z13swoole_ntoh64m")
-)]
 #[must_use]
-pub extern "C" fn swoole_ntoh64(value: u64) -> u64 {
+pub const fn swoole_ntoh64(value: u64) -> u64 {
     value.to_be()
 }
 
@@ -653,11 +624,6 @@ mod tests {
     // protocol.hton64, with the same inputs and expected values. upstream's
     // swoole_swap_endian{16,32,64} are the integers' `swap_bytes`.
 
-    fn unpack(format: u8, buffer: &[u8]) -> i64 {
-        // SAFETY: every buffer here holds 8 readable bytes, the widest format.
-        unsafe { swoole_unpack(format, buffer.as_ptr().cast()) }
-    }
-
     /// `createBinaryData`: the value's native bytes at the front of an 8-byte buffer.
     fn data(bytes: &[u8]) -> [u8; 8] {
         let mut buffer = [0; 8];
@@ -696,39 +662,51 @@ mod tests {
     #[expect(clippy::cognitive_complexity, reason = "one upstream TEST, kept whole")]
     fn unpack_formats() {
         // 8-bit
-        assert_eq!(unpack(b'c', &data(&(-42i8).to_ne_bytes())), -42);
-        assert_eq!(unpack(b'C', &data(&200u8.to_ne_bytes())), 200);
-        assert_eq!(unpack(b'c', &data(&i8::MIN.to_ne_bytes())), i8::MIN.into());
-        assert_eq!(unpack(b'c', &data(&i8::MAX.to_ne_bytes())), i8::MAX.into());
-        assert_eq!(unpack(b'C', &data(&u8::MAX.to_ne_bytes())), u8::MAX.into());
+        assert_eq!(swoole_unpack(b'c', &data(&(-42i8).to_ne_bytes())), -42);
+        assert_eq!(swoole_unpack(b'C', &data(&200u8.to_ne_bytes())), 200);
+        assert_eq!(
+            swoole_unpack(b'c', &data(&i8::MIN.to_ne_bytes())),
+            i8::MIN.into()
+        );
+        assert_eq!(
+            swoole_unpack(b'c', &data(&i8::MAX.to_ne_bytes())),
+            i8::MAX.into()
+        );
+        assert_eq!(
+            swoole_unpack(b'C', &data(&u8::MAX.to_ne_bytes())),
+            u8::MAX.into()
+        );
 
         // 16-bit
-        assert_eq!(unpack(b's', &data(&(-12345i16).to_ne_bytes())), -12345);
-        assert_eq!(unpack(b'S', &data(&54321u16.to_ne_bytes())), 54321);
+        assert_eq!(
+            swoole_unpack(b's', &data(&(-12345i16).to_ne_bytes())),
+            -12345
+        );
+        assert_eq!(swoole_unpack(b'S', &data(&54321u16.to_ne_bytes())), 54321);
         let n_val = 0x1234u16;
         let n_be = n_val.rotate_left(8);
-        assert_eq!(unpack(b'n', &data(&n_be.to_ne_bytes())), 0x1234);
-        assert_eq!(unpack(b'v', &data(&0x1234u16.to_ne_bytes())), 0x1234);
+        assert_eq!(swoole_unpack(b'n', &data(&n_be.to_ne_bytes())), 0x1234);
+        assert_eq!(swoole_unpack(b'v', &data(&0x1234u16.to_ne_bytes())), 0x1234);
         assert_eq!(
-            unpack(b's', &data(&i16::MIN.to_ne_bytes())),
+            swoole_unpack(b's', &data(&i16::MIN.to_ne_bytes())),
             i16::MIN.into()
         );
         assert_eq!(
-            unpack(b's', &data(&i16::MAX.to_ne_bytes())),
+            swoole_unpack(b's', &data(&i16::MAX.to_ne_bytes())),
             i16::MAX.into()
         );
         assert_eq!(
-            unpack(b'S', &data(&u16::MAX.to_ne_bytes())),
+            swoole_unpack(b'S', &data(&u16::MAX.to_ne_bytes())),
             u16::MAX.into()
         );
 
         // 32-bit
         assert_eq!(
-            unpack(b'l', &data(&(-123_456_789i32).to_ne_bytes())),
+            swoole_unpack(b'l', &data(&(-123_456_789i32).to_ne_bytes())),
             -123_456_789
         );
         assert_eq!(
-            unpack(b'L', &data(&3_000_000_000u32.to_ne_bytes())),
+            swoole_unpack(b'L', &data(&3_000_000_000u32.to_ne_bytes())),
             3_000_000_000
         );
         let n_val = 0x1234_5678u32;
@@ -736,99 +714,111 @@ mod tests {
             | ((n_val & 0xFF00) << 8)
             | ((n_val & 0x00FF_0000) >> 8)
             | ((n_val & 0xFF00_0000) >> 24);
-        assert_eq!(unpack(b'N', &data(&n_be.to_ne_bytes())), 0x1234_5678);
+        assert_eq!(swoole_unpack(b'N', &data(&n_be.to_ne_bytes())), 0x1234_5678);
         assert_eq!(
-            unpack(b'V', &data(&0x1234_5678u32.to_ne_bytes())),
+            swoole_unpack(b'V', &data(&0x1234_5678u32.to_ne_bytes())),
             0x1234_5678
         );
         assert_eq!(
-            unpack(b'l', &data(&i32::MIN.to_ne_bytes())),
+            swoole_unpack(b'l', &data(&i32::MIN.to_ne_bytes())),
             i32::MIN.into()
         );
         assert_eq!(
-            unpack(b'l', &data(&i32::MAX.to_ne_bytes())),
+            swoole_unpack(b'l', &data(&i32::MAX.to_ne_bytes())),
             i32::MAX.into()
         );
         assert_eq!(
-            unpack(b'L', &data(&u32::MAX.to_ne_bytes())),
+            swoole_unpack(b'L', &data(&u32::MAX.to_ne_bytes())),
             u32::MAX.into()
         );
 
         // 64-bit
         assert_eq!(
-            unpack(b'q', &data(&(-1_234_567_890_123_456_789i64).to_ne_bytes())),
+            swoole_unpack(b'q', &data(&(-1_234_567_890_123_456_789i64).to_ne_bytes())),
             -1_234_567_890_123_456_789
         );
         assert_eq!(
-            unpack(b'Q', &data(&10_234_567_890_123_456_789u64.to_ne_bytes())),
+            swoole_unpack(b'Q', &data(&10_234_567_890_123_456_789u64.to_ne_bytes())),
             10_234_567_890_123_456_789u64 as i64
         );
         let j_be = 0x1234_5678_9ABC_DEF0u64.swap_bytes();
         assert_eq!(
-            unpack(b'J', &data(&j_be.to_ne_bytes())),
+            swoole_unpack(b'J', &data(&j_be.to_ne_bytes())),
             0x1234_5678_9ABC_DEF0
         );
         assert_eq!(
-            unpack(b'P', &data(&0x1234_5678_9ABC_DEF0u64.to_ne_bytes())),
+            swoole_unpack(b'P', &data(&0x1234_5678_9ABC_DEF0u64.to_ne_bytes())),
             0x1234_5678_9ABC_DEF0
         );
-        assert_eq!(unpack(b'q', &data(&i64::MIN.to_ne_bytes())), i64::MIN);
-        assert_eq!(unpack(b'q', &data(&i64::MAX.to_ne_bytes())), i64::MAX);
         assert_eq!(
-            unpack(b'Q', &data(&u64::MAX.to_ne_bytes())),
+            swoole_unpack(b'q', &data(&i64::MIN.to_ne_bytes())),
+            i64::MIN
+        );
+        assert_eq!(
+            swoole_unpack(b'q', &data(&i64::MAX.to_ne_bytes())),
+            i64::MAX
+        );
+        assert_eq!(
+            swoole_unpack(b'Q', &data(&u64::MAX.to_ne_bytes())),
             u64::MAX as i64
         );
 
         // Machine-dependent int
         assert_eq!(
-            unpack(b'i', &data(&(-987_654_321i32).to_ne_bytes())),
+            swoole_unpack(b'i', &data(&(-987_654_321i32).to_ne_bytes())),
             -987_654_321
         );
         assert_eq!(
-            unpack(b'I', &data(&3_000_000_000u32.to_ne_bytes())),
+            swoole_unpack(b'I', &data(&3_000_000_000u32.to_ne_bytes())),
             3_000_000_000
         );
         assert_eq!(
-            unpack(b'i', &data(&i32::MIN.to_ne_bytes())),
+            swoole_unpack(b'i', &data(&i32::MIN.to_ne_bytes())),
             i32::MIN.into()
         );
         assert_eq!(
-            unpack(b'i', &data(&i32::MAX.to_ne_bytes())),
+            swoole_unpack(b'i', &data(&i32::MAX.to_ne_bytes())),
             i32::MAX.into()
         );
         assert_eq!(
-            unpack(b'I', &data(&u32::MAX.to_ne_bytes())),
+            swoole_unpack(b'I', &data(&u32::MAX.to_ne_bytes())),
             u32::MAX.into()
         );
 
         // Invalid format specifiers
         let zero = [0u8; 8];
-        assert_eq!(unpack(b'x', &zero), -1);
-        assert_eq!(unpack(b'?', &zero), -1);
-        assert_eq!(unpack(b'Z', &zero), -1);
+        assert_eq!(swoole_unpack(b'x', &zero), -1);
+        assert_eq!(swoole_unpack(b'?', &zero), -1);
+        assert_eq!(swoole_unpack(b'Z', &zero), -1);
 
         // Endianness
-        assert_eq!(unpack(b'n', &data(&[0x12, 0x34])), 0x1234);
-        assert_eq!(unpack(b'v', &data(&[0x34, 0x12])), 0x1234);
-        assert_eq!(unpack(b'N', &data(&[0x12, 0x34, 0x56, 0x78])), 0x1234_5678);
-        assert_eq!(unpack(b'V', &data(&[0x78, 0x56, 0x34, 0x12])), 0x1234_5678);
+        assert_eq!(swoole_unpack(b'n', &data(&[0x12, 0x34])), 0x1234);
+        assert_eq!(swoole_unpack(b'v', &data(&[0x34, 0x12])), 0x1234);
+        assert_eq!(
+            swoole_unpack(b'N', &data(&[0x12, 0x34, 0x56, 0x78])),
+            0x1234_5678
+        );
+        assert_eq!(
+            swoole_unpack(b'V', &data(&[0x78, 0x56, 0x34, 0x12])),
+            0x1234_5678
+        );
         let be = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
-        assert_eq!(unpack(b'J', &be), 0x1234_5678_9ABC_DEF0);
+        assert_eq!(swoole_unpack(b'J', &be), 0x1234_5678_9ABC_DEF0);
         let le = [0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12];
-        assert_eq!(unpack(b'P', &le), 0x1234_5678_9ABC_DEF0);
+        assert_eq!(swoole_unpack(b'P', &le), 0x1234_5678_9ABC_DEF0);
 
         // htons, htonl and swoole_hton64 into n, N and J
         assert_eq!(
-            unpack(b'n', &data(&0x1234u16.to_be().to_ne_bytes())),
+            swoole_unpack(b'n', &data(&0x1234u16.to_be().to_ne_bytes())),
             0x1234
         );
         assert_eq!(
-            unpack(b'N', &data(&0x1234_5678u32.to_be().to_ne_bytes())),
+            swoole_unpack(b'N', &data(&0x1234_5678u32.to_be().to_ne_bytes())),
             0x1234_5678
         );
         let be64 = swoole_hton64(0x1234_5678_9ABC_DEF0);
         assert_eq!(
-            unpack(b'J', &data(&be64.to_ne_bytes())),
+            swoole_unpack(b'J', &data(&be64.to_ne_bytes())),
             0x1234_5678_9ABC_DEF0
         );
     }
