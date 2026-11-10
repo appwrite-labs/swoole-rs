@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -64,7 +64,7 @@ jobs:
   phpt:
     needs: build
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 60
     strategy:
       fail-fast: false

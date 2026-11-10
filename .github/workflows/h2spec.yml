@@ -12,7 +12,7 @@ defaults:
 
 jobs:
   h2spec:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
