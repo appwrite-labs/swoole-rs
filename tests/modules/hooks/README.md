@@ -46,17 +46,13 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
-`Co`, reached by symbol through exports kept for this package alone
-(crates/hooks/src/socket_symbols.rs, under `upstream-symbols`): made and deleted
-through `swr_v1_hook_co_socket_make` and `_free`, its members called under their
-upstream symbols (the vectored ones over an `IOVector` owner
-`swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does) and the rest through
-`swr_v1_hook_co_socket_*`, and its fields
+`Co`, whose methods the cases call: made by `co_socket::make` and deleted by
+`swr_v1_hook_co_socket_free`, the vectored members over an `IOVector` owner
+`swr_v1_reactor_iov_prepare` makes (as crates/phpruntime does), and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
-`TimeoutController` are `swr_v1_hook_timeout_scope` and
-`swr_v1_hook_co_socket_timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
+`TimeoutController` are the crate's `TimeoutScope` and its `timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
 take the record's buffer fields. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
