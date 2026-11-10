@@ -560,6 +560,13 @@ fn table_warning(message: &[u8]) {
     log::warning(&origin, format_args!("{rest}"));
 }
 
+/// `swoole_hash_php` of the bytes a row compares: a made table's hash.
+fn php_hash(key: &[u8], compared: usize) -> u64 {
+    let key = key.get(..compared).unwrap_or(key);
+    // SAFETY: `key` holds its length.
+    unsafe { swoole_rs_utilities::misc::swoole_hash_php(key.as_ptr().cast(), key.len()) }
+}
+
 /// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
 /// memory pool, so forked workers share it.
 #[must_use]
@@ -569,9 +576,8 @@ pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     if table.is_null() {
         return table;
     }
-    let hash = swoole_rs_utilities::misc::swoole_hash_php;
     // SAFETY: the pool's blocks are 8-aligned; `size_of::<Table>()` writable bytes.
-    if unsafe { !Table::init(table, rows, conflict, hash, table_warning, table_error) } {
+    if unsafe { !Table::init(table, rows, conflict, php_hash, table_warning, table_error) } {
         return ptr::null_mut();
     }
     table
@@ -610,6 +616,64 @@ pub unsafe fn swr_table_destroy(this: *mut Table) {
     let arena = unsafe { Table::destroy(this) };
     if !arena.is_null() {
         sw_shm_free(arena.cast());
+    }
+}
+
+/// A table [`swr_table_make`] made, owned by this process: its header lives as
+/// long as this does, unless [`SharedTable::destroy`] has freed it by then.
+/// Dropping it leaves the table to the processes that share it (forked workers
+/// may still use it), as upstream's objects do.
+pub struct SharedTable {
+    table: NonNull<Table>,
+    destroyed: std::cell::Cell<bool>,
+}
+
+impl SharedTable {
+    /// [`swr_table_make`], keys hashed with `hash`.
+    #[must_use]
+    pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
+        let mut table = NonNull::new(swr_table_make(rows, conflict))?;
+        // SAFETY: a made table nothing else references yet.
+        unsafe { table.as_mut() }.set_hash(hash);
+        Some(Self {
+            table,
+            destroyed: std::cell::Cell::new(false),
+        })
+    }
+
+    /// `Table::add_column`.
+    pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
+        // SAFETY: a live table, and `&mut self` excludes every borrow of it.
+        unsafe { self.table.as_mut() }.add_column(name, kind, size)
+    }
+
+    /// `Table::create()` ([`swr_table_create`]).
+    pub fn create(&mut self) -> bool {
+        // SAFETY: a made table, which `&mut self` borrows alone.
+        unsafe { swr_table_create(self.table.as_ptr()) }
+    }
+
+    /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.
+    pub fn destroy(&self) {
+        self.destroyed.set(true);
+    }
+}
+
+impl std::ops::Deref for SharedTable {
+    type Target = Table;
+
+    fn deref(&self) -> &Table {
+        // SAFETY: live until this drops; only `&mut self` mutates it.
+        unsafe { self.table.as_ref() }
+    }
+}
+
+impl Drop for SharedTable {
+    fn drop(&mut self) {
+        if self.destroyed.get() {
+            // SAFETY: a made table, destroyed once: nothing borrows it any more.
+            unsafe { swr_table_destroy(self.table.as_ptr()) };
+        }
     }
 }
 

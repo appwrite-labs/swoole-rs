@@ -87,7 +87,10 @@ impl Custom for Held {
 ```
 
 A `CustomClass<T>` serves one data type, so a handler can't read another
-class's objects as `T`. `crates/phplocks` uses no `unsafe` at all.
+class's objects as `T`. A type that sets `Custom::DESTRUCTS` also gets a
+`dtor_obj` handler, which runs `__destruct` and then `Custom::destruct` (the
+channel frees its queued values there). `crates/phplocks` and
+`crates/phpcollections` use no `unsafe` at all.
 
 Mirror upstream's ZPP block exactly: the same min/max, defaults and failure
 return value. Errors are Zend's own (`zend_wrong_parameters_count_error`,

@@ -14,9 +14,9 @@ python3 tests/modules/phpcollections/php_runtime.py \
 
 Copies the DSOs, requires the phpcollections feature bit on exactly one engine, checks the
 selected engine against `tools/build_ext.py`'s manifest, then runs `php_collections.php` on both. The `complete` profile
-requires exactly 324 checks and identical summaries: binary/null/partial writes,
+requires exactly 330 checks and identical summaries: binary/null/partial writes,
 defined arithmetic, object/resource custody, COW isolation, suspended FIFO
-transfer, aliases/Countable/Iterator, constructor refusal, serialization denial,
+transfer, aliases/Countable/Iterator, a column whose name creates the table, a set() whose conversion bails out (read back at shutdown), constructor refusal, serialization denial,
 and column schemas of 1/3/17/65 columns with duplicates. `--profile column-bytes`
 runs the separate 16-check `php_column_bytes.php` (NUL/high-byte column names).
 Optional PHP dependencies use repeated `--php-extension NAME`. Registered as

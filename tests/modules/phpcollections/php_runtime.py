@@ -20,7 +20,7 @@ from tools.ext_identity import attest, unchanged
 from tools.build_upstream import require_build_space
 
 BIT = 33554432
-EXPECTED_CHECKS = 324
+EXPECTED_CHECKS = 330
 FIXTURE = Path(__file__).with_name('php_collections.php')
 
 

@@ -150,6 +150,9 @@ pub struct Families {
     pub locks_minit: [Minit; 4],
     /// `php_swoole_event_minit`.
     pub event_minit: Minit,
+    /// crates/phpcollections' MINITs: `php_swoole_table_minit`, then
+    /// `php_swoole_channel_coro_minit`.
+    pub collections_minit: [Minit; 2],
     /// `php_swoole_timer_minit` and `php_swoole_timer_rshutdown`.
     pub timer_minit: Minit,
     pub timer_rshutdown: Hook,
@@ -250,8 +253,6 @@ pub fn families() -> Option<&'static Families> {
 unsafe extern "C" {
     fn php_swoole_process_minit(module_number: c_int);
     fn php_swoole_process_pool_minit(module_number: c_int);
-    fn php_swoole_table_minit(module_number: c_int);
-    fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
     fn php_swoole_runtime_mshutdown();
     fn php_swoole_runtime_rinit();
@@ -300,14 +301,14 @@ pub(crate) fn startup(module_number: c_int) {
         M(families.locks_minit[1]),
         M(php_swoole_process_minit),
         M(php_swoole_process_pool_minit),
-        M(php_swoole_table_minit),
+        M(families.collections_minit[0]),
         M(families.timer_minit),
     ];
     // coroutine
     steps.extend(families.coroutine_minit.map(M));
     steps.extend([
         M(families.locks_minit[2]),
-        M(php_swoole_channel_coro_minit),
+        M(families.collections_minit[1]),
         M(php_swoole_runtime_minit),
     ]);
     // client
