@@ -130,7 +130,7 @@ pub(crate) fn ssl_supports(option: c_int) -> bool {
 /// unsafe point: a socket stays live while the object or client that owns it
 /// is, and a method holds that owner for its whole call.
 #[derive(Clone, Copy)]
-pub(crate) struct Co(Socket);
+pub struct Co(Socket);
 
 impl Co {
     /// # Safety
@@ -139,7 +139,8 @@ impl Co {
         Self(socket)
     }
 
-    pub(crate) fn as_ptr(self) -> Socket {
+    #[must_use]
+    pub fn as_ptr(self) -> Socket {
         self.0
     }
 
