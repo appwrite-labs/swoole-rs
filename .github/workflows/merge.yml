@@ -211,7 +211,7 @@ jobs:
         run: >
           python3 tools/dev.py integrate --module phphelpers --stdext
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-          --phase build --phase stdext-reference-build --phase phphelpers-runtime
+          --phase cargo-build --phase stdext-reference-build --phase phphelpers-runtime
       # tools/ci.py reads phases* artifacts for new and fixed phases.
       - uses: actions/upload-artifact@v4
         if: always()
