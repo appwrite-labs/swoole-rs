@@ -563,6 +563,7 @@ name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
  "swoole-rs-ffi",
+ "swoole-rs-hooks",
 ]
 
 [[package]]
