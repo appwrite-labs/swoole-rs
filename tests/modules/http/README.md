@@ -198,6 +198,24 @@ Not yet run:
   `THREAD_SUPPORTED` stays false, so `create()` refuses `MODE_THREAD`. No lane builds the
   case packages over ZTS.
 
+`core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
+`server`, in the same binary and phase, one function per TEST under its own name with the
+same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,
+`task_base`, `task_process`, `task_ipc_stream`, `task_worker3`, `task_worker4`,
+`task_sync_multi_task`, `task_sync`, `task_ipc_queue_1` .. `task_ipc_queue_5` and
+`no_idle_task_worker`. `Server::task` and both `task_sync`s are crates/process's `Tasks`
+over the server's task pool and the worker's notify pipe, lock and result slot (`tasks`,
+as crates/phpserver's `task_state` lends them to `Swoole\Server`'s task methods); the other methods are the crates' functions under their
+upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
+`get_task_result`, `get_worker_pid`) keep their bodies. `test::counter_*` is a shared
+mapping the forked processes inherit, as core-tests' memory-pool counters are, and an
+expectation in a callback records its failure there, so here one in a forked worker fails
+the case too. `no_idle_task_worker`'s client waits on a shared flag its `onWorkerStart`
+sets, where upstream's waited on a process-shared mutex it unlocked. `task_ipc_queue_5`
+runs in thread mode, which needs `SW_THREAD`: upstream's CMake defines it for core-tests
+under `enable_thread`, and the extension's MINIT sets crates/server's `THREAD_SUPPORTED`
+for a ZTS PHP. This binary has no MINIT, so the case sets it.
+
 `core-tests/src/server/server.cpp`'s TLS TESTs that start a server are
 `server/src/http1/server_ssl.rs`, in the same binary and phase, one function per TEST
 under its own name: `ssl`, `ssl_error`, `ssl_write`, `dtls`, `dtls2`, `ssl_client_cert_1`
