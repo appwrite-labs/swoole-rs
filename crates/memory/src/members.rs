@@ -57,8 +57,7 @@ pub(crate) unsafe fn release(shared: bool, memory: *mut c_void) {
 ///
 /// # Safety
 /// `output` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_fixed_pool_new(
+pub unsafe fn swr_v1_memory_fixed_pool_new(
     slices: u32,
     width: u32,
     shared: bool,
@@ -83,8 +82,7 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_new(
 /// # Safety
 /// `memory` is null or `size` writable bytes the pool may use until it is destroyed;
 /// `output` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_fixed_pool_borrow(
+pub unsafe fn swr_v1_memory_fixed_pool_borrow(
     width: u32,
     memory: *mut c_void,
     size: usize,
@@ -110,8 +108,7 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_borrow(
 ///
 /// # Safety
 /// `pool` is a constructed pool, destroyed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_fixed_pool_delete(pool: *mut Fixed) {
+pub unsafe fn swr_v1_memory_fixed_pool_delete(pool: *mut Fixed) {
     // SAFETY: as the caller promises.
     let header = unsafe { &*pool };
     if header.allocated != 0 {
@@ -127,8 +124,7 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_delete(pool: *mut Fixed) {
 ///
 /// # Safety
 /// `pool` is a constructed pool; allocation is serialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_fixed_pool_alloc(pool: *mut Fixed) -> *mut c_void {
+pub unsafe fn swr_v1_memory_fixed_pool_alloc(pool: *mut Fixed) -> *mut c_void {
     // SAFETY: as the caller promises.
     let result = unsafe { fixed::alloc(pool) };
     if result.is_null() {
@@ -152,8 +148,7 @@ pub unsafe extern "C" fn swr_v1_memory_fixed_pool_alloc(pool: *mut Fixed) -> *mu
 ///
 /// # Safety
 /// `pool` is a constructed pool, `data` a live slice of it; release is serialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_fixed_pool_free(pool: *mut Fixed, data: *mut c_void) {
+pub unsafe fn swr_v1_memory_fixed_pool_free(pool: *mut Fixed, data: *mut c_void) {
     // SAFETY: as the caller promises.
     let header = unsafe { &*pool };
     let (memory, size) = (header.memory.addr(), header.size);
@@ -250,8 +245,7 @@ pub unsafe extern "C" fn swr_fixed_pool_debug(this: *const c_void, max_lines: c_
 ///
 /// # Safety
 /// `output` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_buffer_new(
+pub unsafe fn swr_v1_memory_ring_buffer_new(
     size: u32,
     shared: bool,
     output: *mut *mut Storage,
@@ -274,8 +268,7 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_new(
 ///
 /// # Safety
 /// `ring` is a constructed ring, destroyed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_buffer_delete(ring: *mut Storage) {
+pub unsafe fn swr_v1_memory_ring_buffer_delete(ring: *mut Storage) {
     // SAFETY: as the caller promises.
     let shared = unsafe { &*ring }.shared != 0;
     // SAFETY: the ring's arena came from `arena(shared, ..)`.
@@ -289,11 +282,7 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_delete(ring: *mut Storage) {
 ///
 /// # Safety
 /// `ring` is a constructed ring, allocated from by one producer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_buffer_alloc(
-    ring: *mut Storage,
-    size: u32,
-) -> *mut c_void {
+pub unsafe fn swr_v1_memory_ring_buffer_alloc(ring: *mut Storage, size: u32) -> *mut c_void {
     // assert(size > 0);
     assert!(size > 0, "a non-empty record");
     // SAFETY: as the caller promises.
@@ -307,8 +296,7 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_alloc(
 ///
 /// # Safety
 /// `ring` is a constructed ring and `data` a live record of it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_ring_buffer_free(ring: *mut Storage, data: *mut c_void) {
+pub unsafe fn swr_v1_memory_ring_buffer_free(ring: *mut Storage, data: *mut c_void) {
     // Consumers share the header, and only touch `free_count`, atomically.
     let free_count = ring
         .wrapping_byte_add(mem::offset_of!(Storage, free_count))
