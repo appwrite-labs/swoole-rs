@@ -21,9 +21,9 @@ checked against the pinned bodies' traces in `ported.txt`:
 
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one
 function each (`coroutine_system.<name>`, upstream's names, inputs and expected
-values), linked against the hybrid tree's `libswoole.so`.
-`hooks-system-rust` (`system.py`, Linux, integrate lane) builds that library from
-the hybrid tree and runs each case in its own process,
+values), linked against a `libswoole.so` that
+`hooks-system-rust` (`system.py`, Linux) builds from native/'s Zend-free sources
+and the Cargo build's Rust archive. It runs each case in its own process,
 excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call what the
@@ -83,7 +83,7 @@ same assertions: the record's fields and value copies, and the per-thread scratc
 `get_addr` and `verify_ip` share.
 The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which only
 C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
-(compiled into the hybrid's lib-swoole with `--fixture`), unchanged but for plain
+(compiled into system.py's lib-swoole with `--fixture`), unchanged but for plain
 assertion macros in place of GoogleTest's: the five `rust_dns_request.*` cases
 (formerly `dns_request_owner.cpp`). `rust_socket_scopes.protocol_snapshot_and_copy_restore`
 and `.error_text_publication` (formerly `socket_scopes.cpp`) witnessed the C++

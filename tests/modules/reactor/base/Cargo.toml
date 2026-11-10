@@ -1,4 +1,4 @@
-# Upstream's core-tests/src/reactor/base.cpp TESTs as Rust, linked against the hybrid tree's
+# Upstream's core-tests/src/reactor/base.cpp TESTs as Rust, linked against system.py's
 # libswoole.so (SWOOLE_LIB_DIR) with fixture.cc compiled in. Not a workspace member: it needs that
 # Linux build, which tests/modules/hooks/system.py makes. build.rs links it; Cargo.lock pins the
 # (empty) dependency set for --locked.

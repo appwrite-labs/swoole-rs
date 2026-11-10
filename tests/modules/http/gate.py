@@ -1,5 +1,5 @@
 """Shared helpers for the HTTP differential gates: body extraction, the two compile sides
-(pin and hybrid tree), the optional ASan HTTP archive and the run/report step."""
+(pin, and the Cargo build SDK's headers), the optional ASan HTTP archive and the run/report step."""
 import io
 import json
 import os

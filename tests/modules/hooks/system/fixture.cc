@@ -1,4 +1,4 @@
-// What the Rust cases in src/ can't express, compiled into the hybrid tree's lib-swoole by
+// What the Rust cases in src/ can't express, compiled into system.py's lib-swoole by
 // tests/modules/hooks/system.py (--fixture): swoole_event_defer and the timer, which have C++
 // linkage, and the repo-owned witnesses that check C++ copies and std::bad_alloc containment,
 // which only C++ can throw (formerly tests/modules/hooks/dns_request_owner.cpp, unchanged

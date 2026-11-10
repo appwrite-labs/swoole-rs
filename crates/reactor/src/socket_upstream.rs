@@ -363,7 +363,7 @@ mod tests {
 }
 
 /// Upstream's `network::Socket` members over the record, under their own symbols for
-/// the hybrid tree's core-tests port (tests/modules/hooks/system), which links them.
+/// the core-tests port (tests/modules/hooks/system), which links them.
 #[cfg(feature = "upstream-symbols")]
 mod members {
     use crate::{SocketAddress, SocketRecord};

@@ -51,7 +51,7 @@ static GLOBAL: Process = Process(UnsafeCell::new(INIT));
 
 /// Borrows the original native field view for this thread. It has no TLS destructor
 /// and remains available during native thread teardown, as the original POD did.
-/// The hybrid tree's process-pool test fixture reads it as `SwooleWG`.
+/// The process-pool case fixture (tests/modules/hooks/system) reads it as `SwooleWG`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "swr_v1_worker_globals")

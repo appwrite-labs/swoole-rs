@@ -6,7 +6,7 @@
 (`reactor-native-originals`) is gone.
 
 `reactor/base.cpp`'s 26 TESTs are Rust (`base/`, the merge tier's `reactor-base-rust`
-phase): a case binary over the hybrid tree's libswoole.so, built and run by
+phase): a case binary over system.py's libswoole.so (native/'s sources and the Cargo build's Rust archive), built and run by
 `tests/modules/hooks/system.py --package tests/modules/reactor/base --fixture
 tests/modules/reactor/base/fixture.cc`. `fixture.cc` gives C entry points to what needs
 C++ (the `Reactor` constructor, members and `std::function` slots, `Pipe` and

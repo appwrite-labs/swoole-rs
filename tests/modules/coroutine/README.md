@@ -9,7 +9,7 @@ Rust FFI static archive. Most gates refuse an existing `--report` path.
 `core-tests/src/coroutine/base.cpp` and `coroutine/file.cpp` no longer build. Their
 TESTs are Rust functions in `base.rs`, one per TEST with the same inputs and expected
 values, run by `hooks-system-rust` (tests/modules/hooks/system.py, which links the
-case binary to the hybrid tree's libswoole.so; Linux):
+case binary to a libswoole.so of native/'s sources and the Cargo build's Rust archive; Linux):
 
 | Upstream TEST | Rust case |
 | --- | --- |

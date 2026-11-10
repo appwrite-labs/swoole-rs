@@ -12,7 +12,7 @@ v6.2.5, commit `76c657d88be39b7af6bf85e46bcbac0da7387760`, fetched at
 | `depends_on` | Module IDs that must be integrated first. |
 | `owned_paths` | Repository paths for the module (crate, native adapter, tests). |
 | `phpt_families` | Upstream `tests/` directories whose PHPTs `dev.py candidate` gates for the module. |
-| `upstream_patch_targets` | Upstream files the module mainly patches (informational). |
+| `upstream_patch_targets` | Upstream files the module replaced; nothing patches them any more (#2200). `tools/capability_inventory.py` maps upstream paths to modules with it. |
 | `feature_bit_reserved` | Feature value, where one is listed. |
 | `abi_contract` | Path to the module's contract document or header. |
 
