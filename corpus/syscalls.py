@@ -130,11 +130,12 @@ def explain(project, engine, found, allowed):
 
 @dataclass(frozen=True)
 class Traced(Engine):
-    """An engine whose PHP runs under strace, writing one file per process to TRACE.<pid>."""
+    """An engine whose PHP runs under strace, writing one file per process to TRACE.<pid>.
+    A ?name is no error where the architecture lacks it (fork, poll and select on arm64)."""
     trace: Path = None
 
     def command(self, *args):
-        return ['strace', '-f', '-ff', '-q', '-s', '0', '--seccomp-bpf', '-e', 'trace=' + ','.join(SYSCALLS),
+        return ['strace', '-f', '-ff', '-q', '-s', '0', '--seccomp-bpf', '-e', 'trace=' + ','.join('?' + name for name in SYSCALLS),
                 '-o', str(self.trace), '--', *super().command(*args)]
 
 

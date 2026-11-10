@@ -128,7 +128,7 @@ class Run(unittest.TestCase):
         self.assertEqual(command[:2], ['strace', '-f'])
         self.assertEqual(command[command.index('-o') + 1], '/t/trace')
         self.assertEqual(command[command.index('--') + 1:], ['php', '-n', '-d', 'extension=/x/swoole.so', 'server.php'])
-        traced = command[command.index('-e') + 1].removeprefix('trace=').split(',')
+        traced = [name.removeprefix('?') for name in command[command.index('-e') + 1].removeprefix('trace=').split(',')]
         self.assertIn('accept4', traced)
         self.assertNotIn('openat', traced)
 
