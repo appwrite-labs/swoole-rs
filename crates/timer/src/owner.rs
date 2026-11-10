@@ -492,7 +492,7 @@ fn attach(reactor: *mut c_void) {
 }
 
 /// The exit condition: no timer is pending.
-extern "C-unwind" fn idle(_event_num: *mut usize) -> bool {
+extern "C-unwind" fn idle(_event_num: &mut usize) -> bool {
     crate::wrapper::current().is_none_or(|timer| timer.count() == 0)
 }
 
