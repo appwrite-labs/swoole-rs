@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Swoole's include/swoole_util.h, owned here: ON_SCOPE_EXIT and swoole::time.
+/* Swoole's include/swoole_util.h, owned here: ON_SCOPE_EXIT.
  * Upstream's file is deleted, so `#include "swoole_util.h"` finds this copy on the Rust prefix's include path. */
 #pragma once
 
@@ -21,22 +21,6 @@
 #include <algorithm>
 
 namespace swoole {
-// Keep parameter 'steady' as false for backward compatibility.
-template <typename T>
-static inline long time(bool steady = false) {
-    if (sw_likely(steady)) {
-        auto now = std::chrono::steady_clock::now();
-        return std::chrono::duration_cast<T>(now.time_since_epoch()).count();
-    } else {
-        auto now = std::chrono::system_clock::now();
-        return std::chrono::duration_cast<T>(now.time_since_epoch()).count();
-    }
-}
-
-static inline long get_timezone() {
-    return swr_v1_utils_timezone();
-}
-
 template <typename Fun>
 class ScopeGuard {
   public:

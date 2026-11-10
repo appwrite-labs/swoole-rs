@@ -424,4 +424,64 @@ mod tests {
         .join()
         .unwrap_or_else(|_| unreachable!());
     }
+
+    /// Upstream's `os.thread_name`. Linux, as core-tests: its 15-byte name limit is
+    /// what makes the second name fail.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_thread_name() {
+        std::thread::spawn(|| {
+            let mut new_name = [0 as c_char; 512];
+            let thread_name = c"sw-core-tests";
+            assert!(unsafe { swoole_thread_set_name(thread_name.as_ptr()) });
+            assert!(unsafe { swoole_thread_get_name(new_name.as_mut_ptr(), new_name.len()) });
+            assert_eq!(thread_name, unsafe { CStr::from_ptr(new_name.as_ptr()) });
+            assert!(!unsafe {
+                swoole_thread_set_name(c"swoole-core-tests-max-size-is-16".as_ptr())
+            });
+            assert_eq!(log::last_error(), libc::ERANGE);
+        })
+        .join()
+        .unwrap_or_else(|_| panic!("the thread's assertions failed"));
+    }
+
+    /// Upstream's `os.cpu_affinity`. `swoole_set_cpu_affinity` left the build (Rust pins
+    /// workers in crates/process `affinity.rs`), so the set is its body,
+    /// `sched_setaffinity(getpid())`; the gets are Rust's `swoole_get_cpu_affinity`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_cpu_affinity() {
+        let set = |set: &libc::cpu_set_t| unsafe {
+            libc::sched_setaffinity(libc::getpid(), size_of::<libc::cpu_set_t>(), set)
+        };
+        let mut affinity: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { swoole_get_cpu_affinity(&raw mut affinity) }, 0);
+        let ori_affinity = affinity;
+
+        unsafe { libc::CPU_ZERO(&mut affinity) };
+        unsafe { libc::CPU_SET(1, &mut affinity) };
+
+        assert_eq!(set(&affinity), 0);
+        assert_eq!(unsafe { swoole_get_cpu_affinity(&raw mut affinity) }, 0);
+
+        // SW_CPU_NUM, as swoole_init sets it.
+        let cpu_n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1);
+        for i in 0..usize::try_from(cpu_n).unwrap() {
+            assert_eq!(unsafe { libc::CPU_ISSET(i, &affinity) }, i == 1, "cpu {i}");
+        }
+
+        assert_eq!(set(&ori_affinity), 0);
+    }
+
+    /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn.
+    #[test]
+    fn os_set_isolation() {
+        unsafe {
+            swr_v1_os_set_isolation(
+                c"not-exists-group".as_ptr(),
+                c"not-exists-user".as_ptr(),
+                c"/tmp/not-exists-dir".as_ptr(),
+            );
+        }
+    }
 }

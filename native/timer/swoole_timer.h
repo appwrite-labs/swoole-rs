@@ -107,9 +107,6 @@ class Timer {
     Timer() = delete;
     ~Timer() = delete;
 
-    static int64_t get_absolute_msec() {
-        return time<std::chrono::milliseconds>(true);
-    }
     Reactor *get_reactor() const {
         return static_cast<Reactor *>(swr_v1_timer_owner_reactor(this));
     }
