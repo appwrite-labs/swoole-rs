@@ -17,9 +17,10 @@ puts a PR in main's merge queue once its PR tier passes.
                              still stand for upstream at HEAD, so it needn't run (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
                              didn't exist, in main's latest completed merge-tier run (exit 1 if any)
-  ci.py new-failures --run RUN
-                             the same for merge-tier run RUN while it runs, its failed jobs too:
-                             the merge queue's `required` check
+  ci.py new-failures --needs JSON --phases DIR (--save FILE | --baseline FILE)
+                             a merge-tier run's failed phases and jobs, read inside the run from
+                             its `needs` and `phases*` artifacts, no API call: saved on main as
+                             the baseline, or held against it as the merge queue's `required` check
 
 For a pull request: `ci.py wait --workflow pr.yml --commit BRANCH` for its PR tier (a branch
 auto-merge deleted resolves through its PR). It returns at once (exit 4, state `conflicts`) when
@@ -43,6 +44,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 import re
 import subprocess
 import sys
@@ -202,10 +204,10 @@ def failure_annotations(result):
     return {**result, 'annotations': found} if found else result
 
 
-def phases(run, tails=None, reported=None):
+def phases(run, tails=None):
     """{phase: passed} from a run's `phases*` artifacts (each shard's loop.json), or None without any.
     A phase every shard runs (the builds) passes only if it passed everywhere. Failed phases'
-    log tails are added to `tails` when given, and the artifacts' names to `reported`."""
+    log tails are added to `tails` when given."""
     with tempfile.TemporaryDirectory() as directory:
         try:
             gh('run', 'download', str(run), '-p', 'phases*', '-D', directory)
@@ -216,8 +218,6 @@ def phases(run, tails=None, reported=None):
             return None
         passed = {}
         for loop in loops:
-            if reported is not None:
-                reported.add(loop.relative_to(directory).parts[0])
             for row in json.loads(loop.read_text())['phases']:
                 passed[row['phase']] = passed.get(row['phase'], True) and not row['failed']
                 if tails is not None and row.get('log_tail'):
@@ -457,31 +457,27 @@ def new_failures(loops):
     return None, sorted(failed)
 
 
-def queue_failures(run):
-    """(baseline url, new failures) of merge-tier run `run`, read while it runs by its `required`
-    job: the merge queue lands a group only if it fails nothing but what main's latest completed
-    merge-tier run already failed. A job is judged like a phase. A full-gates shard speaks
-    through its phases, and one that failed without reporting any broke before its gates ran,
-    which no baseline excuses."""
-    reported = set()
-    current = phases(run, reported=reported) or {}
-    failed = sorted(name for name, conclusion in job_conclusions(run).items()
-                    if conclusion and conclusion not in ('success', 'skipped'))
-    history = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
-                            '--limit', '30', '--json', 'databaseId,conclusion,url'))
-    for baseline in history:
-        previous = baseline['conclusion'] in ('success', 'failure') and phases(baseline['databaseId'])
-        if previous:
-            before = job_conclusions(baseline['databaseId'])
-            new = sorted(name for name, passed in current.items() if not passed and previous.get(name) is not False)
-            for job in failed:
-                shard = re.fullmatch(re.escape(PHASES_JOB) + r' \((\d+)\)', job)
-                if shard and f'phases-{shard.group(1)}' not in reported:
-                    new.append(f'{job} job (no phases)')
-                elif not shard and before.get(job) != 'failure':
-                    new.append(f'{job} job')
-            return baseline['url'], new
-    return None, sorted(name for name, passed in current.items() if not passed) + [f'{job} job' for job in failed]
+def run_failures(needs, directory, shards):
+    """What a merge-tier run failed, told from inside it without the API (whose hourly limit every
+    job shares): `needs` is its last job's `toJSON(needs)` and `directory` holds its `phases*`
+    artifacts. A job is judged like a phase. full-gates speaks through its phases; when it
+    failed and fewer than `shards` of them reported any, a shard broke before its gates ran."""
+    loops = sorted(Path(directory).rglob('loop.json'))
+    reported = {loop.relative_to(directory).parts[0] for loop in loops}
+    return {'phases': sorted({row['phase'] for loop in loops for row in json.loads(loop.read_text())['phases'] if row['failed']}),
+            'jobs': sorted(job for job, state in needs.items()
+                           if job != PHASES_JOB and state['result'] not in ('success', 'skipped')),
+            'unreported': (needs.get(PHASES_JOB, {}).get('result') == 'failure'
+                           and sum(bool(re.fullmatch(r'phases-\d+', name)) for name in reported) < shards)}
+
+
+def against(current, baseline):
+    """The failures of `current` that `baseline` doesn't share (both run_failures): the merge
+    queue lands a group only if it fails nothing but what main's latest completed merge-tier
+    run already failed. No baseline excuses a full-gates shard that reported nothing."""
+    return ([name for name in current['phases'] if name not in baseline['phases']]
+            + [f'{job} job' for job in current['jobs'] if job not in baseline['jobs']]
+            + ([f'{PHASES_JOB} job (a shard reported no phases)'] if current['unreported'] else []))
 
 
 # Open PRs with their merge-queue state: one call, where the REST list has none of it.
@@ -561,7 +557,11 @@ def main(argv=None):
     baseline.add_argument('--php', help="the PHP_VERSION the baseline's upstream must have run on")
     failures = commands.add_parser('new-failures')
     failures.add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
-    failures.add_argument('--run', help='a merge-tier run in progress, in place of loop.json reports')
+    failures.add_argument('--needs', help="the run's toJSON(needs), in place of loop.json reports")
+    failures.add_argument('--phases', type=Path, help="with --needs: the directory of the run's phases* artifacts")
+    failures.add_argument('--shards', type=int, default=3, help="with --needs: how many shards full-gates has")
+    failures.add_argument('--save', type=Path, help='with --needs: write what the run failed here, as a baseline')
+    failures.add_argument('--baseline', type=Path, help='with --needs: fail on what this baseline did not fail')
     args = parser.parse_args(argv)
     global RETRY_DEADLINE, RETRY_BASE
     if args.command == 'phpt-baseline':
@@ -573,13 +573,25 @@ def main(argv=None):
             print(*baseline)
         return 0 if baseline else 2
     if args.command == 'new-failures':
-        if not args.loops and not args.run:
+        if args.needs:
+            current = run_failures(json.loads(args.needs), args.phases, args.shards)
+            if args.save:
+                args.save.parent.mkdir(parents=True, exist_ok=True)
+                args.save.write_text(json.dumps({**current, 'run': os.environ.get('GITHUB_RUN_ID')}))
+            if not args.baseline:
+                print(f"Failed: {', '.join(current['phases'] + current['jobs']) or 'nothing'}")
+                return 0
+            if not args.baseline.exists():
+                sys.exit('new-failures: no baseline; no merge-tier run on main has saved one yet')
+            baseline = json.loads(args.baseline.read_text())
+            new = against(current, baseline)
+            print(f"Against main's merge-tier run {baseline.get('run')}: " +
+                  (f"new failures: {', '.join(new)}" if new else 'no new failures; whatever failed fails on main too'))
+            return int(bool(new))
+        if not args.loops:
             sys.exit('new-failures: no loop.json given; the gates ran nothing')
-        if args.run:
-            # A dropped PR waits for an agent, so a transient gh failure is worth retrying.
-            RETRY_DEADLINE = time.monotonic() + 900
         try:
-            baseline, new = queue_failures(args.run) if args.run else new_failures(args.loops)
+            baseline, new = new_failures(args.loops)
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         print(f"Against {baseline or 'no merge-tier run with phases'}: " +
