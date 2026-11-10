@@ -120,6 +120,7 @@ fn expand(out: &mut Vec<u8>, url: &[u8], caps: &Captures, previous: usize, forma
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_char;
 
     fn apply(rules: &[(&[u8], &[u8])], url: &[u8]) -> Option<Vec<u8>> {
         let mut owner = RewriteRules::default();
@@ -231,6 +232,22 @@ mod tests {
         assert_eq!(rewrite("~[]~", b"ab"), None);
         assert_eq!(rewrite("~a[^]~", b"a\n"), Some(b"<a\n>".to_vec()));
         assert_eq!(rewrite("~\\Bb~", b"ab b"), Some(b"a<b> b".to_vec()));
+        // A range's ends and members compare as `char`, as libstdc++'s do: where it is
+        // signed (x86_64), a range across 0x7f/0x80 runs backwards, the http-rewrites gate's
+        // first random-rule finding.
+        let signed = c_char::MIN < 0;
+        let across = (!signed).then(|| b"<a>1<\xff>".to_vec());
+        assert_eq!(rewrite("~[a-\\xff]~", b"a1\xff"), across);
+        assert_eq!(
+            rewrite("~[\\x7f-\\x80]~", b"\x80"),
+            (!signed).then(|| b"<\x80>".to_vec())
+        );
+        let backwards = signed.then(|| b"<\xff><\0><a>b".to_vec());
+        assert_eq!(rewrite("~[\\xff-a]~", b"\xff\0ab"), backwards);
+        assert_eq!(
+            rewrite("~[\\x80-\\xff]~", b"a\x80"),
+            Some(b"a<\x80>".to_vec())
+        );
         // What std::regex rejects, and backreferences and lookahead, never match.
         for pattern in [
             "a{2,1}",

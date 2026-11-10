@@ -17,7 +17,7 @@ pub use runtime::*;
 mod owner;
 #[cfg(feature = "upstream-symbols")]
 mod wrapper;
-use std::alloc::{Layout, alloc, dealloc};
+use std::alloc::{Layout, alloc};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -133,6 +133,271 @@ unsafe fn zero<T: Default>(out: *mut T) -> bool {
     }
 }
 
+/// The queue's operations, which crates/timer's owner calls directly. Each returns the
+/// status its `swr_v1_timer_*` export returns and, where that export fills a view, the
+/// view (the default when it fills none).
+impl Timer {
+    /// `swr_v1_timer_add`: a node due `delay` after `now`, repeating when `persistent`.
+    pub fn add(
+        &mut self,
+        now: i64,
+        delay: i64,
+        persistent: bool,
+        token: *mut c_void,
+    ) -> (i32, TimerView) {
+        let none = TimerView::default();
+        if now < 0 || delay <= 0 || token.is_null() {
+            return (INVALID, none);
+        }
+        if self.closing {
+            return (CLOSING, none);
+        }
+        if now < self.last_time {
+            return (INVALID, none);
+        }
+        let Some(deadline) = now.checked_add(delay) else {
+            return (OVERFLOW, none);
+        };
+        let Some(id) = self.last_id.checked_add(1) else {
+            return (OVERFLOW, none);
+        };
+        if self.heap.len() >= (isize::MAX as usize) / mem::size_of::<TimerView>() {
+            return (OVERFLOW, none);
+        }
+        if self.heap.try_reserve(1).is_err() || self.positions.try_reserve(1).is_err() {
+            return (NOMEM, none);
+        }
+        let view = TimerView {
+            id,
+            deadline,
+            interval: if persistent { delay } else { 0 },
+            birth_round: self.round,
+            token,
+            ..TimerView::default()
+        };
+        let slot = self.heap.push(view);
+        self.positions.insert(id, slot);
+        self.last_id = id;
+        self.last_time = now;
+        (OK, view)
+    }
+
+    /// `swr_v1_timer_get`.
+    #[must_use]
+    pub fn get(&self, id: i64) -> (i32, TimerView) {
+        if id <= 0 {
+            return (INVALID, TimerView::default());
+        }
+        self.find(id)
+            .map_or((NOT_FOUND, TimerView::default()), |(_, view)| (OK, view))
+    }
+
+    /// The token `id` was added with, or null.
+    #[must_use]
+    pub fn token(&self, id: i64) -> *mut c_void {
+        self.index(id)
+            .and_then(|index| self.heap.get(index))
+            .map_or(ptr::null_mut(), |view| view.token)
+    }
+
+    /// `swr_v1_timer_update`: `id` falls due at `deadline`.
+    pub fn update(&mut self, id: i64, deadline: i64) -> (i32, TimerView) {
+        let none = TimerView::default();
+        if id <= 0 || deadline < 0 {
+            return (INVALID, none);
+        }
+        if self.closing {
+            return (CLOSING, none);
+        }
+        let Some((index, mut view)) = self.find(id).filter(|(_, view)| view.removed == 0) else {
+            return (NOT_FOUND, none);
+        };
+        view.deadline = deadline;
+        self.heap.update(index, view);
+        (OK, view)
+    }
+
+    /// `swr_v1_timer_remove`: only `RELEASE` hands the token back.
+    pub fn remove(&mut self, id: i64) -> (i32, TimerView) {
+        let none = TimerView::default();
+        if id <= 0 {
+            return (INVALID, none);
+        }
+        let Some((index, mut view)) = self.find(id).filter(|(_, view)| view.removed == 0) else {
+            return (NOT_FOUND, none);
+        };
+        if self.active_id == id {
+            view.removed = 1;
+            self.heap.update(index, view);
+            (DEFERRED, view)
+        } else {
+            self.detach(index)
+                .map_or((NOT_FOUND, none), |entry| (RELEASE, entry))
+        }
+    }
+
+    /// `swr_v1_timer_begin`: a selection at `now`.
+    pub fn begin(&mut self, now: i64) -> i32 {
+        if now < 0 {
+            return INVALID;
+        }
+        if self.closing {
+            return CLOSING;
+        }
+        if self.selecting {
+            return BUSY;
+        }
+        if now < self.last_time {
+            return INVALID;
+        }
+        if self.round == u64::MAX {
+            return OVERFLOW;
+        }
+        self.last_time = now;
+        self.captured = now;
+        self.selecting = true;
+        OK
+    }
+
+    /// `swr_v1_timer_next`: the selection's next due node, which becomes the active one.
+    pub fn select_next(&mut self) -> (i32, TimerView) {
+        let none = TimerView::default();
+        if !self.selecting {
+            return (INVALID, none);
+        }
+        if self.active_id != 0 {
+            return (BUSY, none);
+        }
+        if self.closing {
+            return (CLOSING, none);
+        }
+        let Some(view) = self.heap.first().copied() else {
+            return (EMPTY, none);
+        };
+        if view.deadline > self.captured || view.birth_round == self.round {
+            return (EMPTY, none);
+        }
+        self.active_id = view.id;
+        (OK, view)
+    }
+
+    /// `swr_v1_timer_complete`: the active node `id` ran.
+    pub fn complete(&mut self, id: i64) -> (i32, TimerView) {
+        let none = TimerView::default();
+        if id <= 0 || !self.selecting || self.active_id != id {
+            return (INVALID, none);
+        }
+        let Some((index, mut view)) = self.find(id) else {
+            return (INVALID, none);
+        };
+        let mut next = Some(view.deadline);
+        if view.deadline <= self.captured && view.interval > 0 {
+            next = (self.captured - view.deadline)
+                .checked_div(view.interval)
+                .and_then(|n| n.checked_add(1))
+                .and_then(|n| n.checked_mul(view.interval))
+                .and_then(|n| view.deadline.checked_add(n));
+        }
+        let executions = view.exec_count.checked_add(1);
+        self.active_id = 0;
+        let status = if view.removed != 0 || self.closing || view.interval == 0 {
+            RELEASE
+        } else if next.is_none() || executions.is_none() {
+            RELEASE_OVERFLOW
+        } else {
+            OK
+        };
+        if status == OK {
+            // Both values were checked above; matching avoids fallible unwraps.
+            if let (Some(deadline), Some(exec_count)) = (next, executions) {
+                view.deadline = deadline;
+                view.exec_count = exec_count;
+            }
+            self.heap.update(index, view);
+        } else if let Some(entry) = self.detach(index) {
+            view = entry;
+        }
+        (status, view)
+    }
+
+    /// `swr_v1_timer_end`: the selection ends; the delay to the next deadline, or -1.
+    pub fn end(&mut self) -> (i32, i64) {
+        if !self.selecting {
+            return (INVALID, -1);
+        }
+        if self.active_id != 0 {
+            return (BUSY, -1);
+        }
+        let Some(round) = self.round.checked_add(1) else {
+            return (OVERFLOW, -1);
+        };
+        self.selecting = false;
+        self.round = round;
+        let delay = match self.heap.first() {
+            Some(head) if !self.closing => (head.deadline - self.captured).max(1),
+            _ => -1,
+        };
+        (OK, delay)
+    }
+
+    /// `swr_v1_timer_stats_get`.
+    #[must_use]
+    pub fn stats(&self) -> TimerStats {
+        TimerStats {
+            count: self.heap.len(),
+            round: self.round,
+            active_id: self.active_id,
+            selecting: u32::from(self.selecting),
+            closing: u32::from(self.closing),
+        }
+    }
+
+    /// `swr_v1_timer_close`: nothing is added, updated or selected after it, and the
+    /// active node is marked removed.
+    pub fn close(&mut self) {
+        self.closing = true;
+        if let Some((index, mut view)) = self.find(self.active_id) {
+            view.removed = 1;
+            self.heap.update(index, view);
+        }
+    }
+
+    /// `swr_v1_timer_drain`: a closed queue's next node to dispose of (`RELEASE`), or
+    /// `DEFERRED` when only the active one is left.
+    pub fn drain(&mut self) -> (i32, TimerView) {
+        let none = TimerView::default();
+        if !self.closing {
+            return (INVALID, none);
+        }
+        let Some(head) = self.heap.first() else {
+            return (EMPTY, none);
+        };
+        self.detach(usize::from(head.id == self.active_id))
+            .map_or((DEFERRED, none), |view| (RELEASE, view))
+    }
+
+    /// Whether `swr_v1_timer_release` may free the queue: no node and no selection.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        self.heap.is_empty() && !self.selecting
+    }
+}
+
+/// Writes what `op` answers to `out` and returns its status: `INVALID`, without running
+/// `op`, when `out` is null, and `INVALID` with the default when `op` has no queue.
+///
+/// # Safety
+/// `out` is null or valid, aligned, writable output, disjoint from the queue.
+unsafe fn answer<T: Default>(out: *mut T, op: impl FnOnce() -> Option<(i32, T)>) -> i32 {
+    if out.is_null() {
+        return INVALID;
+    }
+    let (status, value) = op().unwrap_or((INVALID, T::default()));
+    // SAFETY: as the caller promises; non-null (checked above).
+    unsafe { out.write(value) };
+    status
+}
+
 /// # Safety
 /// Output must be valid, aligned and disjoint as specified in timer ABI v1.
 #[unsafe(no_mangle)]
@@ -162,19 +427,17 @@ pub unsafe extern "C" fn swr_v1_timer_create(out: *mut *mut Timer) -> i32 {
 /// Handle must be live and exclusively owned; release is exactly once on success.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_release(queue: *mut Timer) -> i32 {
-    if queue.is_null() {
-        return INVALID;
+    // SAFETY: null or a live handle from create, not concurrently mutated.
+    match unsafe { queue.as_ref() } {
+        None => INVALID,
+        Some(state) if !state.idle() => PENDING,
+        Some(_) => {
+            // SAFETY: create allocated it with `Timer`'s layout from the global
+            // allocator, as a Box does; exclusively owned and released exactly once.
+            drop(unsafe { Box::from_raw(queue) });
+            OK
+        }
     }
-    // SAFETY: non-null (checked above); a live handle from create, not concurrently mutated.
-    let state = unsafe { &*queue };
-    if !state.heap.is_empty() || state.selecting {
-        return PENDING;
-    }
-    // SAFETY: a live, exclusively owned handle from create, released exactly once.
-    unsafe { ptr::drop_in_place(queue) };
-    // SAFETY: allocated with this layout by create; its value was just dropped.
-    unsafe { dealloc(queue.cast(), Layout::new::<Timer>()) };
-    OK
 }
 
 /// # Safety
@@ -188,48 +451,18 @@ pub unsafe extern "C" fn swr_v1_timer_add(
     token: *mut c_void,
     out: *mut TimerView,
 ) -> i32 {
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
+    let add = || {
+        let state = state?;
+        Some(if persistent > 1 {
+            (INVALID, TimerView::default())
+        } else {
+            state.add(now, delay, persistent == 1, token)
+        })
+    };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() {
-        return INVALID;
-    }
-    if now < 0 || delay <= 0 || persistent > 1 || token.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if state.closing {
-        return CLOSING;
-    }
-    if now < state.last_time {
-        return INVALID;
-    }
-    let Some(deadline) = now.checked_add(delay) else {
-        return OVERFLOW;
-    };
-    let Some(id) = state.last_id.checked_add(1) else {
-        return OVERFLOW;
-    };
-    if state.heap.len() >= (isize::MAX as usize) / mem::size_of::<TimerView>() {
-        return OVERFLOW;
-    }
-    if state.heap.try_reserve(1).is_err() || state.positions.try_reserve(1).is_err() {
-        return NOMEM;
-    }
-    let view = TimerView {
-        id,
-        deadline,
-        interval: if persistent == 1 { delay } else { 0 },
-        birth_round: state.round,
-        token,
-        ..TimerView::default()
-    };
-    let slot = state.heap.push(view);
-    state.positions.insert(id, slot);
-    state.last_id = id;
-    state.last_time = now;
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    OK
+    unsafe { answer(out, add) }
 }
 
 /// # Safety
@@ -240,18 +473,10 @@ pub unsafe extern "C" fn swr_v1_timer_get(
     id: i64,
     out: *mut TimerView,
 ) -> i32 {
+    // SAFETY: null or a live handle from create, not concurrently mutated.
+    let state = unsafe { queue.as_ref() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() || id <= 0 {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, not concurrently mutated.
-    let state = unsafe { &*queue };
-    let Some((_, view)) = state.find(id) else {
-        return NOT_FOUND;
-    };
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    OK
+    unsafe { answer(out, || state.map(|state| state.get(id))) }
 }
 
 /// The token `id` was added with, or null. Native code applies every view it is
@@ -261,13 +486,7 @@ pub unsafe extern "C" fn swr_v1_timer_get(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_token(queue: *const Timer, id: i64) -> *mut c_void {
     // SAFETY: null or a live handle from create, not concurrently mutated.
-    let Some(state) = (unsafe { queue.as_ref() }) else {
-        return ptr::null_mut();
-    };
-    state
-        .index(id)
-        .and_then(|index| state.heap.get(index))
-        .map_or(ptr::null_mut(), |view| view.token)
+    unsafe { queue.as_ref() }.map_or(ptr::null_mut(), |state| state.token(id))
 }
 
 /// # Safety
@@ -279,26 +498,10 @@ pub unsafe extern "C" fn swr_v1_timer_update(
     deadline: i64,
     out: *mut TimerView,
 ) -> i32 {
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() || id <= 0 || deadline < 0 {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if state.closing {
-        return CLOSING;
-    }
-    let Some((index, mut view)) = state.find(id) else {
-        return NOT_FOUND;
-    };
-    if view.removed != 0 {
-        return NOT_FOUND;
-    }
-    view.deadline = deadline;
-    state.heap.update(index, view);
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    OK
+    unsafe { answer(out, || state.map(|state| state.update(id, deadline))) }
 }
 
 /// # Safety
@@ -309,89 +512,28 @@ pub unsafe extern "C" fn swr_v1_timer_remove(
     id: i64,
     out: *mut TimerView,
 ) -> i32 {
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() || id <= 0 {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    let Some((index, mut view)) = state.find(id) else {
-        return NOT_FOUND;
-    };
-    if view.removed != 0 {
-        return NOT_FOUND;
-    }
-    let status = if state.active_id == id {
-        view.removed = 1;
-        state.heap.update(index, view);
-        DEFERRED
-    } else if let Some(entry) = state.detach(index) {
-        view = entry;
-        RELEASE
-    } else {
-        return NOT_FOUND;
-    };
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    status
+    unsafe { answer(out, || state.map(|state| state.remove(id))) }
 }
 
 /// # Safety
 /// Handle is live and exclusively owned by its native thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_begin(queue: *mut Timer, now: i64) -> i32 {
-    if queue.is_null() || now < 0 {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if state.closing {
-        return CLOSING;
-    }
-    if state.selecting {
-        return BUSY;
-    }
-    if now < state.last_time {
-        return INVALID;
-    }
-    if state.round == u64::MAX {
-        return OVERFLOW;
-    }
-    state.last_time = now;
-    state.captured = now;
-    state.selecting = true;
-    OK
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    unsafe { queue.as_mut() }.map_or(INVALID, |state| state.begin(now))
 }
 
 /// # Safety
 /// Handle/output satisfy ABI v1; returned metadata does not transfer ownership.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_next(queue: *mut Timer, out: *mut TimerView) -> i32 {
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if !state.selecting {
-        return INVALID;
-    }
-    if state.active_id != 0 {
-        return BUSY;
-    }
-    if state.closing {
-        return CLOSING;
-    }
-    let Some(view) = state.heap.first().copied() else {
-        return EMPTY;
-    };
-    if view.deadline > state.captured || view.birth_round == state.round {
-        return EMPTY;
-    }
-    state.active_id = view.id;
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    OK
+    unsafe { answer(out, || state.map(Timer::select_next)) }
 }
 
 /// # Safety
@@ -402,105 +544,30 @@ pub unsafe extern "C" fn swr_v1_timer_complete(
     id: i64,
     out: *mut TimerView,
 ) -> i32 {
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() || id <= 0 {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if !state.selecting || state.active_id != id {
-        return INVALID;
-    }
-    let Some((index, mut view)) = state.find(id) else {
-        return INVALID;
-    };
-    let mut next = Some(view.deadline);
-    if view.deadline <= state.captured && view.interval > 0 {
-        next = (state.captured - view.deadline)
-            .checked_div(view.interval)
-            .and_then(|n| n.checked_add(1))
-            .and_then(|n| n.checked_mul(view.interval))
-            .and_then(|n| view.deadline.checked_add(n));
-    }
-    let executions = view.exec_count.checked_add(1);
-    state.active_id = 0;
-    let status = if view.removed != 0 || state.closing || view.interval == 0 {
-        RELEASE
-    } else if next.is_none() || executions.is_none() {
-        RELEASE_OVERFLOW
-    } else {
-        OK
-    };
-    if status == OK {
-        // Both values were checked above; matching avoids fallible unwraps.
-        if let (Some(deadline), Some(exec_count)) = (next, executions) {
-            view.deadline = deadline;
-            view.exec_count = exec_count;
-        }
-        state.heap.update(index, view);
-    } else if let Some(entry) = state.detach(index) {
-        view = entry;
-    }
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    status
+    unsafe { answer(out, || state.map(|state| state.complete(id))) }
 }
 
 /// # Safety
 /// Handle and `next_delay` output are valid and disjoint as specified by ABI v1.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_end(queue: *mut Timer, next_delay: *mut i64) -> i32 {
-    if next_delay.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `next_delay` is non-null (checked above), valid, aligned and writable.
-    unsafe { next_delay.write(-1) };
-    if queue.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if !state.selecting {
-        return INVALID;
-    }
-    if state.active_id != 0 {
-        return BUSY;
-    }
-    let Some(round) = state.round.checked_add(1) else {
-        return OVERFLOW;
-    };
-    state.selecting = false;
-    state.round = round;
-    if !state.closing
-        && let Some(head) = state.heap.first()
-    {
-        // SAFETY: `next_delay` is non-null (checked above), valid, aligned and writable.
-        unsafe { next_delay.write((head.deadline - state.captured).max(1)) };
-    }
-    OK
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
+    // SAFETY: `next_delay` is null or valid, aligned output disjoint from the handle.
+    unsafe { answer(next_delay, || Some(state.map_or((INVALID, -1), Timer::end))) }
 }
 
 /// # Safety
 /// Handle and exclusive output must follow ABI v1 validity/disjointness rules.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_stats_get(queue: *const Timer, out: *mut TimerStats) -> i32 {
+    // SAFETY: null or a live handle from create, not concurrently mutated.
+    let state = unsafe { queue.as_ref() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, not concurrently mutated.
-    let state = unsafe { &*queue };
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe {
-        out.write(TimerStats {
-            count: state.heap.len(),
-            round: state.round,
-            active_id: state.active_id,
-            selecting: u32::from(state.selecting),
-            closing: u32::from(state.closing),
-        });
-    }
-    OK
+    unsafe { answer(out, || state.map(|state| (OK, state.stats()))) }
 }
 
 /// # Safety
@@ -541,41 +608,21 @@ pub unsafe extern "C" fn swr_v1_timer_ids(
 /// Handle is live and exclusively owned; tokens and native callbacks remain native.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_close(queue: *mut Timer) -> i32 {
-    if queue.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    state.closing = true;
-    if let Some((index, mut view)) = state.find(state.active_id) {
-        view.removed = 1;
-        state.heap.update(index, view);
-    }
-    OK
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    unsafe { queue.as_mut() }.map_or(INVALID, |state| {
+        state.close();
+        OK
+    })
 }
 
 /// # Safety
 /// Handle/output are valid; only RELEASE transfers a token for native disposal.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_drain(queue: *mut Timer, out: *mut TimerView) -> i32 {
+    // SAFETY: null or a live handle from create, exclusively accessed.
+    let state = unsafe { queue.as_mut() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(out) } || queue.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above); a live handle from create, exclusively accessed.
-    let state = unsafe { &mut *queue };
-    if !state.closing {
-        return INVALID;
-    }
-    let Some(head) = state.heap.first() else {
-        return EMPTY;
-    };
-    let Some(view) = state.detach(usize::from(head.id == state.active_id)) else {
-        return DEFERRED;
-    };
-    // SAFETY: `out` is non-null (checked above), valid, aligned and writable.
-    unsafe { out.write(view) };
-    RELEASE
+    unsafe { answer(out, || state.map(Timer::drain)) }
 }
 
 #[cfg(test)]

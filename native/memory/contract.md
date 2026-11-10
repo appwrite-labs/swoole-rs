@@ -12,9 +12,6 @@ hosts are 64-bit macOS and Linux.
   No borrowed Rust reference survives a call.
 - Rust allocations are fallible; no caller-controlled size causes an infallible
   allocation or unchecked wrap.
-- Rust-allocated heap nodes/queues are released only through their Rust owner.
-  Native tokens/data are never freed or dereferenced by Rust.
-- Invalid external node positions return failure before indexing.
 - Defensive rejection of invalid/overflowing scalar input is not equivalence with
   undefined original behavior.
 
@@ -36,27 +33,6 @@ the arena, so a shared pool stays visible across fork. Callers serialize.
   alloc/free publish only head/tail/slice_use through raw field addresses.
 - `debug_step` walks the live links for `FixedPool::debug`: negative max prints 1
   row, max 0 prints 2, larger limits stop after max+2 or list end.
-
-## Heap
-
-Rust only. Rust owns a vector of stable, individually allocated node PODs with
-upstream's `HeapNode` fields and 1-based position.
-
-- create takes min/max as exactly 0/1, zeroes output first, returns 0/-1.
-- push returns a stable node or NULL; on OOM logical contents are unchanged
-  (capacity may grow).
-- count/at do not mutate or allocate. update/remove return 0/-1 and do
-  not allocate. Call them only on live nodes from the same heap.
-- pop returns the data token or NULL when empty (NULL is also a valid token).
-- remove/pop use swap-last and strict priority comparison with the pinned
-  left-child tie choice; equal priorities give the original 1/3/2 three-node order.
-  No FIFO guarantee.
-- peek/at views stay valid until that node is popped/removed or the heap is
-  destroyed. Callers must not free nodes. Destruction frees nodes, not their data
-  tokens.
-- The heap retains at most one removed 24-byte node for reuse by a later push; a
-  second removal frees the previous spare. Vector growth is checked before taking
-  the spare.
 
 ## Core channel
 
@@ -100,28 +76,6 @@ system pages, and are freed when the pool is.
   Arbitrary multithreaded-fork mutex state is not addressed.
 - Huge sizes are rejected rather than reproducing upstream's u32 alignment wrap.
 
-## Ring buffer
-
-Rust only (`crates/memory/src/ring.rs`). The 32-byte shared arena header keeps
-the pinned layout (release counter at offset 28). `layout` rounds a request to 8
-bytes, at least 48 with the header. Record header: u16 lock, u16 index, u32 length.
-
-- Single producer allocates/collects. Multiple threads/processes may release
-  distinct records.
-- Release counter and record-lock words use aligned Rust atomics; Rust never holds
-  a reference to the whole shared header. Release stores the record lock (load
-  then release-store) before the SeqCst counter increment; the producer
-  acquire-loads before reading released lengths. The collection loop's counter
-  load is relaxed (a scheduling bound); per-record acquire loads remain required.
-- Caller byte access must finish before release; each pointer is released exactly
-  once. Sequential duplicate release fails without changing the counter.
-- Rust owns alignment, wrap padding, collection and index/count rollover. The
-  original shrinking-bound collection loop is kept so offsets and failure timing
-  match. alloc returns NULL for zero/overflow/insufficient space (the member
-  asserts size>0); free returns false (the member asserts).
-- `storage_alloc` reads the producer fields into a cursor and publishes them back,
-  even when alloc returns NULL.
-
 ## Shared mapping
 
 `sw_shm_*` (`members.rs`): an anonymous `MAP_SHARED` mapping whose first 8 bytes
@@ -139,7 +93,7 @@ symbols. `native/memory/swoole_memory.h` (upstream's is deleted) keeps `GlobalMe
 -2 `std::bad_alloc`) and its inline members, for core-tests. It has no vtable: its one
 member is the `impl` slot, and `SwooleG.memory_pool` is Rust's (`members::pool::new`,
 `swoole_init`'s; `delete`, `swoole_clean`'s).
-`FixedPool`, `RingBuffer` and `sw_shm_realloc` have no C++ caller left; their members
+`FixedPool` and `sw_shm_realloc` have no C++ caller left; their members
 stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
 `swr_table_make` allocates through `members::pool::alloc`; the pool's `free` is
 a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust frame active.

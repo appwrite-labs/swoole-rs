@@ -71,8 +71,7 @@ mod native {
     use libc::c_int;
 
     pub(super) fn in_coroutine() -> bool {
-        !swoole_rs_corebase::thread_reactor().is_null()
-            && !crate::wait_event::native::swr_v1_coroutine_current().is_null()
+        !swoole_rs_corebase::thread_reactor().is_null() && !swoole_rs_coroutine::current().is_null()
     }
 
     pub(super) fn sleep(seconds: f64) -> c_int {
@@ -122,6 +121,8 @@ pub fn swr_v1_hook_install() {
         uring_futex: built_with(Switch::IouringFutex),
         uring_socket: built_with(Switch::UringSocket),
     }));
+    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    swoole_rs_reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
 }
 

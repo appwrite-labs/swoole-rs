@@ -202,11 +202,11 @@ fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
 fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
     /// `SW_USER_WORKER`.
     const USER_WORKER: c_int = 5;
-    struct Add(*mut c_void, *mut zval, i64);
+    struct Add<'a>(view::Server<'a>, *mut zval, i64);
     unsafe extern "C" fn body(add: *mut c_void) {
         // SAFETY: `add_worker`'s record, live across the trap. A bailout
         // (an unconstructed process) jumps past this frame, which owns nothing.
-        let add = unsafe { &mut *add.cast::<Add>() };
+        let add = unsafe { &mut *add.cast::<Add<'_>>() };
         // SAFETY: a live process object.
         let worker = unsafe { swr_v1_phpprocess_worker(add.1, true) }.cast::<WorkerRecord>();
         // SAFETY: a live server that has not started, and the process's worker.
@@ -235,7 +235,7 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
             - number(serv, fact::WORKER_NUM)
             - number(serv, fact::TASK_WORKER_NUM);
     }
-    let mut add = Add(serv.raw(), process, -3);
+    let mut add = Add(serv, process, -3);
     // SAFETY: as above.
     match unsafe { bailout::trap(body, (&raw mut add).cast()) } {
         Ok(()) => add.2,
@@ -1152,12 +1152,11 @@ pub(crate) fn isset(serv: view::Server<'_>, port: *mut c_void, kind: c_int) -> b
 
 /// Optionally `clear_protocol()`, then turn on each protocol in `flags`.
 fn protocols(port: *mut c_void, flags: u32, clear: bool) {
-    if clear {
-        // SAFETY: a live port, which only start() touches meanwhile.
-        unsafe { swoole_rs_ports::methods::clear_protocol(port) };
-    }
-    // SAFETY: as above.
+    // SAFETY: a live port, which only start() touches meanwhile.
     let c = unsafe { swoole_rs_server::port_config::of(port) };
+    if clear {
+        swoole_rs_ports::methods::clear_protocol(c);
+    }
     c.open_http_protocol |= flags & HTTP != 0;
     c.open_websocket_protocol |= flags & WEBSOCKET != 0;
     c.open_http2_protocol |= flags & HTTP2 != 0;
@@ -1396,7 +1395,7 @@ fn start(call: &Call) {
     match start_server(serv.raw()) {
         Err(bailout) => return bailout.defer(),
         Ok(..0) => {
-            let error = server_methods::get_startup_error_message(serv.raw());
+            let error = server_methods::get_startup_error_message();
             // SAFETY: the startup error message, NUL-terminated.
             let reason = unsafe { CStr::from_ptr(error) };
             let mut text = Message::new();

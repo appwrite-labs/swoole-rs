@@ -80,19 +80,12 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
     c_int::from(unsafe { (*c.socket).removed } != 0)
 }
 
-/// `int redis::recv_packet(Protocol *, Connection *, String *)`. Only upstream's
-/// core-tests (protocol/redis.cpp) call it by its upstream symbol.
+/// `int redis::recv_packet(Protocol *, Connection *, String *)`.
 ///
 /// # Safety
 /// `protocol`, `conn` and its socket, and `buffer` are live; `conn->object` is
 /// null or this receive's request.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole5redis11recv_packetEPNS_8ProtocolEPNS_10ConnectionEPNS_6StringE"
-    )
-)]
-pub(crate) unsafe extern "C" fn recv_packet(
+pub(crate) unsafe fn recv_packet(
     protocol: *const Protocol,
     conn: *mut c_void,
     buffer: *mut CppString,

@@ -335,6 +335,8 @@ def plan(args, reports):
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                '--exclude', 'server.max_request_2=thread-mode event workers do not restart after max_request (#2636)',
+               '--exclude', 'server.ssl_client_cert_3=MODE_THREAD needs thread support (SW_THREAD, a ZTS build); this '
+                            "NTS binary's create() fails with SW_ERROR_OPERATION_NOT_SUPPORT",
                *report('http-server-rust'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
@@ -422,6 +424,11 @@ def plan(args, reports):
             arg for project in json.loads((ROOT / 'corpus/manifest.json').read_text())
             if project['id'] != '11-buffer-lifecycle' for arg in ['--project', project['id']]]
         script('applications', 'corpus/run.py', *php, *engines, *projects, '--require-all', *report('applications'))
+    if sys.platform.startswith('linux') and (integrate or 'reactor' in modules):
+        # The applications under strace: the socket options, flags and epoll registrations
+        # PHP can't see. Seconds, so the candidate lane runs it for the reactor's sockets too.
+        script('syscalls', 'corpus/syscalls.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
+               *report('syscalls'))
     network = ['--external-network'] if getattr(args, 'external_network', False) else []
     if args.case and not integrate:
         script('phpt', 'corpus/upstream/run.py', *php, *engines, '--jobs', args.jobs,
