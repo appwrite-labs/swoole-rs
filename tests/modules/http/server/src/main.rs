@@ -5,6 +5,7 @@
 //! (`core-tests/src/_lib/http.cpp`): the same upgrade request, and frames from the
 //! crates' `websocket::encode`, `mask`, `get_package_length` and `decode`.
 //!
+//! http1/task.rs adds `core-tests/src/server/server.cpp`'s task-worker TESTs;
 //! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs,
 //! server.rs (tests/modules/protocols) `protocol/redis.cpp`'s and `server/mqtt.cpp`'s.
 //! http1/server.rs has `server/buffer.cpp`'s TEST, http1/server_ssl.rs `server/server.cpp`'s
@@ -1064,6 +1065,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("http_server", http1::CASES),
     ("http_server", CASES),
     ("server", http1::server::CASES),
+    ("server", http1::task::CASES),
     ("server", http1::server_ssl::CASES),
     ("server", http1::server_config::CASES),
     ("protocol", protocol::CASES),
