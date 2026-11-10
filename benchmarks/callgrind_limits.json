@@ -15,5 +15,7 @@
   "websocket-deflate": 1.04,
   "tcp-length": 1.02,
   "tcp-eof": 0.57,
-  "udp": 1.09
+  "udp": 1.09,
+  "atomic": 1.02,
+  "process-mode": 0.95
 }

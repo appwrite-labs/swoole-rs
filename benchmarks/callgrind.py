@@ -71,6 +71,9 @@ WORKLOADS = {
     'tcp-length': ('corpus/07-tcp-framing', 'TCP', None, FRAME, FRAME),
     'tcp-eof': ('benchmarks/framing', 'TCP', None, PAYLOAD[:1024] + b'\r\n', PAYLOAD[:1024] + b'\r\n'),
     'udp': ('benchmarks/framing', 'UDP', None, PAYLOAD[:1024], PAYLOAD[:1024]),
+    # Swoole\Atomic and Swoole\Lock, and plaintext dispatched through SWOOLE_PROCESS's master (#2654).
+    'atomic': ('benchmarks/primitives', 'GET', '/atomic', None, b'2016\n'),
+    'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
 }
 
 
