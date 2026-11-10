@@ -120,19 +120,19 @@ fn state_label(state: i32) -> Option<&'static core::ffi::CStr> {
     }
 }
 
-macro_rules! export {
+macro_rules! operation {
     ($(#[$doc:meta])* fn $name:ident($s:ident: $sty:ty $(, $arg:ident: $ty:ty)*) $(-> $ret:ty)? $body:block) => {
         $(#[$doc])*
         /// # Safety
         /// The scheduler is live and not borrowed elsewhere for the call; other
         /// pointer arguments are live.
-        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name($s: $sty $(, $arg: $ty)*) $(-> $ret)? $body
     };
 }
 
-export! {
+operation! {
     /// `Coroutine::get_by_cid`: the facade of live coroutine `cid`, or null.
+    #[unsafe(no_mangle)]
     fn swr_v1_coroutine_get(s: *const Scheduler, cid: c_long) -> *mut c_void {
         // SAFETY: the caller lends the scheduler.
         let s = unsafe { &*s };
@@ -140,15 +140,16 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::count`.
+    #[unsafe(no_mangle)]
     fn swr_v1_coroutine_count(s: *const Scheduler) -> usize {
         // SAFETY: the caller lends the scheduler.
         unsafe { (*s).count() }
     }
 }
 
-export! {
+operation! {
     /// The newest live coroutine older than `before` (`LONG_MAX` starts a walk):
     /// its id in `*cid` and its facade, or null when none is left.
     fn swr_v1_coroutine_older(s: *const Scheduler, before: c_long, cid: *mut c_long) -> *mut c_void {
@@ -162,7 +163,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `swoole_coroutine_iterator_reset`.
     fn swr_v1_coroutine_iterator_reset(s: *mut Scheduler) {
         // SAFETY: the caller lends the scheduler.
@@ -170,7 +171,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `swoole_coroutine_iterator_each`: the walk's next facade, or null at its end.
     fn swr_v1_coroutine_iterator_each(s: *mut Scheduler) -> *mut c_void {
         // SAFETY: the caller lends the scheduler.
@@ -184,7 +185,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::print_list`: one `Coroutine\t<cid>\t<state>` line per live
     /// coroutine on `out` (Swoole's stdout stream); aborts on a state outside the
     /// four. `out` is an open stream.
