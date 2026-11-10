@@ -170,6 +170,31 @@ is crates/server's.
 | `reload_single_process`, `reload_no_task_worker` | `reload(true)` in a single-process base server (`SW_ERROR_OPERATION_NOT_SUPPORT`), and `reload(false)` with no task workers |
 | `restart_worker_process` | `restart_worker_process` over a task worker registered under this pid |
 | `reload_all_from_worker_error`, `reload_tasks_from_worker_error` | a reload requested from `onWorkerError`, with upstream's five-second watchdog |
+| `kill_worker_1`, `_2`, `_4`, `_5`, `worker_exit`, `shutdown_event` | `test_kill_worker` in base and process mode, with and without `reload_async`, `onWorkerExit`, and an `SW_SERVER_EVENT_SHUTDOWN` packet between workers |
+| `kill_self` | `test_kill_self`: a worker killing the worker that holds the connection |
+| `base`, `process`, `process_single_thread` | `test_base` and `test_process`: one request through each mode, the methods that must refuse (`shutdown` before start, `add_port` and `add_worker` after `create`, an unknown session, an unknown command), and the start, shutdown and manager callbacks |
+
+The lock upstream's client thread waits on is a condition variable when `onStart` unlocks
+it in the same process, and a pipe in `test_process`, whose forked worker 0 unlocks it.
+Three upstream assertions have no code left to test, so the cases leave them out:
+
+- `base`'s `Server::HOOK_WORKER_START` hook (`is_started()`), and `process`'s
+  `counter[2] >= 2`, which `manager_alarm`'s `Server::HOOK_MANAGER_TIMER` hook counted:
+  `Server::add_hook` and `manager_alarm` left the build (#1535).
+- `process`'s `call_command_handler_in_master(9999, ...)`: its body is now part of
+  `Server::command`, which looks the command up first, so nothing can call it with an
+  unknown id.
+
+Not yet run:
+
+- `clean_worker_1` (base mode) drives core-tests' `AsyncClient` from `onStart`'s timer in
+  the master's reactor, and nothing here ports that client yet.
+- `thread`, `task_thread`, `reload_thread`, `reload_thread_2` and `reload_thread_3` are
+  `#ifdef SW_THREAD` upstream. `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use
+  `MODE_THREAD`. The package links the NTS Cargo build's libswoole, where thread mode isn't
+  built: its `config.h` has no `SW_THREAD`, `SW_THREAD_LOCAL` globals are process-wide, and
+  `THREAD_SUPPORTED` stays false, so `create()` refuses `MODE_THREAD`. No lane builds the
+  case packages over ZTS.
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,

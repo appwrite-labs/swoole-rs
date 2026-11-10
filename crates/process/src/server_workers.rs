@@ -74,8 +74,15 @@ pub unsafe fn swr_v1_process_server_worker(
     let view = unsafe { &*view };
     let id = u32::from(id);
     if id < view.event_count {
-        // SAFETY: the event pool is live and its workers have been published.
-        let workers = unsafe { (*view.event_pool).workers };
+        // SAFETY: the event pool is live.
+        let published = unsafe { (*view.event_pool).workers };
+        // The pool holds the event array from `start`; before it, `workers[id]` is the
+        // array's, which `get_idle_worker_id` reads after `create`.
+        let workers = if published.is_null() {
+            view.event_workers
+        } else {
+            published
+        };
         return workers.wrapping_add(id as usize);
     }
     let user_start = view.event_count.wrapping_add(view.task_count);

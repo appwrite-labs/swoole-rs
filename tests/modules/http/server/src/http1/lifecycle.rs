@@ -4,8 +4,9 @@
 //! `test::counter_*` is shared memory every forked process sees, as core-tests' is.
 
 use super::*;
+use crate::TEST_STR;
 use case::TimerNode;
-use std::sync::atomic::{AtomicPtr, AtomicU64};
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU64};
 use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::entry;
@@ -22,6 +23,14 @@ const SIGUSR2: c_int = 12;
 const PROT_READ_WRITE: c_int = 3;
 const MAP_SHARED_ANONYMOUS: c_int = 0x21;
 const TEST_COUNTER_NUM: usize = 32;
+const SW_PIPE_MASTER: c_int = 1;
+const SW_PIPE_NONBLOCK: c_int = 2;
+const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
+const SW_SERVER_EVENT_CLOSE: u8 = 4;
+const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
+const SW_ERROR_SERVER_INVALID_COMMAND: c_int = 9012;
+// Server's text members (SWR_SERVER_TEXT_*), after http1.rs's.
+const TEXT_PID_FILE: usize = 3;
 
 unsafe extern "C" {
     fn mmap(
@@ -33,6 +42,20 @@ unsafe extern "C" {
         offset: i64,
     ) -> *mut c_void;
     fn _exit(status: c_int) -> !;
+    fn __libc_current_sigrtmin() -> c_int;
+    fn pipe(fds: *mut [c_int; 2]) -> c_int;
+    fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+    fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
+    #[link_name = "_Z17swoole_random_intv"]
+    fn swoole_random_int() -> u64;
+}
+
+unsafe extern "C-unwind" {
+    #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
+    fn swoole_timer_tick(ms: c_long, callback: TimerFn, data: *mut c_void) -> c_long;
+    #[link_name = "_Z18swoole_timer_clearl"]
+    fn swoole_timer_clear(timer_id: c_long) -> bool;
+    fn swr_v1_core_set_last_error(code: c_int);
 }
 
 static COUNTERS: AtomicPtr<AtomicI32> = AtomicPtr::new(ptr::null_mut());
@@ -141,9 +164,9 @@ fn timer_after(ms: c_long, callback: TimerFn, serv: Server) {
 }
 
 /// `swoole_timer_tick(ms, [serv](TIMER_PARAMS) {...})`.
-fn timer_tick(ms: c_long, callback: TimerFn, serv: Server) {
+fn timer_tick(ms: c_long, callback: TimerFn, serv: Server) -> c_long {
     // SAFETY: as above.
-    unsafe { case::swoole_timer_add(ms, true, callback, serv.0) };
+    unsafe { swoole_timer_tick(ms, callback, serv.0) }
 }
 
 /// The server a timer of [`timer_after`] or [`timer_tick`] captured.
@@ -732,7 +755,699 @@ fn reload_tasks_from_worker_error() {
     test_reload_from_worker_error(true);
 }
 
+/// `swoole::Mutex lock(true); lock.lock()`: the client thread waits on it, and `onStart`
+/// unlocks it, both in the master.
+static STARTED: (Mutex<bool>, std::sync::Condvar) = (Mutex::new(false), std::sync::Condvar::new());
+
+fn lock_wait() {
+    let mut started = STARTED.0.lock().unwrap();
+    while !*started {
+        started = STARTED.1.wait(started).unwrap();
+    }
+}
+
+fn unlock() {
+    *STARTED.0.lock().unwrap() = true;
+    STARTED.1.notify_all();
+}
+
+/// `sw_worker()`: this thread's worker, or null.
+fn current_worker() -> *mut WorkerRecord {
+    // SAFETY: this thread's worker globals.
+    unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker }
+}
+
+fn kill_worker(serv: Server, worker_id: c_int) -> bool {
+    // SAFETY: the running server.
+    unsafe { entry::kill_worker(serv.0, worker_id) }
+}
+
+/// `test_kill_worker`'s `Options`.
+#[derive(Clone, Copy)]
+struct Options {
+    reload_async: bool,
+    worker_exit_callback: bool,
+    test_shutdown_event: bool,
+}
+
+const OPTIONS: Options = Options {
+    reload_async: true,
+    worker_exit_callback: false,
+    test_shutdown_event: false,
+};
+
+static KILL_OPTIONS: Mutex<Options> = Mutex::new(OPTIONS);
+static TEST_TIMER: AtomicI64 = AtomicI64::new(0);
+
+fn kill_options() -> Options {
+    *KILL_OPTIONS.lock().unwrap()
+}
+
+unsafe extern "C" fn kill_on_connect(_: *mut c_void, _: *mut c_void, ev: *mut DataHead) {
+    // SAFETY: the event head the server passed the callback.
+    counter_set(4, unsafe { (*ev).fd } as i32);
+    counter_set(5, worker_id(current_worker()).cast_signed());
+}
+
+unsafe extern "C" fn kill_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let (session, _) = request(req);
+    Server(serv).send(session, b"OK");
+    counter_incr(0, 1);
+    SW_OK
+}
+
+unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
+    server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
+    // SAFETY: the running server.
+    unsafe { entry::drain_worker_pipe(serv) };
+}
+
+unsafe extern "C" fn kill_self_on_worker_stop(
+    _: *mut c_void,
+    serv: *mut c_void,
+    _: *mut WorkerRecord,
+) {
+    server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
+}
+
+unsafe extern "C" fn kill_on_close(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {
+    counter_incr(2, 1);
+}
+
+unsafe extern "C" fn kill_on_worker_start(
+    _: *mut c_void,
+    serv: *mut c_void,
+    worker: *mut WorkerRecord,
+) {
+    let options = kill_options();
+    let c = counter_incr(1, 1) - 1;
+    if options.worker_exit_callback {
+        TEST_TIMER.store(timer_tick(5000, idle_timer, Server(serv)), Ordering::SeqCst);
+    }
+
+    if c < 2 && options.test_shutdown_event && worker_id(worker) == 0 {
+        // SAFETY: zeroed is `ev.info = {}`.
+        let mut ev: DataHead = unsafe { std::mem::zeroed() };
+        ev.type_ = SW_SERVER_EVENT_SHUTDOWN;
+        ev.len = 0;
+        let dst = Server(serv).view().worker(1);
+        // SAFETY: worker 1 of the running server; the event's head.
+        let sent = unsafe {
+            entry::send_to_worker_from_worker(
+                serv,
+                dst,
+                (&raw const ev).cast(),
+                size_of::<DataHead>(),
+                SW_PIPE_MASTER | SW_PIPE_NONBLOCK,
+            )
+        };
+        check(sent > 0, "send_to_worker_from_worker(1, &ev, ...) > 0");
+    }
+}
+
+unsafe extern "C" fn kill_on_worker_exit(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {
+    // SAFETY: clears this worker's timer by its id.
+    unsafe { swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst)) };
+    counter_incr(6, 1);
+}
+
+unsafe extern "C" fn kill_on_start(_: *mut c_void, serv: *mut c_void) {
+    if current_worker().is_null() && !check(!kill_worker(Server(serv), -1), "!kill_worker(-1)") {
+        return;
+    }
+    unlock();
+}
+
+unsafe extern "C" fn kill_self_on_worker_start(
+    _: *mut c_void,
+    _: *mut c_void,
+    _: *mut WorkerRecord,
+) {
+    counter_incr(1, 1);
+}
+
+/// `network::SyncClient::recv` into `String rbuf(1024)`: the bytes read, 0 at EOF, -1 on
+/// an error.
+fn sync_recv(c: &mut std::net::TcpStream) -> isize {
+    let mut rbuf = [0u8; 1024];
+    std::io::Read::read(c, &mut rbuf).map_or(-1, |n| n.cast_signed())
+}
+
+/// `test_kill_worker`'s and `test_kill_self`'s client thread: one request, then the
+/// worker `victim` names is killed and the connection must close.
+fn kill_client(serv: Server, port: u16, victim: fn() -> c_int) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        block_all_signals();
+
+        lock_wait();
+
+        sleep(0.05);
+
+        let c = std::net::TcpStream::connect((TEST_HOST, port));
+        expect(c.is_ok(), "c.connect(TEST_HOST, port->port)");
+        let Ok(mut c) = c else { return };
+
+        expect(
+            std::io::Write::write(&mut c, TEST_STR.as_bytes()).ok() == Some(TEST_STR.len()),
+            "c.send(TEST_STR) == strlen(TEST_STR)",
+        );
+
+        let rn = sync_recv(&mut c);
+        expect(rn == 2, "rn == 2");
+
+        kill_worker(serv, victim());
+
+        let rn = sync_recv(&mut c);
+        expect(rn == 0, "rn == 0");
+
+        counter_incr(3, 1);
+
+        sleep(0.05);
+
+        shutdown(serv);
+    })
+}
+
+/// `test_kill_worker(mode, options)`.
+fn test_kill_worker(mode: c_int, options: Options) {
+    *KILL_OPTIONS.lock().unwrap() = options;
+    let serv = Server::new(mode);
+    serv.config().worker_num = 2;
+    serv.config().reload_async = options.reload_async;
+
+    counter_init();
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert!(port.is_some());
+
+    assert_eq!(serv.create(), SW_OK);
+
+    serv.set_callback(CB_CONNECT, kill_on_connect as *const c_void);
+    serv.set_callback(CB_RECEIVE, kill_on_receive as *const c_void);
+    serv.set_callback(
+        cb::CB_WORKER_STOP as usize,
+        kill_on_worker_stop as *const c_void,
+    );
+    serv.set_callback(CB_CLOSE, kill_on_close as *const c_void);
+    serv.set_callback(CB_WORKER_START, kill_on_worker_start as *const c_void);
+    if options.worker_exit_callback {
+        serv.set_callback(
+            cb::CB_WORKER_EXIT as usize,
+            kill_on_worker_exit as *const c_void,
+        );
+    }
+    serv.set_callback(CB_START, kill_on_start as *const c_void);
+
+    let t = kill_client(serv, port.unwrap().port(), || 1 - counter_get(5));
+
+    assert_eq!(serv.start(), SW_OK);
+    t.join().unwrap();
+
+    assert_eq!(counter_get(0), 1); // Client receive
+    assert_eq!(
+        counter_get(1),
+        if options.test_shutdown_event { 4 } else { 3 }
+    ); // Server onWorkerStart
+    assert_eq!(counter_get(2), 1); // Server onClose
+    assert_eq!(counter_get(3), 1); // Client close
+    // counter[4] is the client fd
+    // counter[5] is the worker id
+    // counter[6] is the worker exit count
+
+    if options.worker_exit_callback {
+        assert_eq!(counter_get(6), 3); // Worker exit
+    }
+    assert_no_failure();
+    serv.delete();
+}
+
+/// `TEST(server, kill_worker_1)`.
+fn kill_worker_1() {
+    test_kill_worker(
+        MODE_BASE,
+        Options {
+            reload_async: true,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `TEST(server, kill_worker_2)`.
+fn kill_worker_2() {
+    test_kill_worker(
+        MODE_PROCESS,
+        Options {
+            reload_async: true,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `TEST(server, kill_worker_4)`.
+fn kill_worker_4() {
+    test_kill_worker(
+        MODE_BASE,
+        Options {
+            reload_async: false,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `TEST(server, kill_worker_5)`.
+fn kill_worker_5() {
+    test_kill_worker(
+        MODE_PROCESS,
+        Options {
+            reload_async: false,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `TEST(server, worker_exit)`.
+fn worker_exit() {
+    test_kill_worker(
+        MODE_PROCESS,
+        Options {
+            worker_exit_callback: true,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `TEST(server, shutdown_event)`.
+fn shutdown_event() {
+    test_kill_worker(
+        MODE_PROCESS,
+        Options {
+            test_shutdown_event: true,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `test_kill_self(mode)`: its counters are `sw_mem_pool()` memory, as `test::counter_*`'s.
+fn test_kill_self(mode: c_int) {
+    let serv = Server::new(mode);
+    serv.config().worker_num = 2;
+
+    counters();
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert!(port.is_some());
+
+    assert_eq!(serv.create(), SW_OK);
+
+    serv.set_callback(CB_CONNECT, kill_on_connect as *const c_void);
+    serv.set_callback(CB_RECEIVE, kill_on_receive as *const c_void);
+    serv.set_callback(
+        cb::CB_WORKER_STOP as usize,
+        kill_self_on_worker_stop as *const c_void,
+    );
+    serv.set_callback(CB_CLOSE, kill_on_close as *const c_void);
+    serv.set_callback(CB_WORKER_START, kill_self_on_worker_start as *const c_void);
+    serv.set_callback(CB_START, kill_on_start as *const c_void);
+
+    let t = kill_client(serv, port.unwrap().port(), || counter_get(5));
+
+    assert_eq!(serv.start(), SW_OK);
+    t.join().unwrap();
+
+    assert_eq!(counter_get(0), 1); // Client receive
+    assert_eq!(counter_get(1), 3); // Server onWorkerStart
+    assert_eq!(counter_get(2), 1); // Server onClose
+    assert_eq!(counter_get(3), 1); // Client close
+    assert_no_failure();
+    serv.delete();
+}
+
+/// `TEST(server, kill_self)`.
+fn kill_self() {
+    test_kill_self(MODE_BASE);
+}
+
+const PACKET: &[u8] = b"hello world\n";
+const PID_FILE: &str = "/tmp/swoole-core-tests.pid";
+
+/// `swoole_clear_last_error()`.
+fn clear_last_error() {
+    // SAFETY: sets this thread's last error.
+    unsafe { swr_v1_core_set_last_error(0) };
+}
+
+/// `packet`, answered with `Server: ` before it.
+fn server_response() -> Vec<u8> {
+    [b"Server: ".as_slice(), PACKET].concat()
+}
+
+/// `ListenPort::get_connection_num()` of the primary port.
+fn primary_port_connection_num(serv: Server) -> usize {
+    // SAFETY: the running server's primary port.
+    unsafe { serv.view().port_connection_num(serv.get_primary_port().0) }
+}
+
+/// One `SyncClient` request: connect, send `packet`, read up to 1024 bytes, close.
+fn send_packet(port: u16) {
+    if let Ok(mut c) = std::net::TcpStream::connect((TEST_HOST, port)) {
+        let _ = std::io::Write::write_all(&mut c, PACKET);
+        let mut buf = [0u8; 1024];
+        let _ = std::io::Read::read(&mut c, &mut buf);
+    }
+}
+
+unsafe extern "C" fn before_shutdown(_: *mut c_void, _: *mut c_void) {
+    counter_incr(10, 1);
+}
+
+unsafe extern "C" fn base_worker_start(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {
+    unlock();
+}
+
+unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut RecvData) -> c_int {
+    let serv = Server(serv);
+    let (session, data) = request(req);
+    expect(data == PACKET, "string(req->data, req->info.len) == packet");
+    let conn = serv.get_connection_by_session_id(session);
+    // SAFETY: the running server and its live connection, laid out as the crate's record.
+    let addr = unsafe {
+        CStr::from_ptr(swoole_rs_server::local_addr::get_local_addr(
+            serv.0,
+            ptr::from_ref(conn).cast(),
+        ))
+    };
+    expect(addr != c"unknown", "serv->get_local_addr(conn) != unknown");
+
+    let resp = server_response();
+    serv.send(session, &resp);
+
+    // SAFETY: the running server; `resp` holds its bytes; no current task.
+    let finished =
+        unsafe { entry::finish(serv.0, resp.as_ptr().cast(), resp.len(), 0, ptr::null()) };
+    expect(!finished, "!serv->finish(resp)");
+
+    expect(
+        serv.view().connection_num() == 1,
+        "get_connection_num() == 1",
+    );
+    expect(
+        primary_port_connection_num(serv) == 1,
+        "get_primary_port()->get_connection_num() == 1",
+    );
+
+    // SAFETY: the base server's message bus.
+    let packet = unsafe { swoole_rs_server::bus_move_packet(serv.view().message_bus()) };
+    expect(
+        packet.is_null(),
+        "get_worker_message_bus()->move_packet() == nullptr",
+    );
+
+    // session not exists
+    let client_fd: c_long = 9999;
+    clear_last_error();
+    expect(!serv.send(client_fd, &resp), "!serv->send(client_fd)");
+    expect(
+        last_error() == SW_ERROR_SESSION_NOT_EXIST,
+        "SW_ERROR_SESSION_NOT_EXIST",
+    );
+
+    clear_last_error();
+    expect(
+        !server_methods::close(serv.view(), client_fd, false),
+        "!serv->close(client_fd)",
+    );
+    expect(
+        last_error() == SW_ERROR_SESSION_NOT_EXIST,
+        "SW_ERROR_SESSION_NOT_EXIST",
+    );
+
+    clear_last_error();
+    let mut sd = SendData {
+        // SAFETY: zeroed is `SendData sd{}`.
+        info: unsafe { std::mem::zeroed() },
+        data: ptr::null(),
+    };
+    sd.info.fd = client_fd;
+    sd.info.type_ = SW_SERVER_EVENT_CLOSE;
+    // SAFETY: the running server and a live `SendData`.
+    let sent = unsafe { server_methods::send_to_connection(serv.0, (&raw const sd).cast()) };
+    expect(sent == SW_ERR, "send_to_connection(&sd) == SW_ERR");
+    expect(
+        last_error() == SW_ERROR_SESSION_NOT_EXIST,
+        "SW_ERROR_SESSION_NOT_EXIST",
+    );
+
+    SW_OK
+}
+
+unsafe extern "C" fn base_on_start(_: *mut c_void, _: *mut c_void) {
+    check(
+        std::fs::File::open(PID_FILE).is_ok(),
+        "access(serv->pid_file, R_OK) == 0",
+    );
+}
+
+/// `test_base()`. Its `Server::HOOK_WORKER_START` hook, which asserted `is_started()`,
+/// left the build with `Server::add_hook` (#1535).
+fn test_base() {
+    let serv = Server::new(MODE_BASE);
+    serv.config().worker_num = 1;
+    serv.set_text(TEXT_PID_FILE, PID_FILE);
+
+    counter_init();
+    set_log_warning();
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert!(port.is_some());
+    let port = port.unwrap().port();
+
+    assert_eq!(serv.create(), SW_OK);
+
+    clear_last_error();
+    assert!(!shutdown(serv));
+    assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
+
+    let t1 = std::thread::spawn(move || {
+        block_all_signals();
+
+        lock_wait();
+
+        send_packet(port);
+
+        kill_self();
+    });
+
+    serv.set_callback(CB_WORKER_START, base_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, base_receive as *const c_void);
+    serv.set_callback(CB_START, base_on_start as *const c_void);
+    serv.set_callback(
+        cb::CB_BEFORE_SHUTDOWN as usize,
+        before_shutdown as *const c_void,
+    );
+
+    serv.start();
+    t1.join().unwrap();
+
+    assert!(std::fs::File::open(PID_FILE).is_err());
+    assert_eq!(counter_get(10), 1); // onBeforeShutdown called
+    assert_no_failure();
+    serv.delete();
+}
+
+/// `TEST(server, base)`.
+fn base() {
+    test_base();
+}
+
+/// The pipe `test_process`'s `Mutex *lock` stands for: shared with the forked worker 0,
+/// which unlocks it, while the master's client thread waits.
+static PROCESS_LOCK: Mutex<[c_int; 2]> = Mutex::new([-1, -1]);
+static PROCESS_T1: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+unsafe extern "C" fn process_kill_timer(_: *mut c_void, tnode: *mut TimerNode) {
+    // SAFETY: random.
+    let id = 1 + unsafe { swoole_random_int() } % 3;
+    kill_worker(timer_server(tnode), id as c_int);
+}
+
+unsafe extern "C" fn process_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let (session, data) = request(req);
+    expect(data == PACKET, "string(req->data, req->info.len) == packet");
+
+    serv.send(session, &server_response());
+
+    expect(
+        serv.view().connection_num() == 1,
+        "get_connection_num() == 1",
+    );
+    expect(
+        primary_port_connection_num(serv) == 1,
+        "get_primary_port()->get_connection_num() == 1",
+    );
+
+    timer_after(100, process_kill_timer, serv);
+
+    SW_OK
+}
+
+unsafe extern "C" fn process_on_start(_: *mut c_void, serv: *mut c_void) {
+    let serv = Server(serv);
+    let t1 = std::thread::spawn(move || {
+        block_all_signals();
+
+        let fd = PROCESS_LOCK.lock().unwrap()[0];
+        let mut byte = 0u8;
+        // SAFETY: the lock's read end; one byte.
+        unsafe { read(fd, (&raw mut byte).cast(), 1) };
+
+        // SAFETY: worker 0 of the running server.
+        let pid = unsafe { Worker::new(serv.view().worker(0)) }.pid();
+        // SAFETY: __libc_current_sigrtmin(3).
+        signal(pid, unsafe { __libc_current_sigrtmin() });
+
+        send_packet(serv.get_primary_port().port());
+
+        sleep(2.0);
+
+        signal(master_pid(serv), SIGTERM);
+    });
+    *PROCESS_T1.lock().unwrap() = Some(t1);
+
+    // command tests
+    clear_last_error();
+    let message = crate::TEST_STR;
+    // SAFETY: the server's state, the server and `message`'s bytes.
+    unsafe {
+        swoole_rs_server::swr_v1_server_command_result(
+            serv.state().cast(),
+            serv.0,
+            9999,
+            message.as_ptr().cast(),
+            message.len(),
+        );
+    }
+    check(
+        last_error() == SW_ERROR_SERVER_INVALID_COMMAND,
+        "ASSERT_ERREQ(SW_ERROR_SERVER_INVALID_COMMAND)",
+    );
+}
+
+unsafe extern "C" fn process_worker_start(
+    _: *mut c_void,
+    _: *mut c_void,
+    worker: *mut WorkerRecord,
+) {
+    if worker_id(worker) == 0 {
+        let fd = PROCESS_LOCK.lock().unwrap()[1];
+        // SAFETY: the lock's write end; one byte.
+        unsafe { write(fd, b"1".as_ptr().cast(), 1) };
+    }
+    counter_incr(3, 1);
+}
+
+unsafe extern "C" fn manager_start_stop(_: *mut c_void, _: *mut c_void) {
+    counter_incr(1, 1);
+}
+
+unsafe extern "C" fn on_shutdown(_: *mut c_void, _: *mut c_void) {
+    counter_incr(9, 1);
+}
+
+/// `test_process(single_thread)`. Upstream's `manager_alarm` and its
+/// `Server::HOOK_MANAGER_TIMER` hook, which counted `counter[2]`, left the build with the
+/// other Server hooks (#1535), so nothing counts the manager timer.
+/// `call_command_handler_in_master(9999, ...)` has no entry point left: its body is part
+/// of `Server::command`, which looks the command up before it can be reached.
+fn test_process(single_thread: bool) {
+    let serv = Server::new(MODE_PROCESS);
+    serv.config().worker_num = 1;
+    serv.config().single_thread = single_thread;
+    serv.config().task_worker_num = 3;
+    set_log_warning();
+
+    counter_init();
+
+    let mut fds = [-1; 2];
+    // SAFETY: a writable pair.
+    assert_eq!(unsafe { pipe(&mut fds) }, 0);
+    *PROCESS_LOCK.lock().unwrap() = fds;
+
+    if serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_none() {
+        eprintln!("listen failed, [error={}]", last_error());
+        std::process::exit(2);
+    }
+
+    assert_eq!(serv.create(), SW_OK);
+
+    clear_last_error();
+    assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_none());
+    assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
+
+    clear_last_error();
+    let fake_worker = Box::into_raw(WorkerRecord::boxed());
+    // SAFETY: the created server, and a live worker it refuses.
+    assert_eq!(
+        unsafe { worker_methods::add_worker(serv.0, fake_worker) },
+        SW_ERR
+    );
+    assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
+    delete_worker(fake_worker);
+
+    serv.set_callback(CB_START, process_on_start as *const c_void);
+    serv.set_callback(CB_WORKER_START, process_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, process_receive as *const c_void);
+    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
+    serv.set_callback(
+        cb::CB_MANAGER_START as usize,
+        manager_start_stop as *const c_void,
+    );
+    serv.set_callback(
+        cb::CB_MANAGER_STOP as usize,
+        manager_start_stop as *const c_void,
+    );
+    serv.set_callback(
+        cb::CB_BEFORE_SHUTDOWN as usize,
+        before_shutdown as *const c_void,
+    );
+    serv.set_callback(cb::CB_SHUTDOWN as usize, on_shutdown as *const c_void);
+
+    assert_eq!(serv.start(), 0);
+
+    let t1 = PROCESS_T1.lock().unwrap().take().expect("onStart ran");
+    t1.join().unwrap();
+    assert_eq!(counter_get(1), 2); // manager callback
+    assert!(counter_get(3) >= 4); // worker start
+    assert_eq!(counter_get(9), 1); // onShutdown called
+    assert_eq!(counter_get(10), 1); // onBeforeShutdown called
+    assert_no_failure();
+    serv.delete();
+}
+
+/// `TEST(server, process)`.
+fn process() {
+    test_process(false);
+    wait_all_child_processes();
+}
+
+/// `TEST(server, process_single_thread)`.
+fn process_single_thread() {
+    test_process(true);
+    wait_all_child_processes();
+}
+
 pub const CASES: &[(&str, fn())] = &[
+    ("base", base),
+    ("process", process),
+    ("process_single_thread", process_single_thread),
     ("reload_all_workers", reload_all_workers),
     ("reload_all_workers2", reload_all_workers2),
     ("kill_user_workers", kill_user_workers),
@@ -742,6 +1457,13 @@ pub const CASES: &[(&str, fn())] = &[
     ("reload_single_process", reload_single_process),
     ("reload_no_task_worker", reload_no_task_worker),
     ("restart_worker_process", restart_worker_process),
+    ("kill_worker_1", kill_worker_1),
+    ("kill_worker_2", kill_worker_2),
+    ("kill_worker_4", kill_worker_4),
+    ("kill_worker_5", kill_worker_5),
+    ("worker_exit", worker_exit),
+    ("shutdown_event", shutdown_event),
+    ("kill_self", kill_self),
     ("reload_all_from_worker_error", reload_all_from_worker_error),
     (
         "reload_tasks_from_worker_error",

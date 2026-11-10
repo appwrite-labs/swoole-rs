@@ -402,6 +402,13 @@ struct RecvData {
     data: *const c_char,
 }
 
+/// `SendData`: its head, then the payload.
+#[repr(C)]
+struct SendData {
+    info: DataHead,
+    data: *const c_char,
+}
+
 /// `network::Address` (Linux): the storage, its length and its `swSocketType`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1629,12 +1636,6 @@ fn max_queued_bytes() {
     }
 
     wait_all_child_processes();
-}
-
-/// `SendData`: its head.
-#[repr(C)]
-struct SendData {
-    info: DataHead,
 }
 
 unsafe extern "C" fn dispatch_error(

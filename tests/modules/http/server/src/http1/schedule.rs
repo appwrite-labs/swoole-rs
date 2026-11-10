@@ -17,13 +17,6 @@ const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
 const DISPATCH_CONCURRENT_LB: u8 = 10;
 
-/// `SendData`: its head, then the payload.
-#[repr(C)]
-struct SendData {
-    info: DataHead,
-    data: *const c_char,
-}
-
 /// `DgramPacket` up to its address.
 #[repr(C)]
 struct DgramPacket {
@@ -109,8 +102,7 @@ use swoole_rs_process::worker_record::WorkerRecord;
 
 type Worker = swoole_rs_process::worker_record::Worker<'static>;
 
-/// `serv.workers[i]`: the event worker array, which `get_worker` reaches only once the
-/// event pool holds it at start.
+/// `serv.workers[i]`: the event worker array.
 fn worker(serv: Server, id: usize) -> Worker {
     assert!(id < serv.config().worker_num as usize);
     let workers = serv.config().workers.cast::<WorkerRecord>();
