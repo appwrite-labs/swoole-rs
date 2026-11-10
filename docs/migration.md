@@ -49,7 +49,7 @@ Graduated: base64, buffer, corebase, crc32, error, framing, http, protocols, web
 ## Speed
 
 The merge tier's `callgrind` job is a ratchet, not a target:
-[`benchmarks/callgrind_limits.json`](../benchmarks/callgrind_limits.json)
+[`benchmarks/callgrind_limits/`](../benchmarks/callgrind_limits) (one file per workload)
 records the Cargo build/upstream instruction ratio per workload, and the
 job fails if one rises more than 1% (noise) above its record.
 
@@ -108,7 +108,7 @@ delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)) and the Z
   C++ mechanisms to Rust mechanisms.
 - **Phase 6, speed** ([#366](https://github.com/appwrite-labs/swoole-rs/issues/366)). The
   Cargo build is within 5% of upstream on every callgrind workload;
-  `benchmarks/callgrind_limits.json` records where it stands.
+  `benchmarks/callgrind_limits` records where it stands.
 
 ### Upstream files still in the build
 

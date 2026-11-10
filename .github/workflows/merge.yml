@@ -135,7 +135,7 @@ jobs:
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
   # (fat LTO, as release builds ship) over upstream may not rise more than 1% above
-  # benchmarks/callgrind_limits.json.
+  # benchmarks/callgrind_limits.
   # plaintext covers the bridge, echo-1k buffer, json the router app and service-health the
   # SQLite service's dispatch (php -n: PDO is dynamic).
   # echo-1k, not echo-64k: a 64 KiB body arrives split differently on each runner, and
@@ -183,7 +183,7 @@ jobs:
       - run: cargo fetch --locked
       - run: python3 tools/build_ext.py --profile release-lto
       - run: >
-          python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits.json
+          python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits
           --workload plaintext --workload echo-1k --workload json --workload service-health
           --workload websocket --workload timer --workload app
           --workload http2 --workload table --workload channel --workload task --workload mysql

@@ -1,6 +1,5 @@
 """benchmarks/callgrind.py's ratchet: a recorded ratio may drift by noise, no more."""
 from pathlib import Path
-import json
 import sys
 import unittest
 
@@ -45,7 +44,7 @@ class Ratchet(unittest.TestCase):
         annotate.assert_called_once_with('error', 'callgrind plaintext', 'ratio 1.1000 over limit 1.0500')
 
     def test_every_merge_tier_workload_is_recorded(self):
-        limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
+        limits = callgrind.read_limits(ROOT / 'benchmarks/callgrind_limits')
         workflow = (ROOT / '.github/workflows/merge.yml').read_text()
         gated = {w for w in callgrind.WORKLOADS if f'--workload {w} ' in workflow or f'--workload {w}\n' in workflow}
         self.assertEqual(gated, set(limits))
