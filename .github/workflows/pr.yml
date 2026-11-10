@@ -123,13 +123,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: ./.github/actions/install
       # Restores main's release build; the upstream tree must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
           save-if: false
       - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
-      - uses: ./.github/actions/install
       - id: upstream
         uses: actions/cache/restore@v4
         with:
@@ -244,14 +244,14 @@ jobs:
       - id: touched
         run: python3 -c "from tools.dev import changed_modules; print('modules=' + ' '.join(changed_modules('origin/${{ github.base_ref }}')))" >> "$GITHUB_OUTPUT"
       - if: steps.touched.outputs.modules != ''
+        uses: ./.github/actions/install
+      - if: steps.touched.outputs.modules != ''
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
           save-if: false
       - if: steps.touched.outputs.modules != ''
         run: rm -rf target/upstream target/thirdparty target/native-core
-      - if: steps.touched.outputs.modules != ''
-        uses: ./.github/actions/install
       - if: steps.touched.outputs.modules != ''
         id: upstream
         uses: actions/cache/restore@v4
