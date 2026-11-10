@@ -1059,24 +1059,23 @@ swoole_rs_zend::handlers! {
     zim_swoole_socket_coro_isClosed => is_closed;
 }
 
-/// A created object, or null with a deferred bailout finished.
+/// A created object, or null. Null with a bailout pending is one the caller
+/// stops on, leaving the raise to its handler's last step.
 fn created(result: Result<*mut zend_object, swoole_rs_zend::bailout::Bailout>) -> *mut zend_object {
-    let object = result.unwrap_or_else(|error| {
+    result.unwrap_or_else(|error| {
         error.defer();
         ptr::null_mut()
-    });
-    swoole_rs_zend::bailout::finish();
-    object
+    })
 }
 
 /// `php_swoole_create_socket(type)`: a new socket object of a native Swoole
-/// socket kind, or null.
+/// socket kind, or null with `errno` or a bailout pending.
 #[must_use]
 pub fn create_socket(kind: i32) -> *mut zend_object {
     created(owner::create_kind(kind))
 }
 
-/// `php_swoole_create_socket_from_fd(fd, type)`.
+/// `php_swoole_create_socket_from_fd(fd, type)`, null as [`create_socket`].
 /// # Safety
 /// The caller gives up `fd`, which the new object owns.
 #[must_use]
@@ -1086,7 +1085,7 @@ pub unsafe fn create_from_fd(fd: i32, kind: i32) -> *mut zend_object {
 }
 
 /// `php_swoole_dup_socket(fd, type)`: an object over a duplicate of `fd`,
-/// which stays the caller's.
+/// which stays the caller's; null as [`create_socket`].
 #[must_use]
 pub fn dup(fd: i32, kind: i32) -> *mut zend_object {
     created(owner::duplicate(fd, kind))
