@@ -123,9 +123,10 @@ def differences(runs):
 
 
 def explain(project, engine, found, allowed):
-    """The allowlist entry that accounts for FOUND, a signature only ENGINE made in PROJECT."""
+    """The allowlist entry that accounts for FOUND, a signature only ENGINE made in PROJECT.
+    An entry without a reason accounts for nothing."""
     return next((entry for entry in allowed if entry['engine'] == engine and fnmatchcase(project, entry.get('project', '*'))
-                 and fnmatchcase(found, entry['signature'])), None)
+                 and fnmatchcase(found, entry['signature']) and entry.get('reason', '').strip()), None)
 
 
 @dataclass(frozen=True)
