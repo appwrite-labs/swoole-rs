@@ -74,6 +74,12 @@ impl<'a> Server<'a> {
         unsafe { &*self.fields().state }
     }
 
+    /// `serv->ports`, in listen order.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn ports(self) -> &'a [*mut c_void] {
+        self.state().tables_ref().ports()
+    }
+
     /// `serv->onX = f`: callback slot `index` (`callbacks::CB_*`) now calls `invoke`, a
     /// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments
     /// (its `Server *` may be a `Server`).
@@ -232,6 +238,28 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn is_started(self) -> bool {
         self.counters().start.load(Ordering::Relaxed) != 0
+    }
+
+    /// `Server::is_single_worker()`: one event worker, which the master runs itself.
+    #[must_use]
+    pub fn is_single_worker(self) -> bool {
+        let config = self.config();
+        config.worker_num == 1
+            && config.task_worker_num == 0
+            && config.max_request == 0
+            && self.user_worker_num() == 0
+    }
+
+    /// A single base-mode worker's server that this process ran and never
+    /// destroyed: worker 0 records its pid as the master's, and `destroy` drops
+    /// the factory. Its event worker pool is this process's alone.
+    #[must_use]
+    pub fn ran_its_single_worker_here(self) -> bool {
+        let config = self.config();
+        u64::from(config.mode_) == crate::MODE_BASE
+            && self.is_single_worker()
+            && self.counters().master_pid == std::process::id().cast_signed()
+            && !config.factory_.is_null()
     }
 
     /// `Server::is_worker_thread()`: thread mode, on a worker thread.
@@ -506,4 +534,52 @@ pub unsafe fn recv_buffer(conn: &ConnectionRecord) -> *mut c_void {
     }
     // SAFETY: per the caller.
     unsafe { &*socket }.recv_buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::ffi::c_void;
+
+    /// Only a single base-mode worker's own, undestroyed server has an event pool
+    /// MSHUTDOWN may destroy: not another process's, a destroyed one, a process-mode
+    /// one, or one with a manager or a task worker. Unit tests link no
+    /// `swr_v1_server_new`, so the test lends the server its shared record.
+    #[test]
+    fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
+        let state = crate::swr_v1_server_state_new();
+        let mut gs = Box::new(unsafe { core::mem::zeroed::<crate::shared::ServerShared>() });
+        let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
+        let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
+        let config = unsafe { serv.config_mut() };
+        config.gs = (&raw mut *gs).cast();
+        config.mode_ = 1;
+        config.worker_num = 1;
+        let mut factory = 0u8;
+        config.factory_ = (&raw mut factory).cast();
+        let own = std::process::id().cast_signed();
+        unsafe { serv.counters_mut() }.master_pid = own;
+        assert!(serv.ran_its_single_worker_here());
+        unsafe { serv.counters_mut() }.master_pid = own + 1;
+        assert!(!serv.ran_its_single_worker_here(), "another process's");
+        unsafe { serv.counters_mut() }.master_pid = own;
+        let config = unsafe { serv.config_mut() };
+        config.factory_ = core::ptr::null_mut();
+        assert!(!serv.ran_its_single_worker_here(), "destroyed");
+        config.factory_ = (&raw mut factory).cast();
+        config.mode_ = 2;
+        assert!(!serv.ran_its_single_worker_here(), "process mode");
+        config.mode_ = 1;
+        config.worker_num = 2;
+        assert!(
+            !serv.ran_its_single_worker_here(),
+            "a manager and two workers"
+        );
+        config.worker_num = 1;
+        config.task_worker_num = 1;
+        assert!(!serv.ran_its_single_worker_here(), "a task worker");
+        config.task_worker_num = 0;
+        config.factory_ = core::ptr::null_mut();
+        unsafe { crate::swr_v1_server_state_free(state) };
+    }
 }

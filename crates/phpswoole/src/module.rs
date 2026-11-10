@@ -167,6 +167,8 @@ pub struct Families {
     pub tracer_rinit: Hook,
     /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
     pub server_rshutdown: Hook,
+    /// MSHUTDOWN's server step: the servers this process kept past their objects.
+    pub server_mshutdown: Hook,
     pub coroutine_rshutdown: [Hook; 2],
     pub thread_rshutdown: Hook,
     pub tracer_rshutdown: Hook,
@@ -487,6 +489,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
     ];
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
+    steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
     steps.extend([
         // The tables' process-private parts, which upstream leaves to the exit.
         Step::Hook(swoole_rs_memory::table::release),

@@ -117,14 +117,21 @@ fn pipe(ctx: &Context, op: u32) -> Option<u64> {
     Some(0)
 }
 
-/// `serv->ports`, in listen order.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub(crate) unsafe fn ports<'a>(serv: *mut c_void) -> &'a [*mut c_void] {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    serv.state().tables_ref().ports()
+/// MSHUTDOWN after `exit()` or a fatal error in a single base-mode worker's callback:
+/// the bailout left its loop before `start_reactor_processes` destroyed the event
+/// worker pool. That worker is the process that made the pool, with no manager or
+/// other worker to share it, so this destroys it. Any other server is left alone.
+pub fn destroy_abandoned_pool() {
+    let serv = swoole_rs_corebase::swr_v1_core_server();
+    if serv.is_null() {
+        return;
+    }
+    // SAFETY: `SwooleG.server`, live while set.
+    let server = unsafe { view::Server::from_raw(serv) };
+    if server.ran_its_single_worker_here() {
+        // SAFETY: the live event pool only this process uses; destroy frees each part once.
+        unsafe { pool_destroy(server.workers().event_pool.cast()) };
+    }
 }
 
 /// `Socket::is_stream(type)`.
@@ -176,12 +183,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             config.ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
             0
         }
-        OP_SINGLE_WORKER => u64::from(
-            config.worker_num == 1
-                && config.task_worker_num == 0
-                && config.max_request == 0
-                && ctx.workers().user_count == 0,
-        ),
+        OP_SINGLE_WORKER => u64::from(ctx.server().is_single_worker()),
         // SAFETY: the context's live server.
         OP_START_MANAGER => sign(unsafe { entry::start_manager_process(serv) }),
         OP_POOL_DESTROY => {
