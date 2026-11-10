@@ -252,8 +252,8 @@ mod tests {
         // class also holds the other case.
         assert_eq!(rewrite("~[[.a.]]~", b"ab"), Some(b"<a>b".to_vec()));
         assert_eq!(
-            rewrite("~[[.hyphen.]-[.period.][.space.][.DEL.]]+~", b"a-. \x7f"),
-            Some(b"a<-. \x7f>".to_vec())
+            rewrite("~[[.hyphen.]-/[.space.][.DEL.]]+~", b"a-./ \x7f"),
+            Some(b"a<-./ \x7f>".to_vec())
         );
         assert_eq!(rewrite("~[[=a=]]~", b"aAb"), Some(b"<a><A>b".to_vec()));
         // What std::regex rejects, and backreferences and lookahead, never match.
@@ -271,6 +271,7 @@ mod tests {
             "[[:word:]]",
             "[[.1.]]",
             "[[.a]]",
+            "[a-[.b.]]",
             "(a)\\1",
             "a(?=b)",
             "(?i)a",

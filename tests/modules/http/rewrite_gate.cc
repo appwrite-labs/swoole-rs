@@ -54,7 +54,7 @@ int main(){try{
   {{"~[a-\\xff]~","<$&>"}},{{"~[\\xff-a]~","<$&>"}},{{"~[\\x7f-\\x80]~","<$&>"}},
   // Collating elements by POSIX name, equivalence classes, and either before a dash.
   {{"~[[.circumflex.][.left-curly-bracket.][.vertical-line.][.backslash.][.IS4.][.alert.]]~","<$&>"}},{{"~[[.1.]]~","X"}},{{"~[[.a.]]~","X"}},{{"~[[=A=]]~","<$&>"}},
-  {{"~[[.hyphen.]-[.period.]]~","<$&>"}},{{"~[[=a=]-z]~","<$&>"}},{{"~[[.a.]-z]~","<$&>"}},{{"~[[:alpha:]-z]~","<$&>"}} };
+  {{"~[[.hyphen.]-[.period.]]~","<$&>"}},{{"~[[.hyphen.]-/]~","<$&>"}},{{"~[[=a=]-z]~","<$&>"}},{{"~[[.a.]-z]~","<$&>"}},{{"~[[:alpha:]-z]~","<$&>"}} };
  std::vector<std::string> urls={"","/","/a","/a/b","/ab","/aa",std::string("/a\0tail",7),std::string(4096,'a'),"baaac","/view/post/3","/view/post/x","/article/settings.html","a b\r\nc","/a/a/a","abcd","/a1b22c333/_x","abab",std::string("ABJqA\0" "1",7),std::string("\xff\0" "a\x80\x7f",5),"^{|\\\x1c\x07" "aAz-./"};
  for(auto &url:urls)for(auto &r:rules)compare(url,r);
  {std::mt19937 rng(34129);for(unsigned i=0;i<2048;++i){std::string url;for(unsigned n=rng()%80;n--;)url.push_back(static_cast<char>(rng()%256));Rules r;for(unsigned n=rng()%8;n--;){std::string prefix=url.substr(0,url.empty()?0:rng()%(url.size()+1)),replacement;for(unsigned m=rng()%80;m--;)replacement.push_back(static_cast<char>(rng()%256));if(rng()%2)prefix="mismatch"+prefix;r.emplace_back(prefix,replacement);}compare(url,r);}}

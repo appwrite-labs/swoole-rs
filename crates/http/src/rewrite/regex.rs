@@ -280,9 +280,13 @@ impl Parser<'_> {
             let (member, low) = self.class_atom()?;
             if self.rest.first() == Some(&b'-') && self.rest.get(1).is_some_and(|&b| b != b']') {
                 self.skip();
-                // A range's ends are single bytes: `[\d-z]` is an error. libstdc++ compares
-                // the ends, and each byte with them, as `char`, which is signed on x86_64:
-                // there `[a-\xff]` is an error and `[\xff-a]` holds 0xff and 0x00-0x61.
+                // A range's ends are single bytes: `[\d-z]` is an error, and so is a
+                // collating element after the dash (`_M_try_char` takes none). libstdc++
+                // compares the ends, and each byte with them, as `char`, which is signed on
+                // x86_64: there `[a-\xff]` is an error and `[\xff-a]` holds 0xff and 0x00-0x61.
+                if self.rest.starts_with(b"[.") {
+                    return None;
+                }
                 let char = |byte: u8| c_char::from_ne_bytes([byte]);
                 let (low, high) = (char(low?), char(self.class_atom()?.1?));
                 if low > high {
