@@ -17,10 +17,9 @@ distinctions and the priority EOF > length > HTTP > MQTT > Redis are preserved,
 including for contradictory flags.
 
 `ListenPort::protocol` and `onRead` live in the Rust-owned port settings
-(`PortConfig`). `init_protocol`,
-`set_length_protocol` and `set_stream_protocol` are Rust symbols
-(`crates/ports/src/methods.rs`), and so is the body of the inline
-`set_eof_protocol` (`swr_v1_ports_set_eof(port, bytes, length, find_from_right)`).
+(`PortConfig`). `init_protocol`, `set_length_protocol`, `set_stream_protocol` and the
+inline `set_eof_protocol` are Rust functions over a port's `PortConfig`
+(`crates/ports/src/methods.rs`), with no native symbol.
 `swr_v1_port_config_new` gives the constructor's protocol defaults.
 
 ## Event catalog and callbacks
@@ -72,7 +71,8 @@ both. SNI contexts are matched in insertion order; upstream iterated an
 option's lookup, conversion, bound and order, written into the Rust-owned
 `PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
 `package_eof` is rejected rather than copied. `set()` calls `dup_ssl_context`
-(`swr_v1_ports_context_dup`), `ssl_add_sni_cert` and `ssl_init` in crates/ports directly.
+(`lifecycle_native::context_dup`), `ssl_add_sni_cert` (`sni_add`) and `ssl_init` in
+crates/ports directly.
 
 ## Class properties: `swr_v1_ports_class_property(index)`
 

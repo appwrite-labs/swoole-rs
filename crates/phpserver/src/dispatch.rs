@@ -303,7 +303,7 @@ fn receive_done(server: *mut c_void, succeeded: bool, fd: i64, args: &mut [zval]
             return true;
         }
         // SAFETY: a live server.
-        unsafe { server_methods::close(server, fd, false) };
+        server_methods::close(unsafe { view::Server::from_raw(server) }, fd, false);
     }
     if let Some(last) = args.last_mut() {
         dtor(last);

@@ -33,6 +33,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
+use swoole_rs_ports::http_routes::exports as http;
 
 mod client;
 mod http1;
@@ -139,15 +140,29 @@ unsafe extern "C" {
         socket: *mut c_void,
         pl: *mut PacketLength,
     ) -> isize;
+}
 
-    #[link_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-    fn http_get_package_length(
-        protocol: *const http1::Protocol,
-        socket: *mut c_void,
-        pl: *mut PacketLength,
-    ) -> isize;
-    #[link_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"]
-    fn http_get_package_length_size(socket: *mut c_void) -> u8;
+/// `http_server::get_package_length`, over the cases' records.
+///
+/// # Safety
+/// The port's protocol, a connection socket and a live packet length, laid out as
+/// the crates' records.
+unsafe fn http_get_package_length(
+    protocol: *const http1::Protocol,
+    socket: *mut c_void,
+    pl: *mut PacketLength,
+) -> isize {
+    // SAFETY: per the caller.
+    unsafe { http::get_package_length(protocol.cast(), socket.cast(), &mut *pl.cast()) }
+}
+
+/// `http_server::get_package_length_size`.
+///
+/// # Safety
+/// `socket` is a connection socket.
+unsafe fn http_get_package_length_size(socket: *mut c_void) -> u8 {
+    // SAFETY: per the caller.
+    unsafe { http::get_package_length_size(socket.cast()) }
 }
 
 // The handshake's `Sec-WebSocket-Accept`, as upstream's `http_context` computes it.
@@ -957,7 +972,7 @@ fn get_package_length() {
     let protocol = unsafe { &*swr_case_init_protocol(port, true) };
     assert_eq!(
         protocol.get_package_length_size,
-        http_get_package_length_size as *mut c_void
+        http::get_package_length_size as *mut c_void
     );
 
     let mut conn = std::ptr::null_mut();

@@ -198,7 +198,7 @@ fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
         // SAFETY: `start_server`'s record, live across the trap.
         let start = unsafe { &mut *start.cast::<Start>() };
         // SAFETY: a live server.
-        start.1 = unsafe { server_methods::start(start.0) };
+        start.1 = server_methods::start(unsafe { view::Server::from_raw(start.0) });
     }
     let mut start = Start(serv, 0);
     // SAFETY: as above.
@@ -814,13 +814,14 @@ fn construct(call: &Call) {
             unsafe { throw_error(c"failed to add systemd socket") };
             return call.set_bool(false);
         }
-    // SAFETY: a new server and the NUL-terminated `Z_PARAM_STRING` bytes.
-    } else if unsafe {
+    } else if {
+        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
+        let host = unsafe { CStr::from_ptr(address.as_ptr().cast()) };
         #[expect(
             clippy::cast_possible_truncation,
             reason = "add_port((SocketType) type, host, (int) port), as upstream"
         )]
-        server_methods::add_port(serv, kind as c_int, address.as_ptr().cast(), port as c_int)
+        server_methods::add_port(server, kind as c_int, host, port as c_int)
     }
     .is_null()
     {
@@ -1186,8 +1187,7 @@ fn has_key(setting: *mut zval, key: &CStr) -> bool {
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
-    // SAFETY: a live server.
-    if unsafe { server_methods::create(serv.raw()) } < 0 {
+    if server_methods::create(serv) < 0 {
         // SAFETY: the calling thread's `sw_error`.
         let reason = unsafe { swoole_get_last_error_msg() };
         // SAFETY: always NUL-terminated.
@@ -1452,15 +1452,7 @@ pub fn php_swoole_server_send_yield(
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
             return Ok(false);
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Server::send takes a uint32_t length, as upstream's ZSTR_LEN narrowing"
-        )]
-        let narrowed = data.len() as u32;
-        // SAFETY: a live server and the caller's bytes.
-        let sent = unsafe {
-            server_methods::send(server.raw(), session_id, data.as_ptr().cast(), narrowed)
-        };
+        let sent = server_methods::send(server, session_id, data);
         let yielded = !sent && swoole_rs_corebase::log::last_error() == SW_ERROR_OUTPUT_SEND_YIELD;
         if yielded && fact(server, fact::SEND_YIELD) {
             continue;

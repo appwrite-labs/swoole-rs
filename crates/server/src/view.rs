@@ -3,7 +3,7 @@
 //!
 //! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
 //! callbacks }`, and a `ListenPort *` is its box of the port's settings pointer
-//! (`native/process/swoole_server.h`). `ServerGS` is `shared::ServerShared`.
+//! (`native/include/swoole_rs_server_view.h`). `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};

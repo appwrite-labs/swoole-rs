@@ -35,6 +35,7 @@ use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
+use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Owned, OwnedArray, bailout, handlers, method_table, php_error,
     sys::{
@@ -71,15 +72,6 @@ const PHP_RUNTIME_NOTICE: c_int = 510;
 /// `swoole::Server` and `swoole::RecvData`, opaque.
 type Server = c_void;
 type RecvData = c_void;
-
-unsafe extern "C" {
-    /// `Server::send` (crates/server).
-    #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
-    fn server_send(server: *mut Server, fd: zend_long, data: *const c_void, length: u32) -> bool;
-    /// `Server::close` (crates/server).
-    #[link_name = "_ZNK6swoole6Server5closeElb"]
-    fn server_close(server: *mut Server, fd: zend_long, reset: bool) -> bool;
-}
 
 thread_local! {
     /// `redis_handlers`: each command key's callable.
@@ -268,20 +260,9 @@ pub unsafe extern "C" fn swr_v1_phpredis_receive(
     receive(server, request).unwrap_or(BAILED)
 }
 
-/// `serv->send(fd, reply, reply.length())`: the length narrowed to `uint32_t`, as C++ did.
-/// # Safety
-/// `server` is the live server.
-unsafe fn send(server: *mut Server, fd: zend_long, reply: &[u8]) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send takes a uint32_t length, as upstream's implicit conversion"
-    )]
-    let length = reply.len() as u32;
-    // SAFETY: per the caller; `length` bytes at `reply`.
-    unsafe { server_send(server, fd, reply.as_ptr().cast(), length) }
-}
-
 fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout::Bailout> {
+    // SAFETY: the live server the receive callback passes.
+    let serv = unsafe { view::Server::from_raw(server) };
     // SAFETY: the live request, which starts with its `DataHead` and its `fd`.
     let fd = unsafe { *request.cast::<zend_long>() };
     let zdata = Owned::default();
@@ -311,8 +292,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         }
     };
     if result.is_err() {
-        // SAFETY: a live server.
-        unsafe { server_close(server, fd, false) };
+        server_methods::close(serv, fd, false);
         return Ok(OK);
     }
     if command.len() >= MAX_COMMAND_SIZE {
@@ -321,8 +301,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         message.extend_from_slice(until_nul(head));
         message.extend_from_slice(format!("...](length={}) is too long", command.len()).as_bytes());
         report(false, E_WARNING, &message)?;
-        // SAFETY: a live server.
-        unsafe { server_close(server, fd, false) };
+        server_methods::close(serv, fd, false);
         return Ok(OK);
     }
     let key = handler_key(command);
@@ -330,8 +309,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         let mut reply = b"-ERR unknown command '".to_vec();
         reply.extend_from_slice(until_nul(command));
         reply.extend_from_slice(b"'\r\n");
-        // SAFETY: a live server and the reply's bytes.
-        let sent = unsafe { send(server, fd, &reply) };
+        let sent = server_methods::send(serv, fd, &reply);
         return Ok(if sent { OK } else { ERR });
     };
     let args = [Owned::long(fd), params.into_owned()];
@@ -360,8 +338,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         report(false, E_WARNING, &message)?;
     }
     if let Some(reply) = retval.bytes() {
-        // SAFETY: a live server and the reply's bytes.
-        unsafe { send(server, fd, reply) };
+        server_methods::send(serv, fd, reply);
     }
     Ok(OK)
 }

@@ -160,8 +160,9 @@ fn listen(call: &Call) {
         };
         serv.find_port(listening)
     } else {
-        // SAFETY: a live server; `Z_PARAM_STRING`'s bytes are NUL-terminated.
-        unsafe { server_methods::add_port(serv.raw(), kind, address.as_ptr().cast(), port) }
+        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
+        let host = unsafe { CStr::from_ptr(address.as_ptr().cast()) };
+        server_methods::add_port(serv, kind, host, port)
     };
     if ls.is_null() {
         return call.set_bool(false);
@@ -338,20 +339,10 @@ fn sendfile(call: &Call) {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "Server::sendfile's uint32_t name length and size_t size, as upstream's conversions"
+        reason = "Server::sendfile's size_t size, as upstream's conversion"
     )]
-    let (name_length, size) = (filename.len() as u32, length as usize);
-    // SAFETY: a live server and the NUL-terminated name.
-    call.set_bool(unsafe {
-        server_methods::sendfile(
-            serv.raw(),
-            fd,
-            filename.as_ptr().cast(),
-            name_length,
-            offset,
-            size,
-        )
-    });
+    let size = length as usize;
+    call.set_bool(server_methods::sendfile(serv, fd, filename, offset, size));
 }
 
 fn send_message(call: &Call) {

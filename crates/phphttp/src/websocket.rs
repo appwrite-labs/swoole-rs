@@ -197,22 +197,15 @@ fn send(server: *mut Server, fd: zend_long, data: &[u8], wait: bool) -> bool {
         // SAFETY: a live server and the bytes.
         return unsafe { context::server_send(server, fd, data.as_ptr().cast(), data.len()) };
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send's uint32_t length"
-    )]
     // SAFETY: as above.
-    unsafe {
-        server_methods::send(server, fd, data.as_ptr().cast(), data.len() as u32)
-    }
+    server_methods::send(unsafe { view::Server::from_raw(server) }, fd, data)
 }
 
 /// `Server::close(fd, reset)`.
 fn close(server: *mut Server, fd: zend_long, reset: bool) -> bool {
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: a live server.
-    unsafe { server_methods::close(server.raw(), fd, reset) }
+    server_methods::close(server, fd, reset)
 }
 
 /// The port's `open_websocket_{close,ping,pong}_frame` bits, or `None` when
