@@ -31,7 +31,7 @@ use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_class_entry, zend_long, zval,
 };
-use swoole_rs_zend::{Class, Minit, Owned, ZStr, ZString, bailout, php_local, string, value};
+use swoole_rs_zend::{Class, Minit, Owned, ZStr, ZString, bailout, string, value};
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 pub(crate) static SERVER: Class = Class::new();

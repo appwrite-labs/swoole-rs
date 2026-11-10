@@ -23,7 +23,7 @@ use swoole_rs_phpstubs::event;
 use swoole_rs_reactor::event_api::{self, CycleTask, Deferred, FdHandler};
 use swoole_rs_tls::event_socket::EventSocket;
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Owned, Value,
+    Call, Class, E_WARNING, Minit, Owned, Php, Value,
     bailout::{self, Bailout},
     message, php_local,
 };
@@ -146,8 +146,8 @@ fn fd(value: Option<&Value>) -> i32 {
     }
 }
 
-fn registered(fd: i32) -> bool {
-    SOCKETS.with_borrow(|sockets| sockets.contains_key(fd))
+fn registered(php: Php, fd: i32) -> bool {
+    SOCKETS.with_borrow(php, |sockets| sockets.contains_key(fd))
 }
 
 /// `int` events, as the reactor takes them.
@@ -195,6 +195,7 @@ fn later<T: 'static>(value: T) {
 
 /// `add(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = SWOOLE_EVENT_READ)`.
 fn add(call: &Call) {
+    let php = call.php();
     let parsed = call.arity(1, 4).and_then(|()| call.long(4, READ));
     let Ok(events) = parsed else {
         call.set_bool(false);
@@ -213,7 +214,7 @@ fn add(call: &Call) {
         Some(message!("unknown fd type"))
     } else if fd == 0 && events & WRITE != 0 {
         Some(message!("invalid socket fd [{fd}]"))
-    } else if registered(fd) {
+    } else if registered(php, fd) {
         Some(message!("already exist"))
     } else if events & (WRITE | READ) == 0 {
         Some(message!("invalid events"))
@@ -256,10 +257,10 @@ fn add(call: &Call) {
         writable,
     });
     // Dropped outside the borrow: a destructor may call back in.
-    let id = ADDED.get() + 1;
-    ADDED.set(id);
+    let id = ADDED.get(php) + 1;
+    ADDED.set(php, id);
     let registered = Registered { id, socket, object };
-    drop(SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, registered)));
+    drop(SOCKETS.with_borrow_mut(php, |sockets| sockets.insert(fd, registered)));
     call.set_long(fd.into());
 }
 
@@ -274,6 +275,7 @@ fn not_found(fd: i32) {
 
 /// `write(mixed $fd, string $data): bool`.
 fn write(call: &Call) {
+    let php = call.php();
     let Ok(data) = call.arity(2, 2).and_then(|()| call.string(2, b"")) else {
         call.set_bool(false);
         return;
@@ -292,7 +294,7 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if !registered(fd) {
+    if !registered(php, fd) {
         not_found(fd);
         call.set_bool(false);
         return;
@@ -301,12 +303,13 @@ fn write(call: &Call) {
         error.defer();
         return;
     }
-    let written = SOCKETS.with_borrow(|sockets| sockets.get(fd).map(|r| r.socket.write(data)));
+    let written = SOCKETS.with_borrow(php, |sockets| sockets.get(fd).map(|r| r.socket.write(data)));
     call.set_bool(written.is_some_and(|written| written >= 0));
 }
 
 /// `set(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = 0)`.
 fn set(call: &Call) {
+    let php = call.php();
     if !has_reactor() {
         fatal_warning(c"reactor is not ready, cannot call swoole_event_set");
         call.set_bool(false);
@@ -324,7 +327,9 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if !SOCKETS.with_borrow(|sockets| sockets.get(fd).is_some_and(|r| r.object.is_some())) {
+    if !SOCKETS.with_borrow(php, |sockets| {
+        sockets.get(fd).is_some_and(|r| r.object.is_some())
+    }) {
         not_found(fd);
         call.set_bool(false);
         return;
@@ -338,7 +343,7 @@ fn set(call: &Call) {
         return;
     }
     // The replaced callables, which the reactor may still be in.
-    let (has, replaced) = SOCKETS.with_borrow_mut(|sockets| {
+    let (has, replaced) = SOCKETS.with_borrow_mut(php, |sockets| {
         let Some(object) = sockets.get_mut(fd).and_then(|r| r.object.as_mut()) else {
             return ((false, false), [readable, writable]);
         };
@@ -365,8 +370,9 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let status =
-        SOCKETS.with_borrow(|sockets| sockets.get(fd).map(|r| r.socket.set(events_of(events))));
+    let status = SOCKETS.with_borrow(php, |sockets| {
+        sockets.get(fd).map(|r| r.socket.set(events_of(events)))
+    });
     if status.is_none_or(|status| status < 0) {
         fatal_warning(c"Swoole\\Event::set failed");
         call.set_bool(false);
@@ -377,6 +383,7 @@ fn set(call: &Call) {
 
 /// `del(mixed $fd): bool`.
 fn del(call: &Call) {
+    let php = call.php();
     if !has_reactor() {
         fatal_warning(c"reactor is not ready, cannot call swoole_event_del");
         call.set_bool(false);
@@ -395,7 +402,7 @@ fn del(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(registered) = SOCKETS.with_borrow_mut(|sockets| sockets.remove(fd)) else {
+    let Some(registered) = SOCKETS.with_borrow_mut(php, |sockets| sockets.remove(fd)) else {
         call.set_bool(false);
         return;
     };
@@ -521,6 +528,7 @@ fn release_cycle_tasks() {
 
 /// `isset(mixed $fd, int $events = SWOOLE_EVENT_READ | SWOOLE_EVENT_WRITE): bool`.
 fn isset(call: &Call) {
+    let php = call.php();
     if !has_reactor() {
         call.set_bool(false);
         return;
@@ -538,7 +546,7 @@ fn isset(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let set = SOCKETS.with_borrow(|sockets| {
+    let set = SOCKETS.with_borrow(php, |sockets| {
         sockets
             .get(fd)
             .is_some_and(|r| !r.socket.removed() && i64::from(r.socket.events()) & events != 0)
@@ -577,19 +585,19 @@ struct Error;
 
 impl FdHandler for Readable {
     fn handle(fd: c_int) -> c_int {
-        handled(ready(fd, false))
+        Php::running().map_or(0, |php| handled(ready(php, fd, false)))
     }
 }
 
 impl FdHandler for Writable {
     fn handle(fd: c_int) -> c_int {
-        handled(ready(fd, true))
+        Php::running().map_or(0, |php| handled(ready(php, fd, true)))
     }
 }
 
 impl FdHandler for Error {
     fn handle(fd: c_int) -> c_int {
-        handled(error_event(fd))
+        Php::running().map_or(0, |php| handled(error_event(php, fd)))
     }
 }
 
@@ -614,14 +622,21 @@ pub(crate) fn errno_message(code: c_int) -> String {
 }
 
 /// `apply` to `fd`'s registration `id`, unless PHP has since deleted or replaced it.
-fn registration<T>(fd: i32, id: u64, apply: impl FnOnce(&mut Registered) -> T) -> Option<T> {
-    SOCKETS.with_borrow_mut(|sockets| sockets.get_mut(fd).filter(|r| r.id == id).map(apply))
+fn registration<T>(
+    php: Php,
+    fd: i32,
+    id: u64,
+    apply: impl FnOnce(&mut Registered) -> T,
+) -> Option<T> {
+    SOCKETS.with_borrow_mut(php, |sockets| {
+        sockets.get_mut(fd).filter(|r| r.id == id).map(apply)
+    })
 }
 
 /// The read (`write` false) or write handler of a user fd: run its callback;
 /// on failure warn, detach and delete the fd.
-fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
-    let found = SOCKETS.with_borrow(|sockets| {
+fn ready(php: Php, fd: i32, write: bool) -> Result<c_int, Bailout> {
+    let found = SOCKETS.with_borrow(php, |sockets| {
         let registered = sockets.get(fd)?;
         let object = registered.object.as_ref()?;
         let callable = if write {
@@ -649,11 +664,11 @@ fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
         .as_cstr(),
     );
     // The detached object, freed once the loop is out of it.
-    let object = registration(fd, id, |r| r.object.take()).flatten();
+    let object = registration(php, fd, id, |r| r.object.take()).flatten();
     if let Some(object) = object {
         later(object);
     }
-    registration(fd, id, |r| r.socket.del());
+    registration(php, fd, id, |r| r.socket.del());
     if bailout::relay_to_c(Ok(())) {
         Err(Bailout)
     } else {
@@ -663,13 +678,15 @@ fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
 
 /// The error handler: dispatch to the read or write handler unless the socket
 /// reported an error; then warn, free the fd's object and delete it.
-fn error_event(fd: i32) -> Result<c_int, Bailout> {
-    let found = SOCKETS.with_borrow(|sockets| sockets.get(fd).map(|r| (r.id, r.socket.events())));
+fn error_event(php: Php, fd: i32) -> Result<c_int, Bailout> {
+    let found = SOCKETS.with_borrow(php, |sockets| {
+        sockets.get(fd).map(|r| (r.id, r.socket.events()))
+    });
     let Some((id, events)) = found else {
         return Ok(0);
     };
     if events & EventType::SW_EVENT_ERROR as i32 == 0 {
-        return ready(fd, events & EventType::SW_EVENT_READ as i32 == 0);
+        return ready(php, fd, events & EventType::SW_EVENT_READ as i32 == 0);
     }
     match swoole_rs_reactor::socket_error(fd) {
         Ok(0) => {}
@@ -684,9 +701,9 @@ fn error_event(fd: i32) -> Result<c_int, Bailout> {
             native::system_error(code, E_WARNING, message.as_cstr())?;
         }
     }
-    drop(registration(fd, id, |r| r.object.take()));
+    drop(registration(php, fd, id, |r| r.object.take()));
     bailout::outcome(())?;
-    registration(fd, id, |r| r.socket.del());
+    registration(php, fd, id, |r| r.socket.del());
     Ok(0)
 }
 

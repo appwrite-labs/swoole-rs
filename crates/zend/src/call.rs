@@ -79,6 +79,12 @@ impl Call {
         Self { frame, value }
     }
 
+    /// Proof that this thread runs PHP, as a call of a handler shows.
+    #[must_use]
+    pub fn php(&self) -> crate::local::Php {
+        crate::local::Php::enter()
+    }
+
     /// `ZEND_NUM_ARGS()`.
     #[must_use]
     #[inline]
