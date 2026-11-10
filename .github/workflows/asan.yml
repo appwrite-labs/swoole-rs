@@ -14,7 +14,7 @@ defaults:
 
 jobs:
   asan:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

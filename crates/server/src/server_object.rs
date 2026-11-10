@@ -93,8 +93,7 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
             .load(core::sync::atomic::Ordering::Relaxed)
             == 0
     {
-        // SAFETY: as the caller guarantees.
-        unsafe { crate::server_methods::destroy(serv.raw()) };
+        crate::server_methods::destroy(serv);
     }
     let ports = (0..).map(|index| serv.port_at(index));
     for port in ports.take_while(|port| !port.is_null()) {

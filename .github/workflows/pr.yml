@@ -12,7 +12,7 @@ defaults:
 
 jobs:
   rust:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
       - run: cargo machete
 
   tooling:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 10
     steps:
       # Two commits: the PR's merge commit and, as HEAD^1, main, which tools/budget.py compares against.
@@ -45,7 +45,7 @@ jobs:
 
   # Whether this PR touches what the extension build compiles or installs with.
   changes:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 5
     outputs:
       ext: ${{ steps.paths.outputs.ext }}
@@ -117,7 +117,7 @@ jobs:
   ext:
     needs: changes
     if: needs.changes.outputs.ext == 'true'
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -232,7 +232,7 @@ jobs:
   # a phase that didn't fail in main's latest completed merge-tier run: red main
   # doesn't block a PR, a new failure does. The PHPT families run in the phpt job.
   gates:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     permissions:
       contents: read
@@ -283,7 +283,7 @@ jobs:
   phpt-build:
     needs: changes
     if: needs.changes.outputs.families != ''
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     outputs:
       php: ${{ steps.build.outputs.php }}
@@ -313,7 +313,7 @@ jobs:
   required:
     if: always()
     needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, iouring, zts, threadcontext]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 5
     steps:
       - env:

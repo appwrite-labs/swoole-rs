@@ -7,15 +7,14 @@ thread_local! {
     static ERRORS: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
 }
 
-unsafe extern "C" fn record_warning(message: *const c_char, length: usize) {
-    let bytes = unsafe { slice::from_raw_parts(message.cast::<u8>(), length) };
+fn record_warning(message: &[u8]) {
     WARNINGS.with(|w| {
         w.borrow_mut()
-            .push(String::from_utf8_lossy(bytes).into_owned());
+            .push(String::from_utf8_lossy(message).into_owned());
     });
 }
 
-unsafe extern "C" fn record_error(code: c_int) {
+fn record_error(code: c_int) {
     ERRORS.with(|e| e.borrow_mut().push(code));
 }
 

@@ -155,6 +155,31 @@ runs in thread mode, which needs `SW_THREAD`: upstream's CMake defines it for co
 under `enable_thread`, and the extension's MINIT sets crates/server's `THREAD_SUPPORTED`
 for a ZTS PHP. This binary has no MINIT, so the case sets it.
 
+`core-tests/src/server/server.cpp`'s TLS TESTs that start a server are
+`server/src/http1/server_ssl.rs`, in the same binary and phase, one function per TEST
+under its own name: `ssl`, `ssl_error`, `ssl_write`, `dtls`, `dtls2`, `ssl_client_cert_1`
+(base mode), `ssl_client_cert_2` (process) and `ssl_client_cert_3` (thread), with upstream's
+modes, certificates, packets and expected values. `server.ssl_matches_wildcard_name`
+starts no server and is a crates/ports unit test (tests/modules/ports/README.md).
+
+- `SyncClient` is crates/clients' `network::Client` through its `swr_v1_clients_*` exports,
+  with `SyncClient`'s `connected`/`created` bookkeeping; `get_client()->set_ssl_cert_file`
+  writes the client's `SSLContext` slot as the setter does.
+- The `Mutex(true)` the client thread waits on and `onWorkerStart` unlocks is a socket
+  pair, and `test::counter_*`'s counter is `sw_shm_malloc` memory, as upstream's is: in
+  process mode the worker is another process. `EXPECT`s are recorded in that memory too,
+  so unlike the cases above a process-mode worker's failure fails the case.
+- An `ASSERT` in the client thread fails the case and signals the master down, where
+  upstream's returned from the thread and left the server running.
+- `ssl_write`'s 4 MiB of random bytes (`append_random_bytes`) are read from `/dev/urandom`.
+- `ssl_client_cert`'s `test::dump_cert_info` prints the certificate's subject and issuer
+  entries and the subject's one-line form; its validity and public-key lines, which the
+  `organizationName: swoole` search can't match, are left out.
+- `dtls2` reaps its forked client, which must exit 0.
+- `ssl_client_cert_3` is excluded: `MODE_THREAD` needs thread support (`SW_THREAD`, a ZTS
+  build), and this binary is NTS, so `create()` fails with "Thread support is not enabled"
+  (#2633).
+
 `core-tests/src/server/server.cpp`'s connection and configuration TESTs (#2536) are
 `server/src/http1/server_config.rs`, in the same binary, phase and records, under the
 `server` suite with upstream's names. `server.protocols` needs only its port, so it is

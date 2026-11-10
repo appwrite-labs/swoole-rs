@@ -6,7 +6,7 @@ use crate::{
     sys::{
         IS_LONG, swr_zend_callable, swr_zend_callable_hold, swr_zend_callable_release,
         swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, swr_zval_try_addref,
-        zend_value, zval,
+        zend_fcall_info_cache, zend_value, zval,
     },
 };
 use std::{ffi::c_void, ptr};
@@ -98,6 +98,25 @@ impl Callable {
         self.0.cast()
     }
 
+    /// The kept callable's cache and bound arguments, for a call.
+    #[must_use]
+    pub fn parts(&self) -> (*mut zend_fcall_info_cache, u32, *mut zval) {
+        // SAFETY: a parsed callable; the borrow ends here, before PHP runs.
+        let callable = unsafe { &mut *self.0 };
+        (
+            &raw mut callable.fcc,
+            callable.fci.param_count,
+            callable.fci.params,
+        )
+    }
+
+    /// The callback and destructor of a C owner, such as a timer, whose data is
+    /// this callable's [`Callable::as_raw`]: each runs `H`'s with the callable.
+    #[must_use]
+    pub fn callbacks<H: Holder>() -> (Callback, Callback) {
+        (run::<H>, free::<H>)
+    }
+
     /// The callable `into_raw` returned.
     /// # Safety
     /// `raw` came from `into_raw` and is not used again.
@@ -128,6 +147,29 @@ impl Callable {
         unsafe { swr_zend_efree(self.0.cast()) };
         released
     }
+}
+
+/// A C owner's callback over the data it was given.
+pub type Callback = unsafe extern "C-unwind" fn(*mut c_void);
+
+/// What a C owner of a callable does with it ([`Callable::callbacks`]).
+pub trait Holder {
+    /// The owner's callback, with its callable.
+    fn run(callable: &Callable);
+    /// The owner's destructor, which takes the callable back to release it.
+    fn free(callable: Callable);
+}
+
+/// # Safety
+/// `data` is a live callable's [`Callable::as_raw`].
+unsafe extern "C-unwind" fn run<H: Holder>(data: *mut c_void) {
+    H::run(&Callable(data.cast()));
+}
+
+/// # Safety
+/// `data` is a callable's [`Callable::as_raw`], not used again.
+unsafe extern "C-unwind" fn free<H: Holder>(data: *mut c_void) {
+    H::free(Callable(data.cast()));
 }
 
 /// `ZVAL_LONG`.

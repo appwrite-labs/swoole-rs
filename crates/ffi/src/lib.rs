@@ -129,6 +129,7 @@ pub extern "C" fn swr_v1_phpswoole_module() -> *mut std::ffi::c_void {
 
 #[cfg(feature = "php")]
 static FAMILIES: swoole_rs_phpswoole::Families = {
+    use swoole_rs_phpclients as clients;
     use swoole_rs_phpcoroutines as co;
     use swoole_rs_phphttp as http;
     use swoole_rs_phpthread as thread;
@@ -139,6 +140,8 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             co::php_swoole_coroutine_scheduler_minit,
         ],
         server_minit: swoole_rs_phpserver::php_swoole_server_minit,
+        timer_minit: swoole_rs_phptimer::minit,
+        timer_rshutdown: swoole_rs_phptimer::rshutdown,
         tracer_minit: co::tracer_minit,
         thread_minit: thread::thread_minit,
         thread_classes_minit: [
@@ -163,6 +166,19 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
         set_hook_flags: co::set_hook_flags,
         active_threads: thread::sw_active_thread_count,
         server_class: swoole_rs_phpserver::server_class_entry,
+        client_minit: [
+            clients::socket_minit,
+            clients::php_swoole_client_minit,
+            clients::php_swoole_client_async_minit,
+            clients::client_coro_minit,
+            clients::http_client_minit,
+        ],
+        name_resolver_minit: clients::php_swoole_name_resolver_minit,
+        socket_settings: clients::socket_settings,
+        name_resolver_add: clients::php_swoole_name_resolver_add,
+        name_resolver_remove: clients::swoole_name_resolver_php_remove,
+        socket_class: clients::socket_class,
+        client_class: clients::client_class,
         http: swoole_rs_phpswoole::Http {
             minit: [
                 http::request_minit,

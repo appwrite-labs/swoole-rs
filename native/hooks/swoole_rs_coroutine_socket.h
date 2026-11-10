@@ -81,7 +81,3 @@ using SocketImpl = UringSocket;
 #else
 using SocketImpl = CoSocket;
 #endif
-
-/* Lent until the fd's hooked close or unwrap. */
-SocketImpl *swoole_coroutine_get_socket_object(int sockfd);
-SocketImpl *swoole_coroutine_get_socket_object_ex(int sockfd);

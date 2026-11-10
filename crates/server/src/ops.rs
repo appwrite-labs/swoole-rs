@@ -42,8 +42,6 @@ pub const RUN_RT_READ: u32 = 20;
 /// `ReactorThread_onPacketReceived`: context event.
 pub const RUN_PACKET_RECEIVED: u32 = 21;
 pub const RUN_THREAD_SHUTDOWN: u32 = 22;
-/// `ReactorThread::close_connection(arg)`.
-pub const RUN_THREAD_CLOSE: u32 = 23;
 /// `ReactorThread_onPipeRead`: context event.
 pub const RUN_PIPE_READ: u32 = 24;
 pub const RUN_INIT_REACTOR: u32 = 25;

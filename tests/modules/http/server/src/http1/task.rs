@@ -16,7 +16,7 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{EventHead, task_dump, task_pack, task_unpack};
+use swoole_rs_process::task_file::{self, EventHead, task_pack};
 use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::{methods as pool, workers::entry};
@@ -173,13 +173,6 @@ fn tasks(serv: Server, sync: bool) -> Tasks<'static, TaskPool> {
         count: &counters.task_count,
         result,
     }
-}
-
-/// `PacketPtr`.
-#[repr(C)]
-struct PacketPtr {
-    length: usize,
-    data: *const u8,
 }
 
 unsafe extern "C" {
@@ -851,21 +844,11 @@ fn task_worker4() {
 fn unpack(task: *mut c_void) -> Option<Vec<u8>> {
     let mut buffer = CppString::EMPTY;
     buffer.alloc(32 * 1024, ptr::null());
-    let mut packet = PacketPtr {
-        length: 0,
-        data: ptr::null(),
-    };
-    // SAFETY: a live task, a live String and a writable PacketPtr.
-    let unpacked = unsafe {
-        task_unpack(
-            task.cast(),
-            ptr::from_mut(&mut buffer),
-            ptr::from_mut(&mut packet).cast(),
-        )
-    };
-    let bytes = unpacked.then(|| {
+    // SAFETY: a live task and a live String.
+    let unpacked = unsafe { task_file::unpack(task, ptr::from_mut(&mut buffer).cast()) };
+    let bytes = unpacked.map(|(data, length, _)| {
         // SAFETY: the unpacked payload, live while `buffer` or the task is.
-        unsafe { std::slice::from_raw_parts(packet.data, packet.length) }.to_vec()
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }.to_vec()
     });
     buffer.dispose();
     bytes
@@ -880,7 +863,7 @@ unsafe extern "C" fn task_sync_multi_on_task(
         return -1;
     };
     // SAFETY: the live task.
-    unsafe { task_dump(task.cast()) };
+    unsafe { &*task.cast::<task_file::EventData>() }.dump();
     check(
         Server(serv).finish(&packet, task),
         "serv->finish(packet.data, packet.length, 0, task)",
@@ -1018,7 +1001,7 @@ unsafe extern "C" fn task_sync_on_task(
         "string(task->data, task->info.len) == packet",
     );
     // SAFETY: the live task.
-    unsafe { task_dump(task.cast()) };
+    unsafe { &*task.cast::<task_file::EventData>() }.dump();
     check(
         Server(serv).finish(payload, task),
         "serv->finish(task->data, task->info.len, 0, task)",

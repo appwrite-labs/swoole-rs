@@ -24,19 +24,17 @@ mod co {
     use std::ffi::c_void;
     use swoole_rs_coroutine::{Coroutine, RC_CANCELED, RC_TIMEDOUT, STATE_WAITING};
 
+    pub(super) use swoole_rs_coroutine::resume;
+
     // SAFETY: crates/coroutine's.
     unsafe extern "C" {
-        fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         pub(super) fn yield_ex(co: *mut c_void, timeout: f64) -> bool;
-        #[link_name = "swr_v1_coroutine_native_resume"]
-        pub(super) fn resume(co: *mut c_void);
     }
 
     /// `Coroutine::get_current_safe()`.
     pub(super) fn current() -> *mut c_void {
-        // SAFETY: no preconditions.
-        let co = unsafe { swr_v1_coroutine_current() };
+        let co = swoole_rs_coroutine::current().cast::<c_void>();
         if co.is_null() {
             // SAFETY: Swoole's fatal error hook; this frame owns nothing.
             unsafe {
@@ -78,7 +76,7 @@ struct Query {
 struct Completion {
     retired: Arc<AtomicBool>,
     coroutine: *mut c_void,
-    resume: unsafe extern "C" fn(*mut c_void),
+    resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
 fn metadata() -> &'static sdk::Metadata {
     // SAFETY: the SDK shim returns its immutable process-lifetime constant table.
@@ -437,7 +435,7 @@ mod tests {
         payload: *mut c_void,
         calls: usize,
     }
-    unsafe extern "C" fn resume_and_discard(context: *mut c_void) {
+    unsafe extern "C-unwind" fn resume_and_discard(context: *mut c_void) {
         let context = unsafe { &mut *context.cast::<Resume>() };
         context.calls += 1;
         unsafe { release_completion(context.payload) };
