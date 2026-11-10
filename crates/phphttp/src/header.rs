@@ -19,12 +19,10 @@ use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
 use swoole_rs_zend::sys::php_format_date;
 use swoole_rs_zend::sys::{
-    HashPosition, swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string,
-    swr_zend_http_property_offset, swr_zend_string_release, zend_class_entry,
-    zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
-    zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_object, zend_string, zval,
+    swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, swr_zend_http_property_offset,
+    swr_zend_string_release, zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{Array, Value, ZStr, ZString, bailout, string, value};
+use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, string};
 
 /// `swHttpHeaderFlag`.
 const SERVER: i32 = 2;
@@ -48,9 +46,6 @@ const METHOD_BR: i32 = 3;
 const METHOD_ZSTD: i32 = 4;
 /// `sw_tg_buffer()`'s size, which bounds one trailer line.
 const TRAILER_LINE: usize = 65536;
-/// `HASH_KEY_IS_STRING`, `HASH_KEY_IS_LONG`.
-const KEY_STRING: i64 = 1;
-const KEY_LONG: i64 = 2;
 
 /// `Swoole\Http\Response`'s `header`, `cookie` and `trailer` slots.
 static OFFSETS: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
@@ -90,18 +85,9 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
         host::COOKIE => &mut response.zcookie,
         _ => &mut response.ztrailer,
     };
-    if slot.ptr.is_null() {
-        // SAFETY: the response's live object zval.
-        let object: *mut zend_object = unsafe { value::obj_of(response.zobject.ptr) };
-        let index = usize::try_from(which).unwrap_or(2).min(2);
-        let offset = OFFSETS.get(index).map_or(0, |offset| offset.load(Relaxed));
-        // SAFETY: a declared property slot of that object.
-        let array = unsafe { swoole_rs_zend::sys::swr_zend_http_property_array(object, offset, 8) };
-        // SAFETY: the array zval just initialised.
-        slot.value = unsafe { *array };
-        slot.ptr = &raw mut slot.value;
-    }
-    slot.ptr
+    let index = usize::try_from(which).unwrap_or(2).min(2);
+    let offset = OFFSETS.get(index).map_or(0, |offset| offset.load(Relaxed));
+    slot.init_array(&response.zobject, offset, 8)
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
@@ -109,8 +95,7 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 /// # Safety
 /// The array is the response object's, which nothing frees while it is borrowed.
 unsafe fn property<'a>(state: &State, which: usize) -> Option<&'a Array> {
-    // SAFETY: the response's live object zval.
-    let object: *mut zend_object = unsafe { value::obj_of(state.response.zobject.ptr) };
+    let object = state.response.zobject.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
     let slot = object.wrapping_byte_add(offset).cast::<zval>();
@@ -174,33 +159,15 @@ fn each<'a, E>(
     array: &'a Array,
     mut body: impl FnMut(Result<&'a [u8], i64>, &'a Value) -> Result<(), E>,
 ) -> Result<(), E> {
-    let table = array.as_ptr();
-    let mut position: HashPosition = 0;
-    // SAFETY: a live table and a writable position.
-    unsafe { zend_hash_internal_pointer_reset_ex(table, &raw mut position) };
-    loop {
-        let mut name: *mut zend_string = ptr::null_mut();
-        let mut index = 0;
-        // SAFETY: as above.
-        let kind = unsafe {
-            zend_hash_get_current_key_ex(table, &raw mut name, &raw mut index, &raw mut position)
-        };
-        let key = match i64::from(kind) {
-            // SAFETY: a key of the borrowed table.
-            KEY_STRING => Ok(unsafe { string::bytes(name) }),
-            KEY_LONG => Err(i64::from_ne_bytes(index.to_ne_bytes())),
-            _ => return Ok(()),
-        };
-        // SAFETY: as above.
-        let data = unsafe { zend_hash_get_current_data_ex(table, &raw mut position) };
-        // SAFETY: null or an element of the borrowed table.
-        let Some(data) = (unsafe { Value::from_ptr(data) }) else {
-            return Ok(());
+    let mut entries = array.entries();
+    while let Some((key, data)) = entries.next_keyed() {
+        let key = match key {
+            Key::Name(name) => Ok(name),
+            Key::Index(index) => Err(i64::from_ne_bytes(index.to_ne_bytes())),
         };
         body(key, data)?;
-        // SAFETY: as above.
-        unsafe { zend_hash_move_forward_ex(table, &raw mut position) };
     }
+    Ok(())
 }
 
 php_local! {

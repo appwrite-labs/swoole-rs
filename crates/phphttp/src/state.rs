@@ -6,7 +6,10 @@ use std::{
     ffi::{CString, c_char, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::{Owned, Props, Value, sys::zval};
+use swoole_rs_zend::{
+    ArrayMut, Owned, Props, Value,
+    sys::{swr_zend_http_property_array, zend_object, zval},
+};
 
 /// `llhttp_t` (`thirdparty/llhttp/llhttp.h`, `llhttp__internal_s`).
 #[repr(C)]
@@ -42,11 +45,45 @@ pub(crate) struct Slot {
 }
 
 impl Slot {
+    /// The slot's zval; None before the context sets it.
+    pub(crate) fn get(&self) -> Option<&Value> {
+        // SAFETY: a set slot points at its own `value`, which the context
+        // (or, for an array, the object's property) keeps live.
+        unsafe { Value::from_ptr(self.ptr) }
+    }
+
+    /// The object a set object slot holds.
+    pub(crate) fn object(&self) -> Option<*mut zend_object> {
+        self.get()?.object()
+    }
+
+    /// The array a set array slot holds, to add to.
+    pub(crate) fn array_mut(&mut self) -> Option<&mut ArrayMut> {
+        self.get()?.array()?;
+        // SAFETY: as `get`, an array zval, borrowed mutably with the slot.
+        Some(unsafe { ArrayMut::from_ptr(self.ptr) })
+    }
+
+    /// `swoole_http_init_and_read_property`: the array in `object`'s declared
+    /// property slot at `offset`, made on first use. Like upstream, the slot
+    /// keeps an uncounted copy, which the property keeps alive.
+    pub(crate) fn init_array(&mut self, object: &Self, offset: u32, size: u32) -> *mut zval {
+        if self.ptr.is_null()
+            && let Some(object) = object.object()
+        {
+            // SAFETY: a declared property slot of the context's live object.
+            let array = unsafe { swr_zend_http_property_array(object, offset, size) };
+            // SAFETY: the array zval just initialised.
+            self.value = unsafe { *array };
+            self.ptr = &raw mut self.value;
+        }
+        self.ptr
+    }
+
     /// Property writes on the slot's object, under its own class; None
     /// before the context sets the slot.
     pub(crate) fn props(&self) -> Option<Props<'_>> {
-        // SAFETY: a set slot points at its own `value`, a live object zval.
-        let object = unsafe { Value::from_ptr(self.ptr) }?.object()?;
+        let object = self.object()?;
         // SAFETY: the context's reference keeps the object live while the slot is borrowed.
         Some(unsafe { Props::new(std::ptr::null_mut(), object) }.own())
     }
