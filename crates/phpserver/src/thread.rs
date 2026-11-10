@@ -149,7 +149,7 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
     let start = Box::into_raw(Box::new(Start { bootstrap, argv }));
     release_start(START.swap(start, Ordering::AcqRel));
     set_worker_thread_start(Some(start_thread));
-    let flags = swoole_rs_phpcoroutines::swr_v1_phpcoroutines_hook_flags();
+    let flags = swoole_rs_phpcoroutines::hook_flags();
     if flags > 0 {
         swoole_rs_phpruntime::enable_hook(flags)?;
     }

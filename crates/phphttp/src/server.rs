@@ -39,17 +39,12 @@ static SERVER: Class = Class::new();
 #[unsafe(no_mangle)]
 pub static mut swoole_http_server_ce: *mut zend_class_entry = ptr::null_mut();
 
-unsafe extern "C" {
-    static swoole_server_ce: *mut zend_class_entry;
-}
-
 /// `php_swoole_http_server_minit`, after `Swoole\Server`'s.
 /// # Safety
 /// Called once, at MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_server_minit() {
-    // SAFETY: MINIT, after the parent class's registration.
-    let parent = unsafe { swoole_server_ce };
+    let parent = swoole_rs_phpserver::server_class_entry();
     // SAFETY: MINIT, with no methods.
     unsafe {
         SERVER.register_child(c"Swoole\\Http\\Server", ptr::null(), parent, |entry, _| {

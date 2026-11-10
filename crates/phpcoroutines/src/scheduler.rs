@@ -307,7 +307,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
 }
 
 /// `PHPCoroutine::set_hook_flags`: the flags, recorded in the options too.
-pub(crate) fn set_hook_flags(flags: u32) {
+pub fn set_hook_flags(flags: u32) {
     let mut array = OwnedArray::default();
     array.insert_long(b"hook_flags", i64::from(flags));
     let array = array.into_owned();
@@ -320,13 +320,7 @@ pub(crate) fn set_hook_flags(flags: u32) {
         // SAFETY: two live arrays; ours is released after the merge.
         unsafe { zend_hash_merge(current, table.as_ptr(), None, true) };
     }
-    runtime::set_hook_flags(flags);
-}
-
-/// `PHPCoroutine::set_hook_flags` for C++.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_set_hook_option(flags: u32) {
-    set_hook_flags(flags);
+    runtime::store_hook_flags(flags);
 }
 
 /// Free the options, at RSHUTDOWN.

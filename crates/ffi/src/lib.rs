@@ -158,5 +158,9 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
         tracer_rshutdown: co::tracer_rshutdown,
         thread_bailout: thread::thread_bailout,
         print_backtrace: co::print_coroutine_backtrace,
+        hook_flags: co::hook_flags,
+        set_hook_flags: co::set_hook_flags,
+        active_threads: thread::sw_active_thread_count,
+        server_class: swoole_rs_phpserver::server_class_entry,
     }
 };

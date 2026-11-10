@@ -58,11 +58,13 @@ pub(crate) fn invalid(object: *mut zend_object) {
     };
 }
 
-/// `Swoole\Server`, as C++ and the other crates read it; MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_server_ce: *mut zend_class_entry = ptr::null_mut();
-
 pub(crate) static SERVER: Class = Class::new();
+
+/// `swoole_server_ce`: `Swoole\Server`, registered at MINIT.
+#[must_use]
+pub fn server_class_entry() -> *mut zend_class_entry {
+    SERVER.entry()
+}
 pub(crate) static TASK: Class = Class::new();
 /// `Event`, `Packet`, `PipeMessage`, `StatusInfo` and `TaskResult`.
 pub(crate) static DATA: [Class; 5] = [
@@ -510,8 +512,6 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
         // SAFETY: MINIT of `module`.
         unsafe { register_long_constant(name, value, module) };
     }
-    // SAFETY: MINIT, once; nothing reads the class entry yet.
-    unsafe { swoole_server_ce = server };
     crate::port::minit(!thread, sockets);
 }
 

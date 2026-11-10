@@ -304,12 +304,13 @@ fn interrupt_stop() {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_hook_flags() -> u32 {
+/// `PHPCoroutine::get_hook_flags()`.
+#[must_use]
+pub fn hook_flags() -> u32 {
     CONFIG.with(|c| c.hook_flags.get())
 }
 
-pub(crate) fn set_hook_flags(flags: u32) {
+pub(crate) fn store_hook_flags(flags: u32) {
     CONFIG.with(|c| c.hook_flags.set(flags));
 }
 

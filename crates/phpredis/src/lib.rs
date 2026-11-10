@@ -106,8 +106,6 @@ handlers! {
 pub static mut swoole_redis_server_ce: *mut zend_class_entry = ptr::null_mut();
 
 unsafe extern "C" {
-    /// `Swoole\Server`, registered before this class.
-    static swoole_server_ce: *mut zend_class_entry;
     /// `Swoole\Exception` (crates/phpswoole).
     static swoole_exception_ce: *mut zend_class_entry;
 }
@@ -118,8 +116,7 @@ unsafe extern "C" {
 /// Called once, at MINIT, after `Swoole\Server` is registered.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_redis_server_minit(_module_number: c_int) {
-    // SAFETY: MINIT registered the parent; nothing writes it now.
-    let server = unsafe { swoole_server_ce };
+    let server = swoole_rs_phpserver::server_class_entry();
     // SAFETY: as above.
     EXCEPTION.store(unsafe { swoole_exception_ce }, Relaxed);
     // SAFETY: MINIT, with a static table and the registered parent.

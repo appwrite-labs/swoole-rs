@@ -26,7 +26,6 @@ use swoole_rs_zend::{
 type Handler = usize;
 
 unsafe extern "C" {
-    static swoole_server_ce: *mut zend_class_entry;
     fn php_swoole_reactor_init() -> c_int;
     fn swr_v1_phpevents_wait();
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
@@ -58,8 +57,8 @@ pub(crate) fn exception() -> *mut zend_class_entry {
 
 /// `swoole_server_ce`, registered after Process.
 pub(crate) fn server_class() -> *mut zend_class_entry {
-    // SAFETY: read after MINIT.
-    unsafe { swoole_server_ce }
+    swoole_rs_phpswoole::families()
+        .map_or(std::ptr::null_mut(), |families| (families.server_class)())
 }
 
 /// The running server, unless it is null.
