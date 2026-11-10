@@ -23,7 +23,7 @@ use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
 use crate::worker_globals::{
     swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
 };
-use crate::worker_record::{WorkerRecord, swr_v1_worker_exceeded_max_requests};
+use crate::worker_record::WorkerRecord;
 
 /// crates/server's table, which every method below lends its export
 /// (`crates/server/src/pool_native.rs`); null in tests, which drive the exports
@@ -212,22 +212,19 @@ pub unsafe extern "C" fn push_message(
     c_int::narrow(unsafe { swr_v1_process_pool_push(native(), pool, kind, data, length) })
 }
 
-/// `ProcessPool::dispatch(data, dst_worker_id)`.
+/// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when `blocking`.
 ///
 /// # Safety
 /// `pool` is a live `ProcessPool`; `event` an `EventData`; `worker_id` writable.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11ProcessPool8dispatchEPNS_9EventDataEPi")
-)]
-pub unsafe extern "C" fn dispatch(
+pub unsafe fn dispatch(
     pool: *mut PoolRecord,
     event: *mut u8,
     worker_id: *mut c_int,
+    blocking: bool,
 ) -> c_int {
     // SAFETY: as the caller guarantees; the table is native's.
     c_int::narrow(unsafe {
-        swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, false)
+        swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, blocking)
     })
 }
 
@@ -311,21 +308,14 @@ pub unsafe extern "C" fn get_worker_by_pid(
 ///
 /// # Safety
 /// `pool` is a live `ProcessPool`; `worker` a live worker.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool17is_worker_runningEPNS_6WorkerE")
-)]
 #[must_use]
-pub unsafe extern "C" fn is_worker_running(
-    pool: *const PoolRecord,
-    worker: *const WorkerRecord,
-) -> bool {
+pub unsafe fn is_worker_running(pool: *const PoolRecord, worker: *const WorkerRecord) -> bool {
     // SAFETY: the caller lends a live pool.
     let running = unsafe { (*pool).running };
     // SAFETY: the caller lends a live worker.
     running
         && swr_v1_worker_global_get(4) == 0
-        && !unsafe { swr_v1_worker_exceeded_max_requests(worker) }
+        && !unsafe { Worker::new(worker) }.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)`: through its pool's queue or the pipe
@@ -537,16 +527,8 @@ pub unsafe extern "C" fn send_message(
 /// # Safety
 /// `pool` is a created `ProcessPool` whose box, if any, was made with
 /// `SW_CHAN_LOCK`; `data` is writable for `size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool11pop_messageEPvm")
-)]
 #[must_use]
-pub unsafe extern "C" fn pop_message(
-    pool: *const PoolRecord,
-    data: *mut c_void,
-    size: usize,
-) -> c_int {
+pub unsafe fn pop_message(pool: *const PoolRecord, data: *mut c_void, size: usize) -> c_int {
     use swoole_rs_memory::channel::{swr_v1_memory_channel_lock, swr_v1_memory_channel_out};
     // SAFETY: the caller lends a live pool.
     let message_box = unsafe { (*pool).message_box };
@@ -610,14 +592,7 @@ impl ExitStatus {
 ///
 /// # Safety
 /// `worker` is a live worker; `exit_status` a live `ExitStatus`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Worker12report_errorERKNS_10ExitStatusE")
-)]
-pub unsafe extern "C" fn worker_report_error(
-    worker: *const WorkerRecord,
-    exit_status: *const ExitStatus,
-) {
+pub unsafe fn worker_report_error(worker: *const WorkerRecord, exit_status: *const ExitStatus) {
     // SAFETY: the caller lends a live worker.
     let id = unsafe { Worker::new(worker).id() };
     // SAFETY: the caller lends a live status.
@@ -641,10 +616,6 @@ pub unsafe extern "C" fn worker_report_error(
 
 /// `swoole::reload_warn`: a reload's failed or forced kill, under the
 /// `ReloadTask` method upstream logged it from; `errno` is the failed kill's.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11reload_warnEiij")
-)]
 pub extern "C" fn reload_warn(kind: c_int, pid: c_int, worker_id: u32) {
     use swoole_rs_corebase::log::{sys_warning, warning};
     match kind {
@@ -684,32 +655,20 @@ pub extern "C" fn worker_is_running() -> bool {
 }
 
 /// `swoole_get_worker_id()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_get_worker_idv")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_id() -> u32 {
+pub fn swoole_get_worker_id() -> u32 {
     u32::try_from(swr_v1_worker_global_get(0)).unwrap_or_default()
 }
 
 /// `swoole_get_worker_pid()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z21swoole_get_worker_pidv")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_pid() -> c_int {
+pub fn swoole_get_worker_pid() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(1)).unwrap_or_default()
 }
 
 /// `swoole_get_worker_type()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_get_worker_typev")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_type() -> c_int {
+pub fn swoole_get_worker_type() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
 }
 
@@ -723,11 +682,7 @@ pub extern "C" fn swoole_set_worker_id(id: u32) {
 }
 
 /// `swoole_set_worker_pid(pid)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z21swoole_set_worker_pidi")
-)]
-pub extern "C" fn swoole_set_worker_pid(pid: c_int) {
+pub fn swoole_set_worker_pid(pid: c_int) {
     swr_v1_worker_global_set(1, i64::from(pid));
 }
 

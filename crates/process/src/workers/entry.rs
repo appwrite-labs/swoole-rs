@@ -17,8 +17,7 @@ use super::ops::{
     RUN_THREAD_ID, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER,
     RUN_WORKER_SIGNAL, RUN_WORKER_START,
 };
-use crate::methods::{Narrow, send_pipe_message};
-use crate::worker_record::WorkerRecord;
+use crate::methods::Narrow;
 
 /// What an operation runs over: crates/server's builder of its context, which runs
 /// it with `arg` over the objects.
@@ -232,11 +231,7 @@ methods! {
 /// `serv` is a live `Server`, `data` holds `data_len` bytes and `current_task` is
 /// null or a live `EventData`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server6finishEPKcmiPKNS_9EventDataE")
-)]
-pub unsafe extern "C" fn finish(
+pub unsafe fn finish(
     serv: *mut c_void,
     data: *const c_char,
     data_len: usize,
@@ -258,27 +253,6 @@ pub unsafe extern "C" fn finish(
             flags,
         )
     }
-}
-
-/// `Server::send_to_worker_from_worker(dst_worker, buf, len, flags)`: the worker's
-/// `send_pipe_message`.
-///
-/// # Safety
-/// `dst_worker` is a live worker of a live pool; `buf` holds `len` bytes.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server26send_to_worker_from_workerEPKNS_6WorkerEPKvmi")
-)]
-pub unsafe extern "C" fn send_to_worker_from_worker(
-    _serv: *mut c_void,
-    dst_worker: *const WorkerRecord,
-    buf: *const u8,
-    len: usize,
-    flags: c_int,
-) -> isize {
-    // SAFETY: as the caller guarantees.
-    unsafe { send_pipe_message(dst_worker, buf, len, flags) }
 }
 
 #[cfg(test)]

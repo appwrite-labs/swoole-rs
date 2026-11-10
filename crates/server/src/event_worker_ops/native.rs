@@ -10,7 +10,6 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::{swoole_get_worker_pid, swoole_get_worker_type};
 use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ARM_EXIT, OP_BUS_CLEAR, OP_BUS_EMPTY, OP_BUS_POP, OP_BUS_READ, OP_COMMAND_REQUEST,
     OP_CONN_UNREAD, OP_COUNT_COROUTINES, OP_DO_TASK, OP_DRAIN_WORKER_PIPES, OP_EVENT_BEGIN,
@@ -270,7 +269,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let size = size_of::<DataHead>();
             // SAFETY: the live server, one of its workers and the event.
             sized(unsafe {
-                entry::send_to_worker_from_worker(ctx.serv, worker.cast(), data, size, PIPE_MASTER)
+                swoole_rs_process::methods::send_pipe_message(worker, data, size, PIPE_MASTER)
             })
         }
         _ => return reactor_op(ctx, op, arg),

@@ -50,8 +50,7 @@ fn slot(signo: c_int) -> Option<&'static Slot> {
 }
 
 /// `void swoole_signalfd_init()`: an empty mask and table.
-#[unsafe(export_name = "_Z20swoole_signalfd_initv")]
-pub extern "C" fn swoole_signalfd_init() {
+pub fn swoole_signalfd_init() {
     clear_mask();
     signal_reset();
 }
