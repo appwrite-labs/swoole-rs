@@ -137,19 +137,12 @@ impl PortInfo {
     }
 }
 
-unsafe extern "C" {
-    /// crates/server's `new Server(mode)`, `delete serv` and the admin commands.
-    fn swr_v1_server_new(mode: c_int) -> *mut c_void;
-    fn swr_v1_server_delete(serv: *mut c_void);
-    fn swr_v1_server_admin_register(serv: *mut c_void, php_memory: extern "C" fn() -> usize);
-    /// `Swoole\Process` (crates/phpprocess), and its object's `Worker`; an
-    /// `E_ERROR` for an unconstructed one.
-    static swoole_process_ce: *mut zend_class_entry;
-    fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void;
-    /// native/error/error.cc's `swoole_get_last_error_msg()`: `sw_error`.
-    #[link_name = "_Z25swoole_get_last_error_msgv"]
-    fn swoole_get_last_error_msg() -> *const c_char;
-}
+// crates/server's `new Server(mode)`, `delete serv` and the admin commands;
+// `Swoole\Process` (crates/phpprocess) and its object's `Worker`, an `E_ERROR` for an
+// unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
+use swoole_rs_error::swoole_get_last_error_msg;
+use swoole_rs_phpprocess::{swoole_process_ce, swr_v1_phpprocess_worker};
+use swoole_rs_server::{swr_v1_server_admin_register, swr_v1_server_delete, swr_v1_server_new};
 
 /// `instanceof_function(ce, parent)`.
 fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
@@ -746,8 +739,8 @@ fn construct(call: &Call) {
             return call.set_bool(false);
         }
     }
-    // SAFETY: a supported mode.
-    let serv = unsafe { swr_v1_server_new(c_int::try_from(mode).unwrap_or_default()) };
+    // A supported mode.
+    let serv = swr_v1_server_new(c_int::try_from(mode).unwrap_or_default());
     // SAFETY: the server just made.
     let server = unsafe { view::Server::from_raw(serv) };
     if mode == MODE_BASE {
@@ -1135,8 +1128,8 @@ fn has_key(setting: *mut zval, key: &CStr) -> bool {
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
     if server_methods::create(serv) < 0 {
-        // SAFETY: the calling thread's `sw_error`.
-        let reason = unsafe { swoole_get_last_error_msg() };
+        // The calling thread's `sw_error`.
+        let reason = swoole_get_last_error_msg();
         // SAFETY: always NUL-terminated.
         let reason = unsafe { CStr::from_ptr(reason) };
         let mut text = Message::new();

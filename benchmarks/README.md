@@ -34,6 +34,12 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Every other HTTP workload reuses one kept-alive connection. `connect` (#2651) is
+`plaintext` on a new connection per request, sent with `Connection: close`, and the
+client waits for the server's close, so accepting the connection, setting up its
+session and tearing it down count in every request. Its record started 5% above an
+arm64 Linux run (0.99); the ratchet lowers it once two merge runs beat it.
+
 Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
 each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
 GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and
@@ -162,9 +168,9 @@ outside timing. They are different workloads, not a before/after speedup ratio.
 
 `storage.py --baseline PATH --output target/storage-results.json` builds the
 same release harness against an untouched baseline and this checkout. It covers
-buffer reuse, heap node pooling and timer heap keys, with
+buffer reuse and the timer queue (crates/timer's `Timer`), with
 seven alternating trials calibrated toward at least 100 ms for the faster engine.
 Allocation probes run separately from timing; all timed checksums must match.
 Use `--prepare-only` to build without measuring. Stop builds and tests before
-measurement. These Rust public-ABI workloads do not measure PHP/server throughput.
+measurement. These Rust workloads do not measure PHP/server throughput.
 Keep raw reports under `target/` and put findings on the PR or issue.

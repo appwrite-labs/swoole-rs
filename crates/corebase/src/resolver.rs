@@ -189,6 +189,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getaddrinfo")]
     fn resolves_addresses_through_libc() {
         let mut results: [libc::sockaddr_in6; 16] = unsafe { std::mem::zeroed() };
         let found = unsafe {

@@ -166,9 +166,7 @@ unsafe extern "C" fn free(object: *mut zend_object) {
 }
 
 // `swoole_set_process_name()` (php_swoole.cc), which `Process::name()` aliases.
-unsafe extern "C" {
-    fn zif_swoole_set_process_name(frame: *mut z::zend_execute_data, value: *mut z::zval);
-}
+use swoole_rs_phpswoole::zif_swoole_set_process_name;
 
 method_table! {
     static METHODS = [

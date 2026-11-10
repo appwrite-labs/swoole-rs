@@ -33,11 +33,6 @@ unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C" fn(*mut usize) -> bool,
-    );
-    fn swr_v1_event_remove_exit_condition(id: c_int);
     // crates/coroutine, crates/timer, crates/reactor,
     // crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
@@ -55,7 +50,6 @@ unsafe extern "C" {
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
     // crates/phpevents, crates/phpclients and PHP.
-    fn sw_php_exit(status: c_int);
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
@@ -710,10 +704,8 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
         clippy::cast_possible_truncation,
         reason = "upstream passes the zend_long status as int"
     )]
-    // SAFETY: Swoole's exit, which does not return here.
-    unsafe {
-        sw_php_exit(status as c_int);
-    };
+    // Swoole's exit, which does not return here.
+    swoole_rs_phpswoole::sw_php_exit(status as c_int);
 }
 
 pub(crate) fn reactor_init() -> i32 {
@@ -760,16 +752,12 @@ pub(crate) fn set_exit_condition(set: bool) {
         return;
     }
     if set {
-        // SAFETY: the thread's live reactor keeps a plain function.
-        unsafe {
-            swr_v1_event_set_exit_condition(
-                EXIT_CONDITION_USER_AFTER_DEFAULT,
-                crate::scheduler::reactor_can_exit,
-            );
-        };
+        swoole_rs_reactor::swr_v1_event_set_exit_condition(
+            EXIT_CONDITION_USER_AFTER_DEFAULT,
+            crate::scheduler::reactor_can_exit,
+        );
     } else {
-        // SAFETY: as above.
-        unsafe { swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT) };
+        swoole_rs_reactor::swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT);
     }
 }
 

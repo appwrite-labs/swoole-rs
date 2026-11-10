@@ -174,7 +174,7 @@ them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 
 The merge queue takes a PR whose PR tier passed and runs the merge tier on it together
 with the PRs queued ahead, on top of `main`, before any of them lands. That run's own
-`required` job (`ci.py new-failures --run`) fails on a phase or job that didn't fail in
+`required` job (`ci.py new-failures --needs`) fails on a phase or job that didn't fail in
 `main`'s latest completed merge-tier run, and GitHub then drops the PR from the queue and
 turns its auto-merge off. `ci.py stuck` lists it with that run: fix what it broke, or
 re-run a job that died on its runner, and run `gh pr merge --auto --squash <pr>` again.

@@ -89,6 +89,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_setaffinity_np")]
     fn pins_the_thread_to_an_allowed_cpu() {
         let outcome = super::worker_affinity(0, None, true);
         assert_eq!(outcome, super::AffinityOutcome::default());

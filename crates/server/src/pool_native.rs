@@ -94,7 +94,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
-    fn swr_v1_event_set_end_callback(id: c_int, callback: unsafe extern "C" fn());
 }
 
 /// A pool's message bus: the Rust bus, then the allocator its packets and buffer
@@ -253,8 +252,7 @@ fn bus_deliver(pool: Pool) {
 }
 
 fn new_message_bus(pool: Pool) -> i64 {
-    // SAFETY: `SwooleG.memory_pool` is live once a pool is created.
-    let msg_id = unsafe { mem_pool::alloc(8) }.cast::<i64>();
+    let msg_id = mem_pool::alloc(8).cast::<i64>();
     if msg_id.is_null() {
         return 0;
     }
@@ -416,7 +414,7 @@ thread_local! {
 }
 
 /// `onWorkerExit`, then stop the loop once it may exit.
-unsafe extern "C" fn worker_exit() {
+extern "C-unwind" fn worker_exit() {
     let (pool, worker) = EXITING.get();
     if let Some(on_worker_exit) = callback!(record(pool).on_worker_exit, WorkerFn) {
         // SAFETY: the pool's callback over its worker.
@@ -510,8 +508,7 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_HAVE_MSGQUEUE => 1,
         OP_ALLOC_WORKERS => {
             let size = record(pool).worker_num as usize * size_of::<WorkerRecord>();
-            // SAFETY: `SwooleG.memory_pool` is live once a pool is created.
-            record(pool).workers = unsafe { mem_pool::alloc(size as u32) }.cast();
+            record(pool).workers = mem_pool::alloc(size as u32).cast();
             i64::from(!record(pool).workers.is_null())
         }
         OP_NEW_MESSAGE_BOX => {
@@ -621,8 +618,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         }
         OP_EXIT_CALLBACK => {
             EXITING.set((pool, worker));
-            // SAFETY: this thread's live loop.
-            unsafe { swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, worker_exit) };
+            swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, worker_exit);
             0
         }
         OP_DONT_RESTART => {

@@ -2,7 +2,7 @@
 //! `swoole_rs_phpruntime::co` and the socket's record, plus Swoole's PHP error
 //! reporting; and `Swoole\Client`'s `network::Client`, whose operations
 //! crates/clients runs.
-use crate::settings::{default_length_func, mqtt_set_protocol, php_swoole_length_func};
+use crate::settings::{default_length_func, php_swoole_length_func};
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
@@ -15,6 +15,7 @@ use swoole_rs_clients::{
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::{Switch, built_with};
+use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     Owned, ZString,

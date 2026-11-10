@@ -34,6 +34,9 @@ from pathlib import Path
 import re
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.annotations import annotate
+
 # First match wins; the reason is the official runner's SKIPIF text.
 CATEGORIES = [
     ('service', r'mysql|redis|pgsql|postgres|mongo|database|ftp|ssh|httpbin|docker|kafka|odbc|oracle'),
@@ -272,9 +275,27 @@ def main():
         args.output.write_text(json.dumps(results, indent=1) + '\n')
     print(markdown(results, rechecked))
     if rechecked is not None:
-        confirmed, _, _, inconclusive = recheck(flagged(results), rechecked)
+        confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)
+        annotate_regressions(results, confirmed + inconclusive)
+        for test in flaky:
+            annotate('notice', 'PHPT flaky on upstream', test)
+        for test in recovered:
+            annotate('notice', 'PHPT passed on re-run', test)
         return int(bool(confirmed or inconclusive))
-    return int(bool(compare(results)[0]))
+    regressions = compare(results)[0]
+    for regression in regressions:
+        annotate('error', 'PHPT regression', regression)
+    return int(bool(regressions))
+
+
+def annotate_regressions(results, tests):
+    """`::error title=PHPT regression::<test> (<engine>: <status>)` per gated test, as compare() names them."""
+    failed = defaultdict(list)
+    for row in results:
+        if row['engine'] != 'upstream' and row['status'] != 'passed':
+            failed[row['test']].append(f"{row['engine']}: {row['status']}")
+    for test in tests:
+        annotate('error', 'PHPT regression', f"{test} ({', '.join(failed[test]) or 'failed'})")
 
 
 if __name__ == '__main__':

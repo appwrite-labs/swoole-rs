@@ -124,7 +124,6 @@ void sw_free(void *ptr);
 
 /*-------------------------------Declare Struct--------------------------------*/
 namespace swoole {
-class GlobalMemory;
 class Reactor;
 class String;
 class Timer;
@@ -383,10 +382,6 @@ static inline uint32_t swoole_pagesize() {
 
 static sw_inline swoole::String *sw_tg_buffer() {
     return SwooleTG.buffer_stack;
-}
-
-static sw_inline swoole::GlobalMemory *sw_mem_pool() {
-    return static_cast<swoole::GlobalMemory *>(swr_v1_core_memory_pool());
 }
 
 static sw_inline swoole::Reactor *sw_reactor() {

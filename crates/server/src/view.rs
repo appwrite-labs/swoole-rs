@@ -11,6 +11,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
+use std::sync::Arc;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -164,11 +165,10 @@ impl<'a> Server<'a> {
         crate::static_config::add_rewrite_rule(self.state(), pattern, replacement);
     }
 
-    /// The static handler's collection `kind` (0 locations, 1 index files): whether
-    /// it is set, and a copy of its values.
-    #[must_use]
-    pub fn static_strings(self, kind: u32) -> (bool, Vec<Vec<u8>>) {
-        crate::static_config::strings(self.state(), kind)
+    /// `f` over the static handler's collection `kind` (0 locations, 1 index files):
+    /// whether it is set, and its values, borrowed under the collection's lock.
+    pub fn static_strings<R>(self, kind: u32, f: impl FnOnce(bool, &[Arc<[u8]>]) -> R) -> R {
+        crate::static_config::strings(self.state(), kind, f)
     }
 
     /// `apply_rewrite_rules` on a static context: true when a rule applied.
@@ -176,10 +176,10 @@ impl<'a> Server<'a> {
         crate::static_config::apply_rewrite_rules(self.state(), context)
     }
 
-    /// `document_root`, copied.
+    /// `document_root`.
     #[must_use]
-    pub fn document_root(self) -> Vec<u8> {
-        self.state().text(crate::state::TEXT_DOCUMENT_ROOT).to_vec()
+    pub fn document_root(self) -> &'a [u8] {
+        self.state().text(crate::state::TEXT_DOCUMENT_ROOT)
     }
 
     /// `upload_tmp_dir.c_str()`: the directory up to its first NUL.

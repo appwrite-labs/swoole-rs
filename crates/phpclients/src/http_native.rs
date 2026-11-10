@@ -62,12 +62,6 @@ unsafe extern "C" {
     fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
-    /// crates/http-ffi's `get_auth_str` codec, into 512 bytes.
-    fn swr_v1_http_proxy_owned_authorization(
-        owner: *const c_void,
-        output: *mut u8,
-        written: *mut usize,
-    ) -> i32;
     fn swoole_coroutine_open(path: *const c_char, flags: c_int, mode: mode_t) -> c_int;
     fn swoole_coroutine_write(fd: c_int, data: *const c_void, length: size_t) -> ssize_t;
     fn swoole_coroutine_ftruncate(fd: c_int, length: off_t) -> c_int;
@@ -159,8 +153,8 @@ impl Co {
         let mut length = 0;
         // SAFETY: the live proxy, 512 writable bytes and a length slot.
         let result = unsafe {
-            swr_v1_http_proxy_owned_authorization(
-                std::ptr::from_ref(proxy).cast(),
+            swoole_rs_http_ffi::swr_v1_http_proxy_owned_authorization(
+                proxy,
                 encoded.as_mut_ptr(),
                 &raw mut length,
             )

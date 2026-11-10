@@ -95,13 +95,8 @@ struct Host {
 
 impl TaskHost for Host {
     fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
-        let dispatch = if blocking {
-            methods::dispatch_sync
-        } else {
-            methods::dispatch
-        };
         // SAFETY: the live task pool and a packed task.
-        unsafe { dispatch(self.pool, task, worker_id) == SW_OK }
+        unsafe { methods::dispatch(self.pool, task, worker_id, blocking) == SW_OK }
     }
 
     fn pipe_clean(&mut self) {

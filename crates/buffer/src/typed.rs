@@ -239,18 +239,14 @@ mod tests {
             assert_eq!(swr_v1_buffer_typed_front(queue, &raw mut view), EMPTY);
             let mut native_payload = 37u32;
             let token = ptr::from_mut(&mut native_payload).cast();
-            assert_eq!(
-                swr_v1_buffer_typed_push(queue, 1, token, Some(never_called)),
-                OK
-            );
+            // One reified pointer: each cast of `never_called` may get its own address.
+            let dispose: unsafe extern "C" fn(*mut c_void) = never_called;
+            assert_eq!(swr_v1_buffer_typed_push(queue, 1, token, Some(dispose)), OK);
             assert_eq!(swr_v1_buffer_typed_front(queue, &raw mut view), OK);
             assert_eq!((view.kind, view.token), (1, token));
             assert_eq!(swr_v1_buffer_typed_pop(queue, &raw mut detached), OK);
             assert_eq!(detached.token, token);
-            assert!(std::ptr::fn_addr_eq(
-                detached.dispose.unwrap(),
-                never_called as unsafe extern "C" fn(*mut c_void)
-            ));
+            assert!(std::ptr::fn_addr_eq(detached.dispose.unwrap(), dispose));
             assert_eq!(native_payload, 37);
             assert_eq!(swr_v1_buffer_release(queue), OK);
         }

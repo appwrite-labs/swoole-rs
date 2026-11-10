@@ -284,7 +284,7 @@ pub unsafe extern "C" fn swr_v1_reactor_change(
         return -1;
     }
     // SAFETY: as the caller promises; no other view of the socket is live.
-    state.record(unsafe { &mut *socket }, op, events)
+    state.record(unsafe { &mut *socket }, socket, op, events)
 }
 
 const SW_EVENT_READ: c_int = 1 << 9;
@@ -409,6 +409,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn kernel_backend_registers_and_reports_removal_failures() {
         if crate::isolated_process::run_in_child(
             "change::tests::kernel_backend_registers_and_reports_removal_failures",

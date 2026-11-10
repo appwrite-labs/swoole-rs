@@ -1,5 +1,5 @@
 name: PHPT
-# Upstream's pinned PHPTs, sharded six ways per engine, and the gate: any test that passes on
+# Upstream's pinned PHPTs, sharded per engine (SHARDS), and the gate: any test that passes on
 # upstream must pass on every other engine (corpus/upstream/gate.py). The caller builds the
 # phpt-engines artifact first (.github/actions/phpt-build). The merge tier runs every family
 # on upstream and the Cargo build. The PR tier runs the families of the modules
@@ -24,6 +24,12 @@ on:
         description: A merge-tier run whose upstream reports and upstream.so the gate uses
         default: ''
         type: string
+      shards:
+        description: >-
+          JSON list of the shard indexes to run, 1 to its length: six for the whole corpus, or
+          what corpus/upstream/inventory.py --plan sizes to the families
+        default: '[1, 2, 3, 4, 5, 6]'
+        type: string
 defaults:
   run:
     shell: bash
@@ -35,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        index: [1, 2, 3, 4, 5, 6]
+        index: ${{ fromJSON(inputs.shards) }}
         engine: ${{ fromJSON(inputs.engines) }}
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +57,11 @@ jobs:
       - id: manifest
         env:
           FAMILIES: ${{ inputs.families }}
+          SHARDS: ${{ inputs.shards }}
         run: |
           modules=()
           for family in $FAMILIES; do modules+=(--module "$family"); done
-          python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 "${modules[@]}" --output target/phpt/manifest.json
+          python3 corpus/upstream/inventory.py --shard "${{ matrix.index }}/$(jq length <<< "$SHARDS")" "${modules[@]}" --output target/phpt/manifest.json
           echo "tests=$(jq '.tests | length' target/phpt/manifest.json)" >> "$GITHUB_OUTPUT"
       # php -n loads nothing; load every extension the distribution enables, in its order.
       - id: extensions
@@ -88,18 +95,58 @@ jobs:
           pattern: phpt-*-*
           merge-multiple: true
           path: shards
-      # The baseline's upstream reports, cut to the families run here.
+      # A run on main whose upstream shards all passed keeps their reports and upstream.so in a
+      # cache under its run id, which later runs restore without the REST API: the Actions token's
+      # hourly limit is shared by every job, and an artifact download that hits it fails the gate
+      # (#2496). Saving is best effort: on a miss the gate downloads the artifacts as before.
+      - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: phpt-engines
+      - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        continue-on-error: true
+        run: mkdir baseline-cache && cp shards/upstream-*.json phpt-engines/upstream.so baseline-cache/
+      - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ github.run_id }}
+      - if: inputs.baseline != ''
+        id: baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ inputs.baseline }}
+      # The baseline's upstream reports, cut to the families run here; the artifacts only on a miss.
       - if: inputs.baseline != ''
         env:
           GH_TOKEN: ${{ github.token }}
           FAMILIES: ${{ inputs.families }}
         run: |
-          gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
+          if [ "${{ steps.baseline.outputs.cache-hit }}" != true ]; then
+            gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
+            mkdir -p baseline-cache && cp baseline/*/*.json baseline-cache/
+            if [ "${{ github.ref }}" = refs/heads/main ]; then
+              gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+              cp baseline-engines/upstream.so baseline-cache/upstream.so
+            fi
+          fi
           families=$(printf '%s\n' $FAMILIES | jq -R . | jq -sc 'map(select(. != ""))')
-          for report in baseline/*/*.json; do
+          for report in baseline-cache/upstream-*.json; do
             jq --argjson f "$families" '.results |= map(select(($f | length) == 0 or (.module | IN($f[]))))' \
               "$report" > "shards/$(basename "$report")"
           done
+      # A main run that reuses a baseline saved before its cache existed (or whose save failed)
+      # saves it on that baseline's key, so PR gates stop missing until the baseline changes.
+      - if: github.ref == 'refs/heads/main' && inputs.baseline != '' && steps.baseline.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ inputs.baseline }}
       # Tests that pass on upstream but not on the Cargo build get 3 re-runs per engine, unless
       # more than 20 are flagged: that is a broad breakage, not flakiness.
       - id: flagged
@@ -120,8 +167,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
-          cp baseline-engines/upstream.so target/phpt/upstream.so
+          if [ ! -f baseline-cache/upstream.so ]; then
+            gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+            cp baseline-engines/upstream.so baseline-cache/upstream.so
+          fi
+          cp baseline-cache/upstream.so target/phpt/upstream.so
       - if: steps.flagged.outputs.rerun == 'true'
         run: |
           python3 corpus/upstream/inventory.py --output target/phpt/all.json
@@ -139,8 +189,9 @@ jobs:
       - if: always() && needs.phpt.result != 'success'
         env:
           ENGINES: ${{ inputs.engines }}
+          SHARDS: ${{ inputs.shards }}
         run: |
-          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in 1 2 3 4 5 6; do
+          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in $(jq -r '.[]' <<< "$SHARDS"); do
             [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
           done; done
           rm -f phpt.json

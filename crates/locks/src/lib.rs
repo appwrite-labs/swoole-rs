@@ -635,6 +635,7 @@ mod tests {
     };
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_barrier_init")]
     fn barrier_releases_every_party_together() {
         let barrier = Box::new(unsafe { std::mem::zeroed::<super::Barrier>() });
         barrier_init(&barrier, false, 4);
@@ -768,6 +769,7 @@ mod tests {
     // last attempt can come before the unlock; upstream runs this case on Linux.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_mutex_timedlock")]
     fn lock_lockwait() {
         const TIMEOUT_1: i32 = 2;
         const TIMEOUT_2: i32 = 10;
@@ -795,6 +797,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn lock_shared() {
         test_share_lock_fun(&Lock::new(MUTEX, true));
     }
@@ -805,16 +808,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn lock_rwlock_shared() {
         test_share_lock_fun(&Lock::new(RW_LOCK, true));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_rwlockattr_init")]
     fn lock_rwlock() {
         test_func(&Lock::new(RW_LOCK, false));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_rwlockattr_init")]
     fn lock_rwlock_try_rd() {
         test_lock_rd_func(&Lock::new(RW_LOCK, false));
     }
@@ -822,6 +828,7 @@ mod tests {
     // Upstream orders the two threads with 1 ms and 2 ms sleeps and fails now and then on
     // either engine; barriers keep the write lock held across the try instead.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_rwlockattr_init")]
     fn lock_rw_try_wr() {
         let lock = Lock::new(RW_LOCK, false);
         let (held, tried) = (Barrier::new(2), Barrier::new(2));
@@ -842,18 +849,21 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn lock_spinlock_shared() {
         test_share_lock_fun(&Lock::new(SPIN_LOCK, true));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_spin_init")]
     fn lock_spinlock() {
         test_func(&Lock::new(SPIN_LOCK, false));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_spin_init")]
     fn lock_spinlock_try_rd() {
         test_lock_rd_func(&Lock::new(SPIN_LOCK, false));
     }
