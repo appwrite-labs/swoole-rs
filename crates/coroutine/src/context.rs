@@ -114,8 +114,7 @@ fn asan() -> Option<(StartSwitch, FinishSwitch)> {
 ///
 /// # Safety
 /// `ctx` is writable and stays at this address until [`swr_v1_context_free`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_context_init(
+pub unsafe fn swr_v1_context_init(
     ctx: *mut Context,
     stack_size: usize,
     flags: u32,
@@ -167,8 +166,7 @@ pub unsafe extern "C" fn swr_v1_context_init(
 
 /// # Safety
 /// `ctx` came from [`swr_v1_context_init`] and is not running.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_context_free(ctx: *mut Context) {
+pub unsafe fn swr_v1_context_free(ctx: *mut Context) {
     // SAFETY: a live context, as the caller promises.
     if unsafe { (*ctx).flags } & THREAD != 0 {
         // SAFETY: a started thread context.
@@ -187,8 +185,7 @@ pub unsafe extern "C" fn swr_v1_context_free(ctx: *mut Context) {
 ///
 /// # Safety
 /// `ctx` came from [`swr_v1_context_init`], has not ended, and is not running.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_context_swap_in(ctx: *mut Context) {
+pub unsafe fn swr_v1_context_swap_in(ctx: *mut Context) {
     // SAFETY: a live context, as the caller promises.
     if unsafe { (*ctx).flags } & THREAD != 0 {
         // SAFETY: as above.
@@ -225,8 +222,7 @@ pub unsafe extern "C" fn swr_v1_context_swap_in(ctx: *mut Context) {
 ///
 /// # Safety
 /// `ctx` is the running context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_context_swap_out(ctx: *mut Context) {
+pub unsafe fn swr_v1_context_swap_out(ctx: *mut Context) {
     // SAFETY: the running context, as the caller promises.
     if unsafe { (*ctx).flags } & THREAD != 0 {
         // SAFETY: as above.

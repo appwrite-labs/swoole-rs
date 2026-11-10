@@ -1,10 +1,9 @@
 //! Upstream's `core-tests/src/server/http_server.cpp` TESTs that start a server, one Rust
-//! function per TEST with the same inputs and expected values, over the hybrid's
-//! libswoole.so. http1/case.rs builds the Servers upstream's helpers built
+//! function per TEST with the same inputs and expected values, over the crates. http1/case.rs builds the Servers upstream's helpers built
 //! (`test_base_server`, `test_http_server`, `test_ssl_http`); the callbacks, the
 //! clients and every assertion are here. The WebSocket client is cpp-httplib's
 //! (`core-tests/src/_lib/http.cpp`): the same upgrade request, and frames from the
-//! hybrid's `websocket::encode`, `mask`, `get_package_length` and `decode`.
+//! crates' `websocket::encode`, `mask`, `get_package_length` and `decode`.
 //!
 //! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs,
 //! server.rs (tests/modules/protocols) `protocol/redis.cpp`'s and `server/mqtt.cpp`'s.
@@ -12,6 +11,10 @@
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`), from the tree
 //! root (core-tests' `get_root_path()`). It exits 0 when every assertion held.
+#![expect(
+    clippy::disallowed_types,
+    reason = "the clients' headers and the Redis and MQTT servers' tables: test code, off the data-layout budget"
+)]
 
 #[path = "../../../framing/protocol.rs"]
 mod protocol;
@@ -28,6 +31,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
+// The crates, once: the C++ in libswoole.a and the cases call them by symbol.
+use swoole_rs_ffi as _;
 
 mod client;
 mod http1;
@@ -105,7 +110,6 @@ const HTTP2_SETTING_FRAME: [u8; 45] = [
     0, 6, 0xff, 0xff, 0xff, 0xff,
 ];
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_Z11swoole_initv"]
     fn swoole_init();

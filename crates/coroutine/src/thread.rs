@@ -68,8 +68,7 @@ unsafe impl Send for Start {}
 
 /// `thread_context_init`: the calling thread holds the baton, and coroutine
 /// threads share its reactor, timer, buffer stack and async threads.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_thread_context_init() {
+pub fn swr_v1_thread_context_init() {
     *SHARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(shared_thread());
     CURRENT.store(ptr::from_ref(&MAIN).cast_mut(), Ordering::Release);
 }
@@ -81,8 +80,7 @@ pub fn thread_context_active() -> bool {
 }
 
 /// `thread_context_clean`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_thread_context_clean() {
+pub fn swr_v1_thread_context_clean() {
     *SHARED.lock().unwrap_or_else(PoisonError::into_inner) = None;
     CURRENT.store(ptr::null_mut(), Ordering::Release);
 }

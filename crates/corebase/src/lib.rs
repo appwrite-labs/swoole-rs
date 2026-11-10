@@ -366,22 +366,11 @@ pub unsafe fn radix(mut value: c_ulong, radix: u32, output: *mut u8, capacity: u
     }
 }
 
-/// Target-default char mode retained for the frozen two-argument ABI.
-/// # Safety
-/// Same input/output requirements as `swr_v1_corebase_hex_mode`; native char mode
-/// must match this Rust target's default `c_char`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_hex(input: *const c_char, parsed: *mut usize) -> c_ulong {
-    // SAFETY: forwards the caller's own input and output contract unchanged.
-    unsafe { swr_v1_corebase_hex_mode(input, parsed, u8::from(c_char::MIN != 0)) }
-}
-
 /// Preserve native prefix, locale, signed-char and `size_t` wrap semantics.
 /// # Safety
 /// Input is a valid NUL-terminated C string; parsed is writable and disjoint.
 /// Bytes passed to toupper must satisfy the original host's ctype precondition.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_hex_mode(
+pub unsafe fn swr_v1_corebase_hex_mode(
     input: *const c_char,
     parsed: *mut usize,
     native_char_signed: u8,
@@ -485,8 +474,7 @@ pub struct MkdirState {
 /// bytes, disjoint from input and initialized state. State starts zeroed, then
 /// stays unmodified between calls; output stays unchanged by native IO. Stop on
 /// any result other than1. All pointers remain valid during each call only.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_mkdir_next(
+pub unsafe fn swr_v1_corebase_mkdir_next(
     input: *const u8,
     input_length: usize,
     output: *mut u8,
@@ -551,8 +539,7 @@ pub unsafe extern "C" fn swr_v1_corebase_mkdir_next(
 /// 2 path bound exceeded. No allocation or native callback occurs here.
 /// # Safety
 /// input lends length bytes; scratch lends capacity writable bytes and is disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_mkdir_complete(
+pub unsafe fn swr_v1_corebase_mkdir_complete(
     input: *const u8,
     length: usize,
     scratch: *mut u8,
@@ -685,11 +672,11 @@ mod tests {
         let mut parsed = 0;
         unsafe {
             assert_eq!(
-                swr_v1_corebase_hex(c"FFtail".as_ptr(), &raw mut parsed),
+                swoole_hex2dec(c"FFtail".as_ptr(), &raw mut parsed),
                 16_833_333
             );
             assert_eq!(parsed, 6);
-            assert_eq!(swr_v1_corebase_hex(c"0x".as_ptr(), &raw mut parsed), 0);
+            assert_eq!(swoole_hex2dec(c"0x".as_ptr(), &raw mut parsed), 0);
             assert_eq!(parsed, 2);
         }
     }

@@ -508,7 +508,6 @@ struct Head {
     callbacks: *mut Callback,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_set_log_leveli"]
     pub(super) fn swoole_set_log_level(level: c_int);
@@ -567,7 +566,6 @@ unsafe extern "C" {
     fn strftime(out: *mut c_char, size: usize, format: *const c_char, tm: *const c_void) -> usize;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_server_text_slot(state: *const c_void, index: usize) -> *const c_void;
     fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;

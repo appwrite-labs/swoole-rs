@@ -53,7 +53,6 @@ impl AsyncEvent {
     }
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     fn swoole_coroutine_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     fn swoole_coroutine_wait(status: *mut c_int) -> c_int;

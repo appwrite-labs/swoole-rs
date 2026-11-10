@@ -23,7 +23,7 @@ use swoole_rs_zend::{
         zend_object, zend_object_handlers, zend_string, zval, zval_ptr_dtor,
     },
     unset_property_deny,
-    value::{obj_of, set_long},
+    value::set_long,
 };
 
 pub(crate) type Holder = Object<*mut Context>;
@@ -91,8 +91,7 @@ fn object(slot: &mut Slot, ce: *mut zend_class_entry, ctx: *mut Context, offset:
     // SAFETY: the context's own zval and a registered class.
     unsafe { init_object(&raw mut slot.value, ce) };
     slot.ptr = &raw mut slot.value;
-    // SAFETY: the object just created.
-    let std = unsafe { obj_of(slot.ptr) };
+    let Some(std) = slot.object() else { return };
     // SAFETY: one of our objects.
     unsafe { set_context(std, ctx) };
     // SAFETY: the declared property's slot, `OBJ_PROP(std, offset)`.
@@ -104,15 +103,7 @@ fn object(slot: &mut Slot, ce: *mut zend_class_entry, ctx: *mut Context, offset:
 /// `swoole_http_context_new`: a new context with its request and response
 /// objects, both pointing at it and holding `fd`, and the request's `server`
 /// and `header` arrays.
-#[cfg_attr(
-    target_os = "macos",
-    unsafe(export_name = "_Z23swoole_http_context_newx")
-)]
-#[cfg_attr(
-    not(target_os = "macos"),
-    unsafe(export_name = "_Z23swoole_http_context_newl")
-)]
-pub(crate) extern "C" fn context_new(fd: i64) -> *mut Context {
+pub(crate) fn context_new(fd: i64) -> *mut Context {
     let ctx = alloc();
     let state = send::state(ctx);
     object(

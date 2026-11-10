@@ -383,26 +383,26 @@ unsafe fn start(s: *mut Scheduler, co: *mut Coroutine, resuming: bool) {
     unsafe { switch_in(s, co) };
 }
 
-macro_rules! export {
+macro_rules! operation {
     ($(#[$doc:meta])* fn $name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block) => {
         $(#[$doc])*
         /// # Safety
         /// Pointer arguments are live and aligned, and not borrowed elsewhere for
         /// the call; coroutines are linked only to live coroutines.
-        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
     };
 }
 
-export! {
+operation! {
     fn swr_v1_coroutine_set_stack_size(s: *mut Scheduler, size: usize) {
         // SAFETY: the caller lends the scheduler exclusively.
         unsafe { (*s).set_stack_size(size) };
     }
 }
 
-export! {
+operation! {
     /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
+    #[unsafe(no_mangle)]
     fn swr_v1_coroutine_set_callback(s: *mut Scheduler, slot: u32, function: SwapCallback) {
         // SAFETY: the caller lends the scheduler exclusively.
         let s = unsafe { &mut *s };
@@ -414,7 +414,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::run`: the current coroutine becomes `co`'s origin and `co`
     /// runs until it first yields or ends. Returns its id.
     fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
@@ -426,9 +426,10 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::resume`: refused while bailing out; otherwise the resume
     /// callback sees the old current, then `co` runs until it yields or ends.
+    #[unsafe(no_mangle)]
     fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
         {
             // SAFETY: the caller lends the scheduler.
@@ -449,16 +450,17 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::yield`: waiting, with a clean resume code; the yield callback
     /// runs, control returns to `co`'s origin, and this returns once resumed.
+    #[unsafe(no_mangle)]
     fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
         // SAFETY: forwarded.
         unsafe { yield_(s, co) };
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::yield(CancelFunc *)`: as [`swr_v1_coroutine_yield`] with a
     /// cancel function (a [`Canceler`]) set until it is resumed.
     fn swr_v1_coroutine_yield_cancelable(s: *mut Scheduler, co: *mut Coroutine, cancel_fn: *mut c_void) {
@@ -471,7 +473,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// `Coroutine::bailout`, once the callback is set: marks the scheduler, and
     /// inside a coroutine yields the one closest to the main context, which
     /// switches there directly and never returns.
@@ -496,14 +498,15 @@ export! {
     }
 }
 
-export! {
+operation! {
+    #[unsafe(no_mangle)]
     fn swr_v1_coroutine_set_task(co: *mut Coroutine, task: *mut c_void) {
         // SAFETY: the caller lends `co` exclusively.
         unsafe { (*co).task = task };
     }
 }
 
-export! {
+operation! {
     /// Cancel, from the canceler once it can no longer fail.
     fn swr_v1_coroutine_cancel(co: *mut Coroutine) {
         // SAFETY: the caller lends `co` exclusively.
@@ -513,7 +516,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     /// A timed wait expired, before its resume.
     fn swr_v1_coroutine_timeout(co: *mut Coroutine) {
         // SAFETY: the caller lends `co` exclusively.
@@ -521,7 +524,7 @@ export! {
     }
 }
 
-export! {
+operation! {
     fn swr_v1_coroutine_execute_usec(co: *const Coroutine, now: c_long) -> c_long {
         // SAFETY: the caller passes a live coroutine.
         let co = unsafe { &*co };
