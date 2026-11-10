@@ -76,8 +76,10 @@ result's errno. Fds, addresses, ports, lengths and buffers are dropped. A signat
 run of one engine made and no run of the other did is a difference; one only some runs
 make is timing, reported as unstable and not gated. Each difference needs a
 `syscalls.json` entry (`engine`, `signature` and optional `project` patterns, `reason`),
-or a `kind:bug` issue that the entry's reason names. `target/reports/syscalls.json` holds
-every difference and each engine's call counts.
+or a `kind:bug` issue that the entry's reason names. A call both engines make, more than
+twice a run and a quarter more often on one, is listed as a count difference (extra or
+fewer calls per request); timing moves counts too, so those aren't gated.
+`target/reports/syscalls.json` holds every difference and each engine's call counts.
 
 ## Original Swoole PHPT tests
 

@@ -186,6 +186,14 @@ def main():
             else:
                 failed = True
                 print(f'{project["id"]:20} only {engine}: {found}', flush=True)
+        # Calls both engines make, but more than twice per run and a quarter more often on one:
+        # extra calls per request, or fewer. Timing moves counts too, so they're listed, not gated.
+        first, second = (row['counts'][engine.name] for engine in engines)
+        row['count_differences'] = {found: [first.get(found, 0), second.get(found, 0)] for found in sorted({*first, *second})
+                                    if abs(first.get(found, 0) - second.get(found, 0))
+                                    > max(2 * args.runs, max(first.get(found, 0), second.get(found, 0)) / 4)}
+        for found, (a, b) in row['count_differences'].items():
+            print(f'{project["id"]:20} count {engines[0].name} {a}, {engines[1].name} {b}: {found}', flush=True)
         explained = sum(bool(d['reason']) for d in row['differences'])
         print(f'{project["id"]:20} {len(row["differences"]) - explained} unexplained, {explained} allowed, '
               f'{len(row["unstable"])} unstable', flush=True)

@@ -135,6 +135,7 @@ class Run(unittest.TestCase):
     def test_main_fails_on_an_unexplained_difference_and_reports_every_one(self):
         def run_project(engine, project):
             extra = 'prctl(PR_SET_NAME, ""...) = 0\n' if engine.name == 'cargo' else 'listen(3, 128) = 0\n'
+            extra += 'close(3) = 0\n' * (10 if engine.name == 'cargo' else 1)
             engine.trace.with_name('trace.1').write_text('listen(3, 512) = 0\n' * (project['id'] == '01-hello') + extra)
         manifest = [{'id': '01-hello'}, {'id': '11-driver', 'mode': 'driver'}]
         with tempfile.TemporaryDirectory() as directory:
@@ -154,7 +155,10 @@ class Run(unittest.TestCase):
         self.assertEqual(row['differences'], [
             {'engine': 'cargo', 'signature': 'prctl(PR_SET_NAME, ""...) = ok', 'reason': 'names'},
             {'engine': 'upstream', 'signature': 'listen(128) = ok', 'reason': None}])
-        self.assertEqual(row['counts']['cargo'], {'listen(512) = ok': 2, 'prctl(PR_SET_NAME, ""...) = ok': 2})
+        self.assertEqual(row['counts']['cargo'], {'listen(512) = ok': 2, 'prctl(PR_SET_NAME, ""...) = ok': 2, 'close() = ok': 20})
+        # Twenty closes against two is listed; two listens against none is within two calls a run.
+        self.assertEqual(row['count_differences'], {'close() = ok': [20, 2]})
+        self.assertIn('01-hello             count cargo 20, upstream 2: close() = ok', out.getvalue())
         self.assertEqual(report['stale'], [{'engine': 'cargo', 'signature': 'never', 'reason': 'stale'}])
 
 
