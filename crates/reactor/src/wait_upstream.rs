@@ -9,8 +9,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
-// SAFETY: crates/reactor's and crates/timer's.
-unsafe extern "C" {
+// SAFETY: crates/timer's. A declaration, since crates/timer depends on this crate.
+unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]
     fn swoole_timer_select();
 }

@@ -33,7 +33,7 @@ unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
-    // crates/coroutine, crates/timer, crates/reactor,
+    // crates/coroutine, crates/reactor,
     // crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
@@ -45,8 +45,6 @@ unsafe extern "C" {
     fn coroutine_deactivate();
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(timer: *mut c_void) -> bool;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
     // crates/phpevents, crates/phpclients and PHP.
@@ -681,7 +679,7 @@ pub unsafe fn timer_add(
 /// `timer` is live.
 pub unsafe fn timer_del(timer: *mut c_void) {
     // SAFETY: a live timer.
-    unsafe { swoole_timer_del(timer) };
+    unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
 }
 
 /// PHP 8.4+ `exit()`: the original handler, false if there is none.

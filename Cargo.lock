@@ -873,6 +873,7 @@ dependencies = [
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -1148,6 +1149,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
 ]
 
 [[package]]
