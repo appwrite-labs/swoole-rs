@@ -67,8 +67,7 @@ pub type LogHost = unsafe extern "C" fn(
 static HOST: OnceLock<LogHost> = OnceLock::new();
 
 /// Registers native's log macros; later registrations are ignored.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_set_log_host(host: LogHost) {
+pub fn swr_v1_core_set_log_host(host: LogHost) {
     HOST.get_or_init(|| host);
 }
 

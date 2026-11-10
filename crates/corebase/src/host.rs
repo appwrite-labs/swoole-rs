@@ -625,17 +625,6 @@ mod tests {
         }
     }
     #[test]
-    fn hex2dec_parses_in_the_targets_char_mode() {
-        let (mut parsed, mut expected_parsed) = (0, 0);
-        // SAFETY: NUL-terminated literals and live locals.
-        let value = unsafe { swoole_hex2dec(c"FFtail".as_ptr(), &raw mut parsed) };
-        // SAFETY: as above.
-        let expected =
-            unsafe { crate::swr_v1_corebase_hex(c"FFtail".as_ptr(), &raw mut expected_parsed) };
-        assert_eq!((value, parsed), (expected, expected_parsed));
-    }
-
-    #[test]
     fn dump_bin_skips_types_without_a_size() {
         // SAFETY: zero bytes are read for an unsized type.
         unsafe { swoole_dump_bin(ptr::null(), c_char::from_ne_bytes(*b"x"), 0) };

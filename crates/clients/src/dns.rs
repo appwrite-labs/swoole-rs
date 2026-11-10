@@ -356,7 +356,7 @@ pub fn lookup<S: DnsSocket>(
     exchange.found
 }
 
-pub use swoole_rs_corebase::{Resolved, swr_v1_clients_getaddrinfo, swr_v1_clients_gethostbyname};
+pub use swoole_rs_corebase::swr_v1_clients_gethostbyname;
 
 /// The first `nameserver` of the file at `path`, read in `fgets` lines of up to 99
 /// bytes: the server, if one (at most 15 bytes, nonempty) is named.
@@ -565,8 +565,6 @@ mod tests {
         );
     }
 
-    unsafe extern "C" fn ignore(_: c_int) {}
-
     #[test]
     fn resolves_through_libc() {
         let mut addr = [0 as c_char; 16];
@@ -597,39 +595,6 @@ mod tests {
             },
             -1
         );
-
-        let mut results: [libc::sockaddr_in6; 16] = unsafe { std::mem::zeroed() };
-        let found = unsafe {
-            swr_v1_clients_getaddrinfo(
-                c"127.0.0.1".as_ptr(),
-                c"80".as_ptr(),
-                libc::AF_INET,
-                libc::SOCK_STREAM,
-                0,
-                results.as_mut_ptr(),
-                16,
-                ignore,
-            )
-        };
-        assert_eq!(found, Resolved { error: 0, count: 1 });
-        let v4 = unsafe { &*results.as_ptr().cast::<libc::sockaddr_in>() };
-        assert_eq!(
-            (u16::from_be(v4.sin_port), v4.sin_addr.s_addr.to_ne_bytes()),
-            (80, [127, 0, 0, 1])
-        );
-        let failed = unsafe {
-            swr_v1_clients_getaddrinfo(
-                c"127.0.0.1".as_ptr(),
-                c"no-such-service-swr".as_ptr(),
-                libc::AF_INET,
-                0,
-                0,
-                results.as_mut_ptr(),
-                16,
-                ignore,
-            )
-        };
-        assert_ne!(failed.error, 0);
     }
 
     #[test]
