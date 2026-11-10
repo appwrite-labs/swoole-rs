@@ -150,7 +150,7 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `protocols` | crates/ports `methods::tests::server_protocols` | |
 | `sendwait`, `forward_message`, `pause_and_resume`, `max_queued_bytes` | same names (`server_conn.rs`) | the client thread starts before `serv.start()`, as upstream's |
 | `system` | same name | its listening socket takes a port the kernel picks, where upstream's took `get_random_port()` |
-| `no_idle_worker`, `overflow_1` .. `overflow_4`, `max_request_1`, `max_request_2`, `watermark`, `discard_data` | same names | the client thread starts in `onStart`, as upstream's |
+| `no_idle_worker`, `overflow_1` .. `overflow_4`, `max_request_1`, `max_request_2`, `watermark`, `discard_data` | same names | the client thread starts in `onStart`, as upstream's. `max_request_2` is excluded from the phase until thread-mode workers restart after `max_request` (#2636) |
 | | | `max_request_2` is MODE_THREAD, which upstream builds only with `enable_thread` (`SW_THREAD`): the case sets `swoole_rs_server::THREAD_SUPPORTED`, as the extension's MINIT does under ZTS |
 | `udp_packet` | same name | the server socket `sendto` answers on is `req->info.server_fd`, which `get_server_socket` looks up; the forked client's assertions fail the case |
 | `pipe_message`, `reopen_log` | same names | |
