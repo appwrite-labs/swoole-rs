@@ -216,29 +216,44 @@ unsafe extern "C-unwind" fn resume_canceled(co: *mut c_void, _: *mut c_void) -> 
 /// `co` is the running coroutine.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
 unsafe extern "C-unwind" fn yield_ex(co: *mut Coroutine, timeout: f64) -> bool {
+    // SAFETY: as the caller promises.
+    yield_resumed(unsafe { yield_timed(co.cast(), timeout) })
+}
+
+/// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
+/// when it timed out or was canceled.
+#[must_use]
+pub fn yield_resumed(code: i32) -> bool {
+    match code {
+        RC_TIMEDOUT => set_last_error(SW_ERROR_CO_TIMEDOUT),
+        RC_CANCELED => set_last_error(SW_ERROR_CO_CANCELED),
+        _ => return true,
+    }
+    false
+}
+
+/// `yield_ex` without its last error: the resume code, `RC_TIMEDOUT` or
+/// `RC_CANCELED` when it timed out or was canceled.
+///
+/// # Safety
+/// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
+#[must_use]
+pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first.
-        unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, co.cast()) }
+        unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, co) }
     } else {
         ptr::null_mut()
     };
     // SAFETY: as the caller promises.
-    unsafe { yield_with_cancel(co.cast(), resume_canceled, ptr::null_mut()) };
+    unsafe { yield_with_cancel(co, resume_canceled, ptr::null_mut()) };
     // SAFETY: `co` runs again.
-    let code = unsafe { (*co).resume_code };
-    if code == RC_TIMEDOUT {
-        set_last_error(SW_ERROR_CO_TIMEDOUT);
-        return false;
-    }
-    if !timer.is_null() {
+    let code = unsafe { (*co.cast::<Coroutine>()).resume_code };
+    if code != RC_TIMEDOUT && !timer.is_null() {
         // SAFETY: the pending timer added above.
         unsafe { swoole_timer_del(timer) };
     }
-    if code == RC_CANCELED {
-        set_last_error(SW_ERROR_CO_CANCELED);
-        return false;
-    }
-    true
+    code
 }
 
 /// `static void Coroutine::print_list()`.

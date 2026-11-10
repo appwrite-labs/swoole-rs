@@ -27,7 +27,7 @@ pub(crate) struct Stats {
 }
 
 /// A `swoole::Coroutine`, which starts with its `swoole_rs_coroutine::Coroutine`.
-type Co = *mut c_void;
+pub(crate) type Co = *mut c_void;
 
 unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
@@ -35,8 +35,6 @@ unsafe extern "C" {
     // crates/reactor.
     // crates/coroutine, crates/reactor,
     // crates/process and crates/hooks.
-    #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-    fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
     fn coroutine_cancel(co: Co) -> bool;
     #[link_name = "_ZN6swoole9Coroutine8activateEv"]
@@ -429,8 +427,15 @@ pub unsafe fn yield_cancelable(
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
 pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
-    // SAFETY: as above.
-    unsafe { coroutine_yield_ex(co, timeout) }
+    swoole_rs_coroutine::yield_resumed(wait(co, timeout))
+}
+
+/// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
+/// `RC_CANCELED` or another when resumed).
+pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
+    // SAFETY: callers pass the running coroutine, and their frames own nothing
+    // that needs a drop (as for `yield_`).
+    unsafe { swoole_rs_coroutine::yield_timed(co, timeout) }
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.

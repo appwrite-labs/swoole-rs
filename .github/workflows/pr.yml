@@ -44,8 +44,10 @@ jobs:
       - run: tests/dev/run.sh
 
   # Whether this PR touches what the extension build compiles or installs with.
+  # On a GitHub-hosted runner, like `required`: every PHPT and variant job waits for this one, and
+  # a hosted runner starts in seconds where a gcrunner VM takes 40 to 55. It only reads git and a cache.
   changes:
-    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       ext: ${{ steps.paths.outputs.ext }}
@@ -342,7 +344,7 @@ jobs:
   required:
     if: always()
     needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, iouring, zts, threadcontext]
-    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - env:

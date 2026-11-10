@@ -26,9 +26,9 @@ on:
         type: string
       shards:
         description: >-
-          JSON list of the shard indexes to run, 1 to its length: six for the whole corpus, or
+          JSON list of the shard indexes to run, 1 to its length: nine for the whole corpus, or
           what corpus/upstream/inventory.py --plan sizes to the families
-        default: '[1, 2, 3, 4, 5, 6]'
+        default: '[1, 2, 3, 4, 5, 6, 7, 8, 9]'
         type: string
 defaults:
   run:
@@ -129,10 +129,10 @@ jobs:
           FAMILIES: ${{ inputs.families }}
         run: |
           if [ "${{ steps.baseline.outputs.cache-hit }}" != true ]; then
-            gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
+            tools/download.sh ${{ inputs.baseline }} baseline -p 'phpt-upstream-*'
             mkdir -p baseline-cache && cp baseline/*/*.json baseline-cache/
             if [ "${{ github.ref }}" = refs/heads/main ]; then
-              gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+              tools/download.sh ${{ inputs.baseline }} baseline-engines -n phpt-engines
               cp baseline-engines/upstream.so baseline-cache/upstream.so
             fi
           fi
@@ -170,7 +170,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ ! -f baseline-cache/upstream.so ]; then
-            gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+            tools/download.sh ${{ inputs.baseline }} baseline-engines -n phpt-engines
             cp baseline-engines/upstream.so baseline-cache/upstream.so
           fi
           cp baseline-cache/upstream.so target/phpt/upstream.so

@@ -55,6 +55,7 @@ impl<T> Process<T> {
     }
 }
 
+pub mod channel;
 mod classes;
 pub use classes::*;
 mod context;

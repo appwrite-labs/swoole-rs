@@ -34,7 +34,7 @@ use std::{
 use swoole_rs_corebase::constants::EventType;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::event;
-use swoole_rs_reactor::{Event, ReactorTask, SocketRecord, event_api};
+use swoole_rs_reactor::{Event, ReactorTask, Socket, event_api};
 use swoole_rs_zend::{
     Call, Class, Minit,
     bailout::{self, Bailout, trap},
@@ -140,14 +140,17 @@ fn fd(zsocket: *mut zval) -> i32 {
     }
 }
 
-fn socket(fd: i32) -> Option<*mut SocketRecord> {
-    SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|&socket| socket as *mut SocketRecord))
+/// The user socket `add` registered for `fd`.
+fn socket<'a>(fd: i32) -> Option<Socket<'a>> {
+    let socket = SOCKETS.with_borrow(|sockets| sockets.get(&fd).copied())?;
+    // SAFETY: the registry holds records `add` made, on this thread, until `del` removes and
+    // frees them.
+    unsafe { Socket::from_ptr(socket as *mut _) }
 }
 
 /// The `EventObject` a user socket carries.
-fn object_of(socket: *mut SocketRecord) -> *mut EventObject {
-    // SAFETY: a live user socket `add` made.
-    unsafe { (*socket).object }.cast()
+fn object_of(socket: Socket<'_>) -> *mut EventObject {
+    socket.read(|record| record.object).cast()
 }
 
 /// `int` events, as the reactor takes them.
@@ -258,7 +261,7 @@ fn add(call: &Call) {
     if unsafe { event_api::swoole_event_add(socket, events_of(events)) } < 0 {
         fatal_warning(c"swoole_event_add failed".as_ptr());
         // SAFETY: the reactor refused the socket; nothing else holds it.
-        unsafe { native::socket_free_record(socket, false) };
+        unsafe { native::socket_free(socket) };
         // SAFETY: the object made above, which nothing else holds.
         bailout::raise(unsafe { free_object(object) });
         call.set_bool(false);
@@ -312,7 +315,7 @@ fn write(call: &Call) {
     }
     // SAFETY: a registered socket and the argument's bytes.
     let written =
-        unsafe { event_api::swoole_event_write(socket, data.as_ptr().cast(), data.len()) };
+        unsafe { event_api::swoole_event_write(socket.as_ptr(), data.as_ptr().cast(), data.len()) };
     call.set_bool(written >= 0);
 }
 
@@ -378,7 +381,7 @@ fn set(call: &Call) {
         return;
     }
     // SAFETY: a registered socket.
-    if unsafe { event_api::swoole_event_set(socket, events_of(events)) } < 0 {
+    if unsafe { event_api::swoole_event_set(socket.as_ptr(), events_of(events)) } < 0 {
         fatal_warning(c"Swoole\\Event::set failed".as_ptr());
         call.set_bool(false);
         return;
@@ -417,10 +420,12 @@ fn del(call: &Call) {
         free_unrun_object,
     );
     // SAFETY: a registered socket.
-    let deleted = unsafe { event_api::swoole_event_del(socket) };
+    let deleted = unsafe { event_api::swoole_event_del(socket.as_ptr()) };
     SOCKETS.with_borrow_mut(|sockets| sockets.remove(&fd));
-    // SAFETY: removed from the reactor and the registry; the fd stays the user's.
-    unsafe { native::socket_free_record(socket, true) };
+    // The fd stays the user's.
+    socket.edit(|record| record.fd = -1);
+    // SAFETY: removed from the reactor and the registry.
+    unsafe { native::socket_free(socket.as_ptr()) };
     call.set_bool(deleted == 0);
 }
 
@@ -523,9 +528,8 @@ fn isset(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a registered socket.
-    let socket = unsafe { &*socket };
-    call.set_bool(socket.removed == 0 && i64::from(socket.events) & events != 0);
+    let (removed, registered) = socket.read(|record| (record.removed, record.events));
+    call.set_bool(removed == 0 && i64::from(registered) & events != 0);
 }
 
 /// Call `callable` with `argv`: whether it succeeded.
@@ -562,22 +566,26 @@ fn handled(result: Result<c_int, Bailout>) -> c_int {
     })
 }
 
-/// The socket of an event the reactor lends.
-fn event_socket(event: *mut c_void) -> *mut SocketRecord {
-    // SAFETY: a live `swoole::Event`.
-    unsafe { (*event.cast::<Event>()).socket }.cast()
+/// The user socket of an event the reactor lends.
+/// # Safety
+/// `event` is a live `swoole::Event` of a user socket `add` registered.
+unsafe fn event_socket<'a>(event: *mut c_void) -> Option<Socket<'a>> {
+    // SAFETY: per the caller.
+    let socket = unsafe { (*event.cast::<Event>()).socket };
+    // SAFETY: per the caller, a live registered socket while the reactor lends its event.
+    unsafe { Socket::from_ptr(socket.cast()) }
 }
 
 /// The user fd type's read handler.
 pub(crate) unsafe extern "C" fn readable(_reactor: *mut c_void, event: *mut c_void) -> c_int {
     // SAFETY: the reactor lends the event of a user socket `add` registered.
-    handled(unsafe { ready(event_socket(event), false) })
+    handled(unsafe { ready(event, false) })
 }
 
 /// The user fd type's write handler.
 pub(crate) unsafe extern "C" fn writable(_reactor: *mut c_void, event: *mut c_void) -> c_int {
     // SAFETY: as above.
-    handled(unsafe { ready(event_socket(event), true) })
+    handled(unsafe { ready(event, true) })
 }
 
 /// The user fd type's error handler.
@@ -589,8 +597,12 @@ pub(crate) unsafe extern "C" fn error(reactor: *mut c_void, event: *mut c_void) 
 /// The read (`write` false) or write handler of a user fd: run its callback;
 /// on failure warn, detach and delete the fd.
 /// # Safety
-/// `socket` is a user socket `add` registered, carrying its object.
-unsafe fn ready(socket: *mut SocketRecord, write: bool) -> Result<c_int, Bailout> {
+/// `event` is a live event of a user socket `add` registered, carrying its object.
+unsafe fn ready(event: *mut c_void, write: bool) -> Result<c_int, Bailout> {
+    // SAFETY: per the caller.
+    let Some(socket) = (unsafe { event_socket(event) }) else {
+        return Ok(-1);
+    };
     let object = object_of(socket);
     // SAFETY: per the caller, the live object.
     let peo = unsafe { &*object };
@@ -607,12 +619,11 @@ unsafe fn ready(socket: *mut SocketRecord, write: bool) -> Result<c_int, Bailout
         "Swoole\\Event: {kind} callback handler error, fd [{fd}] will be removed from reactor"
     ));
     fatal_warning(message.as_ptr());
-    // SAFETY: per the caller.
-    unsafe { (*socket).object = ptr::null_mut() };
+    socket.edit(|record| record.object = ptr::null_mut());
     // The detached object, freed once the loop is out of it.
     native::defer(deferred_free_object, object.cast(), free_unrun_object);
     // SAFETY: per the caller.
-    unsafe { event_api::swoole_event_del(socket) };
+    unsafe { event_api::swoole_event_del(socket.as_ptr()) };
     if bailout::relay_to_c(Ok(())) {
         Err(Bailout)
     } else {
@@ -750,10 +761,11 @@ pub extern "C" fn swr_v1_phpevents_wait() {
 unsafe fn error_event(reactor: *mut c_void, event: *mut c_void) -> Result<c_int, Bailout> {
     // SAFETY: per the caller.
     let reported_fd = unsafe { (*event.cast::<Event>()).fd };
-    let socket = event_socket(event);
-    // SAFETY: per the caller, a live user socket.
-    let record = unsafe { &*socket };
-    let (fd, fd_type, events) = (record.fd, record.fd_type, record.events);
+    // SAFETY: per the caller.
+    let Some(socket) = (unsafe { event_socket(event) }) else {
+        return Ok(-1);
+    };
+    let (fd, fd_type, events) = socket.read(|record| (record.fd, record.fd_type, record.events));
     if events & EventType::SW_EVENT_ERROR as i32 == 0 {
         let kind = u32::from(events & EventType::SW_EVENT_READ as i32 == 0);
         // SAFETY: the live reactor's handler tables.
@@ -797,7 +809,7 @@ unsafe fn error_event(reactor: *mut c_void, event: *mut c_void) -> Result<c_int,
     // SAFETY: the error path consumes this object once before removing the socket.
     unsafe { free_object(object_of(socket)) }?;
     // SAFETY: the event still lends this socket until deletion completes.
-    unsafe { event_api::swoole_event_del(socket) };
+    unsafe { event_api::swoole_event_del(socket.as_ptr()) };
     Ok(0)
 }
 

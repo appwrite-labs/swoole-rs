@@ -17,7 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, SocketRecord, reactor_upstream, what_event_want};
+use swoole_rs_reactor::{Event, Socket, SocketRecord, reactor_upstream, what_event_want};
 use swoole_rs_timer::swoole_timer_del;
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
@@ -195,13 +195,21 @@ impl Objects<'_> {
         // SAFETY: the ops reading it run with a live connection in the context.
         unsafe { &mut *self.ctx.conn }
     }
-    fn conn_socket(&self) -> &SocketRecord {
+    fn conn_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: a live connection's socket.
-        unsafe { &*self.conn().socket.cast::<SocketRecord>() }
+        unsafe { Socket::from_ptr(self.conn().socket.cast()) }
     }
-    fn sock(&self) -> &mut SocketRecord {
+    fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
-        unsafe { &mut *self.ctx.sock }
+        unsafe { Socket::from_ptr(self.ctx.sock) }
+    }
+    /// `read` over the context's socket, or the default without one.
+    fn read_sock<R: Default>(&self, read: impl FnOnce(&SocketRecord) -> R) -> R {
+        self.sock().map(|sock| sock.read(read)).unwrap_or_default()
+    }
+    fn event_socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: the ops reading it run on a live event over a live socket.
+        unsafe { Socket::from_ptr(self.event().socket.cast()) }
     }
     fn event(&self) -> &Event {
         // SAFETY: the ops reading it run on a live event.
@@ -285,17 +293,19 @@ fn read_facts(o: &mut Objects<'_>) -> u64 {
         return 0;
     }
     o.ctx.port = o.port_by_fd(o.event().fd);
-    let sock = o.sock();
-    let ssl = !sock.ssl.is_null();
-    cn::FOUND
-        | BUILT_PREQUEUE
-        | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
-        | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
-        | flag(ssl && sock.tls.want_read != 0, cn::SSL_WANT_READ)
-        | flag(ssl && sock.tls.state != SSL_READY, cn::SSL_PENDING)
-        | flag(is_dgram(sock.socket_type), cn::DTLS_PORT)
-        | flag(sock.dtls != 0, cn::DTLS_SOCKET)
-        | flag(o.mode() == crate::MODE_PROCESS, cn::PROCESS)
+    let process = o.mode() == crate::MODE_PROCESS;
+    o.read_sock(|sock| {
+        let ssl = !sock.ssl.is_null();
+        cn::FOUND
+            | BUILT_PREQUEUE
+            | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
+            | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
+            | flag(ssl && sock.tls.want_read != 0, cn::SSL_WANT_READ)
+            | flag(ssl && sock.tls.state != SSL_READY, cn::SSL_PENDING)
+            | flag(is_dgram(sock.socket_type), cn::DTLS_PORT)
+            | flag(sock.dtls != 0, cn::DTLS_SOCKET)
+            | flag(process, cn::PROCESS)
+    })
 }
 
 /// `ReactorThread_onWrite`'s facts; sets the context's port and connection.
@@ -317,14 +327,11 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
     if conn.active == 0 {
         return 0;
     }
-    let sock = o.sock();
+    let pending = o.read_sock(|sock| !sock.ssl.is_null() && sock.tls.state != SSL_READY);
     cn::FOUND
         | BUILT_PREQUEUE
         | flag(conn.close_notify != 0, cn::CLOSE_NOTIFY)
-        | flag(
-            !sock.ssl.is_null() && sock.tls.state != SSL_READY,
-            cn::SSL_PENDING,
-        )
+        | flag(pending, cn::SSL_PENDING)
         | flag(o.config().disable_notify, cn::DISABLE_NOTIFY)
         | flag(conn.close_force != 0, cn::CLOSE_FORCE)
 }
@@ -348,8 +355,9 @@ fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
         .callbacks
         .slot(CB_DISPATCH_FUNC)
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
-    // SAFETY: the event's live socket.
-    let notified = unsafe { (*o.event().socket.cast::<SocketRecord>()).close_notified } != 0;
+    let notified = o
+        .event_socket()
+        .is_some_and(|s| s.read(|s| s.close_notified != 0));
     cn::FOUND
         | BUILT_PREQUEUE
         | flag(config.disable_notify, cn::DISABLE_NOTIFY)
@@ -368,29 +376,36 @@ fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
 /// `Server::close_connection`'s facts, the socket's fd above bit 32; sets the
 /// context's connection and port.
 fn close_facts(o: &mut Objects<'_>) -> u64 {
-    let (object, fd) = (o.sock().object, o.sock().fd);
+    let Some((object, fd)) = o
+        .sock()
+        .map(|sock| sock.read(|sock| (sock.object, sock.fd)))
+    else {
+        return 0;
+    };
     o.ctx.conn = object.cast();
     o.ctx.port = o.port_by_fd(fd);
-    let (sock, conn) = (o.sock(), o.conn());
-    let ssl = !sock.ssl.is_null();
-    BUILT_PREQUEUE
-        | flag(!conn.timer.is_null(), cn::TIMER)
-        | flag(!conn.websocket_buffer.is_null(), cn::WEBSOCKET_BUFFER)
-        | flag(sock.removed != 0, cn::REMOVED)
-        | flag(o.mode() == crate::MODE_BASE, cn::BASE)
-        | flag(ssl, cn::SOCKET_SSL)
-        | flag(sock.dtls != 0, cn::DTLS_SOCKET)
-        | flag(!sock.recv_buffer.is_null(), cn::RECV_BUFFER)
-        | flag(conn.close_force != 0, cn::CLOSE_FORCE)
-        | flag(conn.close_reset != 0, cn::CLOSE_RESET)
-        | flag(conn.peer_closed != 0, cn::PEER_CLOSED)
-        | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
-        | flag(sock.ssl_closed != 0, cn::SSL_CLOSED)
-        | flag(
-            ssl && sock.tls.state == SSL_READY && is_stream(sock.socket_type),
-            cn::TLS_READY_STREAM,
-        )
-        | (u64::from(sock.fd.cast_unsigned()) << 32)
+    let (conn, base) = (o.conn(), o.mode() == crate::MODE_BASE);
+    o.read_sock(|sock| {
+        let ssl = !sock.ssl.is_null();
+        BUILT_PREQUEUE
+            | flag(!conn.timer.is_null(), cn::TIMER)
+            | flag(!conn.websocket_buffer.is_null(), cn::WEBSOCKET_BUFFER)
+            | flag(sock.removed != 0, cn::REMOVED)
+            | flag(base, cn::BASE)
+            | flag(ssl, cn::SOCKET_SSL)
+            | flag(sock.dtls != 0, cn::DTLS_SOCKET)
+            | flag(!sock.recv_buffer.is_null(), cn::RECV_BUFFER)
+            | flag(conn.close_force != 0, cn::CLOSE_FORCE)
+            | flag(conn.close_reset != 0, cn::CLOSE_RESET)
+            | flag(conn.peer_closed != 0, cn::PEER_CLOSED)
+            | flag(conn.close_queued != 0, cn::CLOSE_QUEUED)
+            | flag(sock.ssl_closed != 0, cn::SSL_CLOSED)
+            | flag(
+                ssl && sock.tls.state == SSL_READY && is_stream(sock.socket_type),
+                cn::TLS_READY_STREAM,
+            )
+            | (u64::from(sock.fd.cast_unsigned()) << 32)
+    })
 }
 
 /// Which facts [`facts`] builds.
@@ -424,8 +439,8 @@ pub(crate) unsafe fn valid(conn: *const ConnectionRecord) -> bool {
         return false;
     };
     // SAFETY: per the caller.
-    let socket = unsafe { conn.socket.cast::<SocketRecord>().as_ref() };
-    conn.active != 0 && socket.is_some_and(|socket| socket.fd_type == FD_SESSION)
+    let socket = unsafe { Socket::from_ptr(conn.socket.cast()) };
+    conn.active != 0 && socket.is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
 }
 
 fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Arguments<'_>) {
@@ -504,8 +519,9 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_SSL_READY => {
+            let conn = o.sock()?.read(|s| s.object.cast::<ConnectionRecord>());
             // SAFETY: a session socket's object is its live connection.
-            unsafe { (*o.sock().object.cast::<ConnectionRecord>()).ssl_ready = 1 };
+            unsafe { (*conn).ssl_ready = 1 };
             0
         }
         OP_CLIENT_CERT => {
@@ -530,7 +546,7 @@ pub(crate) unsafe fn answer(
             let buffer = unsafe { &*swoole_rs_corebase::thread_buffer().cast::<CppString>() };
             o.ctx.task = SendData {
                 info: DataHead {
-                    fd: o.sock().fd.into(),
+                    fd: o.sock()?.fd().into(),
                     kind: u8::try_from(EVENT_CONNECT).unwrap_or_default(),
                     reactor_id: o.reactor().id.cast_signed(),
                     len: u32::try_from(buffer.length).unwrap_or(u32::MAX),
@@ -560,7 +576,10 @@ pub(crate) unsafe fn answer(
         OP_CONN_FD => sign(o.conn().fd),
         OP_CONN_REACTOR => u64::from(o.conn().reactor_id),
         OP_CONN_SESSION => sign(o.conn().session_id),
-        OP_CONN_READING => u64::from(o.conn().peer_closed == 0 && o.conn_socket().removed == 0),
+        OP_CONN_READING => {
+            let removed = o.conn_socket()?.read(|s| s.removed != 0);
+            u64::from(o.conn().peer_closed == 0 && !removed)
+        }
         OP_WAIT_EXIT => {
             o.reactor().wait_exit = true;
             0
@@ -596,10 +615,9 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_RT_BUF_EMPTY => {
-            // SAFETY: the event's live socket.
-            let socket = unsafe { &*o.event().socket.cast::<SocketRecord>() };
-            // SAFETY: its output buffer is null or live.
-            u64::from(unsafe { empty(socket.output.out_buffer) })
+            let buffer = o.event_socket()?.read(|s| s.output.out_buffer);
+            // SAFETY: the event socket's output buffer is null or live.
+            u64::from(unsafe { empty(buffer) })
         }
         OP_RT_FRONT_STREAM => u64::from(stream_event(o.front().kind)),
         OP_RT_TOUCH_SEND => {
@@ -611,30 +629,28 @@ pub(crate) unsafe fn answer(
         OP_SERVER => u64::try_from(o.ctx.serv.expose_provenance()).unwrap_or(0),
         OP_RT_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
         OP_WR_WAIT => {
-            let output = &o.sock().output;
-            (if output.close_wait != 0 {
-                CLOSE_WAIT
-            } else {
-                0
-            }) | (if output.send_wait != 0 { SEND_WAIT } else { 0 })
+            let (close, send) = o.read_sock(|s| (s.output.close_wait, s.output.send_wait));
+            (if close != 0 { CLOSE_WAIT } else { 0 }) | (if send != 0 { SEND_WAIT } else { 0 })
         }
         OP_WR_CLEAR_OVERFLOW => {
             o.conn().overflow = 0;
             0
         }
         OP_WR_QUEUED => {
+            let buffer = o.read_sock(|s| s.output.out_buffer);
             // SAFETY: the socket's output buffer is null or live.
-            o.conn().send_queued_bytes = unsafe { length(o.sock().output.out_buffer) };
+            o.conn().send_queued_bytes = unsafe { length(buffer) };
             0
         }
         OP_WR_STATE => write_state(&o),
         OP_RD_WRITE_FACTS => write_facts(&mut o),
         OP_CC_FACTS => close_facts(&mut o),
         OP_WR_TIMER_DEL => {
-            let output = &mut o.sock().output;
+            let sock = o.sock()?;
+            let timer = sock.read(|s| s.output.send_timer);
             // SAFETY: the socket's live send timer.
-            unsafe { swoole_timer_del(output.send_timer.cast()) };
-            output.send_timer = core::ptr::null_mut();
+            unsafe { swoole_timer_del(timer.cast()) };
+            sock.edit(|s| s.output.send_timer = core::ptr::null_mut());
             0
         }
         OP_CC_TIMER_DEL => {
@@ -644,10 +660,7 @@ pub(crate) unsafe fn answer(
             conn.timer = core::ptr::null_mut();
             0
         }
-        OP_CC_SSL_WANT => {
-            let tls = o.sock().tls;
-            u64::from(tls.want_read != 0 || tls.want_write != 0)
-        }
+        OP_CC_SSL_WANT => u64::from(o.read_sock(|s| s.tls.want_read != 0 || s.tls.want_write != 0)),
         OP_CC_SESSION_CLEAR => {
             if let Some(session) = state.session(o.conn().session_id) {
                 session.fd = 0;
@@ -744,7 +757,6 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         sign(unsafe { reactor_upstream::reactor_interest(reactor, socket, kind, 0) })
     };
     let conn_socket = || o.conn().socket.cast::<SocketRecord>();
-    let event_socket = || o.event().socket.cast::<SocketRecord>();
     let port = || {
         let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
         Some(port)
@@ -752,8 +764,13 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_REACTOR_DEL => change(o.ctx.sock, 2, 0),
         OP_PORT_DEL => {
-            // SAFETY: one of the server's live ports.
-            change(unsafe { port_config::of(port()?) }.socket.cast(), 2, 0);
+            change(
+                o.server()
+                    .port_socket_at(usize::try_from(arg).ok()?)?
+                    .as_ptr(),
+                2,
+                0,
+            );
             0
         }
         OP_RT_DGRAM_BIND => {
@@ -761,9 +778,8 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let port = port()?;
             // SAFETY: one of the server's live ports.
             let config = unsafe { port_config::of(port) };
-            let socket = config.socket.cast::<SocketRecord>();
-            // SAFETY: the port's live listening socket.
-            let fd = unsafe { (*socket).fd };
+            let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
+            let fd = socket.fd();
             // SAFETY: the connection table's slot for the listening fd.
             let serv_sock = unsafe { &mut *o.connection(c_long::from(fd), 0) };
             serv_sock.fd = fd;
@@ -771,21 +787,20 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             serv_sock.object = port;
             // SAFETY: the calling thread's own id.
             config.thread_id = unsafe { libc::pthread_self() };
-            change(socket, 0, SW_EVENT_READ)
+            change(socket.as_ptr(), 0, SW_EVENT_READ)
         }
         OP_CONN_UNREAD => interest(conn_socket(), 4),
         OP_RD_UNREAD => interest(o.ctx.sock, 4),
-        OP_RT_REMOVE_WRITE => interest(event_socket(), 5),
+        OP_RT_REMOVE_WRITE => interest(o.event().socket.cast(), 5),
         OP_WR_READ_ONLY => {
             change(o.ctx.sock, 1, SW_EVENT_READ);
             0
         }
         OP_REACTOR_CLOSE => {
-            // SAFETY: the connection's live socket.
-            o.handle().close(unsafe { &mut *conn_socket() });
+            o.handle().close(o.conn_socket()?);
             0
         }
-        OP_WR_CLOSE => sign(o.handle().close(o.sock())),
+        OP_WR_CLOSE => sign(o.handle().close(o.sock()?)),
         OP_WR_CLOSE_ERRNO => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             #[expect(
@@ -844,14 +859,13 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_RT_POP => {
-            // SAFETY: the event's live socket, whose output buffer holds the front.
-            let buffer = unsafe { (*event_socket()).output.out_buffer };
-            // SAFETY: as above.
+            let buffer = o.event_socket()?.read(|s| s.output.out_buffer);
+            // SAFETY: the event socket's live buffer, which holds the front.
             unsafe { swr_cpp_buffer_pop(buffer.cast()) };
             0
         }
         OP_WR_FRONT => {
-            let buffer = o.sock().output.out_buffer;
+            let buffer = o.sock()?.read(|s| s.output.out_buffer);
             // SAFETY: the socket's output buffer is null or live.
             if unsafe { empty(buffer) } {
                 return Some(0);
@@ -860,18 +874,19 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             1 + u64::from(unsafe { swr_cpp_buffer_typed_front(buffer.cast()) }.kind)
         }
         OP_CC_QUEUE_CLOSE => {
-            let output = &mut o.sock().output;
-            if output.out_buffer.is_null() {
-                output.out_buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+            let sock = o.sock()?;
+            let mut buffer = sock.read(|s| s.output.out_buffer);
+            if buffer.is_null() {
+                buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+                sock.edit(|s| s.output.out_buffer = buffer);
             }
             // SAFETY: the socket's live output buffer.
-            unsafe { swr_cpp_buffer_typed_close(output.out_buffer.cast()) };
+            unsafe { swr_cpp_buffer_typed_close(buffer.cast()) };
             o.conn().close_queued = 1;
             0
         }
         OP_CC_WATCH_WRITE => {
-            // SAFETY: the context's live socket.
-            let events = what_event_want(unsafe { &*o.ctx.sock }, SW_EVENT_WRITE);
+            let events = o.sock()?.read(|s| what_event_want(s, SW_EVENT_WRITE));
             // arg: the socket is out of the reactor
             change(o.ctx.sock, u32::from(arg == 0), events)
         }
@@ -884,10 +899,11 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CC_RECV_FREE => {
             // free the reception memory buffer
-            let sock = o.sock();
+            let sock = o.sock()?;
+            let buffer = sock.read(|s| s.recv_buffer);
             // SAFETY: the socket's `new String`, not used again.
-            unsafe { delete_string(sock.recv_buffer.cast()) };
-            sock.recv_buffer = core::ptr::null_mut();
+            unsafe { delete_string(buffer.cast()) };
+            sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
             0
         }
         OP_CC_HTTP_OBJECT => u64::from(o.port().open_http_protocol && !o.conn().object.is_null()),
@@ -902,8 +918,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 l_onoff: 1,
                 l_linger: 0,
             };
-            // SAFETY: the connection's live socket.
-            let fd = unsafe { (*conn_socket()).fd };
+            let fd = o.conn_socket()?.fd();
             #[expect(clippy::cast_possible_truncation, reason = "sizeof(struct linger)")]
             let size = size_of::<libc::linger>() as libc::socklen_t;
             let value = (&raw const linger).cast();
@@ -915,7 +930,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_NOTIFY_CONNECT | OP_WR_NOTIFY_CLOSE | OP_WR_BUFFER_EMPTY => {
             let (conn, event) = match op {
                 // A session socket's object is its connection.
-                OP_NOTIFY_CONNECT => (o.sock().object.cast(), EVENT_CONNECT),
+                OP_NOTIFY_CONNECT => (o.sock()?.read(|s| s.object).cast(), EVENT_CONNECT),
                 OP_WR_NOTIFY_CLOSE => (o.ctx.conn, EVENT_CLOSE),
                 _ => {
                     o.conn().high_watermark = 0;
@@ -929,16 +944,14 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             }
             0
         }
-        // SAFETY: a TLS socket's live record.
-        OP_SSL_ACCEPT => sign(unsafe { tls::socket_ssl_accept(o.ctx.sock) }),
-        // SAFETY: as above.
-        OP_CC_SSL_SHUTDOWN => u64::from(unsafe { tls::socket_ssl_shutdown(o.ctx.sock) }),
+        OP_SSL_ACCEPT => sign(o.sock().map_or(-1, tls::socket_ssl_accept)),
+        OP_CC_SSL_SHUTDOWN => u64::from(o.sock().is_some_and(tls::socket_ssl_shutdown)),
         OP_CC_SSL_CLOSE => {
-            let socket = conn_socket();
-            // SAFETY: the connection's live TLS socket.
-            unsafe { (*socket).ssl_quiet_shutdown = o.conn().peer_closed };
-            // SAFETY: as above.
-            unsafe { tls::socket_ssl_close(socket) };
+            if let Some(socket) = o.conn_socket() {
+                let quiet = o.conn().peer_closed;
+                socket.edit(|record| record.ssl_quiet_shutdown = quiet);
+                tls::socket_ssl_close(socket);
+            }
             0
         }
         op => return native(o, op, arg),
@@ -982,11 +995,11 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_RD_DTLS => {
             // SAFETY: the context's live DTLS port and its session socket.
-            u64::from(unsafe { crate::dtls::on_read(o.ctx.port, o.sock(), o.event().fd) })
+            u64::from(unsafe { crate::dtls::on_read(o.ctx.port, o.sock()?, o.event().fd) })
         }
         OP_CC_DTLS_FREE => {
             // SAFETY: the closing socket's live port; nothing uses its session after.
-            unsafe { crate::dtls::free(o.ctx.port, o.sock().fd) };
+            unsafe { crate::dtls::free(o.ctx.port, o.sock()?.fd()) };
             0
         }
         OP_WR_TIMER_DELAY => {
@@ -995,13 +1008,14 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 reason = "C++'s implicit double to long"
             )]
             let delay = o.port().max_idle_time as c_long;
+            let timer = o.sock()?.read(|s| s.output.send_timer);
             // SAFETY: the socket's live send timer.
-            unsafe { swoole_timer_delay(o.sock().output.send_timer.cast(), delay) };
+            unsafe { swoole_timer_delay(timer.cast(), delay) };
             0
         }
         OP_RESUME_READ => {
             // The firing timer's reactor: this thread's.
-            crate::reactor_handle::Reactor::thread().interest(o.sock(), 2, 0);
+            crate::reactor_handle::Reactor::thread().interest(o.sock()?, 2, 0);
             o.conn().timer = core::ptr::null_mut();
             0
         }
@@ -1075,23 +1089,32 @@ fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
 
 /// `ReactorThread_onWrite`'s state after flushing.
 fn write_state(o: &Objects<'_>) -> u64 {
-    let (sock, conn) = (o.sock(), o.conn());
+    let conn = o.conn();
+    let (out, buffer_size, timer, removed) = o.read_sock(|s| {
+        let output = &s.output;
+        (
+            output.out_buffer,
+            output.buffer_size,
+            output.send_timer,
+            s.removed != 0,
+        )
+    });
     // SAFETY: the socket's output buffer is null or live.
-    let length = unsafe { length(sock.output.out_buffer) };
+    let length = unsafe { length(out) };
     let buffer_empty = o
         .state
         .callbacks
         .slot(CB_BUFFER_EMPTY)
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
     let flag = |set: bool, bit: u64| if set { bit } else { 0 };
-    flag(conn.overflow != 0 && length < sock.output.buffer_size, OVERFLOW_DRAINED)
+    flag(conn.overflow != 0 && length < buffer_size, OVERFLOW_DRAINED)
         | flag(
             buffer_empty && conn.high_watermark != 0 && length <= o.port().buffer_low_watermark,
             LOW_WATERMARK,
         )
-        | flag(!sock.output.send_timer.is_null(), SEND_TIMER)
+        | flag(!timer.is_null(), SEND_TIMER)
         // SAFETY: as above.
-        | flag(unsafe { empty(sock.output.out_buffer) }, OUT_EMPTY)
+        | flag(unsafe { empty(out) }, OUT_EMPTY)
         | flag(conn.peer_closed != 0, PEER_CLOSED)
-        | flag(sock.removed != 0, REMOVED)
+        | flag(removed, REMOVED)
 }

@@ -222,14 +222,11 @@ pub(crate) fn poll(socket: Co, event: u32, timeout: f64) -> bool {
 /// writer closed the socket (`event_socket` no longer names `owner`, the native
 /// object over `socket`, or left the reactor).
 ///
-/// # Safety
-/// `event_socket` is the live `network::Socket` the event came from; a resumed
-/// coroutine may free the record but not `event_socket`.
-pub(crate) unsafe fn error_event(socket: Co, event_socket: *const swoole_rs_reactor::SocketRecord) {
+/// A resumed coroutine may free the record but not `event_socket`.
+pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_reactor::Socket<'_>) {
     for event in [WRITE, READ] {
-        // SAFETY: the live network::Socket (see above).
-        let record = unsafe { &*event_socket };
-        if event == READ && (record.object != socket.this() || record.removed != 0) {
+        let (object, removed) = event_socket.read(|record| (record.object, record.removed));
+        if event == READ && (object != socket.this() || removed != 0) {
             return;
         }
         // The record is live: it still owns `event_socket`.
@@ -440,7 +437,10 @@ mod tests {
                 }
             })));
             s.0.err_code = 9;
-            unsafe { error_event(s.co(), event_socket) };
+            error_event(
+                s.co(),
+                unsafe { swoole_rs_reactor::Socket::from_ptr(event_socket) }.unwrap(),
+            );
             let mut want = vec!["resume:8".to_string()];
             if object_matches && !removed && !close_in_writer {
                 want.push("resume:7".into());

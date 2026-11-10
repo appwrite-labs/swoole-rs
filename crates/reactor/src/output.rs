@@ -178,9 +178,9 @@ pub struct OwnedOutputResult {
 /// commit the cursor and the socket's wait flags, and detach a finished chunk.
 ///
 /// # Safety
-/// `socket` and `buffer` are live and exclusive apart from `hooks`' own use of the socket.
+/// `buffer` is live and exclusive.
 pub unsafe fn handle_send_owned(
-    socket: *mut crate::SocketRecord,
+    socket: crate::Socket<'_>,
     buffer: *mut swoole_rs_buffer::Buffer,
     hooks: &impl OutputEffects,
 ) -> OwnedOutputResult {
@@ -216,8 +216,7 @@ pub unsafe fn handle_send_owned(
             return output;
         }
     }
-    // SAFETY: the effects returned; the caller lends the socket exclusively.
-    output.result.publish(unsafe { &mut (*socket).output });
+    socket.edit(|record| output.result.publish(&mut record.output));
     if output.result.pop {
         // SAFETY: detach transfers custody to the caller without invoking a disposer.
         output.status =
@@ -355,8 +354,9 @@ mod tests {
                 0
             );
             let hooks = hooks(socket.cast(), &mut (*socket).kernel_nobufs);
+            let handle = crate::Socket::from_ptr(socket).unwrap();
             reset(2, 0, false);
-            let sent = handle_send_owned(socket, queue, &hooks);
+            let sent = handle_send_owned(handle, queue, &hooks);
             assert_eq!(
                 (sent.status, sent.result.code, sent.result.offset),
                 (0, -1, 2)
@@ -369,7 +369,7 @@ mod tests {
             );
             assert_eq!(front.offset, 2);
             reset(-1, libc::EPIPE, false);
-            let closed = handle_send_owned(socket, queue, &hooks);
+            let closed = handle_send_owned(handle, queue, &hooks);
             assert_eq!(
                 (
                     closed.status,
@@ -384,7 +384,7 @@ mod tests {
             );
             assert_eq!(front.offset, 2);
             reset(3, 0, false);
-            let completed = handle_send_owned(socket, queue, &hooks);
+            let completed = handle_send_owned(handle, queue, &hooks);
             assert_eq!((completed.status, completed.result.pop), (0, true));
             assert!(completed.detached.token.is_null() && completed.detached.dispose.is_none());
             assert_eq!(
