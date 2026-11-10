@@ -151,8 +151,12 @@ impl<E: Effects> Recv<'_, E> {
     }
     /// Removes the dispatched bytes, so the buffer starts at the next package, as
     /// upstream's leaves it, before the loop reads, fails or returns.
+    /// A callback that closed the socket may have freed the buffer, which upstream
+    /// leaves alone then, so nothing is removed.
     fn settle(&mut self) {
-        if self.start > 0 {
+        if self.flag(FLAG_REMOVED) && !self.flag(FLAG_PAUSED) {
+            self.start = 0;
+        } else if self.start > 0 {
             let start = std::mem::take(&mut self.start);
             let offset = self.offset();
             self.op(OP_REDUCE, start as u64);
@@ -455,8 +459,10 @@ mod tests {
         chunks: Vec<&'static [u8]>,
         /// `FLAG_REMOVED` and `FLAG_PAUSED`, as the socket reports them.
         gone: u32,
-        /// What `gone` becomes at the first dispatch (a callback closing or pausing).
+        /// What `gone` becomes at dispatch number `gone_at` (a callback closing or pausing).
         gone_on_dispatch: u32,
+        gone_at: usize,
+        dispatches: usize,
         wait: bool,
         events: Vec<String>,
     }
@@ -483,6 +489,8 @@ mod tests {
                 chunks,
                 gone: 0,
                 gone_on_dispatch: 0,
+                gone_at: 1,
+                dispatches: 0,
                 wait: false,
                 events: Vec::new(),
             }
@@ -523,7 +531,10 @@ mod tests {
                     let end = arg + usize::try_from(self.buffer.offset).unwrap();
                     let packet = String::from_utf8_lossy(&self.storage[arg..end]).into_owned();
                     self.events.push(format!("package:{packet}"));
-                    self.gone |= self.gone_on_dispatch;
+                    self.dispatches += 1;
+                    if self.dispatches == self.gone_at {
+                        self.gone |= self.gone_on_dispatch;
+                    }
                     0
                 }
                 OP_REDUCE => {
@@ -634,6 +645,23 @@ mod tests {
         native.gone_on_dispatch = FLAG_REMOVED;
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(native.events, ["recv:16", "length:4", "package:\x01a"]);
+
+        // Closed by a later package's callback: the buffer may be gone, so nothing is
+        // removed from it, as upstream leaves it.
+        let mut native = Native::new(MODE_LENGTH, 16, vec![b"\x01a\x01b\x01c"]);
+        native.gone_on_dispatch = FLAG_REMOVED;
+        native.gone_at = 2;
+        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(
+            native.events,
+            [
+                "recv:16",
+                "length:6",
+                "package:\x01a",
+                "length:4",
+                "package:\x01b"
+            ]
+        );
 
         let mut native = Native::new(MODE_LENGTH, 16, vec![b"\x01a\x01b\x02", b"c"]);
         native.gone_on_dispatch = FLAG_REMOVED | FLAG_PAUSED;
