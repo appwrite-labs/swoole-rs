@@ -309,7 +309,8 @@ fn task_coroutine(serv: view::Server<'_>) -> bool {
 }
 
 /// `Server::is_sync_process()` of the running server.
-pub(crate) fn sync_server() -> bool {
+#[must_use]
+pub fn sync_server() -> bool {
     server().is_some_and(|serv| match methods::swoole_get_worker_type() {
         MANAGER => true,
         TASK_WORKER => !task_coroutine(serv),

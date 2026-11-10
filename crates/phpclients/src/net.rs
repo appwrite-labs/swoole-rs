@@ -277,6 +277,12 @@ pub fn client_class() -> *mut zend_class_entry {
     CLIENT.entry()
 }
 
+/// `Swoole\Client`.
+#[must_use]
+pub fn client() -> &'static Class {
+    &CLIENT
+}
+
 swoole_rs_zend::minit!(php_swoole_client_minit => register);
 
 /// `php_swoole_client_minit`, after `Swoole\Exception` is registered.
