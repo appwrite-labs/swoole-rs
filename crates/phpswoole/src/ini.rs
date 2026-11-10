@@ -115,12 +115,7 @@ static mut ENTRIES: [zend_ini_entry_def; 11] = [
 /// # Safety
 /// Called once by module startup after its globals constructor. `globals` is the
 /// process-lifetime address of `swoole_globals` (NTS) or `swoole_globals_id` (ZTS).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_register_ini(
-    globals: *mut c_void,
-    number: c_int,
-    kind: c_int,
-) {
+pub unsafe fn swr_v1_phpswoole_register_ini(globals: *mut c_void, number: c_int, kind: c_int) {
     let entries = ptr::addr_of_mut!(ENTRIES).cast::<zend_ini_entry_def>();
     for index in 0..10 {
         // SAFETY: startup alone writes this in-bounds definition before registration.

@@ -520,7 +520,6 @@ extern "C" fn event_free() {
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's MSHUTDOWN.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let mut steps = vec![
         Step::Hook(swoole_rs_phphelpers::known_free),
@@ -541,7 +540,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
 /// `PHP_RINIT_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
@@ -591,7 +589,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RSHUTDOWN.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
