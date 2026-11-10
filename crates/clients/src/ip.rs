@@ -11,8 +11,8 @@ pub struct ClientsIp {
 /// Input denotes `length` initialized readable bytes, or null for length0. Native
 /// `std::string` callers pass their full bytes; parsing stops at the first NUL to
 /// preserve their original `c_str/inet_pton` boundary. No pointer is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ip(
+#[must_use]
+pub unsafe fn swr_v1_clients_ip(
     version: u8,
     data: *const u8,
     length: usize,
@@ -50,8 +50,8 @@ pub unsafe extern "C" fn swr_v1_clients_ip(
 /// # Safety
 /// Address denotes exactly4 (version4) or16 (version6) initialized bytes. No
 /// pointer is retained. Original IPv4 policy recognizes only127.0.0.1, not /8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_loopback(version: u8, address: *const u8) -> u8 {
+#[must_use]
+pub unsafe fn swr_v1_clients_loopback(version: u8, address: *const u8) -> u8 {
     let length = match version {
         4 => 4,
         6 => 16,
@@ -77,8 +77,8 @@ pub struct ClientsIpText {
 /// # Safety
 /// Input denotes4 (version4) or16 (version6) initialized address bytes. No pointer
 /// is retained. DNS IPv6 output deliberately keeps all eight four-digit groups.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ip_text(version: u8, address: *const u8) -> ClientsIpText {
+#[must_use]
+pub unsafe fn swr_v1_clients_ip_text(version: u8, address: *const u8) -> ClientsIpText {
     let mut output = ClientsIpText {
         bytes: [0; 40],
         length: 0,

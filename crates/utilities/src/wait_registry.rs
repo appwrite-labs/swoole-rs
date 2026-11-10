@@ -172,8 +172,8 @@ impl Registry {
 }
 
 /// Bytes `sw_atomic_wait_init` allocates from the shared memory pool.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_wait_registry_size() -> usize {
+#[must_use]
+pub fn swr_v1_utils_wait_registry_size() -> usize {
     size_of::<Registry>()
 }
 
@@ -181,8 +181,7 @@ pub extern "C" fn swr_v1_utils_wait_registry_size() -> usize {
 /// # Safety
 /// `memory` is null or writable for [`swr_v1_utils_wait_registry_size`] bytes,
 /// shared with every process that waits, and lives as long as they do.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_wait_registry_init(memory: *mut c_void) -> bool {
+pub unsafe fn swr_v1_utils_wait_registry_init(memory: *mut c_void) -> bool {
     if memory.is_null() || !memory.cast::<Registry>().is_aligned() {
         return false;
     }

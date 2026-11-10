@@ -611,12 +611,6 @@ pub extern "C" fn swr_v1_curl_multi_running(multi: &Multi) -> c_int {
     multi.running.get()
 }
 
-/// The coroutine waiting on the multi, if any (`Multi::check_bound_co`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_co(multi: &Multi) -> *mut c_void {
-    multi.co.get()
-}
-
 /// `Multi::add_handle`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_multi_add_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
@@ -649,8 +643,7 @@ pub unsafe extern "C" fn swr_v1_curl_multi_select(
 
 /// `Multi::exec`; [`EXEC_NEEDS_COROUTINE`] when it must wait outside a
 /// coroutine or while another one waits.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_exec(multi: &Multi, handle: &mut Handle) -> CURLcode {
+pub fn swr_v1_curl_multi_exec(multi: &Multi, handle: &mut Handle) -> CURLcode {
     multi.exec(handle)
 }
 

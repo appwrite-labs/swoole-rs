@@ -513,64 +513,39 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 /// `SW_WEBSOCKET_FRAME_HEADER_SIZE`: header, mask and a 64-bit length.
 const WEBSOCKET_FRAME_HEADER_SIZE: u8 = 2 + 4 + 8;
 
-/// `ListenPort::init_protocol()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10ListenPort13init_protocolEv")
-)]
-pub(crate) extern "C" fn init_protocol(port: *mut c_void) {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
+/// `ListenPort::init_protocol()`, over the port's settings.
+pub fn init_protocol(config: &mut PortConfig) {
     let dtls = config.is_dtls();
     init_protocol_over(config, || dtls);
 }
 
-/// `ListenPort::set_eof_protocol(eof, find_from_right)`, given the string's bytes.
-///
-/// # Safety
-/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile,
-/// and `eof` covers `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_set_eof(
-    port: *mut c_void,
-    eof: *const u8,
-    length: usize,
-    find_from_right: bool,
-) {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { port_config::of(port) };
+/// `ListenPort::set_eof_protocol(eof, find_from_right)`, given the string's bytes: at
+/// most the first eight.
+pub fn set_eof_protocol(config: &mut PortConfig, eof: &[u8], find_from_right: bool) {
     config.open_eof_check = true;
     let protocol = &mut config.protocol;
     protocol.split_by_eof = !find_from_right;
-    let length = length.min(protocol.package_eof.len());
-    // SAFETY: `eof` covers `length` bytes, and `length` fits the EOF array.
-    unsafe { ptr::copy_nonoverlapping(eof, protocol.package_eof.as_mut_ptr(), length) };
+    let length = eof.len().min(protocol.package_eof.len());
+    for (slot, &byte) in protocol.package_eof.iter_mut().zip(eof) {
+        *slot = byte;
+    }
     #[expect(clippy::cast_possible_truncation, reason = "at most 8")]
     let length = length as u8;
     protocol.package_eof_len = length;
 }
 
 /// `ListenPort::set_length_protocol(length_offset, length_type, body_offset)`.
-///
-/// # Safety
-/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10ListenPort19set_length_protocolEjcj")
-)]
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "the narrowing stores of the C++ fields"
 )]
-pub unsafe extern "C" fn set_length_protocol(
-    port: *mut c_void,
+pub fn set_length_protocol(
+    config: &mut PortConfig,
     length_offset: u32,
     length_type: c_char,
     body_offset: u32,
 ) {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { port_config::of(port) };
     config.open_length_check = true;
     let protocol = &mut config.protocol;
     protocol.package_length_type = length_type.to_ne_bytes()[0];
@@ -581,16 +556,7 @@ pub unsafe extern "C" fn set_length_protocol(
 
 /// `ListenPort::set_stream_protocol()`: length framing as `Stream::set_protocol`
 /// sets it, a network-order u32 before the body.
-///
-/// # Safety
-/// `port` is a live `ListenPort` whose settings nothing else touches meanwhile.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10ListenPort19set_stream_protocolEv")
-)]
-pub unsafe extern "C" fn set_stream_protocol(port: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { port_config::of(port) };
+pub fn set_stream_protocol(config: &mut PortConfig) {
     config.open_length_check = true;
     let protocol = &mut config.protocol;
     protocol.get_package_length = callback(Callback::DefaultLength);
@@ -604,12 +570,8 @@ pub unsafe extern "C" fn set_stream_protocol(port: *mut c_void) {
 ///
 /// # Safety
 /// `port` is a live `ListenPort` with an SSL context.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10ListenPort8ssl_initEv")
-)]
 #[must_use]
-pub unsafe extern "C" fn ssl_init(port: *const c_void) -> bool {
+pub unsafe fn ssl_init(port: *const c_void) -> bool {
     // SAFETY: as the caller guarantees.
     let target = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
     // SAFETY: as the caller guarantees; ssl_init works on the port's own context.
@@ -1040,7 +1002,7 @@ mod tests {
                 let config = port.config();
                 config.protocol.package_eof = *b"xxxxxxxx";
                 let value: Vec<u8> = (0..length).map(|i| (i % 256) as u8).collect();
-                unsafe { swr_v1_ports_set_eof(port.at(), value.as_ptr(), value.len(), right) };
+                set_eof_protocol(config, &value, right);
                 let kept = length.min(8);
                 let mut eof = *b"xxxxxxxx";
                 eof[..kept].copy_from_slice(&value[..kept]);
@@ -1066,7 +1028,7 @@ mod tests {
             for offset in edges {
                 for body in edges {
                     let c_kind = c_char::from_ne_bytes([kind]);
-                    unsafe { set_length_protocol(port.at(), offset, c_kind, body) };
+                    set_length_protocol(config, offset, c_kind, body);
                     let p = &config.protocol;
                     let size = swoole_rs_corebase::swoole_type_size(c_kind);
                     assert!(config.open_length_check, "length check on");
@@ -1096,15 +1058,15 @@ mod tests {
         for iteration in 0..256u32 {
             config.protocol.get_package_length = ptr::without_provenance_mut(17);
             let kind = c_char::from_ne_bytes([iteration as u8]);
-            unsafe { set_length_protocol(port.at(), iteration * 257, kind, u32::MAX - iteration) };
+            set_length_protocol(config, iteration * 257, kind, u32::MAX - iteration);
             let eof = vec![iteration as u8; (iteration % 17) as usize];
-            unsafe { swr_v1_ports_set_eof(port.at(), eof.as_ptr(), eof.len(), iteration % 2 == 1) };
+            set_eof_protocol(config, &eof, iteration % 2 == 1);
             let eof_before = (
                 config.protocol.split_by_eof,
                 config.protocol.package_eof_len,
                 config.protocol.package_eof,
             );
-            unsafe { set_stream_protocol(port.at()) };
+            set_stream_protocol(config);
             let p = &config.protocol;
             assert!(
                 config.open_length_check && config.open_eof_check,
@@ -1241,5 +1203,70 @@ mod tests {
         assert!(conn.object.is_null(), "the request is freed and cleared");
         destroy_http_request(&raw mut conn);
         assert!(conn.object.is_null(), "no request: nothing to do");
+    }
+
+    /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers
+    /// `SO_ACCEPTCONN` with `ENOPROTOOPT`, not the `EINVAL` of a socket that isn't listening.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn server_port_import() {
+        log::swr_v1_core_set_log_host(crate::read::tests::record);
+        let mut port = Fresh::new();
+        assert!(!import(port.at(), libc::STDIN_FILENO));
+        assert_eq!(log::last_error(), libc::ENOTSOCK);
+
+        let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(!import(port.at(), sock));
+        assert_eq!(log::last_error(), libc::EINVAL);
+        unsafe { libc::close(sock) };
+    }
+
+    /// Upstream's `server_port.create`. `Server::add_port` creates the socket, then the
+    /// case does again. `cert_file` is written into its slot, as upstream assigns the
+    /// string, without the setter's file check.
+    #[test]
+    fn server_port_create() {
+        log::swr_v1_core_set_log_host(crate::read::tests::record);
+        let mut port = unbound_port(1, "127.0.0.1", 0, true);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(create_socket(at), 0, "add_port");
+        assert_eq!(0, create_socket(at));
+
+        let config = unsafe { port_config::of(at) };
+        config.open_eof_check = true;
+        config.protocol.package_eof_len = u8::try_from(SW_DATA_EOF_MAXLEN + 10).unwrap();
+        init_protocol(at);
+        assert_eq!(c"eof", get_protocols(config));
+        assert_eq!(
+            u32::from(config.protocol.package_eof_len),
+            SW_DATA_EOF_MAXLEN
+        );
+
+        assert!(ssl_context_init(at));
+        let context = config.ssl_context;
+        assert!(!unsafe { ssl_context_create(at, context, false) });
+        assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
+        let cert_file = unsafe { swoole_rs_tls::swr_v1_tls_owner_view(context) }.strings[4];
+        let set = |text: &str| unsafe {
+            swoole_rs_corebase::swr_v1_core_string_set(cert_file, text.as_ptr().cast(), text.len())
+        };
+        assert_eq!(set("server.crt"), 0, "cert_file = \"server.crt\"");
+        assert!(!unsafe { ssl_context_create(at, context, true) });
+        assert_eq!(set(""), 0, "cert_file.clear()");
+        assert!(unsafe { ssl_context_create(at, context, true) });
+
+        close(at);
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    /// Upstream's `server_port.dgram`.
+    #[test]
+    fn server_port_dgram() {
+        let mut port = unbound_port(2, "127.0.0.1", 0, true);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(create_socket(at), 0, "add_port");
+        assert_eq!(c"dgram", get_protocols(unsafe { port_config::of(at) }));
+        close_socket(at);
+        unsafe { port_config::swr_v1_port_config_free(port) };
     }
 }

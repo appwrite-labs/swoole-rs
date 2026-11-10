@@ -160,8 +160,7 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_advance(owner: *mut ReactorIov, n: i
 /// # Safety
 /// `owner` is live/exclusive; each payload is valid for the direction and the
 /// optional nonthrowing TLS effect is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_iov_owned(
+pub unsafe fn swr_v1_socket_iov_owned(
     fd: i32,
     write: bool,
     owner: *mut ReactorIov,

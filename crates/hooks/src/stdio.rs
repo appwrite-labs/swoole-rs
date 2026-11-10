@@ -107,8 +107,7 @@ static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 
 /// Install the build's [`Host`] and the runtime: native's `swoole_init` calls it.
 #[cfg(not(test))]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_install() {
+pub fn swr_v1_hook_install() {
     use swoole_rs_corebase::{Switch, built_with};
     static BUILT: OnceLock<Host> = OnceLock::new();
     #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]

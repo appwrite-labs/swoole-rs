@@ -3,8 +3,7 @@
 /// overflow has no defined native reference result; never perform it in Rust.
 /// # Safety
 /// `resolved` is initialized writable caller storage for this call only.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_file_range(
+pub unsafe fn swr_v1_httpbindings_file_range(
     size: i64,
     offset: i64,
     length: i64,

@@ -647,8 +647,7 @@ fn close(call: &Call) {
     let Ok((fd, reset)) = parsed else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    call.set_bool(unsafe { server_methods::close(serv.raw(), fd, reset) });
+    call.set_bool(server_methods::close(serv, fd, reset));
 }
 
 fn feedback(call: &Call, pause: bool) {
@@ -665,10 +664,7 @@ fn feedback(call: &Call, pause: bool) {
     } else {
         EVENT_RESUME_RECV
     };
-    // SAFETY: a live server and one of its connections.
-    call.set_bool(unsafe {
-        server_methods::feedback(serv.raw(), ptr::from_mut(conn).cast(), event)
-    });
+    call.set_bool(server_methods::feedback(serv, conn, event));
 }
 
 fn pause(call: &Call) {
@@ -719,8 +715,7 @@ fn stats(call: &Call) {
         i64::from(config.task_worker_num),
         // SAFETY: a live server.
         i64::try_from(serv.user_worker_num()).unwrap_or(i64::MAX),
-        // SAFETY: a live server.
-        i64::from(unsafe { server_methods::get_idle_worker_num(serv.raw()) }),
+        i64::from(server_methods::get_idle_worker_num(serv)),
         load(&gs.dispatch_count),
         load(&gs.request_count),
         load(&gs.response_count),
@@ -811,8 +806,7 @@ fn heartbeat(call: &Call) {
             if session_id > 0 && !serv.healthy(now, conn) {
                 if close {
                     conn.close_force = 1;
-                    // SAFETY: a live server.
-                    unsafe { server_methods::close(serv.raw(), session_id, false) };
+                    server_methods::close(serv, session_id, false);
                 }
                 // SAFETY: the return slot holds an array.
                 unsafe { add_next_index_long(call.return_value(), session_id) };
@@ -1120,8 +1114,7 @@ fn get_master_pid(call: &Call) {
 
 fn shutdown(call: &Call) {
     let serv = server(call);
-    // SAFETY: a live server.
-    call.set_bool(unsafe { server_methods::shutdown(serv.raw()) });
+    call.set_bool(server_methods::shutdown(serv));
 }
 
 fn stop(call: &Call) {

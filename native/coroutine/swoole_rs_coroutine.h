@@ -44,10 +44,6 @@ typedef struct {
 enum { SWR_CO_ON_YIELD = 0, SWR_CO_ON_RESUME = 1, SWR_CO_ON_CLOSE = 2 };
 /* This thread's scheduler (upstream's SW_THREAD_LOCAL Coroutine::scheduler_). */
 swr_v1_coroutine_scheduler *swr_v1_coroutine_scheduler_get(void);
-/* Coroutine::bailout: inside a coroutine callback(data) runs in the main
- * context (PHP's bailout, or the process exits); outside one, later resumes
- * are refused. */
-void swr_v1_coroutine_bail(void (*callback)(void *), void *data);
 #ifdef __cplusplus
 }
 #endif

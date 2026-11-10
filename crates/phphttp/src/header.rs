@@ -196,8 +196,7 @@ pub(crate) fn date() -> *mut zend_string {
 }
 
 /// `php_swoole_http_response_rshutdown`: drop the cached date.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_response_rshutdown() {
+pub extern "C" fn response_rshutdown() {
     let (_, date) = DATE_CACHE.replace((0, ptr::null_mut()));
     if !date.is_null() {
         // SAFETY: the cache's reference.

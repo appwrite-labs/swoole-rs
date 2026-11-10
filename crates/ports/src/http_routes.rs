@@ -360,12 +360,6 @@ pub mod exports {
     ///
     /// # Safety
     /// Upstream's: the port's protocol, a connection socket and its packet length.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"
-        )
-    )]
     pub unsafe extern "C" fn get_package_length(
         proto: *const c_void,
         socket: *mut SocketRecord,
@@ -388,12 +382,6 @@ pub mod exports {
     ///
     /// # Safety
     /// `socket` is a connection socket.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"
-        )
-    )]
     pub unsafe extern "C" fn get_package_length_size(socket: *mut SocketRecord) -> u8 {
         // SAFETY: as the caller guarantees.
         length_size(unsafe { connection(socket) })

@@ -307,7 +307,6 @@ pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord
 ///
 /// # Safety
 /// Both strings are NUL-terminated.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_log(
     origin: *const c_char,
     code: c_int,

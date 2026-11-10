@@ -436,7 +436,8 @@ pub(crate) fn check_bound(socket: Co, event: u32) {
 }
 
 /// `get_event_str(event)`.
-pub(crate) fn event_str(socket: Co, event: u32) -> &'static CStr {
+#[must_use]
+pub fn event_str(socket: Co, event: u32) -> &'static CStr {
     match socket.with_state(|state| state.event_name(event)) {
         0 => c"reading",
         1 => c"writing",

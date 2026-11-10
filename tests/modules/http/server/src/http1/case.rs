@@ -16,6 +16,8 @@ use super::{
     swr_v1_core_string_set,
 };
 use crate::{CppString, Event, Hook, Receive};
+use swoole_rs_ports::{lifecycle_native, methods};
+use swoole_rs_server::server_methods;
 
 const SW_LOG_INFO: c_int = 2;
 const SW_SOCK_SSL: c_int = 512;
@@ -114,22 +116,6 @@ struct Tick {
 }
 
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole10ListenPort19set_stream_protocolEv"]
-    fn port_set_stream_protocol(port: *mut c_void);
-    #[link_name = "_ZN6swoole10ListenPort19set_length_protocolEjcj"]
-    fn port_set_length_protocol(port: *mut c_void, offset: u32, kind: c_char, size: u32);
-    fn swr_v1_ports_set_eof(port: *mut c_void, eof: *const u8, length: usize, from_right: bool);
-    #[link_name = "_ZN6swoole10ListenPort13init_protocolEv"]
-    fn port_init_protocol(port: *mut c_void);
-    #[link_name = "_ZNK6swoole10ListenPort8ssl_initEv"]
-    fn port_ssl_init(port: *mut c_void) -> bool;
-    fn swr_v1_ports_context_dup(port: *const c_void) -> *const c_void;
-    fn swr_v1_ports_sni_add(
-        port: *mut c_void,
-        name: *const c_char,
-        length: usize,
-        context: *const c_void,
-    ) -> bool;
     fn swr_v1_tls_owner_view(owner: *const c_void) -> TlsView;
     fn swr_v1_tls_owner_set_path(
         owner: *const c_void,
@@ -140,12 +126,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_core_thread_global() -> *mut c_void;
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
-    #[link_name = "_ZN6swoole6Server18set_max_connectionEj"]
-    fn server_set_max_connection(serv: *mut c_void, max: u32);
-    #[link_name = "_ZN6swoole6Server8shutdownEv"]
-    fn server_shutdown(serv: *mut c_void) -> bool;
-    #[link_name = "_ZNK6swoole6Server5closeElb"]
-    fn server_close(serv: *mut c_void, session: c_long, reset: bool) -> bool;
     #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
     fn make_socket(fd: c_int, fd_type: c_int) -> *mut SocketHead;
     #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
@@ -281,14 +261,11 @@ pub(crate) unsafe fn swr_case_protocol_server(
 ) -> *mut c_void {
     let serv = Server::new(MODE_BASE);
     serv.config().worker_num = 1;
-    let port = serv.listen_port(SW_SOCK_TCP, 0);
-    // SAFETY: the live port.
-    unsafe {
-        match framing {
-            0 => port_set_stream_protocol(port.0),
-            1 => port_set_length_protocol(port.0, 0, b'l' as c_char, 4),
-            _ => swr_v1_ports_set_eof(port.0, b"\r\n".as_ptr(), 2, false),
-        }
+    let port = serv.listen_port(SW_SOCK_TCP, 0).settings();
+    match framing {
+        0 => methods::set_stream_protocol(port),
+        1 => methods::set_length_protocol(port, 0, b'l' as c_char, 4),
+        _ => methods::set_eof_protocol(port, b"\r\n", false),
     }
     serv.create();
     serv.on_worker_start(on_worker_start);
@@ -468,8 +445,8 @@ pub(crate) unsafe fn swr_case_ssl_server(
     set_ssl_path(port.ssl_context(), CERT_FILE, cert);
     set_ssl_path(port.ssl_context(), KEY_FILE, key);
     tls_fields(port.ssl_context()).http = 1;
-    // SAFETY: the live port.
-    unsafe { port_ssl_init(port.0) };
+    // SAFETY: the live port, with its context.
+    let _ = unsafe { methods::ssl_init(port.0) };
     let created = serv.create();
     serv.on_start(on_start);
     serv.on_worker_start(on_worker_start);
@@ -493,8 +470,8 @@ pub(crate) unsafe fn swr_case_abort_server(
     unsafe {
         *saved = SWOOLE_G_MAX_SOCKETS;
         SWOOLE_G_MAX_SOCKETS = max_sockets;
-        server_set_max_connection(serv.0, 1);
     }
+    server_methods::set_max_connection(serv.view(), 1);
     log_level(SW_LOG_WARNING);
     // SAFETY: a writable out-parameter.
     let ports = unsafe { &mut *ports };
@@ -540,8 +517,7 @@ pub(crate) unsafe fn swr_case_init_protocol(port: *mut c_void, websocket: bool) 
     if websocket {
         port.config().open_websocket_protocol = true;
     }
-    // SAFETY: the live port.
-    unsafe { port_init_protocol(port.0) };
+    methods::init_protocol(port.settings());
     &raw const port.config().protocol
 }
 
@@ -600,8 +576,7 @@ pub(crate) unsafe fn swr_case_start(serv: *mut c_void) -> c_int {
 }
 
 pub(crate) unsafe fn swr_case_shutdown(serv: *mut c_void) -> bool {
-    // SAFETY: a live server.
-    unsafe { server_shutdown(serv) }
+    server_methods::shutdown(Server(serv).view())
 }
 
 pub(crate) unsafe fn swr_case_master_pid(serv: *mut c_void) -> c_int {
@@ -621,8 +596,7 @@ pub(crate) unsafe fn swr_case_send(
 }
 
 pub(crate) unsafe fn swr_case_close(serv: *mut c_void, session_id: c_long) -> bool {
-    // SAFETY: a live server.
-    unsafe { server_close(serv, session_id, false) }
+    server_methods::close(Server(serv).view(), session_id, false)
 }
 
 pub(crate) unsafe fn swr_case_sendfile(
@@ -745,11 +719,10 @@ pub(crate) unsafe fn swr_case_ssl_sni(
     let port = Server(serv).get_primary_port();
     // SAFETY: the live port; its context's copy, which `sni_add` takes.
     unsafe {
-        let context = swr_v1_ports_context_dup(port.0);
-        set_ssl_path(context, CERT_FILE, cert);
-        set_ssl_path(context, KEY_FILE, key);
-        let name = CStr::from_ptr(name);
-        swr_v1_ports_sni_add(port.0, name.as_ptr(), name.count_bytes(), context);
+        let context = lifecycle_native::context_dup(port.0);
+        set_ssl_path(context.cast(), CERT_FILE, cert);
+        set_ssl_path(context.cast(), KEY_FILE, key);
+        lifecycle_native::sni_add(port.0, CStr::from_ptr(name).to_bytes(), context);
     }
 }
 
@@ -774,6 +747,6 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
 }
 
 pub(crate) unsafe fn swr_case_ssl_init(serv: *mut c_void) -> bool {
-    // SAFETY: the live primary port.
-    unsafe { port_ssl_init(Server(serv).get_primary_port().0) }
+    // SAFETY: the live primary port, with its context.
+    unsafe { methods::ssl_init(Server(serv).get_primary_port().0) }
 }

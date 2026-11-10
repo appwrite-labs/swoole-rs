@@ -10,13 +10,14 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, declare_long, declare_property_null,
     handlers, init_object, push_string, set_key,
@@ -56,13 +57,6 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 unsafe extern "C" {
     /// `sw_reactor()`.
     fn swr_v1_event_reactor() -> *mut c_void;
-    /// The HTTP/2 server's (crates/phphttp2).
-    fn swr_v1_phphttp2_server_goaway(
-        ctx: *mut Context,
-        code: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
     static swoole_socket_coro_ce: *mut zend_class_entry;
 }
 
@@ -126,8 +120,8 @@ method_table! {
 /// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
+pub unsafe fn response_minit(args: &MinitArgs) {
+    let codecs = args.codecs | u32::from(args.compression) << 3;
     // SAFETY: MINIT, with a static table.
     unsafe {
         RESPONSE.register(
@@ -547,15 +541,15 @@ fn goaway(call: &Call) {
             .and_then(|()| Ok((call.long(1, 0)?, call.str_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
         let debug = nullable(debug);
-        let (data, length) = if debug.is_null() {
-            (ptr::null(), 0)
+        let debug = if debug.is_null() {
+            &[][..]
         } else {
             // SAFETY: a live string argument.
-            let debug = unsafe { bytes(debug) };
-            (debug.as_ptr().cast(), debug.len())
+            unsafe { bytes(debug) }
         };
-        // SAFETY: a live HTTP/2 context and the debug data's span.
-        call.set_bool(unsafe { swr_v1_phphttp2_server_goaway(ctx, code, data, length) });
+        let server = crate::http2::server();
+        let ctx = crate::http2::Ctx::of(ctx);
+        call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
         Some(())
     };
     or_false(call, run());

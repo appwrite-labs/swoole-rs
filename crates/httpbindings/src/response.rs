@@ -21,8 +21,8 @@ pub fn response_header(name: &[u8]) -> i32 {
 
 /// Native codec selection before any allocation/backend call. Capabilities are
 /// zlib/Brotli/Zstd bits; unsupported methods retain the native warning path.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_httpbindings_codec(
+#[must_use]
+pub fn swr_v1_httpbindings_codec(
     method: i32,
     capabilities: u32,
     accepted: u32,
@@ -48,13 +48,8 @@ pub extern "C" fn swr_v1_httpbindings_codec(
 /// Preserve codec-specific native level policy. Zstd normalizes a captured local
 /// level; Brotli/zlib native callers publish the result to their original field.
 /// Brotli retains min-first and Zstd max-first order, with no clamp panic across C ABI.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_httpbindings_codec_level(
-    method: i32,
-    level: i32,
-    minimum: i32,
-    maximum: i32,
-) -> i32 {
+#[must_use]
+pub fn swr_v1_httpbindings_codec_level(method: i32, level: i32, minimum: i32, maximum: i32) -> i32 {
     match method {
         1 | 2 => match level {
             i32::MIN..=-1 => -1,

@@ -46,17 +46,13 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
-`Co`, reached by symbol through exports kept for this package alone
-(crates/hooks/src/socket_symbols.rs, under `upstream-symbols`): made and deleted
-through `swr_v1_hook_co_socket_make` and `_free`, its members called under their
-upstream symbols (the vectored ones over an `IOVector` owner
-`swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does) and the rest through
-`swr_v1_hook_co_socket_*`, and its fields
+`Co`, whose methods the cases call: made by `co_socket::make` and deleted by
+`swr_v1_hook_co_socket_free`, the vectored members over an `IOVector` owner
+`swr_v1_reactor_iov_prepare` makes (as crates/phpruntime does), and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
-`TimeoutController` are `swr_v1_hook_timeout_scope` and
-`swr_v1_hook_co_socket_timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
+`TimeoutController` are the crate's `TimeoutScope` and its `timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
 take the record's buffer fields. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
@@ -265,3 +261,34 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `async.misc` | `async.misc` |
 | `async.thread_starts_with_signals_blocked` | `pool::tests::thread_starts_with_signals_blocked` (crates/ossupport) |
 | `os.daemon` | `os.daemon` |
+
+`core-tests/src/coroutine/async.cpp` is Rust in `system/src/co_async.rs`, run by
+`hooks-system-rust`. `coroutine::async(handler, event, timeout)` and `async(fn)` are
+crates/hooks's `swr_v1_hook_async` and `swr_v1_hook_async_job` over `COROUTINE_ASYNC`,
+the operations the hooked functions use, and the package calls them through its
+`swoole-rs-hooks` dependency. `coroutine_async.gethostbyname` resolves www.baidu.com, so
+it is excluded as external network. It checks upstream's
+`(\d{1,3}).(\d{1,3}).(\d{1,3}).(\d{1,3})` match as an IPv4 parse, which accepts
+inet_ntop's output exactly when that output is a dotted quad.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `coroutine_async.usleep` | `coroutine_async.usleep` |
+| `coroutine_async.gethostbyname` | `coroutine_async.gethostbyname` (excluded: external network) |
+| `coroutine_async.error` | `coroutine_async.error` |
+| `coroutine_async.cancel` | `coroutine_async.cancel` |
+| `coroutine_async.timeout` | `coroutine_async.timeout` |
+
+`core-tests/src/coroutine/http_server.cpp`'s two TESTs have no Rust case. Their
+assertions are status 200 and the bodies of core-tests' own coroutine httplib server
+(`core-tests/include/httplib_server.h`, test-library code), as an httplib client thread
+sees them, so a port would test a Rust rewrite of that server and nothing in the
+build. The Swoole operations the server runs on already have cases:
+`coroutine_socket.bind_success`, `listen`, `accept`, `recv_success`,
+`write_and_read` and `cancel` (`SW_EVENT_READ`, which the server's `stop()` cancels its
+accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
+
+| Upstream TEST | Rust case or reason |
+| --- | --- |
+| `coroutine_http_server.get` | none: it asserts the test library's httplib server, whose Swoole operations are the cases above |
+| `coroutine_http_server.post` | none: as `get` |

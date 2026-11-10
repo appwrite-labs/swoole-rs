@@ -42,10 +42,10 @@ pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
-    CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Minit, RSHUTDOWN_BEGIN, RSHUTDOWN_END,
-    display_errors, enable_library, families, globals, load_library,
-    php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
-    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
+    CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs,
+    RSHUTDOWN_BEGIN, RSHUTDOWN_END, display_errors, enable_library, families, globals,
+    load_library, php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown,
+    swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{
@@ -110,7 +110,6 @@ pub fn exception_class() -> *mut zend_class_entry {
 /// (`module::startup`).
 /// # Safety
 /// Zend's MINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_int) -> c_int {
     begin(kind, module_number);
     let mut flags = constants::flags();

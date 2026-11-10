@@ -329,7 +329,6 @@ unsafe fn dispatch(frame: *mut zend_execute_data, operation: bool) -> Result<c_i
 /// `ASSIGN_DIM`'s complete typed-array opcode handler.
 /// # Safety
 /// Zend supplies a live frame at its assignment instruction.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_assign(frame: *mut zend_execute_data) -> c_int {
     // SAFETY: this native entry follows Zend's user opcode callback contract.
     finish(unsafe { dispatch(frame, false) })
@@ -337,7 +336,6 @@ pub unsafe extern "C" fn swr_v1_phpstdext_assign(frame: *mut zend_execute_data) 
 /// `ASSIGN_DIM_OP`'s complete typed-array opcode handler.
 /// # Safety
 /// Zend supplies a live frame at its assignment operation instruction.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_assign_op(frame: *mut zend_execute_data) -> c_int {
     // SAFETY: this native entry follows Zend's user opcode callback contract.
     finish(unsafe { dispatch(frame, true) })

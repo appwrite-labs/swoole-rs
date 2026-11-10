@@ -655,16 +655,19 @@ fn bailout_() {
         let exit = Cell::new(false);
         let end = Cell::new(false);
         let bailed = Cell::new(false);
+        // Outside the coroutine, as upstream's std::function copy is: the coroutine
+        // ends, and its stack is freed, before the loop runs the deferred call.
+        let deferred = || {
+            bailed.set(true);
+            bailout(None);
+            end.set(true);
+        };
+        let deferred: &dyn Fn() = &deferred;
+        let data = (&raw const deferred).cast_mut().cast();
         co_run(|| {
-            let deferred = || {
-                bailed.set(true);
-                bailout(None);
-                end.set(true);
-            };
-            let deferred: &dyn Fn() = &deferred;
             // SAFETY: the loop runs the deferred call before `co_run` returns, while
             // `deferred` is live.
-            unsafe { swr_case_event_defer(Some(call), (&raw const deferred).cast_mut().cast()) };
+            unsafe { swr_case_event_defer(Some(call), data) };
             exit.set(true);
         });
 

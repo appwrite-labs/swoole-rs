@@ -24,6 +24,7 @@ use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_p
 use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, bailout, declare_bool,
     declare_long, declare_property_null, declare_string, handlers, method_table, string,
@@ -286,19 +287,6 @@ unsafe extern "C" {
     fn get_read_buffer(socket: Socket) -> *mut Buffer;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
-    /// The HTTP/2 server (crates/phphttp2): a stream's reset, and a
-    /// connection's session. `receive` leaves a bailout pending.
-    fn swr_v1_phphttp2_server_reset(ctx: *mut c_void, stream_id: u32, code: u32);
-    fn swr_v1_phphttp2_session_new(
-        fd: i64,
-        default_ctx: *mut c_void,
-        max_body_size: u32,
-        is_coro: bool,
-        handle: unsafe extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    );
-    fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_char) -> c_int;
-    fn swr_v1_phphttp2_session_free(fd: i64);
     fn llhttp_should_keep_alive(parser: *const crate::state::Llhttp) -> c_int;
 }
 
@@ -413,21 +401,13 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 /// # Safety
 /// Called once, at MINIT, with Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
-    exception: *mut zend_class_entry,
-    short_name: bool,
-    compression: bool,
-) -> *mut zend_class_entry {
+pub unsafe fn server_coro_minit(args: &MinitArgs) {
+    let (exception, short_name, compression) = (args.exception, args.shortname, args.compression);
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phphttp_server_coro_minit(exception, short_name, compression) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-            std::ptr::null_mut()
-        }
+    if let Err(error) = result {
+        error.defer();
+        swoole_rs_zend::bailout::finish();
     }
 }
 
@@ -1279,32 +1259,33 @@ fn http2(conn: &Connection, context: *mut Context) {
         reason = "upstream's uint32_t package_max_length"
     )]
     let max_body_size = conn.package_max_length() as u32;
-    // SAFETY: the context outlives the session, freed below; the handler
-    // gets the server, which outlives the connection.
-    unsafe {
-        swr_v1_phphttp2_session_new(
-            fd,
-            context,
-            max_body_size,
-            true,
-            http2_request_handler,
-            ptr::from_ref(conn.server).cast_mut().cast(),
-        );
-    };
-    loop {
-        // SAFETY: a live socket; the frame stays in its read buffer.
-        let retval = unsafe { co::recv_packet(conn.socket, 0.0) };
-        let frame = conn.buffer().str.cast::<c_char>();
-        // SAFETY: a whole frame.
-        if retval <= 0 || unsafe { swr_v1_phphttp2_session_receive(fd, frame) } == SW_ERR {
-            break;
+    if let Some(server) = crate::http2::server() {
+        // SAFETY: the context outlives the session, freed below; the handler
+        // gets the server, which outlives the connection.
+        unsafe {
+            (server.session_new)(
+                fd,
+                crate::http2::Ctx::of(context),
+                max_body_size,
+                true,
+                http2_request_handler,
+                ptr::from_ref(conn.server).cast_mut().cast(),
+            );
+        };
+        loop {
+            // SAFETY: a live socket; the frame stays in its read buffer.
+            let retval = unsafe { co::recv_packet(conn.socket, 0.0) };
+            let frame = conn.buffer().str.cast::<u8>();
+            // SAFETY: a whole frame.
+            if retval <= 0 || unsafe { (server.session_receive)(fd, frame) } == SW_ERR {
+                break;
+            }
+            if bailout::pending() {
+                break;
+            }
         }
-        if bailout::pending() {
-            break;
-        }
+        (server.session_free)(fd);
     }
-    // SAFETY: the session made above.
-    unsafe { swr_v1_phphttp2_session_free(fd) };
     send::state(context).detached = 1;
     context::release_objects(context);
 }
@@ -1385,8 +1366,10 @@ fn http2_request(
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = send::state(context).stream_id;
-                // SAFETY: the stream's live context.
-                unsafe { swr_v1_phphttp2_server_reset(context, stream_id, HTTP2_INTERNAL_ERROR) };
+                if let Some(server) = crate::http2::server() {
+                    let context = crate::http2::Ctx::of(context);
+                    (server.reset)(context, stream_id, HTTP2_INTERNAL_ERROR);
+                }
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
             }
             Ok(true) => {}

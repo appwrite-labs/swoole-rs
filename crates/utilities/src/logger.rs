@@ -646,7 +646,6 @@ pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
 ///
 /// # Safety
 /// `origin` and `message` are NUL-terminated.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_utils_log(
     kind: c_int,
     level: c_int,

@@ -20,7 +20,7 @@ use crate::server_methods::{end_arg, on_base};
 use crate::state::ServerState;
 use crate::{MODE_PROCESS, MODE_THREAD};
 
-/// `swoole::Factory` (`swoole_server.h`): its server, then thread mode's manager state
+/// `swoole::Factory` (upstream's `swoole_server.h`): its server, then thread mode's manager state
 /// (crates/process/src/workers/thread.rs), null in the other modes.
 #[repr(C)]
 pub(crate) struct Factory {

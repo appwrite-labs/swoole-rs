@@ -45,7 +45,6 @@ zval *swr_zend_property_array(zend_class_entry *ce, zend_object *object, const c
 
 void swr_zend_property_merge(zend_class_entry *ce, zend_object *object, const char *name, size_t length, zval *settings) {
     zval *property = swr_zend_property_array(ce, object, name, length);
-    SEPARATE_ARRAY(property);
     php_array_merge(Z_ARRVAL_P(property), Z_ARRVAL_P(settings));
 }
 

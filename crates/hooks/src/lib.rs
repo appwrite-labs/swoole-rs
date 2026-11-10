@@ -41,8 +41,6 @@ pub mod sleep;
 pub mod socket_extra;
 pub mod socket_map;
 pub mod socket_members;
-#[cfg(feature = "upstream-symbols")]
-pub mod socket_symbols;
 pub mod socket_tls;
 pub mod socket_wait;
 #[cfg(feature = "ssh2")]
