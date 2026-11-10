@@ -169,6 +169,7 @@ def plan(args, reports):
         script('api-fuzz', 'tests/differential/fuzz.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
                '--seed', '0', '--programs', '500', '--jobs', args.jobs, '--cases', ROOT / 'tests/differential/cases',
                *report('api-fuzz'))
+        script('zend-bailout', 'tests/modules/zend/run.py', *php_for('curl', 'sockets'), *engines, *report('zend-bailout'))
     if integrate and {'base64', 'crc32'} & set(modules):
         reference_identity = reports / 'reference-identity.json'
         script('reference-identity', 'tools/extension_identity.py', '--source', ROOT / 'target/upstream/src',
@@ -284,7 +285,7 @@ def plan(args, reports):
                '--include-tls', *report('tls-constants'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file,async}.cpp, network/{client,dns,address,socket}.cpp,
-        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
+        # os/{timer,pipe,process_pool,wait,async}.cpp, os.daemon and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
@@ -297,6 +298,9 @@ def plan(args, reports):
                '--exclude', 'coroutine_async.gethostbyname=' + NETWORK,
                *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
                  for arg in ['--exclude', f'dns.{name}={reason}']],
+               # core-tests/src/coroutine/gethostbyname.cpp (system/src/gethostbyname.rs) resolves public names.
+               *[arg for name in ['resolve_cache', 'resolve_cache_inet4_and_inet6', 'dns_expire']
+                 for arg in ['--exclude', f'coroutine_gethostbyname.{name}={NETWORK}']],
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).

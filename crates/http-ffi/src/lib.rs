@@ -49,12 +49,7 @@ unsafe fn bytes<'a>(data: *const u8, length: usize) -> Result<&'a [u8], i32> {
 /// Required encoded capacity, INCLUDING the trailing NUL. No allocation occurs.
 /// # Safety
 /// Input is readable and output is aligned/writable/disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_url_capacity(
-    data: *const u8,
-    length: usize,
-    output: *mut usize,
-) -> i32 {
+pub unsafe fn swr_v1_http_url_capacity(data: *const u8, length: usize, output: *mut usize) -> i32 {
     // SAFETY: `output` is null or aligned and writable.
     let Some(output) = (unsafe { output.as_mut() }) else {
         return INVALID;
@@ -73,8 +68,7 @@ pub unsafe extern "C" fn swr_v1_http_url_capacity(
 /// # Safety
 /// Input is readable; output capacity is writable, disjoint from input/length.
 /// Length output is valid/aligned. No allocation, callback or borrow escapes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_url_encode(
+pub unsafe fn swr_v1_http_url_encode(
     data: *const u8,
     length: usize,
     output: *mut u8,
@@ -111,12 +105,7 @@ pub unsafe extern "C" fn swr_v1_http_url_encode(
 /// Decode in place, preserving malformed escapes and decoding '+' as space.
 /// # Safety
 /// Data is writable for length+1 initialized input bytes; written is disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_url_decode(
-    data: *mut u8,
-    length: usize,
-    written: *mut usize,
-) -> i32 {
+pub unsafe fn swr_v1_http_url_decode(data: *mut u8, length: usize, written: *mut usize) -> i32 {
     // SAFETY: `written` is null or aligned and writable.
     let Some(written) = (unsafe { written.as_mut() }) else {
         return INVALID;
@@ -211,12 +200,8 @@ pub extern "C" fn swr_v2_http_status_message(code: i32) -> *const c_char {
 }
 
 /// Classify the mature parser's return after its native execution has ended.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_http_multipart_result(
-    processed: i64,
-    length: usize,
-    excepted: u32,
-) -> i32 {
+#[must_use]
+pub fn swr_v1_http_multipart_result(processed: i64, length: usize, excepted: u32) -> i32 {
     swoole_rs_http::multipart_result(processed, length, excepted)
 }
 /// Classify the complete native header name before scratch allocation can move it.
@@ -274,8 +259,7 @@ pub unsafe extern "C" fn swr_v1_http_multipart_filename(data: *mut u8, capacity:
 /// Buffer is writable through capacity<=`isize::MAX`, initialized through a NUL
 /// reachable from cursor; cursor/output are valid/aligned/disjoint. Callback may
 /// mutate the native buffer between calls, but never retains a Rust reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_cookie_next(
+pub unsafe fn swr_v1_http_cookie_next(
     data: *mut u8,
     capacity: usize,
     cursor: *mut usize,

@@ -28,8 +28,8 @@ mod typed;
 pub use assignment::{swr_v1_phpstdext_assign, swr_v1_phpstdext_assign_op};
 pub use invoke::swr_v1_phpstdext_method_call;
 pub use typed::{
-    swr_v1_phpstdext_check, swr_v1_phpstdext_copy_type, swr_v1_phpstdext_foreach_begin,
-    swr_v1_phpstdext_operation, swr_v1_phpstdext_unset,
+    swr_v1_phpstdext_check, swr_v1_phpstdext_foreach_begin, swr_v1_phpstdext_operation,
+    swr_v1_phpstdext_unset,
 };
 
 use std::ffi::c_int;
