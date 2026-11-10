@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 const TEST_DOMAIN_BAIDU: &CStr = c"www.baidu.com";
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_ZN6swoole9coroutine6System22set_dns_cache_capacityEm"]
     fn set_dns_cache_capacity(capacity: usize);
