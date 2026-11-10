@@ -17,6 +17,7 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.annotations import annotate
 from tools.harness import ROOT, write_report
 from tools.build_upstream import require_build_space, tree
 from tools.check_migration import GRADUATED, MODULES
@@ -847,6 +848,8 @@ def main():
             except (OSError, ValueError) as error:
                 row.update(failed=True, outcome_error=str(error))
         print(f'  [{name}] {row["seconds"]:.3f}s; exit={result.returncode}; failed={row["failed"]}; {row["log"]}', flush=True)
+        if row['failed']:
+            annotate('error', f'{name} failed', f'exit {result.returncode}, {row["log"]}')
         return row
 
     def record(row):

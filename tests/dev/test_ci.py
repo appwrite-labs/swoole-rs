@@ -1,4 +1,4 @@
-"""tools/ci.py against a fake gh: run states, failure logs and phases, following replaced runs."""
+"""tools/ci.py against a fake gh: run states, failure annotations and phases, following replaced runs."""
 import json
 import os
 from pathlib import Path
@@ -55,6 +55,8 @@ elif args[0] == 'api' and args[1].startswith('search/issues?q='):
         sys.exit(1)
     term = urllib.parse.unquote(args[1].split('=', 1)[1]).split('"')[1]
     print(json.dumps(data['search'].get(term, [])))
+elif args[0] == 'api' and '/annotations' in args[1]:
+    print(json.dumps(data.get('annotations', {}).get(args[1].split('/')[-2], [])))
 elif args[0] == 'api' and '/check-runs' in args[1]:
     for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
         print(json.dumps(check))
@@ -68,8 +70,6 @@ elif args[:3] == ['api', '-i', 'user']:
     print('{}')
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
-elif args[0] == 'api' and '/actions/jobs/' in args[1]:
-    print(data['job_logs'][args[1].split('/')[-2]])
 elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
     for row in data.get('artifacts', []):
         print(json.dumps({'expired': False, 'head_branch': 'main', 'repository_id': 1, 'head_repository_id': 1, **row}))
@@ -103,8 +103,6 @@ elif args[:2] == ['run', 'list']:
                            'conclusion': '' if running else conclusion, 'url': 'u'}]))
     else:
         print('[]')
-elif args[:2] == ['run', 'view'] and '--log-failed' in args:
-    print(data.get('failed_log', 'rust\\tcargo test\\t2026-10-25T21:00:01Z error: boom'))
 elif args[:2] == ['run', 'view']:
     jobs = data.get('jobs', {}).get(args[2], [['rust', 'success']])
     print(json.dumps({'jobs': [{'name': name, 'databaseId': index + 100, 'status': 'completed', 'conclusion': conclusion,
@@ -155,7 +153,6 @@ class Ci(unittest.TestCase):
         # ports-added didn't exist in run 4, so its failure is new as well.
         self.assertEqual((result['previous_run'], result['new_failures'], result['fixed']),
                          ('u4', ['http-native', 'ports-added'], ['timer-model']))
-        self.assertEqual(result['logs'], {'rust': ['2026-10-25T21:00:01Z error: boom']})
         # Each new failure names the open issues that mention it, so Red main's p0 is filed once.
         self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
                 search={'http-native': [40, 41]})
@@ -188,25 +185,23 @@ class Ci(unittest.TestCase):
         phases = {'7': [['old', False]], '4': [['old', False]]}
         jobs = {'7': [['full-gates (1)', 'failure'], ['phpt / gate', 'failure'], ['tooling', 'failure']],
                 '4': [['full-gates (1)', 'failure'], ['phpt / gate', 'success'], ['tooling', 'failure']]}
-        gate = 'phpt / gate\tRun gate\t2026-10-27T16:02:38.6Z '
-        failed_log = '\n'.join(gate + line for line in [
-            '<details><summary>2 regressions: pass on upstream, fail on a re-run here</summary>',
-            '- `tests/a/one.phpt`', '- `tests/b/two.phpt`',
-            '<details><summary>1 flaky on upstream</summary>', '- `tests/c/flaky.phpt`: hybrid passed'])
+        # The gate job is run 7's second job, id 101; gate.py annotates each regressed test.
+        def gate(*tests):
+            return {'101': [{'title': 'PHPT regression', 'message': f'{test} (cargo: failed)'} for test in tests]
+                    + [{'title': 'PHPT flaky on upstream', 'message': 'tests/c/flaky.phpt'},
+                       {'title': '', 'message': 'Process completed with exit code 1.'}]}
+        annotations = gate('tests/a/one.phpt', 'tests/b/two.phpt')
         code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
-                                  jobs=jobs, failed_log=failed_log)
+                                  jobs=jobs, annotations=annotations)
         # full-gates and tooling were already failing; the PHPT gate passed in run 4.
         self.assertEqual(result['new_failures'], ['phpt / gate job (tests/a/one.phpt, tests/b/two.phpt)'])
         # A gate failure's issues are those naming its regressed tests.
         code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
-                                  jobs=jobs, failed_log=failed_log, search={'a/one.phpt': [12], 'b/two.phpt': [12, 13]})
+                                  jobs=jobs, annotations=annotations, search={'a/one.phpt': [12], 'b/two.phpt': [12, 13]})
         self.assertEqual(result['issues'], {result['new_failures'][0]: [12, 13]})
         # Only the first five tests are searched, and the line says so: an issue may name a later one.
-        failed_log = '\n'.join(gate + line for line in [
-            '<details><summary>7 regressions: pass on upstream, fail on a re-run here</summary>',
-            *[f'- `tests/t/{n}.phpt`' for n in range(7)]])
         self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
-                jobs=jobs, failed_log=failed_log, search={})
+                jobs=jobs, annotations=gate(*[f'tests/t/{n}.phpt' for n in range(7)]), search={})
         self.assertIn('.phpt) (no open issue; searched 5 of 7 tests)', self.out)
         self.assertEqual(sum('search/issues' in call for call in self.gh_calls), 5)
 
@@ -219,10 +214,14 @@ class Ci(unittest.TestCase):
         # didn't have is new, as a phase would be.
         self.assertEqual(result['new_failures'], ['timer-model', 'brand-new job'])
 
-    def test_runs_without_phases_keep_the_log_tail(self):
-        code, result, _ = self.ci('status', runs={'c' * 40: ['failure']})
-        self.assertNotIn('failed_phases', result)
-        self.assertIn('rust', result['logs'])
+    def test_runs_without_phases_show_their_failed_jobs_annotations(self):
+        annotations = {'100': [{'title': 'build failed', 'message': 'exit 101, target/reports/dev/x/build.log'},
+                               {'title': None, 'message': 'Process completed with exit code 1.'}]}
+        code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, jobs={'7': [['rust', 'failure']]},
+                                  annotations=annotations, flags=('--poll', '0'))
+        self.assertIn('--- rust annotations\nbuild failed: exit 101, target/reports/dev/x/build.log\n'
+                      'Process completed with exit code 1.', self.out)
+        self.assertNotIn('failed phases', self.out)
 
     def test_next_orders_claimable_issues_by_priority_then_age(self):
         def issue(number, created, *labels, blocked_by=0, **extra):
@@ -425,17 +424,14 @@ class Ci(unittest.TestCase):
         self.assertNotIn('last_completed', result)
         self.assertFalse(any('--branch main' in call for call in self.gh_calls))
 
-    def test_failed_job_logs_are_visible_while_siblings_run(self):
-        log = '\n'.join(['old output'] * 50 + ['compiler diagnostic', '##[error]Process completed with exit code 1.']
-                        + ['artifact upload and cleanup'] * 60)
+    def test_failed_job_annotations_are_visible_while_siblings_run(self):
+        annotations = {'100': [{'title': 'PHPT regression', 'message': 'tests/a.phpt (cargo: failed)'}]}
         code, result, _ = self.ci('status', '--workflow', 'pr.yml', runs={'c' * 40: ['running']},
-                                  jobs={'7': [['hybrid', 'failure'], ['cares', '']]}, job_logs={'100': log})
+                                  jobs={'7': [['hybrid', 'failure'], ['cares', '']]}, annotations=annotations)
         self.assertEqual((code, result['state']), (2, 'running'))
-        self.assertEqual(len(result['logs']['hybrid']), 40)
-        self.assertEqual(result['logs']['hybrid'][-2:], ['compiler diagnostic', '##[error]Process completed with exit code 1.'])
-        self.assertNotIn('artifact upload and cleanup', result['logs']['hybrid'])
-        self.assertEqual([call for call in self.gh_calls if '/actions/jobs/' in call],
-                         ['api repos/{owner}/{repo}/actions/jobs/100/logs --allow-escape-sequences'])
+        self.assertEqual(result['annotations'], {'hybrid': ['PHPT regression: tests/a.phpt (cargo: failed)']})
+        self.assertEqual([call for call in self.gh_calls if '/annotations' in call],
+                         ['api repos/{owner}/{repo}/check-runs/100/annotations?per_page=100'])
 
 
 if __name__ == '__main__':
