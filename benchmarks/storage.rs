@@ -1,11 +1,10 @@
-//! Same public-ABI workloads for baseline and candidate; no PHP/native runtime.
+//! Same workloads for baseline and candidate; no PHP/native runtime.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 use swoole_rs_buffer as buffer;
-use swoole_rs_memory as memory;
 use swoole_rs_timer as timer;
 
 static TRACK: AtomicBool = AtomicBool::new(false);
@@ -71,35 +70,6 @@ fn run(name: &str, rounds: usize) -> u64 {
                     }
                 }
                 assert_eq!(buffer::swr_v1_buffer_release(owner), 0);
-            }
-            "heap-1" | "heap-128" | "heap-512" => {
-                let n = if name == "heap-1" {
-                    1
-                } else if name == "heap-128" {
-                    128
-                } else {
-                    512
-                };
-                let mut owner = ptr::null_mut();
-                assert_eq!(memory::swr_v1_memory_heap_create(n, 0, &mut owner), 0);
-                for _ in 0..rounds {
-                    for id in 1..=n {
-                        assert!(
-                            !memory::swr_v1_memory_heap_push(
-                                owner,
-                                (n - id) as u64,
-                                ptr::without_provenance_mut(id)
-                            )
-                            .is_null()
-                        );
-                    }
-                    for id in (1..=n).rev() {
-                        let value = memory::swr_v1_memory_heap_pop(owner).addr();
-                        assert_eq!(value, id);
-                        sum += value as u64;
-                    }
-                }
-                memory::swr_v1_memory_heap_release(owner);
             }
             "timer-churn-512" => {
                 let mut owner = timer::Timer::default();
