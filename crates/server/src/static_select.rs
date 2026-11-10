@@ -116,7 +116,6 @@ fn encode(header: &HttpStaticHeaders<'_>) -> Vec<u8> {
     head
 }
 
-
 #[expect(
     clippy::cast_possible_wrap,
     reason = "upstream prints the size_t length with %ld"

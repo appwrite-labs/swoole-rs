@@ -99,7 +99,6 @@ impl<E: Effects> StaticHandler<E> {
         })
     }
 
-
     fn autoindex(&self) -> bool {
         self.server.config().http_autoindex
     }
