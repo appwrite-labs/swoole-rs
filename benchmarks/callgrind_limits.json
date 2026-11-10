@@ -12,9 +12,14 @@
   "task": 0.94,
   "mysql": 0.97,
   "connect": 1.04,
+  "http-client": 0.97,
+  "client": 0.96,
+  "socket": 0.99,
   "gzip": 1.04,
   "websocket-deflate": 1.04,
   "tcp-length": 1.02,
   "tcp-eof": 0.57,
-  "udp": 1.09
+  "udp": 1.09,
+  "atomic": 1.02,
+  "process-mode": 0.95
 }

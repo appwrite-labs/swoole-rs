@@ -352,7 +352,9 @@ fn pop(call: &Call) {
         return;
     }
     // SAFETY: a value `push` queued.
-    call.set_value(unsafe { data.read() });
+    let value = unsafe { data.read() };
+    // SAFETY: that value, whose reference the return slot takes.
+    unsafe { call.set_value(value) };
     // SAFETY: as above; the zval moved out.
     unsafe { swr_zend_efree(data.cast()) };
     set_error(call, ERROR_OK);
