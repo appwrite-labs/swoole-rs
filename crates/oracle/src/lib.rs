@@ -833,24 +833,6 @@ pub mod clients {
     }
 }
 
-/// The bundled `thirdparty/multipart_parser.c`, as the server links it.
-pub mod multipart {
-    use core::ffi::{c_char, c_void};
-    unsafe extern "C" {
-        pub fn multipart_parser_init(
-            boundary: *const c_char,
-            length: usize,
-            settings: *const c_void,
-        ) -> *mut c_void;
-        pub fn multipart_parser_execute(
-            parser: *mut c_void,
-            data: *const c_char,
-            length: usize,
-        ) -> isize;
-        pub fn multipart_parser_free(parser: *mut c_void);
-    }
-}
-
 /// Upstream's bundled nghttp2 HPACK inflater, the reference for crates/http2's `hpack`.
 pub mod nghttp2 {
     use core::ffi::{c_int, c_void};

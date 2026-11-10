@@ -566,10 +566,6 @@ fn main() {
             .compile(&format!("swoole_{engine}_resp_stream"));
     }
     socks5();
-    // The bundled third-party multipart parser the server streams uploads through.
-    cc::Build::new()
-        .file("upstream/thirdparty/multipart_parser.c")
-        .compile("swoole_oracle_multipart_parser");
     // The bundled llhttp the HTTP server and client parse with.
     cc::Build::new()
         .files(
