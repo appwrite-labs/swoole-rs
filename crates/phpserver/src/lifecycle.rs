@@ -502,12 +502,41 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     drop(property);
     // SAFETY: the object Zend is freeing.
     unsafe { zend_object_std_dtor(object) };
-    if let Some(server) = server.filter(|&server| fact(server, fact::MASTER)) {
-        crate::thread::free_setting(server);
-        // SAFETY: the master owns the Server; nothing refers to it now.
-        unsafe { swr_v1_server_delete(server.raw()) };
+    if let Some(server) = server {
+        if fact(server, fact::MASTER) {
+            crate::thread::free_setting(server);
+            delete(server.raw());
+        } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
+            // Never started, or a base-mode start returned: upstream keeps it to the
+            // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
+            orphans().push(server.raw() as usize);
+        }
     }
     bailout::finish();
+}
+
+/// `delete serv`, by its owner, once nothing refers to it.
+fn delete(serv: *mut c_void) {
+    // SAFETY: the master's server whose object went, or one MSHUTDOWN deletes; once.
+    unsafe { swr_v1_server_delete(serv) };
+}
+
+/// The servers [`free`] leaves to [`php_swoole_server_mshutdown`].
+fn orphans() -> std::sync::MutexGuard<'static, Vec<usize>> {
+    static ORPHANS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    ORPHANS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// MSHUTDOWN: the event worker pool a bailed-out single worker left, then the
+/// servers whose objects went in a process that isn't their master, now that no
+/// object can name them.
+pub extern "C" fn php_swoole_server_mshutdown() {
+    swoole_rs_server::reactor_process_ops::destroy_abandoned_pool();
+    for serv in std::mem::take(&mut *orphans()) {
+        delete(serv as *mut c_void);
+    }
 }
 
 /// A live object and a class declaring the properties written, for as long as

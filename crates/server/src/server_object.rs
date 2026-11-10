@@ -77,7 +77,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
 
 /// `delete serv`: destroys a server still running in its master, deletes its
 /// ports, closes its pipes, then frees the CPU list, the shared record, the
-/// message bus, the state and the object.
+/// message bus, the state and the object. It stops being `SwooleG.server`.
 ///
 /// # Safety
 /// `serv` came from [`swr_v1_server_new`] and is not used again.
@@ -100,8 +100,9 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
         // SAFETY: a live port, deleted once.
         unsafe { port_delete(port) };
     }
+    let object_ptr = serv.raw();
     // SAFETY: the object `swr_v1_server_new` boxed, freed once.
-    let object = unsafe { Box::from_raw(serv.raw().cast::<ServerObject>()) };
+    let object = unsafe { Box::from_raw(object_ptr.cast::<ServerObject>()) };
     // SAFETY: the server's state, which this object owns.
     let state = unsafe { &*object.state };
     state.close_pipes();
@@ -115,6 +116,9 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     unsafe { crate::pool_native::free_bus(state.tables_ref().message_bus) };
     // SAFETY: `swr_v1_server_new`'s state, not used again.
     unsafe { crate::swr_v1_server_state_free(object.state) };
+    if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
+        swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
+    }
 }
 
 /// `new ListenPort(serv)`: a port of `serv` with the default settings.
@@ -126,7 +130,8 @@ pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
     Box::into_raw(Box::new(Box::into_raw(config))).cast()
 }
 
-/// `delete port`: its TLS state, then its settings.
+/// `delete port`: its TLS state, its settings, and the record of a socket
+/// `destroy` never closed.
 ///
 /// # Safety
 /// `port` came from [`port_new`] and is not used again.
@@ -136,6 +141,9 @@ pub(crate) unsafe fn port_delete(port: *mut c_void) {
     // SAFETY: the port's settings, `PortConfig::boxed`'s, which nothing else uses now.
     let mut config = unsafe { Box::from_raw(config) };
     (crate::port_config::methods().tls_free)(&mut config);
+    // SAFETY: the record of a port `destroy` never closed (a server never started),
+    // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
+    unsafe { swoole_rs_reactor::SocketRecord::free(config.socket.cast()) };
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.

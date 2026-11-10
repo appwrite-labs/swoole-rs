@@ -43,7 +43,6 @@ use crate::callbacks::{
 use crate::objects::{Bus, Reactor};
 use crate::port_config::methods;
 use crate::reactor_ops::sign;
-use crate::reactor_process_ops::ports;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
@@ -299,8 +298,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
     let port = || {
-        // SAFETY: the context's live server.
-        let ports = unsafe { ports(serv) };
+        let ports = ctx.server().ports();
         let port = usize::try_from(arg)
             .ok()
             .and_then(|i| ports.get(i).copied())?;
@@ -378,8 +376,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             server_methods::store_listen_socket(ctx.server());
             0
         }
-        // SAFETY: as above.
-        OP_PORT_COUNT => unsafe { ports(serv) }.len() as u64,
+        OP_PORT_COUNT => ctx.server().ports().len() as u64,
         OP_PORT_DGRAM => u64::from(matches!(port()?.1.r#type, 2 | 4 | 6)),
         OP_PORT_LISTEN => sign((methods().listen)(port()?.0)),
         OP_PORT_ADD => {
