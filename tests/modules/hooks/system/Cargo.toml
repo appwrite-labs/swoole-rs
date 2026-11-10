@@ -1,11 +1,17 @@
-# Upstream's core-tests/src/coroutine/{system,hook,socket}.cpp GoogleTests as Rust, linked against the
-# libswoole.so system.py builds from native/'s sources and the Cargo build's Rust archive
-# (SWOOLE_LIB_DIR). Not a workspace member: it needs that
-# Linux build, which system.py makes.
+# Upstream's core-tests/src/coroutine/{system,hook,socket}.cpp GoogleTests (and the others main.rs lists) as Rust, linked with
+# the crates (swoole-rs-ffi) and the C and C++ tests/modules/hooks/system.py builds, which builds
+# and runs it (Linux); `cargo test` leaves it out.
 [package]
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+build = "build.rs"
 
-[workspace]
+[[bin]]
+name = "swoole-rs-hooks-system-tests"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+swoole-rs-ffi = { path = "../../../../crates/ffi" }

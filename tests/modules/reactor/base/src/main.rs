@@ -1,8 +1,7 @@
 //! Upstream's `core-tests/src/reactor/base.cpp`, one Rust function per TEST with the same
-//! inputs and expected values, over the hybrid's libswoole.so. `fixture.cc` gives the
+//! inputs and expected values, over the crates and the C++ tests/modules/hooks/system.py builds. `fixture.cc` gives the
 //! Reactor, SocketPair and C++-linkage APIs C entry points; the handlers, callbacks and every
-//! assertion are here. Cargo.toml keeps the package out of the workspace: it links the
-//! Linux hybrid build.
+//! assertion are here. Cargo.toml names the build script that links them.
 //!
 //! `main --list` prints the cases; `main NAME` runs one in this process, as core-tests' main
 //! does (`swoole_init`, the case, `swoole_clean`), and exits 0 when every assertion held.
@@ -14,6 +13,8 @@ use std::mem::offset_of;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
+// The crates, once: the C++ in libswoole.a and the cases call them by symbol.
+use swoole_rs_ffi as _;
 
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -117,7 +118,6 @@ struct Iovec {
 type Handler = extern "C" fn(*mut Reactor, *mut Event) -> c_int;
 type Plain = extern "C" fn(*mut c_void);
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_Z11swoole_initv"]
     fn swoole_init();
@@ -215,7 +215,12 @@ unsafe extern "C" {
         mask: c_int,
     );
     fn swr_case_signal_block_all();
-    fn swr_v1_timer_add_plain(ms: i64, persistent: bool, f: Plain, data: *mut c_void) -> *mut c_void;
+    fn swr_v1_timer_add_plain(
+        ms: i64,
+        persistent: bool,
+        f: Plain,
+        data: *mut c_void,
+    ) -> *mut c_void;
     fn swr_case_random_bytes(buf: *mut c_char, size: usize) -> usize;
     fn swr_case_tg_buffer() -> *mut CppString;
     fn swr_case_string_grow(str: *mut CppString, n: usize);
@@ -1134,10 +1139,9 @@ unsafe fn error() {
         assert_eq!(add(reactor, bad_sock, SW_EVENT_READ), SW_OK);
         close((*bad_sock).fd);
 
-        assert_eq!(
-            set(reactor, bad_sock, SW_EVENT_READ | SW_EVENT_READ),
-            SW_ERR
-        );
+        #[expect(clippy::eq_op, reason = "upstream's input, base.cpp line 721")]
+        let events = SW_EVENT_READ | SW_EVENT_READ;
+        assert_eq!(set(reactor, bad_sock, events), SW_ERR);
         assert_eq!(errno(), EBADF);
 
         assert_eq!(del(reactor, bad_sock), SW_OK);
