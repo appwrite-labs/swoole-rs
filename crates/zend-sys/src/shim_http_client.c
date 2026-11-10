@@ -38,6 +38,8 @@ zval *swr_zend_property_array(zend_class_entry *ce, zend_object *object, const c
             array_init(property);
         }
     }
+    /* Callers add to it in place: a shared or immutable array is copied first. */
+    SEPARATE_ARRAY(property);
     return property;
 }
 
