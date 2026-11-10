@@ -34,6 +34,14 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
+each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
+GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and
+`Coroutine\Socket`). `callgrind.py` serves their peers, an HTTP server and a TCP
+echo, from threads of its own, so callgrind counts only the client side. Their records started 5% above an
+arm64 Linux run (0.92, 0.91 and 0.94); the ratchet lowers them once two merge runs
+beat them.
+
 Two measure compression against `benchmarks/compression` (#2649): `gzip` posts
 4 KiB of JSON with `Accept-Encoding: gzip` and checks the gzip-encoded echo, and
 `websocket-deflate` echoes 1 KiB of JSON with permessage-deflate negotiated, so
