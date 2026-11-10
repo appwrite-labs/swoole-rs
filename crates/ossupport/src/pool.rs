@@ -419,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn grows_to_the_cap_retires_idle_workers_and_restarts() {
         // One core worker, at most four; idle 0.5s truncates to an immediate retirement.
         let pool = Pool::acquire(HOOKS, 2, 1, 4, 0.0, 0.5);
@@ -528,6 +529,7 @@ mod tests {
     /// thread), over a pool of its own, as the child's process had. The `thread_init` hook
     /// observes the worker's mask where upstream's `std_allocator.malloc` hook did.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigemptyset")]
     fn thread_starts_with_signals_blocked() {
         for already_blocked in [false, true] {
             std::thread::spawn(move || unsafe {

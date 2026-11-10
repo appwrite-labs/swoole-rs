@@ -387,6 +387,7 @@ mod tests {
     // core-tests/src/server/http_server.cpp: websocket_encode. `print_frame` writes to
     // Swoole's stdout stream, pointed at a log file for the case.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fopen")]
     fn websocket_encode() {
         let mut buffer = string();
         let packet = b"hello world\n";

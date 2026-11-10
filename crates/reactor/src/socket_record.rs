@@ -332,6 +332,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
     fn release_unlinks_a_bound_unix_socket_and_closes() {
         let path = std::env::temp_dir().join(format!("swr-release-{}", std::process::id()));
         std::fs::remove_file(&path).ok();
@@ -434,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
     fn accept_fills_a_new_record_from_the_listener() {
         let (mut unknown, flags) = (false, 0b1100);
         let listener = SocketRecord::open_typed(5, 1, flags, &mut unknown);
