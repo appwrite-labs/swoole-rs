@@ -20,8 +20,9 @@ The merge tier's `callgrind` job runs it for `plaintext`, `echo-1k`, `json` and
 rather than `echo-64k`: how a 64 KiB request is split across reads differs between
 runners, and that changes how much of it the Expect-header scan walks (#338).
 
-Records come from the merge tier's x86_64 numbers (its `callgrind` artifact), set 5%
-above them; a local arm64 run doesn't predict them. On x86_64, glibc copies and fills
+A new or reset record comes from the merge tier's x86_64 numbers (its `callgrind`
+artifact), set 5% above them; a local arm64 run doesn't predict them. Older records
+noted below as set from arm64 runs keep those values until the ratchet lowers them. On x86_64, glibc copies and fills
 large buffers with `rep movsb`/`rep stosb`, which callgrind counts once per byte, so a
 64 KiB `memcpy` is about 65,000 instructions there and a few thousand on arm64. Bulk
 copies both engines make weigh far more on x86_64 and pull its ratio towards 1.0
