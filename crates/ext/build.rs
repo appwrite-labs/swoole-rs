@@ -1,11 +1,9 @@
 //! Compile what the extension still needs of C and C++ (native/ and the bundled
 //! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
-//! phpize and configure. The thirdparty sources are native/swoole-src's, except
-//! llhttp, nghttp2 and `multipart_parser`, which are still the pin's (`SWOOLE_SRC`).
+//! phpize and configure. The thirdparty sources are native/swoole-src's.
 
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
-    println!("cargo::rerun-if-env-changed=SWOOLE_SRC");
     // Zend's symbols resolve against the PHP that loads the extension.
     if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
         println!("cargo::rustc-cdylib-link-arg=-Wl,-undefined,dynamic_lookup");
@@ -318,12 +316,6 @@ mod php {
     }
 
     pub(super) fn build() {
-        let Some(tree) = env::var_os("SWOOLE_SRC").map(PathBuf::from) else {
-            println!(
-                "cargo::warning=SWOOLE_SRC is unset: swoole.so links no native objects and will not load (tools/build_ext.py sets it)"
-            );
-            return;
-        };
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let native = root.join("native");
         let out = PathBuf::from(env::var("OUT_DIR").expect("ext: OUT_DIR"));
@@ -331,7 +323,6 @@ mod php {
         let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("ext: target arch");
         let platform = if os == "macos" { MACOS } else { LINUX };
         let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
-        let third = tree.join("thirdparty");
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
         let profile = profile(&vendored, php_version_id(&php_config));
@@ -365,11 +356,7 @@ mod php {
             .collect();
         modules.sort();
         includes.extend(modules.iter().cloned());
-        includes.extend([owned.clone(), owned.join("thirdparty")]);
-        // The pin's headers, which only the profile's PHP-derived thirdparty sources read (#2660).
-        if !profile.c.is_empty() || !profile.cxx.is_empty() {
-            includes.extend([tree.clone(), tree.join("ext-src"), third.clone()]);
-        }
+        includes.extend([owned, vendored.clone()]);
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
@@ -405,19 +392,6 @@ mod php {
             c.files(sources(module, "c"));
         }
         c.file(vendored.join("php/streams/plain_wrapper.c"))
-            .files(["api.c", "http.c", "llhttp.c"].map(|f| third.join("llhttp").join(f)))
-            .files(
-                [
-                    "nghttp2_hd.c",
-                    "nghttp2_rcbuf.c",
-                    "nghttp2_helper.c",
-                    "nghttp2_buf.c",
-                    "nghttp2_mem.c",
-                    "nghttp2_hd_huffman.c",
-                    "nghttp2_hd_huffman_data.c",
-                ]
-                .map(|f| third.join("nghttp2").join(f)),
-            )
             // Rust's coroutine links boost.context's switch even under thread context.
             .file(vendored.join("boost/asm").join(format!("make_{asm}")))
             .file(vendored.join("boost/asm").join(format!("jump_{asm}")))

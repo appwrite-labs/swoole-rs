@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Build swoole.so with Cargo alone (crates/ext): no phpize, configure or make.
 
-crates/ext's build.rs compiles native/ and the bundled thirdparty C from the unpatched pin it
-checks out in target/ext/src (native/swoole-src owns the files it changes), then the extension
-is checked to load and report the pinned version.
+crates/ext's build.rs compiles native/ (native/swoole-src holds the C swoole-src bundles), so no
+swoole-src checkout is needed; then the extension is checked to load and report the pinned version.
 Prints `Built cargo: <path>` (target/ext/swoole.so) and writes the build's config.h beside it, which
 the ABI export gate preprocesses with, and target/ext/build-manifest.json, which
 tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
@@ -99,22 +98,6 @@ def sdk(out, features, profile, env):
     shutil.copy2(out / 'config.h', root / 'include/config.h')
 
 
-def checkout(tree):
-    """The pin, unpatched, in `tree`: kept when it is already there and clean. Cloned from
-    target/upstream/src when that exists, else from GitHub."""
-    def git(*args):
-        return subprocess.run(['git', '-C', str(tree), *args], check=True, capture_output=True, text=True).stdout
-    if (tree / '.git').exists() and git('status', '--porcelain', '--untracked-files=no') == '' \
-            and git('rev-parse', 'HEAD').strip() == COMMIT:
-        return
-    shutil.rmtree(tree, ignore_errors=True)
-    reference = ROOT / 'target/upstream/src'
-    source = [str(reference)] if (reference / '.git').exists() else ['--depth', '1', '--branch', VERSION,
-                                                                     'https://github.com/swoole/swoole-src.git']
-    subprocess.run(['git', '-c', 'advice.detachedHead=false', 'clone', '-q', *source, str(tree)], check=True)
-    git('checkout', '-q', COMMIT)
-
-
 def native_flags(archive):
     """Compiler flags for code built against the SDK an archive (`target/ext/sdk/lib/libswoole_rs_ffi.a`)
     belongs to: the SWOOLE_RS_* switches its config.h turns on and its include/, which holds
@@ -152,9 +135,7 @@ def main():
     parser.add_argument('--native', action='store_true', help='Also lay out target/ext/sdk for the native gates')
     args = parser.parse_args()
     out = ROOT / 'target/ext'
-    tree = out / 'src'
-    checkout(tree)
-    env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
+    env = {**os.environ, 'PHP_CONFIG': args.php_config}
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
                 'thread': '--enable-swoole-thread', 'stdext': '--enable-swoole-stdext'}

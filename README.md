@@ -22,9 +22,9 @@ the PHPT corpus, the corpus apps and swoole/library's suite (`tools/coverage.py`
 to the per-crate table and the entry points no run reached.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
-PHP extension. `swoole.so` builds with Cargo alone (`crates/ext`) from Rust, the owned
-C and C++ in `native/` and the bundled thirdparty C of upstream Swoole v6.2.5 (pinned at
-`76c657d8`); the pinned upstream build is the oracle. See the
+PHP extension. `swoole.so` builds with Cargo alone (`crates/ext`) from Rust and the owned
+C and C++ in `native/`, with no upstream checkout; upstream Swoole v6.2.5 (pinned at
+`76c657d8`) is built only as the oracle. See the
 [migration approach](docs/migration.md).
 
 ## Build

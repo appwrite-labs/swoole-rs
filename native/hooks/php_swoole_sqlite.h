@@ -15,6 +15,25 @@ int swoole_sqlite3_close(sqlite3 *db);
 int swoole_sqlite3_close_v2(sqlite3 *db);
 int swoole_sqlite3_step(sqlite3_stmt *stmt);
 END_EXTERN_C()
+#if PHP_VERSION_ID < 80300
+/* PHP 8.3's zend_zval_value_name, which the driver's statement calls. */
+static inline const char *zend_zval_value_name(const zval *arg) {
+    ZVAL_DEREF(arg);
+    if (Z_ISUNDEF_P(arg)) {
+        return "null";
+    }
+    if (Z_TYPE_P(arg) == IS_OBJECT) {
+        return ZSTR_VAL(Z_OBJCE_P(arg)->name);
+    }
+    if (Z_TYPE_P(arg) == IS_FALSE) {
+        return "false";
+    }
+    if (Z_TYPE_P(arg) == IS_TRUE) {
+        return "true";
+    }
+    return zend_get_type_by_const(Z_TYPE_P(arg));
+}
+#endif
 #ifdef SW_USE_SQLITE_HOOK
 #define sqlite3_open_v2 swoole_sqlite3_open_v2
 #define sqlite3_prepare_v2 swoole_sqlite3_prepare_v2
