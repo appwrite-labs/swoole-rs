@@ -16,12 +16,12 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
           save-if: false
       - run: rm -rf target/ext target/thirdparty
-      - uses: ./.github/actions/install
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
