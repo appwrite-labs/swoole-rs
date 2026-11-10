@@ -31,7 +31,11 @@ const SUN_PATH: usize =
 /// The bytes before the first NUL, as a C string reads them.
 #[must_use]
 pub fn c_str(bytes: &[u8]) -> &[u8] {
-    bytes.split(|&byte| byte == 0).next().unwrap_or_default()
+    let end = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    bytes.get(..end).unwrap_or_default()
 }
 
 /// Formats `args` into `buffer` without allocating; `None` when it does not fit.
@@ -199,8 +203,16 @@ mod tests {
             ("1.2.3.4 ", None, None),
             ("", None, None),
         ] {
-            assert_eq!(ipv4(text.as_bytes(), false), strict.map(Ipv4Addr::from), "{text}");
-            assert_eq!(ipv4(text.as_bytes(), true), zeroes.map(Ipv4Addr::from), "{text} with zeroes");
+            assert_eq!(
+                ipv4(text.as_bytes(), false),
+                strict.map(Ipv4Addr::from),
+                "{text}"
+            );
+            assert_eq!(
+                ipv4(text.as_bytes(), true),
+                zeroes.map(Ipv4Addr::from),
+                "{text} with zeroes"
+            );
         }
     }
 }
