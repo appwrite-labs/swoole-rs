@@ -239,6 +239,7 @@ mod tests {
 
     // One test owns the process-wide storage, so parallel tests never race on it.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getrlimit")]
     fn storage_init_task_directory_and_reset() {
         init_allocator();
         init();

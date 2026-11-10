@@ -121,6 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no PROT_NONE guard pages")]
     fn allocated_stacks_are_marked_and_usable() {
         let size = 4 * START;
         for flags in [0, STACK_MARK, STACK_PROTECT | STACK_MARK] {
@@ -138,6 +139,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "every byte of 16 stacks is too slow to interpret")]
     fn marker_boundaries_and_last_changed_sample_preserve_original_accounting() {
         for size in [
             0,

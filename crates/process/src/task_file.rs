@@ -530,6 +530,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn packs_a_large_payload_to_a_temp_file() {
         let template = CString::new(
             std::env::temp_dir()
@@ -582,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn a_failed_mkstemp_warns_as_swoole_tmpfile_and_nothing_more() {
         install();
         let template = CString::new("/swr-no-such-dir/task-XXXXXX").unwrap();
@@ -600,6 +602,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn an_over_long_template_is_cut_and_mkstemp_warns() {
         install();
         let long = format!("/swr-no-such-dir/{}XXXXXX", "a".repeat(300));
@@ -674,6 +677,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri has no access")]
         fn a_large_task_spills_to_a_file_that_unpacking_reads_and_removes() {
             let _turn = TASK_ID.lock();
             assert!(unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(c"/tmp".as_ptr()) });

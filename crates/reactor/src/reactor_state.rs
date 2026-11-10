@@ -157,6 +157,8 @@ impl ReactorState {
     /// the backend `requested` selects open for `count` events, or not ready after
     /// logging the kernel's refusal. Allocation failure aborts (upstream's `bad_alloc`),
     /// as does a negative `count` (`bad_array_new_length`).
+    /// The head is set by [`ReactorState::into_raw`], once the caller is done with the
+    /// `&mut`.
     pub(crate) fn open(requested: c_int, count: c_int) -> &'static mut Self {
         let (kind, opened) = select(requested);
         let owner = Box::leak(Box::new(Self {
@@ -213,13 +215,22 @@ impl ReactorState {
             };
             swoole_rs_corebase::log::sys_warning(origin, format_args!("{call}() failed"));
         }
-        owner.head = ReactorPrepared {
-            owner: ptr::from_mut(owner),
+        owner
+    }
+
+    /// The state as the pointer its head and callers keep, the head set. Nothing goes
+    /// through `owner` afterwards: a write or reborrow through it would end them.
+    pub(crate) fn into_raw(owner: &'static mut Self) -> *mut Self {
+        let state = &raw mut *owner;
+        let head = ReactorPrepared {
+            owner: state,
             fields: &raw mut owner.fields,
             registry: &raw mut owner.registry,
             handlers: &raw mut owner.handlers,
         };
-        owner
+        // SAFETY: `state` is the live allocation; a raw write leaves the head's pointers.
+        unsafe { (*state).head = head };
+        state
     }
 
     /// Opens backend `kind` (1 epoll, 2 kqueue, 3 poll) for `count` events: false when
@@ -322,7 +333,7 @@ unsafe extern "C" {
 pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
     let owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
-        return ptr::from_mut(owner).cast();
+        return ReactorState::into_raw(owner).cast();
     }
     owner.fields.timeout_msec = -1;
     #[cfg(feature = "upstream-symbols")]
@@ -332,7 +343,7 @@ pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *m
         owner.fields.close = Some(reactor_close);
         owner.handlers.defaults[0] = Some(reactor_writable_callback);
     }
-    let state = ptr::from_mut(owner);
+    let state = ReactorState::into_raw(owner);
     if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_CREATE) {
         // SAFETY: hooks receive the live `Reactor`.
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_CREATE, state.cast()) };
@@ -540,11 +551,7 @@ pub(crate) unsafe fn kernel_wait(
     }
 }
 /// The wait loop's initial state transition, over the actual borrowed slots.
-/// # Safety
-/// owner is live/exclusive and no native callback is active.
-pub(crate) unsafe fn before_wait(owner: *mut ReactorState) {
-    // SAFETY: the caller lends the state exclusively.
-    let fields = unsafe { &mut (*owner).fields };
+pub(crate) const fn before_wait(fields: &mut ReactorFields) {
     fields.start = true;
     fields.running = true;
     if fields.timeout_msec == 0 {
@@ -555,12 +562,18 @@ pub(crate) unsafe fn before_wait(owner: *mut ReactorState) {
 impl ReactorState {
     /// `Reactor::_add` (0), `_set` (1) and `_del` (2): the registry and the socket's
     /// flags together. -2 when add cannot allocate, leaving the flags alone.
-    pub(crate) fn record(&mut self, socket: &mut SocketRecord, op: u32, events: c_int) -> c_int {
+    /// The registry keeps `pointer`, the caller's pointer `socket` borrows from: one
+    /// derived from `socket` would end at the caller's next write through `pointer`.
+    pub(crate) fn record(
+        &mut self,
+        socket: &mut SocketRecord,
+        pointer: *mut SocketRecord,
+        op: u32,
+        events: c_int,
+    ) -> c_int {
         match op {
             0 => {
-                let result = self
-                    .registry
-                    .put(socket.fd, ptr::from_mut(socket).cast(), events);
+                let result = self.registry.put(socket.fd, pointer.cast(), events);
                 if result != 0 {
                     return result;
                 }
@@ -597,7 +610,16 @@ pub(crate) mod tests {
     /// A state with backend `kind` open for `count` events: `new Reactor` without its
     /// native effects.
     pub(crate) fn state(kind: c_int, count: c_int) -> ReactorPrepared {
-        ReactorState::open(kind, count).head
+        unsafe { (*ReactorState::into_raw(ReactorState::open(kind, count))).head }
+    }
+    /// [`ReactorState::record`] with the test's socket.
+    pub(crate) unsafe fn record(
+        owner: *mut ReactorState,
+        socket: *mut SocketRecord,
+        op: u32,
+        events: c_int,
+    ) -> c_int {
+        unsafe { (*owner).record(&mut *socket, socket, op, events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
         unsafe { swr_v1_reactor_delete(owner.cast()) };
@@ -616,23 +638,24 @@ pub(crate) mod tests {
             assert!((*fields).ready);
             assert_eq!((*state.owner).backend_limit, 4);
             let mut socket = SocketRecord::with_fd(123, 0);
-            assert_eq!((*state.owner).record(&mut socket, 0, 512), 0);
+            assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
             assert_eq!(socket.events, 512);
             assert_eq!(socket.removed, 0);
             assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 1);
-            (*state.owner).record(&mut socket, 1, 1024);
+            record(state.owner, &raw mut socket, 1, 1024);
             assert_eq!(socket.events, 1024);
-            (*state.owner).record(&mut socket, 2, 0);
+            record(state.owner, &raw mut socket, 2, 0);
             assert_eq!(socket.events, 0);
             assert_eq!(socket.removed, 1);
             assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
-            before_wait(state.owner);
+            before_wait(&mut (*state.owner).fields);
             assert!((*fields).running && (*fields).start);
             assert_eq!((*fields).timeout_msec, -1);
             free(state.owner);
         }
     }
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn actual_backend_waits_read_pipe_and_close_ownership_before_destroy_hook() {
         if crate::isolated_process::run_in_child(
             "reactor_state::tests::actual_backend_waits_read_pipe_and_close_ownership_before_destroy_hook",
@@ -650,7 +673,7 @@ pub(crate) mod tests {
                 let mut fds = [0; 2];
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let mut socket = SocketRecord::with_fd(fds[0], 0);
-                assert_eq!((*state.owner).record(&mut socket, 0, 512), 0);
+                assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
                 #[cfg(target_os = "linux")]
                 if kind == 1 {
                     assert_eq!(
@@ -700,6 +723,7 @@ pub(crate) mod tests {
         }
     }
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn owner_drop_preserves_a_reopened_backend_descriptor_number() {
         if crate::isolated_process::run_in_child(
             "reactor_state::tests::owner_drop_preserves_a_reopened_backend_descriptor_number",

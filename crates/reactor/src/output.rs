@@ -91,13 +91,15 @@ pub struct OutputResult {
 }
 
 impl OutputResult {
-    /// Sets the socket's `close_wait` and `send_wait` flags the result asks for.
-    pub const fn publish(&self, socket: &mut crate::SocketRecord) {
+    /// Sets the socket's `close_wait` and `send_wait` flags the result asks for. It
+    /// borrows only the socket's output state, so it leaves pointers to the socket's
+    /// other fields, such as the hooks' `kernel_nobufs`, usable.
+    pub const fn publish(&self, output: &mut crate::SocketOutput) {
         if self.close_wait {
-            socket.output.close_wait = 1;
+            output.close_wait = 1;
         }
         if self.send_wait {
-            socket.output.send_wait = 1;
+            output.send_wait = 1;
         }
     }
 }
@@ -262,7 +264,7 @@ pub unsafe fn handle_send_owned(
         }
     }
     // SAFETY: the effects returned; the caller lends the socket exclusively.
-    output.result.publish(unsafe { &mut *socket });
+    output.result.publish(unsafe { &mut (*socket).output });
     if output.result.pop {
         // SAFETY: detach transfers custody to the caller without invoking a disposer.
         output.status =
@@ -587,11 +589,13 @@ mod tests {
     unsafe extern "C" fn dispose(context: *mut c_void) {
         unsafe { (*context.cast::<Request>()).occupied = false };
     }
+    /// One reified pointer: each cast of `dispose` may get its own address.
+    static DISPOSE: unsafe extern "C" fn(*mut c_void) = dispose;
     unsafe extern "C" fn enqueue(context: *mut c_void) {
         let request = unsafe { &mut *context.cast::<Request>() };
         assert!(request.buffer && !request.occupied);
         request.occupied = true;
-        request.destroy = Some(dispose);
+        request.destroy = Some(DISPOSE);
     }
 
     #[test]
@@ -601,7 +605,7 @@ mod tests {
 
         let path = std::env::temp_dir().join(format!("swr-ordinary-output-{}", std::process::id()));
         let mut file = std::fs::File::create(&path).unwrap();
-        assert_eq!(file.write(b"0123456789012345678901234567890").unwrap(), 31);
+        file.write_all(b"0123456789012345678901234567890").unwrap();
         let mut nobufs = false;
         let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
         let mut cases = 0;
@@ -639,10 +643,7 @@ mod tests {
                             (request.begin, request.end),
                             (2, libc::off_t::try_from(actual_length + 2).unwrap())
                         );
-                        assert!(std::ptr::fn_addr_eq(
-                            request.destroy.unwrap(),
-                            dispose as unsafe extern "C" fn(*mut c_void)
-                        ));
+                        assert!(std::ptr::fn_addr_eq(request.destroy.unwrap(), DISPOSE));
                         let mut remaining = actual_length;
                         let (mut iterations, mut popped, mut corked) = (0, 0, 0);
                         reset(0, 0, cork_ok);
@@ -651,8 +652,10 @@ mod tests {
                             let sent = 3.min(remaining.min(7));
                             let requested = crate::sendfile_chunk(request.begin, request.end);
                             assert!(sent <= requested);
-                            request.sends += 1;
-                            request.begin += libc::off_t::try_from(sent).unwrap();
+                            // Through `context`: a write to `request` itself would end it.
+                            let shared = context.cast::<Request>();
+                            unsafe { (*shared).sends += 1 };
+                            unsafe { (*shared).begin += libc::off_t::try_from(sent).unwrap() };
                             remaining -= sent;
                             let result = sendfile_sent(
                                 &file_hooks,

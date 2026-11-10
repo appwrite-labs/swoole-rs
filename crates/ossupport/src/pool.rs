@@ -419,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn grows_to_the_cap_retires_idle_workers_and_restarts() {
         // One core worker, at most four; idle 0.5s truncates to an immediate retirement.
         let pool = Pool::acquire(HOOKS, 2, 1, 4, 0.0, 0.5);

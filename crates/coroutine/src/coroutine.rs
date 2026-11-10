@@ -228,9 +228,11 @@ unsafe fn release(scheduler: &mut Scheduler, co: *mut Coroutine) {
         child.prev_sibling = ptr::null_mut();
         child.next_sibling = ptr::null_mut();
     }
-    // SAFETY: forwarded from the caller.
+    let cid = this.cid;
+    // SAFETY: forwarded from the caller; `this` isn't used again, since this
+    // borrows `co` anew.
     unsafe { set_origin(co, ptr::null_mut()) };
-    scheduler.remove(this.cid);
+    scheduler.remove(cid);
 }
 
 fn switch_time(yielding: Option<&mut Coroutine>, resuming: Option<&mut Coroutine>, now: c_long) {

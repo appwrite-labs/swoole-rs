@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn entries_reuse_idle_slots_once_full() {
-        let memory = Box::leak(Box::new(std::mem::MaybeUninit::<Registry>::zeroed()));
+        let memory = Box::new(std::mem::MaybeUninit::<Registry>::zeroed());
         let registry = unsafe { memory.assume_init_ref() };
         let locked = registry.lock();
         for address in 1..=ENTRIES {

@@ -212,6 +212,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no setitimer")]
     fn system_timer_arms_and_disarms() {
         assert_eq!(swr_v1_timer_system_set(-1), 0);
         let mut current = libc::itimerval {
