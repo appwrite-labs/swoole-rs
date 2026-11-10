@@ -209,13 +209,7 @@ fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
 pub(crate) unsafe fn send(serv: view::Server<'_>, fd: c_long, data: *mut zend_string) -> bool {
     // SAFETY: per the caller.
     let bytes = unsafe { string::bytes(data) };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send takes a uint32_t length, as upstream's ZSTR_LEN narrowing"
-    )]
-    let length = bytes.len() as u32;
-    // SAFETY: per the caller; `length` bytes.
-    let sent = unsafe { server_methods::send(serv.raw(), fd, bytes.as_ptr().cast(), length) };
+    let sent = server_methods::send(serv, fd, bytes);
     if !sent
         && swoole_rs_corebase::log::last_error() == crate::lifecycle::SW_ERROR_OUTPUT_SEND_YIELD
     {

@@ -513,10 +513,7 @@ pub(crate) unsafe fn answer(
         OP_INCOMING => sign(unsafe { methods::connection_incoming(serv, reactor, conn) }),
         // SAFETY: this thread's reactor and the connection's live socket.
         OP_CLOSE => sign(unsafe { entry::close_connection(reactor, conn_ref().socket.cast()) }),
-        OP_CONN_HEALTHY => {
-            // SAFETY: the live server and one of its connections.
-            u64::from(unsafe { methods::is_healthy_connection(serv, f64::from_bits(arg), conn) })
-        }
+        OP_CONN_HEALTHY => u64::from(server.healthy(f64::from_bits(arg), conn_ref())),
         OP_SEND_CLOSE_FORCE => {
             // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
             let session = arg.cast_signed();

@@ -36,9 +36,7 @@ impl Drop for ProtocolScope {
 }
 
 /// `Socket::TimeoutSetter`: `timeout` for the timeouts `kind` selects, each restored
-/// when dropped. A zero timeout changes nothing. C layout, for the hooks system
-/// tests' `swr_v1_hook_timeout_scope` (`socket_symbols`).
-#[repr(C)]
+/// when dropped. A zero timeout changes nothing.
 pub struct TimeoutScope {
     socket: Co,
     timeout: f64,

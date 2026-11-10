@@ -564,6 +564,7 @@ version = "0.0.0"
 dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
+ "swoole-rs-hooks",
 ]
 
 [[package]]
@@ -595,6 +596,8 @@ name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
  "swoole-rs-ffi",
+ "swoole-rs-ports",
+ "swoole-rs-server",
 ]
 
 [[package]]
@@ -869,6 +872,7 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-protocols",
+ "swoole-rs-server",
  "swoole-rs-zend",
 ]
 

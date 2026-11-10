@@ -24,6 +24,7 @@ use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_p
 use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, bailout, declare_bool,
     declare_long, declare_property_null, declare_string, handlers, method_table, string,
@@ -400,21 +401,13 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 /// # Safety
 /// Called once, at MINIT, with Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_coro_minit(
-    exception: *mut zend_class_entry,
-    short_name: bool,
-    compression: bool,
-) -> *mut zend_class_entry {
+pub unsafe fn server_coro_minit(args: &MinitArgs) {
+    let (exception, short_name, compression) = (args.exception, args.shortname, args.compression);
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phphttp_server_coro_minit(exception, short_name, compression) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-            std::ptr::null_mut()
-        }
+    if let Err(error) = result {
+        error.defer();
+        swoole_rs_zend::bailout::finish();
     }
 }
 

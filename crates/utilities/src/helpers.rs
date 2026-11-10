@@ -18,12 +18,7 @@ pub fn timezone() -> c_long {
 /// `swoole_strlchr`: the first `c` in `[p, last)`, or null.
 /// # Safety
 /// `p..last` is a readable range (empty when `last <= p`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_strlchr(
-    p: *mut c_char,
-    last: *const c_char,
-    c: c_char,
-) -> *mut c_char {
+pub unsafe fn swr_v1_utils_strlchr(p: *mut c_char, last: *const c_char, c: c_char) -> *mut c_char {
     let length = (last as usize).saturating_sub(p as usize);
     if length == 0 {
         return std::ptr::null_mut();

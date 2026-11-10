@@ -5,7 +5,7 @@
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
-use swoole_rs_ports::lifecycle_native::{swr_v1_ports_context_dup, swr_v1_ports_sni_add};
+use swoole_rs_ports::lifecycle_native::{context_dup, sni_add};
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{
@@ -446,7 +446,7 @@ impl Source for Zend<'_> {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
             }
             // SAFETY: an SSL port; the copy's reference goes to `sni_add` below or is released.
-            let context = unsafe { swr_v1_ports_context_dup(self.port) };
+            let context = unsafe { context_dup(self.port) };
             let item = Self {
                 settings: Settings {
                     serv: self.settings.serv,
@@ -462,9 +462,7 @@ impl Source for Zend<'_> {
             // SAFETY: a live key.
             let name = unsafe { bytes(key) };
             // SAFETY: a live port and name, and the copy's reference, handed over once.
-            let added = unsafe {
-                swr_v1_ports_sni_add(self.port, name.as_ptr().cast(), name.len(), context)
-            };
+            let added = unsafe { sni_add(self.port, name, context) };
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
             }

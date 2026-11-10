@@ -59,7 +59,7 @@ pub struct PortData {
 
 type Port = Object<PortData>;
 
-/// `swr_ports_property_kind` (`native/ports/swoole_rs_ports.h`).
+/// The kinds `swoole_rs_ports::swr_v1_ports_class_property` returns.
 const PROPERTY_END: u32 = 0;
 const PROPERTY_LONG: u32 = 2;
 const PROPERTY_BOOL: u32 = 3;

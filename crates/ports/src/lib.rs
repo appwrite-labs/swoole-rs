@@ -17,7 +17,7 @@
 use std::ffi::{CStr, c_char, c_int};
 use std::slice;
 
-use swoole_rs_server::port_config::PortMethods;
+use swoole_rs_server::port_config::{self, PortMethods};
 
 pub mod framing_recv;
 pub mod http_routes;
@@ -115,7 +115,8 @@ const METHODS: PortMethods = PortMethods {
     create_socket: methods::create_socket,
     close_socket: methods::close_socket,
     get_protocols: methods::get_protocols,
-    init_protocol: |port| methods::init_protocol(port),
+    // SAFETY: the server passes one of its live ports, whose settings it isn't touching.
+    init_protocol: |port| methods::init_protocol(unsafe { port_config::of(port) }),
     destroy_http_request: methods::destroy_http_request,
     tls_free: lifecycle_native::tls_free,
     dtls_create: lifecycle_native::dtls_create,
@@ -156,8 +157,8 @@ pub struct PortsProperty {
     pub kind: u32,
     pub private: u32,
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
+#[must_use]
+pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
     // Declaration order differs from callback enum order and is observable.
     const EVENT_ORDER: [usize; 12] = [0, 1, 2, 3, 10, 11, 4, 5, 7, 8, 9, 6];
     const PUBLIC: &[(&[u8], u32, i64)] = &[

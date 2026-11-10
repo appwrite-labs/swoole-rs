@@ -39,7 +39,7 @@ mod state;
 mod websocket;
 
 pub use cookie::*;
-pub use header::swr_v1_phphttp_response_rshutdown;
+pub use header::response_rshutdown;
 pub use request::*;
 pub use response::*;
 pub use server::*;

@@ -6,7 +6,7 @@
 use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_char, c_int, c_void},
     ptr,
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
@@ -303,7 +303,7 @@ fn receive_done(server: *mut c_void, succeeded: bool, fd: i64, args: &mut [zval]
             return true;
         }
         // SAFETY: a live server.
-        unsafe { server_methods::close(server, fd, false) };
+        server_methods::close(unsafe { view::Server::from_raw(server) }, fd, false);
     }
     if let Some(last) = args.last_mut() {
         dtor(last);
@@ -629,12 +629,6 @@ struct ExitStatus {
 type Ctx = *mut c_void;
 
 unsafe extern "C" {
-    #[link_name = "_Z32php_swoole_http_server_onReceivePN6swoole6ServerEPNS_8RecvDataE"]
-    fn php_swoole_http_server_onReceive(server: *mut c_void, request: *mut c_void) -> c_int;
-    #[link_name = "_Z30php_swoole_http_server_onClosePN6swoole6ServerEPNS_8DataHeadE"]
-    fn php_swoole_http_server_onClose(server: *mut c_void, info: *mut DataHead);
-    #[link_name = "_Z31php_swoole_http2_server_onClosePN6swoole6ServerEl"]
-    fn php_swoole_http2_server_onClose(server: *mut c_void, session_id: c_long);
     fn swr_v1_phpredis_receive(server: *mut c_void, request: *mut c_void) -> c_int;
     fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int;
 }
@@ -783,8 +777,11 @@ extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: *mut c_void)
 }
 
 extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: *mut c_void) -> c_int {
+    let Some(families) = swoole_rs_phpswoole::families() else {
+        return SW_OK;
+    };
     // SAFETY: the Server's own event.
-    unsafe { php_swoole_http_server_onReceive(server.raw(), request) }
+    unsafe { (families.http.on_receive)(server.raw(), request) }
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
@@ -933,9 +930,10 @@ fn close(server: view::Server<'_>, info: *mut DataHead) {
     }
     // SAFETY: as above; the callback may have changed it.
     let conn = unsafe { &*conn };
-    if conn.http2_stream != 0 {
-        // SAFETY: the closed session of a live server.
-        unsafe { php_swoole_http2_server_onClose(server.raw(), conn.session_id) };
+    if conn.http2_stream != 0
+        && let Some(families) = swoole_rs_phpswoole::families()
+    {
+        (families.http.http2_on_close)(conn.session_id);
     }
 }
 
@@ -944,8 +942,11 @@ extern "C" fn on_close(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
 }
 
 extern "C" fn on_http_close(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
+    let Some(families) = swoole_rs_phpswoole::families() else {
+        return;
+    };
     // SAFETY: the Server's own event.
-    unsafe { php_swoole_http_server_onClose(server.raw(), info) };
+    unsafe { (families.http.on_close)(server.raw(), info.cast()) };
 }
 
 extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {

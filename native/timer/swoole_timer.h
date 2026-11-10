@@ -87,8 +87,6 @@ void swr_v1_timer_owner_delay(swoole::Timer *timer, const swoole::TimerNode *nod
 // A C++ exception a callback or destructor throws aborts at Rust's frames (panic = "abort").
 void swr_v1_timer_owner_select(swoole::Timer *timer);
 void swr_v1_timer_owner_abandon(swoole::Timer *timer, void (*bailout)());
-// swoole_timer_add of a callback of the data alone.
-swoole::TimerNode *swr_v1_timer_add_plain(long ms, bool persistent, void (*callback)(void *), void *data);
 }
 
 namespace swoole {

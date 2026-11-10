@@ -19,8 +19,8 @@ theirs. PHP has FFI built in for the timer and ports gates. Any sanitizer report
 the run whatever the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
 never shows one. Rerun locally to read them. LeakSanitizer runs at the extension's
-MSHUTDOWN, not at exit: a worker or child process exits without shutting PHP down, so
-only a process that does is checked. tools/lsan.supp names PHP's own allocations that
+MSHUTDOWN, not at exit, and only in the process that loaded the extension: a worker exits
+without shutting PHP down, and a forked child's check hangs (#2345). tools/lsan.supp names PHP's own allocations that
 look lost there. USE_TRACKED_ALLOC hands the request heap to malloc, as PHP's CI runs
 it. PCRE's JIT is off, its SIMD scans read past the subject.
 
