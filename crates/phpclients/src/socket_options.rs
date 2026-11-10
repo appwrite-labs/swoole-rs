@@ -51,7 +51,7 @@ const SOCK_UDP6: c_int = 4;
 const EOF_MAXLEN: usize = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const OPERATION_NOT_SUPPORT: i64 = 507;
-/// `swr_v1_phpclients_socket_settings`'s `which`.
+/// `socket_settings`'s `which`.
 pub(crate) const ALL: c_int = 0;
 pub(crate) const PROTOCOL: c_int = 1;
 pub(crate) const SSL: c_int = 2;
@@ -222,8 +222,7 @@ pub(crate) fn apply(socket: Co, settings: *const zval, which: c_int) -> bool {
 /// [`apply`] for C++ callers, which raise no bailout of their own.
 /// # Safety
 /// `socket` is a live coroutine socket and `settings` a live array zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
+pub unsafe extern "C" fn socket_settings(
     socket: *mut c_void,
     settings: *const zval,
     which: c_int,
@@ -236,26 +235,26 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
 
 /// `php_swoole_socket_set(socket, settings)`.
 /// # Safety
-/// As [`swr_v1_phpclients_socket_settings`].
+/// As [`socket_settings`].
 #[unsafe(export_name = "_Z21php_swoole_socket_setPN6swoole9coroutine6SocketEPK12_zval_struct")]
 pub unsafe extern "C" fn php_swoole_socket_set(
     socket: native::Socket,
     settings: *const zval,
 ) -> bool {
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_settings(socket, settings, ALL) }
+    unsafe { socket_settings(socket, settings, ALL) }
 }
 
 /// `php_swoole_socket_set_protocol(socket, settings)`.
 /// # Safety
-/// As [`swr_v1_phpclients_socket_settings`].
+/// As [`socket_settings`].
 #[unsafe(export_name = "_Z30php_swoole_socket_set_protocolPN6swoole9coroutine6SocketEPK12_zval_struct")]
 pub unsafe extern "C" fn php_swoole_socket_set_protocol(
     socket: native::Socket,
     settings: *const zval,
 ) -> bool {
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_settings(socket, settings, PROTOCOL) }
+    unsafe { socket_settings(socket, settings, PROTOCOL) }
 }
 
 /// `php_swoole_socket_set_protocol`.

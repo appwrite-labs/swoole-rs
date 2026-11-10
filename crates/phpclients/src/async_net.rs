@@ -88,7 +88,6 @@ method_table! {
 /// `create_object`, which Zend inherits.
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Client`'s.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_client_async_minit(_module_number: c_int) {
     // SAFETY: MINIT, with a static table and the registered parent.
     unsafe {

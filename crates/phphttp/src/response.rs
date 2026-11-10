@@ -64,7 +64,6 @@ unsafe extern "C" {
         data: *const c_char,
         length: usize,
     ) -> bool;
-    static swoole_socket_coro_ce: *mut zend_class_entry;
 }
 
 /// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
@@ -750,8 +749,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     }
     if object.object().is_some() {
         let server_ce = swoole_rs_phpserver::server_class_entry();
-        // SAFETY: a class MINIT registered.
-        let socket_ce = unsafe { swoole_socket_coro_ce };
+        let socket_ce = swoole_rs_phpclients::socket_class();
         if instance_of(object, server_ce) {
             let Some(checked) = websocket::server_of(object.as_ptr()) else {
                 return;

@@ -80,7 +80,6 @@ unsafe extern "C" {
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
-    fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool;
     fn swr_v1_phphelpers_call_anyway(
         fci: *mut swoole_rs_zend::sys::zend_fcall_info,
         fcc: *mut swoole_rs_zend::sys::zend_fcall_info_cache,
@@ -763,8 +762,10 @@ pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
 }
 
 pub(crate) fn add_name_resolver(resolver: *mut zval) {
-    // SAFETY: a live zval.
-    unsafe { php_swoole_name_resolver_add(resolver) };
+    if let Some(families) = swoole_rs_phpswoole::families() {
+        // SAFETY: a live zval.
+        unsafe { (families.name_resolver_add)(resolver) };
+    }
 }
 
 pub(crate) fn set_dns_cache_expire(expire: c_long) {
