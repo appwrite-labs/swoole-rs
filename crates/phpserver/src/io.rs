@@ -184,7 +184,7 @@ unsafe fn socket_sendto(socket: *mut c_void, host: &[u8], port: i64, data: &[u8]
     }
     // SAFETY: per the caller.
     let (fd, kind) = unsafe { view::socket_fd(socket) };
-    let host = host.split(|&byte| byte == 0).next().unwrap_or_default();
+    let host = swoole_rs_corebase::net_address::c_str(host);
     let mut addr = MaybeUninit::<AddressStorage>::zeroed();
     let mut length: libc::socklen_t = 0;
     #[expect(

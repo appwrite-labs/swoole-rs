@@ -21,7 +21,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_iouring_entries, swr_v1_core_set_iouring_flag, swr_v1_core_set_iouring_workers,
     swr_v1_core_set_wait_signal,
 };
-use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, handlers, php_error};
+use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, handlers, report};
 
 /// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const OPERATION_NOT_SUPPORT: i32 = 507;
@@ -96,8 +96,7 @@ pub fn php_swoole_set_aio_option(options: &Array) {
 /// whose bailout waits for the handler's end.
 fn fatal_error(level: i32, message: &CStr) {
     set_last_error(PHP_FATAL_ERROR);
-    // SAFETY: an error from Rust, through the shim's zend_try.
-    bailout::defer(unsafe { php_error(level, message) });
+    bailout::defer(report(level, message));
 }
 
 /// `SwooleG.dns_cache_refresh_time`'s bits: the coroutine DNS cache's lifetime

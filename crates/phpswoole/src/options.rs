@@ -20,7 +20,7 @@ use swoole_rs_utilities::{
     swr_v1_logger_set, swr_v1_logger_set_date_format,
 };
 use swoole_rs_zend::{
-    Array, E_ERROR, Value, ZStr, ZString, bailout, php_error, sys::ZEND_ACC_NOT_SERIALIZABLE,
+    Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
     throw_exception,
 };
 
@@ -32,10 +32,8 @@ const HTTP2_INIT_WINDOW_SIZE: u32 = 4;
 const HTTP2_MAX_FRAME_SIZE: u32 = 5;
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 6;
 
-unsafe extern "C" {
-    /// crates/clients' resolver address (`dns_server`).
-    fn swr_v1_clients_set_dns_server(server: *const u8, length: usize);
-}
+// crates/clients' resolver address (`dns_server`).
+use swoole_rs_clients::dns::swr_v1_clients_set_dns_server;
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
 /// Nothing is found once a bailout is pending: upstream's setters stopped at
@@ -90,8 +88,7 @@ fn size_error(failed: &ZStr, error: &ZStr) {
     ]
     .concat();
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: an error from Rust, through the shim's zend_try.
-    bailout::defer(unsafe { php_error(E_ERROR, &message) });
+    bailout::defer(report(E_ERROR, &message));
 }
 
 /// `php_swoole_parse_to_size(zv)`: a size string as an ini quantity

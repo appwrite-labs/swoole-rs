@@ -95,7 +95,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     for (name, _, kind) in types() {
         minit.class_constant_long(&LOCK, name, kind);
     }
-    minit.property_long(&LOCK, c"errCode", 0);
+    minit.property_long(&LOCK, c"errCode", 0, ZEND_ACC_PUBLIC);
     for (_, name, kind) in types() {
         minit.long_constant(name, kind);
     }
@@ -118,7 +118,7 @@ fn construct(call: &Call) {
         return;
     };
     if held.0.get().is_some() {
-        call.constructed_twice();
+        call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }

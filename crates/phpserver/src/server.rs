@@ -13,15 +13,14 @@ use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Object, declare_bool, declare_long, declare_property_null,
-    declare_string, php_error, register_long_constant,
+    Call, Class, E_WARNING, Minit, Object, report,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
         add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long, zend_ce_arrayaccess,
-        zend_ce_countable, zend_ce_iterator, zend_class_entry, zend_class_implements,
-        zend_declare_property_double, zend_object, zend_object_handlers, zval,
+        zend_ce_countable, zend_ce_iterator, zend_class_entry, zend_class_implements, zend_object,
+        zend_object_handlers, zval,
     },
-    throw_error, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -233,20 +232,6 @@ unsafe extern "C" fn iterator_free(object: *mut zend_object) {
     unsafe { IteratorObject::dtor(object) };
 }
 
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "ZEND_ACC_* visibilities are small"
-)]
-const PUBLIC: c_int = ZEND_ACC_PUBLIC as c_int;
-
-/// `zend_declare_property_double(ce, name, value, ZEND_ACC_PUBLIC)`.
-/// # Safety
-/// MINIT, with a registered class.
-unsafe fn declare_double(ce: *mut zend_class_entry, name: &CStr) {
-    // SAFETY: per the caller; Zend copies the name.
-    unsafe { zend_declare_property_double(ce, name.as_ptr(), name.count_bytes(), 0.0, PUBLIC) };
-}
-
 /// A declared property: public unless `Private`.
 enum Property {
     Null(&'static CStr),
@@ -257,28 +242,16 @@ enum Property {
     Double(&'static CStr),
 }
 
-/// Declare `properties` on `ce`, in order.
-/// # Safety
-/// MINIT, with a registered class.
-unsafe fn declare(ce: *mut zend_class_entry, properties: &[Property]) {
+/// Declare `properties` on `class`, in order.
+fn declare(minit: &Minit, class: &Class, properties: &[Property]) {
     for property in properties {
         match *property {
-            // SAFETY: MINIT, with a registered class.
-            Property::Null(name) => unsafe { declare_property_null(ce, name, ZEND_ACC_PUBLIC) },
-            // SAFETY: as above.
-            Property::Private(name) => unsafe {
-                declare_property_null(ce, name, ZEND_ACC_PRIVATE);
-            },
-            // SAFETY: as above.
-            Property::Long(name, value) => unsafe {
-                declare_long(ce, name, value, ZEND_ACC_PUBLIC);
-            },
-            // SAFETY: as above.
-            Property::Bool(name) => unsafe { declare_bool(ce, name, false, ZEND_ACC_PUBLIC) },
-            // SAFETY: as above.
-            Property::Str(name) => unsafe { declare_string(ce, name, c"", ZEND_ACC_PUBLIC) },
-            // SAFETY: as above.
-            Property::Double(name) => unsafe { declare_double(ce, name) },
+            Property::Null(name) => minit.property_null(class, name, ZEND_ACC_PUBLIC),
+            Property::Private(name) => minit.property_null(class, name, ZEND_ACC_PRIVATE),
+            Property::Long(name, value) => minit.property_long(class, name, value, ZEND_ACC_PUBLIC),
+            Property::Bool(name) => minit.property_bool(class, name, false, ZEND_ACC_PUBLIC),
+            Property::Str(name) => minit.property_string(class, name, c"", ZEND_ACC_PUBLIC),
+            Property::Double(name) => minit.property_double(class, name, 0.0, ZEND_ACC_PUBLIC),
         }
     }
 }
@@ -463,58 +436,51 @@ unsafe extern "C" {
 /// Zend's MINIT, once.
 pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     use swoole_rs_corebase::{Switch, built_with};
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(module) };
     let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));
     THREAD.store(thread, Ordering::Relaxed);
     let methods = if sockets {
-        SERVER_METHODS.as_ptr()
+        &SERVER_METHODS.0
     } else {
         SERVER_METHODS.without(&[c"getSocket"])
     };
-    // SAFETY: MINIT, with tables that live for the process.
-    unsafe {
-        SERVER.register(c"Swoole\\Server", methods, |entry, handlers| {
+    minit.register(&SERVER, c"Swoole\\Server", methods, |entry, handlers| {
+        entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+        deny(handlers);
+        Object::<ServerData>::install(
+            entry,
+            handlers,
+            crate::lifecycle::create,
+            crate::lifecycle::free,
+        );
+    });
+    minit.register(
+        &TASK,
+        c"Swoole\\Server\\Task",
+        &TASK_METHODS.0,
+        |entry, handlers| {
+            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+            deny(handlers);
+            TaskObject::install(entry, handlers, task_create, task_free);
+        },
+    );
+    declare(&minit, &TASK, TASK_PROPERTIES);
+    for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
+        // `SW_INIT_CLASS_ENTRY_DATA_OBJECT` has no methods.
+        minit.register(class, name, &[], |_, _| {});
+        declare(&minit, class, properties);
+    }
+    minit.register(
+        &ITERATOR,
+        c"Swoole\\Connection\\Iterator",
+        &ITERATOR_METHODS.0,
+        |entry, handlers| {
             entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
             deny(handlers);
-            Object::<ServerData>::install(
-                entry,
-                handlers,
-                crate::lifecycle::create,
-                crate::lifecycle::free,
-            );
-        });
-    }
-    // SAFETY: as above.
-    unsafe {
-        TASK.register(
-            c"Swoole\\Server\\Task",
-            TASK_METHODS.as_ptr(),
-            |entry, handlers| {
-                entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-                deny(handlers);
-                TaskObject::install(entry, handlers, task_create, task_free);
-            },
-        );
-    }
-    // SAFETY: MINIT, with the class just registered.
-    unsafe { declare(TASK.entry(), TASK_PROPERTIES) };
-    for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
-        // SAFETY: MINIT; `SW_INIT_CLASS_ENTRY_DATA_OBJECT` has no methods.
-        unsafe { class.register(name, ptr::null(), |_, _| {}) };
-        // SAFETY: MINIT, with the class just registered.
-        unsafe { declare(class.entry(), properties) };
-    }
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        ITERATOR.register(
-            c"Swoole\\Connection\\Iterator",
-            ITERATOR_METHODS.as_ptr(),
-            |entry, handlers| {
-                entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-                deny(handlers);
-                IteratorObject::install(entry, handlers, iterator_create, iterator_free);
-            },
-        );
-    }
+            IteratorObject::install(entry, handlers, iterator_create, iterator_free);
+        },
+    );
     let iterator = ITERATOR.entry();
     // SAFETY: MINIT; Zend's own interfaces are registered before extensions
     // and not written after.
@@ -527,21 +493,17 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     unsafe { zend_class_implements(iterator, 2, iterator_ce, array_access) };
     // SAFETY: as above.
     unsafe { zend_class_implements(iterator, 1, countable) };
-    let server = SERVER.entry();
-    // SAFETY: MINIT, with the class registered above.
-    unsafe { declare(server, SERVER_PROPERTIES) };
+    declare(&minit, &SERVER, SERVER_PROPERTIES);
     if thread {
-        // SAFETY: as above.
-        unsafe { declare(server, &[Str(c"bootstrap")]) };
+        declare(&minit, &SERVER, &[Str(c"bootstrap")]);
     }
     for &(name, value) in CONSTANTS {
         if name == c"SWOOLE_THREAD" && !thread {
             continue;
         }
-        // SAFETY: MINIT of `module`.
-        unsafe { register_long_constant(name, value, module) };
+        minit.long_constant(name, value);
     }
-    crate::port::minit(!thread, sockets);
+    crate::port::minit(&minit, !thread, sockets);
 }
 
 /// The constants `php_swoole_server_minit` registers, in its order (the values
@@ -615,19 +577,16 @@ pub(crate) fn worker_id() -> i64 {
 pub(crate) fn no_payload() {
     set_last_error(SW_ERROR_NO_PAYLOAD);
     if display_errors() {
-        // SAFETY: from a handler; a warning.
-        swoole_rs_zend::bailout::defer(unsafe {
-            php_error(E_WARNING, c"the data sent must not be empty")
-        });
+        swoole_rs_zend::bailout::defer(report(E_WARNING, c"the data sent must not be empty"));
     }
 }
 
 /// `php_swoole_fatal_error(level, message)`.
 pub(crate) fn fatal(level: i32, message: &CStr) {
     set_last_error(SW_ERROR_PHP_FATAL_ERROR);
-    // SAFETY: from a handler; a bailout (an `E_ERROR`, or a user error handler's
-    // exit) waits for the handler's last step, so callers return after it.
-    swoole_rs_zend::bailout::defer(unsafe { php_error(level, message) });
+    // A bailout (an `E_ERROR`, or a user error handler's exit) waits for the
+    // handler's last step, so callers return after it.
+    swoole_rs_zend::bailout::defer(report(level, message));
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
@@ -1171,9 +1130,8 @@ fn iterator<'a>(call: &Call) -> &'a mut Iterator {
     iterator
 }
 
-fn iterator_construct(_: &Call) {
-    // SAFETY: in a handler.
-    unsafe { throw_error(c"please use the Swoole\\Server->connections") };
+fn iterator_construct(call: &Call) {
+    call.throw_error(c"please use the Swoole\\Server->connections");
 }
 
 fn rewind(call: &Call) {

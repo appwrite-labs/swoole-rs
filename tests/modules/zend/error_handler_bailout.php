@@ -15,7 +15,7 @@ set_error_handler(function (int $level, string $message) use ($mode) {
 $cases = [
     // Call's ZPP coercion: passing null to an int is deprecated.
     'atomic_coercion' => fn() => (new Swoole\Atomic())->add(null),
-    // phpprocess: php_error through crates/zend.
+    // phpprocess: report through crates/zend.
     'process_signal' => fn() => Swoole\Process::signal(9999, fn() => null),
     // phpcollections: a C++ php_swoole_fatal_error reporter.
     'table_column' => fn() => (new Swoole\Table(8))->column('a', Swoole\Table::TYPE_STRING, 0),

@@ -9,7 +9,6 @@ use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_clo
 use swoole_rs_zend::{
     E_ERROR,
     bailout::{self, Bailout},
-    php_error,
     sys::{swr_zval_stringl, zval, zval_ptr_dtor},
 };
 
@@ -540,8 +539,7 @@ pub fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
             }
         }
     }
-    // SAFETY: called while PHP runs.
-    unsafe { php_error(level, message) }
+    swoole_rs_zend::report(level, message)
 }
 
 pub use swoole_rs_phpswoole::check_reactor;

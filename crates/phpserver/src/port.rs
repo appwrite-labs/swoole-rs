@@ -16,14 +16,14 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Object, Value, ZString, bailout, message,
+    Call, Class, E_WARNING, Minit, Object, Value, ZString, bailout, message,
     sys::{
         IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
         zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
         zend_update_property, zval,
     },
-    throw_error, type_of, unset_property_deny,
+    type_of, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -204,18 +204,20 @@ method_table! {
 
 /// MINIT: register the class as `php_swoole_server_port_minit` did; `sockets`
 /// is `SWOOLE_SOCKETS_SUPPORT`.
-pub(crate) fn minit(not_serializable: bool, sockets: bool) {
+pub(crate) fn minit(minit: &Minit, not_serializable: bool, sockets: bool) {
     let methods = if sockets {
-        METHODS.as_ptr()
+        &METHODS.0
     } else {
         METHODS.without(&[c"getSocket"])
     };
-    // SAFETY: MINIT, with a table that lives for the process.
-    unsafe {
-        PORT.register(c"Swoole\\Server\\Port", methods, |entry, handlers| {
+    minit.register(
+        &PORT,
+        c"Swoole\\Server\\Port",
+        methods,
+        |entry, handlers| {
             configure(entry, handlers, not_serializable);
-        });
-    };
+        },
+    );
     let ce = PORT.entry();
     for index in 0.. {
         let property = swr_v1_ports_class_property(index);
@@ -261,8 +263,7 @@ fn invalid(call: &Call) {
 }
 
 fn construct(call: &Call) {
-    // SAFETY: in a handler.
-    unsafe { throw_error(c"please use the Swoole\\Server->listen method") };
+    call.throw_error(c"please use the Swoole\\Server->listen method");
     call.set_bool(false);
 }
 

@@ -13,8 +13,9 @@ use std::{ffi::CStr, ptr};
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
-    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool,
-    declare_long, declare_string, set_object,
+    Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
+    bailout::Bailout,
+    set_object,
     string::ZBuf,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
@@ -93,56 +94,29 @@ method_table! {
     ];
 }
 
-/// MINIT, as `php_swoole_client_coro_minit` did.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe extern "C" fn client_coro_minit(_module: c_int) {
-    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
-    // SAFETY: MINIT, once.
-    let result = unsafe { init_phpclients_client_minit(shortname) };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
-    }
-}
+swoole_rs_zend::minit!(client_coro_minit => register);
 
-unsafe fn init_phpclients_client_minit(
-    shortname: bool,
-) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe { CLIENT.register(c"Swoole\\Coroutine\\Client", METHODS.as_ptr(), configure) };
-    if shortname {
-        // SAFETY: MINIT, after `register`.
-        unsafe { CLIENT.alias(c"Co\\Client") }?;
+/// MINIT, as `php_swoole_client_coro_minit` did.
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register(&CLIENT, c"Swoole\\Coroutine\\Client", &METHODS.0, configure);
+    if swoole_rs_phpswoole::globals().use_shortname.get() {
+        minit.alias(&CLIENT, c"Co\\Client")?;
     }
-    let ce = CLIENT.entry();
-    // SAFETY: MINIT, with the class just registered (each call below too).
-    unsafe { declare_long(ce, c"errCode", 0, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_string(ce, c"errMsg", c"", ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"fd", -1, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"socket") };
-    // SAFETY: as above.
-    unsafe { declare_long(ce, c"type", SOCK_TCP, ZEND_ACC_PUBLIC) };
-    // SAFETY: as above.
-    unsafe { CLIENT.property_null(c"setting") };
-    // SAFETY: as above.
-    unsafe { declare_bool(ce, c"connected", false, ZEND_ACC_PUBLIC) };
+    minit.property_long(&CLIENT, c"errCode", 0, ZEND_ACC_PUBLIC);
+    minit.property_string(&CLIENT, c"errMsg", c"", ZEND_ACC_PUBLIC);
+    minit.property_long(&CLIENT, c"fd", -1, ZEND_ACC_PUBLIC);
+    minit.property_null(&CLIENT, c"socket", ZEND_ACC_PUBLIC);
+    minit.property_long(&CLIENT, c"type", SOCK_TCP, ZEND_ACC_PUBLIC);
+    minit.property_null(&CLIENT, c"setting", ZEND_ACC_PUBLIC);
+    minit.property_bool(&CLIENT, c"connected", false, ZEND_ACC_PUBLIC);
     for (name, value) in [
         (c"MSG_OOB", libc::MSG_OOB),
         (c"MSG_PEEK", libc::MSG_PEEK),
         (c"MSG_DONTWAIT", libc::MSG_DONTWAIT),
         (c"MSG_WAITALL", libc::MSG_WAITALL),
     ] {
-        // SAFETY: as above.
-        unsafe { CLIENT.constant_long(name, i64::from(value)) };
+        minit.class_constant_long(&CLIENT, name, i64::from(value));
     }
-
     Ok(())
 }
 

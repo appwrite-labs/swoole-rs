@@ -19,8 +19,8 @@ use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, declare_long, declare_property_null,
-    handlers, init_object, push_string, set_key,
+    Call, Class, Invalid, Minit, Owned, Props, Value, ZStr, ZString, handlers, init_object,
+    push_string, set_key,
     sys::{
         IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
         zend_string,
@@ -116,23 +116,21 @@ method_table! {
 /// Called once, at MINIT.
 pub unsafe fn response_minit(args: &MinitArgs) {
     let codecs = args.codecs | u32::from(args.compression) << 3;
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        RESPONSE.register(
-            c"Swoole\\Http\\Response",
-            METHODS.as_ptr(),
-            |entry, handlers| {
-                context::configure(entry, handlers, create, free);
-            },
-        );
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
+    minit.register(
+        &RESPONSE,
+        c"Swoole\\Http\\Response",
+        &METHODS.0,
+        |entry, handlers| {
+            context::configure(entry, handlers, create, free);
+        },
+    );
+    minit.property_long(&RESPONSE, c"fd", 0, ZEND_ACC_PUBLIC);
+    for name in [c"socket", c"header", c"cookie", c"trailer"] {
+        minit.property_null(&RESPONSE, name, ZEND_ACC_PUBLIC);
     }
     let ce = RESPONSE.entry();
-    // SAFETY: MINIT, with the class just registered.
-    unsafe { declare_long(ce, c"fd", 0, ZEND_ACC_PUBLIC) };
-    for name in [c"socket", c"header", c"cookie", c"trailer"] {
-        // SAFETY: as above.
-        unsafe { declare_property_null(ce, name, swoole_rs_zend::sys::ZEND_ACC_PUBLIC) };
-    }
     crate::header::minit(ce);
     context::response_minit(ce);
     crate::parse::minit(codecs);

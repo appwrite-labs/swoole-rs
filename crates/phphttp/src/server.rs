@@ -14,7 +14,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::ManuallyDrop,
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
@@ -31,10 +31,10 @@ use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_class_entry, zend_long, zval,
 };
-use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout, string, value};
+use swoole_rs_zend::{Class, Minit, Owned, ZStr, ZString, bailout, string, value};
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
-static SERVER: Class = Class::new();
+pub(crate) static SERVER: Class = Class::new();
 
 /// `Swoole\Http\Server`, once MINIT registered it.
 #[must_use]
@@ -45,14 +45,13 @@ pub fn server_class() -> *mut zend_class_entry {
 /// `php_swoole_http_server_minit`, after `Swoole\Server`'s.
 /// # Safety
 /// Called once, at MINIT.
-pub unsafe fn server_minit(_: &MinitArgs) {
-    let parent = swoole_rs_phpserver::server_class_entry();
-    // SAFETY: MINIT, with no methods.
-    unsafe {
-        SERVER.register_child(c"Swoole\\Http\\Server", ptr::null(), parent, |entry, _| {
-            entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-        });
-    }
+pub unsafe fn server_minit(args: &MinitArgs) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
+    let parent = minit.parent(swoole_rs_phpserver::server_class_ref());
+    minit.register_child(&SERVER, c"Swoole\\Http\\Server", &[], parent, |entry, _| {
+        entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+    });
 }
 
 /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
@@ -112,19 +111,10 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// Elsewhere: the connection's addresses and its peer's port and loopback
-// check (crates/clients).
-unsafe extern "C" {
-    fn swr_v1_clients_address_host(
-        address: *const swoole_rs_corebase::net_types::SocketAddress,
-    ) -> *const c_char;
-    fn swr_v1_clients_address_port(
-        address: *const swoole_rs_corebase::net_types::SocketAddress,
-    ) -> c_int;
-    fn swr_v1_clients_address_loopback(
-        address: *const swoole_rs_corebase::net_types::SocketAddress,
-    ) -> bool;
-}
+// The connection's addresses and its peer's port and loopback check.
+use swoole_rs_clients::address::{
+    swr_v1_clients_address_host, swr_v1_clients_address_loopback, swr_v1_clients_address_port,
+};
 
 /// A keep-alive session's server and remote address, until it closes, by its
 /// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN

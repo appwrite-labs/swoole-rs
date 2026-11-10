@@ -13,17 +13,17 @@ use swoole_rs_phpstubs::thread_arraylist;
 use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Object, Value as ZValue, bailout, set_object,
+    Call, Class, Invalid, Minit, Object, Value as ZValue, bailout, set_object,
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
         IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, ZPP_ERROR_WRONG_ARG, swr_zend_dval_to_lval_safe,
         swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_argument_type_error,
         zend_ce_arrayaccess, zend_ce_countable, zend_class_entry, zend_class_implements,
-        zend_declare_property_long, zend_object, zend_object_handlers, zend_type_error, zend_ulong,
+        zend_object, zend_object_handlers, zend_type_error, zend_ulong,
         zend_use_resource_as_offset, zend_wrong_parameter_error, zval,
     },
-    throw_constructed_twice, throw_error, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -123,17 +123,13 @@ method_table! {
 }
 
 /// `php_swoole_thread_map_minit`.
-/// # Safety
-/// MINIT, after `thread_minit`, with a static method table.
-pub unsafe fn map_minit() {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        MAP.register(
-            c"Swoole\\Thread\\Map",
-            MAP_METHODS.as_ptr(),
-            configure(create_map, free_array),
-        );
-    };
+pub fn map_minit(minit: &Minit) {
+    minit.register(
+        &MAP,
+        c"Swoole\\Thread\\Map",
+        &MAP_METHODS.0,
+        configure(create_map, free_array),
+    );
     // SAFETY: MINIT; Zend's own interfaces.
     unsafe { implements(&MAP, true) };
 }
@@ -156,30 +152,16 @@ method_table! {
 }
 
 /// `php_swoole_thread_arraylist_minit`.
-/// # Safety
-/// As [`map_minit`].
-pub unsafe fn arraylist_minit() {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        LIST.register(
-            c"Swoole\\Thread\\ArrayList",
-            ARRAYLIST_METHODS.as_ptr(),
-            configure(create_list, free_array),
-        );
-    }
+pub fn arraylist_minit(minit: &Minit) {
+    minit.register(
+        &LIST,
+        c"Swoole\\Thread\\ArrayList",
+        &ARRAYLIST_METHODS.0,
+        configure(create_list, free_array),
+    );
     // SAFETY: MINIT; Zend's own interfaces.
     unsafe { implements(&LIST, true) };
-    #[expect(clippy::cast_possible_wrap, reason = "small flags")]
-    // SAFETY: MINIT, after `register`; Zend copies the name.
-    unsafe {
-        zend_declare_property_long(
-            LIST.entry(),
-            c"id".as_ptr(),
-            2,
-            0,
-            (ZEND_ACC_PUBLIC | ZEND_ACC_READONLY) as i32,
-        );
-    }
+    minit.property_long(&LIST, c"id", 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
 }
 
 method_table! {
@@ -193,23 +175,17 @@ method_table! {
 }
 
 /// `php_swoole_thread_queue_minit`.
-/// # Safety
-/// As [`map_minit`].
-pub unsafe fn queue_minit() {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        QUEUE.register(
-            c"Swoole\\Thread\\Queue",
-            QUEUE_METHODS.as_ptr(),
-            configure(create_queue, free_queue),
-        );
-    }
+pub fn queue_minit(minit: &Minit) {
+    minit.register(
+        &QUEUE,
+        c"Swoole\\Thread\\Queue",
+        &QUEUE_METHODS.0,
+        configure(create_queue, free_queue),
+    );
     // SAFETY: MINIT; Zend's own interface.
     unsafe { implements(&QUEUE, false) };
-    // SAFETY: MINIT, after `register`.
-    unsafe { QUEUE.constant_long(c"NOTIFY_ONE", NOTIFY_ONE) };
-    // SAFETY: as above.
-    unsafe { QUEUE.constant_long(c"NOTIFY_ALL", NOTIFY_ALL) };
+    minit.class_constant_long(&QUEUE, c"NOTIFY_ONE", NOTIFY_ONE);
+    minit.class_constant_long(&QUEUE, c"NOTIFY_ALL", NOTIFY_ALL);
 }
 
 const NOTIFY_ONE: i64 = 1;
@@ -340,14 +316,12 @@ fn construct_array(call: &Call, list: bool) {
         return;
     };
     if !slot::<Array>(call).is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         return;
     }
     let shared = match array {
         Some(array) if list && !array.is_list() => {
-            // SAFETY: in a handler.
-            unsafe { throw_error(c"the parameter $array must be an array of type list") };
+            call.throw_error(c"the parameter $array must be an array of type list");
             return;
         }
         Some(array) => Array::from(array),
@@ -557,9 +531,8 @@ handlers! {
 // ArrayList.
 
 /// `throw new Swoole\Exception("out of range", -1)`.
-fn out_of_range() {
-    // SAFETY: in a handler, with Swoole's exception class.
-    unsafe { throw_exception(host::exception(), c"out of range", -1) };
+fn out_of_range(call: &Call) {
+    call.throw(swoole_rs_phpswoole::exception(), c"out of range", -1);
 }
 
 /// Parse `(int $index)` and check the object.
@@ -576,7 +549,7 @@ fn list_get(call: &Call) {
     if let Some((list, index)) = list_long(call) {
         // SAFETY: in a handler; the return slot.
         if !unsafe { list.index_get(index, call.return_value()) } {
-            out_of_range();
+            out_of_range(call);
         }
     }
 }
@@ -598,7 +571,7 @@ fn list_set(call: &Call) {
         return;
     };
     if !list.index_set(list_index(index), value) {
-        out_of_range();
+        out_of_range(call);
     }
 }
 
@@ -611,7 +584,7 @@ fn list_step(call: &Call, decrement: bool) {
     };
     delta(call, decrement, |delta| {
         if !list.index_incr(list_index(key), delta, call) {
-            out_of_range();
+            out_of_range(call);
         }
     });
 }
@@ -688,8 +661,7 @@ const NO_PAYLOAD: i32 = 550;
 fn queue_construct(call: &Call) {
     let shared = slot::<Queue>(call);
     if !shared.is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         return;
     }
     *shared = Arc::into_raw(Arc::default());

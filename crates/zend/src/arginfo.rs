@@ -39,13 +39,13 @@ impl<const N: usize> Methods<N> {
     /// The table without the rows named in `skip`, leaked for the process: for
     /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
     #[must_use]
-    pub fn without(&'static self, skip: &[&CStr]) -> *const zend_function_entry {
+    pub fn without(&'static self, skip: &[&CStr]) -> &'static [zend_function_entry] {
         let keep = |row: &&zend_function_entry| {
             // SAFETY: a row's name is a static C string; only `END`'s is null.
             row.fname.is_null() || !skip.contains(&unsafe { CStr::from_ptr(row.fname) })
         };
         let rows: Vec<zend_function_entry> = self.0.iter().filter(keep).copied().collect();
-        Box::leak(rows.into_boxed_slice()).as_ptr()
+        Box::leak(rows.into_boxed_slice())
     }
 }
 

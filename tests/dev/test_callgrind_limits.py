@@ -1,6 +1,5 @@
 """benchmarks/callgrind.py's ratchet: a recorded ratio may drift by noise, no more."""
 from pathlib import Path
-import json
 import socket
 import sys
 import unittest
@@ -33,6 +32,24 @@ class Ratchet(unittest.TestCase):
         self.assertEqual(callgrind.ratchet(results, limits), {'plaintext': 0.97})
         self.assertEqual(callgrind.lowest(0.94), 0.94)
 
+    def test_ratchet_rewrites_only_the_lowered_workload_files(self):
+        from unittest import mock
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            limits = Path(temp, 'limits')
+            limits.mkdir()
+            (limits / 'plaintext').write_text('1.00\n')
+            (limits / 'json').write_text('1.00\n')
+            run = {'instructions_per_request': {'plaintext': {'cargo': 951, 'upstream': 1000},
+                                                'json': {'cargo': 999, 'upstream': 1000}}}
+            Path(temp, 'r.json').write_text(json.dumps(run))
+            with mock.patch('sys.argv', ['callgrind.py', '--limits', str(limits), '--ratchet', f'{temp}/r.json']):
+                self.assertEqual(callgrind.main(), 0)
+            self.assertEqual((limits / 'plaintext').read_text(), '0.96\n')
+            self.assertEqual((limits / 'json').read_text(), '1.00\n')
+            self.assertEqual(callgrind.read_limits(limits), {'plaintext': 0.96, 'json': 1.00})
+
     def test_resolver_answers_the_question_and_drops_the_edns_record(self):
         port = int(callgrind.peers()['PEER_DNS_PORT'])
         question = b'\x09callgrind\x04test\x00\x00\x01\x00\x01'
@@ -58,7 +75,7 @@ class Ratchet(unittest.TestCase):
         annotate.assert_called_once_with('error', 'callgrind plaintext', 'ratio 1.1000 over limit 1.0500')
 
     def test_every_merge_tier_workload_is_recorded(self):
-        limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
+        limits = callgrind.read_limits(ROOT / 'benchmarks/callgrind_limits')
         workflow = (ROOT / '.github/workflows/merge.yml').read_text()
         gated = {w for w in callgrind.WORKLOADS if f'--workload {w} ' in workflow or f'--workload {w}\n' in workflow}
         self.assertEqual(gated, set(limits))

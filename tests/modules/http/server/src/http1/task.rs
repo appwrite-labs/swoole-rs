@@ -27,7 +27,6 @@ use case::{TimerNode, swoole_timer_after};
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_STR: &[u8] = b"hello world, hello swoole\n";
-const MODE_THREAD: c_int = 3;
 const TASK_IPC_UNIXSOCK: u8 = 1;
 const TASK_IPC_MSGQUEUE: u8 = 2;
 const TASK_IPC_PREEMPTIVE: u8 = 3;

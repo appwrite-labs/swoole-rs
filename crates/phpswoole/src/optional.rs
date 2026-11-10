@@ -266,16 +266,18 @@ extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
 
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
-extern "C" fn thread_minit(module_number: c_int) {
+/// # Safety
+/// Zend's MINIT of this module, numbered `module_number`.
+unsafe extern "C" fn thread_minit(module_number: c_int) {
     let Some(families) = families() else {
         return;
     };
-    // SAFETY: MINIT, before any PHP thread starts (as for each below).
-    unsafe { (families.thread_minit)() };
-    // SAFETY: as above, with the module's number.
+    // SAFETY: per the caller; the token lives for this call.
+    let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
+    (families.thread_minit)(&minit);
+    // SAFETY: MINIT, with the module's number, before any PHP thread starts.
     unsafe { (families.locks_minit[3])(module_number) };
-    for minit in families.thread_classes_minit {
-        // SAFETY: as above.
-        unsafe { minit() };
+    for register in families.thread_classes_minit {
+        register(&minit);
     }
 }

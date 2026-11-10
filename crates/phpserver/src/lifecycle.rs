@@ -20,7 +20,7 @@ use swoole_rs_server::{
 };
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout, class_name,
-    init_object, message, object_of, php_error,
+    init_object, message, object_of, report,
     sys::{
         IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
         swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array, swr_zend_property_slot,
@@ -28,7 +28,7 @@ use swoole_rs_zend::{
         zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find, zend_object,
         zend_object_std_dtor, zval, zval_ptr_dtor,
     },
-    throw_constructed_twice, throw_error, throw_exception, type_of,
+    type_of,
     value::table,
 };
 
@@ -698,10 +698,8 @@ fn bind(call: &Call, serv: view::Server<'_>) {
 }
 
 /// `zend_throw_exception_ex(swoole_exception_ce, code, message)`.
-fn exception(message: &CStr, code: i64) {
-    let ce = swoole_rs_phpswoole::exception_class();
-    // SAFETY: from a handler.
-    unsafe { throw_exception(ce, message, code) };
+fn exception(call: &Call, message: &CStr, code: i64) {
+    call.throw(swoole_rs_phpswoole::exception(), message, code);
 }
 
 use crate::server::set_last_error;
@@ -716,13 +714,12 @@ fn class(object: ServerObject) -> String {
 fn construct(call: &Call) {
     let object = ServerObject::this(call);
     if !object.serv().is_null() {
-        // SAFETY: from a handler, with `$this`.
-        unsafe { throw_constructed_twice(object.raw()) };
+        call.throw_constructed_twice();
         return call.set_bool(false);
     }
     if !swoole_rs_phpswoole::globals().cli.get() {
         let text = message!("{} can only be used in CLI mode", class(object));
-        exception(text.as_cstr(), -1);
+        exception(call, text.as_cstr(), -1);
         return call.set_bool(false);
     }
     let parsed = call.arity(1, 4).and_then(|()| {
@@ -744,8 +741,7 @@ fn construct(call: &Call) {
             reason = "(int) serv_mode, as upstream"
         )]
         let text = message!("invalid $mode parameters {}", mode as i32);
-        // SAFETY: from a handler.
-        unsafe { throw_error(text.as_cstr()) };
+        call.throw_error(text.as_cstr());
         return call.set_bool(false);
     }
     let mut existing = None;
@@ -759,13 +755,17 @@ fn construct(call: &Call) {
         }
         2 => {
             set_last_error(SW_ERROR_OPERATION_NOT_SUPPORT);
-            exception(c"This operation is only allowed in the main thread", -2);
+            exception(
+                call,
+                c"This operation is only allowed in the main thread",
+                -2,
+            );
             return call.set_bool(false);
         }
         _ => {
             set_last_error(SW_ERROR_OPERATION_NOT_SUPPORT);
             let text = message!("server is running. unable to create {}", class(object));
-            exception(text.as_cstr(), -3);
+            exception(call, text.as_cstr(), -3);
             return call.set_bool(false);
         }
     }
@@ -781,8 +781,7 @@ fn construct(call: &Call) {
     }
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         if server_methods::add_systemd_socket(server) <= 0 {
-            // SAFETY: from a handler.
-            unsafe { throw_error(c"failed to add systemd socket") };
+            call.throw_error(c"failed to add systemd socket");
             orphans().push(serv as usize);
             return call.set_bool(false);
         }
@@ -805,7 +804,7 @@ fn construct(call: &Call) {
         text.push(format!(":{port}], Error: ").as_bytes());
         text.push(reason.to_bytes());
         text.push(format!("[{code}]").as_bytes());
-        exception(text.as_cstr(), code.into());
+        exception(call, text.as_cstr(), code.into());
         orphans().push(serv as usize);
         return call.set_bool(false);
     }
@@ -929,8 +928,7 @@ unsafe extern "C" fn command_run(
         Err(_) => true,
         Ok(false) => {
             set_last_error(crate::server::SW_ERROR_PHP_FATAL_ERROR);
-            // SAFETY: a warning, from a callback C++ runs.
-            let warned = unsafe { php_error(E_WARNING, c"Swoole\\Server: command handler error") };
+            let warned = report(E_WARNING, c"Swoole\\Server: command handler error");
             if warned.is_ok() {
                 send(br#"{"data": "failed to call function", "code": -1}"#);
             }
@@ -1061,8 +1059,7 @@ fn command(call: &Call) {
 pub(crate) fn runtime_warning(text: &CStr) {
     set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
     if crate::server::display_errors() {
-        // SAFETY: from a handler; a pending bailout waits for its last step.
-        bailout::defer(unsafe { php_error(E_WARNING, text) });
+        bailout::defer(report(E_WARNING, text));
     }
 }
 

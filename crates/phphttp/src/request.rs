@@ -11,7 +11,7 @@ use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Key, Value, declare_long, declare_property_null, handlers, init_object,
+    Call, Class, Key, Minit, Value, handlers, init_object,
     sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -61,21 +61,19 @@ method_table! {
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
 /// # Safety
 /// Called once, at MINIT.
-pub unsafe fn request_minit(_: &MinitArgs) {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        REQUEST.register(
-            c"Swoole\\Http\\Request",
-            METHODS.as_ptr(),
-            |entry, handlers| {
-                context::configure(entry, handlers, create, free);
-            },
-        );
-    }
-    let ce = REQUEST.entry();
+pub unsafe fn request_minit(args: &MinitArgs) {
+    // SAFETY: Zend's MINIT of this module, on this thread.
+    let minit = unsafe { Minit::new(args.module) };
+    minit.register(
+        &REQUEST,
+        c"Swoole\\Http\\Request",
+        &METHODS.0,
+        |entry, handlers| {
+            context::configure(entry, handlers, create, free);
+        },
+    );
     for name in [c"fd", c"streamId"] {
-        // SAFETY: MINIT, with the class just registered.
-        unsafe { declare_long(ce, name, 0, ZEND_ACC_PUBLIC) };
+        minit.property_long(&REQUEST, name, 0, ZEND_ACC_PUBLIC);
     }
     for name in [
         c"header",
@@ -86,8 +84,7 @@ pub unsafe fn request_minit(_: &MinitArgs) {
         c"post",
         c"tmpfiles",
     ] {
-        // SAFETY: as above.
-        unsafe { declare_property_null(ce, name, swoole_rs_zend::sys::ZEND_ACC_PUBLIC) };
+        minit.property_null(&REQUEST, name, ZEND_ACC_PUBLIC);
     }
 }
 

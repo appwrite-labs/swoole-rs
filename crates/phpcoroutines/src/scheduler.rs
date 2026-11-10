@@ -2,16 +2,11 @@
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
-use std::{
-    cell::Cell,
-    collections::VecDeque,
-    ffi::{c_int, c_void},
-    mem, ptr,
-};
+use std::{cell::Cell, collections::VecDeque, ffi::c_void, mem, ptr};
 use swoole_rs_phphelpers::callable as kept;
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_ERROR, E_WARNING, Object, OwnedArray,
+    Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray,
     bailout::{self, Bailout},
     class_name, message,
     sys::{
@@ -57,30 +52,20 @@ method_table! {
     ];
 }
 
+swoole_rs_zend::minit!(php_swoole_coroutine_scheduler_minit => register);
+
 /// MINIT: `Swoole\Coroutine\Scheduler` (`Co\Scheduler`), final, not
 /// serializable, clone and unset denied.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe extern "C" fn php_swoole_coroutine_scheduler_minit(_module_number: c_int) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phpcoroutines_scheduler_minit() };
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            error.defer();
-            swoole_rs_zend::bailout::finish();
-        }
-    }
-}
-
-unsafe fn init_phpcoroutines_scheduler_minit() -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe { SCHEDULER.register(c"Swoole\\Coroutine\\Scheduler", METHODS.as_ptr(), configure) };
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register(
+        &SCHEDULER,
+        c"Swoole\\Coroutine\\Scheduler",
+        &METHODS.0,
+        configure,
+    );
     if host::flag(host::SHORTNAME) {
-        // SAFETY: MINIT, after registration.
-        unsafe { SCHEDULER.alias(c"Co\\Scheduler") }?;
+        minit.alias(&SCHEDULER, c"Co\\Scheduler")?;
     }
-
     Ok(())
 }
 

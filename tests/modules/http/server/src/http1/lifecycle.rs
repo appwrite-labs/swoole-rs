@@ -605,6 +605,203 @@ unsafe extern "C" fn count_worker_start(_: *mut c_void, _: *mut c_void, _: *mut 
     counter_incr(1, 1);
 }
 
+// `reload_thread_2`'s and `reload_thread_3`'s `flags[...]`, as counters.
+const RELOAD: usize = 12;
+const ON_BEFORE_RELOAD: usize = 13;
+const ON_AFTER_RELOAD: usize = 14;
+const ON_MANAGER_STOP: usize = 15;
+const SHUTDOWN: usize = 16;
+const WORKER_STARTS: usize = 17;
+const USER_WORKER_STARTS: usize = 4;
+
+unsafe extern "C" fn reload_thread_timer(_: *mut c_void, tnode: *mut TimerNode) {
+    counter_set(RELOAD, 1);
+    expect(reload(timer_server(tnode), true), "serv->reload(true)");
+}
+
+/// `onManagerStart`: reload every worker after 500 ms.
+unsafe extern "C" fn reload_thread_manager_start(_: *mut c_void, serv: *mut c_void) {
+    timer_after(500, reload_thread_timer, Server(serv));
+}
+
+unsafe extern "C" fn reload_thread_shutdown(_: *mut c_void, tnode: *mut TimerNode) {
+    counter_set(SHUTDOWN, 1);
+    shutdown(timer_server(tnode));
+}
+
+unsafe extern "C" fn reload_thread_manager_stop(_: *mut c_void, _: *mut c_void) {
+    counter_set(ON_MANAGER_STOP, 1);
+}
+
+unsafe extern "C" fn reload_thread_before_reload(_: *mut c_void, _: *mut c_void) {
+    counter_set(ON_BEFORE_RELOAD, 1);
+}
+
+unsafe extern "C" fn count_thread_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    counter_incr(WORKER_STARTS, 1);
+}
+
+/// `reload_thread_2`'s `onAfterReload`: shut down 500 ms later.
+unsafe extern "C" fn reload_thread_2_after_reload(_: *mut c_void, serv: *mut c_void) {
+    counter_set(ON_AFTER_RELOAD, 1);
+    timer_after(500, reload_thread_shutdown, Server(serv));
+}
+
+unsafe extern "C" fn reload_thread_2_user_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    std::thread::sleep(Duration::from_millis(500));
+    counter_incr(USER_WORKER_STARTS, 1);
+}
+
+/// A thread-mode Server of two workers on a port, with `onWorkerStart` counted and the
+/// manager's 500 ms reload; `create` comes after `prepare`.
+fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
+    let serv = Server::new(MODE_THREAD);
+    serv.config().worker_num = 2;
+    counter_init();
+    case::log_level(case::SW_LOG_INFO);
+
+    assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
+    prepare(serv);
+    assert_eq!(serv.create(), SW_OK);
+
+    serv.set_callback(CB_WORKER_START, count_thread_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(
+        cb::CB_MANAGER_START as usize,
+        reload_thread_manager_start as *const c_void,
+    );
+    serv.set_callback(
+        cb::CB_MANAGER_STOP as usize,
+        reload_thread_manager_stop as *const c_void,
+    );
+    serv
+}
+
+/// `TEST(server, reload_thread_2)`: two task workers and a user worker too. Its `lock`,
+/// which the last `onWorkerStart` unlocks, has no other user, so it is left out.
+fn reload_thread_2() {
+    let mut user_worker = ptr::null_mut();
+    let serv = reload_thread_server(|serv| {
+        serv.config().task_worker_num = 2;
+        user_worker = add_user_worker(serv);
+    });
+    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
+    serv.set_callback(
+        cb::CB_USER_WORKER_START as usize,
+        reload_thread_2_user_start as *const c_void,
+    );
+    serv.set_callback(
+        cb::CB_BEFORE_RELOAD as usize,
+        reload_thread_before_reload as *const c_void,
+    );
+    serv.set_callback(
+        cb::CB_AFTER_RELOAD as usize,
+        reload_thread_2_after_reload as *const c_void,
+    );
+
+    assert_eq!(serv.start(), SW_OK);
+
+    assert_eq!(counter_get(ON_BEFORE_RELOAD), 1);
+    assert_eq!(counter_get(ON_AFTER_RELOAD), 1);
+    assert_eq!(counter_get(ON_MANAGER_STOP), 1);
+    assert_eq!(counter_get(RELOAD), 1);
+    assert_eq!(counter_get(SHUTDOWN), 1);
+    assert!(counter_get(USER_WORKER_STARTS) >= 2);
+    assert_no_failure();
+    serv.delete();
+    delete_worker(user_worker);
+}
+
+/// `reload_thread`'s `onUserWorkerStart`: until the server stops.
+unsafe extern "C" fn reload_thread_user_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
+    let config = Server(serv).config();
+    // SAFETY: the running server's flag, which shutdown clears from another thread; read
+    // anew each time, as upstream's loop reads `serv->running`.
+    while unsafe { ptr::read_volatile(&raw const config.running) } {
+        sleep(0.1);
+    }
+}
+
+unsafe extern "C" fn unlock_on_manager_start(_: *mut c_void, _: *mut c_void) {
+    unlock();
+}
+
+/// `TEST(server, reload_thread)`: a client thread reloads every worker once the manager
+/// starts, and a second reload is refused while the first runs. Its trace logging is
+/// left out.
+fn reload_thread() {
+    let mut user_worker = ptr::null_mut();
+    let serv = reload_thread_server(|serv| {
+        serv.config().task_worker_num = 2;
+        user_worker = add_user_worker(serv);
+    });
+    client_thread(
+        move || master_pid(serv),
+        move || {
+            lock_wait();
+            sleep(0.01);
+            expect(reload(serv, true), "serv.reload(true)");
+            expect(!reload(serv, true), "!serv.reload(true)");
+            expect(
+                last_error() == SW_ERROR_OPERATION_NOT_SUPPORT,
+                "EXPECT_ERREQ(SW_ERROR_OPERATION_NOT_SUPPORT)",
+            );
+            sleep(1.0);
+            expect(shutdown(serv), "serv.shutdown()");
+        },
+    );
+    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
+    serv.set_callback(
+        cb::CB_USER_WORKER_START as usize,
+        reload_thread_user_start as *const c_void,
+    );
+    serv.set_callback(
+        cb::CB_MANAGER_START as usize,
+        unlock_on_manager_start as *const c_void,
+    );
+
+    assert_eq!(serv.start(), SW_OK);
+    join_client();
+
+    // Each of the two workers and two task workers starts twice.
+    assert_eq!(counter_get(WORKER_STARTS), 4 * 2);
+    assert_no_failure();
+    serv.delete();
+    delete_worker(user_worker);
+}
+
+/// `reload_thread_3`'s `onAfterReload`: a task-worker reload is refused (there are none),
+/// then the server shuts down 500 ms later.
+unsafe extern "C" fn reload_thread_3_after_reload(_: *mut c_void, serv: *mut c_void) {
+    counter_set(ON_AFTER_RELOAD, 1);
+    let serv = Server(serv);
+    expect(!reload(serv, false), "!serv->reload(false)");
+    expect(
+        last_error() == SW_ERROR_OPERATION_NOT_SUPPORT,
+        "EXPECT_ERREQ(SW_ERROR_OPERATION_NOT_SUPPORT)",
+    );
+    timer_after(500, reload_thread_shutdown, serv);
+}
+
+/// `TEST(server, reload_thread_3)`.
+fn reload_thread_3() {
+    let serv = reload_thread_server(|_| {});
+    serv.set_callback(
+        cb::CB_AFTER_RELOAD as usize,
+        reload_thread_3_after_reload as *const c_void,
+    );
+
+    assert_eq!(serv.start(), SW_OK);
+
+    assert_eq!(counter_get(ON_AFTER_RELOAD), 1);
+    assert_eq!(counter_get(ON_MANAGER_STOP), 1);
+    assert_eq!(counter_get(RELOAD), 1);
+    assert_eq!(counter_get(SHUTDOWN), 1);
+    assert!(counter_get(WORKER_STARTS) >= 2 * 2);
+    assert_no_failure();
+    serv.delete();
+}
+
 /// `TEST(server, restart_worker_process)`.
 fn restart_worker_process() {
     let serv = Server::new(MODE_BASE);
@@ -1614,6 +1811,9 @@ pub const CASES: &[(&str, fn())] = &[
     ("reload_single_process", reload_single_process),
     ("reload_no_task_worker", reload_no_task_worker),
     ("restart_worker_process", restart_worker_process),
+    ("reload_thread", reload_thread),
+    ("reload_thread_2", reload_thread_2),
+    ("reload_thread_3", reload_thread_3),
     ("kill_worker_1", kill_worker_1),
     ("kill_worker_2", kill_worker_2),
     ("kill_worker_4", kill_worker_4),

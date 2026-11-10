@@ -42,6 +42,7 @@ pub(super) mod task;
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
 const MODE_PROCESS: c_int = 2;
+const MODE_THREAD: c_int = 3;
 const DISPATCH_FDMOD: u8 = 2;
 const DISPATCH_IDLE_WORKER: u8 = 3;
 const DISPATCH_RESULT_DISCARD_PACKET: c_int = -1;

@@ -1,6 +1,6 @@
 //! Swoole's PHP error macros (`php_swoole_private.h`).
 use std::ffi::CStr;
-use swoole_rs_zend::{E_ERROR, Message, bailout, php_error};
+use swoole_rs_zend::{E_ERROR, Message, bailout, report};
 
 pub(crate) const PHP_FATAL_ERROR: i32 = 503;
 pub(crate) const INVALID_PARAMS: i32 = 505;
@@ -39,14 +39,13 @@ pub(crate) fn cli() -> bool {
 /// `php_swoole_fatal_error`: always reported.
 pub(crate) fn fatal(level: i32, text: &Message) {
     set_last_error(PHP_FATAL_ERROR);
-    // SAFETY: from a handler; the message lives on the caller's stack.
-    bailout::defer(unsafe { php_error(level, text.as_cstr()) });
+    bailout::defer(report(level, text.as_cstr()));
 }
 
 /// `php_swoole_error`: reported when `swoole.display_errors` is on.
 pub(crate) fn notice(level: i32, text: &Message) {
     set_last_error(PHP_RUNTIME_NOTICE);
-    report(level, text);
+    displayed(level, text);
 }
 
 /// `php_swoole_sys_error`: with `strerror(errno)` and errno appended.
@@ -60,12 +59,12 @@ pub(crate) fn sys(level: i32, text: &Message) {
     // SAFETY: strerror returns a NUL-terminated message, as upstream reads it.
     full.push(unsafe { CStr::from_ptr(reason) }.to_bytes());
     full.push(format!("[{error}]").as_bytes());
-    report(level, &full);
+    displayed(level, &full);
 }
 
-fn report(level: i32, text: &Message) {
+/// Report `text` when it is an `E_ERROR` or `swoole.display_errors` is on.
+fn displayed(level: i32, text: &Message) {
     if level == E_ERROR || swoole_rs_phpswoole::display_errors() {
-        // SAFETY: from a handler; the message lives on the caller's stack.
-        bailout::defer(unsafe { php_error(level, text.as_cstr()) });
+        bailout::defer(report(level, text.as_cstr()));
     }
 }

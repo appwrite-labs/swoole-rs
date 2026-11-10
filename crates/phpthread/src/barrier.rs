@@ -10,9 +10,9 @@ use std::{
 };
 use swoole_rs_phpstubs::thread_barrier;
 use swoole_rs_zend::{
-    Call, Class, Object, Value as ZValue, set_object,
+    Call, Class, Minit, Object, Value as ZValue, set_object,
     sys::{ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_object, zval},
-    throw_constructed_twice, throw_exception, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -47,22 +47,18 @@ method_table! {
 }
 
 /// `php_swoole_thread_barrier_minit`.
-/// # Safety
-/// MINIT, after `thread_minit`, with a static method table.
-pub unsafe fn barrier_minit() {
-    // SAFETY: MINIT, with a static table.
-    unsafe {
-        BARRIER.register(
-            c"Swoole\\Thread\\Barrier",
-            METHODS.as_ptr(),
-            |entry, handlers| {
-                entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-                handlers.clone_obj = None;
-                handlers.unset_property = Some(unset_property_deny);
-                BarrierObject::install(entry, handlers, create, free);
-            },
-        );
-    }
+pub fn barrier_minit(minit: &Minit) {
+    minit.register(
+        &BARRIER,
+        c"Swoole\\Thread\\Barrier",
+        &METHODS.0,
+        |entry, handlers| {
+            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
+            handlers.clone_obj = None;
+            handlers.unset_property = Some(unset_property_deny);
+            BarrierObject::install(entry, handlers, create, free);
+        },
+    );
 }
 
 /// A Barrier stored in a container, by reference; `None` for other objects.
@@ -109,22 +105,18 @@ fn construct(call: &Call) {
     // SAFETY: the methods are non-static and the class final.
     let slot = unsafe { BarrierObject::data(call.this()) };
     if !slot.is_null() {
-        // SAFETY: in a handler, with `$this` live.
-        unsafe { throw_constructed_twice(call.this()) };
+        call.throw_constructed_twice();
         return;
     }
     let Ok(count) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return;
     };
     if count < 2 {
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(
-                host::exception(),
-                c"The parameter $count must be greater than 1",
-                INVALID_PARAMS,
-            );
-        }
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            c"The parameter $count must be greater than 1",
+            INVALID_PARAMS,
+        );
         return;
     }
     let count = usize::try_from(count).unwrap_or(usize::MAX);
