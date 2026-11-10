@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.build_upstream import COMMIT
+from tools.build_upstream import COMMIT, prepare_pin
 from tools.harness import ROOT
 
 
@@ -47,7 +47,8 @@ def digest(source, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', type=Path, default=ROOT / 'target/upstream/src')
+    parser.add_argument('--source', type=Path, default=ROOT / 'target/upstream/src',
+                        help='The pin checkout; cloned at the pinned tag when missing')
     parser.add_argument('--shard', default='1/1', help='INDEX/COUNT, 1-based')
     parser.add_argument('--module', action='append', help='Only this family; repeatable. Applied before sharding')
     output = parser.add_mutually_exclusive_group(required=True)
@@ -57,6 +58,9 @@ def main():
     index, count = map(int, args.shard.split('/'))
     if not 1 <= index <= count:
         parser.error('--shard must be INDEX/COUNT with 1 <= INDEX <= COUNT')
+    if not args.source.exists():
+        args.source.parent.mkdir(parents=True, exist_ok=True)
+        prepare_pin(args.source)
     paths = list(blobs(args.source))
     tests = shard([path for path in paths if path.endswith('.phpt')
                    and (not args.module or path.split('/')[1] in args.module)], index, count)
