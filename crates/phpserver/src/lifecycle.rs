@@ -115,17 +115,13 @@ struct PortInfo {
 }
 
 impl PortInfo {
-    /// # Safety
-    /// `port` is a live `ListenPort`.
-    unsafe fn of(port: *mut c_void) -> Self {
-        // SAFETY: per the caller.
-        let config = unsafe { view::port(port) };
+    fn of(port: view::Port<'_>) -> Self {
+        let config = port.config();
         Self {
             host: config.host_bytes().to_vec(),
             port: config.port.into(),
             kind: config.r#type.into(),
-            // SAFETY: per the caller.
-            fd: unsafe { view::port_fd(port) }.into(),
+            fd: port.fd().into(),
             ssl: config.ssl != 0,
         }
     }
@@ -136,7 +132,7 @@ impl PortInfo {
 // unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
 use swoole_rs_error::swoole_get_last_error_msg;
 use swoole_rs_phpprocess::swr_v1_phpprocess_worker;
-use swoole_rs_server::{swr_v1_server_admin_register, swr_v1_server_delete, swr_v1_server_new};
+use swoole_rs_server::{admin_register, swr_v1_server_delete, swr_v1_server_new};
 
 /// `instanceof_function(ce, parent)`.
 fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
@@ -291,8 +287,7 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
 fn put(serv: view::Server<'_>, which: u32) {
     match which {
         install::ALLOCATORS => crate::dispatch::use_zend_strings(serv),
-        // SAFETY: a live server that has not started.
-        install::ADMIN_COMMANDS => unsafe { swr_v1_server_admin_register(serv.raw(), php_memory) },
+        install::ADMIN_COMMANDS => admin_register(serv, php_memory),
         _ => crate::dispatch::install(serv, which),
     }
 }
@@ -301,11 +296,6 @@ fn put(serv: view::Server<'_>, which: u32) {
 extern "C" fn php_memory() -> usize {
     // SAFETY: Zend's allocator statistics, read on a PHP thread.
     unsafe { swoole_rs_zend::sys::zend_memory_usage(true) }
-}
-
-/// `swoole_process_ce`.
-pub(crate) fn process_class() -> *mut zend_class_entry {
-    swoole_rs_phpprocess::process_class().entry()
 }
 
 /// A live Server object, which `create` made, for as long as the handle is used:
@@ -653,17 +643,16 @@ impl<'a> Props<'a> {
 /// object and appended to `$server->ports`.
 /// # Safety
 /// `object` is bound to its server, and `port` is one of its ports.
-pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> Owned {
+pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
     let Some(serv) = object.server() else {
         return Owned::default();
     };
     // SAFETY: a live server and, per the caller, one of its ports.
-    let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port) };
+    let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port.raw()) };
     object.property(|p| p.ports.push(port_object));
     // SAFETY: the Port object, live with the Server object that keeps it.
     let props = unsafe { Props::of(port_object) };
-    // SAFETY: a live port.
-    let info = unsafe { PortInfo::of(port) };
+    let info = PortInfo::of(port);
     props.port_info(&info, Some(info.fd));
     // SAFETY: the Server object; its class declares `ports`.
     let zports =
@@ -675,7 +664,7 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> Owned 
     // SAFETY: `add_next_index_zval`: the array takes the Port's reference;
     // `ports` borrows it.
     unsafe { zend_hash_next_index_insert(zports, &raw mut zport) };
-    props.connections(serv, port);
+    props.connections(serv, port.raw());
     copy
 }
 
@@ -685,19 +674,16 @@ fn bind(call: &Call, serv: view::Server<'_>) {
     // *php_swoole_server_zval_ptr(serv) = *zserv
     crate::dispatch::set_server_zval(call.this_zval());
     object.set_serv(serv.raw());
-    let mut index = 0;
-    while let port = serv.port_at(index)
-        && !port.is_null()
-    {
+    for &port in serv.ports() {
         // SAFETY: `$this`, bound above, and one of its ports.
         unsafe { add_port(object, port) };
-        index += 1;
     }
     let props = Props::server(object);
     props.connections(serv, ptr::null_mut());
     props.long(c"mode", number(serv, fact::MODE));
-    // SAFETY: the primary port.
-    props.port_info(&unsafe { PortInfo::of(serv.port_at(0)) }, None);
+    if let Some(primary) = serv.port_at(0) {
+        props.port_info(&PortInfo::of(primary), None);
+    }
 }
 
 /// `zend_throw_exception_ex(swoole_exception_ce, code, message)`.
@@ -798,7 +784,7 @@ fn construct(call: &Call) {
         )]
         server_methods::add_port(server, kind as c_int, &host, port as c_int)
     }
-    .is_null()
+    .is_none()
     {
         let code = swoole_rs_corebase::log::last_error();
         let reason = swoole_rs_phpruntime::strerror(code);
@@ -834,7 +820,7 @@ fn add_process(call: &Call) {
     put(serv, install::USER_WORKER_START);
     // A copy holding its own reference, as upstream.
     let copy = Box::new(process.copy());
-    let (zcopy, object) = (copy.as_ptr(), copy.object());
+    let zcopy = copy.as_ptr();
     // The box keeps the copy where the worker's user data points.
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
     match add_worker(serv, zcopy) {
@@ -848,9 +834,8 @@ fn add_process(call: &Call) {
             call.set_bool(false);
         }
         id => {
-            if let Some(object) = object {
-                // SAFETY: `Swoole\Process` and its live object, which the copy holds.
-                unsafe { swoole_rs_zend::Props::new(process_class(), object) }.long(c"id", id);
+            if let Some(props) = process.props(Some(swoole_rs_phpprocess::process_class())) {
+                props.long(c"id", id);
             }
             call.set_long(id);
         }
@@ -1070,11 +1055,10 @@ fn register_callback(object: ServerObject, serv: view::Server<'_>) {
 fn port_facts(object: *mut zend_object) -> PortFacts {
     // SAFETY: a bound Port object.
     let port = unsafe { crate::port::bound_port(object) };
-    // SAFETY: its live ListenPort.
-    let c = unsafe { view::port(port) };
+    let c = port.config();
     let owner = c.ssl_context;
     PortFacts {
-        port,
+        port: port.raw(),
         protocols: [
             (c.open_http_protocol, HTTP),
             (c.open_websocket_protocol, WEBSOCKET),
@@ -1094,9 +1078,10 @@ fn port_facts(object: *mut zend_object) -> PortFacts {
     }
 }
 
-pub(crate) fn isset(serv: view::Server<'_>, port: *mut c_void, kind: c_int) -> bool {
-    // SAFETY: a live server and one of its ports.
-    unsafe { crate::instance::php_swoole_server_isset_callback(serv, port, kind) }
+fn isset(serv: view::Server<'_>, port: *mut c_void, kind: c_int) -> bool {
+    // SAFETY: null or one of the live server's ports.
+    let port = unsafe { view::Port::from_raw(port) };
+    crate::instance::php_swoole_server_isset_callback(serv, port, kind)
 }
 
 /// Optionally `clear_protocol()`, then turn on each protocol in `flags`.

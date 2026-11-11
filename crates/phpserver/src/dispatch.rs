@@ -27,7 +27,7 @@ use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, ZString,
     bailout::{self, Bailout},
-    long_zval, message, object_of, report,
+    long_zval, message, report,
     sys::{
         ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
@@ -758,9 +758,10 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
         );
         return SW_ERR;
     };
-    let port = server.port_by_fd(conn.fd);
-    // SAFETY: null, or the connection's live port.
-    if port.is_null() || !unsafe { view::port(port) }.open_redis_protocol {
+    if !server
+        .port_of_fd(conn.fd)
+        .is_some_and(|port| port.open_redis_protocol)
+    {
         return php_swoole_server_on_receive(server, request);
     }
     let Some(redis) = crate::server::redis_receive() else {
@@ -878,9 +879,10 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     // SAFETY: the session's live connection slot.
     if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
-        // SAFETY: the session's live port.
-        let websocket = !port.is_null() && unsafe { view::port(port) }.open_websocket_protocol;
-        if websocket && crate::lifecycle::isset(server, port, ON_DISCONNECT) {
+        let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
+        if websocket
+            && crate::instance::php_swoole_server_isset_callback(server, port, ON_DISCONNECT)
+        {
             cb = port_callback(server, info.server_fd, ON_DISCONNECT);
         }
     }
@@ -950,11 +952,13 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
         // The worker `addProcess` made holds its process object.
         worker.user_data().cast::<zval>()
     };
-    // SAFETY: the process object.
-    let object = unsafe { object_of(process) };
-    let ce = crate::lifecycle::process_class();
-    // SAFETY: a live `Swoole\Process` object.
-    unsafe { swoole_rs_zend::Props::new(ce, object) }.long(c"id", id);
+    // SAFETY: the process object's zval, which the server keeps.
+    let value = unsafe { swoole_rs_zend::Value::from_ptr(process) };
+    if let Some(props) =
+        value.and_then(|value| value.props(Some(swoole_rs_phpprocess::process_class())))
+    {
+        props.long(c"id", id);
+    }
     let gs = server.counters();
     let props = Props::server(server_object);
     props.long(c"master_pid", i64::from(gs.master_pid));

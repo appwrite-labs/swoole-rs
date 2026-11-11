@@ -1357,7 +1357,9 @@ fn server_response() -> Vec<u8> {
 /// `ListenPort::get_connection_num()` of the primary port.
 fn primary_port_connection_num(serv: Server) -> usize {
     // SAFETY: the running server's primary port.
-    unsafe { serv.view().port_connection_num(serv.get_primary_port().0) }
+    serv.view().port_connection_num(
+        unsafe { swoole_rs_ffi::view::Port::from_raw(serv.get_primary_port().0) }.unwrap(),
+    )
 }
 
 /// One `SyncClient` request: connect, send `packet`, read up to 1024 bytes, close.

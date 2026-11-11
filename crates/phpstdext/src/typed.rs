@@ -11,7 +11,7 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, Key, Value, ZString,
+    Call, Owned, Value, ZString,
     bailout::Bailout,
     handlers,
     sys::{
@@ -19,8 +19,8 @@ use swoole_rs_zend::{
         IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
         IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof,
         swr_zend_try_lookup_class, zend_class_entry, zend_execute_data, zend_function,
-        zend_get_type_by_const, zend_hash_index_add, zend_hash_str_add, zend_internal_function,
-        zend_long, zend_throw_error, zend_type_error, zend_value, zif_handler, zval, zval_ptr_dtor,
+        zend_get_type_by_const, zend_internal_function, zend_long, zend_throw_error,
+        zend_type_error, zend_value, zif_handler, zval, zval_ptr_dtor,
     },
     value::{self, table},
 };
@@ -687,40 +687,34 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
     // SAFETY: the table just made, with its definition.
     let typed = unsafe { Typed::from_table(array) };
     typed.mark();
-    let value = call.return_value();
-    // SAFETY: `ZVAL_ARR(return_value, array)`.
-    unsafe { value::set(value, zend_value { arr: array }, IS_ARRAY_EX) };
-    let Some(init) = init else {
-        return Ok(());
-    };
-    let mut entries = init.entries();
-    while let Some((key, element)) = entries.next_keyed() {
-        let key_type = match key {
-            Key::Index(index) => KeyType {
-                kind: IS_LONG,
-                index: index.cast_signed(),
-            },
-            Key::Name(_) => KeyType {
-                kind: IS_STRING,
-                index: 0,
-            },
-        };
-        if !check(typed, key_type, element) {
-            // SAFETY: the array made above.
-            unsafe { zval_ptr_dtor(value) };
-            return Err(Failure::Thrown);
+    let mut made = Owned::default();
+    // SAFETY: `ZVAL_ARR(made, array)`: `made` takes the new table's reference.
+    unsafe { value::set(made.as_ptr(), zend_value { arr: array }, IS_ARRAY_EX) };
+    if let Some(init) = init
+        && let Some(target) = made.array_mut()
+    {
+        let mut entries = init.entries();
+        while let Some((name, index, element)) = entries.next_stored() {
+            let key_type = KeyType {
+                kind: if name.is_some() { IS_STRING } else { IS_LONG },
+                index: if name.is_some() {
+                    0
+                } else {
+                    index.cast_signed()
+                },
+            };
+            if !check(typed, key_type, element) {
+                // `made` releases the array.
+                return Err(Failure::Thrown);
+            }
+            // The array takes the new reference; init's keys are distinct.
+            match name {
+                Some(name) => target.add_new(name, element.copy()),
+                None => target.insert_index(index, element.copy()),
+            }
         }
-        // The array takes the new reference.
-        let mut copy = element.copy().into_zval();
-        match key {
-            // SAFETY: a live table.
-            Key::Index(index) => unsafe { zend_hash_index_add(array, index, &raw mut copy) },
-            // SAFETY: as above; Zend copies the key.
-            Key::Name(name) => unsafe {
-                zend_hash_str_add(array, name.as_ptr().cast(), name.len(), &raw mut copy)
-            },
-        };
     }
+    call.set_owned(made);
     Ok(())
 }
 

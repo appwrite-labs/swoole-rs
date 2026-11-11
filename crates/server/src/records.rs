@@ -97,20 +97,14 @@ impl ServerTables {
     }
 
     /// The listen ports.
-    pub(crate) fn ports(&self) -> &[*mut c_void] {
+    pub(crate) fn ports(&self) -> &[crate::view::Port<'_>] {
         let PortList { items, count } = self.ports;
         if items.is_null() {
             return &[];
         }
-        // SAFETY: the live buffer `ServerState::push_port` published with this length.
-        unsafe { core::slice::from_raw_parts(items, count as usize) }
-    }
-
-    /// The settings of listen port `index`, if there is one.
-    pub(crate) fn port_config(&self, index: usize) -> Option<&crate::port_config::PortConfig> {
-        let &port = self.ports().get(index)?;
-        // SAFETY: a listed port lives as long as the server.
-        Some(unsafe { crate::view::port(port) })
+        // SAFETY: the live buffer `ServerState::push_port` published with this length;
+        // each item is a live, non-null port of the server (`Port` has a pointer's layout).
+        unsafe { core::slice::from_raw_parts(items.cast(), count as usize) }
     }
 }
 

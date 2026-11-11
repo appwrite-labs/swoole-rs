@@ -6,7 +6,7 @@ use crate::native::{Co, Socket};
 use libc::{c_char, c_int, c_void, size_t};
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
-use swoole_rs_corebase::{ProxyFields, ProxyState, log};
+use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
@@ -112,10 +112,7 @@ impl Co {
     /// After the settings: no proxy handshake for plain HTTP proxying.
     pub(crate) fn skip_proxy_handshake(self) {
         if let Some(proxy) = self.plain_proxy() {
-            proxy.fields.update(|fields| ProxyFields {
-                dont_handshake: 1,
-                ..fields
-            });
+            proxy.update(|fields| fields.dont_handshake = 1);
         }
     }
 
@@ -131,14 +128,8 @@ impl Co {
         if proxy.string(2).is_empty() {
             return None;
         }
-        let mut encoded = [0u8; 512];
-        let (result, length) = swoole_rs_http_ffi::owned_authorization(proxy, &mut encoded);
         let mut value = b"Basic ".to_vec();
-        if result >= 0 {
-            // `std::string(encode_buf)`: up to the first NUL.
-            let encoded = encoded.get(..length).unwrap_or(&encoded);
-            value.extend_from_slice(encoded.split(|&byte| byte == 0).next().unwrap_or_default());
-        }
+        value.extend(swoole_rs_http_ffi::authorization(proxy));
         Some(value)
     }
 
