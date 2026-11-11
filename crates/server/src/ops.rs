@@ -896,6 +896,9 @@ pub const OP_LC_UNLINK_PID: u32 = 1211;
 pub const OP_LC_START_BASE: u32 = 1212;
 pub const OP_LC_START_PROCESS: u32 = 1213;
 pub const OP_LC_START_THREAD: u32 = 1214;
+/// `Server::shutdown()` from a worker thread: the thread manager respawns no worker
+/// from now on. `running` stays set, so the master still handles the SIGTERM.
+pub const OP_SET_STOPPING: u32 = 1215;
 
 #[cfg(test)]
 mod tests {

@@ -11,6 +11,9 @@ use std::{cell::Cell, ffi::c_int, marker::PhantomData, ptr::NonNull};
 #[derive(Clone, Copy)]
 pub struct Socket<'a> {
     record: NonNull<SocketRecord>,
+    /// This thread's [`BORROWED`], looked up once per handle: a thread-local in a
+    /// `dlopen`ed library costs a TLS descriptor call per lookup.
+    borrowed: &'a Cell<bool>,
     _live: PhantomData<(&'a mut SocketRecord, *mut ())>,
 }
 
@@ -19,24 +22,23 @@ thread_local! {
     static BORROWED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// `body`'s result with [`BORROWED`] set, which it clears when `body` returns or unwinds.
-/// One thread-local lookup a call: in the extension, each is a `__tls_get_addr` (#2808).
-fn borrowed<R>(body: impl FnOnce() -> R) -> R {
-    /// Clears the flag on return or unwind.
-    struct Clear<'a>(&'a Cell<bool>);
-    impl Drop for Clear<'_> {
-        fn drop(&mut self) {
-            self.0.set(false);
-        }
-    }
-    BORROWED.with(|flag| {
+/// Clears [`BORROWED`] when the closure returns or unwinds.
+struct Borrow<'a>(&'a Cell<bool>);
+
+impl<'a> Borrow<'a> {
+    fn take(flag: &'a Cell<bool>) -> Self {
         assert!(
             !flag.replace(true),
             "a socket's read or edit runs inside another's"
         );
-        let _clear = Clear(flag);
-        body()
-    })
+        Self(flag)
+    }
+}
+
+impl Drop for Borrow<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }
 
 impl Socket<'_> {
@@ -47,8 +49,13 @@ impl Socket<'_> {
     /// (native code and raw pointers may, between this handle's calls).
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
+        let record = NonNull::new(record)?;
+        let flag = BORROWED.with(std::ptr::from_ref);
         Some(Self {
-            record: NonNull::new(record)?,
+            record,
+            // SAFETY: a const thread-local without a destructor lives as long as its
+            // thread, and the handle is `!Send`, so it never leaves this one.
+            borrowed: unsafe { &*flag },
             _live: PhantomData,
         })
     }
@@ -63,18 +70,20 @@ impl Socket<'_> {
     /// # Panics
     /// Inside another socket's `read` or `edit` closure.
     pub fn read<R>(self, read: impl FnOnce(&SocketRecord) -> R) -> R {
+        let _borrow = Borrow::take(self.borrowed);
         // SAFETY: live for the handle's lifetime (from_ptr), and no other Rust reference to it exists:
         // handles form one only here and in `edit`, which cannot nest.
-        borrowed(|| read(unsafe { self.record.as_ref() }))
+        read(unsafe { self.record.as_ref() })
     }
 
     /// `edit`'s result over the record, which it may change.
     /// # Panics
     /// Inside another socket's `read` or `edit` closure.
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketRecord) -> R) -> R {
+        let _borrow = Borrow::take(self.borrowed);
         let mut record = self.record;
         // SAFETY: as in `read`; this is the only reference while `edit` runs.
-        borrowed(|| edit(unsafe { record.as_mut() }))
+        edit(unsafe { record.as_mut() })
     }
 
     /// `fd`.
@@ -89,5 +98,26 @@ impl Socket<'_> {
     pub fn wait_event(self, timeout_ms: c_int, events: c_int) -> c_int {
         let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart != 0));
         crate::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_nested_borrow_panics_and_the_guard_clears_on_unwind() {
+        let mut record = SocketRecord::new();
+        record.fd = 7;
+        let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+        let other = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+        let nested =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| socket.read(|_| other.fd())));
+        assert!(
+            nested.is_err(),
+            "a read inside another handle's read panics"
+        );
+        socket.edit(|record| record.fd = 8);
+        assert_eq!(other.fd(), 8, "the guard cleared when the panic unwound");
     }
 }

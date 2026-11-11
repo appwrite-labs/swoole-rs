@@ -12,13 +12,13 @@ use crate::ops::{
     OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
     OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
 };
-use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
+use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::send::send_to_connection;
 use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::{c_char, c_int};
-use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::StringSlot;
@@ -63,6 +63,8 @@ pub struct ServerState {
         expect(dead_code, reason = "only the hybrid makes pipes")
     )]
     worker_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    /// A worker thread asked to shut down: the thread manager respawns no worker.
+    pub(crate) stopping: AtomicBool,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -105,6 +107,7 @@ impl ServerState {
             local_addrs: AtomicPtr::new(core::ptr::null_mut()),
             task_pipes: std::sync::Mutex::new(Vec::new()),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
+            stopping: AtomicBool::new(false),
         }
     }
 
@@ -367,6 +370,7 @@ fn c_path(text: &[u8]) -> CString {
 #[inline(always)]
 pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
     match op {
+        OP_SET_STOPPING => state.stopping.store(true, Ordering::Release),
         OP_LOCK => state.lock(),
         OP_UNLOCK => state.unlock(),
         OP_ST_SET_ROOT => {
