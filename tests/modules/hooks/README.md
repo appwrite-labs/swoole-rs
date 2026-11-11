@@ -222,6 +222,13 @@ may run after it.
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
+## PHP gates
+
+`select_handler_arrays.py` (`hooks-select-handler-arrays`, Cargo build, every
+platform) runs `select_handler_arrays.php`: a warning's handler replaces `$read`
+during the hooked `stream_select`, with `[]` or with an array another variable
+holds. The call returns, and the other variable keeps its elements.
+
 ## Known failures
 
 - `hooks-system-rust`: 18 of system.cpp's 20 cases pass; the two `getaddrinfo`

@@ -52,7 +52,8 @@ pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use value::{obj_of as object_of, push_str as push_string};
 pub use zval::{
-    Array, ArrayMut, Entries, HeldArray, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString,
+    Array, ArrayMut, Entries, HeldArray, Key, Owned, OwnedArray, Separated, UNDEF, Value, ZStr,
+    ZString,
 };
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
