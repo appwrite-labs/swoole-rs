@@ -224,14 +224,8 @@ pub struct Http {
     pub server_rinit: Hook,
     pub server_rshutdown: Hook,
     pub response_rshutdown: Hook,
-    /// `php_swoole_http_server_onReceive` and `onClose` of the live server,
-    /// with the event's `RecvData` or `DataHead`.
-    pub on_receive: unsafe fn(*mut c_void, *mut c_void) -> c_int,
-    pub on_close: unsafe fn(*mut c_void, *mut c_void),
     /// `php_swoole_http2_server_onClose`: the session of a closed connection goes.
     pub http2_on_close: fn(i64),
-    /// `swoole_http_server_can_cache_session_addr` of the live server.
-    pub can_cache_session_addr: unsafe fn(*mut c_void) -> bool,
     /// `Swoole\Http\Server` and `Swoole\WebSocket\Server`, after MINIT.
     pub server_class: fn() -> *mut zend_class_entry,
     pub websocket_class: fn() -> *mut zend_class_entry,
