@@ -210,7 +210,6 @@
       ],
       "owned_paths": [
         "crates/hooks/",
-        "crates/uring-sys/",
         "crates/phpruntime/",
         "crates/pgsql/",
         "crates/odbc/",

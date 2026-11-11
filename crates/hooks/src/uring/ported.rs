@@ -6,7 +6,7 @@
 //! second coroutine is a thread with its own ring. tests/modules/hooks/README.md maps
 //! each TEST and records the calls that are not in the build.
 use crate::uring::testing::{HOST, with_config, with_engine};
-use crate::uring::{self, Config, sys};
+use crate::uring::{self, Config};
 use std::ffi::{CStr, c_int, c_uint};
 use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -457,7 +457,7 @@ fn sleep() {
     let _serial = serial();
     with_engine(|| {
         let begin = Instant::now();
-        let ts = sys::__kernel_timespec {
+        let ts = libc::timespec {
             tv_sec: 1,
             tv_nsec: 200 * SW_NUM_MILLION,
         };
@@ -465,7 +465,7 @@ fn sleep() {
         assert!(begin.elapsed().as_secs_f64() >= 1.2, "slept 1.2s");
 
         let begin = Instant::now();
-        let ts = sys::__kernel_timespec {
+        let ts = libc::timespec {
             tv_sec: 0,
             tv_nsec: 300 * SW_NUM_MILLION,
         };

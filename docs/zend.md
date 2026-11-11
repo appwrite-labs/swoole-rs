@@ -236,8 +236,7 @@ header names its reasons from this list:
   `shim_errors.c`, `shim_host.c`).
 - **private**: the layout is private to a source file or library release:
   `zend_closure` behind `ZEND_CLOSURE_OBJECT`, `zend_execute.c`'s static helpers
-  (`crates/phpstdext/src/stdext.c`), `pdo_dbh_t`, ext/sockets' `php_socket`,
-  liburing's ring (`crates/uring-sys/src/shim.c`).
+  (`crates/phpstdext/src/stdext.c`), `pdo_dbh_t`, ext/sockets' `php_socket`.
 - **budget**: a `static inline` over public fields (`Z_TRY_ADDREF_P`,
   `ZVAL_COPY`, `ZVAL_STR`, `GC_ADDREF`, `Z_OBJPROP_P`, `ZEND_HASH_FOREACH`)
   whose callers hold raw pointers: a Rust port adds `unsafe` and removes none,
