@@ -195,7 +195,7 @@ may run after it.
 | `iouring.poll` | `poll`, except `poll(fds, 2, 1000)` failing with `SW_ERROR_INVALID_PARAMS`: the engine's `poll` takes one pollfd, and the hooked `poll` (like upstream's hook) sends only `nfds == 1` to it |
 | `iouring.accept_timeout` | `accept_timeout` |
 
-Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
+Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures
 
