@@ -2,7 +2,7 @@
 //! `swoole::http::Context::build_header`, `build_trailer` and `compress` did
 //! them. Each send leases reusable storage until its IO completes.
 use crate::parse::CAPABILITIES;
-use crate::state::State;
+use crate::state::{Slot, State};
 use crate::{host, send};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -83,14 +83,14 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
 /// is an array.
-/// # Safety
-/// The array is the response object's, which nothing frees while it is borrowed.
-unsafe fn property<'a>(state: &State, which: usize) -> Option<&'a Array> {
-    let object = state.response.zobject.object()?;
+/// The context's reference keeps the response object, and so the array, live
+/// while its slot is borrowed.
+fn property(response: &Slot, which: usize) -> Option<&Array> {
+    let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
     let slot = object.wrapping_byte_add(offset).cast::<zval>();
-    // SAFETY: a declared property slot, live as the caller promises.
+    // SAFETY: a declared property slot of the context's live response.
     unsafe { Value::from_ptr(slot) }.and_then(Value::array)
 }
 
@@ -319,8 +319,7 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    // SAFETY: the response object outlives the send.
-    if let Some(header) = unsafe { property(state, 0) } {
+    if let Some(header) = property(&state.response.zobject, 0) {
         // Asked once, like upstream's `compression_types` test.
         let typed = compression && crate::context::compression_type(state, None);
         let mut content_type: Option<ZString> = None;
@@ -371,8 +370,7 @@ fn build(
     }
 
     // http cookies
-    // SAFETY: as above.
-    if let Some(cookie) = unsafe { property(state, 1) } {
+    if let Some(cookie) = property(&state.response.zobject, 1) {
         each::<()>(cookie, |_, value_| {
             if let Some(line) = value_.bytes()
                 && !has_crlf(line)
@@ -464,8 +462,7 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        // SAFETY: the response object outlives the send.
-        if let Some(trailer) = unsafe { property(send::state(ctx), 2) } {
+        if let Some(trailer) = property(&send::state(ctx).response.zobject, 2) {
             each(trailer, |key, value_| {
                 let Ok(name) = key else { return Ok(()) };
                 if value_.is_null() {
