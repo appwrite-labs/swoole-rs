@@ -55,6 +55,7 @@ FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 H2BODY = PAYLOAD[:4000]
 STATIC = (Path(__file__).parent / 'traffic/static.txt').read_bytes()
 BOUNDARY = 'swoole-rs-benchmark'
+VARIANT_FILE = b'%d\n' % len((Path(__file__).parent / 'variants/server.php').read_bytes())
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -111,6 +112,10 @@ WORKLOADS = {
     'sqlite': ('benchmarks/hooks', 'GET', '/sqlite', None, b'ok\n'),
     'curl': ('benchmarks/hooks', 'GET', '/curl', None, b'ok\n'),
     'dns': ('benchmarks/hooks', 'GET', '/dns', None, b'ok\n'),
+    # Build variants (#2683), each on its own pair: a coroutine file read through io_uring on the
+    # --enable-iouring build, and a Swoole\Thread start and join on the ZTS --enable-swoole-thread one.
+    'uring-file': ('benchmarks/variants', 'GET', '/file', None, VARIANT_FILE),
+    'thread': ('benchmarks/variants', 'GET', '/thread', None, b'joined\n'),
 }
 TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 TLS.check_hostname, TLS.verify_mode = False, ssl.CERT_NONE
