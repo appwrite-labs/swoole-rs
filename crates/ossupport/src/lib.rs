@@ -11,6 +11,10 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod cpu_set;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub use cpu_set::CpuSet;
 mod file;
 mod file_api;
 mod file_record;
