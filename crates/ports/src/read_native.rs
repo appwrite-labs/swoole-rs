@@ -67,7 +67,7 @@ pub(crate) unsafe fn on_read(
 ) -> c_int {
     let event = event.cast::<Event>();
     // SAFETY: as the caller guarantees.
-    let socket = unsafe { (*event).socket }.cast::<SocketRecord>();
+    let socket = unsafe { (*event).socket_ptr() }.cast::<SocketRecord>();
     // SAFETY: the event's live connection socket, which only this reactor thread touches.
     let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
@@ -266,7 +266,7 @@ fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
                 c"ListenPort::readable_callback_raw"
             };
             // SAFETY: the live event.
-            let fd = unsafe { (*c.event).fd };
+            let fd = unsafe { (*c.event).fd() };
             log::sys_warning(origin, format_args!("recv from connection#{fd} failed"));
             0
         }

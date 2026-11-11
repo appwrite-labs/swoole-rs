@@ -235,7 +235,7 @@ impl Objects<'_> {
     /// socket; whether it did.
     fn accept(&mut self) -> bool {
         // SAFETY: the accepting event.
-        let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket };
+        let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
         // SAFETY: its live listening socket.
         let listener = unsafe { Socket::from_ptr(listener.cast()) };
         let socket = listener.map_or(core::ptr::null_mut(), |l| l.edit(SocketRecord::accept));
@@ -1917,12 +1917,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FORCE_CLOSE => {
             let conn = o.conn();
             conn.close_force = 1;
-            let mut event = swoole_rs_reactor::Event {
-                fd: conn.fd,
-                reactor_id: 0,
-                fd_type: 0,
-                socket: conn.socket,
-            };
+            // SAFETY: the connection's live socket, for this call.
+            let mut event = unsafe { swoole_rs_reactor::Event::new(conn.fd, 0, 0, conn.socket) };
             // SAFETY: the context's live reactor and an event over its live connection.
             unsafe {
                 reactor_upstream::trigger_close_event(o.ctx.reactor, (&raw mut event).cast())
@@ -2667,8 +2663,7 @@ extern "C" fn accept_command_result(
     // SAFETY: the master reactor's live server.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();
     let bus = server_message_bus(state);
-    // SAFETY: the event's live socket.
-    let Some(sock) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {
+    let Some(sock) = event.socket() else {
         return 0;
     };
     if bus.read(sock) <= 0 {
