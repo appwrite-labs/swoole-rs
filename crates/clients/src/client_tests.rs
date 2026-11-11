@@ -2,7 +2,7 @@
 use super::*;
 use std::cell::RefCell;
 use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_new};
-use swoole_rs_reactor::SocketFields;
+use swoole_rs_reactor::{Socket, SocketFields};
 
 #[derive(Default)]
 struct Mock {
@@ -259,11 +259,11 @@ pub(super) fn socket_ssl_connect(_: Socket<'_>) -> c_int {
     }
     OK
 }
-pub(super) fn socket_ssl_verify(_: &SocketFields, allow_self_signed: bool) -> bool {
+pub(super) fn socket_ssl_verify(_: Socket<'_>, allow_self_signed: bool) -> bool {
     log(format!("ssl verify {allow_self_signed}"));
     true
 }
-pub(super) fn socket_ssl_check_host(_: &SocketFields, _: &CStr) -> bool {
+pub(super) fn socket_ssl_check_host(_: Socket<'_>, _: &CStr) -> bool {
     log("ssl host");
     true
 }

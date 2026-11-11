@@ -96,8 +96,7 @@ impl Co {
         // SAFETY: the record's live extra and its host name slot.
         let hostname = unsafe { &raw const (*self.extra()).strings[2] };
         // SAFETY: the live owner, network::Socket and slot; TLS is initialised.
-        let result =
-            unsafe { swr_v1_tls_owner_socket_session(owner, self.socket(), hostname, None) };
+        let result = unsafe { swr_v1_tls_owner_socket_session(owner, self.socket(), hostname) };
         let origin = c"Socket::ssl_create";
         match result.status {
             0 => return true,
@@ -122,7 +121,7 @@ impl Co {
     #[must_use]
     pub fn ssl_verify(self, allow_self_signed: bool) -> bool {
         let verified = self
-            .net(|network| socket_ssl_verify(network, allow_self_signed))
+            .with_network(|network| socket_ssl_verify(network, allow_self_signed))
             .unwrap_or(false)
             && {
                 // SAFETY: the live owner of the socket's context.
@@ -130,7 +129,7 @@ impl Co {
                 name.length == 0 || {
                     // SAFETY: the view's NUL-terminated bytes, live for the call.
                     let name = unsafe { CStr::from_ptr(name.data) };
-                    self.net(|network| socket_ssl_check_host(network, name))
+                    self.with_network(|network| socket_ssl_check_host(network, name))
                         .unwrap_or(false)
                 }
             };
