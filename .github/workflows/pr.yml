@@ -134,7 +134,7 @@ jobs:
           if echo "$changed" | grep -qE '^(tools/asan\.py|tools/lsan\.supp|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
             echo asan=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(tools/(tsan\.py|tsan\.supp|tsan_canary\.rs)|\.github/workflows/tsan\.yml|\.devcontainer/php\.sh)$'; then
+          if echo "$changed" | grep -qE '^(tools/(tsan\.py|tsan_canary\.rs)|\.github/workflows/tsan\.yml|\.devcontainer/php\.sh)$'; then
             echo tsan=true >> "$GITHUB_OUTPUT"
           fi
 
