@@ -456,12 +456,16 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     minit.register(&SERVER, c"Swoole\\Server", methods, |entry, handlers| {
         entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
         deny(handlers);
-        Object::<ServerData>::install(
-            entry,
-            handlers,
-            crate::lifecycle::create,
-            crate::lifecycle::free,
-        );
+        // SAFETY: `lifecycle::create` makes an `Object<ServerData>`, and
+        // `lifecycle::free` destroys it with `zend_object_std_dtor`.
+        unsafe {
+            Object::<ServerData>::install(
+                entry,
+                handlers,
+                crate::lifecycle::create,
+                crate::lifecycle::free,
+            );
+        }
     });
     minit.register_object::<TaskData>(c"Swoole\\Server\\Task", &TASK_METHODS.0, ZEND_ACC_FINAL);
     declare(&minit, &TASK, TASK_PROPERTIES);

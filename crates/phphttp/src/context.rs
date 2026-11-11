@@ -105,7 +105,9 @@ pub(crate) fn configure(
     entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
     handlers.clone_obj = None;
     handlers.unset_property = Some(unset_property_deny);
-    Holder::install(entry, handlers, create, free);
+    // SAFETY: both classes' `create` make a `Holder` and their `free` end with its
+    // `dtor`; they are the only handlers passed here.
+    unsafe { Holder::install(entry, handlers, create, free) };
 }
 
 /// `Swoole\Http\Response`'s declared `fd` slot (MINIT).

@@ -2,25 +2,27 @@
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
-use std::{cell::Cell, collections::VecDeque, mem, ptr};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    mem::ManuallyDrop,
+    ptr,
+};
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray, Parsed,
+    Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, OwnedArray, Parsed,
     bailout::{self, Bailout},
     kind, message,
-    sys::{
-        IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_array,
-        zend_array_destroy, zend_array_dup, zend_class_entry, zend_hash_merge, zend_object,
-        zend_object_handlers, zval, zval_add_ref,
-    },
-    unset_property_deny,
+    sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
 per_thread! {
-    /// `PHPCoroutine::options`: what `Co::set()` was given.
-    static OPTIONS: Cell<*mut zend_array> = Cell::new(ptr::null_mut());
+    /// `PHPCoroutine::options`: what `Co::set()` was given. RSHUTDOWN frees
+    /// them; a thread's locals drop after Zend's request memory is gone, so
+    /// one that outlives it (a shutdown that bailed out) leaks with it.
+    static OPTIONS: RefCell<Option<ManuallyDrop<OwnedArray>>> = RefCell::new(None);
     /// `exit_condition_fci_cache`: `Co::set()`'s `exit_condition` callable.
     static EXIT_CONDITION: Cell<*mut kept::Callable> = Cell::new(ptr::null_mut());
 }
@@ -31,20 +33,34 @@ struct Task {
     count: i64,
 }
 
-/// `SchedulerObject`: the queued tasks (none until the first) and whether
-/// `start()` is running. All-zero is a fresh scheduler.
+/// `SchedulerObject`: the queued tasks and whether `start()` is running.
+/// Methods, and the coroutines `start()` runs, share it.
+#[derive(Default)]
 struct Scheduler {
-    #[expect(
-        clippy::box_collection,
-        reason = "Zend zeroes the object: a null Box is None, while an empty queue is not all-zero"
-    )]
-    list: Option<Box<VecDeque<Task>>>,
-    started: bool,
+    list: RefCell<VecDeque<Task>>,
+    started: Cell<bool>,
 }
 
-type SchedulerObject = Object<Scheduler>;
+impl Custom for Scheduler {
+    fn class() -> &'static CustomClass<Self> {
+        &SCHEDULER
+    }
 
-static SCHEDULER: Class = Class::new();
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Tasks `start()` never ran release their callables with the object.
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        for task in self.list.get_mut().drain(..) {
+            bailout::defer(task.callable.release());
+        }
+    }
+}
+
+static SCHEDULER: CustomClass<Scheduler> = CustomClass::new();
 
 method_table! {
     static METHODS = [
@@ -61,42 +77,11 @@ swoole_rs_zend::minit!(php_swoole_coroutine_scheduler_minit => register);
 /// MINIT: `Swoole\Coroutine\Scheduler` (`Co\Scheduler`), final, not
 /// serializable, clone and unset denied.
 fn register(minit: &Minit) -> Result<(), Bailout> {
-    minit.register(
-        &SCHEDULER,
-        c"Swoole\\Coroutine\\Scheduler",
-        &METHODS.0,
-        configure,
-    );
+    minit.register_object::<Scheduler>(c"Swoole\\Coroutine\\Scheduler", &METHODS.0, ZEND_ACC_FINAL);
     if host::flag(host::SHORTNAME) {
         minit.alias(&SCHEDULER, c"Co\\Scheduler")?;
     }
     Ok(())
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    SchedulerObject::install(entry, handlers, create, free);
-    entry.ce_flags |= ZEND_ACC_FINAL;
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates an object of the scheduler class.
-    unsafe { SchedulerObject::create(&SCHEDULER, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees one of our objects.
-    let list = mem::take(&mut unsafe { SchedulerObject::data(std) }.list);
-    if let Some(tasks) = list {
-        for task in *tasks {
-            bailout::defer(task.callable.release());
-        }
-    }
-    // SAFETY: as above.
-    unsafe { SchedulerObject::dtor(std) };
-    bailout::finish();
 }
 
 swoole_rs_zend::handlers! {
@@ -107,9 +92,15 @@ swoole_rs_zend::handlers! {
     zim_swoole_coroutine_scheduler_getOptions => get_options;
 }
 
-fn this(call: &Call) -> &'static mut Scheduler {
-    // SAFETY: Scheduler's instance methods run on one of our objects.
-    unsafe { SchedulerObject::data(call.this()) }
+/// The scheduler of `$this`, unless it is already `state` (`running` or
+/// `started`): then `method` warns and returns false.
+fn idle<'a>(call: &'a Call, state: &str, method: &str) -> Option<&'a Scheduler> {
+    let scheduler = call.custom::<Scheduler>()?;
+    if scheduler.started.get() {
+        refuse(call, state, method);
+        return None;
+    }
+    Some(scheduler)
 }
 
 /// The "scheduler is running/started, unable to execute %s->%s" warning.
@@ -124,20 +115,19 @@ fn refuse(call: &Call, state: &str, method: &str) {
 }
 
 /// Queue a task with its callable kept past the call.
-fn queue(scheduler: &mut Scheduler, callable: Parsed, count: i64) {
+fn queue(scheduler: &Scheduler, callable: Parsed, count: i64) {
     let callable = callable.keep(None);
     scheduler
         .list
-        .get_or_insert_default()
+        .borrow_mut()
         .push_back(Task { callable, count });
 }
 
 /// `add(callable $func, mixed ...$params)`.
 fn add(call: &Call) {
-    if this(call).started {
-        refuse(call, "running", "add");
+    let Some(scheduler) = idle(call, "running", "add") else {
         return;
-    }
+    };
     let Ok(callable) = call
         .arity(1, u32::MAX)
         .and_then(|()| Callable::parse(call, 1))
@@ -145,15 +135,14 @@ fn add(call: &Call) {
         call.set_bool(false);
         return;
     };
-    queue(this(call), callable, 1);
+    queue(scheduler, callable, 1);
 }
 
 /// `parallel(int $n, callable $func, mixed ...$params)`.
 fn parallel(call: &Call) {
-    if this(call).started {
-        refuse(call, "running", "parallel");
+    let Some(scheduler) = idle(call, "running", "parallel") else {
         return;
-    }
+    };
     let parsed = call
         .arity(2, u32::MAX)
         .and_then(|()| Ok((call.long(1, 0)?, Callable::parse(call, 2)?)));
@@ -161,29 +150,29 @@ fn parallel(call: &Call) {
         call.set_bool(false);
         return;
     };
-    queue(this(call), callable, count);
+    queue(scheduler, callable, count);
 }
 
 /// `start()`: create every task's coroutines in order, then run the event
 /// loop until they finish.
 fn start(call: &Call) {
-    if this(call).started {
-        refuse(call, "started", "start");
+    let Some(scheduler) = idle(call, "started", "start") else {
         return;
-    }
+    };
     if host::reactor_init() < 0 {
         call.set_bool(false);
         return;
     }
-    this(call).started = true;
-    if this(call).list.is_none() {
+    scheduler.started.set(true);
+    if scheduler.list.borrow().is_empty() {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
     // Each step pops before creating, so no frame here owns a task while a
     // coroutine runs.
-    while let Some(task) = this(call).list.as_mut().and_then(|list| list.pop_front()) {
+    let next = || scheduler.list.borrow_mut().pop_front();
+    while let Some(task) = next() {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
             if runtime::create(fcc, argc, argv, name).is_err() {
@@ -197,9 +186,7 @@ fn start(call: &Call) {
         }
     }
     host::event_wait();
-    let scheduler = this(call);
-    scheduler.list = None;
-    scheduler.started = false;
+    scheduler.started.set(false);
     call.set_bool(true);
 }
 
@@ -252,44 +239,37 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
             host::fatal_error(E_WARNING, c"name_resolver must be an array");
         }
     }
-    let options = options.as_ptr();
-    let current = OPTIONS.with(Cell::get);
-    if current.is_null() {
-        // SAFETY: a live array.
-        OPTIONS.with(|o| o.set(unsafe { zend_array_dup(options) }));
-    } else {
-        // SAFETY: two live arrays; values are copied with a reference.
-        unsafe { zend_hash_merge(current, options, Some(zval_add_ref), true) };
-    }
+    with_options(|current| {
+        // zend_hash_merge(current, options, zval_add_ref, overwrite)
+        let mut entries = options.entries();
+        while let Some((name, index, value)) = entries.next_stored() {
+            match name {
+                Some(name) => current.update(name, value.copy()),
+                None => current.update_index(index, value.copy()),
+            }
+        }
+    });
+}
+
+/// Edit this thread's options, an empty array until the first edit. They are
+/// out of the cell meanwhile: a destructor an overwrite runs may reach them.
+fn with_options(edit: impl FnOnce(&mut OwnedArray)) {
+    let mut options = OPTIONS
+        .with(RefCell::take)
+        .map_or_else(OwnedArray::default, ManuallyDrop::into_inner);
+    edit(&mut options);
+    OPTIONS.with(|o| o.replace(Some(ManuallyDrop::new(options))));
 }
 
 /// `PHPCoroutine::set_hook_flags`: the flags, recorded in the options too.
 pub fn set_hook_flags(flags: u32) {
-    let mut array = OwnedArray::default();
-    array.insert_long(b"hook_flags", i64::from(flags));
-    let array = array.into_owned();
-    let current = OPTIONS.with(Cell::get);
-    if current.is_null() {
-        let table = array
-            .array()
-            .map_or(ptr::null_mut(), swoole_rs_zend::Array::as_ptr);
-        // The options now own the table.
-        let _kept = array.into_zval();
-        OPTIONS.with(|o| o.set(table));
-    } else if let Some(table) = array.array() {
-        // SAFETY: two live arrays; ours is released after the merge.
-        unsafe { zend_hash_merge(current, table.as_ptr(), None, true) };
-    }
+    with_options(|options| options.insert_long(b"hook_flags", i64::from(flags)));
     runtime::store_hook_flags(flags);
 }
 
 /// Free the options, at RSHUTDOWN.
 pub(crate) fn free_options() {
-    let options = OPTIONS.with(|o| o.replace(ptr::null_mut()));
-    if !options.is_null() {
-        // SAFETY: our array.
-        unsafe { zend_array_destroy(options) };
-    }
+    drop(OPTIONS.with(RefCell::take).map(ManuallyDrop::into_inner));
 }
 
 /// `Co::set(array $options)`/`Scheduler::set()`.
@@ -411,14 +391,9 @@ fn rshutdown() -> Result<(), Bailout> {
 
 /// `Co::getOptions()`/`Scheduler::getOptions()`.
 fn get_options(call: &Call) {
-    let options = OPTIONS.with(Cell::get);
-    if options.is_null() {
-        return;
+    // RETURN_ARR(zend_array_dup(options)): a shared copy, which the next
+    // edit separates from.
+    if let Some(copy) = OPTIONS.with(|o| o.borrow().as_ref().map(|options| options.copy())) {
+        call.set_owned(copy);
     }
-    // SAFETY: a live array, copied into the return slot.
-    let copy = unsafe { zend_array_dup(options) };
-    // SAFETY: the return slot takes the copy (RETURN_ARR).
-    let slot = unsafe { &mut *call.return_value() };
-    slot.value.arr = copy;
-    slot.u1.type_info = IS_ARRAY_EX;
 }
