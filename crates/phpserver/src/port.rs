@@ -401,7 +401,11 @@ fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Res
         port,
     };
     port_settings::apply(&source)?;
-    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context));
+    let (ssl, kind, context) = source.config(|c| {
+        let context = c.ssl_context.as_ref();
+        let context = context.map_or(core::ptr::null(), swoole_rs_tls::TlsContext::as_ptr);
+        (c.ssl, c.r#type, context)
+    });
     if ssl == 0 {
         return Ok(());
     }

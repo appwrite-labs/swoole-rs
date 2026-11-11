@@ -190,9 +190,7 @@ impl ServerState {
             return &[];
         }
         // SAFETY: a live slot of this state; texts are set only while the server is configured.
-        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
-        // SAFETY: the view's bytes stay put until the slot is next set.
-        unsafe { core::slice::from_raw_parts(view.data.cast(), view.length) }
+        unsafe { &*slot }.bytes()
     }
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the

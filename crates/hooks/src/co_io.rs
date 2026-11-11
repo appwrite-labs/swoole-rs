@@ -1179,8 +1179,8 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
         swoole_rs_corebase::swr_v1_core_string_set(slot, message.as_ptr().cast(), message.len())
     };
     if status == 0 {
-        // SAFETY: the assignment left stable, terminated bytes in the slot.
-        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
+        // SAFETY: the live slot, whose assignment left stable, terminated bytes.
+        let view = unsafe { &*slot }.view();
         // SAFETY: the record's own error string, as above.
         unsafe { socket.set_err_msg(view.data) };
     }

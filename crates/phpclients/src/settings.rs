@@ -445,7 +445,7 @@ pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: *const z
     }
     text("ssl_ciphers", Text::Ciphers);
     // SAFETY: as above.
-    match unsafe { tls::has_files(owner) } {
+    match tls::has_files(unsafe { &*owner }) {
         (true, false) => report(ErrorKind::Fatal, E_ERROR, "ssl require key file"),
         (false, true) => report(ErrorKind::Fatal, E_ERROR, "ssl require cert file"),
         _ => {}

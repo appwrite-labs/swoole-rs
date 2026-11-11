@@ -220,9 +220,7 @@ pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
     // SAFETY: a complete event over a live request.
     let view = swoole_rs_corebase::swr_v1_core_resolver_view(unsafe { &*event.data });
     // SAFETY: the request's name, live with it.
-    let name = unsafe { swoole_rs_corebase::swr_v1_core_string_view(view.name) };
-    // SAFETY: `length` bytes at `data`.
-    let name = unsafe { core::slice::from_raw_parts(name.data.cast::<u8>(), name.length) };
+    let name = unsafe { &*view.name }.bytes();
     // SAFETY: the request's fields, live with it.
     let family = unsafe { (*view.fields).family };
     log(format!("dns {} {family}", String::from_utf8_lossy(name)));

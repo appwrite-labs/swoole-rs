@@ -447,7 +447,7 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
         }
     }
     // SAFETY: the live context.
-    match unsafe { tls::has_files(owner) } {
+    match tls::has_files(unsafe { &*owner }) {
         (true, false) => fatal(E_WARNING, b"ssl require key file")?,
         (false, true) => fatal(E_WARNING, b"ssl require cert file")?,
         _ => {}

@@ -725,8 +725,8 @@ pub(crate) unsafe fn swr_case_ssl_sni(
     // SAFETY: the live port; its context's copy, which `sni_add` takes.
     unsafe {
         let context = lifecycle::context_dup(port.0);
-        set_ssl_path(context.cast(), CERT_FILE, cert);
-        set_ssl_path(context.cast(), KEY_FILE, key);
+        set_ssl_path(context.as_ptr().cast(), CERT_FILE, cert);
+        set_ssl_path(context.as_ptr().cast(), KEY_FILE, key);
         lifecycle::sni_add(port.0, CStr::from_ptr(name).to_bytes(), context);
     }
 }
