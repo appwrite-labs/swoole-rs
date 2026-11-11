@@ -227,7 +227,22 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "the handler pushes its three frames and returns without reading the client's push, so "
         "the server closes with unread data and resets the connection; when the client's recv() "
         "meets the reset before the frames, the recv() asserts fail on both "
-        'engines (Docker: upstream 7/100, cargo 1/50, #2815; #2950\'s queue run: cargo 1 of 3)'}
+        'engines (Docker: upstream 7/100, cargo 1/50, #2815; #2950\'s queue run: cargo 1 of 3)',
+        'tests/swoole_server/enable_reuse_port.phpt':
+        "the kernel hashes each of the 32 connections to one of the 4 SO_REUSEPORT listeners by "
+        "its source port, and the test asserts every worker got more than 4: a binomial draw "
+        "that misses for some worker 25% of the time, on every engine (first runs in 258 "
+        'merge-tier runs: upstream 59, cargo 66, #3000)',
+        'tests/swoole_server/dispatch_mode_8.phpt':
+        "a random quarter of onConnect calls sleep 0.5 s, so how evenly CO_CONN_LB spreads the "
+        "200 connections across 4 workers depends on where those sleeps land, and the "
+        'standard deviation crosses the < 5 bound on every engine (first runs in 258 merge-tier '
+        'runs: upstream 25, cargo 31; Docker upstream 2/35 at 5.24 and 5.48, #3000)',
+        'tests/swoole_runtime/file_lock/lock_ex.phpt':
+        "both coroutines' flock() calls go to the AIO pool, and when co 2's LOCK_SH lands before "
+        "co 1's LOCK_EX, co 1 blocks until co 2 unlocks, which co 2 does only after its 2 s "
+        "release->pop() has timed out (first runs in 258 merge-tier runs: upstream 11, cargo "
+        '16; Docker upstream 1/38, #3000)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
