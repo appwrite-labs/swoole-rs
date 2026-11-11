@@ -128,9 +128,8 @@ impl<'a> Context<'a> {
     fn state(&self) -> &'a crate::ServerState {
         self.server.state()
     }
-    fn config(&self) -> &'a mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server.config_mut() }
+    fn config(&self) -> &'a crate::ServerConfig {
+        self.server.config()
     }
     /// The task pool, which the ops reading it run with.
     fn pool(&self) -> TaskPool<'a> {
