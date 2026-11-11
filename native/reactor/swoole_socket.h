@@ -8,6 +8,7 @@
 #include "swoole.h"
 #include "swoole_ssl.h"
 #include "swoole_buffer.h"
+#include "swoole_string.h"
 
 #include "swoole_rs_reactor.h"
 #include "swoole_rs_clients.h"
@@ -225,7 +226,6 @@ struct Socket : swr_v1_socket {
     bool check_liveness();
 
     int sendfile_sync(const char *filename, off_t offset, size_t length);
-    ssize_t sendfile(const File &fp, off_t *offset, size_t length);
 
     ssize_t recv(void *_buf, size_t _n, int _flags);
     ssize_t send(const void *_buf, size_t _n, int _flags);
@@ -264,7 +264,6 @@ struct Socket : swr_v1_socket {
     ssize_t ssl_send(const void *_buf, size_t _n);
     ssize_t ssl_readv(IOVector *io_vector);
     ssize_t ssl_writev(IOVector *io_vector);
-    ssize_t ssl_sendfile(const File &fp, off_t *offset, size_t size);
     STACK_OF(X509) * ssl_get_peer_cert_chain() const;
     std::vector<std::string> ssl_get_peer_cert_chain(int limit) const;
     X509 *ssl_get_peer_certificate() const;
