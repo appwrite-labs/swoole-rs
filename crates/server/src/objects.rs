@@ -91,6 +91,16 @@ impl Bus {
     pub(crate) fn packet(self) -> BusPacket {
         self.rust().packet()
     }
+    /// `f` over the bytes of the packet the bus holds, which stay put while it runs.
+    pub(crate) fn with_packet<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let packet = self.packet();
+        if packet.data.is_null() {
+            return f(&[]);
+        }
+        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads again,
+        // which this thread alone would do and not during `f`.
+        f(unsafe { core::slice::from_raw_parts(packet.data.cast_const().cast(), packet.length) })
+    }
     pub(crate) fn pop(self) {
         self.rust().pop();
     }

@@ -142,16 +142,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let id = u16::try_from(unsafe { &*me }.id()).unwrap_or(0);
             // SAFETY: worker 0, live.
             let pipe = unsafe { (*ctx.other(0)).pipe_master };
-            let bus = ctx.tables().message_bus;
-            // SAFETY: the live server, its bus holding the request, and the pipe.
-            unsafe { crate::commands::call_command_handler(ctx.server(), bus, id, pipe) };
+            let pipe = crate::objects::socket(pipe);
+            crate::commands::call_command_handler(ctx.server(), ctx.bus(), id, pipe);
             0
         }
         OP_COMMAND_RESPONSE => {
-            let (fd, packet) = (ctx.bus().head().fd, ctx.bus().packet());
-            let result = crate::commands::swr_v1_server_command_result;
-            // SAFETY: the live server and the packet's bytes.
-            unsafe { result(ctx.state(), ctx.serv, fd, packet.data, packet.length) };
+            let (bus, state) = (ctx.bus(), ctx.state());
+            let fd = bus.head().fd;
+            bus.with_packet(|reply| crate::commands::command_result(state, fd, reply));
             0
         }
         OP_BUS_POP => {

@@ -426,25 +426,19 @@ pub(crate) unsafe fn answer(
         }
         OP_COMMAND_REQUEST => {
             let thread = this(ctx);
-            let (id, pipe) = (
-                u16::try_from(thread.id).unwrap_or_default(),
-                thread.pipe_command,
-            );
-            // SAFETY: the live server, this thread's bus holding the request and its pipe.
-            unsafe {
-                crate::commands::call_command_handler(server, bus_of(thread), id, pipe.cast());
-            };
+            let id = u16::try_from(thread.id).unwrap_or_default();
+            let pipe = socket(thread.pipe_command.cast());
+            crate::commands::call_command_handler(server, thread.message_bus(), id, pipe);
             0
         }
         OP_COMMAND_RESPONSE | OP_PIPE_SEND => {
-            let packet = this(ctx).message_bus().packet();
+            let bus = this(ctx).message_bus();
+            let packet = bus.packet();
             // SAFETY: the bus's buffer, which PIPE_READ stored.
             let mut info = unsafe { *resp };
             if op == OP_COMMAND_RESPONSE {
-                use crate::commands::swr_v1_server_command_result as result;
-                let (data, length) = (packet.data, packet.length);
-                // SAFETY: the live server and the reply's bytes.
-                unsafe { result(state, serv, info.fd, data, length) };
+                let fd = info.fd;
+                bus.with_packet(|reply| crate::commands::command_result(state, fd, reply));
                 return Some(0);
             }
             info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);

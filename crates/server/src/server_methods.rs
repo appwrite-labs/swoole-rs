@@ -725,62 +725,50 @@ pub unsafe extern "C" fn send_pipe_message(
 }
 
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
-/// command joined. The handler's context lives as long as the server.
-///
-/// # Safety
-/// `serv` is a live `Server`; `name` holds `length` bytes; `handler.invoke` is a
-/// `commands::Handler`.
-pub unsafe fn swr_v1_server_add_command(
-    serv: *mut c_void,
-    name: *const c_char,
-    length: usize,
+/// command joined. The server keeps the handler for its life.
+pub fn swr_v1_server_add_command(
+    serv: view::Server<'_>,
+    name: &[u8],
     accepted_types: c_int,
-    handler: crate::CommandFn,
+    handler: crate::CommandHandler,
 ) -> bool {
     let add = crate::commands::AddCommand {
-        // SAFETY: per the caller.
-        name: unsafe { core::slice::from_raw_parts(name.cast(), length) },
+        name,
         accepted_types,
         handler,
     };
+    // `add` lives for the call.
     let arg = core::ptr::from_ref(&add).expose_provenance() as u64;
-    // SAFETY: as the caller guarantees; `add` lives for the call.
-    unsafe { run(RUN_ST_ADD_COMMAND, arg, &mut NativeContext::new(serv)) != 0 }
+    run_on(serv, RUN_ST_ADD_COMMAND, arg) != 0
 }
 
 /// `Server::command(process_id, process_type, name, message, callback)`: whether
 /// the request went. Its reply reaches `callback` once, perhaps before this returns.
-///
-/// # Safety
-/// `serv` is a live `Server`; `name` and `message` hold their lengths in bytes;
-/// `callback.invoke` is a `commands::Callback` whose context lives until it is called.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Server::command's five arguments, its two strings as pointer and length"
-)]
-pub unsafe fn swr_v1_server_command(
-    serv: *mut c_void,
+pub fn swr_v1_server_command(
+    serv: view::Server<'_>,
     process_id: u32,
     process_type: c_int,
-    name: *const c_char,
-    name_length: usize,
-    message: *const c_char,
-    length: usize,
-    callback: crate::CommandFn,
+    name: &[u8],
+    message: &[u8],
+    callback: crate::CommandCallback,
 ) -> bool {
     let send = crate::commands::SendCommand {
         serv,
         process_id,
         process_type,
-        // SAFETY: per the caller.
-        name: unsafe { core::slice::from_raw_parts(name.cast(), name_length) },
-        // SAFETY: per the caller.
-        message: unsafe { core::slice::from_raw_parts(message.cast(), length) },
+        name,
+        message,
         callback,
     };
+    // `send` lives for the call.
     let arg = core::ptr::from_ref(&send).expose_provenance() as u64;
-    // SAFETY: as the caller guarantees; `send` lives for the call.
-    unsafe { run(RUN_ST_COMMAND, arg, &mut NativeContext::new(serv)) != 0 }
+    run_on(serv, RUN_ST_COMMAND, arg) != 0
+}
+
+/// `Server::call_command_callback(request_id, message)`: the reply to `request_id`
+/// reaches its callback, or the server logs an invalid command result.
+pub fn swr_v1_server_command_result(serv: view::Server<'_>, request_id: i64, message: &[u8]) {
+    crate::commands::command_result(serv.state(), request_id, message);
 }
 
 #[cfg(test)]

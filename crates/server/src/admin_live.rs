@@ -4,10 +4,11 @@ use super::{Command, Connection, Facts, Manager, Port, Socket, Thread, commands,
 use crate::json::Json;
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
-use crate::{CommandFn, CommandReply, MODE_BASE, MODE_PROCESS, ServerConfig};
+use crate::{MODE_BASE, MODE_PROCESS, ServerConfig};
 use crate::{ServerState, view};
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
@@ -41,36 +42,17 @@ pub unsafe extern "C" fn swr_v1_server_admin_register(
     let config = serv.config();
     let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread;
     for (index, (name, types)) in commands(event_workers).enumerate() {
-        let handler = CommandFn {
-            invoke: answer as *const c_void,
-            ctx: core::ptr::without_provenance_mut(index),
-        };
-        let (name, length) = (name.as_ptr().cast(), name.len());
-        // SAFETY: per the caller; `answer` is a command handler.
-        unsafe { crate::swr_v1_server_add_command(serv.raw(), name, length, types, handler) };
+        let handler = Arc::new(
+            move |serv: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
+                reply.extend_from_slice(answer(serv, index, message).as_bytes());
+            },
+        );
+        crate::swr_v1_server_add_command(serv, name.as_bytes(), types, handler);
     }
 }
 
-/// A `commands::Handler`: admin command `ctx`'s answer to `message`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `message` holds `length` bytes (or is null).
-unsafe extern "C" fn answer(
-    ctx: *mut c_void,
-    serv: *mut c_void,
-    message: *const c_char,
-    length: usize,
-    reply: CommandReply,
-    out: *mut c_void,
-) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    let message = if message.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: per the caller.
-        unsafe { core::slice::from_raw_parts(message.cast(), length) }
-    };
+/// Admin command `index`'s answer to `message`.
+fn answer(serv: view::Server<'_>, index: usize, message: &[u8]) -> String {
     let state = serv.state();
     let mut live = Live {
         serv,
@@ -80,9 +62,7 @@ unsafe extern "C" fn answer(
         sockets: Vec::new(),
         connections: Vec::new(),
     };
-    let text = run(&mut live, ctx.addr(), message).dump();
-    // SAFETY: the server's reply writer, with its output.
-    unsafe { reply(out, text.as_ptr().cast(), text.len()) };
+    run(&mut live, index, message).dump()
 }
 
 /// `Address::get_addr()`, which formats into a per-thread buffer.

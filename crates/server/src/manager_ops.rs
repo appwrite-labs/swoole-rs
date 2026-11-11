@@ -37,7 +37,7 @@ use swoole_rs_process::workers::ops::{
 };
 
 use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
-use crate::commands::CommandFn;
+use crate::commands::CommandHandler;
 use crate::{view, worker_methods};
 
 /// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head.
@@ -61,7 +61,7 @@ struct Context {
     /// The worker being restarted, or the message being read.
     worker: *mut WorkerRecord,
     task: *const EventData,
-    handler: CommandFn,
+    handler: Option<CommandHandler>,
     wait_status: c_int,
     wait_error: c_int,
     msg: EventData,
@@ -93,10 +93,7 @@ impl Context {
             serv,
             worker: null_mut(),
             task: null(),
-            handler: CommandFn {
-                invoke: null(),
-                ctx: null_mut(),
-            },
+            handler: None,
             wait_status: 0,
             wait_error: 0,
             msg: EventData {
@@ -377,10 +374,11 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_HAS_COMMAND => {
             let id = i32::from(ctx.task().info.server_fd);
             let handler = crate::commands::handler(ctx.state(), id);
-            if let Some(handler) = handler {
+            let found = handler.is_some();
+            if found {
                 ctx.handler = handler;
             }
-            return Some(u64::from(handler.is_some()));
+            return Some(u64::from(found));
         }
         LOG_UNKNOWN_COMMAND => {
             let id = ctx.task().info.server_fd;
@@ -520,21 +518,16 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_COMMAND_REPLY => {
             let task = ctx.task();
-            let message = (task.data.as_ptr().cast(), task.info.len as usize);
+            let message = task
+                .data
+                .get(..task.info.len as usize)
+                .unwrap_or(&task.data);
             let state = ctx.state();
             let sock = crate::commands::reply_socket(state, ctx.server())?;
             let bus = crate::master_ops::server_message_bus(state);
-            // SAFETY: the handler OP_HAS_COMMAND found and the command's message.
-            unsafe {
-                crate::commands::answer(
-                    ctx.handler,
-                    ctx.serv,
-                    message,
-                    (bus, sock),
-                    task.info.fd,
-                    0,
-                )
-            };
+            let handler = ctx.handler.as_ref()?;
+            let fd = task.info.fd;
+            crate::commands::answer(handler, ctx.server(), message, (bus, sock), fd, 0);
             0
         }
         _ => return None,

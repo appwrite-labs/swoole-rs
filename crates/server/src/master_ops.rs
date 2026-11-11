@@ -2705,18 +2705,8 @@ extern "C" fn accept_command_result(
     if bus.read(sock) <= 0 {
         return 0;
     }
-    let packet = bus.packet();
     let request_id = bus.head().fd;
-    // SAFETY: the live state and server, and the packet's bytes.
-    unsafe {
-        crate::commands::swr_v1_server_command_result(
-            state,
-            serv,
-            request_id,
-            packet.data,
-            packet.length,
-        );
-    };
+    bus.with_packet(|message| crate::commands::command_result(state, request_id, message));
     bus.pop();
     0
 }
