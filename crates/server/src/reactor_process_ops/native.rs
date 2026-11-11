@@ -129,7 +129,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_COMMAND_REQUEST => {
-            let me = crate::worker_methods::current_worker();
+            let me = swoole_rs_process::worker_globals::current_worker();
             // SAFETY: as above.
             let id = u16::try_from(unsafe { &*me }.id()).unwrap_or(0);
             // SAFETY: worker 0, live.

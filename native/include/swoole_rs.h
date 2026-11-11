@@ -15,13 +15,7 @@ extern "C" {
 uint32_t swr_v1_abi_version(void);
 uint64_t swr_v1_feature_bits(void);
 
-/*
- * swoole::Server operations (crates/server). Rust decides each step and asks native
- * code for every fact or effect through call(context, op, arg); the numbers are
- * crates/server/src/ops.rs.
- */
-typedef uint64_t (*swr_v1_server_call)(void *context, uint32_t op, uint64_t arg);
-int64_t swr_v1_server_run(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call);
+/* swoole::Server operations (crates/server); the numbers are crates/server/src/ops.rs. */
 struct swr_v1_server_state;
 
 

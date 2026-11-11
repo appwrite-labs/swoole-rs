@@ -200,7 +200,7 @@ mod native {
             if *at != string.as_mut_ptr() {
                 string.clear();
                 // SAFETY: the write's `length` bytes, outside the String.
-                unsafe { string.append(*at, length) };
+                unsafe { swoole_rs_buffer::string::swr_string_append(string, *at, length) };
                 *at = string.as_mut_ptr();
             }
         });

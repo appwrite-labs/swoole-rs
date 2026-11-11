@@ -119,10 +119,10 @@ impl ServerState {
         &self,
         worker: &mut swoole_rs_process::worker_record::WorkerRecord,
     ) -> bool {
-        let mut storage = Box::new(core::mem::MaybeUninit::<SocketPair>::uninit());
-        swoole_rs_tls::socket_pair::unix_socket_new(&mut storage, true, libc::SOCK_DGRAM);
-        // SAFETY: the constructor initialised it.
-        let mut pair = unsafe { storage.assume_init() };
+        let mut pair = Box::new(swoole_rs_tls::socket_pair::unix_socket(
+            true,
+            libc::SOCK_DGRAM,
+        ));
         let (master, end) = (pair.master_socket, pair.worker_socket);
         if master.is_null() || end.is_null() {
             swoole_rs_tls::socket_pair::drop(&mut pair);
@@ -648,7 +648,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// The operations of `swr_v1_server_run` this module runs.
+/// The operations of `crate::run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,

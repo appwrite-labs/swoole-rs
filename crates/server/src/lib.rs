@@ -1,7 +1,7 @@
-//! `swoole::Server` operations. Native code keeps the objects (connections, sockets,
-//! ports, the reactor, callbacks and logs); Rust decides every step and asks native
-//! code for each fact or effect through one `call(context, op, arg)`, reading facts
-//! afresh. The interface address table is Rust state (`local_addr`).
+//! `swoole::Server` operations. Rust decides every step and answers each fact or
+//! effect from the records it lays out: the server's state, master.cc's method
+//! context and the reactor-thread context, reading facts afresh. The interface
+//! address table is Rust state (`local_addr`).
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
@@ -13,8 +13,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use core::ffi::c_void;
-
 pub use commands::{CommandCallback, CommandHandler};
 pub use server_methods::{
     swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_result,
@@ -110,9 +108,6 @@ pub use server_object::{swr_v1_server_delete, swr_v1_server_new};
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;
 
-/// One native fact or effect on the server in `context`.
-pub type ServerCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
-
 pub(crate) const SW_OK: i64 = 0;
 pub(crate) const SW_ERR: i64 = -1;
 
@@ -160,20 +155,7 @@ pub(crate) trait Host {
 /// The state of a server without one, which native code never passes.
 static NO_STATE: std::sync::LazyLock<ServerState> = std::sync::LazyLock::new(ServerState::new);
 
-trait NativeCall {
-    /// # Safety
-    /// The context is live for the callback, whose native unwind contract holds.
-    unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64>;
-}
-impl NativeCall for ServerCall {
-    unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64> {
-        // SAFETY: the caller lends the context under the legacy nonthrowing contract.
-        Ok(unsafe { self(context, op, arg) })
-    }
-}
-struct Native<'a, C> {
-    context: *mut c_void,
-    call: C,
+struct Native<'a> {
     state: Option<&'a ServerState>,
     /// master.cc's context, whose records `master_ops` answers ops from; null
     /// for the other runners.
@@ -183,7 +165,7 @@ struct Native<'a, C> {
     reactor: *mut reactor_ops::ReactorContext,
 }
 
-impl<C: NativeCall> Host for Native<'_, C> {
+impl Host for Native<'_> {
     // Constant opcodes erase unrelated fact-table branches before native effects.
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
@@ -220,8 +202,8 @@ impl<C: NativeCall> Host for Native<'_, C> {
                 return Ok(value);
             }
         }
-        // SAFETY: the entrypoint lends this context with C's native effect contract.
-        unsafe { self.call.invoke(self.context, op, arg) }
+        // An op no record answers: 0, as master.cc's `default:` was.
+        Ok(0)
     }
 
     fn worker_id(&mut self) -> Effect<u64> {
@@ -237,71 +219,8 @@ impl<C: NativeCall> Host for Native<'_, C> {
     // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
     #[inline(always)]
     fn state(&mut self) -> Effect<&ServerState> {
-        if let Some(state) = self.state {
-            return Ok(state);
-        }
-        let address = usize::try_from(self.get(ops::OP_STATE)?).unwrap_or(0);
-        let state = core::ptr::with_exposed_provenance::<ServerState>(address);
-        // SAFETY: native code passes `Server::state_`, which lives as long as the server.
-        Ok(unsafe { state.as_ref() }.unwrap_or(&NO_STATE))
+        Ok(self.state.unwrap_or(&NO_STATE))
     }
-}
-
-/// Runs one `Server` operation (`ops::RUN_*`) with `arg`; the result is the
-/// operation's return value as upstream's C++ method returns it.
-///
-/// # Safety
-/// `call` acts on the server objects in `context`, live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_run(
-    operation: u32,
-    arg: u64,
-    context: *mut c_void,
-    call: ServerCall,
-) -> i64 {
-    run(
-        &mut Native {
-            context,
-            call,
-            state: None,
-            master: core::ptr::null_mut(),
-            reactor: core::ptr::null_mut(),
-        },
-        operation,
-        arg,
-    )
-    .unwrap_or(SW_ERR)
-}
-
-/// Runs a reactor-thread operation over a `ReactorContext`, whose records Rust
-/// reads, and the server's owned records.
-///
-/// # Safety
-/// `context` is a live `ReactorContext` lending synchronized server objects.
-pub(crate) unsafe fn run_reactor(
-    operation: u32,
-    arg: u64,
-    context: *mut c_void,
-    call: ServerCall,
-    state: &ServerState,
-) -> i64 {
-    run(
-        &mut Native {
-            context,
-            call,
-            state: Some(state),
-            master: core::ptr::null_mut(),
-            reactor: context.cast(),
-        },
-        operation,
-        arg,
-    )
-    .unwrap_or(SW_ERR)
-}
-
-/// An op no arm answers: 0, as master.cc's `default:` was.
-pub(crate) unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u64 {
-    0
 }
 
 /// `operation` over a reactor-thread context without [`run`]'s match: the reads,
@@ -309,20 +228,17 @@ pub(crate) unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u6
 /// cost about 120 instructions a message.
 ///
 /// # Safety
-/// As [`run_reactor`].
+/// `context` lends synchronized server objects, live for the call.
 #[inline(always)]
 pub(crate) unsafe fn run_reactor_with<'s>(
     context: &mut reactor_ops::ReactorContext,
     state: &'s ServerState,
-    operation: impl FnOnce(&mut Native<'s, ServerCall>) -> Effect<i64>,
+    operation: impl FnOnce(&mut Native<'s>) -> Effect<i64>,
 ) -> i64 {
-    let reactor = core::ptr::from_mut(context);
     operation(&mut Native {
-        context: reactor.cast(),
-        call: unanswered,
         state: Some(state),
         master: core::ptr::null_mut(),
-        reactor,
+        reactor: core::ptr::from_mut(context),
     })
     .unwrap_or(SW_ERR)
 }
@@ -347,8 +263,6 @@ pub(crate) unsafe fn run_method(
         Some(unsafe { view::Server::from_raw(serv) }.state())
     };
     let mut native = Native {
-        context: ctx.cast(),
-        call: unanswered as ServerCall,
         state,
         master: ctx,
         reactor: core::ptr::null_mut(),
@@ -495,12 +409,6 @@ mod fault_tests;
 #[cfg(test)]
 mod mode_tests {
     use super::{Host, Native, ops::OP_MODE};
-    use core::ffi::c_void;
-
-    /// Native code is never asked: any call fails the test.
-    unsafe extern "C" fn unreachable(_: *mut c_void, op: u32, _: u64) -> u64 {
-        panic!("native op {op}");
-    }
 
     #[test]
     fn the_mode_is_the_configs() {
@@ -508,8 +416,6 @@ mod mode_tests {
         // SAFETY: a fresh state owns its config.
         unsafe { &mut *(*state).config() }.mode_ = 2;
         let mut host = Native {
-            context: core::ptr::null_mut(),
-            call: unreachable as super::ServerCall,
             // SAFETY: the fresh state, freed below.
             state: Some(unsafe { &*state }),
             master: core::ptr::null_mut(),

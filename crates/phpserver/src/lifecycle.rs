@@ -17,7 +17,7 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
-    class_name, init_object, message, object_of, report,
+    class_name, message, object_of, report,
     sys::{
         IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array,
         swr_zend_try_json_encode, swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert,
@@ -569,18 +569,19 @@ impl Props<'static> {
     }
 
     /// A Server object, under its own class.
-    fn own(object: ServerObject) -> Self {
+    pub(crate) fn own(object: ServerObject) -> Self {
         Self(object.class(), object.raw(), PhantomData)
     }
 }
 
 impl<'a> Props<'a> {
     /// `object_init_ex(target, class)`: a new object in `target`, under its class;
-    /// the handle borrows `target`, so it can't outlive the object.
+    /// the handle borrows `target`, so it can't outlive the object. Zend
+    /// instantiates every registered data class.
     pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
-        let ce = class.entry();
-        // SAFETY: a writable zval and a registered data class.
-        Self(ce, unsafe { init_object(target, ce) }, PhantomData)
+        *target = class.create_object().into_zval();
+        let object = Value::of(target).object().unwrap_or(ptr::null_mut());
+        Self(class.entry(), object, PhantomData)
     }
 
     pub(crate) fn object(self) -> *mut zend_object {

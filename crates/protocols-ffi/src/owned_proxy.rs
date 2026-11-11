@@ -3,7 +3,7 @@
 //! `handshake`'s `std::function` send.
 use std::ffi::{c_char, c_int};
 use std::ptr;
-use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
+use swoole_rs_corebase::{ProxyFields, ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
     socks_auth, socks_config, socks_connect, socks_negotiate, socks_strerror, socks_transition,
 };
@@ -47,52 +47,37 @@ struct Packet {
 /// the proxy's single thread writes its packet and state only through this call.
 fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
     let owner = owner(proxy);
-    // SAFETY: a scalar snapshot before accessing its distinct packet storage.
-    let fields = unsafe { *owner.fields.get() };
-    // SAFETY: SOCKS owners contain an exclusive512-byte packet allocation.
-    let buffer = unsafe { owner.buffer() };
-    // SAFETY: as above, lent to this call alone.
-    let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, 512) };
+    let fields = owner.fields.get();
     let mut result = Packet {
         size: -1,
         diagnostic: 0,
         last_error: 0,
     };
+    let Some(mut buffer) = owner.packet() else {
+        return result;
+    };
+    let buffer = &mut *buffer;
     match action {
         0 => {
-            // SAFETY: the stable username slot is unchanged while packing.
-            let user = unsafe { owner.string(1) };
-            if let Some(method) = socks_negotiate(user.length != 0, buffer) {
-                // SAFETY: the owner's method field is exclusively lent to negotiation.
-                unsafe { (*owner.fields.get()).method = method };
+            if let Some(method) = socks_negotiate(!owner.string(1).is_empty(), buffer) {
+                owner.fields.set(ProxyFields { method, ..fields });
                 result.size = 3;
             }
         }
-        1 => {
-            // SAFETY: the owner's credentials are stable and disjoint from packet storage.
-            let user = unsafe { owner.string(1) };
-            // SAFETY: the password slot remains unchanged while packing.
-            let password = unsafe { owner.string(2) };
-            // SAFETY: the stable username span, disjoint from the packet storage.
-            let user = unsafe { crate::input(user.data.cast(), user.length) };
-            // SAFETY: as above, for the password.
-            let password = unsafe { crate::input(password.data.cast(), password.length) };
-            if let (Some(user), Some(password)) = (user, password) {
-                result.size = socks_auth(user, password, buffer);
-            }
-        }
+        1 => result.size = socks_auth(&owner.string(1), &owner.string(2), buffer),
         2 => {
             // Preserve the initialized prefix even when literal address validation fails.
             if let Some(prefix) = buffer.get_mut(..3) {
                 prefix.copy_from_slice(&[5, 1, 0]);
             }
-            // SAFETY: the target slot stays stable through address parsing and packing.
-            let host = unsafe { owner.string(3) };
+            let mut host = owner.string(3);
+            let host_length = host.len();
+            host.push(0);
             // SAFETY: every member of this POD sockaddr union admits zero bytes.
             let mut address: AddressStorage = unsafe { std::mem::zeroed() };
             let mut length = 0;
             let (kind, bytes, size) = if fields.dns_tunnel != 0 {
-                (3, host.data.cast::<u8>(), host.length)
+                (3, host.as_ptr(), host_length)
             } else {
                 // SAFETY: the exact address operation receives a local union/length and terminated host.
                 let error = unsafe {
@@ -100,8 +85,8 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                         ptr::from_mut(&mut address).cast(),
                         &raw mut length,
                         fields.socket_type,
-                        host.data,
-                        host.length,
+                        host.as_ptr().cast(),
+                        host_length,
                         fields.target_port,
                         None,
                     )
@@ -208,8 +193,7 @@ pub unsafe extern "C" fn handshake_step(
         return -1;
     };
     let owner = owner(proxy);
-    // SAFETY: a scalar snapshot; nothing else writes the fields during this call.
-    let fields = unsafe { *owner.fields.get() };
+    let fields = owner.fields.get();
     let decision = socks_transition(fields.state, fields.method, reply);
     let notice = |code, message: std::fmt::Arguments<'_>| {
         log::error_log(NOTICE, code, c"Socks5Proxy::handshake", message);
@@ -243,8 +227,11 @@ pub unsafe extern "C" fn handshake_step(
     if decision.error != 0 {
         return -1;
     }
-    // SAFETY: the state advances before packing, as in upstream's member order.
-    unsafe { (*owner.fields.get()).state = decision.state };
+    // The state advances before packing, as in upstream's member order.
+    owner.fields.set(ProxyFields {
+        state: decision.state,
+        ..fields
+    });
     match decision.action {
         1 => pack_auth_request(proxy),
         2 => pack_connect_request(proxy),

@@ -2,7 +2,6 @@
 use crate::{
     Call, Class,
     bailout::{self, Bailout},
-    class_name,
     sys::{zend_class_entry, zend_long, zend_throw_error, zend_throw_exception},
 };
 use std::{
@@ -40,11 +39,9 @@ impl Call {
     /// # Panics
     /// The handler has no `$this`.
     pub fn throw_constructed_twice(&self) {
-        let object = self.this_object();
-        assert!(object.is_some(), "a constructor's $this");
-        let Some(object) = object else { return };
-        // SAFETY: `$this` of the executing handler is live.
-        let name = unsafe { class_name(object) };
+        let name = self.class_name();
+        assert!(name.is_some(), "a constructor's $this");
+        let Some(name) = name else { return };
         let message = [
             b"Constructor of ",
             name.to_bytes(),

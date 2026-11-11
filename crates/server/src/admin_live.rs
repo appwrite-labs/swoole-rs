@@ -224,7 +224,7 @@ impl Facts for Live<'_> {
         let gs = self.serv.counters();
         let mode = u64::from(self.config.mode_);
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
-        let worker = crate::worker_methods::current_worker();
+        let worker = swoole_rs_process::worker_globals::current_worker();
         // Server::foreach_connection: each valid connection, max_fd read afresh.
         let mut fd = gs.min_fd;
         while fd <= gs.max_fd {
