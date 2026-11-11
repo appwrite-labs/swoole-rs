@@ -725,10 +725,9 @@ pub(crate) fn get_ipv6(
     let shown = unsafe { CStr::from_ptr(shown.as_ptr()) };
     // SAFETY: the return slot.
     unsafe { swoole_rs_zend::value::array_init(result) };
+    let addr = shown.as_ptr();
     // SAFETY: an array; Zend copies the key and the string.
-    unsafe {
-        swoole_rs_zend::sys::add_assoc_string_ex(result, c"addr".as_ptr(), 4, shown.as_ptr())
-    };
+    unsafe { swoole_rs_zend::sys::add_assoc_string_ex(result, c"addr".as_ptr(), 4, addr) };
     let index = i64::from(info.ipi6_ifindex);
     // SAFETY: as above.
     unsafe { swoole_rs_zend::sys::add_assoc_long_ex(result, c"ifindex".as_ptr(), 7, index) };
