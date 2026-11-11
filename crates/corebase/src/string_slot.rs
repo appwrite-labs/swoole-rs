@@ -64,6 +64,30 @@ pub unsafe extern "C" fn swr_v1_core_string_view(slot: *const StringSlot) -> Cor
         },
     }
 }
+impl Bytes {
+    /// A copy of `bytes` with its own trailing terminator, or none on allocation refusal.
+    fn copied(bytes: &[u8]) -> Option<Self> {
+        let length = bytes.len();
+        if length < 24 {
+            let mut data = [0u8; 24];
+            data.get_mut(..length)?.copy_from_slice(bytes);
+            return Some(Self::Inline { data, length });
+        }
+        let mut data = Vec::new();
+        data.try_reserve_exact(length.checked_add(1)?).ok()?;
+        data.extend_from_slice(bytes);
+        data.push(0);
+        Some(Self::Heap(data))
+    }
+}
+impl StringSlot {
+    /// Replaces the bytes; false, leaving them, on allocation refusal.
+    pub fn assign(&mut self, bytes: &[u8]) -> bool {
+        Bytes::copied(bytes)
+            .map(|bytes| *self.bytes.get_mut() = bytes)
+            .is_some()
+    }
+}
 /// Fallible byte assignment; 0 success, -2 allocation refusal.
 /// Embedded NULs remain part of the value, with a separate trailing terminator.
 /// # Safety
@@ -74,28 +98,14 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
     bytes: *const c_char,
     length: usize,
 ) -> i32 {
-    let replacement = if length < 24 {
-        let mut data = [0u8; 24];
-        if length != 0
-            && let Some(inline) = data.get_mut(..length)
-        {
-            // SAFETY: the caller lends all bytes, copied into the bounded inline value.
-            inline
-                .copy_from_slice(unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) });
-        }
-        Bytes::Inline { data, length }
+    let bytes = if length == 0 {
+        &[]
     } else {
-        let Some(capacity) = length.checked_add(1) else {
-            return -2;
-        };
-        let mut data = Vec::new();
-        if data.try_reserve_exact(capacity).is_err() {
-            return -2;
-        }
-        // SAFETY: the caller lends all bytes, copied before mutation.
-        data.extend_from_slice(unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) });
-        data.push(0);
-        Bytes::Heap(data)
+        // SAFETY: the caller lends `length` readable bytes, copied before mutation.
+        unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) }
+    };
+    let Some(replacement) = Bytes::copied(bytes) else {
+        return -2;
     };
     // SAFETY: the slot is live and externally synchronized.
     let slot = unsafe { &*slot };

@@ -1,18 +1,13 @@
 //! Owned DNS request strings, hints and address storage. A record is reference
 //! counted: its native request holds one reference and each pool copy of an
 //! `AsyncEvent` carrying it another. Records contain no callbacks.
+use crate::resolver::{DIAGNOSTIC_FAILED, gethostbyname, ntop, resolve_addresses};
 use crate::{StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::{cell::UnsafeCell, ptr};
-unsafe extern "C" {
-    fn inet_ntop(
-        family: c_int,
-        source: *const core::ffi::c_void,
-        output: *mut c_char,
-        capacity: libc::socklen_t,
-    ) -> *const c_char;
-}
+use std::ffi::CString;
+use std::ptr;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -23,11 +18,14 @@ pub struct ResolverFields {
     pub error: c_int,
     pub count: c_int,
 }
+/// Native code writes `fields` and the strings through `PreparedResolver`'s views,
+/// and the addresses through `swr_v1_core_resolver_span`'s, never while a Rust
+/// method runs.
 pub struct ResolverRequest {
     refs: AtomicUsize,
-    fields: UnsafeCell<ResolverFields>,
+    fields: Cell<ResolverFields>,
     strings: [StringSlot; 3],
-    results: UnsafeCell<Vec<libc::sockaddr_in6>>,
+    results: RefCell<Vec<libc::sockaddr_in6>>,
 }
 #[repr(C)]
 pub struct PreparedResolver {
@@ -37,30 +35,218 @@ pub struct PreparedResolver {
     pub service: *const StringSlot,
     pub address: *const StringSlot,
 }
+
+fn zero_address() -> libc::sockaddr_in6 {
+    // SAFETY: sockaddr_in6 is a POD address, whose zero state is valid.
+    unsafe { std::mem::zeroed() }
+}
+
+/// The slot's bytes. The record's slots change only in `host` and under native
+/// code's own synchronization, never while this copies.
+fn copy(slot: &StringSlot) -> Vec<u8> {
+    // SAFETY: a live slot, not changing while it is read (above).
+    let view = unsafe { swr_v1_core_string_view(slot) };
+    if view.length == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the slot holds `length` bytes at `data` until it changes.
+    unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
+}
+
+/// `bytes` as `std::string::c_str()` reads them: up to the first NUL.
+fn c_string(mut bytes: Vec<u8>) -> CString {
+    if let Some(end) = bytes.iter().position(|&byte| byte == 0) {
+        bytes.truncate(end);
+    }
+    CString::new(bytes).unwrap_or_default()
+}
+
+/// `text` up to its terminator.
+fn terminated(text: &[c_char; 46]) -> Vec<u8> {
+    let end = text
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(text.len());
+    text.iter()
+        .take(end)
+        .map(|&byte| u8::from_ne_bytes(byte.to_ne_bytes()))
+        .collect()
+}
+
+/// A copy of `addresses`, or none on allocation refusal.
+fn copied(addresses: &[libc::sockaddr_in6]) -> Option<Vec<libc::sockaddr_in6>> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(addresses.len()).ok()?;
+    copy.extend_from_slice(addresses);
+    Some(copy)
+}
+
+impl ResolverRequest {
+    fn boxed(family: c_int, socktype: c_int, protocol: c_int) -> Box<Self> {
+        Box::new(Self {
+            refs: AtomicUsize::new(1),
+            fields: Cell::new(ResolverFields {
+                family,
+                socktype,
+                protocol,
+                error: 0,
+                count: 0,
+            }),
+            strings: std::array::from_fn(|_| StringSlot::default()),
+            results: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// The views over `record`, which the returned owner holds one reference to.
+    fn prepared(record: Box<Self>) -> PreparedResolver {
+        let state = Box::leak(record);
+        let view = swr_v1_core_resolver_view(state);
+        // A handle from the mutable borrow, as one from a shared borrow can't free the record.
+        PreparedResolver {
+            owner: &raw mut *state,
+            ..view
+        }
+    }
+
+    /// A record for `name` and `service` whose owner holds one reference, freed
+    /// with `swr_v1_core_resolver_free`; all null on allocation refusal.
+    #[must_use]
+    pub fn create(
+        family: c_int,
+        socktype: c_int,
+        protocol: c_int,
+        name: &[u8],
+        service: &[u8],
+    ) -> PreparedResolver {
+        let mut record = Self::boxed(family, socktype, protocol);
+        let [name_slot, service_slot, _] = &mut record.strings;
+        if !name_slot.assign(name) || !service_slot.assign(service) {
+            return PreparedResolver {
+                owner: ptr::null_mut(),
+                fields: ptr::null_mut(),
+                name: ptr::null(),
+                service: ptr::null(),
+                address: ptr::null(),
+            };
+        }
+        Self::prepared(record)
+    }
+
+    /// The hints and results.
+    #[must_use]
+    pub fn fields(&self) -> ResolverFields {
+        self.fields.get()
+    }
+
+    fn update(&self, change: impl FnOnce(&mut ResolverFields)) {
+        let mut fields = self.fields.get();
+        change(&mut fields);
+        self.fields.set(fields);
+    }
+
+    /// The name to resolve.
+    #[must_use]
+    pub fn name(&self) -> Vec<u8> {
+        copy(&self.strings[0])
+    }
+
+    /// The text address `host` wrote.
+    #[must_use]
+    pub fn address(&self) -> Vec<u8> {
+        copy(&self.strings[2])
+    }
+
+    /// `async::handler_getaddrinfo`'s body: resolves the hints and replaces the
+    /// complete result set. A libc error publishes only `error`, keeping the
+    /// previous count and addresses. On success count and error publish before
+    /// allocation, as native vector assignment does. -1 is a libc error, -2 an
+    /// allocation refusal, -3 `unknown` returning false.
+    pub fn lookup(&self, unknown: impl FnMut(c_int) -> bool) -> c_int {
+        let hints = self.fields();
+        let [name, service, _] = &self.strings;
+        let name = c_string(copy(name));
+        let service = copy(service);
+        let service = (!service.is_empty()).then(|| c_string(service));
+        let mut found = [zero_address(); 128];
+        let result = resolve_addresses(
+            &name,
+            service.as_deref(),
+            (hints.family, hints.socktype, hints.protocol),
+            &mut found,
+            unknown,
+        );
+        if result.error == DIAGNOSTIC_FAILED {
+            return -3;
+        }
+        self.update(|fields| fields.error = result.error);
+        if result.error != 0 {
+            return -1;
+        }
+        self.update(|fields| fields.count = result.count);
+        let count = usize::try_from(result.count).unwrap_or(0);
+        let Some(found) = copied(found.get(..count).unwrap_or_default()) else {
+            return -2;
+        };
+        self.results.replace(found);
+        0
+    }
+
+    /// `async::handler_gethostbyname`'s body: the name's first address, as text,
+    /// into the address slot. -1 if it does not resolve, -2 on allocation refusal.
+    pub fn host(&self) -> c_int {
+        let family = self.fields().family;
+        let text = gethostbyname(family, &c_string(self.name()))
+            .and_then(|binary| ntop(family, binary.first_chunk()?));
+        let Some(text) = text else {
+            return -1;
+        };
+        let text = terminated(&text);
+        let address = ptr::from_ref(&self.strings[2]);
+        // SAFETY: a live slot that nothing reads while this sets it (see `copy`), and
+        // readable text.
+        unsafe { swr_v1_core_string_set(address, text.as_ptr().cast(), text.len()) }
+    }
+
+    /// Address `index` as text, or none past the end; `valid` false if it does not
+    /// format.
+    fn text(&self, index: usize) -> Option<ResolverText> {
+        let family = self.fields().family;
+        let address = *self.results.borrow().get(index)?;
+        let binary = if family == libc::AF_INET6 {
+            address.sin6_addr.s6_addr
+        } else {
+            // The original reads other families through sockaddr_in, whose sin_addr
+            // shares sin6_flowinfo's offset.
+            let mut binary = [0; 16];
+            binary[..4].copy_from_slice(&address.sin6_flowinfo.to_ne_bytes());
+            binary
+        };
+        let binary = binary.map(|byte| c_char::from_ne_bytes(byte.to_ne_bytes()));
+        let text = ntop(family, &binary);
+        Some(ResolverText {
+            bytes: text.unwrap_or([0; 46]),
+            valid: text.is_some(),
+        })
+    }
+
+    /// The text addresses `lookup` found, skipping any that do not format.
+    #[must_use]
+    pub fn addresses(&self) -> Vec<Vec<u8>> {
+        (0..)
+            .map_while(|index| self.text(index))
+            .filter(|text| text.valid)
+            .map(|text| terminated(&text.bytes))
+            .collect()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_resolver_new(
     family: c_int,
     socktype: c_int,
     protocol: c_int,
 ) -> PreparedResolver {
-    let state = Box::leak(Box::new(ResolverRequest {
-        refs: AtomicUsize::new(1),
-        fields: UnsafeCell::new(ResolverFields {
-            family,
-            socktype,
-            protocol,
-            error: 0,
-            count: 0,
-        }),
-        strings: std::array::from_fn(|_| StringSlot::default()),
-        results: UnsafeCell::new(Vec::new()),
-    }));
-    let view = swr_v1_core_resolver_view(state);
-    // A handle from the mutable borrow, as one from a shared borrow can't free the record.
-    PreparedResolver {
-        owner: &raw mut *state,
-        ..view
-    }
+    ResolverRequest::prepared(ResolverRequest::boxed(family, socktype, protocol))
 }
 
 /// The record's fields and string slots, from its handle.
@@ -68,7 +254,7 @@ pub fn swr_v1_core_resolver_view(owner: &ResolverRequest) -> PreparedResolver {
     let [name, service, address] = &owner.strings;
     PreparedResolver {
         owner: ptr::from_ref(owner).cast_mut(),
-        fields: owner.fields.get(),
+        fields: owner.fields.as_ptr(),
         name,
         service,
         address,
@@ -102,50 +288,39 @@ pub struct ResolverAddresses {
     pub length: usize,
     pub capacity: usize,
 }
-/// # Safety
-/// owner is live and synchronized; no mutation occurs while its span is used.
+/// The addresses, which native code reads and writes until it next resizes,
+/// assigns or looks up.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_span(owner: &ResolverRequest) -> ResolverAddresses {
-    let storage = owner.results.get();
-    // SAFETY: a shared borrow only while reading the span metadata.
-    let addresses = unsafe { &*storage };
+pub extern "C" fn swr_v1_core_resolver_span(owner: &ResolverRequest) -> ResolverAddresses {
+    let mut addresses = owner.results.borrow_mut();
     ResolverAddresses {
         data: if addresses.capacity() == 0 {
             ptr::null_mut()
         } else {
-            addresses.as_ptr().cast_mut()
+            addresses.as_mut_ptr()
         },
         length: addresses.len(),
         capacity: addresses.capacity(),
     }
 }
 /// Resize the actual Rust vector. -4 is length overflow; -2 allocation refusal.
-/// # Safety
-/// owner is live and exclusively writable, with no outstanding span accesses.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_resize(
-    owner: &ResolverRequest,
-    length: usize,
-) -> c_int {
+pub extern "C" fn swr_v1_core_resolver_resize(owner: &ResolverRequest, length: usize) -> c_int {
     if length > isize::MAX.unsigned_abs() / size_of::<libc::sockaddr_in6>() {
         return -4;
     }
-    let storage = owner.results.get();
-    // SAFETY: no callbacks occur while this vector is borrowed.
-    let addresses = unsafe { &mut *storage };
-    if length > addresses.len() && addresses.try_reserve(length - addresses.len()).is_err() {
+    let mut addresses = owner.results.borrow_mut();
+    let more = length.saturating_sub(addresses.len());
+    if more != 0 && addresses.try_reserve(more).is_err() {
         return -2;
     }
-    addresses.resize_with(length, || {
-        // SAFETY: sockaddr_in6 is a POD address, whose zero state is valid.
-        unsafe { std::mem::zeroed() }
-    });
+    addresses.resize_with(length, zero_address);
     0
 }
 /// Assignment accepts overlap, including self-assignment, and leaves old storage
 /// intact on allocation refusal.
 /// # Safety
-/// owner is exclusive; data holds length readable addresses until this returns.
+/// data holds length readable addresses until this returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_assign(
     owner: &ResolverRequest,
@@ -155,109 +330,39 @@ pub unsafe extern "C" fn swr_v1_core_resolver_assign(
     if length > isize::MAX.unsigned_abs() / size_of::<libc::sockaddr_in6>() {
         return -4;
     }
-    let mut replacement = Vec::new();
-    if replacement.try_reserve_exact(length).is_err() {
+    let source = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller lends `length` addresses, copied before the old ones go.
+        unsafe { std::slice::from_raw_parts(data, length) }
+    };
+    let Some(replacement) = copied(source) else {
         return -2;
-    }
-    if length != 0 {
-        // SAFETY: the source span remains live until replacement is complete.
-        replacement.extend_from_slice(unsafe { std::slice::from_raw_parts(data, length) });
-    }
-    // Only now mutate the caller's address owner, after copying overlaps.
-    let storage = owner.results.get();
-    // SAFETY: synchronized exclusive access; old addresses contain no callbacks.
-    unsafe { *storage = replacement };
+    };
+    owner.results.replace(replacement);
     0
 }
 
-/// Resolve the request's hints and replace its complete result set. Errors from
-/// libc publish only error, retaining the previous count and vector. On success,
-/// count/error publish before allocation, matching native vector assignment.
+/// `ResolverRequest::lookup` with a native diagnostic.
 /// # Safety
-/// owner is exclusive; unknown catches native exceptions and returns false on failure; context stays live throughout the call.
+/// unknown catches native exceptions and returns false on failure; context stays
+/// live throughout the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_lookup(
     owner: &ResolverRequest,
     unknown: unsafe extern "C" fn(*mut core::ffi::c_void, c_int) -> bool,
     context: *mut core::ffi::c_void,
 ) -> c_int {
-    let fields = owner.fields.get();
-    // SAFETY: copy every hint before any external resolver effect.
-    let hints = unsafe { *fields };
-    let [name, service, _] = &owner.strings;
-    // SAFETY: the first slot contains the terminated hostname.
-    let name = unsafe { swr_v1_core_string_view(name) };
-    // SAFETY: the service remains stable until resolution returns.
-    let service = unsafe { swr_v1_core_string_view(service) };
-    // SAFETY: every byte of POD sockaddr_in6 may be zero.
-    let mut found: [libc::sockaddr_in6; 128] = unsafe { std::mem::zeroed() };
-    let diagnostic = |family| {
+    owner.lookup(|family| {
         // SAFETY: the injected leaf catches all exceptions and borrows live context.
         unsafe { unknown(context, family) }
-    };
-    // SAFETY: stable strings, bounded initialized output, and contained diagnostic.
-    let result = unsafe {
-        crate::resolver::resolve_addresses(
-            name.data,
-            if service.length == 0 {
-                ptr::null()
-            } else {
-                service.data
-            },
-            hints.family,
-            hints.socktype,
-            hints.protocol,
-            found.as_mut_ptr(),
-            found.len(),
-            diagnostic,
-        )
-    };
-    if result.error == crate::resolver::DIAGNOSTIC_FAILED {
-        return -3;
-    }
-    // SAFETY: update error for both success and failure, as the native API does.
-    unsafe { (*fields).error = result.error };
-    if result.error != 0 {
-        return -1;
-    }
-    // SAFETY: count commits before potentially failing address assignment.
-    unsafe { (*fields).count = result.count };
-    // SAFETY: the bounded stack result is readable until assignment returns.
-    unsafe {
-        swr_v1_core_resolver_assign(
-            owner,
-            found.as_ptr(),
-            usize::try_from(result.count).unwrap_or(0),
-        )
-    }
+    })
 }
 
-/// # Safety
-/// owner is exclusive.
+/// `ResolverRequest::host`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_host(owner: &ResolverRequest) -> c_int {
-    // SAFETY: copy the family without holding a Rust borrow across libc.
-    let family = unsafe { (*owner.fields.get()).family };
-    let [name, _, address] = &owner.strings;
-    // SAFETY: the first slot's terminated name remains unmodified through libc.
-    let name = unsafe { swr_v1_core_string_view(name) };
-    let mut binary = [0 as c_char; 46];
-    // SAFETY: stable terminated name and output large enough for both families.
-    if unsafe { crate::swr_v1_clients_gethostbyname(family, name.data, binary.as_mut_ptr()) } != 0 {
-        return -1;
-    }
-    let mut text = [0 as c_char; 46];
-    // SAFETY: inet_ntop receives a complete binary address and bounded output.
-    let result = unsafe { inet_ntop(family, binary.as_ptr().cast(), text.as_mut_ptr(), 46) };
-    if result.is_null() {
-        return -1;
-    }
-    // SAFETY: successful inet_ntop writes a bounded terminated address.
-    let length = unsafe { std::ffi::CStr::from_ptr(text.as_ptr()) }
-        .to_bytes()
-        .len();
-    // SAFETY: the stack text remains readable for the copy.
-    unsafe { swr_v1_core_string_set(address, text.as_ptr(), length) }
+pub extern "C" fn swr_v1_core_resolver_host(owner: &ResolverRequest) -> c_int {
+    owner.host()
 }
 
 #[repr(C)]
@@ -265,40 +370,34 @@ pub struct ResolverText {
     pub bytes: [c_char; 46],
     pub valid: bool,
 }
-/// Formats one actual address without entering a C++ vector callback.
-/// # Safety
-/// owner is live/synchronized and index names one address in its current vector.
-unsafe fn swr_v1_core_resolver_format(owner: &ResolverRequest, index: usize) -> ResolverText {
-    // SAFETY: read its family without retaining a borrow across libc.
-    let family = unsafe { (*owner.fields.get()).family };
-    let storage = owner.results.get();
-    // SAFETY: obtain the live vector's data without exposing a Rust reference.
-    let data = unsafe { (*storage).as_ptr() };
-    // SAFETY: index is within that live address span.
-    let address = unsafe { data.add(index) };
-    let input = if family == libc::AF_INET6 {
-        // SAFETY: the address storage contains a full sockaddr_in6.
-        unsafe { ptr::addr_of!((*address).sin6_addr).cast() }
-    } else {
-        // SAFETY: the original API interprets other families through sockaddr_in.
-        unsafe { ptr::addr_of!((*address.cast::<libc::sockaddr_in>()).sin_addr).cast() }
-    };
-    let mut text = ResolverText {
-        bytes: [0; 46],
-        valid: false,
-    };
-    // SAFETY: a complete address field and bounded terminated output buffer.
-    text.valid = !unsafe { inet_ntop(family, input, text.bytes.as_mut_ptr(), 46) }.is_null();
-    text
-}
 
 #[repr(C)]
 pub struct ResolverCompletion {
     pub error: c_int,
     pub failed: bool,
 }
-/// Decides completion after native await returns. A failed await must not read
-/// the worker-owned request error, which may still be changing after timeout.
+impl ResolverCompletion {
+    /// Decides completion after an await returns. A failed await must not read the
+    /// worker-owned request error, which may still be changing after timeout, so
+    /// `request_error` runs only when `retval != -1`.
+    pub fn after_await(
+        retval: isize,
+        event_error: c_int,
+        request_error: impl FnOnce() -> c_int,
+        timeout_error: c_int,
+        resolution_timeout: c_int,
+    ) -> Self {
+        Self {
+            failed: retval == -1 || request_error() != 0,
+            error: if event_error == timeout_error {
+                resolution_timeout
+            } else {
+                event_error
+            },
+        }
+    }
+}
+/// `ResolverCompletion::after_await` with the request's error slot.
 /// # Safety
 /// `request_error` may be null. Otherwise it is readable only when `retval != -1`;
 /// a failed await deliberately permits a still-inaccessible worker field.
@@ -310,23 +409,20 @@ pub unsafe extern "C" fn swr_v1_core_resolver_finish(
     timeout_error: c_int,
     resolution_timeout: c_int,
 ) -> ResolverCompletion {
-    let failed = retval == -1
-        || (!request_error.is_null() && {
-            // SAFETY: await succeeded, so the caller lends its synchronized error slot.
-            unsafe { *request_error != 0 }
-        });
-    ResolverCompletion {
-        failed,
-        error: if event_error == timeout_error {
-            resolution_timeout
-        } else {
-            event_error
-        },
-    }
+    let request_error = || {
+        // SAFETY: null, or the await succeeded and the caller lends its error slot.
+        unsafe { request_error.as_ref() }.copied().unwrap_or(0)
+    };
+    ResolverCompletion::after_await(
+        retval,
+        event_error,
+        request_error,
+        timeout_error,
+        resolution_timeout,
+    )
 }
 
-/// Creates request hints and both input strings together; no arbitrary payload
-/// exists during construction. Null owner reports byte OOM.
+/// `ResolverRequest::create` over native spans; a null owner reports byte OOM.
 /// # Safety
 /// name/service hold their declared readable byte lengths.
 #[unsafe(no_mangle)]
@@ -339,48 +435,32 @@ pub unsafe extern "C" fn swr_v1_core_resolver_create(
     service: *const c_char,
     service_length: usize,
 ) -> PreparedResolver {
-    let prepared = swr_v1_core_resolver_new(family, socktype, protocol);
-    // SAFETY: fresh stable slot, readable input, and no native callback registered.
-    let name_status = unsafe { swr_v1_core_string_set(prepared.name, name, name_length) };
-    let service_status = if name_status == 0 {
-        // SAFETY: the second fresh slot has no callback and the input is readable.
-        unsafe { swr_v1_core_string_set(prepared.service, service, service_length) }
-    } else {
-        name_status
+    let span = |data: *const c_char, length| {
+        if length == 0 {
+            return &[][..];
+        }
+        // SAFETY: the caller lends `length` readable bytes.
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
     };
-    if service_status != 0 {
-        // SAFETY: construction has exposed no view; return its unique allocation.
-        unsafe { swr_v1_core_resolver_free(prepared.owner) };
-        return PreparedResolver {
-            owner: ptr::null_mut(),
-            fields: ptr::null_mut(),
-            name: ptr::null(),
-            service: ptr::null(),
-            address: ptr::null(),
-        };
-    }
-    prepared
+    ResolverRequest::create(
+        family,
+        socktype,
+        protocol,
+        span(name, name_length),
+        span(service, service_length),
+    )
 }
 
 /// Returns the next printable address. Native code appends its owned output only
 /// after this leaf returns, so vector allocation exceptions cross no Rust frame.
-/// # Safety
-/// owner is live/synchronized; no result storage mutation occurs until this
-/// enumeration ends.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_next(
+pub extern "C" fn swr_v1_core_resolver_next(
     owner: &ResolverRequest,
     cursor: &mut usize,
 ) -> ResolverText {
-    // SAFETY: the caller lends stable live address storage.
-    let span = unsafe { swr_v1_core_resolver_span(owner) };
-    let mut index = *cursor;
-    while index < span.length {
-        // SAFETY: index remains within the stable address span.
-        let text = unsafe { swr_v1_core_resolver_format(owner, index) };
-        index += 1;
+    while let Some(text) = owner.text(*cursor) {
         // Publish progress before native code can append/throw.
-        *cursor = index;
+        *cursor += 1;
         if text.valid {
             return text;
         }
