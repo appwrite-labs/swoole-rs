@@ -14,7 +14,7 @@
     reason = "upstream's C conversions between ssize_t, size_t, uint32_t and int"
 )]
 use core::cell::{Cell, UnsafeCell};
-use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
@@ -47,7 +47,7 @@ use swoole_rs_process::process_pool::{
     OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND, OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP,
     OP_RELOAD_TIMER, OP_REMOVE_PIPE, OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_DEL, OP_TIMER_FREE,
     OP_TIMER_INIT, OP_TIMER_SELECT, OP_UNLIMIT_PIPES, OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT,
-    OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, RAISE, RUN_MAIN, pool_run_op,
+    OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, PoolRef, RAISE, RUN_MAIN, RecvData, pool_run_op,
 };
 use swoole_rs_process::reload_task::ReloadTask;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -98,13 +98,6 @@ pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
     free: Some(libc::free),
 };
 
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const c_char,
-}
-
 /// `swoole::WorkerStopMessage`.
 #[repr(C)]
 struct WorkerStopMessage {
@@ -115,26 +108,15 @@ struct WorkerStopMessage {
 type Pool = *mut PoolRecord;
 type Worker = *mut WorkerRecord;
 
-/// The pool's callbacks, from the record's untyped slots.
-macro_rules! callback {
-    ($slot:expr, $ty:ty) => {{
-        let slot: *const c_void = $slot;
-        // SAFETY: the slot holds null or a function of this type.
-        unsafe { core::mem::transmute::<*const c_void, Option<$ty>>(slot) }
-    }};
-}
-
-type PoolFn = unsafe extern "C" fn(Pool);
-type WorkerFn = unsafe extern "C" fn(Pool, Worker);
-type TaskFn = unsafe extern "C" fn(Pool, Worker, *mut c_void) -> c_int;
-type MessageFn = unsafe extern "C" fn(Pool, *mut RecvData);
-type EventFn = unsafe extern "C" fn(Pool, *mut c_void);
-type ErrorFn = unsafe extern "C" fn(Pool, Worker, *const ExitStatus);
-type NotFoundFn = unsafe extern "C" fn(Pool, *const ExitStatus) -> c_int;
-
 fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
     // SAFETY: every caller passes the live pool its operation runs over.
     unsafe { &mut *pool }
+}
+
+/// [`record`]'s pool as the handle its callbacks take.
+fn pool_ref<'a>(pool: Pool) -> PoolRef<'a> {
+    // SAFETY: as `record`.
+    unsafe { PoolRef::new(pool) }
 }
 
 fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
@@ -165,10 +147,9 @@ fn errno() -> c_int {
 }
 
 /// `pool->onMessage(pool, &msg)`.
-fn on_message(pool: Pool, mut msg: RecvData) {
-    if let Some(on_message) = callback!(record(pool).on_message, MessageFn) {
-        // SAFETY: the pool's callback over a message it reads during the call.
-        unsafe { on_message(pool, &raw mut msg) };
+fn on_message(pool: Pool, msg: &RecvData) {
+    if let Some(on_message) = record(pool).on_message {
+        on_message(pool_ref(pool), msg);
     }
 }
 
@@ -248,7 +229,7 @@ fn bus_deliver(pool: Pool) {
     info.len = packet.length as u32;
     on_message(
         pool,
-        RecvData {
+        &RecvData {
             info,
             data: packet.data,
         },
@@ -416,9 +397,8 @@ thread_local! {
 /// `onWorkerExit`, then stop the loop once it may exit.
 extern "C-unwind" fn worker_exit() {
     let (pool, worker) = EXITING.get();
-    if let Some(on_worker_exit) = callback!(record(pool).on_worker_exit, WorkerFn) {
-        // SAFETY: the pool's callback over its worker.
-        unsafe { on_worker_exit(pool, worker) };
+    if let Some(on_worker_exit) = record(pool).on_worker_exit {
+        on_worker_exit(pool_ref(pool), handle(worker));
     }
     // The loop running this end callback.
     let reactor = crate::objects::Reactor::thread();
@@ -458,7 +438,7 @@ extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
         len: n as u32,
         ..DataHead::default()
     };
-    on_message(pool, RecvData { info, data: packet });
+    on_message(pool, &RecvData { info, data: packet });
     0
 }
 
@@ -484,9 +464,9 @@ unsafe fn run_main(pool: Pool, worker: Worker, protocol: u64) -> c_int {
 
 macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
-        unsafe extern "C" fn $name(pool: Pool, worker: Worker) -> c_int {
-            // SAFETY: the pool calls its main loop over a live worker.
-            unsafe { run_main(pool, worker, $protocol) }
+        extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
+            // SAFETY: the pool calls its main loop over itself and a live worker.
+            unsafe { run_main(pool.raw(), worker.raw(), $protocol) }
         }
     )*};
 }
@@ -550,13 +530,12 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         }
         OP_NEW_PIPE => new_pipe(pool, worker),
         OP_MAIN_LOOP => {
-            let main: unsafe extern "C" fn(Pool, Worker) -> c_int = match arg {
+            record(pool).main_loop = Some(match arg {
                 1 => run_task,
                 2 => run_stream,
                 3 => run_message,
                 _ => run_async,
-            };
-            record(pool).main_loop = main as *const c_void;
+            });
             0
         }
         OP_NEW_MESSAGE_BUS => new_message_bus(pool),
@@ -726,31 +705,26 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             };
         }
         OP_ON_WORKER_MESSAGE => {
-            if let Some(on_worker_message) = callback!(record(pool).on_worker_message, EventFn) {
+            if let Some(on_worker_message) = record(pool).on_worker_message {
                 // SAFETY: the message `OP_POP_MESSAGE` just popped.
-                unsafe { on_worker_message(pool, POOL_MESSAGE.0.get().cast()) };
+                unsafe { on_worker_message(pool_ref(pool), POOL_MESSAGE.0.get().cast()) };
             }
         }
         OP_ON_WORKER_NOT_FOUND => {
-            if let Some(not_found) = callback!(record(pool).on_worker_not_found, NotFoundFn) {
-                // SAFETY: the pool's callback over a status it reads during the call.
-                let status = exit_status(arg);
-                // SAFETY: as above.
-                unsafe { not_found(pool, &raw const status) };
+            if let Some(not_found) = record(pool).on_worker_not_found {
+                not_found(pool_ref(pool), &exit_status(arg));
             }
         }
         OP_WORKER_ERROR => {
             let status = exit_status(arg);
             worker_report_error(handle(worker), &status);
-            if let Some(on_worker_error) = callback!(record(pool).on_worker_error, ErrorFn) {
-                // SAFETY: the pool's callback over its worker and the status.
-                unsafe { on_worker_error(pool, worker, &raw const status) };
+            if let Some(on_worker_error) = record(pool).on_worker_error {
+                on_worker_error(pool_ref(pool), handle(worker), &status);
             }
         }
         OP_ON_AFTER_RELOAD => {
-            if let Some(on_after_reload) = callback!(record(pool).on_after_reload, PoolFn) {
-                // SAFETY: the pool's callback.
-                unsafe { on_after_reload(pool) };
+            if let Some(on_after_reload) = record(pool).on_after_reload {
+                on_after_reload(pool_ref(pool));
             }
         }
         OP_KILL_TIMER => {
@@ -815,28 +789,23 @@ impl PoolNative for Native {
         let (pool, worker) = pool_worker(c);
         let r = record(pool);
         let (pool_fn, worker_fn) = match c.flags() {
-            CB_START => (r.on_start, ptr::null()),
-            CB_BEFORE_RELOAD => (r.on_before_reload, ptr::null()),
-            CB_SHUTDOWN => (r.on_shutdown, ptr::null()),
-            CB_WORKER_START => (ptr::null(), r.on_worker_start),
-            CB_WORKER_STOP => (ptr::null(), r.on_worker_stop),
+            CB_START => (r.on_start, None),
+            CB_BEFORE_RELOAD => (r.on_before_reload, None),
+            CB_SHUTDOWN => (r.on_shutdown, None),
+            CB_WORKER_START => (None, r.on_worker_start),
+            CB_WORKER_STOP => (None, r.on_worker_stop),
             CB_MAIN_LOOP => {
-                if let Some(main_loop) =
-                    callback!(r.main_loop, unsafe extern "C" fn(Pool, Worker) -> c_int)
-                {
-                    // SAFETY: the pool's main loop over its worker.
-                    c.set_result(unsafe { main_loop(pool, worker) } as isize);
+                if let Some(main_loop) = r.main_loop {
+                    c.set_result(main_loop(pool_ref(pool), handle(worker)) as isize);
                 }
                 return;
             }
             _ => return,
         };
-        if let Some(f) = callback!(pool_fn, PoolFn) {
-            // SAFETY: the pool's callback.
-            unsafe { f(pool) };
-        } else if let Some(f) = callback!(worker_fn, WorkerFn) {
-            // SAFETY: the pool's callback over its worker.
-            unsafe { f(pool, worker) };
+        if let Some(f) = pool_fn {
+            f(pool_ref(pool));
+        } else if let Some(f) = worker_fn {
+            f(pool_ref(pool), handle(worker));
         }
     }
 
@@ -945,9 +914,10 @@ impl PoolNative for Native {
 
     fn task(&self, c: &mut PoolCall) {
         let (pool, worker) = pool_worker(c);
-        if let Some(on_task) = callback!(record(pool).on_task, TaskFn) {
-            // SAFETY: the pool's callback over its worker and the task read.
-            c.set_result(unsafe { on_task(pool, worker, c.data()) } as isize);
+        if let Some(on_task) = record(pool).on_task {
+            // SAFETY: the task the worker read into the call's buffer.
+            let task = unsafe { &mut *c.data().cast::<DataHead>() };
+            c.set_result(on_task(pool_ref(pool), handle(worker), task) as isize);
         }
     }
 
@@ -959,7 +929,7 @@ impl PoolNative for Native {
         };
         on_message(
             c.pool().cast(),
-            RecvData {
+            &RecvData {
                 info,
                 data: c.data().cast(),
             },
