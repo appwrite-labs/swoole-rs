@@ -1004,7 +1004,6 @@ dependencies = [
  "swoole-rs-phpcoroutines",
  "swoole-rs-phplocks",
  "swoole-rs-phpprocess",
- "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
