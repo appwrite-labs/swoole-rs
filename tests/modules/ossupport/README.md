@@ -30,12 +30,12 @@ host `swoole_init` installs sets, so its TESTs are `file.<name>` in
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
-| `file.read_line` | none: `File::read_line` left the build (not in `native/ossupport/swoole_file.h`, no Rust body, no caller) |
+| `file.read_line` | none: `File::read_line` left the build (no declaration, no Rust body, no caller) |
 | `file.read_line_no_crlf` | none, as `file.read_line` |
 | `file.file_put_contents` | `file.file_put_contents`, over `file_api::file_put_contents` |
 | `file.file_get_contents` | `file.file_get_contents`, over `file_api::file_get_contents`; the large file is the test binary, as upstream's is core-tests' |
 | `file.file_get_size` | `file.file_get_size`, over `file::file_size` (`file_get_size(int)`), which returns the error its caller publishes. The path overload left the build, so its ENOENT check has no subject |
-| `file.open_twice` | `file_owner.py` (`ossupport-file-owner`): the unchanged body, compiled against the pin and against the Cargo SDK's `native/ossupport/swoole_file.h` |
+| `file.open_twice` | `file_record::tests::file_open_twice`, over `FileRecord::open`/`close` (`cargo test -p swoole-rs-ossupport file_open_twice`) |
 | `file.error` | `file.error`: `FileRecord::read_all`'s failure and errno (its callers warn), `fd_write_all` (`File::write_all`, which warns), and `file_size`'s `fstat` for `File::stat` |
 | `file.tmp_file` | `file.tmp_file` (`swoole_tmpfile`), and crates/process's `task_file::tests::make_tmpfile_in_a_missing_directory` for `make_tmpfile` |
 | `file.empty_file` | `file.empty_file`, over `FileRecord::read_all` |

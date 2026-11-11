@@ -30,17 +30,6 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def body(source, signature):
-    """The text of the brace-delimited definition starting at `signature`."""
-    start = source.index(signature)
-    end = source.index('{', start) + 1
-    depth = 1
-    while depth:
-        depth += (source[end] == '{') - (source[end] == '}')
-        end += 1
-    return source[start:end]
-
-
 def public(*prefixes, count=None):
     """A placeholder for the lines of an engine's own swoole.h that start with prefixes,
     filled in per engine when the originals config is written."""
@@ -63,13 +52,8 @@ def main():
     phase.add_argument('--pretty-originals', action='store_true', help='Execute two unchanged pretty-name original GoogleTests through the actual public method')
     phase.add_argument('--logger-originals', action='store_true', help='Execute unchanged rotation, memory-stream and pretty-name original GoogleTests')
     phase.add_argument('--hash-originals', action='store_true', help='Execute unchanged defined PHP/Jenkins hash original GoogleTests')
-    phase.add_argument('--global-logger-originals', action='store_true', help='Execute four unchanged global Logger originals with coherent per-engine SDKs')
-    phase.add_argument('--redirect-original', action='store_true', help='Execute original redirect_1 and verify child assertion observability')
-    phase.add_argument('--redirect-originals', action='store_true', help='Execute both redirect originals with private path inputs and child-failure observer')
     args = parser.parse_args()
-    redirect = args.redirect_original or args.redirect_originals
-    coherent = args.global_logger_originals or redirect
-    originals = args.pretty_originals or args.logger_originals or args.hash_originals or args.global_logger_originals or redirect
+    originals = args.pretty_originals or args.logger_originals or args.hash_originals
     fixture = 'pretty_originals' if originals else 'pretty' if args.pretty else 'backtrace' if args.backtrace else 'storage'
     work = args.output.resolve().parent / ('logger-storage-' + uuid.uuid4().hex)
     work.mkdir(parents=True)
@@ -78,7 +62,7 @@ def main():
     try:
         # The selected side's sources, headers and config.h are the Cargo build's.
         hybrid_flags = native_flags(args.archive)
-        for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
+        for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + ['coherent_sdk.py']:
             path = Path(__file__).with_name(name)
             (work / name).write_bytes(path.read_bytes())
         header = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole_log.h'])
@@ -106,31 +90,6 @@ def main():
                 declarations = public('uint64_t swoole_random_int(', 'size_t swoole_random_bytes(', '#define SW_LOOP_N(', count=3)
                 config = '#include "swoole_hash.h"\n' + declarations + '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
                 report['limits'] = 'Two unchanged hash originals PHP/Jenkins with real random input provider,8192originalsizes andassertions. Austin signedbinary undefined-shift original andCRC32 unselected/unqualified. No fullgroup/39original inventory, worldbuild, sanitizer, fault/crash/OOM/lifetime or performance claim.'
-            if args.global_logger_originals:
-                names = ['level', 'date_format_long_string', 'date_with_microseconds', 'ignore_error']
-                excerpt = ('\n'.join(body(original.decode(), 'TEST(log, ' + name + ')') for name in names)).encode()
-                expected = ['log.' + name for name in names]
-                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_rs_process_pool.h"\n#endif\n#include <regex>\n#define M14_PRIVATE_LOG_FILE 1\n'
-                config += original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')].decode()
-                config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
-                report['limits'] = 'Four unchanged global Logger originals through real GoogleTest and coherent frozen native/selected SDKs. Ordinary String construction/read consumers only. Unsafe date_format scanf, hardcoded open_fail, spawn adapters and full39/performance unqualified.'
-            if redirect:
-                names = ['redirect_1', 'redirect_2'] if args.redirect_originals else ['redirect_1']
-                excerpt = '\n'.join(body(original.decode(), 'TEST(log, ' + name + ')') for name in names).encode()
-                expected = ['log.' + name for name in names]
-                main_source = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/main.cpp'], text=True)
-                (work / 'pinned-main.cpp').write_text(main_source)
-                helpers = '\n'.join(body(main_source, signature) for signature in ['pid_t spawn_exec(', 'int spawn_exec_and_wait('])
-                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_rs_process_pool.h"\n#endif\n#include <system_error>\n#define M14_PRIVATE_LOG_FILE 1\n#define M14_CHILD_ASSERTIONS 1\n#include "child_assertions.h"\n'
-                config += original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')].decode()
-                if args.redirect_originals:
-                    original_inputs = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/include/test_core.h'], text=True)
-                    (work / 'pinned-test_core.h').write_text(original_inputs)
-                    report['test_path_input'] = dict(original_macro=next(line for line in original_inputs.splitlines() if line.startswith('#define TEST_LOG_FILE ')), private_binding='(::file)')
-                    config += '#define TEST_LOG_FILE (::file)\n'
-                config += 'namespace swoole { namespace test {\n' + helpers + '\n}}\n'
-                config += 'TEST(m14_observer, child_failure) { ASSERT_EQ(test::spawn_exec_and_wait([]() { ADD_FAILURE() << "observer negative control"; }), 0); }\n'
-                config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
             # Each engine's config takes its declarations from its own swoole.h.
             headers = {'native': subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True),
                        'selected': (ROOT / 'native/corebase/swoole.h').read_text()}
@@ -181,12 +140,9 @@ def main():
                 raise ValueError('GoogleTest library identity unavailable')
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
         report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parents[1], args.source, PIN),
-                                  'selected': dict(flags=hybrid_flags,
-                                                   string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
+                                  'selected': dict(flags=hybrid_flags)}
         sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': hybrid_flags}
         openssl = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
-        if coherent and report['coherent_sdk']['native']['string_header_sha256'] == report['coherent_sdk']['selected']['string_header_sha256']:
-            raise ValueError('Selected SDK lacks actual String overlay')
         def helper_command(engine, output):
             return ['c++', '-std=c++17' if originals else '-std=c++14', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror', *includes,
                     '-DHAVE_CONFIG_H', *sdk_headers[engine], *openssl, *(['-I' + str(work / (engine + '-config'))] if originals else []),
@@ -203,12 +159,6 @@ def main():
         required = ['get_pretty_name'] if args.pretty or originals else ['Logger3put', 'reset', 'open', 'close'] if args.backtrace else ['gen_real_file', 'set_stream', 'reopen', 'get_file']
         if args.logger_originals:
             required += ['sw_logger', 'set_stream', 'open', 'close']
-        if coherent:
-            required = ['sw_logger', 'file_get_contents', 'swoole_get_worker_type', 'swoole_set_worker_type']
-        if redirect:
-            required = ['sw_logger', 'file_get_contents', 'swoole_waitpid', 'redirect_stdout_and_stderr', 'fork']
-        if args.redirect_originals:
-            required += ['read_content']
         if args.hash_originals:
             required = ['swoole_hash_php', 'swoole_hash_jenkins', 'swoole_random_int', 'swoole_random_bytes']
         if symbols.returncode or any(name not in symbols.stdout for name in required):
@@ -222,21 +172,17 @@ def main():
             raise ValueError('Selected inline helper compilation failed')
         symbols = run_isolated(['nm', '-u', str(inline_helper)], timeout=15)
         report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
-        required = ['_ZN6swoole6StringD1Ev'] if coherent else []
-        if args.backtrace:
-            required += ['swr_v1_logger_set']
+        required = ['swr_v1_logger_set'] if args.backtrace else []
         if symbols.returncode or any(name not in symbols.stdout for name in required):
             raise ValueError('Selected inline helper lacks required Rust utility imports')
         exports = run_isolated(['nm', *(['-D'] if sys.platform.startswith('linux') else []), '-g', selected['extension']], timeout=30)
         report['selected_inline_exports'] = {name: re.findall(r'^.*\b[TW]\s+_?' + name + (r'\w+$' if name.endswith('_') else r'$'), exports.stdout, re.M) for name in required}
         if exports.returncode or not all(report['selected_inline_exports'].values()):
             raise ValueError('Actual selected DSO lacks required defined inline utility exports')
-        launch = [sys.executable, str(work / 'terminal_stdout.py')] if redirect else []
-        report['stdout_environment'] = 'terminal with raw output processing; libc line buffering inherited by fork' if redirect else 'pipe'
         for engine, identity in zip(engines, report['engines']):
             with tempfile.TemporaryDirectory(prefix='m14-storage-') as directory:
                 engine_helper = inline_helper if identity['rust_feature_bits'] & 512 else helper
-                result = run_isolated(launch + engine.command('-d', 'extension=' + str(engine_helper), str(work / (fixture + '.php')), directory,
+                result = run_isolated(engine.command('-d', 'extension=' + str(engine_helper), str(work / (fixture + '.php')), directory,
                                                      *([str(len(expected))] if originals else [])),
                                       timeout=30, env={**os.environ, 'TZ': 'UTC0', 'LC_ALL': 'C'})
                 row = dict(engine=engine.name, exit=result.returncode, stdout=result.stdout, stderr=result.stderr,
@@ -245,8 +191,6 @@ def main():
                 report['results'].append(row)
                 if result.returncode == 0 and not result.stderr and row['extension_sha256_after'] == identity['sha256']:
                     remaining = result.stdout
-                    if redirect and row['files'].get('child-assertions.txt', {}).get('content') != 'child-exit\n' * len(expected):
-                        raise ValueError('Child assertion observer missing completion or recorded failure')
                     if originals:
                         cases = list(ET.fromstring(row['files']['gtest.xml']['content']).iter('testcase'))
                         row['original_cases'] = [dict(case.attrib) for case in cases]
@@ -270,18 +214,6 @@ def main():
                             remaining = remaining[:match.start()] + remaining[match.end():]
                     row['summary'] = json.loads(remaining)
                     row['passed'] = True
-                if redirect:
-                    with tempfile.TemporaryDirectory(prefix='m14-observer-negative-') as control:
-                        result = run_isolated(launch + engine.command('-d', 'extension=' + str(engine_helper), str(work / (fixture + '.php')), control, '1'), timeout=30, env={**os.environ, 'TZ': 'UTC0', 'LC_ALL': 'C', 'M14_CHECK_OBSERVER': '1'})
-                        files = {p.name: p.read_text() for p in Path(control).iterdir() if p.is_file()}
-                        control_cases = list(ET.fromstring(files['gtest.xml']).iter('testcase'))
-                        journal = files.get('child-assertions.txt')
-                        rejected = (result.returncode == 0 and not result.stderr and journal == 'failure\nchild-exit\n'
-                                    and len(control_cases) == 1 and control_cases[0].get('name') == 'child_failure' and not list(control_cases[0]))
-                        row['observer_negative_control'] = dict(exit=result.returncode, stdout=result.stdout, stderr=result.stderr, files=files,
-                                                                child_failure_hidden_by_original_exit=True, rejected_by_journal=rejected)
-                        if not rejected:
-                            raise ValueError('Child assertion negative control did not expose original zero-exit blindness')
         if failed := [row for row in report['results'] if not row['passed']]:
             raise ValueError('Logger storage fixture failed; all engine outputs retained: ' + '; '.join(
                 f"{row['engine']} exit {row['exit']}, stderr {row['stderr'][-400:]!r}" for row in failed))

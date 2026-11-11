@@ -24,7 +24,7 @@ use swoole_rs_zend::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
         swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
-        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_object, zend_objects_new,
+        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_objects_new,
         zend_throw_exception_object, zval,
     },
 };
@@ -501,9 +501,7 @@ fn get_context(call: &Call) {
     }
     let object = if object.is_null() {
         // SAFETY: the return slot, with Swoole's registered context class.
-        unsafe { init_object(call.return_value(), classes::context_class()) };
-        // SAFETY: the new object.
-        let object = unsafe { swoole_rs_zend::value::obj_of(call.return_value()) };
+        let object = unsafe { init_object(call.return_value(), classes::context_class()) };
         // The context takes the object's first reference.
         ctx.set_context(object);
         object
@@ -654,9 +652,7 @@ fn list(call: &Call) {
     drop(cids);
     let iterator = classes::iterator();
     // SAFETY: the return slot, with Swoole's registered iterator class.
-    unsafe { init_object(call.return_value(), iterator) };
-    // SAFETY: the new object.
-    let object: *mut zend_object = unsafe { swoole_rs_zend::value::obj_of(call.return_value()) };
+    let object = unsafe { init_object(call.return_value(), iterator) };
     let constructor = iterator
         .wrapping_byte_add(mem::offset_of!(zend_class_entry, constructor))
         .cast();

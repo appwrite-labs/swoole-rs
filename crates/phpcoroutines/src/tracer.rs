@@ -27,7 +27,6 @@ use swoole_rs_zend::{
         swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
         zend_observer_fcall_handlers, zend_string, zval,
     },
-    value,
 };
 
 handlers! {
@@ -482,26 +481,20 @@ fn prof_begin(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if let Some(options) = options {
-        // SAFETY: an array argument.
-        let table = unsafe { value::table(options) };
-        let key = c"root_path";
-        // SAFETY: a live table; Zend reads the key.
-        let found = unsafe { z::zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) };
-        if let Some(found) = NonNull::new(found) {
-            // SAFETY: a live zval; a `__toString` bailout is deferred.
-            let root = unsafe { value::get_string(found.as_ptr()) };
-            if bailout::pending() {
-                return;
-            }
-            let mut path = c_bytes(root).to_vec();
-            // SAFETY: the reference get_string returned.
-            unsafe { swr_zend_string_release(root) };
-            if path.last() != Some(&b'/') {
-                path.push(b'/');
-            }
-            PROFILE.with(|profile| profile.borrow_mut().root_path = path);
+    if let Some(found) = options
+        .and_then(Value::array)
+        .and_then(|options| options.find(b"root_path"))
+    {
+        // A `__toString` bailout is deferred.
+        let root = found.string();
+        if bailout::pending() {
+            return;
         }
+        let mut path = until_nul(root.bytes()).to_vec();
+        if path.last() != Some(&b'/') {
+            path.push(b'/');
+        }
+        PROFILE.with(|profile| profile.borrow_mut().root_path = path);
     }
     call.set_bool(true);
 }

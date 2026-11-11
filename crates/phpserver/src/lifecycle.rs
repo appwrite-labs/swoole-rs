@@ -19,13 +19,12 @@ use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout, class_name,
     init_object, message, object_of, report,
     sys::{
-        IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
-        swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array, swr_zend_property_slot,
-        swr_zend_separate_array, swr_zend_try_json_encode, swr_zval_copy, swr_zval_stringl,
-        zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find, zend_object,
-        zend_object_std_dtor, zval, zval_ptr_dtor,
+        IS_NULL, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree, swr_zend_instanceof,
+        swr_zend_json_decode, swr_zend_property_array, swr_zend_separate_array,
+        swr_zend_try_json_encode, swr_zval_copy, swr_zval_stringl, zend_class_entry,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_object, zend_object_std_dtor, zval,
+        zval_ptr_dtor,
     },
-    type_of,
     value::table,
 };
 
@@ -138,7 +137,7 @@ impl PortInfo {
 // `Swoole\Process` (crates/phpprocess) and its object's `Worker`, an `E_ERROR` for an
 // unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
 use swoole_rs_error::swoole_get_last_error_msg;
-use swoole_rs_phpprocess::{swoole_process_ce, swr_v1_phpprocess_worker};
+use swoole_rs_phpprocess::swr_v1_phpprocess_worker;
 use swoole_rs_server::{swr_v1_server_admin_register, swr_v1_server_delete, swr_v1_server_new};
 
 /// `instanceof_function(ce, parent)`.
@@ -304,8 +303,7 @@ extern "C" fn php_memory() -> usize {
 
 /// `swoole_process_ce`.
 pub(crate) fn process_class() -> *mut zend_class_entry {
-    // SAFETY: reads a class registered at MINIT.
-    unsafe { swoole_process_ce }
+    swoole_rs_phpprocess::process_class().entry()
 }
 
 /// A live Server object, which `create` made, for as long as the handle is used:
@@ -587,9 +585,7 @@ impl<'a> Props<'a> {
     pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
         let ce = class.entry();
         // SAFETY: a writable zval and a registered data class.
-        unsafe { init_object(target, ce) };
-        // SAFETY: the object zval just made.
-        Self(ce, unsafe { object_of(target) }, PhantomData)
+        Self(ce, unsafe { init_object(target, ce) }, PhantomData)
     }
 
     pub(crate) fn object(self) -> *mut zend_object {
@@ -628,10 +624,7 @@ impl<'a> Props<'a> {
     }
 
     pub(crate) fn value(self, name: &CStr, value: &mut zval) {
-        // SAFETY: a live value, borrowed for the write.
-        if let Some(value) = unsafe { Value::from_ptr(value) } {
-            self.set(name, value);
-        }
+        self.set(name, Value::of(value));
     }
 
     /// `host`, `port`, `type`, `sock` (with `fd`) and `ssl` from `info`.
@@ -831,23 +824,18 @@ fn add_process(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let process = call.zval(1);
-    // SAFETY: a passed argument.
-    let is_process = unsafe { type_of(process) } == IS_OBJECT && {
-        // SAFETY: an object zval.
-        let object = unsafe { object_of(process) };
-        // SAFETY: its live object.
-        instance_of(unsafe { (*object).ce }, process_class())
-    };
-    if !is_process {
+    let Some(process) = call
+        .value(1)
+        .filter(|process| process.instance_of(swoole_rs_phpprocess::process_class()))
+    else {
         fatal(E_ERROR, c"object is not instanceof swoole_process");
         return call.set_bool(false);
-    }
+    };
     put(serv, install::USER_WORKER_START);
     // SAFETY: an emalloc'd copy holding its own reference, as upstream.
     let copy = unsafe { swoole_rs_zend::sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: a writable zval and the live argument.
-    unsafe { swr_zval_copy(copy, process) };
+    unsafe { swr_zval_copy(copy, process.as_ptr()) };
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
     match add_worker(serv, copy) {
         -3 => bailout::defer(Err(bailout::Bailout)),
@@ -936,8 +924,7 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
             warned.is_err()
         }
         Ok(true) => {
-            // SAFETY: the call's result.
-            match unsafe { swoole_rs_zend::string_of(&raw const retval) } {
+            match Value::of(&mut retval).bytes() {
                 Some(text) => send(text),
                 None => send(br#"{"data": "wrong return type", "code": -2}"#),
             }
@@ -1240,9 +1227,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         // SAFETY: a live Port object.
         let port_object = unsafe { object_of(zport) };
         // SAFETY: as above; the Port class declares `setting`.
-        let port_setting = unsafe { swr_zend_property_slot(port_object, c"setting".as_ptr(), 7) };
-        // SAFETY: a declared property's slot.
-        if port_setting.is_null() || unsafe { type_of(port_setting) } == IS_NULL {
+        if unsafe { swoole_rs_zend::property(port_object, c"setting") }.is_null() {
             // `$port->set($setting)`, Port's own method.
             // SAFETY: the live Port object, its class and the server's settings.
             let set = unsafe {

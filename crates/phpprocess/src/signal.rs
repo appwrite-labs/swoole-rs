@@ -9,7 +9,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Value, bailout, long_zval, message};
+use swoole_rs_zend::{Call, E_ERROR, E_WARNING, bailout, long_zval, message};
 
 use swoole_rs_reactor::signal_upstream::swoole_signal_get_handler;
 
@@ -119,12 +119,10 @@ pub(crate) fn signal(call: &Call) {
             call.set_bool(true);
             return;
         }
-        Some(_) if call.value(2).and_then(Value::as_long) == Some(SIG_IGN) => {
-            (ptr::null_mut(), IGNORE)
-        }
+        Some(value) if value.as_long() == Some(SIG_IGN) => (ptr::null_mut(), IGNORE),
         Some(value) => {
             // SAFETY: a passed argument.
-            let callable = unsafe { host::callable_create(value) };
+            let callable = unsafe { host::callable_create(value.as_ptr()) };
             if callable.is_null() {
                 call.set_bool(false);
                 return;
