@@ -20,8 +20,9 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
-use swoole_rs_phpclients::{Co, get_socket, is_socket_closed, php_swoole_socket_set_protocol};
-use swoole_rs_phpruntime::co::{self, Socket};
+use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
+use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
+use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::host::callable;
@@ -47,7 +48,10 @@ type Holder = Object<*mut HttpServer>;
 /// share it, so every field that changes is a cell.
 struct HttpServer {
     /// The listening coroutine socket.
-    listener: Co,
+    socket: Co,
+    /// The same socket as crates/phpclients' handle, for its accept and its
+    /// length callable.
+    listener: swoole_rs_phpclients::Co,
     /// `handlers`, by pattern, in the order they were first set. Upstream's
     /// `std::unordered_map` leaves the order among overlapping prefixes to
     /// the standard library's hashing; registration order is ours.
@@ -76,9 +80,11 @@ const Z_BEST_SPEED: i8 = 1;
 const COMPRESSION_MIN_LENGTH_DEFAULT: u32 = 20;
 
 impl HttpServer {
-    fn new(listener: Co) -> Self {
+    fn new(socket: Co) -> Self {
         Self {
-            listener,
+            socket,
+            // SAFETY: the listening socket, which the server frees in its drop.
+            listener: unsafe { swoole_rs_phpclients::Co::new(socket.this()) },
             handlers: RefCell::new(Vec::new()),
             default_handler: Cell::new(ptr::null_mut()),
             running: Cell::new(true),
@@ -184,8 +190,8 @@ impl HttpServer {
     }
 
     /// `create_context`: the settings, the socket and the parser.
-    fn context(&self, socket: Socket, zconn: *mut zval) -> *mut Context {
-        let context = context::context_new(i64::from(record(socket).sock_fd));
+    fn context(&self, socket: Co, zconn: *mut zval) -> *mut Context {
+        let context = context::context_new(i64::from(socket.sock_fd()));
         crate::parse::init_request_parser(context);
         // SAFETY: the live connection object.
         if let Some(zconn) = unsafe { Value::from_ptr(zconn) }
@@ -194,7 +200,7 @@ impl HttpServer {
             response.value(c"socket", zconn);
         }
         // SAFETY: a new context and the live connection object.
-        unsafe { context::bind(context, ptr::null_mut(), zconn) };
+        unsafe { context::bind(context, zconn) };
         let state = send::state(context);
         state
             .compression_types
@@ -222,7 +228,7 @@ impl Drop for HttpServer {
         // Each connection frees its own copy (`Co::accept`); the listener owns the original.
         bailout::defer(self.listener.free_length_callable());
         // SAFETY: the listening socket `__construct` made, freed once.
-        bailout::defer(unsafe { co::free(self.listener.as_ptr()) });
+        bailout::defer(unsafe { co::free(self.socket.this()) });
     }
 }
 
@@ -276,37 +282,26 @@ struct Peer {
     server_port: c_int,
 }
 
-/// A live socket's record: the listener, or a connection the loop serves.
-fn record<'a>(socket: Socket) -> &'a mut co::CoSocket {
-    // SAFETY: the server's sockets outlive their use here.
-    unsafe { co::record(socket) }
-}
-
-/// A live socket's network socket, while it is open.
-fn network<'a>(socket: Socket) -> Option<swoole_rs_reactor::Socket<'a>> {
-    // SAFETY: a live socket's network socket: null or as live.
-    unsafe { swoole_rs_reactor::Socket::from_ptr(record(socket).socket) }
-}
-
 /// The socket's error code and message.
-fn socket_error<'a>(socket: Socket) -> (c_int, &'a CStr) {
-    let record = record(socket);
+fn socket_error<'a>(socket: Co) -> (c_int, &'a CStr) {
     // SAFETY: the socket's message is NUL-terminated, and kept until its next error.
-    (record.err_code, unsafe { CStr::from_ptr(record.err_msg) })
+    (socket.err_code(), unsafe {
+        CStr::from_ptr(socket.err_msg())
+    })
 }
 
 /// `get_addr()` and `get_port()`: the network socket's address.
-fn address(socket: Socket) -> (&'static CStr, c_int) {
-    let Some(network) = network(socket) else {
-        return (c"", 0);
-    };
-    network.read(|record| {
-        let info = &record.info;
-        let host = swr_v1_clients_address_host(info);
-        // SAFETY: NUL-terminated text, live until the next call.
-        let host = unsafe { CStr::from_ptr(host) };
-        (host, swr_v1_clients_address_port(info))
-    })
+fn address(socket: Co) -> (&'static CStr, c_int) {
+    let address = socket.with_network(|network| {
+        network.read(|record| {
+            let info = &record.info;
+            let host = swr_v1_clients_address_host(info);
+            // SAFETY: NUL-terminated text, live until the next call.
+            let host = unsafe { CStr::from_ptr(host) };
+            (host, swr_v1_clients_address_port(info))
+        })
+    });
+    address.unwrap_or((c"", 0))
 }
 
 /// `SW_EVENT_READ`.
@@ -329,28 +324,32 @@ fn request_data(context: *mut Context, buffer: &mut Buffer, length: usize) {
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
 /// their length (`swoole::http2::get_frame_length`).
-fn http2_begin(socket: Socket) {
+fn http2_begin(socket: Co) {
     let settings = swoole_rs_http2::sw_rs_http2_default_settings();
     let mut frame = [0u8; 45];
     let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
-    let record = record(socket);
     // SAFETY: its network socket and the frame's bytes.
     unsafe {
-        swoole_rs_tls::upstream::socket_send(record.socket.cast(), frame.as_ptr().cast(), length, 0)
+        swoole_rs_tls::upstream::socket_send(
+            socket.socket().cast(),
+            frame.as_ptr().cast(),
+            length,
+            0,
+        )
     };
-    record.open_length_check = true;
-    record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
-    record.protocol.package_length_offset = 0;
-    record.protocol.package_body_offset = 0;
-    record.protocol.get_package_length =
-        swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+    socket.set_open_length_check(true);
+    socket.with(|record| {
+        record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
+        record.protocol.package_length_offset = 0;
+        record.protocol.package_body_offset = 0;
+        record.protocol.get_package_length =
+            swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+    });
 }
 
 /// `recv_wait`: the socket waits for a request.
-fn set_recv_wait(socket: Socket, waiting: bool) {
-    if let Some(network) = network(socket) {
-        network.edit(|record| record.recv_wait = u8::from(waiting));
-    }
+fn set_recv_wait(socket: Co, waiting: bool) {
+    socket.with_network(|network| network.edit(|record| record.recv_wait = u8::from(waiting)));
 }
 
 method_table! {
@@ -391,12 +390,9 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 }
 
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe fn server_coro_minit(args: &MinitArgs) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
-    if let Err(error) = register(&minit, args.shortname, args.compression) {
+pub fn server_coro_minit(args: &MinitArgs) {
+    let minit = &args.minit;
+    if let Err(error) = register(minit, args.shortname, args.compression) {
         error.defer();
         swoole_rs_zend::bailout::finish();
     }
@@ -439,7 +435,7 @@ fn props(call: &Call) -> Props<'_> {
 }
 
 /// `http_server_coro_set_error`: the socket's error into `errCode`/`errMsg`.
-fn set_error(props: Props<'_>, socket: Socket) -> zend_long {
+fn set_error(props: Props<'_>, socket: Co) -> zend_long {
     let (code, message) = socket_error(socket);
     props.long(c"errCode", zend_long::from(code));
     props.bytes(c"errMsg", message.to_bytes());
@@ -479,17 +475,16 @@ fn construct(call: &Call) {
             bailout::Bailout.defer();
             return None;
         };
-        // SAFETY: the new listening socket, which the server frees in its drop.
-        let server = Box::into_raw(Box::new(HttpServer::new(unsafe { Co::new(socket) })));
+        // SAFETY: the new socket, which the server owns until it drops.
+        let socket = unsafe { Co::of(socket) };
+        let server = Box::into_raw(Box::new(HttpServer::new(socket)));
         // SAFETY: as above.
         unsafe { *Holder::data(object) = server };
         if reuse_port {
-            set_reuse_port(network(socket).map_or(-1, swoole_rs_reactor::Socket::fd));
+            set_reuse_port(socket.sock_fd());
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-        // SAFETY: a live socket and the host's bytes.
-        let bound = unsafe { co::bind(socket, host.as_ptr().cast(), host.len(), port as c_int) };
-        if !bound {
+        if !socket.bind(host, port as c_int) {
             let code = set_error(props(call), socket);
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
             let port = port as i32;
@@ -513,16 +508,14 @@ fn construct(call: &Call) {
             unsafe { z::add_assoc_bool_ex(settings, c"open_ssl".as_ptr(), 8, true) };
         }
         if ssl {
-            // SAFETY: a live socket.
-            unsafe { co::enable_ssl(socket) };
+            let _enabled = socket.enable_ssl();
         }
-        // SAFETY: a live socket.
-        if !unsafe { co::listen(socket, 0) } {
+        if !socket.listen(0) {
             let code = set_error(props(call), socket);
             exception(call, code, "listen() failed");
             return None;
         }
-        let fd = record(socket).sock_fd;
+        let fd = socket.sock_fd();
         let (_, bound) = address(socket);
         props(call).long(c"fd", zend_long::from(fd));
         props(call).long(c"port", zend_long::from(bound));
@@ -610,7 +603,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     };
     let object = call.this();
     let server = server(server_of(call));
-    let socket = server.listener.as_ptr();
+    let socket = server.socket;
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
@@ -618,7 +611,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let settings =
         unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
     // SAFETY: a live socket and the settings array.
-    if !unsafe { php_swoole_socket_set_protocol(socket, settings) } {
+    if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings) } {
         props(call).long(c"errCode", EINVAL);
         #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
         let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
@@ -668,6 +661,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let mut start = Start {
         props: props(call),
         server,
+        socket,
         accept: &mut accept,
         bailed: false,
     };
@@ -746,6 +740,7 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
 struct Start<'a> {
     props: Props<'a>,
     server: &'a HttpServer,
+    socket: Co,
     accept: &'a mut Accept,
     /// Creating an `onAccept` coroutine bailed out (#913): the loop stops and
     /// `start` re-raises it once the Rust frames are done.
@@ -798,7 +793,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     }
 
     fn error(&mut self) -> (c_int, &CStr) {
-        socket_error(self.server.listener.as_ptr())
+        socket_error(self.socket)
     }
 
     fn sleep(&mut self) {
@@ -807,7 +802,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     }
 
     fn set_error(&mut self) {
-        set_error(self.props, self.server.listener.as_ptr());
+        set_error(self.props, self.socket);
     }
 
     fn fail(&mut self, warning: &str) {
@@ -901,16 +896,15 @@ fn shutdown(call: &Call) {
     }
     let server = self::server(server);
     server.running.set(false);
-    // SAFETY: its live listening socket.
-    unsafe { co::cancel(server.listener.as_ptr(), EVENT_READ) };
+    server.socket.cancel(EVENT_READ);
     // Connections waiting for their next request stop waiting.
     let clients = server.clients();
-    let mut waiting: Vec<(z::zend_ulong, Socket)> = Vec::new();
+    let mut waiting: Vec<(z::zend_ulong, Co)> = Vec::new();
     // SAFETY: a live array; the callback only reads.
     unsafe { z::swr_zend_hash_foreach_kv(clients, Some(collect), (&raw mut waiting).cast()) };
     for (index, socket) in waiting {
-        // SAFETY: a live connection socket.
-        unsafe { co::cancel(socket, EVENT_READ) };
+        // The array's connection objects keep their sockets live.
+        socket.cancel(EVENT_READ);
         // SAFETY: the live array and one of its keys.
         unsafe { z::zend_hash_index_del(clients, index) };
     }
@@ -925,9 +919,12 @@ unsafe extern "C" fn collect(
 ) {
     // SAFETY: a socket object in the server's array.
     let socket = unsafe { get_socket(connection) };
-    if network(socket).is_some_and(|network| network.read(|record| record.recv_wait != 0)) {
+    // SAFETY: the object's live socket.
+    let socket = unsafe { Co::of(socket) };
+    let waiting = socket.with_network(|network| network.read(|record| record.recv_wait != 0));
+    if waiting == Some(true) {
         // SAFETY: `shutdown`'s vector, borrowed for the scan.
-        unsafe { (*out.cast::<Vec<(z::zend_ulong, Socket)>>()).push((index, socket)) };
+        unsafe { (*out.cast::<Vec<(z::zend_ulong, Co)>>()).push((index, socket)) };
     }
 }
 
@@ -941,7 +938,7 @@ fn objects(context: *mut Context) -> [zval; 2] {
 /// One connection's state across its requests.
 struct Connection<'a> {
     server: &'a HttpServer,
-    socket: Socket,
+    socket: Co,
     zconn: *mut zval,
     buffer: *mut Buffer,
 }
@@ -962,13 +959,9 @@ impl Connection<'_> {
     }
 
     fn package_max_length(&self) -> usize {
-        record(self.socket).protocol.package_max_length as usize
+        self.socket
+            .with(|record| record.protocol.package_max_length as usize)
     }
-}
-
-fn parse(context: *mut Context, data: *const u8, length: usize) -> usize {
-    // SAFETY: a live context and `length` readable bytes.
-    unsafe { parse_request(context, data.cast(), length) }
 }
 
 /// Where the loop goes next: read more, or parse what the buffer holds.
@@ -985,16 +978,14 @@ fn on_accept(call: &Call) {
     let server = server(server_of(call));
     // SAFETY: a coroutine socket object.
     let socket = unsafe { get_socket(zconn) };
+    // SAFETY: the object's live socket, which the server's array keeps.
+    let socket = unsafe { Co::of(socket) };
     // The request allocator first.
-    record(socket).buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
-    // SAFETY: a live socket.
-    let buffer =
-        unsafe { swoole_rs_hooks::socket_members::get_read_buffer(socket.cast()) }.cast::<Buffer>();
-    // SAFETY: as above.
-    let handshake = unsafe { co::ssl_enabled(socket) } && {
-        // SAFETY: as above.
-        !unsafe { co::ssl_handshake(socket) }
-    };
+    socket.with(|record| {
+        record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
+    });
+    let buffer = socket.buffer(false);
+    let handshake = !socket.tls_owner().is_null() && !socket.ssl_handshake();
     if handshake {
         call.set_null();
         return;
@@ -1007,14 +998,13 @@ fn on_accept(call: &Call) {
     let (remote_addr, remote_port) = address(socket);
     let remote_addr = ZString::new(remote_addr.to_bytes());
     // The network socket's address becomes the local one.
-    // SAFETY: a live socket.
-    unsafe { co::getsockname(socket) };
+    let _named = socket.getsockname();
     let (server_addr, _) = address(socket);
     let peer = Peer {
         remote_addr,
         server_addr: ZString::new(server_addr.to_bytes()),
         remote_port,
-        server_port: address(server.listener.as_ptr()).1,
+        server_port: address(server.socket).1,
     };
     let conn = Connection {
         server,
@@ -1057,7 +1047,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             let (length, size) = (buffer.len(), buffer.size());
             let free = buffer.as_mut_ptr().wrapping_add(length).cast();
             // SAFETY: a live socket and its buffer's free space.
-            let received = unsafe { co::recv(conn.socket, free, size - length) };
+            let received = unsafe { co::recv(conn.socket.this(), free, size - length) };
             if received <= 0 {
                 break;
             }
@@ -1087,7 +1077,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 send::state(context).response.status = ENTITY_TOO_LARGE;
                 break;
             }
-            if parse(context, conn.buffer().as_mut_ptr(), header_length) != header_length {
+            if parse_request(context, conn.data(0, header_length)) != header_length {
                 send::state(context).response.status = BAD_REQUEST;
                 break;
             }
@@ -1106,8 +1096,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             let state = send::state(context);
             if state.completed == 0 && state.request.version == 101 && expects_continue(context) {
                 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
-                // SAFETY: a live socket and the interim response.
-                unsafe { co::send_all(conn.socket, CONTINUE.as_ptr().cast(), CONTINUE.len()) };
+                let _sent = conn.socket.send_all(CONTINUE);
             }
         }
         if send::state(context).completed == 0 {
@@ -1122,11 +1111,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 length = length.min(max - offset);
             }
             // `offset + length` lies within the buffer.
-            let parsed = parse(
-                context,
-                conn.buffer().as_mut_ptr().wrapping_add(offset),
-                length,
-            );
+            let parsed = parse_request(context, conn.data(offset, offset + length));
             let buffer = conn.buffer();
             buffer.set_offset(buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX));
             let error = send::state(context).parser.error;
@@ -1217,8 +1202,8 @@ fn http2(conn: &Connection, context: *mut Context) {
             );
         };
         loop {
-            // SAFETY: a live socket; the frame stays in its read buffer.
-            let retval = unsafe { co::recv_packet(conn.socket, 0.0) };
+            // The frame stays in the read buffer.
+            let retval = recv_packet(conn.socket, 0.0);
             let frame = conn.buffer().as_mut_ptr();
             // SAFETY: a whole frame.
             if retval <= 0 || unsafe { (server.session_receive)(fd, frame) } == SW_ERR {

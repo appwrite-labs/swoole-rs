@@ -121,13 +121,13 @@ pub type Minit = unsafe extern "C" fn(c_int);
 /// Any other phase hook, likewise.
 pub type Hook = unsafe extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
-pub type HttpMinit = unsafe fn(&MinitArgs);
+pub type HttpMinit = fn(&MinitArgs);
 
-/// What the HTTP MINIT steps read of Swoole's own: the module,
+/// What the HTTP MINIT steps read of Swoole's own: the module's MINIT,
 /// `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
 /// the build's compression, zlib and thread switches.
 pub struct MinitArgs {
-    pub module: c_int,
+    pub minit: swoole_rs_zend::Minit,
     pub shortname: bool,
     pub codecs: u32,
     pub compression: bool,
@@ -352,20 +352,21 @@ extern "C" fn tracer_minit(_module_number: c_int) {
 
 /// [`Http::minit`]'s step `N`.
 extern "C" fn http_minit<const N: usize>(module: c_int) {
-    let Some(&minit) = families().and_then(|families| families.http.minit.get(N)) else {
+    let Some(&step) = families().and_then(|families| families.http.minit.get(N)) else {
         return;
     };
     let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
     let args = MinitArgs {
-        module,
+        // SAFETY: Zend runs this module's MINIT on this thread; `args` goes
+        // before it returns.
+        minit: unsafe { swoole_rs_zend::Minit::new(module) },
         shortname: globals().use_shortname.get(),
         codecs: codecs(),
         compression: flags & crate::constants::COMPRESSION != 0,
         zlib: flags & crate::constants::ZLIB != 0,
         thread: flags & crate::constants::THREAD != 0,
     };
-    // SAFETY: Rust's MINIT, which runs each step once, in order.
-    unsafe { minit(&args) };
+    step(&args);
 }
 
 /// The codecs the build has: 1 zlib, 2 brotli, 4 zstd.

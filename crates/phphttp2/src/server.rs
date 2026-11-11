@@ -854,8 +854,7 @@ unsafe fn on_receive(view: view::Server<'_>, conn: *mut c_void, request: &RecvDa
     let server = view.raw();
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
-        // SAFETY: the live server.
-        let default_ctx = unsafe { Ctx::server_context(server, session_id) };
+        let default_ctx = Ctx::server_context(view, session_id);
         // SAFETY: the live server and the session's connection.
         let max_body_size =
             unsafe { swoole_rs_server::server_methods::package_max_length(server, conn) };
