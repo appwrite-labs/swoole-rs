@@ -211,7 +211,7 @@ extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: u
 pub(super) unsafe fn swr_v1_timer_add_plain_sec(
     timeout: f64,
     _: bool,
-    _: extern "C-unwind" fn(*mut c_void),
+    _: unsafe extern "C-unwind" fn(*mut c_void),
     _: *mut c_void,
 ) -> *mut c_void {
     log(format!("timer {timeout}"));
@@ -623,7 +623,7 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     Handle(client).set(ACTIVE, true);
     set_proxy(client, true);
     assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
-    on_timeout(client.cast());
+    unsafe { on_timeout(client.cast()) };
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(
         taken(),

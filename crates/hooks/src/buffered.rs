@@ -132,7 +132,7 @@ struct Context {
 
 impl Context {
     fn sync(&mut self, action: u32, size: usize) {
-        (host().read_buffer)(self.socket, &raw mut self.view, action, size);
+        (host().read_buffer)(self.socket, &mut self.view, action, size);
     }
 }
 
@@ -145,8 +145,9 @@ unsafe extern "C" fn record_recv(at: *mut c_void, buffer: *mut u8, size: usize) 
     // SAFETY: the buffered read's live context.
     let ctx = unsafe { context(at) };
     ctx.sync(1, 0);
-    // The caller lends the buffer's free space to the receive.
-    (host().recv)(ctx.socket, buffer, size, false)
+    // SAFETY: the buffered read lends `size` free bytes of the buffer at `buffer`.
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buffer, size) };
+    (host().recv)(ctx.socket, buffer, false)
 }
 
 fn buffer(socket: Co) -> Context {

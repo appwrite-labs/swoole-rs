@@ -39,12 +39,15 @@ impl Packet {
         self.set_offset(0);
     }
     fn sync(&mut self, action: u32, size: usize) {
-        (crate::co_io::host().read_buffer)(self.socket, &raw mut self.view, action, size);
+        (crate::co_io::host().read_buffer)(self.socket, &mut self.view, action, size);
     }
     fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
         self.sync(1, 0);
-        // The receive borrows the requested free space in the buffer.
-        (crate::co_io::host().recv)(self.socket, self.view.str.wrapping_add(at), length, all)
+        // SAFETY: the requested free space in the read String the view refreshed,
+        // which the receive borrows.
+        let buf =
+            unsafe { core::slice::from_raw_parts_mut(self.view.str.wrapping_add(at), length) };
+        (crate::co_io::host().recv)(self.socket, buf, all)
     }
     fn recv(&mut self, at: usize, length: usize) -> isize {
         self.receive(at, length, false)
@@ -93,7 +96,7 @@ impl Packet {
             let packet = (crate::co_io::host().package_length)(
                 self.socket,
                 buffer.length as u32,
-                &raw mut header,
+                &mut header,
             );
             if packet < 0 {
                 self.fail(0, packet);
@@ -350,9 +353,9 @@ pub(crate) mod tests {
         socket
     }
 
-    pub(crate) extern "C" fn read_buffer(
+    pub(crate) fn read_buffer(
         socket: crate::co_socket::Co,
-        view: *mut ReadBuffer,
+        view: &mut ReadBuffer,
         action: u32,
         size: usize,
     ) {
@@ -362,7 +365,7 @@ pub(crate) mod tests {
             fake.gets += 1;
         }
         if action != 0 {
-            fake.buffer = unsafe { *view };
+            fake.buffer = *view;
         }
         if action == 2 {
             fake.storage.resize(size, 0);
@@ -374,31 +377,23 @@ pub(crate) mod tests {
             fake.buffer.length -= size;
             fake.buffer.offset = 0;
         }
-        unsafe { *view = fake.buffer };
+        *view = fake.buffer;
     }
-    pub(crate) extern "C" fn receive(
-        socket: crate::co_socket::Co,
-        at: *mut u8,
-        size: usize,
-        all: bool,
-    ) -> isize {
+    pub(crate) fn receive(socket: crate::co_socket::Co, buf: &mut [u8], all: bool) -> isize {
         let ctx = socket.resolve_context();
+        let (at, size) = (buf.as_mut_ptr(), buf.len());
         if all {
             unsafe { recv_all(ctx, at, size) }
         } else {
             unsafe { recv(ctx, at, size) }
         }
     }
-    pub(crate) extern "C" fn get_length(
-        socket: crate::co_socket::Co,
-        size: u32,
-        header: *mut u32,
-    ) -> isize {
+    pub(crate) fn get_length(socket: crate::co_socket::Co, size: u32, header: &mut u32) -> isize {
         let ctx = socket.resolve_context();
         let at = unsafe { fake(ctx) }.buffer.str;
         unsafe { package_length(ctx, at, size, header) }
     }
-    pub(crate) extern "C" fn failure(socket: crate::co_socket::Co, kind: u32, length: isize) {
+    pub(crate) fn failure(socket: crate::co_socket::Co, kind: u32, length: isize) {
         let ctx = socket.resolve_context();
         unsafe { fail(ctx, kind, length) };
     }
