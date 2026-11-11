@@ -108,6 +108,15 @@ pub extern "C" fn unix_socket_new(
     this.as_mut_ptr()
 }
 
+/// `UnixSocket(blocking, protocol)` by value: both ends null when it failed.
+#[must_use]
+pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
+    let mut storage = MaybeUninit::uninit();
+    unix_socket_new(&mut storage, blocking, protocol);
+    // SAFETY: `unix_socket_new` writes the pair before anything can fail.
+    unsafe { storage.assume_init() }
+}
+
 /// The two ends, master first (None once closed).
 fn ends(pair: &SocketPair) -> [Option<Socket<'_>>; 2] {
     // SAFETY: a pair's open ends are live sockets, freed only by its close.

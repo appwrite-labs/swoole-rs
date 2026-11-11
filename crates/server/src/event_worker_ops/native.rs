@@ -375,7 +375,7 @@ fn client_cert(data: *const u8, length: usize) -> *mut CppString {
     let mut cert = Box::new(CppString::EMPTY);
     cert.alloc(length, None);
     // SAFETY: the bus packet's `length` readable bytes.
-    unsafe { cert.append(data, length) };
+    unsafe { swoole_rs_buffer::string::swr_string_append(&mut cert, data, length) };
     Box::into_raw(cert)
 }
 
@@ -407,7 +407,7 @@ fn worker_context(reactor: Reactor) -> Context {
 fn context(serv: *mut c_void, reactor: Reactor) -> Context {
     Context {
         serv,
-        worker: crate::worker_methods::current_worker(),
+        worker: swoole_rs_process::worker_globals::current_worker(),
         info: core::ptr::null_mut(),
         reactor: reactor.ptr(),
         conn: core::ptr::null_mut(),

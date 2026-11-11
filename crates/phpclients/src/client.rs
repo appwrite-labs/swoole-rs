@@ -6,23 +6,21 @@
 use crate::{
     native::{self, Co, Socket, Transfer},
     net::{SOCK_SSL, SOCK_TCP, SOCK_TCP6, SOCK_UNIX_STREAM, check_type, socket_type},
-    socket::{socket_of, strerror, warn},
+    socket::{Sock, strerror, warn},
 };
-use libc::{c_char, c_int};
+use libc::c_int;
 use std::{ffi::CStr, ptr};
-use swoole_rs_error::strerror_with;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
     bailout::Bailout,
-    set_object,
     string::ZBuf,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
-        zend_object_handlers, zend_string, zval,
+        zend_object_handlers, zend_string,
     },
-    unset_property_deny, value,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -31,13 +29,23 @@ const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
 const NO_CONNECTION: c_int = 5001;
 
-/// `struct ClientCoroObject { SocketImpl *socket; zval zsocket; zval zobject; zend_object std; }`.
+/// `struct ClientCoroObject { SocketImpl *socket; zval zsocket; zval zobject; zend_object std; }`,
+/// with the object itself as a pointer, not a zval.
 #[repr(C)]
 pub(crate) struct Data {
     socket: Socket,
     /// The `Coroutine\Socket` object, from connect until its close.
     zsocket: Owned,
-    zobject: zval,
+    /// The client object itself, without a reference.
+    object: *mut zend_object,
+}
+
+impl Data {
+    /// The client's socket, while it has one.
+    fn co(&self) -> Option<Co> {
+        // SAFETY: a socket the client holds is live.
+        (!self.socket.is_null()).then(|| unsafe { Co::new(self.socket) })
+    }
 }
 
 type ClientObject = Object<Data>;
@@ -48,18 +56,14 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: Zend creates this class or a subclass; zeroed data is no socket.
     let std = unsafe { ClientObject::create(&CLIENT, ce) };
     // SAFETY: the object just created.
-    let data = unsafe { ClientObject::data(std) };
-    // SAFETY: `zobject` names the object itself, without a reference.
-    unsafe { set_object(&raw mut data.zobject, std) };
+    unsafe { ClientObject::data(std) }.object = std;
     std
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees a client object.
-    let socket = unsafe { ClientObject::data(std) }.socket;
-    if !socket.is_null() {
-        // SAFETY: a live socket the client still holds.
-        unsafe { Co::new(socket) }.close();
+    if let Some(socket) = unsafe { ClientObject::data(std) }.co() {
+        socket.close();
     }
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
@@ -134,10 +138,6 @@ fn verify_port(port: i64) -> bool {
     (1..=65535).contains(&port)
 }
 
-extern "C" fn system_error(code: i32) -> *const c_char {
-    strerror(code).as_ptr()
-}
-
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, code, message)`.
 fn report(call: &Call, code: c_int, message: &CStr) {
     report_object(props(call), code, message);
@@ -152,10 +152,9 @@ fn props(call: &Call) -> Props<'_> {
 impl Data {
     /// Property writes on the client object this data lives in.
     fn props(&self) -> Props<'_> {
-        // SAFETY: `zobject` names the object holding this data, live while it is borrowed.
-        let object = unsafe { value::obj_of(&raw const self.zobject) };
-        // SAFETY: as above; the class declares every name written.
-        unsafe { Props::new(CLIENT.entry(), object) }
+        // SAFETY: the object holding this data, live while it is borrowed; the
+        // class declares every name written.
+        unsafe { Props::new(CLIENT.entry(), self.object) }
     }
 }
 
@@ -168,15 +167,8 @@ fn report_object(props: Props, code: c_int, message: &CStr) {
 }
 
 /// `swoole_strerror(code)`.
-fn error_message<'a>(code: c_int) -> &'a CStr {
-    // Known and system messages are static; an unknown one is this thread's buffer.
-    let message = strerror_with(code, Some(system_error));
-    if message.is_null() {
-        c""
-    } else {
-        // SAFETY: a NUL-terminated message.
-        unsafe { CStr::from_ptr(message) }
-    }
+fn error_message(code: c_int) -> &'static CStr {
+    swoole_rs_phpruntime::strerror(code)
 }
 
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, code)`: `swoole_strerror(code)`.
@@ -205,12 +197,9 @@ fn type_property(call: &Call) -> i64 {
 }
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
-unsafe extern "C" fn socket_closed(data: *mut libc::c_void, _socket: *mut libc::c_void) {
-    // SAFETY: the client outlives the hook on its socket.
-    let data = unsafe { &mut *data.cast::<Data>() };
-    if !data.socket.is_null() {
-        // SAFETY: the client's live socket.
-        let protocol = &mut unsafe { Co::new(data.socket) }.record().protocol;
+fn socket_closed(data: &mut Data) {
+    if let Some(socket) = data.co() {
+        let protocol = &mut socket.record().protocol;
         if !protocol.private_data_1.is_null() {
             // The length callable this socket owns.
             if let Err(bailout) = native::callable_free(protocol.private_data_1) {
@@ -236,23 +225,27 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     let data = unsafe { ClientObject::data(object) };
     #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
     let socket_kind = socket_type(kind) as i32;
-    let created = crate::socket::create_socket(socket_kind);
-    if created.is_null() {
-        if swoole_rs_zend::bailout::pending() {
+    let created = match crate::socket::owner::create_kind(socket_kind) {
+        Ok(Some(created)) => created,
+        Ok(None) => {
+            let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            report_object(data.props(), code, error_message(code));
             return None;
         }
-        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        report_object(data.props(), code, error_message(code));
-        return None;
-    }
-    // SAFETY: the client takes the new object's reference.
-    data.zsocket = unsafe { Owned::object(created) };
-    // SAFETY: a new `Coroutine\Socket` object.
-    let socket = unsafe { socket_of(created) };
-    // SAFETY: its constructed socket, which the client's reference keeps live.
-    let socket = unsafe { Co::new(socket) };
-    // SAFETY: the client outlives the hook.
-    unsafe { socket.close_hook(socket_closed, std::ptr::from_mut(data).cast()) };
+        Err(bailout) => {
+            bailout.defer();
+            return None;
+        }
+    };
+    let socket = Sock::of(&created).and_then(Sock::co)?;
+    data.zsocket = created;
+    let client = ptr::from_mut(data);
+    swoole_rs_hooks::socket_extra::set_close_hook(
+        socket.handle(),
+        // SAFETY: the client outlives the hook on its socket, and no other
+        // reference to it is live while the hook runs.
+        Box::new(move |_| socket_closed(unsafe { &mut *client })),
+    );
     let record = socket.record();
     let props = data.props().own();
     props.long(c"fd", i64::from(record.sock_fd));
@@ -261,8 +254,7 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     record.zero_copy = true;
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
         report_object(data.props(), libc::EISCONN, error_message(libc::EISCONN));
-        // SAFETY: the client and its socket's hook argument.
-        unsafe { socket_closed(std::ptr::from_mut(data).cast(), socket.as_ptr()) };
+        socket_closed(data);
         return None;
     }
     Some(socket)
@@ -274,14 +266,8 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
 /// the method returns false.
 fn connected(call: &Call) -> Option<(Co, Owned)> {
     let zsocket = &this(call).zsocket;
-    if let Some(object) = zsocket.object() {
-        let hold = zsocket.copy();
-        // SAFETY: the client only ever stores `Coroutine\Socket` objects.
-        let socket = unsafe { socket_of(object) };
-        if !socket.is_null() {
-            // SAFETY: a constructed socket, live while the hold keeps its object.
-            return Some((unsafe { Co::new(socket) }, hold));
-        }
+    if let Some(socket) = Sock::of(zsocket).and_then(Sock::co) {
+        return Some((socket, zsocket.copy()));
     }
     report_code(call, NO_CONNECTION);
     call.set_bool(false);
@@ -320,9 +306,7 @@ fn datagram_socket(call: &Call) -> Option<Co> {
 
 /// The client's socket, if it has one.
 fn client_socket(call: &Call) -> Option<Co> {
-    let socket = this(call).socket;
-    // SAFETY: a socket the client holds is live.
-    (!socket.is_null()).then(|| unsafe { Co::new(socket) })
+    this(call).co()
 }
 
 /// `__construct(int $type)`.
@@ -333,8 +317,7 @@ fn construct(call: &Call) {
     if !check_type(kind) {
         return call.set_bool(false);
     }
-    // SAFETY: from a handler.
-    unsafe { native::swoole_rs_check_reactor() };
+    swoole_rs_phpruntime::check_reactor();
     props(call).long(c"type", kind);
     call.set_bool(true);
 }
@@ -729,15 +712,6 @@ mod tests {
         assert!(
             verify_port((1 << 32) + 80),
             "upstream truncates to int first"
-        );
-    }
-
-    #[test]
-    fn data_matches_client_object() {
-        assert_eq!(
-            ClientObject::OFFSET,
-            size_of::<Socket>() + 2 * size_of::<zval>(),
-            "std follows the socket and two zvals"
         );
     }
 }

@@ -85,11 +85,8 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
     let (kind, number, host) = {
         // SAFETY: as the caller guarantees; the borrow ends here.
         let config = unsafe { port_config::of(port) };
-        let host = config.host();
-        // SAFETY: a slot's view covers its length while `config` is borrowed.
-        let host = unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) };
         // NUL-terminated: the address parser reads the host as a C string.
-        let host = CString::new(host).unwrap_or_default();
+        let host = CString::new(config.host_bytes()).unwrap_or_default();
         (config.r#type, config.port, host)
     };
     // SAFETY: as the caller guarantees.

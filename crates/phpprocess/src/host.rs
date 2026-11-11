@@ -4,7 +4,7 @@
 use std::{
     cell::Cell,
     ffi::{c_int, c_void},
-    ptr,
+    ptr::{self, NonNull},
 };
 use swoole_rs_corebase::{
     swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads,
@@ -12,9 +12,11 @@ use swoole_rs_corebase::{
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
+use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
+    Value,
     bailout::{self, Bailout},
     sys::{
         swr_zend_callable_warning, swr_zend_tsrm_is_main_thread, zend_class_entry, zend_object,
@@ -87,11 +89,9 @@ thread_local! {
     static USER_WORKER_ID: Cell<u32> = const { Cell::new(0) };
 }
 
-/// In a server worker thread, `worker` becomes a copy of its server worker
+/// In a server worker thread, `process` becomes a copy of its server worker
 /// (shared); false elsewhere.
-/// # Safety
-/// `worker` is a writable `Worker`.
-pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
+pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
     let Some(serv) = server().filter(|&serv| serv.is_worker_thread()) else {
         return false;
     };
@@ -109,11 +109,8 @@ pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
         reason = "Server::get_worker takes a uint16_t"
     )]
     let source = serv.worker(id as u16);
-    let process = worker.cast::<WorkerRecord>();
-    // SAFETY: two live, distinct worker records.
-    unsafe { ptr::copy_nonoverlapping(source, process, 1) };
-    // SAFETY: the record just written.
-    let process = unsafe { &mut *process };
+    // SAFETY: the server's live worker record, distinct from `process`.
+    *process = unsafe { source.read() };
     process.pipe_current = if user {
         process.pipe_worker
     } else {
@@ -163,11 +160,9 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> *mut zend_object {
 }
 
 /// `php_swoole_convert_to_fd(value)`.
-/// # Safety
-/// `value` is a live zval.
-pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> c_int {
-    // SAFETY: per the caller.
-    unsafe { php_swoole_convert_to_fd(value) }
+pub(crate) fn convert_to_fd(value: &Value) -> c_int {
+    // SAFETY: a live zval.
+    unsafe { php_swoole_convert_to_fd(value.as_ptr()) }
 }
 
 /// The value, or `None` with the bailout deferred: the caller stops on
@@ -176,82 +171,94 @@ fn deferred<T>(result: Result<T, Bailout>) -> Option<T> {
     result.map_err(Bailout::defer).ok()
 }
 
-/// `sw_callable_create(value)`: a callable, or null after a warning or with a
-/// bailout pending.
-/// # Safety
-/// `value` is a live zval.
-pub(crate) unsafe fn callable_create(value: *mut zval) -> *mut c_void {
-    // SAFETY: per the caller; the reporter is C.
-    let created = unsafe {
-        callable::factory(
-            value,
-            ptr::null(),
-            true,
-            exception(),
-            swr_zend_callable_warning,
-        )
-    };
-    deferred(created).map_or(ptr::null_mut(), <*mut callable::Callable>::cast)
+/// A callable `sw_callable_create` made, freed (`sw_callable_free`) on drop,
+/// which leaves a destructor's bailout pending.
+pub(crate) struct Callable(NonNull<callable::Callable>);
+
+impl Callable {
+    /// `sw_callable_create(value)`, or `None` after a warning or with a bailout
+    /// pending.
+    pub(crate) fn create(value: &Value) -> Option<Self> {
+        // SAFETY: a live zval; the reporter is C.
+        let created = unsafe {
+            callable::factory(
+                value.as_ptr(),
+                ptr::null(),
+                true,
+                exception(),
+                swr_zend_callable_warning,
+            )
+        };
+        deferred(created).and_then(NonNull::new).map(Self)
+    }
+
+    /// Take back a callable [`Callable::into_raw`] gave up (none for null).
+    /// # Safety
+    /// `raw` is null or a callable `into_raw` gave up, taken back once.
+    pub(crate) unsafe fn from_raw(raw: *mut c_void) -> Option<Self> {
+        NonNull::new(raw.cast()).map(Self)
+    }
+
+    pub(crate) fn into_raw(self) -> *mut c_void {
+        std::mem::ManuallyDrop::new(self).0.as_ptr().cast()
+    }
+
+    /// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`
+    /// with at most two arguments, copied without a reference as upstream
+    /// passes them: false with a bailout pending is one the caller stops on.
+    pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> bool {
+        let mut argv = [swoole_rs_zend::UNDEF; 2];
+        for (slot, arg) in argv.iter_mut().zip(args) {
+            // SAFETY: a live zval, copied bitwise; the copy is never released.
+            *slot = unsafe { arg.as_ptr().read() };
+        }
+        let argc = u32::try_from(args.len().min(argv.len())).unwrap_or(0);
+        // SAFETY: a live callable.
+        let cache = unsafe { callable::cache(self.0.as_ptr()) };
+        // SAFETY: a live cache and `argc` zvals; the leaves are phpcoroutines' and C's.
+        let called = unsafe {
+            function_call(
+                cache,
+                argc,
+                argv.as_mut_ptr(),
+                ptr::null_mut(),
+                coroutine,
+                create_coroutine,
+                swr_zend_callable_warning,
+            )
+        };
+        deferred(called).unwrap_or(false)
+    }
 }
 
-/// `sw_callable_free(callable)`, which is gone even when its destructor leaves
-/// a bailout pending.
-/// # Safety
-/// `callable` is one [`callable_create`] made, freed once and no longer held.
-pub(crate) unsafe fn callable_free(callable: *mut c_void) {
-    // SAFETY: per the caller.
-    bailout::defer(unsafe { callable::release(callable.cast()) });
+impl Drop for Callable {
+    fn drop(&mut self) {
+        // SAFETY: the callable this owns, freed once.
+        bailout::defer(unsafe { callable::release(self.0.as_ptr()) });
+    }
 }
 
-/// The deferred `sw_callable_free`, the outermost Rust frame of its call.
-unsafe extern "C-unwind" fn deferred_free(callable: *mut c_void) {
-    // SAFETY: the callable `callable_defer_free` handed over.
-    unsafe { callable_free(callable) };
-    bailout::finish();
+/// A callable `swoole_event_defer(sw_callable_free, ...)` frees once the loop
+/// is past any dispatch using it.
+struct DeferredFree(Callable);
+
+impl Deferred for DeferredFree {
+    /// The outermost Rust frame of its call.
+    fn run(self) {
+        drop(self.0);
+        bailout::finish();
+    }
+
+    /// A loop freed first leaks it, as upstream's defer does.
+    fn dispose(self) {
+        std::mem::forget(self.0);
+    }
 }
 
-/// `swoole_event_defer(sw_callable_free, callable)`.
-/// # Safety
-/// As [`callable_free`], with an event loop on this thread.
-pub(crate) unsafe fn callable_defer_free(callable: *mut c_void) {
-    defer(deferred_free, callable);
-}
-
-/// `Reactor::defer(call, data)` on this thread's loop.
-fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    let reactor = swoole_rs_reactor::event_api::swr_v1_event_current()
-        .cast::<swoole_rs_reactor::ReactorPrepared>();
-    // SAFETY: the live loop, which begins with its prepared state.
-    let fields = unsafe { (*reactor).fields };
-    // SAFETY: the loop's live fields.
-    unsafe { swoole_rs_reactor::defer(fields, call, data, None) };
-}
-
-/// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`:
-/// false with a bailout pending is one the caller stops on.
-/// # Safety
-/// `callable` is live and `argv` holds `argc` zvals.
-pub(crate) unsafe fn callable_call(
-    callable: *mut c_void,
-    argc: u32,
-    argv: *mut zval,
-    coroutine: bool,
-) -> bool {
-    // SAFETY: per the caller.
-    let cache = unsafe { callable::cache(callable.cast()) };
-    // SAFETY: per the caller; the leaves are phpcoroutines' and C's.
-    let called = unsafe {
-        function_call(
-            cache,
-            argc,
-            argv,
-            ptr::null_mut(),
-            coroutine,
-            create_coroutine,
-            swr_zend_callable_warning,
-        )
-    };
-    deferred(called).unwrap_or(false)
+/// `swoole_event_defer(sw_callable_free, callable)` on this thread's loop;
+/// freed now without one.
+pub(crate) fn callable_defer_free(callable: Callable) {
+    _ = swoole_event_defer_value(DeferredFree(callable));
 }
 
 /// `php_swoole_is_enable_coroutine()`: the running server's
@@ -277,26 +284,34 @@ pub(crate) fn main_thread() -> bool {
     }
 }
 
-/// `swoole_signal_set(signo, handler, safety)`.
-fn set_signal(signo: c_int, handler: Handler, safety: bool) {
+/// `swoole_signal_set(signo, handler, safety)`: the handler it replaced.
+pub(crate) fn signal_swap(signo: c_int, handler: Handler, safety: bool) -> Handler {
     // SAFETY: a signal number and a handler or none.
-    _ = unsafe { swoole_rs_reactor::signal_upstream::swoole_signal_set(signo, handler, safety) };
+    unsafe { swoole_rs_reactor::signal_upstream::swoole_signal_set(signo, handler, safety) }
 }
 
-unsafe extern "C-unwind" fn deferred_signal(data: *mut c_void) {
-    // SAFETY: the box `signal_set` handed over.
-    let (signo, handler, safety) = *unsafe { Box::from_raw(data.cast::<(c_int, Handler, bool)>()) };
-    set_signal(signo, handler, safety);
+fn set_signal(signo: c_int, handler: Handler, safety: bool) {
+    _ = signal_swap(signo, handler, safety);
+}
+
+/// A `swoole_signal_set` the loop runs.
+struct DeferredSignal(c_int, Handler, bool);
+
+impl Deferred for DeferredSignal {
+    fn run(self) {
+        set_signal(self.0, self.1, self.2);
+    }
+
+    fn dispose(self) {}
 }
 
 /// `swoole_signal_set(signo, handler, safety)`, deferred to the event loop
 /// under the thread context.
 pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
     if built_with(Switch::ThreadContext) {
-        defer(
-            deferred_signal,
-            Box::into_raw(Box::new((signo, handler, safety))).cast(),
-        );
+        if let Err(signal) = swoole_event_defer_value(DeferredSignal(signo, handler, safety)) {
+            signal.run();
+        }
     } else {
         set_signal(signo, handler, safety);
     }

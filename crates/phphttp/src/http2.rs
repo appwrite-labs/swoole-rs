@@ -12,8 +12,11 @@ use std::{
     sync::{OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::view;
-use swoole_rs_zend::sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval};
+use swoole_rs_server::{ConnectionRecord, view};
+use swoole_rs_zend::{
+    bailout::Bailout,
+    sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval},
+};
 
 /// A live context the HTTP/2 server holds: a connection's settings context
 /// or a stream's. Only [`Ctx::server_context`], [`Ctx::stream_context`] and
@@ -58,12 +61,11 @@ pub enum Value {
 /// bailout in one waits for the caller.
 pub struct Server {
     /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
-    /// connection.
-    /// # Safety
-    /// The live server, the session's connection (or null) and its `RecvData`.
-    pub on_receive: for<'a> unsafe fn(view::Server<'a>, *mut c_void, &RecvData) -> c_int,
-    /// The static file handler for the live server: true once it answered.
-    pub static_file: fn(*mut c_void, Ctx) -> bool,
+    /// connection, with the session's connection.
+    pub on_receive: for<'a> fn(view::Server<'a>, &ConnectionRecord, &RecvData) -> c_int,
+    /// The static file handler for the live server: true once it answered,
+    /// or the bailout its work left pending.
+    pub static_file: fn(*mut c_void, Ctx) -> Result<bool, Bailout>,
     /// `Response::end`: the stream's last frames.
     pub respond: fn(Ctx, &[u8]) -> bool,
     /// `Response::write`: a DATA frame.
@@ -76,12 +78,10 @@ pub struct Server {
     pub goaway: fn(Ctx, i64, &[u8]) -> bool,
     /// `RST_STREAM` with the stream id and error code.
     pub reset: fn(Ctx, u32, u32),
-    /// A coroutine connection's session (fd, default context, max body size,
-    /// coroutine, handler and its data).
-    /// # Safety
-    /// The context outlives the session; the handler may be called with a
-    /// `SessionRequest` and the data.
-    pub session_new: unsafe fn(i64, Ctx, u32, bool, unsafe extern "C" fn(*mut c_void), *mut c_void),
+    /// A connection's session (fd, default context, max body size, whether a
+    /// coroutine server's, and the handler of each finished request). The
+    /// context outlives the session.
+    pub session_new: fn(i64, Ctx, u32, bool, Handler),
     /// One whole frame for the session of an fd; `SW_ERR` on failure.
     /// # Safety
     /// The frame's bytes, as long as its header says.
@@ -89,6 +89,10 @@ pub struct Server {
     /// The session of an fd goes.
     pub session_free: fn(i64),
 }
+
+/// A session's `onRequest` for a finished request: the stream's context and
+/// the session's default one. A bailout in it returns as `Err`.
+pub type Handler = Box<dyn Fn(Ctx, Ctx) -> Result<(), Bailout>>;
 
 static SERVER: OnceLock<&'static Server> = OnceLock::new();
 
@@ -120,6 +124,11 @@ impl Ctx {
     /// The handle of one of this crate's live HTTP/2 contexts.
     pub(crate) fn of(ctx: *mut Context) -> Self {
         Self(ctx)
+    }
+
+    /// The context the handle names.
+    pub(crate) fn raw(self) -> *mut Context {
+        self.0
     }
 
     /// `Context::set_header(key, value, false)` of a string value.
@@ -177,7 +186,7 @@ impl Ctx {
     pub fn multipart(self) -> bool {
         let state = send::state(self.0);
         let data = state.request.h2_data.take().unwrap_or_default();
-        let parsed = parse::multipart_parse(state, data.as_ptr(), data.len());
+        let parsed = parse::multipart_parse(state, &data);
         send::state(self.0).request.h2_data = Some(data);
         parsed
     }
@@ -300,18 +309,15 @@ impl Ctx {
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
     /// `$cookie`.
     pub fn cookie(self, value: &[u8]) {
-        parse::parse_cookie(self.value(Value::Cookie), value.as_ptr(), value.len());
+        parse::parse_cookie(self.value(Value::Cookie), value);
     }
 
     /// A server connection's settings context (`default_ctx`): the server's
     /// settings, for session `fd`, kept alive and counted by the request hooks.
-    /// # Safety
-    /// `server` is the live server.
     #[must_use]
-    pub unsafe fn server_context(server: *mut c_void, fd: i64) -> Self {
+    pub fn server_context(server: view::Server<'_>, fd: i64) -> Self {
         let ctx = context::alloc();
-        // SAFETY: a new context and the live server.
-        unsafe { context::init(ctx, server) };
+        context::init(send::state(ctx), server);
         let state = send::state(ctx);
         state.fd = fd;
         state.http2 = 1;
@@ -325,8 +331,7 @@ impl Ctx {
     #[must_use]
     pub fn stream_context(self, fd: i64, stream_id: u32) -> Self {
         let ctx = context::context_new(fd);
-        // SAFETY: two live contexts.
-        unsafe { context::copy_settings(ctx, self.0) };
+        context::copy_settings(send::state(ctx), send::state(self.0));
         let state = send::state(ctx);
         state.http2 = 1;
         state.stream_id = stream_id;
@@ -349,24 +354,7 @@ impl Ctx {
     /// multipart parser; false when it has none.
     #[must_use]
     pub fn multipart_start(self, content_type: &[u8]) -> bool {
-        let ctx = self.0;
-        let (mut boundary, mut length) = (std::ptr::null_mut(), 0);
-        // SAFETY: a live context, the value's bytes and local outputs.
-        let found = unsafe {
-            parse::multipart_boundary_of(
-                ctx.cast(),
-                content_type.as_ptr().cast(),
-                content_type.len(),
-                b"multipart/form-data".len(),
-                &mut boundary,
-                &mut length,
-            )
-        };
-        // SAFETY: the boundary inside the value.
-        if !found || !unsafe { parse::init_multipart(ctx.cast(), boundary, length) } {
-            return false;
-        }
-        true
+        parse::multipart_start(send::state(self.0), content_type)
     }
 
     /// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into

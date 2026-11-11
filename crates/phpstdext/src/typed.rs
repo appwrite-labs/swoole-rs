@@ -2,30 +2,27 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, ex_var, invoke::compiled_function, ptr_ptr_var, rt_constant};
+use crate::{CONTINUE, DISPATCH, Frame, invoke::compiled_function};
 use std::{
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_char, c_int, c_long},
+    marker::PhantomData,
     mem::offset_of,
     ptr, slice,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Array, Call, Value,
+    Call, Key, Value, ZString,
     bailout::Bailout,
-    handlers, string,
+    handlers,
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashTable,
-        IS_ARRAY, IS_ARRAY_EX, IS_CONST, IS_CV, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
-        IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, IS_VAR, swr_zend_efree, swr_zend_emalloc,
-        swr_zend_hash_foreach_key, swr_zend_instanceof, swr_zend_string_release,
-        swr_zend_try_lookup_class, swr_zend_uninitialized_zval, swr_zval_try_addref,
-        zend_array_count, zend_class_entry, zend_execute_data, zend_function,
-        zend_get_type_by_const, zend_hash_add, zend_hash_index_add, zend_internal_function,
-        zend_string, zend_throw_error, zend_type_error, zend_ulong, zend_value, zif_handler, zval,
-        zval_ptr_dtor,
+        IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
+        IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof,
+        swr_zend_try_lookup_class, zend_class_entry, zend_execute_data, zend_function,
+        zend_get_type_by_const, zend_hash_index_add, zend_hash_str_add, zend_internal_function,
+        zend_long, zend_throw_error, zend_type_error, zend_value, zif_handler, zval, zval_ptr_dtor,
     },
-    type_of,
-    value::{long_of, set_long, set_str, table},
+    value::{self, table},
 };
 
 /// `HASH_FLAG_TYPED_ARRAY`, a `HashTable` flag bit Zend leaves unused.
@@ -42,7 +39,7 @@ const fn code(kind: u32) -> u8 {
 
 /// Upstream's `ArrayTypeValue`.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TypeValue {
     value: u8,
     key: u8,
@@ -72,28 +69,9 @@ fn flags_of(ht: *mut HashTable) -> *mut u32 {
     ht.wrapping_byte_add(offset_of!(HashTable, u)).cast()
 }
 
-/// `HT_FLAGS(ht) & HASH_FLAG_TYPED_ARRAY`.
-#[inline]
-pub(crate) fn is_typed(array: &Array) -> bool {
-    // SAFETY: a live table's flags word.
-    (unsafe { *flags_of(array.as_ptr()) } & TYPED) != 0
-}
-
-/// # Safety
-/// `ht` is live.
-unsafe fn set_typed(ht: *mut HashTable) {
-    // SAFETY: per the caller.
-    unsafe { *flags_of(ht) |= TYPED };
-}
-
 /// `get_type_info`: the definition behind a typed array's table.
 fn info_of(ht: *mut HashTable) -> *mut TypeInfo {
     ht.wrapping_byte_add(size_of::<HashTable>()).cast()
-}
-
-/// The definition's text.
-fn text_of(info: *mut TypeInfo) -> *mut u8 {
-    info.wrapping_byte_add(offset_of!(TypeInfo, text)).cast()
 }
 
 /// Bytes a `TypeInfo` with `len` bytes of text takes.
@@ -101,57 +79,146 @@ fn info_size(len: usize) -> usize {
     size_of::<TypeInfo>() + len + 1
 }
 
-/// # Safety
-/// `info` is a parsed definition.
-unsafe fn text<'a>(info: *mut TypeInfo) -> &'a [u8] {
-    // SAFETY: per the caller.
-    let len = usize::from(unsafe { (*info).len });
-    // SAFETY: per the caller, `len` bytes of text.
-    unsafe { slice::from_raw_parts(text_of(info), len) }
+/// The value part of a definition's text.
+fn value_part(text: &[u8], this: TypeValue) -> &[u8] {
+    let start = usize::from(this.offset);
+    text.get(start..start + usize::from(this.len))
+        .unwrap_or_default()
 }
 
-/// `get_value_type_str()` with its length.
-/// # Safety
-/// `info` is a parsed definition.
-unsafe fn value_bytes<'a>(info: *mut TypeInfo) -> &'a [u8] {
-    // SAFETY: per the caller.
-    let this = unsafe { (*info).this };
-    let start = text_of(info).wrapping_add(usize::from(this.offset));
-    // SAFETY: the value part lies within the text.
-    unsafe { slice::from_raw_parts(start, usize::from(this.len)) }
+/// A typed array's table, live for `'a`, with its parsed definition behind it.
+#[derive(Clone, Copy)]
+pub(crate) struct Typed<'a> {
+    ht: *mut HashTable,
+    live: PhantomData<&'a HashTable>,
 }
 
-/// `ArrayTypeInfo::equals`.
-/// # Safety
-/// Both are parsed definitions.
-unsafe fn equals(a: *mut TypeInfo, b: *mut TypeInfo) -> bool {
-    // SAFETY: per the caller.
-    let x = unsafe { (*a).this };
-    // SAFETY: per the caller.
-    let y = unsafe { (*b).this };
-    // SAFETY: per the caller.
-    // SAFETY: per the caller.
-    let left = unsafe { text(a) };
-    // SAFETY: per the caller.
-    let same = left == unsafe { text(b) };
-    x.key == y.key && x.value == y.value && same
+impl<'a> Typed<'a> {
+    /// The typed array `value` holds, if it holds one (not dereferenced).
+    pub(crate) fn of(value: &'a Value) -> Option<Self> {
+        if value.kind() != IS_ARRAY {
+            return None;
+        }
+        // SAFETY: a live array zval. The table pointer is read from it rather
+        // than borrowed, so it reaches the definition behind the table.
+        let ht = unsafe { table(value.as_ptr()) };
+        // SAFETY: the zval holds the table while borrowed.
+        let flags = unsafe { flags_of(ht).read() };
+        (flags & TYPED != 0).then_some(Self {
+            ht,
+            live: PhantomData,
+        })
+    }
+
+    /// # Safety
+    /// `ht` is a typed array live for `'a`.
+    pub(crate) unsafe fn from_table(ht: *mut HashTable) -> Self {
+        Self {
+            ht,
+            live: PhantomData,
+        }
+    }
+
+    pub(crate) fn table(self) -> *mut HashTable {
+        self.ht
+    }
+
+    /// Flag the table typed again, after a builtin rebuilt it in place.
+    fn mark(self) {
+        // SAFETY: a live table; only its flags change.
+        unsafe { *flags_of(self.ht) |= TYPED };
+    }
+
+    fn header(self) -> &'a TypeInfo {
+        // SAFETY: a typed table carries a parsed definition right after it.
+        unsafe { &*info_of(self.ht) }
+    }
+
+    fn this(self) -> TypeValue {
+        self.header().this
+    }
+
+    /// The definition's text.
+    fn text(self) -> &'a [u8] {
+        let start = info_of(self.ht).wrapping_byte_add(offset_of!(TypeInfo, text));
+        // SAFETY: a parsed definition's `len` bytes of text follow its header.
+        unsafe { slice::from_raw_parts(start.cast::<u8>(), usize::from(self.header().len)) }
+    }
+
+    /// `get_value_type_str()` with its length.
+    fn value_bytes(self) -> &'a [u8] {
+        value_part(self.text(), self.this())
+    }
+
+    /// `zend_hash_num_elements`.
+    fn count(self) -> u32 {
+        // SAFETY: a live table.
+        unsafe { (*self.ht).nNumOfElements }
+    }
+
+    /// `ArrayTypeInfo::element_type_equals`: whether `element` is the type of
+    /// this array's values.
+    fn element_equals(self, element: Self) -> bool {
+        let (expected, actual) = (self.header().element, element.this());
+        actual.key == expected.key
+            && actual.value == expected.value
+            && element.text() == self.value_bytes()
+    }
+
+    /// `get_array_type_def`: `<string,value>`, `<int,value>` or, for a list, `value>`.
+    fn definition(self) -> ZString {
+        let prefix: &[u8] = match u32::from(self.this().key) {
+            IS_STRING => b"<string,",
+            IS_LONG => b"<int,",
+            // Upstream writes the `<` but only steps past it for a keyed type.
+            _ => b"",
+        };
+        ZString::new(&[prefix, self.value_bytes(), b">"].concat())
+    }
 }
 
-/// `ArrayTypeInfo::element_type_equals`: whether `element` is the type of
-/// `info`'s values.
-/// # Safety
-/// Both are parsed definitions.
-unsafe fn element_equals(info: *mut TypeInfo, element: *mut TypeInfo) -> bool {
-    // SAFETY: per the caller.
-    let expected = unsafe { (*info).element };
-    // SAFETY: per the caller.
-    let actual = unsafe { (*element).this };
-    // SAFETY: per the caller.
-    // SAFETY: per the caller.
-    let actual_text = unsafe { text(element) };
-    // SAFETY: per the caller.
-    let same = actual_text == unsafe { value_bytes(info) };
-    actual.key == expected.key && actual.value == expected.value && same
+/// A definition parsed from a `swoole_typed_array` or `swoole_array_is_typed`
+/// argument.
+struct Parsed {
+    this: TypeValue,
+    element: TypeValue,
+    ce: *mut zend_class_entry,
+    /// Lowercase, without spaces, then a NUL.
+    text: Vec<u8>,
+}
+
+impl Parsed {
+    /// The text without its NUL.
+    fn text(&self) -> &[u8] {
+        self.text.split_last().map_or(&[], |(_, text)| text)
+    }
+
+    /// `ArrayTypeInfo::equals`.
+    fn equals(&self, typed: Typed) -> bool {
+        let other = typed.this();
+        self.this.key == other.key && self.this.value == other.value && self.text() == typed.text()
+    }
+
+    /// Write the definition behind a table.
+    /// # Safety
+    /// `info` has `info_size(self.text().len())` writable bytes.
+    unsafe fn write(&self, info: *mut TypeInfo) {
+        let header = TypeInfo {
+            this: self.this,
+            element: self.element,
+            ce: self.ce,
+            // Shorter than 65535 bytes: `parse` checked.
+            len: u16::try_from(self.text().len()).unwrap_or(u16::MAX),
+            text: [],
+        };
+        // SAFETY: per the caller, room for the header.
+        unsafe { info.write(header) };
+        let text = info
+            .wrapping_byte_add(offset_of!(TypeInfo, text))
+            .cast::<u8>();
+        // SAFETY: per the caller, room for the text and its NUL.
+        unsafe { ptr::copy_nonoverlapping(self.text.as_ptr(), text, self.text.len()) };
+    }
 }
 
 unsafe extern "C" {
@@ -182,49 +249,46 @@ fn type_of_name(name: &[u8]) -> u8 {
     code(kind)
 }
 
-/// `ArrayTypeValue::parse` of the `len` bytes at `start`, whose `strchr`
-/// runs to the NUL ending the whole definition.
-/// # Safety
-/// `start` begins `len` bytes of a NUL-terminated definition.
-unsafe fn parse_value(target: &mut TypeValue, start: *const u8, len: usize) -> bool {
-    // SAFETY: per the caller.
-    match unsafe { split_value(start, len) } {
-        Ok(value) => {
-            *target = value;
-            true
-        }
+/// `ArrayTypeValue::parse` of the `len` bytes at `start` of `text`, a
+/// NUL-terminated definition whose `strchr` runs to that NUL.
+fn parse_value(text: &[u8], start: usize, len: usize) -> Option<TypeValue> {
+    match split_value(text, start, len) {
+        Ok(value) => Some(value),
         Err(rest) => {
+            let rest = text.get(rest..).unwrap_or_default();
             // SAFETY: a printf format with the NUL-terminated rest.
             unsafe {
                 zend_throw_error(
                     ptr::null_mut(),
                     c"The key type of array must be string or int, but got %s".as_ptr(),
-                    rest,
+                    rest.as_ptr(),
                 );
             }
-            false
+            None
         }
     }
 }
 
-/// [`parse_value`]'s split: the value, or where the text after a key that is
-/// not `string` or `int` begins.
-/// # Safety
-/// As [`parse_value`].
-unsafe fn split_value(start: *const u8, len: usize) -> Result<TypeValue, *const u8> {
-    // SAFETY: per the caller, NUL-terminated.
-    let rest = unsafe { CStr::from_ptr(start.cast()) }.to_bytes();
-    // SAFETY: per the caller, within the definition.
-    let bytes = |from: usize, count: usize| unsafe {
-        slice::from_raw_parts(start.wrapping_add(from), count)
+/// [`parse_value`]'s split: the value, or where in `text` the text after a key
+/// that is not `string` or `int` begins.
+fn split_value(text: &[u8], start: usize, len: usize) -> Result<TypeValue, usize> {
+    let from_start = text.get(start..).unwrap_or_default();
+    let rest = from_start
+        .split(|&byte| byte == 0)
+        .next()
+        .unwrap_or_default();
+    let bytes = |from: usize, count: usize| {
+        from_start
+            .get(from..from.saturating_add(count))
+            .unwrap_or_default()
     };
     let mut target = TypeValue::default();
     match rest.iter().position(|&byte| byte == b',') {
         None => target.offset = 1,
         Some(comma) => {
-            target.key = type_of_name(bytes(1, comma - 1));
+            target.key = type_of_name(bytes(1, comma.saturating_sub(1)));
             if !matches!(u32::from(target.key), IS_STRING | IS_LONG) {
-                return Err(start.wrapping_add(comma + 1));
+                return Err(start + comma + 1);
             }
             // Definitions are shorter than 65535 bytes.
             target.offset = u16::try_from(comma + 1).unwrap_or(u16::MAX);
@@ -236,74 +300,42 @@ unsafe fn split_value(start: *const u8, len: usize) -> Result<TypeValue, *const 
     Ok(target)
 }
 
-/// `ArrayTypeInfo::parse` into `info`, which has room for the definition.
-/// # Safety
-/// `info` has `info_size(len)` bytes; `definition` is live.
-unsafe fn parse(info: *mut TypeInfo, definition: *mut zend_string) -> Result<(), Failure> {
-    // SAFETY: a live string.
-    let source = unsafe { string::bytes(definition) };
-    let Ok(source_len) = u16::try_from(source.len()) else {
-        throw(c"The type definition string is too long (must be less than 65535 characters)");
-        return Err(Failure::Thrown);
-    };
-    if source_len == u16::MAX {
+/// `ArrayTypeInfo::parse`.
+fn parse(source: &[u8]) -> Result<Parsed, Failure> {
+    if u16::try_from(source.len()).is_err() || source.len() == usize::from(u16::MAX) {
         throw(c"The type definition string is too long (must be less than 65535 characters)");
         return Err(Failure::Thrown);
     }
-    let text = text_of(info);
     // `zend_string_tolower`, then `remove_all_spaces`.
-    let mut len = 0;
-    for &byte in source {
-        let lower = byte.to_ascii_lowercase();
-        if isspace(c_int::from(lower)) == 0 {
-            // SAFETY: at most `source.len()` bytes.
-            unsafe { text.wrapping_add(len).write(lower) };
-            len += 1;
-        }
-    }
-    // SAFETY: room for the NUL.
-    unsafe { text.wrapping_add(len).write(0) };
-    // SAFETY: room for the header; at most `source_len`.
-    unsafe {
-        info.write(TypeInfo {
-            this: TypeValue::default(),
-            element: TypeValue::default(),
-            ce: ptr::null_mut(),
-            len: u16::try_from(len).unwrap_or(source_len),
-            text: [],
-        });
-    }
-    // SAFETY: the bytes just written.
-    let written = unsafe { slice::from_raw_parts(text, len) };
-    if written.first() != Some(&b'<') || written.last() != Some(&b'>') {
+    let mut text: Vec<u8> = source
+        .iter()
+        .map(u8::to_ascii_lowercase)
+        .filter(|&byte| isspace(c_int::from(byte)) == 0)
+        .collect();
+    let len = text.len();
+    if text.first() != Some(&b'<') || text.last() != Some(&b'>') {
         throw(c"The type definition of typed array must start with '<' and end with '>'");
         return Err(Failure::Thrown);
     }
-    let mut this = TypeValue::default();
-    // SAFETY: a NUL-terminated definition of `len` bytes.
-    if !unsafe { parse_value(&mut this, text, len) } {
-        return Err(Failure::Thrown);
-    }
-    // SAFETY: the header written above.
-    unsafe { (*info).this = this };
+    text.push(0);
+    let this = parse_value(&text, 0, len).ok_or(Failure::Thrown)?;
+    let mut parsed = Parsed {
+        this,
+        element: TypeValue::default(),
+        ce: ptr::null_mut(),
+        text,
+    };
     if u32::from(this.value) == IS_OBJECT {
-        // SAFETY: parsed above.
-        let name = string::copy(unsafe { value_bytes(info) });
-        let ce = lookup_class(name);
-        // SAFETY: the reference made above.
-        unsafe { swr_zend_string_release(name) };
-        let ce = ce?;
-        // SAFETY: the header written above.
-        unsafe { (*info).ce = ce };
+        parsed.ce = lookup_class(&ZString::new(value_part(parsed.text(), this)))?;
     }
-    Ok(())
+    Ok(parsed)
 }
 
 /// `zend_lookup_class(name)`, throwing "Class '%s' not found".
-fn lookup_class(name: *mut zend_string) -> Result<*mut zend_class_entry, Failure> {
+fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
     let mut ce = ptr::null_mut();
     // SAFETY: a live name; autoloaders run under `zend_try`.
-    if unsafe { swr_zend_try_lookup_class(name, &raw mut ce) } != 0 {
+    if unsafe { swr_zend_try_lookup_class(name.as_ptr(), &raw mut ce) } != 0 {
         return Err(Failure::Bailout(Bailout));
     }
     if ce.is_null() {
@@ -312,7 +344,7 @@ fn lookup_class(name: *mut zend_string) -> Result<*mut zend_class_entry, Failure
             zend_throw_error(
                 ptr::null_mut(),
                 c"Class '%s' not found".as_ptr(),
-                string::val(name),
+                name.c_str().as_ptr(),
             );
         }
         return Err(Failure::Thrown);
@@ -330,54 +362,36 @@ fn type_name(kind: u32) -> *const c_char {
     unsafe { zend_get_type_by_const(kind.cast_signed()) }
 }
 
-/// `get_array_type_def`: `<string,value>`, `<int,value>` or, for a list, `value>`.
-/// # Safety
-/// `info` is a parsed definition.
-unsafe fn definition_of(info: *mut TypeInfo) -> *mut zend_string {
-    // SAFETY: per the caller.
-    let key = u32::from(unsafe { (*info).this.key });
-    let prefix: &[u8] = match key {
-        IS_STRING => b"<string,",
-        IS_LONG => b"<int,",
-        // Upstream writes the `<` but only steps past it for a keyed type.
-        _ => b"",
-    };
-    // SAFETY: per the caller.
-    let value = unsafe { value_bytes(info) };
-    let result = string::alloc(value.len() + 16);
-    let start = string::val(result);
-    // SAFETY: at most 8 + `value.len()` + 2 bytes of the allocation.
-    unsafe { ptr::copy_nonoverlapping(prefix.as_ptr(), start, prefix.len()) };
-    let tail = start.wrapping_add(prefix.len());
-    // SAFETY: as above.
-    unsafe { ptr::copy_nonoverlapping(value.as_ptr(), tail, value.len()) };
-    // SAFETY: as above.
-    unsafe { tail.wrapping_add(value.len()).write(b'>') };
-    // SAFETY: as above; writes the NUL.
-    unsafe { string::truncate(result, prefix.len() + value.len() + 1) };
-    result
+/// A key as [`check`] reads it: its type and, for an int, its value.
+#[derive(Clone, Copy)]
+pub(crate) struct KeyType {
+    kind: u32,
+    index: zend_long,
 }
 
-/// `ArrayTypeInfo::check`: whether `key => value` may go in the typed array
-/// `ht`; if not, Zend has thrown.
-/// # Safety
-/// `ht` is a live typed array; `key` and `value` are live zvals.
-pub unsafe fn swr_v1_phpstdext_check(
-    ht: *mut HashTable,
-    key: *const zval,
-    value: *const zval,
-) -> bool {
-    let info = info_of(ht);
-    // SAFETY: per the caller.
-    let this = unsafe { (*info).this };
-    // SAFETY: per the caller.
-    if !unsafe { check_key(ht, this, key) } {
+impl KeyType {
+    /// No key: an append.
+    pub(crate) const UNDEF: Self = Self {
+        kind: IS_UNDEF,
+        index: 0,
+    };
+
+    pub(crate) fn of(key: &Value) -> Self {
+        Self {
+            kind: key.kind(),
+            index: key.as_long().unwrap_or(0),
+        }
+    }
+}
+
+/// `ArrayTypeInfo::check`: whether `key => value` may go in `typed`; if not,
+/// Zend has thrown.
+pub(crate) fn check(typed: Typed, key: KeyType, value: &Value) -> bool {
+    let this = typed.this();
+    if !check_key(typed, this, key) {
         return false;
     }
-    // SAFETY: per the caller.
-    let Some(value) = (unsafe { Value::from_ptr(value) }).map(Value::dereferenced) else {
-        return false;
-    };
+    let value = value.dereferenced();
     let value_type = value.kind();
     let expected = u32::from(this.value);
     let bool_type = |kind| kind == IS_TRUE || kind == IS_FALSE;
@@ -395,25 +409,17 @@ pub unsafe fn swr_v1_phpstdext_check(
         }
         return false;
     }
-    match expected {
-        // SAFETY: a parsed object definition.
-        IS_OBJECT => unsafe { check_object(info, value) },
-        // SAFETY: a parsed array definition.
-        IS_ARRAY => value
-            .array()
-            .is_some_and(|element| unsafe { check_array(info, element) }),
+    match (value.class(), Typed::of(value)) {
+        (Some(actual), _) => check_object(typed.header().ce, actual),
+        (None, element) if expected == IS_ARRAY => check_array(typed, element),
         _ => true,
     }
 }
 
-/// The key half of [`swr_v1_phpstdext_check`].
-/// # Safety
-/// As there.
-unsafe fn check_key(ht: *mut HashTable, this: TypeValue, key: *const zval) -> bool {
-    // SAFETY: per the caller.
-    let key_type = unsafe { type_of(key) };
+/// The key half of [`check`].
+fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
     if this.key > 0 {
-        if key_type == u32::from(this.key) {
+        if key.kind == u32::from(this.key) {
             return true;
         }
         // SAFETY: printf arguments: two strings.
@@ -421,41 +427,32 @@ unsafe fn check_key(ht: *mut HashTable, this: TypeValue, key: *const zval) -> bo
             zend_type_error(
                 c"Array key type mismatch, expected `%s`, got `%s`".as_ptr(),
                 type_name(this.key.into()),
-                type_name(key_type),
+                type_name(key.kind),
             );
         }
         return false;
     }
-    if key_type == IS_LONG {
-        // SAFETY: an int key.
-        let index = unsafe { long_of(key) };
-        // SAFETY: a live table.
-        if index > i64::from(unsafe { (*ht).nNumOfElements }) {
+    if key.kind == IS_LONG {
+        if key.index > i64::from(typed.count()) {
             // SAFETY: printf arguments: a long.
             unsafe {
                 zend_throw_error(
                     ptr::null_mut(),
                     c"Incorrect array key `%ld`, out of the permitted range".as_ptr(),
-                    index as c_long,
+                    key.index as c_long,
                 );
             }
             return false;
         }
-    } else if !matches!(key_type, IS_UNDEF | IS_NULL) {
+    } else if !matches!(key.kind, IS_UNDEF | IS_NULL) {
         throw(c"Incorrect array key, must be undef or int");
         return false;
     }
     true
 }
 
-/// # Safety
-/// `info` is a parsed object definition.
-unsafe fn check_object(info: *mut TypeInfo, object: &Value) -> bool {
-    let Some(actual) = object.class() else {
-        return false;
-    };
-    // SAFETY: per the caller.
-    let ce = unsafe { (*info).ce };
+/// Whether an object of class `actual` is a `ce`.
+fn check_object(ce: *mut zend_class_entry, actual: *mut zend_class_entry) -> bool {
     // SAFETY: live classes.
     if unsafe { swr_zend_instanceof(actual, ce) } {
         return true;
@@ -468,21 +465,20 @@ unsafe fn check_object(info: *mut TypeInfo, object: &Value) -> bool {
     unsafe {
         zend_type_error(
             c"Array value type mismatch, expected `%s`, got `%s`".as_ptr(),
-            string::val(expected_name),
-            string::val(actual_name),
+            swoole_rs_zend::string::val(expected_name),
+            swoole_rs_zend::string::val(actual_name),
         );
     }
     false
 }
 
-/// # Safety
-/// `info` is a parsed array-of-arrays definition.
-unsafe fn check_array(info: *mut TypeInfo, element: &Array) -> bool {
-    // SAFETY: per the caller.
-    let expected = unsafe { value_bytes(info) };
+/// Whether `element`, an array value, is of the value type of `typed`, an
+/// array of arrays.
+fn check_array(typed: Typed, element: Option<Typed>) -> bool {
+    let expected = typed.value_bytes();
     // Shorter than 65535 bytes.
     let expected_len = c_int::try_from(expected.len()).unwrap_or(c_int::MAX);
-    if !is_typed(element) {
+    let Some(element) = element else {
         // SAFETY: printf arguments: a length and its bytes.
         unsafe {
             zend_type_error(
@@ -492,27 +488,21 @@ unsafe fn check_array(info: *mut TypeInfo, element: &Array) -> bool {
             );
         }
         return false;
-    }
-    // SAFETY: both typed.
-    if unsafe { element_equals(info, info_of(element.as_ptr())) } {
+    };
+    if typed.element_equals(element) {
         return true;
     }
-    // SAFETY: a typed array's definition.
-    let actual = unsafe { definition_of(info_of(element.as_ptr())) };
-    // SAFETY: the string just made.
-    let actual_bytes = unsafe { string::bytes(actual) };
+    let actual = element.definition();
     // SAFETY: printf arguments: two lengths and their bytes.
     unsafe {
         zend_type_error(
             c"Array value type mismatch, expected `%.*s`, got `%.*s`".as_ptr(),
             expected_len,
             expected.as_ptr(),
-            c_int::try_from(actual_bytes.len()).unwrap_or(c_int::MAX),
-            actual_bytes.as_ptr(),
+            c_int::try_from(actual.bytes().len()).unwrap_or(c_int::MAX),
+            actual.bytes().as_ptr(),
         );
     }
-    // SAFETY: the string made above.
-    unsafe { swr_zend_string_release(actual) };
     false
 }
 
@@ -520,14 +510,10 @@ unsafe fn check_array(info: *mut TypeInfo, element: &Array) -> bool {
 /// the typed array `source`, give the copy `source`'s definition, without
 /// resuming a contained bailout.
 /// # Safety
-/// `container` holds the fresh separated array and `source` remains live.
-pub(crate) unsafe fn copy_type(
-    container: *mut zval,
-    source: *mut HashTable,
-) -> Result<(), Bailout> {
-    let source_info = info_of(source);
-    // SAFETY: per the caller.
-    let extra = info_size(usize::from(unsafe { (*source_info).len }));
+/// `container` holds the fresh separated array.
+pub(crate) unsafe fn copy_type(container: *mut zval, source: Typed) -> Result<(), Bailout> {
+    let source_info = info_of(source.ht);
+    let extra = info_size(usize::from(source.header().len));
     // SAFETY: an array zval.
     let ht = unsafe { table(container) };
     let mut memory = ptr::null_mut();
@@ -543,8 +529,8 @@ pub(crate) unsafe fn copy_type(
     unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
     // SAFETY: the source holds `extra` bytes of definition; the copy has room.
     unsafe { ptr::copy_nonoverlapping(source_info.cast::<u8>(), info_of(copy).cast(), extra) };
-    // SAFETY: the table just made.
-    unsafe { set_typed(copy) };
+    // SAFETY: the table just made, with the definition copied behind it.
+    unsafe { Typed::from_table(copy) }.mark();
     // SAFETY: an array zval, which now holds the copy.
     unsafe { (*container).value = zend_value { arr: copy } };
     // SAFETY: the old allocation, which nothing references now.
@@ -554,11 +540,8 @@ pub(crate) unsafe fn copy_type(
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,
 /// arithmetic int or float values. If not, Zend has thrown.
-/// # Safety
-/// `ht` is a live typed array.
-pub unsafe fn swr_v1_phpstdext_operation(ht: *mut HashTable, concat: bool) -> bool {
-    // SAFETY: per the caller.
-    let value = u32::from(unsafe { (*info_of(ht)).this.value });
+pub(crate) fn operation(typed: Typed, concat: bool) -> bool {
+    let value = u32::from(typed.this().value);
     let (allowed, message) = if concat {
         (value == IS_STRING, c"Only string support concat operation")
     } else {
@@ -578,25 +561,19 @@ pub unsafe fn swr_v1_phpstdext_operation(ht: *mut HashTable, concat: bool) -> bo
 /// # Safety
 /// Zend's user opcode handler contract.
 pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: a live frame.
-    let opline = unsafe { (*frame).opline };
-    // SAFETY: the frame's current opline.
-    let op1 = unsafe { (*opline).op1 };
-    // SAFETY: a variable operand holds its slot.
-    let var = unsafe { op1.var };
-    // SAFETY: `get_array_on_opline`: op1's slot.
-    let slot = unsafe { ptr_ptr_var(frame, var) };
-    // SAFETY: a live zval.
-    let array = unsafe { Value::from_ptr(slot) }.map(Value::dereferenced);
-    let Some(ht) = array.and_then(Value::array).filter(|ht| is_typed(ht)) else {
+    // SAFETY: per Zend's contract.
+    let frame = unsafe { Frame::new(frame) };
+    // `get_array_on_opline`: op1's slot.
+    let Some(array) = frame.op().op1_indirect() else {
         return DISPATCH;
     };
-    // SAFETY: a typed array's definition.
-    if unsafe { (*info_of(ht.as_ptr())).this.key } == 0 {
-        throw(c"The typed array list do not support random deletion of elements");
-        return CONTINUE;
+    match Typed::of(array.dereferenced()) {
+        Some(typed) if typed.this().key == 0 => {
+            throw(c"The typed array list do not support random deletion of elements");
+            CONTINUE
+        }
+        _ => DISPATCH,
     }
-    DISPATCH
 }
 
 /// The `FE_RESET_RW` user opcode handler: no `foreach` by reference over a
@@ -604,62 +581,33 @@ pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -
 /// # Safety
 /// Zend's user opcode handler contract.
 pub unsafe extern "C" fn swr_v1_phpstdext_foreach_begin(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: a live frame.
-    let opline = unsafe { (*frame).opline };
-    // SAFETY: the frame's current opline.
-    let op = unsafe { &*opline };
-    // SAFETY: an operand holds its slot or literal.
-    let var = unsafe { op.op1.var };
-    // SAFETY: as above.
-    let result = unsafe { op.result.var };
-    let operand = match u32::from(op.op1_type) {
-        // SAFETY: a variable operand's slot.
-        IS_VAR | IS_CV => unsafe { ptr_ptr_var(frame, var) },
-        // SAFETY: a constant operand.
-        IS_CONST => unsafe { rt_constant(opline, op.op1) },
-        _ => ex_var(frame, var),
-    };
-    // SAFETY: the operand's live zval.
-    let array = unsafe { Value::from_ptr(operand) }.map(Value::dereferenced);
-    if !array.and_then(Value::array).is_some_and(is_typed) {
+    // SAFETY: per Zend's contract.
+    let frame = unsafe { Frame::new(frame) };
+    let op = frame.op();
+    if op
+        .op1_indirect()
+        .and_then(|array| Typed::of(array.dereferenced()))
+        .is_none()
+    {
         return DISPATCH;
     }
     throw(c"The type array do not support using references for element value during iteration");
-    let result = ex_var(frame, result);
-    // SAFETY: the result slot: `ZVAL_UNDEF`.
-    unsafe {
-        (*result).u1 = _zval_struct__bindgen_ty_1 {
-            type_info: IS_UNDEF,
-        }
-    };
-    // SAFETY: as above: `Z_FE_ITER_P(result) = -1`.
-    unsafe {
-        (*result).u2 = _zval_struct__bindgen_ty_2 {
-            fe_iter_idx: u32::MAX,
-        }
-    };
+    if let Some(result) = op.result() {
+        let result = result.as_ptr();
+        // SAFETY: the result slot: `ZVAL_UNDEF`.
+        unsafe {
+            (*result).u1 = _zval_struct__bindgen_ty_1 {
+                type_info: IS_UNDEF,
+            }
+        };
+        // SAFETY: as above: `Z_FE_ITER_P(result) = -1`.
+        unsafe {
+            (*result).u2 = _zval_struct__bindgen_ty_2 {
+                fe_iter_idx: u32::MAX,
+            }
+        };
+    }
     CONTINUE
-}
-
-/// `make_typed_array`: a table with room for `len` bytes of definition.
-fn make_typed_array(size: u32, len: usize) -> *mut HashTable {
-    // SAFETY: Zend's request allocator.
-    let ht = unsafe { swr_zend_emalloc(size_of::<HashTable>() + info_size(len)) }.cast();
-    // SAFETY: room for a table.
-    unsafe { _zend_hash_init(ht, size, Some(zval_ptr_dtor), false) };
-    // SAFETY: the table just made.
-    unsafe { set_typed(ht) };
-    ht
-}
-
-/// `emalloc` room for a definition parsed from `definition`.
-/// # Safety
-/// `definition` is live.
-unsafe fn scratch(definition: *mut zend_string) -> *mut TypeInfo {
-    // SAFETY: per the caller.
-    let len = unsafe { (*definition).len };
-    // SAFETY: Zend's request allocator.
-    unsafe { swr_zend_emalloc(info_size(len)) }.cast()
 }
 
 handlers! {
@@ -670,28 +618,20 @@ handlers! {
 /// `swoole_typed_array(string $typeDef, ?array $initArray = null)`.
 fn typed_array(call: &Call) {
     let parsed = call.arity(1, 2).and_then(|()| {
-        let definition = call.str(1)?;
-        let init = if call.num_args() >= 2 {
-            Some(call.array(2)?)
-        } else {
-            None
-        };
-        Ok((definition, init))
+        let definition = call.zstr(1)?;
+        if call.num_args() >= 2 {
+            call.array_ref(2)?;
+        }
+        Ok(definition)
     });
-    let Ok((Some(definition), init)) = parsed else {
+    let Ok(Some(definition)) = parsed else {
         return;
     };
-    // SAFETY: a live argument.
-    let scratch = unsafe { scratch(definition) };
-    // SAFETY: room for the definition.
-    let outcome = unsafe { parse(scratch, definition) }.and_then(|()| match init {
-        // SAFETY: a parsed definition and a live array argument.
-        Some(init) => unsafe { from_array(call, scratch, init) },
-        // SAFETY: a parsed definition.
-        None => unsafe { fill(call, scratch, None) },
+    let init = call.value(2);
+    let outcome = parse(definition.bytes()).and_then(|parsed| match init {
+        Some(init) => from_array(call, &parsed, init),
+        None => fill(call, &parsed, None),
     });
-    // SAFETY: allocated above; `fill` copied what it needed.
-    unsafe { swr_zend_efree(scratch.cast()) };
     if let Err(failure) = outcome {
         call.set_null();
         if let Failure::Bailout(bailout) = failure {
@@ -702,19 +642,11 @@ fn typed_array(call: &Call) {
 
 /// `swoole_typed_array` with initial values: a typed array of the same
 /// definition is returned as is.
-/// # Safety
-/// `scratch` is parsed; `init` is a live array.
-unsafe fn from_array(call: &Call, scratch: *mut TypeInfo, init: &Value) -> Result<(), Failure> {
-    let Some(array) = init.array() else {
-        return Ok(());
+fn from_array(call: &Call, parsed: &Parsed, init: &Value) -> Result<(), Failure> {
+    let Some(typed) = Typed::of(init) else {
+        return fill(call, parsed, Some(init));
     };
-    let ht = array.as_ptr();
-    if !is_typed(array) {
-        // SAFETY: per the caller.
-        return unsafe { fill(call, scratch, Some(ht)) };
-    }
-    // SAFETY: both parsed definitions.
-    if unsafe { equals(scratch, info_of(ht)) } {
+    if parsed.equals(typed) {
         call.set_owned(init.copy());
     } else {
         throw(c"The type definition of the typed array does not match the initial values");
@@ -722,126 +654,100 @@ unsafe fn from_array(call: &Call, scratch: *mut TypeInfo, init: &Value) -> Resul
     Ok(())
 }
 
-/// A new typed array of `scratch`'s definition, holding `init`'s entries.
-/// # Safety
-/// `scratch` is parsed; `init` is live.
-unsafe fn fill(
-    call: &Call,
-    scratch: *mut TypeInfo,
-    init: Option<*mut HashTable>,
-) -> Result<(), Failure> {
-    // SAFETY: a live table.
-    let size = init.map_or(0, |init| unsafe { zend_array_count(init) });
-    // SAFETY: parsed.
-    let len = usize::from(unsafe { (*scratch).len });
-    let array = make_typed_array(size, len);
+/// `make_typed_array`: a table with room for `len` bytes of definition.
+fn make_typed_array(size: u32, len: usize) -> *mut HashTable {
+    // SAFETY: Zend's request allocator.
+    let ht = unsafe { swr_zend_emalloc(size_of::<HashTable>() + info_size(len)) }.cast();
+    // SAFETY: room for a table.
+    unsafe { _zend_hash_init(ht, size, Some(zval_ptr_dtor), false) };
+    ht
+}
+
+/// A new typed array of `parsed`'s definition, holding `init`'s entries.
+fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failure> {
+    let init = init.and_then(Value::array);
+    let mut definition = Parsed {
+        this: parsed.this,
+        element: TypeValue::default(),
+        ce: parsed.ce,
+        text: parsed.text.clone(),
+    };
+    let this = parsed.this;
+    if u32::from(this.value) == IS_ARRAY {
+        let start = usize::from(this.offset);
+        definition.element =
+            parse_value(&parsed.text, start, usize::from(this.len)).ok_or(Failure::Thrown)?;
+    }
+    let array = make_typed_array(
+        init.map_or(0, swoole_rs_zend::Array::count),
+        parsed.text().len(),
+    );
+    // SAFETY: room for the definition behind the table just made.
+    unsafe { definition.write(info_of(array)) };
+    // SAFETY: the table just made, with its definition.
+    let typed = unsafe { Typed::from_table(array) };
+    typed.mark();
     let value = call.return_value();
     // SAFETY: `ZVAL_ARR(return_value, array)`.
-    unsafe { (*value).value = zend_value { arr: array } };
-    // SAFETY: as above.
-    unsafe {
-        (*value).u1 = _zval_struct__bindgen_ty_1 {
-            type_info: IS_ARRAY_EX,
-        }
+    unsafe { value::set(value, zend_value { arr: array }, IS_ARRAY_EX) };
+    let Some(init) = init else {
+        return Ok(());
     };
-    let info = info_of(array);
-    // SAFETY: both hold `info_size(len)` bytes.
-    unsafe { ptr::copy_nonoverlapping(scratch.cast::<u8>(), info.cast(), info_size(len)) };
-    // SAFETY: a parsed definition.
-    let this = unsafe { (*info).this };
-    if u32::from(this.value) == IS_ARRAY {
-        let mut element = TypeValue::default();
-        let start = text_of(info).wrapping_add(usize::from(this.offset));
-        // SAFETY: the value part of the NUL-terminated definition.
-        if !unsafe { parse_value(&mut element, start, usize::from(this.len)) } {
+    let mut entries = init.entries();
+    while let Some((key, element)) = entries.next_keyed() {
+        let key_type = match key {
+            Key::Index(index) => KeyType {
+                kind: IS_LONG,
+                index: index.cast_signed(),
+            },
+            Key::Name(_) => KeyType {
+                kind: IS_STRING,
+                index: 0,
+            },
+        };
+        if !check(typed, key_type, element) {
             // SAFETY: the array made above.
             unsafe { zval_ptr_dtor(value) };
             return Err(Failure::Thrown);
         }
-        // SAFETY: as above.
-        unsafe { (*info).element = element };
-    }
-    let Some(init) = init else {
-        return Ok(());
-    };
-    let mut fill = Fill { array, ok: true };
-    // SAFETY: a live table; `fill` outlives the walk.
-    unsafe { swr_zend_hash_foreach_key(init, Some(add), (&raw mut fill).cast()) };
-    if !fill.ok {
-        // SAFETY: the array made above.
-        unsafe { zval_ptr_dtor(value) };
-        return Err(Failure::Thrown);
+        // The array takes the new reference.
+        let mut copy = element.copy().into_zval();
+        match key {
+            // SAFETY: a live table.
+            Key::Index(index) => unsafe { zend_hash_index_add(array, index, &raw mut copy) },
+            // SAFETY: as above; Zend copies the key.
+            Key::Name(name) => unsafe {
+                zend_hash_str_add(array, name.as_ptr().cast(), name.len(), &raw mut copy)
+            },
+        };
     }
     Ok(())
-}
-
-struct Fill {
-    array: *mut HashTable,
-    ok: bool,
-}
-
-/// One `ZEND_HASH_FOREACH_KEY_VAL` step of `swoole_typed_array`'s fill.
-unsafe extern "C" fn add(
-    index: zend_ulong,
-    key: *mut zend_string,
-    value: *mut zval,
-    context: *mut c_void,
-) -> bool {
-    // SAFETY: `fill`'s `Fill`.
-    let fill = unsafe { &mut *context.cast::<Fill>() };
-    // SAFETY: an all-zero zval is IS_UNDEF.
-    let mut zkey: zval = unsafe { std::mem::zeroed() };
-    if key.is_null() {
-        // SAFETY: a local zval.
-        unsafe { set_long(&raw mut zkey, index.cast_signed()) };
-    } else {
-        // SAFETY: a borrowed key; only its type is read.
-        unsafe { set_str(&raw mut zkey, key) };
-    }
-    // SAFETY: a live typed array and zvals.
-    if !unsafe { swr_v1_phpstdext_check(fill.array, &raw const zkey, value) } {
-        fill.ok = false;
-        return false;
-    }
-    // SAFETY: a live value; the array takes the new reference.
-    unsafe { swr_zval_try_addref(value) };
-    if key.is_null() {
-        // SAFETY: a live table.
-        unsafe { zend_hash_index_add(fill.array, index, value) };
-    } else {
-        // SAFETY: as above.
-        unsafe { zend_hash_add(fill.array, key, value) };
-    }
-    true
 }
 
 /// `swoole_array_is_typed(array $array, string $typeDef = '')`.
 fn array_is_typed(call: &Call) {
     let parsed = call
         .arity(1, 2)
-        .and_then(|()| Ok((call.array_ref(1)?, call.str(2)?)));
-    let Ok((array, definition)) = parsed else {
+        .and_then(|()| Ok((call.array_ref(1)?, call.zstr(2)?)));
+    let Ok((_, definition)) = parsed else {
         return;
     };
-    let ht = array.as_ptr();
-    if !is_typed(array) {
+    let Some(typed) = call.value(1).and_then(Typed::of) else {
         call.set_bool(false);
         return;
-    }
+    };
     let Some(definition) = definition else {
         call.set_bool(true);
         return;
     };
-    // SAFETY: a live argument.
-    let scratch = unsafe { scratch(definition) };
-    // SAFETY: room for the definition.
-    let parsed = unsafe { parse(scratch, definition) };
-    // SAFETY: both parsed definitions, when it parsed.
-    call.set_bool(parsed.is_ok() && unsafe { equals(info_of(ht), scratch) });
-    // SAFETY: allocated above.
-    unsafe { swr_zend_efree(scratch.cast()) };
-    if let Err(Failure::Bailout(bailout)) = parsed {
-        swoole_rs_zend::bailout::raise(Err(bailout));
+    match parse(definition.bytes()) {
+        Ok(parsed) => call.set_bool(parsed.equals(typed)),
+        Err(failure) => {
+            call.set_bool(false);
+            if let Failure::Bailout(bailout) = failure {
+                swoole_rs_zend::bailout::raise(Err(bailout));
+            }
+        }
     }
 }
 
@@ -900,38 +806,22 @@ unsafe fn run(
 }
 
 /// The typed array a builtin's first argument names, if it is one.
-/// # Safety
-/// A live call frame.
-unsafe fn typed_target(
-    frame: *mut zend_execute_data,
-) -> Option<(*mut HashTable, *mut zval, usize)> {
-    // SAFETY: per the caller.
-    let (args, count) = unsafe { crate::invoke::arguments(frame) };
-    if count == 0 {
-        return None;
-    }
-    // SAFETY: a passed argument.
-    let array = unsafe { Value::from_ptr(args) }?.dereferenced().array()?;
-    is_typed(array).then_some((array.as_ptr(), args, count))
+fn typed_target(call: &Call) -> Option<Typed<'_>> {
+    Typed::of(call.value(1)?.dereferenced())
 }
 
 /// Check each argument after the first as an appended value.
-/// # Safety
-/// `ht` is typed; `args` holds `count` zvals.
-unsafe fn check_appended(ht: *mut HashTable, args: *mut zval, count: usize) -> bool {
-    (1..count).all(|index| {
-        // SAFETY: Zend's shared undefined zval.
-        let key = unsafe { swr_zend_uninitialized_zval() };
-        // SAFETY: per the caller.
-        unsafe { swr_v1_phpstdext_check(ht, key, args.wrapping_add(index)) }
-    })
+fn check_appended(typed: Typed, call: &Call) -> bool {
+    (2..=call.num_args())
+        .filter_map(|n| call.value(n))
+        .all(|value| check(typed, KeyType::UNDEF, value))
 }
 
 unsafe extern "C" fn push(frame: *mut zend_execute_data, value: *mut zval) {
     // SAFETY: Zend's handler contract.
-    if let Some((ht, args, count)) = unsafe { typed_target(frame) }
-        // SAFETY: as above.
-        && !unsafe { check_appended(ht, args, count) }
+    let call = unsafe { Call::new(frame, value) };
+    if let Some(typed) = typed_target(&call)
+        && !check_appended(typed, &call)
     {
         return;
     }
@@ -941,57 +831,48 @@ unsafe extern "C" fn push(frame: *mut zend_execute_data, value: *mut zval) {
 
 unsafe extern "C" fn unshift(frame: *mut zend_execute_data, value: *mut zval) {
     // SAFETY: Zend's handler contract.
-    let target = unsafe { typed_target(frame) };
-    if let Some((ht, args, count)) = target
-        // SAFETY: as above.
-        && !unsafe { check_appended(ht, args, count) }
+    let call = unsafe { Call::new(frame, value) };
+    let target = typed_target(&call);
+    if let Some(typed) = target
+        && !check_appended(typed, &call)
     {
         return;
     }
     // SAFETY: the original handler.
     unsafe { run(|originals| originals.unshift, frame, value) };
-    if let Some((ht, ..)) = target {
-        // SAFETY: the table the original handler rebuilt in place.
-        unsafe { set_typed(ht) };
+    // The table the original handler rebuilt in place.
+    if let Some(typed) = target {
+        typed.mark();
     }
 }
 
 unsafe extern "C" fn splice(frame: *mut zend_execute_data, value: *mut zval) {
     // SAFETY: Zend's handler contract.
-    let target = unsafe { typed_target(frame) };
-    if let Some((ht, args, count)) = target
-        && count > 3
-        // SAFETY: the passed fourth argument.
-        && !unsafe { check_replacement(ht, args.wrapping_add(3)) }
+    let call = unsafe { Call::new(frame, value) };
+    let target = typed_target(&call);
+    if let Some(typed) = target
+        && let Some(replacement) = call.value(4)
+        && !check_replacement(typed, replacement)
     {
         return;
     }
     // SAFETY: the original handler.
     unsafe { run(|originals| originals.splice, frame, value) };
-    if let Some((ht, ..)) = target {
-        // SAFETY: the table the original handler rebuilt in place.
-        unsafe { set_typed(ht) };
+    // The table the original handler rebuilt in place.
+    if let Some(typed) = target {
+        typed.mark();
     }
 }
 
 /// `array_splice`'s `$replacement`: an array of values, or one value.
-/// # Safety
-/// `ht` is typed; `replacement` is a live argument.
-unsafe fn check_replacement(ht: *mut HashTable, replacement: *mut zval) -> bool {
-    // SAFETY: Zend's shared undefined zval.
-    let key = unsafe { swr_zend_uninitialized_zval() };
-    // SAFETY: per the caller.
-    let Some(values) = (unsafe { Value::from_ptr(replacement) }).map(Value::dereferenced) else {
-        return false;
+fn check_replacement(typed: Typed, replacement: &Value) -> bool {
+    let values = replacement.dereferenced();
+    let Some(values) = values.array() else {
+        return check(typed, KeyType::UNDEF, values);
     };
-    let Some(array) = values.array() else {
-        // SAFETY: a typed array and live zvals.
-        return unsafe { swr_v1_phpstdext_check(ht, key, values.as_ptr()) };
-    };
-    // SAFETY: as above.
-    array
+    values
         .entries()
-        .all(|(_, value)| unsafe { swr_v1_phpstdext_check(ht, key, value.as_ptr()) })
+        .all(|(_, value)| check(typed, KeyType::UNDEF, value))
 }
 
 #[cfg(test)]
@@ -1025,8 +906,7 @@ mod tests {
     fn parsed(definition: &[u8]) -> TypeValue {
         let mut text = definition.to_vec();
         text.push(0);
-        // SAFETY: a NUL-terminated definition.
-        unsafe { split_value(text.as_ptr(), definition.len()) }.unwrap()
+        split_value(&text, 0, definition.len()).unwrap_or_default()
     }
 
     #[test]
@@ -1045,5 +925,34 @@ mod tests {
         assert_eq!((empty.value, empty.len), (code(IS_OBJECT), 0));
         let nul = parsed(b"<int\0,string>");
         assert_eq!(nul.key, 0, "strchr stops at a NUL");
+    }
+
+    #[test]
+    fn the_text_follows_the_header_intact() {
+        let parsed = Parsed {
+            this: TypeValue::default(),
+            element: TypeValue::default(),
+            ce: ptr::null_mut(),
+            text: b"<string,int>\0".to_vec(),
+        };
+        let mut buffer = vec![u64::MAX; info_size(12).div_ceil(8)];
+        let info = buffer.as_mut_ptr().cast::<TypeInfo>();
+        unsafe { parsed.write(info) };
+        let text = info
+            .wrapping_byte_add(offset_of!(TypeInfo, text))
+            .cast::<u8>();
+        assert_eq!(
+            unsafe { slice::from_raw_parts(text, 13) },
+            b"<string,int>\0"
+        );
+        assert_eq!(unsafe { (*info).len }, 12);
+    }
+
+    #[test]
+    fn a_bad_key_reports_the_rest() {
+        let text = b"<float,int>\0";
+        assert_eq!(split_value(text, 0, 11), Err(7));
+        let nested = b"<int,<x,int>>\0";
+        assert_eq!(split_value(nested, 5, 7), Err(8));
     }
 }

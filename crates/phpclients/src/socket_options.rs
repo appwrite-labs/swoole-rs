@@ -19,12 +19,9 @@ use std::{
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text};
 use swoole_rs_zend::{
-    Array, Call, Owned, OwnedArray, Value,
-    bailout::{self, Bailout},
-    report, set_object,
+    Array, Call, OwnedArray, Value, bailout, report,
     sys::{
-        E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer,
-        zend_object, zval,
+        E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer, zval,
     },
 };
 
@@ -811,13 +808,6 @@ fn domain(fd: c_int) -> Option<c_int> {
     (status == 0).then_some(c_int::from(address.ss_family))
 }
 
-/// `php_swoole_create_socket_from_fd(fd, kind)` inside `zend_try`: null when
-/// no socket could be made (after upstream's warning).
-fn from_fd(fd: c_int, kind: c_int) -> Result<*mut zend_object, Bailout> {
-    // SAFETY: transfer this descriptor through the real Rust object/custody constructor.
-    unsafe { crate::socket::owner::from_fd(fd, kind) }
-}
-
 /// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.
 fn socketpair(call: &Call) {
     let parsed = call
@@ -837,16 +827,15 @@ fn socketpair(call: &Call) {
         warn_sys("failed to create socket", errno());
         return call.set_bool(false);
     }
-    // SAFETY: from a function handler.
-    unsafe { native::swoole_rs_check_reactor() };
+    swoole_rs_phpruntime::check_reactor();
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
     let mut sockets = OwnedArray::default();
     for fd in pair {
-        match from_fd(fd, kind) {
-            // SAFETY: a new object; the value takes its only reference.
-            Ok(object) if !object.is_null() => sockets.push(unsafe { Owned::object(object) }),
+        // SAFETY: the new descriptor, which the object takes over.
+        match unsafe { crate::socket::owner::from_fd(fd, kind) } {
+            Ok(Some(object)) => sockets.push(object),
             // The first socket, if made, goes with the array.
-            Ok(_) => return call.set_bool(false),
+            Ok(None) => return call.set_bool(false),
             Err(bailout) => return bailout.defer(),
         }
     }
@@ -855,10 +844,10 @@ fn socketpair(call: &Call) {
 
 /// `static import($stream): Socket|false`.
 fn import(call: &Call) {
-    let Ok(stream_zval) = call.arity(1, 1).and_then(|()| call.resource(1)) else {
+    let Ok(stream_value) = call.arity(1, 1).and_then(|()| call.resource(1)) else {
         return;
     };
-    let stream_zval = stream_zval.as_ptr();
+    let stream_zval = stream_value.as_ptr();
     let mut stream: *mut php_stream = ptr::null_mut();
     let mut fd: c_int = -1;
     // SAFETY: a resource argument and writable locals.
@@ -885,20 +874,17 @@ fn import(call: &Call) {
         warn_sys("fcntl(F_GETFL) failed", errno());
         return call.set_bool(false);
     }
-    // SAFETY: the stream argument and native descriptor classification stay live through import.
+    // SAFETY: the stream's own descriptor, which the object takes over with the stream.
     let object = match unsafe {
-        crate::socket::owner::import_stream(fd, kind, flags & libc::O_NONBLOCK, stream_zval)
+        crate::socket::owner::import_stream(fd, kind, flags & libc::O_NONBLOCK, stream_value)
     } {
-        Ok(object) => object,
+        Ok(Some(object)) => object,
+        Ok(None) => return call.set_bool(false),
         Err(error) => return error.defer(),
     };
-    if object.is_null() {
-        return call.set_bool(false);
-    }
     // SAFETY: the stream the object now holds.
     unsafe { swr_zend_stream_unbuffer(stream) };
-    // SAFETY: the return slot takes the new object's only reference.
-    unsafe { set_object(call.return_value(), object) };
+    call.set_owned(object);
 }
 
 swoole_rs_zend::handlers! {

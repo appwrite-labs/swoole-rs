@@ -10,7 +10,7 @@
 //! ([`wakeup`]) writes the result into it before resuming it.
 
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::{mem, ptr};
 use swoole_rs_corebase::set_errno;
 
@@ -838,54 +838,41 @@ fn statx_to_stat(statx: &libc::statx, stat: &mut libc::stat) {
     stat.st_ctime_nsec = statx.stx_ctime.tv_nsec.into();
 }
 
-unsafe fn statx(
-    host: &Host,
-    dfd: c_int,
-    path: *const c_char,
-    flags: c_int,
-    stat: *mut libc::stat,
-) -> c_int {
+fn statx(host: &Host, dfd: c_int, path: &CStr, flags: c_int, stat: &mut libc::stat) -> c_int {
     // SAFETY: an all-zero statx is valid.
     let mut buf: libc::statx = unsafe { mem::zeroed() };
     let mask = libc::STATX_BASIC_STATS | libc::STATX_BTIME;
     // SAFETY: `buf` and `path` outlive the request.
     let ret = request(host, -1.0, |sqe| unsafe {
-        sys::swr_uring_prep_statx(sqe, dfd, path, flags, mask, (&raw mut buf).cast());
+        sys::swr_uring_prep_statx(sqe, dfd, path.as_ptr(), flags, mask, (&raw mut buf).cast());
     });
     if ret == 0 {
-        // SAFETY: the caller's contract.
-        statx_to_stat(&buf, unsafe { &mut *stat });
+        statx_to_stat(&buf, stat);
     }
     int(ret)
 }
 
-/// # Safety
-/// `stat` is valid.
-pub unsafe fn fstat(host: &Host, fd: c_int, stat: *mut libc::stat) -> c_int {
-    // SAFETY: the caller's contract; the empty path is a literal.
-    unsafe { statx(host, fd, c"".as_ptr(), libc::AT_EMPTY_PATH, stat) }
+/// `fstat(2)` of `fd` into `stat`.
+pub fn fstat(host: &Host, fd: c_int, stat: &mut libc::stat) -> c_int {
+    statx(host, fd, c"", libc::AT_EMPTY_PATH, stat)
 }
 
-/// # Safety
-/// `path` and `stat` are valid.
-pub unsafe fn stat(host: &Host, path: *const c_char, stat: *mut libc::stat) -> c_int {
-    // SAFETY: the caller's contract.
-    unsafe { statx(host, libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, stat) }
+/// `stat(2)` of `path` into `stat`; upstream's ring `lstat` is this too.
+pub fn stat(host: &Host, path: &CStr, stat: &mut libc::stat) -> c_int {
+    statx(host, libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, stat)
 }
 
 /// `waitpid` through `IORING_OP_WAITID`; `WNOHANG` stays a plain waitpid(2).
-///
-/// # Safety
-/// `stat_loc` is valid.
-pub unsafe fn waitpid(
+pub fn waitpid(
     host: &Host,
     pid: libc::pid_t,
-    stat_loc: *mut c_int,
+    stat_loc: Option<&mut c_int>,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
     if options & libc::WNOHANG != 0 {
-        // SAFETY: the caller's contract.
+        let stat_loc = stat_loc.map_or(ptr::null_mut(), ptr::from_mut);
+        // SAFETY: null or the caller's status word.
         return unsafe { libc::waitpid(pid, stat_loc, options) };
     }
     // SAFETY: an all-zero siginfo_t is valid.
@@ -905,23 +892,19 @@ pub unsafe fn waitpid(
     }
     // SAFETY: the kernel filled `info` for a waited child.
     let status = wait_status(info.si_code, unsafe { info.si_status() });
-    // SAFETY: the caller's contract.
-    unsafe { *stat_loc = status };
+    if let Some(stat_loc) = stat_loc {
+        *stat_loc = status;
+    }
     // SAFETY: as above.
     unsafe { info.si_pid() }
 }
 
 /// poll(2) of one descriptor; `timeout` 0 polls without the ring.
-///
-/// # Safety
-/// `fd` points to one pollfd.
-pub unsafe fn poll(host: &Host, fd: *mut libc::pollfd, timeout: c_int) -> c_int {
+pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
     if timeout == 0 {
-        // SAFETY: the caller's contract.
-        return unsafe { libc::poll(fd, 1, timeout) };
+        // SAFETY: one live pollfd.
+        return unsafe { libc::poll(pollfd, 1, timeout) };
     }
-    // SAFETY: the caller's contract.
-    let pollfd = unsafe { &mut *fd };
     let (descriptor, events) = (pollfd.fd, pollfd.events);
     // SAFETY: the request carries no pointers.
     let rc = int(request(host, f64::from(timeout) / 1000.0, |sqe| unsafe {

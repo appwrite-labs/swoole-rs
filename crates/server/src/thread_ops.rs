@@ -73,6 +73,12 @@ fn this<'a>(ctx: &ReactorContext) -> &'a mut ThreadRecord {
     unsafe { &mut *ctx.thread.cast::<ThreadRecord>() }
 }
 
+/// This thread's buffer, which a datagram is read into.
+fn thread_buffer<'a>() -> &'a mut CppString {
+    // SAFETY: the calling thread's live buffer, which only this thread touches.
+    unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() }
+}
+
 /// The thread's `MessageBus`.
 fn bus_of(thread: &mut ThreadRecord) -> *mut c_void {
     (&raw mut thread.bus).cast()
@@ -171,9 +177,7 @@ pub(crate) unsafe fn answer(
             let kind = conn.socket_type;
             ctx.sock = conn.socket.cast();
             ctx.conn = conn;
-            let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
-            // SAFETY: this thread's live buffer.
-            ctx.pkt = unsafe { (*buffer).as_mut_ptr() }.cast();
+            ctx.pkt = thread_buffer().as_mut_ptr().cast();
             ctx.task = SendData {
                 info: DataHead {
                     server_fd: u16::try_from(fd).unwrap_or(u16::MAX),
@@ -190,9 +194,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_RECVFROM => {
-            let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
-            // SAFETY: this thread's live buffer.
-            let room = unsafe { (*buffer).size() } - size_of::<DgramPacket>();
+            let room = thread_buffer().size() - size_of::<DgramPacket>();
             let fd = socket(ctx.sock.cast())?.fd();
             let pkt = packet(ctx);
             let data = (&raw mut *pkt).wrapping_add(1).cast();
@@ -326,7 +328,8 @@ pub(crate) unsafe fn answer(
         }
         OP_THREAD_NOTIFY => {
             let joining = thread(state, usize::try_from(arg).ok()?).cast::<ThreadRecord>();
-            // SAFETY: one of the server's live threads.
+            // SAFETY: one of the server's live threads; only its field is read, as the
+            // thread itself may hold its record meanwhile.
             let notify = unsafe { (*joining).notify_pipe };
             if !notify.is_null() {
                 send_event(notify.cast(), 0, EVENT_SHUTDOWN);
@@ -529,9 +532,7 @@ pub(crate) unsafe fn answer(
         }
         OP_DGRAM_BUFFER => {
             // support 64K packet
-            let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
-            // SAFETY: this thread's live buffer.
-            let buffer = unsafe { &mut *buffer };
+            let buffer = thread_buffer();
             buffer.extend(buffer.size().wrapping_mul(2));
             0
         }
@@ -553,9 +554,9 @@ pub(crate) unsafe fn answer(
             // SAFETY: this thread's reactor, the port and its event.
             let retval = unsafe { on_read(reactor, port, event.cast()) };
             // Upstream reads the socket after the read too.
-            let received = sock
-                .read(|s| s.total_recv_bytes)
-                .wrapping_sub(last_recv_bytes);
+            let (total_recv_bytes, notified) =
+                sock.read(|s| (s.total_recv_bytes, s.close_notified != 0));
+            let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
             if received.cast_signed() > 0 {
                 let received = received as u64;
                 if let Some(gs) = port_config.counters() {
@@ -570,8 +571,6 @@ pub(crate) unsafe fn answer(
             if conn.active != 0 {
                 let max = config().max_queued_bytes;
                 let flag = |set: bool, bit: u64| if set { bit } else { 0 };
-                // An active connection's socket.
-                let notified = sock.read(|s| s.close_notified != 0);
                 result |= crate::conn_io::ACTIVE
                     | flag(notified, crate::conn_io::READ_NOTIFIED)
                     | flag(

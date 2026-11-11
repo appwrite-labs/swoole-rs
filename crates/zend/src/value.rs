@@ -1,11 +1,9 @@
-//! Object properties and arrays, through Zend's own update and add functions.
+//! Raw zval reads and stores, and the empty string and array.
 use crate::Value;
 use crate::sys::{
-    _zval_struct__bindgen_ty_1, HashTable, IS_LONG, add_assoc_long_ex, add_assoc_string_ex,
-    zend_class_entry, zend_empty_array, zend_empty_string, zend_long, zend_object, zend_string,
-    zend_value, zval,
+    _zval_struct__bindgen_ty_1, HashTable, IS_LONG, zend_empty_array, zend_empty_string, zend_long,
+    zend_object, zend_string, zend_value, zval,
 };
-use std::ffi::CStr;
 
 /// Every `zend_value` field sits at the zval's first byte, so one read takes it.
 const _: () = assert!(
@@ -85,48 +83,6 @@ pub unsafe fn count(array: *const zval) -> u32 {
         .map_or(0, crate::Array::count)
 }
 
-/// `zend_update_property_long(ce, object, name, value)`.
-/// # Safety
-/// `ce` is a registered class and `object` a live instance of it.
-#[inline]
-pub unsafe fn update_long(
-    ce: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: &CStr,
-    value: zend_long,
-) {
-    // SAFETY: per the caller.
-    unsafe { crate::Props::new(ce, object) }.long(name, value);
-}
-
-/// `zend_update_property_bool(ce, object, name, value)`.
-/// # Safety
-/// As `update_long`.
-#[inline]
-pub unsafe fn update_bool(
-    ce: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: &CStr,
-    value: bool,
-) {
-    // SAFETY: per the caller.
-    unsafe { crate::Props::new(ce, object) }.bool(name, value);
-}
-
-/// `zend_update_property_string(ce, object, name, value)`.
-/// # Safety
-/// As `update_long`.
-#[inline]
-pub unsafe fn update_string(
-    ce: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: &CStr,
-    value: &CStr,
-) {
-    // SAFETY: per the caller.
-    unsafe { crate::Props::new(ce, object) }.bytes(name, value.to_bytes());
-}
-
 /// The two stores of Zend's `ZVAL_*` setters: the value and its type info,
 /// leaving `u2` (a bucket's chain, a frame's argument count) untouched.
 /// # Safety
@@ -165,24 +121,6 @@ pub fn empty_string() -> *mut zend_string {
 #[inline]
 pub fn empty_array() -> *mut HashTable {
     (&raw const zend_empty_array).cast_mut()
-}
-
-/// `add_assoc_long(array, key, value)`.
-/// # Safety
-/// `array` is a live array zval.
-#[inline]
-pub unsafe fn add_long(array: *mut zval, key: &CStr, value: zend_long) {
-    // SAFETY: per the caller.
-    unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), value) };
-}
-
-/// `add_assoc_string(array, key, value)`: Zend copies the value.
-/// # Safety
-/// `array` is a live array zval.
-#[inline]
-pub unsafe fn add_string(array: *mut zval, key: &CStr, value: &CStr) {
-    // SAFETY: per the caller.
-    unsafe { add_assoc_string_ex(array, key.as_ptr(), key.count_bytes(), value.as_ptr()) };
 }
 
 /// `add_next_index_str(array, string)`: the array takes over the reference.

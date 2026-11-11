@@ -15,6 +15,7 @@ use swoole_rs_corebase::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
 };
+use swoole_rs_corebase::sys;
 
 /// `network::Socket`'s TLS state group, in the layout `swoole_rs_tls` works on.
 #[repr(C)]
@@ -301,13 +302,15 @@ impl SocketFields {
         if self.is_local() && self.bound != 0 && self.get_name() == 0 {
             // SAFETY: the Unix arm of the address getsockname(2) just wrote.
             let path = unsafe { self.info.addr.un.sun_path };
-            if path[0] != 0 {
-                // SAFETY: a NUL-terminated path in the record's address storage.
-                unsafe { libc::unlink(path.as_ptr()) };
+            #[expect(clippy::cast_sign_loss, reason = "the path's bytes, as C reads them")]
+            let path = path.map(|byte| byte as u8);
+            if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path)
+                && !path.is_empty()
+            {
+                sys::unlink(path);
             }
         }
-        // SAFETY: close(2) has no memory preconditions.
-        self.fd == -1 || unsafe { libc::close(self.fd) } == 0
+        self.fd == -1 || sys::close(self.fd) == 0
     }
 
     /// `Socket::dup`: a copy of every field, owning `dup(fd)`, not borrowed.
@@ -317,8 +320,7 @@ impl SocketFields {
             fields: *self,
             borrows: AtomicU32::new(0),
         };
-        // SAFETY: dup(2) has no memory preconditions.
-        copy.fd = unsafe { libc::dup(copy.fd) };
+        copy.fd = sys::dup(copy.fd);
         copy.into_raw()
     }
 

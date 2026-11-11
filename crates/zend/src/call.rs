@@ -130,11 +130,7 @@ impl Call {
     /// or None without one (a static method).
     #[must_use]
     pub fn this_owned(&self) -> Option<crate::Owned> {
-        let this = self.this_object()?;
-        // SAFETY: the frame's live `$this`.
-        unsafe { (*this).gc.refcount += 1 };
-        // SAFETY: as above, carrying the reference added.
-        Some(unsafe { crate::Owned::object(this) })
+        self.this_value().map(Value::copy)
     }
 
     /// `$this`'s [`Custom`](crate::Custom) data, or None when `$this` is no `T`
@@ -142,17 +138,41 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
-        // SAFETY: the frame's live `$this`, held while `self` is borrowed.
-        unsafe { crate::object::custom(self.this_object()?) }
+        self.this_value()?.custom()
+    }
+
+    /// `ZEND_THIS` holding an object, borrowed for the call, or None without
+    /// one (a static method).
+    #[must_use]
+    #[inline]
+    pub fn this_value(&self) -> Option<&Value> {
+        // SAFETY: a live frame.
+        let this = unsafe { &raw const (*self.frame).This };
+        // SAFETY: the frame holds `This` for the call.
+        unsafe { Value::from_ptr(this) }.filter(|this| this.object().is_some())
     }
 
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
     #[inline]
     pub(crate) fn this_object(&self) -> Option<*mut zend_object> {
-        // SAFETY: a live frame.
-        let this = unsafe { &raw const (*self.frame).This };
-        // SAFETY: `This` is a zval whose type says whether it holds an object.
-        unsafe { Value::from_ptr(this) }?.object()
+        self.this_value()?.object()
+    }
+
+    /// `ZSTR_VAL(Z_OBJCE_P(ZEND_THIS)->name)`, or None without a `$this` (a
+    /// static method).
+    #[must_use]
+    #[inline]
+    pub fn class_name(&self) -> Option<&CStr> {
+        // SAFETY: the frame holds `$this` for the call, and its class outlives it.
+        Some(unsafe { crate::class_name(self.this_object()?) })
+    }
+
+    /// Property writes on `$this` under `scope` (`None` for none), or None
+    /// without one (a static method). The frame holds `$this` for the call.
+    #[must_use]
+    #[inline]
+    pub fn props(&self, scope: Option<&Class>) -> Option<crate::Props<'_>> {
+        self.this_value()?.props(scope)
     }
 
     /// `ZEND_CALL_ARG(execute_data, n)`'s address, 1-based; a slot only when
@@ -523,12 +543,9 @@ impl Call {
     /// A static method has no `$this` to update.
     #[inline]
     pub fn update_property_long(&self, scope: Option<&Class>, name: &CStr, value: i64) {
-        let Some(this) = self.this_object() else {
-            return;
-        };
-        let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        // SAFETY: a method's live `$this`; a registered class or null.
-        unsafe { crate::Props::new(scope, this) }.long(name, value);
+        if let Some(props) = self.props(scope) {
+            props.long(name, value);
+        }
     }
 
     /// `zend_update_property(scope, Z_OBJ_P(ZEND_THIS), name, value)`: the

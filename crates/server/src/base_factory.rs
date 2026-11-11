@@ -396,7 +396,7 @@ pub(crate) fn finish<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect
     Ok(false)
 }
 
-/// The base-factory operations of `swr_v1_server_run`.
+/// The base-factory operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END, RUN_BASE_FINISH, RUN_BASE_NOTIFY,

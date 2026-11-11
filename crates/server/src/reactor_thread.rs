@@ -387,7 +387,7 @@ pub(crate) fn heartbeat_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// The reactor-thread operations of `swr_v1_server_run`.
+/// The reactor-thread operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use crate::ops::{
         RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS,

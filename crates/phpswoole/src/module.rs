@@ -121,13 +121,13 @@ pub type Minit = unsafe extern "C" fn(c_int);
 /// Any other phase hook, likewise.
 pub type Hook = unsafe extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
-pub type HttpMinit = unsafe fn(&MinitArgs);
+pub type HttpMinit = fn(&MinitArgs);
 
-/// What the HTTP MINIT steps read of Swoole's own: the module,
+/// What the HTTP MINIT steps read of Swoole's own: the module's MINIT,
 /// `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
 /// the build's compression, zlib and thread switches.
 pub struct MinitArgs {
-    pub module: c_int,
+    pub minit: swoole_rs_zend::Minit,
     pub shortname: bool,
     pub codecs: u32,
     pub compression: bool,
@@ -160,7 +160,7 @@ pub struct Families {
     pub redis_minit: Minit,
     pub redis_rshutdown: Hook,
     /// `php_swoole_tracer_minit(threshold, blocking, profile, leaks)`, at MINIT, once.
-    pub tracer_minit: unsafe fn(i64, bool, bool, bool),
+    pub tracer_minit: fn(&swoole_rs_zend::Minit, i64, bool, bool, bool),
     /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
     /// queue's, map's and list's, each at MINIT before any PHP thread starts.
     pub thread_minit: fn(&swoole_rs_zend::Minit),
@@ -202,8 +202,8 @@ pub struct Families {
     pub socket_settings: unsafe extern "C" fn(*mut c_void, *const zval, c_int) -> bool,
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
-    pub name_resolver_add: unsafe fn(*mut zval) -> bool,
-    pub name_resolver_remove: unsafe fn(*mut zval) -> *mut zval,
+    pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,
+    pub name_resolver_remove: fn(Option<&swoole_rs_zend::Value>) -> *mut zval,
     /// `swoole_socket_coro_ce` and `swoole_client_ce`, for `Swoole\Event`
     /// (crates/phpevents).
     pub socket_class: fn() -> &'static Class,
@@ -337,13 +337,15 @@ pub(crate) fn startup(module_number: c_int) {
 
 /// `php_swoole_tracer_minit`: blocking detection and the profiler need the
 /// fiber mock.
-extern "C" fn tracer_minit(_module_number: c_int) {
+extern "C" fn tracer_minit(module_number: c_int) {
     let g = globals();
     let (blocking, profile) = (g.blocking_detection.get(), g.profile.get());
     let (threshold, leaks) = (g.blocking_threshold.get(), g.leak_detection.get());
     if let Some(families) = families() {
-        // SAFETY: Rust's MINIT, once.
-        unsafe { (families.tracer_minit)(threshold, blocking, profile, leaks) };
+        // SAFETY: Zend runs this module's MINIT on this thread; the token goes
+        // before it returns.
+        let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
+        (families.tracer_minit)(&minit, threshold, blocking, profile, leaks);
     }
     if blocking || profile {
         g.enable_fiber_mock.set(true);
@@ -352,20 +354,21 @@ extern "C" fn tracer_minit(_module_number: c_int) {
 
 /// [`Http::minit`]'s step `N`.
 extern "C" fn http_minit<const N: usize>(module: c_int) {
-    let Some(&minit) = families().and_then(|families| families.http.minit.get(N)) else {
+    let Some(&step) = families().and_then(|families| families.http.minit.get(N)) else {
         return;
     };
     let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
     let args = MinitArgs {
-        module,
+        // SAFETY: Zend runs this module's MINIT on this thread; `args` goes
+        // before it returns.
+        minit: unsafe { swoole_rs_zend::Minit::new(module) },
         shortname: globals().use_shortname.get(),
         codecs: codecs(),
         compression: flags & crate::constants::COMPRESSION != 0,
         zlib: flags & crate::constants::ZLIB != 0,
         thread: flags & crate::constants::THREAD != 0,
     };
-    // SAFETY: Rust's MINIT, which runs each step once, in order.
-    unsafe { minit(&args) };
+    step(&args);
 }
 
 /// The codecs the build has: 1 zlib, 2 brotli, 4 zstd.

@@ -34,7 +34,7 @@ mod native {
     use std::ffi::{c_int, c_void};
     use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
     use swoole_rs_zend::{
-        bailout,
+        Value, bailout,
         sys::{swr_zend_efree, swr_zend_try_zval_dtor, zval},
     };
 
@@ -126,12 +126,16 @@ mod native {
             && (resolver.is_null() || unsafe { super::same(kept.cast(), resolver.cast()) })
     }
 
-    /// Remove the first PHP resolver for `resolver`'s object (any, when null) and return
-    /// its kept zval, or null if there was none.
-    /// # Safety
-    /// `resolver` is null or a live object zval.
-    pub unsafe fn swoole_name_resolver_php_remove(resolver: *mut zval) -> *mut zval {
-        // SAFETY: `php_same` reads only the kept zvals and `resolver`.
+    /// Remove the first PHP resolver for `resolver`'s object (any, when `None`) and
+    /// return its kept zval, or null if there was none (or `resolver` is no object).
+    pub fn swoole_name_resolver_php_remove(resolver: Option<&Value>) -> *mut zval {
+        let resolver = match resolver {
+            None => std::ptr::null_mut(),
+            Some(resolver) if resolver.object().is_some() => resolver.as_ptr(),
+            Some(_) => return std::ptr::null_mut(),
+        };
+        // SAFETY: `php_same` reads only the kept zvals and `resolver`, null or a live
+        // object zval.
         unsafe { swoole_rs_corebase::swr_v1_core_name_resolver_remove(php_same, resolver.cast()) }
             .cast()
     }
@@ -246,17 +250,18 @@ unsafe extern "C" fn assign_vec(out: *mut c_void, text: *const c_char, length: u
 /// `swoole_name_resolver_add(Swoole\NameResolver $ns): bool`.
 fn add(call: &Call) {
     match call.arity(1, 1).and_then(|()| call.object(1)) {
-        // SAFETY: an object argument.
-        Ok(resolver) => call.set_bool(unsafe { php_swoole_name_resolver_add(resolver) }),
+        Ok(_) => call.set_bool(
+            call.value(1)
+                .map(Value::dereferenced)
+                .is_some_and(php_swoole_name_resolver_add),
+        ),
         Err(_) => call.set_bool(false),
     }
 }
 
 /// `php_swoole_name_resolver_add`: register `resolver` (an object) if it is a
 /// `Swoole\NameResolver`, holding a reference to it.
-/// # Safety
-/// `resolver` is a live object zval.
-pub unsafe fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
+pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
     // SAFETY: a request-allocated name, released below.
     let name =
         unsafe { swr_zend_string_init(RESOLVER_CLASS.as_ptr().cast(), RESOLVER_CLASS.len()) };
@@ -269,10 +274,6 @@ pub unsafe fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
         warn(true, &format!("Class \"{class}\" not found"));
         return false;
     }
-    // SAFETY: per the caller, a live object zval.
-    let Some(resolver) = (unsafe { Value::from_ptr(resolver) }) else {
-        return false;
-    };
     let Some(object_ce) = resolver.class() else {
         return false;
     };
@@ -310,8 +311,7 @@ fn remove(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a live object zval.
-    let kept = unsafe { native::swoole_name_resolver_php_remove(resolver) };
+    let kept = native::swoole_name_resolver_php_remove(call.value(1).map(Value::dereferenced));
     if !kept.is_null() {
         // Drop the reference `add` took, through the argument as upstream does.
         // SAFETY: the argument holds another reference, so no destructor runs.

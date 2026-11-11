@@ -5,12 +5,13 @@
 //! in the pool. Each method parses as upstream's ZPP block does; operations
 //! that can run PHP code go through `swr_v1_clients_run` inside `zend_try`.
 use crate::native::{self, Cli, ErrorKind, Run};
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
     marker::PhantomData,
     ptr,
+    rc::Rc,
     sync::{Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_clients::{
@@ -26,6 +27,7 @@ use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
+    host::callable::Callable,
     string::ZBuf,
     sys::{
         IS_ARRAY, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
@@ -146,8 +148,10 @@ pub(crate) struct Data {
     pub(crate) conn: Cell<*mut Conn>,
     /// `getSocket()`'s socket (`IS_UNDEF`: none); zeroed bytes are `IS_UNDEF`.
     zsocket: Cell<Owned>,
-    /// The async callbacks (callables, by [`crate::async_net`] slot).
-    pub(crate) callbacks: Cell<*mut [*mut c_void; 7]>,
+    /// The async callbacks, by [`crate::async_net`] slot; all-zero is none.
+    pub(crate) callbacks: [Cell<Option<Rc<Callable>>>; 7],
+    /// `on()` ran: the async client is initialised.
+    pub(crate) listening: Cell<bool>,
 }
 
 impl Data {
@@ -233,9 +237,7 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees a client object.
     let object = unsafe { Obj::new(std) };
-    if !object.data().callbacks.get().is_null() {
-        bailout::defer(crate::async_net::free_callbacks(object));
-    }
+    crate::async_net::free_callbacks(object);
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
     bailout::finish();
@@ -399,16 +401,7 @@ pub(crate) fn errno() -> c_int {
 
 /// `swoole_strerror(code)`.
 pub(crate) fn strerror(code: c_int) -> String {
-    extern "C" fn system(code: c_int) -> *const c_char {
-        crate::socket::strerror(code).as_ptr()
-    }
-    // Known and system messages are static; an unknown one is this thread's buffer.
-    let message = swoole_rs_error::strerror_with(code, Some(system));
-    if message.is_null() {
-        return String::new();
-    }
-    // SAFETY: a NUL-terminated message.
-    unsafe { CStr::from_ptr(message) }
+    swoole_rs_phpruntime::strerror(code)
         .to_string_lossy()
         .into_owned()
 }

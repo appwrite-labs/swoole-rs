@@ -212,6 +212,29 @@ pub unsafe fn trap(
     trapped(unsafe { swr_zend_try(Some(body), arg) })
 }
 
+/// Run `body()` inside `zend_try`: [`trap`] of a Rust closure, without a
+/// `*mut c_void` argument record and a native body to unpack it.
+/// # Errors
+/// `body` bailed out; Zend's state is as `zend_catch` leaves it.
+/// # Safety
+/// As [`trap`]: a bailout jumps over `body`'s frame and those it calls, so
+/// neither `body`, its captures, nor any Rust it calls before the bailout holds
+/// anything that needs dropping.
+pub unsafe fn trap_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
+    /// Takes and runs the closure: a bailout leaves the slot empty, so nothing
+    /// is dropped twice.
+    unsafe extern "C" fn run<F: FnOnce()>(slot: *mut c_void) {
+        // SAFETY: `trap_with`'s live slot, which it lends for this call only.
+        let body = unsafe { &mut *slot.cast::<Option<F>>() }.take();
+        if let Some(body) = body {
+            body();
+        }
+    }
+    let mut slot = Some(body);
+    // SAFETY: per the caller; `run::<F>` takes the slot of an `F`.
+    unsafe { trap(run::<F>, (&raw mut slot).cast()) }
+}
+
 /// `zend_call_function(fci, fcc)` inside `zend_try`: whether the call
 /// succeeded. Nothing is called, and the result slot is left as it was, while
 /// a bailout is pending: upstream never ran past it.

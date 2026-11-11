@@ -66,10 +66,11 @@ pub struct AsyncOps {
     pub current: extern "C" fn() -> *mut c_void,
     /// `async::dispatch`: a pool-owned copy of the event, or null if refused.
     pub dispatch: unsafe extern "C" fn(*const AsyncEvent) -> *mut AsyncEvent,
-    /// `co->yield()`.
-    pub park: unsafe extern "C" fn(*mut c_void),
-    /// `co->yield_ex(timeout)`: false on timeout or cancellation.
-    pub park_for: unsafe extern "C-unwind" fn(*mut c_void, f64) -> bool,
+    /// `co->yield()` of the current coroutine.
+    pub park: fn(),
+    /// `co->yield_ex(timeout)` of the current coroutine: false on timeout or
+    /// cancellation.
+    pub park_for: fn(f64) -> bool,
     /// `co->resume()`.
     pub resume: unsafe extern "C" fn(*mut c_void),
     /// `swoole_get_last_error()`.
@@ -132,8 +133,8 @@ pub unsafe fn swr_v1_hook_async(
     if dispatched.is_null() {
         return false;
     }
-    // SAFETY: parks this coroutine until `completed`, a timeout or a cancel.
-    if unsafe { (ops.park_for)(co, timeout) } {
+    // Parks this coroutine until `completed`, a timeout or a cancel.
+    if (ops.park_for)(timeout) {
         // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
         let done = unsafe { &*dispatched };
         event.canceled = done.canceled;
@@ -183,8 +184,8 @@ pub unsafe fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncO
     if dispatched.is_null() {
         return false;
     }
-    // SAFETY: parks this coroutine until `completed` resumes it.
-    unsafe { (ops.park)(co) };
+    // Parks this coroutine until `completed` resumes it.
+    (ops.park)();
     // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
     set_errno(unsafe { (*dispatched).error });
     true
@@ -216,7 +217,7 @@ mod tests {
         PENDING.with_borrow_mut(|slot| &raw mut **slot.insert(copy))
     }
     // Runs the pool's half (handler, then completion) as the reactor would, unless timed out.
-    unsafe extern "C" fn park(_: *mut c_void) {
+    fn park() {
         let raw = PENDING.with_borrow_mut(|slot| &raw mut **slot.as_mut().unwrap());
         unsafe {
             ((*raw).handler.unwrap())(raw);
@@ -225,11 +226,11 @@ mod tests {
             }
         }
     }
-    unsafe extern "C-unwind" fn park_for(co: *mut c_void, _: f64) -> bool {
+    fn park_for(_: f64) -> bool {
         if TIME_OUT.get() {
             return false;
         }
-        unsafe { park(co) };
+        park();
         true
     }
     unsafe extern "C" fn resume(_: *mut c_void) {
@@ -314,7 +315,7 @@ mod tests {
             (-1, 9001, 1, 9001)
         );
         // The pool finishes later; the completion skips the gone coroutine.
-        unsafe { park(core::ptr::null_mut()) };
+        park();
         assert_eq!(RESUMED.get(), 1);
     }
 }

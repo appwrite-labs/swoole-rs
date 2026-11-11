@@ -4,10 +4,7 @@
 //! backtraces go through `LoggerHost` (`swr_logger_host`, in crates/process). Both run after
 //! the lock is released, so a diagnostic can log through this logger again. The log
 //! macros a Rust log runs (`swr_v1_utils_log`) are here too.
-use crate::{
-    swr_v1_utils_log_level, swr_v1_utils_log_line, swr_v1_utils_log_micros,
-    swr_v1_utils_log_rotation,
-};
+use crate::{log_bytes, log_line, log_micros, log_rotation, swr_v1_utils_log_level};
 use libc::{FILE, c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
@@ -37,12 +34,6 @@ pub struct LoggerIdentity {
     pub worker_symbol: c_char,
 }
 
-// POSIX stream locks, which libc omits on Darwin.
-unsafe extern "C" {
-    fn flockfile(stream: *mut FILE);
-    fn funlockfile(stream: *mut FILE);
-}
-
 /// The native effects a logger asks for.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -69,14 +60,17 @@ enum Effect {
 }
 
 struct State {
-    opened: bool,
+    /// The descriptor `open` made, which takes each line in one `write(2)`
+    /// under the lock; lines go to `stream` while there is none.
+    file_fd: Option<c_int>,
     redirected: bool,
     backtrace: bool,
     microseconds: bool,
     rotation: c_int,
     stdout_fd: c_int,
     stderr_fd: c_int,
-    fp: *mut FILE,
+    /// `stdout`, or the stream `set_stream` gave.
+    stream: *mut FILE,
     stdout: *mut FILE,
     date_format: CString,
     file: CString,
@@ -120,9 +114,7 @@ fn strftime(out: &mut [u8], format: &CStr, time: libc::time_t) -> usize {
 
 /// `Logger::gen_real_file`'s date suffix for `rotation`.
 fn rotation_date(rotation: c_int, out: &mut [u8; 16]) -> usize {
-    // SAFETY: a static NUL-terminated format.
-    let format = unsafe { CStr::from_ptr(swr_v1_utils_log_rotation(rotation)) };
-    strftime(out, format, now().0)
+    strftime(out, log_rotation(rotation), now().0)
 }
 
 fn real_file(rotation: c_int, file: &CStr) -> CString {
@@ -134,14 +126,26 @@ fn real_file(rotation: c_int, file: &CStr) -> CString {
     CString::new(path).unwrap_or_default()
 }
 
+/// All of `bytes` to `fd`, as `fwrite` to an unbuffered stream would: short
+/// writes continue, and an error drops the rest.
+fn write_all(fd: c_int, mut bytes: &[u8]) {
+    while !bytes.is_empty() {
+        let Ok(written) = usize::try_from(sys::write(fd, bytes)) else {
+            return;
+        };
+        if written == 0 {
+            return;
+        }
+        bytes = bytes.get(written..).unwrap_or_default();
+    }
+}
+
 impl State {
     fn close(&mut self) {
-        if self.opened {
-            // SAFETY: the stream `open` created, closed once.
-            unsafe { libc::fclose(self.fp) };
-            self.fp = self.stdout;
+        if let Some(fd) = self.file_fd.take() {
+            sys::close(fd);
+            self.stream = self.stdout;
             self.file = CString::default();
-            self.opened = false;
         }
     }
 
@@ -166,30 +170,29 @@ impl State {
             self.file = CString::default();
             return false;
         }
-        self.opened = true;
-        // SAFETY: a descriptor this logger now owns.
-        self.fp = unsafe { libc::fdopen(fd, c"a".as_ptr()) };
+        self.file_fd = Some(fd);
         true
     }
 
     fn reopen(&mut self, effects: &mut Vec<Effect>) {
-        if !self.opened {
+        if self.file_fd.is_none() {
             return;
         }
         let file = self.file.clone();
         self.close();
         self.open(file, effects);
-        if self.redirected {
-            // SAFETY: the live log stream.
-            effects.push(Effect::Redirect(unsafe { libc::fileno(self.fp) }));
+        if self.redirected
+            && let Some(fd) = self.file_fd
+        {
+            effects.push(Effect::Redirect(fd));
         }
     }
 
     fn redirect(&mut self, effects: &mut Vec<Effect>) -> bool {
-        if !self.opened {
+        let Some(fd) = self.file_fd else {
             effects.push(Effect::Warning("no log file opened"));
             return false;
-        }
+        };
         if self.redirected {
             effects.push(Effect::Warning("has been redirected"));
             return false;
@@ -204,8 +207,7 @@ impl State {
             effects.push(Effect::SysWarning("dup(STDERR_FILENO) failed", errno()));
             return false;
         }
-        // SAFETY: the live log stream.
-        effects.push(Effect::Redirect(unsafe { libc::fileno(self.fp) }));
+        effects.push(Effect::Redirect(fd));
         self.redirected = true;
         true
     }
@@ -233,8 +235,7 @@ impl State {
     fn write(
         &mut self,
         level: c_int,
-        content: *const u8,
-        length: usize,
+        content: &[u8],
         identity: &LoggerIdentity,
         effects: &mut Vec<Effect>,
     ) {
@@ -245,49 +246,21 @@ impl State {
             self.reopen(effects);
         }
         if self.microseconds {
-            let rest = date.get_mut(length_date..).unwrap_or_default();
-            // SAFETY: `rest` is writable for its length.
-            length_date +=
-                unsafe { swr_v1_utils_log_micros(rest.as_mut_ptr(), rest.len(), micros) };
+            length_date += log_micros(date.get_mut(length_date..).unwrap_or_default(), micros);
         }
         let mut line = vec![0u8; SW_LOG_BUFFER_SIZE];
-        // SAFETY: disjoint buffers; `content` is readable for `length` bytes or through its NUL,
-        // as upstream's `%.*s` with `static_cast<int>(length)` read it.
-        let mut n = unsafe {
-            swr_v1_utils_log_line(
-                line.as_mut_ptr(),
-                line.len(),
-                date.as_ptr(),
-                i32::try_from(length_date).unwrap_or(i32::MAX),
-                u8::from_ne_bytes(identity.worker_symbol.to_ne_bytes()),
-                identity.worker_pid,
-                identity.worker_id,
-                level,
-                content,
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
-                    reason = "upstream's static_cast<int>(length)"
-                )]
-                {
-                    length as i32
-                },
-            )
-        };
-        if n == usize::MAX {
-            n = 0;
-        }
-        if self.opened {
-            // SAFETY: the live log stream.
-            unsafe { flockfile(self.fp) };
-        }
-        // SAFETY: `line` holds `n` bytes; the stream is live.
-        unsafe { libc::fwrite(line.as_ptr().cast(), n, 1, self.fp) };
-        // SAFETY: as above.
-        unsafe { libc::fflush(self.fp) };
-        if self.opened {
-            // SAFETY: locked above.
-            unsafe { funlockfile(self.fp) };
+        let date = date.get(..length_date).unwrap_or_default();
+        let symbol = u8::from_ne_bytes(identity.worker_symbol.to_ne_bytes());
+        let (pid, worker) = (identity.worker_pid, identity.worker_id);
+        let n = log_line(&mut line, date, symbol, pid, worker, level, content);
+        let line = line.get(..n).unwrap_or_default();
+        if let Some(fd) = self.file_fd {
+            write_all(fd, line);
+        } else {
+            // SAFETY: `line` is readable for its length; the stream is the caller's live one.
+            unsafe { libc::fwrite(line.as_ptr().cast(), line.len(), 1, self.stream) };
+            // SAFETY: as above.
+            unsafe { libc::fflush(self.stream) };
         }
         if self.backtrace {
             effects.push(Effect::Backtrace);
@@ -355,14 +328,14 @@ impl Logger {
             host,
             level: AtomicI32::new(SW_LOG_INFO),
             state: Mutex::new(State {
-                opened: false,
+                file_fd: None,
                 redirected: false,
                 backtrace: false,
                 microseconds: false,
                 rotation: 0,
                 stdout_fd: -1,
                 stderr_fd: -1,
-                fp: stdout_stream,
+                stream: stdout_stream,
                 stdout: stdout_stream,
                 date_format: SW_LOG_DEFAULT_DATE_FORMAT.into(),
                 file: CString::default(),
@@ -381,8 +354,9 @@ impl Logger {
         self.lock().close();
     }
 
-    /// `Logger::put`; `content` is readable as upstream's `%.*s` reads it.
-    fn put(&self, level: c_int, content: *const u8, length: usize) {
+    /// `Logger::put`: `content` through its first NUL, as upstream's `%.*s`
+    /// reads it, then the backtrace if one was asked for.
+    pub fn put(&self, level: c_int, content: &[u8]) {
         if level < self.level.load(Relaxed) {
             return;
         }
@@ -390,7 +364,7 @@ impl Logger {
         if identity.worker_pid == 0 {
             identity.worker_pid = swoole_rs_corebase::sys::getpid();
         }
-        self.with(|state, effects| state.write(level, content, length, &identity, effects));
+        self.with(|state, effects| state.write(level, content, &identity, effects));
     }
 }
 
@@ -437,12 +411,12 @@ pub extern "C" fn swr_v1_logger_close(logger: &Logger) {
 pub unsafe extern "C" fn swr_v1_logger_set_stream(logger: &Logger, stream: *mut FILE) {
     let mut state = logger.lock();
     state.close();
-    state.fp = stream;
+    state.stream = stream;
 }
 
-/// `Logger::put`: the line, then the backtrace if one was asked for.
+/// [`Logger::put`].
 /// # Safety
-/// `content` is readable as upstream's `%.*s` reads it.
+/// `content` is readable as upstream's `%.*s` with `static_cast<int>(length)` reads it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_logger_put(
     logger: &Logger,
@@ -450,7 +424,14 @@ pub unsafe extern "C" fn swr_v1_logger_put(
     content: *const c_char,
     length: usize,
 ) {
-    logger.put(level, content.cast(), length);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "upstream's static_cast<int>(length)"
+    )]
+    let precision = length as i32;
+    // SAFETY: per the contract.
+    logger.put(level, unsafe { log_bytes(content.cast(), precision) });
 }
 
 /// `Logger::get_level`.
@@ -541,7 +522,7 @@ pub extern "C" fn swr_v1_logger_redirect(logger: &Logger, enable: bool) -> bool 
 /// `Logger::is_opened`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_logger_is_opened(logger: &Logger) -> bool {
-    logger.lock().opened
+    logger.lock().file_fd.is_some()
 }
 
 /// `Logger::get_file` (0) or `get_real_file` (1): valid until the file next changes.
@@ -662,7 +643,7 @@ pub unsafe extern "C" fn swr_v1_utils_log(
     };
     let length = swoole_rs_error::set_last_error_msg(&line);
     if let Some(logger) = process_logger() {
-        logger.put(level, line.as_ptr(), length);
+        logger.put(level, line.get(..length).unwrap_or(&line));
     }
     if matches!(kind, log::LOG_SYS_ERROR | log::LOG_FATAL) {
         swoole_rs_corebase::swoole_exit(1);

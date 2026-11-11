@@ -2,12 +2,11 @@
 //! `swoole::http::Context::build_header`, `build_trailer` and `compress` did
 //! them. Each send leases reusable storage until its IO completes.
 use crate::parse::CAPABILITIES;
-use crate::state::State;
+use crate::state::{Slot, State};
 use crate::{host, send};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::io::Write;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
@@ -84,14 +83,14 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
 /// is an array.
-/// # Safety
-/// The array is the response object's, which nothing frees while it is borrowed.
-unsafe fn property<'a>(state: &State, which: usize) -> Option<&'a Array> {
-    let object = state.response.zobject.object()?;
+/// The context's reference keeps the response object, and so the array, live
+/// while its slot is borrowed.
+fn property(response: &Slot, which: usize) -> Option<&Array> {
+    let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
     let slot = object.wrapping_byte_add(offset).cast::<zval>();
-    // SAFETY: a declared property slot, live as the caller promises.
+    // SAFETY: a declared property slot of the context's live response.
     unsafe { Value::from_ptr(slot) }.and_then(Value::array)
 }
 
@@ -274,6 +273,31 @@ fn header_key(key: Result<&[u8], i64>) -> (Cow<'_, [u8]>, i32) {
     (key, flag)
 }
 
+/// `value` in decimal, written into the end of `buffer` (`swoole_itoa`);
+/// twenty bytes hold any i64. Not `write!`: `core::fmt` costs four times as much
+/// on every response header.
+#[must_use]
+pub fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
+    let mut rest = value.unsigned_abs();
+    let mut start = buffer.len();
+    for slot in buffer.iter_mut().rev() {
+        *slot = b'0' + (rest % 10) as u8;
+        start -= 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if value < 0
+        && let Some(sign) = start.checked_sub(1)
+        && let Some(slot) = buffer.get_mut(sign)
+    {
+        *slot = b'-';
+        start = sign;
+    }
+    buffer.get(start..).unwrap_or_default()
+}
+
 fn build(
     state: &mut State,
     body: *const c_char,
@@ -286,7 +310,7 @@ fn build(
     if state.response.reason.is_null() {
         out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
     } else {
-        write!(out, "{}", state.response.status).unwrap_or_default();
+        out.extend_from_slice(decimal(&mut [0; 20], state.response.status.into()));
         out.push(b' ');
         // SAFETY: `status()` stored a NUL-terminated reason.
         out.extend_from_slice(unsafe { CStr::from_ptr(state.response.reason) }.to_bytes());
@@ -295,8 +319,7 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    // SAFETY: the response object outlives the send.
-    if let Some(header) = unsafe { property(state, 0) } {
+    if let Some(header) = property(&state.response.zobject, 0) {
         // Asked once, like upstream's `compression_types` test.
         let typed = compression && crate::context::compression_type(state, None);
         let mut content_type: Option<ZString> = None;
@@ -347,8 +370,7 @@ fn build(
     }
 
     // http cookies
-    // SAFETY: as above.
-    if let Some(cookie) = unsafe { property(state, 1) } {
+    if let Some(cookie) = property(&state.response.zobject, 1) {
         each::<()>(cookie, |_, value_| {
             if let Some(line) = value_.bytes()
                 && !has_crlf(line)
@@ -403,7 +425,10 @@ fn build(
             out.extend_from_slice(b"\r\n");
         }
         if flags & CONTENT_LENGTH == 0 {
-            write!(out, "Content-Length: {length}\r\n").unwrap_or_default();
+            out.extend_from_slice(b"Content-Length: ");
+            let length = i64::try_from(length).unwrap_or(i64::MAX);
+            out.extend_from_slice(decimal(&mut [0; 20], length));
+            out.extend_from_slice(b"\r\n");
         }
     }
     out.extend_from_slice(b"\r\n");
@@ -437,8 +462,7 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        // SAFETY: the response object outlives the send.
-        if let Some(trailer) = unsafe { property(send::state(ctx), 2) } {
+        if let Some(trailer) = property(&send::state(ctx).response.zobject, 2) {
             each(trailer, |key, value_| {
                 let Ok(name) = key else { return Ok(()) };
                 if value_.is_null() {
@@ -575,6 +599,13 @@ pub(crate) fn compress_body<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimal_matches_display() {
+        for value in [0, 7, 200, 404, 1_048_576, -1, -503, i64::MAX, i64::MIN] {
+            assert_eq!(decimal(&mut [0; 20], value), value.to_string().as_bytes());
+        }
+    }
 
     #[test]
     fn output_survives_reentry_and_returns_on_error() {

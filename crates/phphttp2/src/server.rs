@@ -5,7 +5,7 @@
 //! `onReceive` and `onClose` for its HTTP/2 connections. The HTTP contexts are
 //! crates/phphttp's.
 use crate::session::{Session, SessionState, Stream};
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -21,7 +21,7 @@ use swoole_rs_http2::{
     sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::view;
+use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
     Array, Owned, Value as Zval, ZString, bailout, string,
     sys::{
@@ -102,6 +102,7 @@ const LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
 
+use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
 
 pub(crate) use swoole_rs_phphttp::http2::{Ctx, Value};
@@ -547,30 +548,6 @@ fn fold(text: &[u8]) -> ([u8; 33], usize) {
     (folded, length)
 }
 
-/// `value` in decimal, written into the end of `buffer` (`swoole_itoa`);
-/// twenty bytes hold any i64. Not `write!`: `core::fmt` costs four times as much
-/// on every response header.
-fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
-    let mut rest = value.unsigned_abs();
-    let mut start = buffer.len();
-    for slot in buffer.iter_mut().rev() {
-        *slot = b'0' + (rest % 10) as u8;
-        start -= 1;
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
-    }
-    if value < 0
-        && let Some(sign) = start.checked_sub(1)
-        && let Some(slot) = buffer.get_mut(sign)
-    {
-        *slot = b'-';
-        start = sign;
-    }
-    buffer.get(start..).unwrap_or_default()
-}
-
 /// `Stream::send_header`.
 fn send_header(
     ctx: Ctx,
@@ -848,33 +825,26 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
-/// # Safety
-/// `conn` is the session's connection.
-unsafe fn on_receive(view: view::Server<'_>, conn: *mut c_void, request: &RecvData) -> c_int {
-    let server = view.raw();
+fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvData) -> c_int {
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
-        // SAFETY: the live server.
-        let default_ctx = unsafe { Ctx::server_context(server, session_id) };
+        let default_ctx = Ctx::server_context(view, session_id);
+        let conn = ptr::from_ref(conn).cast_mut().cast();
         // SAFETY: the live server and the session's connection.
         let max_body_size =
-            unsafe { swoole_rs_server::server_methods::package_max_length(server, conn) };
-        // SAFETY: the session's own settings context and the server's request handler.
-        unsafe {
-            crate::session::session_new(
-                session_id,
-                default_ctx,
-                max_body_size,
-                false,
-                swoole_rs_phphttp::http2_request_handler,
-                ptr::null_mut(),
-            );
-        };
+            unsafe { swoole_rs_server::server_methods::package_max_length(view.raw(), conn) };
+        crate::session::session_new(
+            session_id,
+            default_ctx,
+            max_body_size,
+            false,
+            Box::new(|ctx, _| swoole_rs_phphttp::http2_request(ctx)),
+        );
         SessionState::find(session_id)
     });
     let zdata = Owned::default();
-    // SAFETY: a new string.
-    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(view, zdata.as_ptr(), request) };
+    // SAFETY: the empty slot `zdata` owns, for a new string.
+    swoole_rs_phpserver::php_swoole_get_recv_data(view, unsafe { &mut *zdata.as_ptr() }, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
@@ -1422,13 +1392,6 @@ mod tests {
         assert_eq!(strtol(b"abc"), (0, false));
         assert_eq!(strtol(b""), (0, true));
         assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, true));
-    }
-
-    #[test]
-    fn decimal_matches_display() {
-        for value in [0, 7, 200, 404, 1_048_576, -1, -503, i64::MAX, i64::MIN] {
-            assert_eq!(decimal(&mut [0; 20], value), value.to_string().as_bytes());
-        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use swoole_rs_httpbindings::request_option;
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Key, Minit, Value, handlers, init_object,
+    Call, Class, Key, Value, handlers,
     sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -24,8 +24,9 @@ pub(crate) fn entry() -> *mut zend_class_entry {
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it.
-    unsafe { context::create(&REQUEST, ce) }
+    // SAFETY: Zend calls `create_object` with this class or a subclass of
+    // it; a null context is valid zeroed data.
+    unsafe { Holder::create(&REQUEST, ce) }
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
@@ -59,11 +60,8 @@ method_table! {
 }
 
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe fn request_minit(args: &MinitArgs) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
+pub fn request_minit(args: &MinitArgs) {
+    let minit = &args.minit;
     minit.register(
         &REQUEST,
         c"Swoole\\Http\\Request",
@@ -101,7 +99,7 @@ fn checked(call: &Call) -> Option<*mut Context> {
 
 fn get_content(call: &Call) {
     let Some(ctx) = checked(call) else { return };
-    match body(ctx.cast()) {
+    match body(send::state(ctx)) {
         Some(bytes) => call.set_bytes(bytes),
         None => call.set_empty_string(),
     }
@@ -137,16 +135,10 @@ fn create_request(call: &Call) {
     parse::init_request_parser(ctx);
     let state = send::state(ctx);
     let slot = &mut state.request.zobject;
-    // SAFETY: the context's own zval and the registered class.
-    unsafe { init_object(&raw mut slot.value, entry()) };
-    slot.ptr = &raw mut slot.value;
+    let _made = context::new_object(slot, context::Kind::Request, ctx);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it, as upstream's does.
     unsafe { call.set_value(slot.value) };
-    if let Some(std) = slot.object() {
-        // SAFETY: one of our objects.
-        unsafe { context::set_context(std, ctx) };
-    }
     state.parse_cookie = 1;
     state.parse_body = 1;
     state.parse_files = 1;
@@ -203,16 +195,17 @@ fn parse(call: &Call) {
     let Ok(Some(data)) = call.arity(1, 1).and_then(|()| call.string_opt(1)) else {
         return call.set_bool(false);
     };
-    let parsed = parse::parse_piece(ctx.cast(), data);
+    let parsed = parse::parse_piece(crate::send::state(ctx), data);
     call.set_long(i64::try_from(parsed).unwrap_or(i64::MAX));
 }
 
 fn get_method(call: &Call) {
     let Some(ctx) = checked(call) else { return };
     if host::flags(ctx) & HTTP2 != 0 {
-        // SAFETY: the context's `server` array, live while the request is.
-        let server = unsafe { Value::from_ptr(send::state(ctx).request.zserver.ptr) };
-        let method = server
+        let method = send::state(ctx)
+            .request
+            .zserver
+            .get()
             .and_then(Value::array)
             .and_then(|server| server.find(b"request_method"));
         return match method {
@@ -220,7 +213,7 @@ fn get_method(call: &Call) {
             None => call.set_null(),
         };
     }
-    call.set_bytes(method_name(ctx.cast()).as_bytes());
+    call.set_bytes(method_name(send::state(ctx)).as_bytes());
 }
 
 fn is_completed(call: &Call) {

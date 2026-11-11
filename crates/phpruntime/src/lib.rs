@@ -154,49 +154,6 @@ pub unsafe fn callable_dup(callable: *mut c_void) -> *mut c_void {
     unsafe { handle::copy(callable.cast()) }.cast()
 }
 
-/// [`callable_call`]'s arguments and result.
-#[repr(C)]
-struct CallableCall {
-    callable: *mut c_void,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-    from_loop: bool,
-    result: bool,
-}
-
-/// [`callable_call`]'s trapped body.
-/// # Safety
-/// `call` is a live [`CallableCall`] whose callable, arguments and return slot
-/// are live.
-unsafe extern "C" fn invoke(call: *mut c_void) {
-    // SAFETY: per the caller.
-    let call = unsafe { &mut *call.cast::<CallableCall>() };
-    let callable = call.callable.cast();
-    call.result = if call.from_loop {
-        // SAFETY: per the caller.
-        let cache = unsafe { handle::cache(callable) };
-        // SAFETY: per the caller; the reporter is C.
-        let called = unsafe {
-            swoole_rs_zend::host::swr_v1_phphelpers_call(
-                std::ptr::null_mut(),
-                cache,
-                call.argc,
-                call.argv,
-                call.retval,
-                true,
-                swr_zend_callable_warning,
-            )
-        };
-        called == 0
-    } else {
-        // SAFETY: per the caller.
-        let called = unsafe { handle::invoke(callable, call.argc, call.argv, call.retval) };
-        bailout::finish();
-        called.unwrap_or(false)
-    };
-}
-
 /// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
 /// `from_loop` `sw_zend_call_function_ex2`, which raises an uncaught exception at
 /// once as the event loop's callbacks do: whether the call succeeded.
@@ -211,18 +168,37 @@ pub unsafe fn callable_call(
     retval: *mut zval,
     from_loop: bool,
 ) -> Result<bool, Bailout> {
-    let mut call = CallableCall {
-        callable,
-        #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
-        argc: args.len() as u32,
-        argv: args.as_mut_ptr(),
-        retval,
-        from_loop,
-        result: false,
+    #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
+    let (argc, argv) = (args.len() as u32, args.as_mut_ptr());
+    let callable = callable.cast();
+    let mut result = false;
+    let invoke = || {
+        result = if from_loop {
+            // SAFETY: per the caller.
+            let cache = unsafe { handle::cache(callable) };
+            // SAFETY: per the caller; the reporter is C.
+            let called = unsafe {
+                swoole_rs_zend::host::swr_v1_phphelpers_call(
+                    std::ptr::null_mut(),
+                    cache,
+                    argc,
+                    argv,
+                    retval,
+                    true,
+                    swr_zend_callable_warning,
+                )
+            };
+            called == 0
+        } else {
+            // SAFETY: per the caller.
+            let called = unsafe { handle::invoke(callable, argc, argv, retval) };
+            bailout::finish();
+            called.unwrap_or(false)
+        };
     };
-    // SAFETY: per the caller; `invoke` takes a `CallableCall`.
-    unsafe { bailout::trap(invoke, (&raw mut call).cast()) }?;
-    Ok(call.result)
+    // SAFETY: per the caller; the body holds copies and the result slot.
+    unsafe { bailout::trap_with(invoke) }?;
+    Ok(result)
 }
 
 const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;
@@ -617,16 +593,7 @@ fn throw(message: &Message, code: i64) {
 fn log_warning(message: &CStr) {
     const SW_LOG_WARNING: i32 = 4;
     if let Some(logger) = swoole_rs_utilities::process_logger() {
-        let message = message.to_bytes();
-        // SAFETY: the live process logger, with the message's bytes.
-        unsafe {
-            swoole_rs_utilities::swr_v1_logger_put(
-                logger,
-                SW_LOG_WARNING,
-                message.as_ptr().cast(),
-                message.len(),
-            );
-        }
+        logger.put(SW_LOG_WARNING, message.to_bytes());
     }
 }
 

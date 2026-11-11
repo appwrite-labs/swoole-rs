@@ -233,7 +233,7 @@ impl Facts for Live<'_> {
         let gs = self.serv.counters();
         let mode = u64::from(self.config.mode_);
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
-        let worker = crate::worker_methods::current_worker();
+        let worker = swoole_rs_process::worker_globals::current_worker();
         // Server::foreach_connection: each valid connection, max_fd read afresh.
         let mut fd = gs.min_fd;
         while fd <= gs.max_fd {
@@ -367,9 +367,7 @@ impl Facts for Live<'_> {
         (0..tables.ports().len())
             .filter_map(|index| tables.port_config(index))
             .map(|config| {
-                let host = config.host();
-                // SAFETY: the host's bytes, which the port keeps.
-                let host = unsafe { core::slice::from_raw_parts(host.data.cast(), host.length) };
+                let host = config.host_bytes();
                 let protocols = (crate::port_config::methods().get_protocols)(config);
                 let connections = serv.port_connections(config);
                 Port {

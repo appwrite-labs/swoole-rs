@@ -16,7 +16,7 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Object, Value, ZString, bailout, message,
+    Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
@@ -100,14 +100,12 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     swoole_rs_zend::bailout::finish();
 }
 
-/// A new Port object (an emalloc'd zval) bound to `port` and its server `serv`.
+/// A new Port object bound to `port` and its server `serv`.
 /// # Safety
 /// `serv` is a live server and `port` one of its ports.
-pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zval {
-    // SAFETY: Zend's request allocator; the Server object frees it.
-    let zport = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: a writable zval and the registered class.
-    let object = unsafe { swoole_rs_zend::init_object(zport, PORT.entry()) };
+pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned, *mut zend_object) {
+    let zport = PORT.create_object();
+    let object = zport.object().unwrap_or(ptr::null_mut());
     // SAFETY: the object just created, one of ours.
     let data = unsafe { Port::data(object) };
     data.port = port;
@@ -122,7 +120,7 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zv
         (&raw mut data.property).cast(),
         true,
     );
-    zport
+    (zport, object)
 }
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
@@ -378,12 +376,8 @@ pub(crate) fn merge_setting(
     object: *mut zend_object,
     settings: *mut zval,
 ) -> Result<*mut zval, bailout::Bailout> {
-    let mut zobject = crate::dispatch::undef();
-    // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
-    unsafe { swoole_rs_zend::set_object(&raw mut zobject, object) };
     // SAFETY: the object and its class, which declares `setting`.
-    let setting =
-        unsafe { swoole_rs_zend::host::array_property_of(scope, &raw mut zobject, c"setting") }?;
+    let setting = unsafe { swoole_rs_zend::host::array_property_of(scope, object, c"setting") }?;
     // SAFETY: the property, now an array, and the settings array.
     bailout::trapped(unsafe { z::swr_zend_try_array_merge(setting, settings) })?;
     Ok(setting)

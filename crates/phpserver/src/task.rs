@@ -5,7 +5,7 @@
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
 //! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
 //! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
-use crate::dispatch::{handler_error, invoke, set_last_error, undef, zserv};
+use crate::dispatch::{dtor, handler_error, invoke, set_last_error, undef, zserv};
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
@@ -29,15 +29,15 @@ use swoole_rs_process::{
 use swoole_rs_server::view;
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
-    Array, Call, E_WARNING, Value,
+    Array, Call, E_WARNING, Owned, Value,
     bailout::Bailout,
-    kind, long_zval, message, report,
+    long_zval, message, report,
     string::bytes,
     sys::{
-        IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
+        add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
         swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval, zval_ptr_dtor,
     },
-    value::{array_init, count, table},
+    value::{count, table},
 };
 
 /// `SW_TASK_*` flags.
@@ -279,11 +279,6 @@ fn info(task: Packed<'_>) -> Info {
         time: head.time,
         flags: i64::from(head.ext_flags),
     }
-}
-
-fn dtor(value: &mut zval) {
-    // SAFETY: a value this module owns.
-    unsafe { zval_ptr_dtor(value) };
 }
 
 /// The bytes a task carries: a string as it is, anything else serialized
@@ -568,8 +563,7 @@ fn task_wait_multi(call: &Call) {
         return call.set_bool(false);
     }
     let tasks = call.value(1).and_then(Value::array);
-    // SAFETY: the return slot.
-    unsafe { array_init(call.return_value()) };
+    call.set_array();
     let n_task = tasks.map_or(0, Array::count);
     if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
@@ -619,8 +613,7 @@ fn task_co(call: &Call, fill_false: bool) {
     }
     let co = swoole_rs_phpcoroutines::current();
     let result = call.return_value();
-    // SAFETY: the return slot.
-    unsafe { array_init(result) };
+    call.set_array();
     let mut task_co = TaskCo {
         co,
         result,
@@ -770,32 +763,27 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         args[3] = data;
         4
     };
-    let mut retval = undef();
+    let retval = Owned::default();
     let cb = crate::lifecycle::callback(ON_TASK);
     let outcome = match invoke(
         cb,
         args.get_mut(..argc).unwrap_or_default(),
-        &raw mut retval,
+        retval.as_ptr(),
         facts.task_coroutine,
     ) {
-        Ok(false) => handler_error(&zserv, "onTask"),
+        Ok(false) => handler_error("onTask"),
         called => called.map(drop),
     };
     if argc == 2 {
         dtor(&mut args[1]);
     }
     let outcome = outcome.and_then(|()| {
-        if kind(&retval) != IS_NULL {
-            let finished = finish_task(
-                server.raw(),
-                Value::of(&mut retval),
-                task.as_ptr().cast_mut(),
-            );
-            dtor(&mut retval);
-            finished?;
+        if !retval.is_null() {
+            finish_task(server.raw(), &retval, task.as_ptr().cast_mut())?;
         }
         Ok(())
     });
+    drop(retval);
     dtor(&mut data);
     outcome.map(|()| SW_OK)
 }
@@ -851,7 +839,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
         ptr::null_mut(),
         facts.enable_coroutine,
     ) {
-        Ok(false) => handler_error(&zserv, "onFinish"),
+        Ok(false) => handler_error("onFinish"),
         called => called.map(drop),
     };
     if flags & CALLBACK != 0
@@ -881,17 +869,15 @@ fn resume(server: view::Server<'_>, id: i64, mut data: zval) -> Result<(), Bailo
         return Ok(());
     };
     // SAFETY: the waiting coroutine's live TaskCo, unregistered before it ends.
-    let (co, result, index, total) = unsafe {
-        let task_co = &*task_co;
-        (
-            task_co.co,
-            task_co.result,
-            task_co.list.iter().position(|&t| t == id),
-            task_co.count,
-        )
-    };
-    // SAFETY: as above.
-    if unsafe { (*task_co).list.is_empty() } {
+    let task_co = unsafe { &*task_co };
+    let (co, result, index, total, single) = (
+        task_co.co,
+        task_co.result,
+        task_co.list.iter().position(|&t| t == id),
+        task_co.count,
+        task_co.list.is_empty(),
+    );
+    if single {
         // ZVAL_COPY_VALUE: the result takes the value.
         // SAFETY: the waiting call's return slot.
         unsafe { result.write(data) };

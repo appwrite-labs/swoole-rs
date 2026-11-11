@@ -17,8 +17,8 @@ use std::ptr;
 
 use crate::os::{getpid, kill};
 use crate::pool::{
-    Bailed, PoolCall, PoolHooks, PoolIpc, PoolLoop, Step, pool_ipc_free, pool_ipc_new,
-    pool_ipc_prepare, pool_run, swr_v1_process_pool_ipc_listener,
+    Bailed, PoolCall, PoolIpc, PoolLoop, pool_ipc_free, pool_ipc_new, pool_ipc_prepare, pool_run,
+    swr_v1_process_pool_ipc_listener,
 };
 use crate::reaper::{self, RELOAD_KILL_ONE, RELOAD_NONE, Reap, Waited, wait_child};
 use crate::reload_task::{ReloadTask, Warn};
@@ -77,18 +77,51 @@ pub struct PoolRecord {
     pub ptr: *mut c_void,
 }
 
-/// The table every export runs over (`crates/server/src/pool_native.rs`).
-#[repr(C)]
-pub struct PoolNative {
-    /// One effect (`OP_*`) on `pool` and `worker` (null when none).
-    pub call:
-        unsafe extern "C" fn(pool: *mut c_void, worker: *mut c_void, op: u32, arg: u64) -> i64,
-    /// The callback `CB_*` in the call's `flags`, run inside the trap.
-    pub callback: Step,
-    /// The worker loops' hooks.
-    pub hooks: *const PoolHooks,
+/// What every export runs over (`crates/server/src/pool_native.rs`): the pool's
+/// native objects, which this crate can't depend on, and its callbacks. Each takes
+/// a [`PoolCall`] this crate filled over live objects.
+pub trait PoolNative: Sync {
+    /// One effect (`OP_*`) on the call's pool and worker.
+    fn call(&self, call: &PoolCall, op: u32, arg: u64) -> i64;
+    /// The callback `CB_*` in the call's flags; it runs inside the trap.
+    fn callback(&self, call: &mut PoolCall);
     /// `sizeof(EventData)`.
-    pub event_size: usize,
+    fn event_size(&self) -> usize;
+    /// `ProcessPool::is_worker_running(worker)`.
+    fn running(&self, call: &PoolCall) -> bool;
+    /// Run the expired timers and dispatch the pending signals.
+    fn end(&self);
+    /// `queue->pop(data, length)`.
+    fn queue_pop(&self, call: &mut PoolCall);
+    /// `queue->push(data, length)`: 1 when pushed.
+    fn queue_push(&self, call: &mut PoolCall);
+    /// The stream listener's `accept()`: the connection in `socket`.
+    fn accept(&self, call: &mut PoolCall);
+    /// `socket->recv_sync(data, length, flags)`.
+    fn recv(&self, call: &mut PoolCall);
+    /// `socket->send_sync(data, length)`.
+    fn send(&self, call: &mut PoolCall);
+    /// `socket->free()` of the call's socket, which is not used again.
+    fn close(&self, call: &PoolCall);
+    /// The worker's pipe, with the next timer as its read timeout: `read_sync`.
+    fn pipe_read(&self, call: &mut PoolCall);
+    /// `pipe_worker->wait_event(next timer, SW_EVENT_READ)`.
+    fn pipe_wait(&self, call: &mut PoolCall);
+    /// `message_bus->read(pipe_worker)`.
+    fn bus_read(&self, call: &mut PoolCall);
+    /// `onMessage` with the bus's packet, then `message_bus->pop()`.
+    fn bus_deliver(&self, call: &mut PoolCall);
+    /// `onTask(pool, worker, data)`.
+    fn task(&self, call: &mut PoolCall);
+    /// `onMessage` with `length` bytes at `data`.
+    fn message(&self, call: &mut PoolCall);
+    /// `worker->shutdown()`.
+    fn shutdown(&self, call: &PoolCall);
+    /// `socket` (a worker's pipe): `swoole_event_write` when the event loop is
+    /// available and `flags` asks for it, else `send_sync`.
+    fn pipe_write(&self, call: &mut PoolCall);
+    /// Report a `WARN_*` or `TRACE_*` with its numbers.
+    fn warn(&self, call: &PoolCall, kind: c_int, a: i64, b: i64);
 }
 
 /// An export's result when a callback bailed out: the caller raises it.
@@ -247,15 +280,16 @@ pub(crate) trait PoolHost {
     fn callback(&mut self, cb: c_int, worker: *mut c_void) -> Result<isize, Bailed>;
     /// Run the protocol's worker loop: `DONE` or `BAILED`.
     fn run_loop(&mut self, pool_loop: &PoolLoop, protocol: c_int) -> c_int;
-    fn hooks(&self) -> *const PoolHooks;
+    /// The native side, which tests leave out.
+    fn native(&self) -> Option<&dyn PoolNative>;
     fn warn(&self) -> Warn;
     fn event_size(&self) -> usize;
-    /// The hooks' socket free.
-    fn close(&self) -> unsafe extern "C" fn(*mut c_void);
+    /// The native socket free.
+    fn close(&self, socket: *mut c_void);
 }
 
 struct Native<'a> {
-    native: &'a PoolNative,
+    native: &'a dyn PoolNative,
     pool: *mut c_void,
 }
 
@@ -269,24 +303,24 @@ impl PoolHost for Native<'_> {
         if let Some(result) = effect(op, arg) {
             return result;
         }
-        // SAFETY: a native effect on the live pool this export runs over.
-        unsafe { (self.native.call)(self.pool, worker, op, arg) }
+        // A native effect on the live pool this export runs over.
+        self.native.call(&PoolCall::new(self.pool, worker), op, arg)
     }
 
     fn callback(&mut self, cb: c_int, worker: *mut c_void) -> Result<isize, Bailed> {
         let mut call = PoolCall::new(self.pool, worker);
         call.flags = cb;
-        crate::pool::run(self.native.callback, &mut call)?;
+        crate::pool::run(self.native, |native, call| native.callback(call), &mut call)?;
         Ok(call.result)
     }
 
     fn run_loop(&mut self, pool_loop: &PoolLoop, protocol: c_int) -> c_int {
-        // SAFETY: the loop describes this live pool, its worker and hooks.
-        unsafe { pool_run(pool_loop, protocol) }
+        // SAFETY: the loop describes this live pool, its worker and IPC state.
+        unsafe { pool_run(self.native, pool_loop, protocol) }
     }
 
-    fn hooks(&self) -> *const PoolHooks {
-        self.native.hooks
+    fn native(&self) -> Option<&dyn PoolNative> {
+        Some(self.native)
     }
 
     fn warn(&self) -> Warn {
@@ -294,39 +328,22 @@ impl PoolHost for Native<'_> {
     }
 
     fn event_size(&self) -> usize {
-        self.native.event_size
+        self.native.event_size()
     }
 
-    fn close(&self) -> unsafe extern "C" fn(*mut c_void) {
-        // SAFETY: native's static hooks.
-        unsafe { (*self.native.hooks).close }
+    fn close(&self, socket: *mut c_void) {
+        let mut call = PoolCall::new(self.pool, ptr::null_mut());
+        call.socket = socket;
+        self.native.close(&call);
     }
 }
 
-/// The `OP_*` effects that are calls into the process-wide worker, signal, timer,
-/// event and wait state: `None` for the rest, which native code does.
+/// The `OP_*` effects that are calls into the process-wide worker and signal state:
+/// `None` for the rest, which native code does (the timer, event loop and wait
+/// effects too, since crates/reactor and crates/timer depend on this crate).
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: u32, arg: u64) -> Option<i64> {
     use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
-    // SAFETY: crates/timer's and crates/reactor's functions, and
-    // crates/reactor's swoole_waitpid, under their upstream symbols. Declarations,
-    // since crates/reactor (and through it crates/timer) depends on this crate.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z25swoole_timer_is_availablev"]
-        fn swoole_timer_is_available() -> bool;
-        #[link_name = "_Z17swoole_timer_freev"]
-        fn swoole_timer_free();
-        #[link_name = "_Z19swoole_timer_selectv"]
-        fn swoole_timer_select();
-        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-        fn swoole_timer_del(node: *mut c_void) -> bool;
-        #[link_name = "_Z17swoole_event_waitv"]
-        fn swoole_event_wait() -> c_int;
-        #[link_name = "_Z25swoole_event_is_availablev"]
-        fn swoole_event_is_available() -> bool;
-        #[link_name = "_Z14swoole_waitpidiPii"]
-        fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    }
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the int the operation widened"
@@ -339,47 +356,15 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         }
         OP_IS_MASTER => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
         OP_CURRENT_WORKER => {
-            // SAFETY: this thread's worker globals.
-            let worker = unsafe { (*crate::worker_globals::thread_globals()).worker };
+            let worker = crate::worker_globals::current_worker();
             worker.expose_provenance().cast_signed() as i64
         }
         OP_SIGNAL_DISPATCH => {
             crate::signal::swoole_signal_dispatch();
             0
         }
-        OP_TIMER_SELECT => {
-            // SAFETY: the thread's timer, when it has one.
-            unsafe { swoole_timer_select() };
-            0
-        }
-        OP_TIMER_FREE => {
-            // SAFETY: as above.
-            if unsafe { swoole_timer_is_available() } {
-                // SAFETY: the thread's timer, freed once.
-                unsafe { swoole_timer_free() };
-            }
-            0
-        }
-        OP_TIMER_DEL => {
-            // SAFETY: a node of the thread's timer, deleted once.
-            unsafe {
-                swoole_timer_del(ptr::with_exposed_provenance_mut(
-                    usize::try_from(arg).unwrap_or(0),
-                ))
-            };
-            0
-        }
-        // SAFETY: the thread's event loop.
-        OP_EVENT_WAIT => i64::from(unsafe { swoole_event_wait() }),
-        // SAFETY: as above.
-        OP_EVENT_AVAILABLE => i64::from(unsafe { swoole_event_is_available() }),
         // crates/corebase's fork, with its process bookkeeping.
         OP_FORK => i64::from(swoole_rs_corebase::swoole_fork(0)),
-        OP_WAITPID => {
-            let mut status = 0;
-            // SAFETY: `status` is writable.
-            i64::from(unsafe { swoole_waitpid(int, &raw mut status, 0) })
-        }
         _ => return None,
     })
 }
@@ -925,7 +910,6 @@ impl<H: PoolHost> Pool<H> {
             IPC_UNIXSOCK
         };
         let pool_loop = PoolLoop {
-            hooks: self.h.hooks(),
             ipc: self.ipc(),
             pool: self.p.cast(),
             worker: worker.cast(),
@@ -1105,10 +1089,13 @@ impl<H: PoolHost> Pool<H> {
         let warning = p
             .wrapping_byte_add(std::mem::offset_of!(PoolRecord, scheduler_warning))
             .cast::<u8>();
+        let Some(native) = self.h.native() else {
+            return SW_ERR;
+        };
         // SAFETY: the pool's records, counter and flag; the caller's event and out-pointer.
         let sent = unsafe {
             crate::pool::pool_dispatch(
-                self.h.hooks(),
+                native,
                 p.cast(),
                 self.workers(),
                 self.worker_num(),
@@ -1139,7 +1126,7 @@ impl<H: PoolHost> Pool<H> {
         }
         self.set_queue(ptr::null_mut());
         // SAFETY: the pool's IPC state, freed once; the native close frees its listener.
-        unsafe { pool_ipc_free(self.ipc(), self.h.close()) };
+        unsafe { pool_ipc_free(self.ipc(), |socket| self.h.close(socket)) };
         self.set_ipc(ptr::null_mut());
         if !self.registry().is_null() {
             // SAFETY: the pool's boxed registry, freed once.
@@ -1221,14 +1208,12 @@ impl<H: PoolHost> Reap for Pool<H> {
 /// Run `f` over the pool with the native side.
 ///
 /// # Safety
-/// `native` is native's table and `pool` a live `ProcessPool`.
+/// `pool` is a live `ProcessPool`.
 unsafe fn with<T>(
-    native: *const PoolNative,
+    native: &dyn PoolNative,
     pool: *mut PoolRecord,
     f: impl FnOnce(&mut Pool<Native<'_>>) -> T,
 ) -> T {
-    // SAFETY: the caller's table, live for the call.
-    let native = unsafe { &*native };
     let mut pool = Pool {
         h: Native {
             native,
@@ -1246,9 +1231,9 @@ fn raise_or(result: Result<i64, Bailed>) -> i64 {
 /// `ProcessPool::create(worker_num, key, mode)`.
 ///
 /// # Safety
-/// `native` is native's table; `pool` a zeroed or reset `ProcessPool`.
-pub unsafe extern "C" fn swr_v1_process_pool_create(
-    native: *const PoolNative,
+/// `pool` a zeroed or reset `ProcessPool`.
+pub unsafe fn swr_v1_process_pool_create(
+    native: &dyn PoolNative,
     pool: *mut PoolRecord,
     worker_num: u32,
     key: c_int,
@@ -1261,9 +1246,9 @@ pub unsafe extern "C" fn swr_v1_process_pool_create(
 /// `ProcessPool::push_message(type, data, length)`.
 ///
 /// # Safety
-/// `native` is native's table; `pool` a live `ProcessPool`; `data` holds `length` bytes.
-pub unsafe extern "C" fn swr_v1_process_pool_push(
-    native: *const PoolNative,
+/// `pool` a live `ProcessPool`; `data` holds `length` bytes.
+pub unsafe fn swr_v1_process_pool_push(
+    native: &dyn PoolNative,
     pool: *mut PoolRecord,
     kind: u8,
     data: *const u8,
@@ -1276,10 +1261,10 @@ pub unsafe extern "C" fn swr_v1_process_pool_push(
 /// `ProcessPool::dispatch` (`blocking`: `dispatch_sync`) of the `EventData` at `event`.
 ///
 /// # Safety
-/// `native` is native's table; `pool` a live `ProcessPool`; `event` an `EventData`
+/// `pool` a live `ProcessPool`; `event` an `EventData`
 /// and `worker_id` writable.
-pub unsafe extern "C" fn swr_v1_process_pool_dispatch_event(
-    native: *const PoolNative,
+pub unsafe fn swr_v1_process_pool_dispatch_event(
+    native: &dyn PoolNative,
     pool: *mut PoolRecord,
     event: *mut u8,
     worker_id: *mut c_int,
@@ -1307,10 +1292,10 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
 /// one): the C++ method's return value, or [`RAISE`].
 ///
 /// # Safety
-/// `native` is native's table; `pool` a live `ProcessPool`; `worker` null or
+/// `pool` a live `ProcessPool`; `worker` null or
 /// one of its workers.
 pub unsafe fn pool_run_op(
-    native: *const PoolNative,
+    native: &dyn PoolNative,
     pool: *mut PoolRecord,
     worker: *mut WorkerRecord,
     operation: u32,
@@ -1452,8 +1437,8 @@ mod tests {
         fn run_loop(&mut self, _: &PoolLoop, _: c_int) -> c_int {
             crate::pool::DONE
         }
-        fn hooks(&self) -> *const PoolHooks {
-            ptr::null()
+        fn native(&self) -> Option<&dyn PoolNative> {
+            None
         }
         fn warn(&self) -> Warn {
             warn
@@ -1461,12 +1446,10 @@ mod tests {
         fn event_size(&self) -> usize {
             8192
         }
-        fn close(&self) -> unsafe extern "C" fn(*mut c_void) {
-            close
-        }
+        fn close(&self, _: *mut c_void) {}
     }
 
-    unsafe extern "C" fn close(_: *mut c_void) {}
+    fn close(_: *mut c_void) {}
 
     extern "C" fn warn(_: c_int, _: c_int, _: u32) {}
 

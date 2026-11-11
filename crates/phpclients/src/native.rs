@@ -7,6 +7,7 @@ use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
     ptr,
+    rc::Rc,
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
@@ -19,8 +20,9 @@ use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
 use swoole_rs_reactor::Socket as Net;
 use swoole_rs_zend::{
-    Owned, ZString,
+    Owned, Value, ZString,
     bailout::{self, Bailout},
+    host::callable::Callable,
     string::{self, ZBuf},
     sys::zval,
 };
@@ -68,8 +70,7 @@ pub(crate) unsafe fn unconstructed() {
 }
 
 /// `new SocketImpl(...)`: by family (`domain`, `kind`, `protocol`) or by
-/// `swSocketType` (`kind`), over `fd` unless it is negative. The new socket is
-/// the caller's to own.
+/// `swSocketType` (`kind`), over `fd` unless it is negative.
 /// # Errors
 /// The constructor bailed out.
 pub(crate) fn make(
@@ -78,8 +79,10 @@ pub(crate) fn make(
     kind: c_int,
     protocol: c_int,
     family: bool,
-) -> Result<Socket, Bailout> {
-    co::make(fd, domain, kind, protocol, family)
+) -> Result<NewSocket, Bailout> {
+    let socket = co::make(fd, domain, kind, protocol, family)?;
+    // SAFETY: the new socket, which nothing else holds.
+    Ok(NewSocket(unsafe { Co::new(socket) }))
 }
 
 /// `delete socket`.
@@ -87,9 +90,44 @@ pub(crate) fn make(
 /// A close hook bailed out.
 /// # Safety
 /// `socket` is live and owned; it is gone after the call.
-pub(crate) unsafe fn free_socket(socket: Socket) -> Result<(), Bailout> {
+pub(crate) unsafe fn free_socket(socket: Co) -> Result<(), Bailout> {
     // SAFETY: per the caller.
-    unsafe { co::free(socket) }
+    unsafe { co::free(socket.as_ptr()) }
+}
+
+/// A coroutine socket that nothing else holds: its holder frees it or gives it
+/// to an object. Dropped, it leaks.
+#[must_use]
+pub struct NewSocket(Co);
+
+impl NewSocket {
+    pub(crate) fn co(&self) -> Co {
+        self.0
+    }
+
+    /// Give up ownership, to the object that now holds the socket.
+    pub(crate) fn into_co(self) -> Co {
+        self.0
+    }
+
+    /// `delete socket`.
+    /// # Errors
+    /// A close hook bailed out.
+    pub(crate) fn free(self) -> Result<(), Bailout> {
+        // SAFETY: an owned socket, which nothing else holds.
+        unsafe { free_socket(self.0) }
+    }
+}
+
+/// `php_swoole_check_reactor()` inside `zend_try`.
+/// # Errors
+/// Starting the reactor bailed out.
+pub(crate) fn check_reactor() -> Result<(), Bailout> {
+    // SAFETY: a hook that owns nothing, run below the C bailout trap.
+    if unsafe { swoole_rs_zend::sys::swr_zend_try_hook(Some(swoole_rs_check_reactor)) } != 0 {
+        return Err(Bailout);
+    }
+    Ok(())
 }
 
 /// Whether the build has an optional SSL option: the host name (0) or grease
@@ -123,7 +161,8 @@ impl Co {
     }
 
     /// crates/hooks' handle to the same record.
-    pub(crate) fn handle(self) -> Handle {
+    #[must_use]
+    pub fn handle(self) -> Handle {
         self.0
     }
 
@@ -166,8 +205,7 @@ impl Co {
     /// # Errors
     /// A close hook bailed out.
     pub(crate) fn close_trapped(self) -> Result<bool, Bailout> {
-        // SAFETY: a live socket.
-        unsafe { co::close_trapped(self.as_ptr()) }
+        co::close_trapped(self.0)
     }
 
     /// `close()`; the socket may be gone after it returns true.
@@ -235,20 +273,18 @@ impl Co {
         freed
     }
 
-    /// `accept(timeout)`: the new connection, owned by the caller, or null. It
-    /// copies the listener's length callable, so closing it leaves the listener's.
+    /// `accept(timeout)`: the new connection, owned by the caller. It copies
+    /// the listener's length callable, so closing it leaves the listener's.
     #[must_use]
-    pub fn accept(self, timeout: f64) -> Socket {
-        let Some(conn) = self.0.accept(timeout) else {
-            return ptr::null_mut();
-        };
+    pub fn accept(self, timeout: f64) -> Option<NewSocket> {
+        let conn = NewSocket(Self(self.0.accept(timeout)?));
         let callable = self.record().protocol.private_data_1;
         if !callable.is_null() {
             // SAFETY: the listener's live callable, copied for the new connection.
-            Self(conn).record().protocol.private_data_1 =
+            conn.co().record().protocol.private_data_1 =
                 unsafe { swoole_rs_phpruntime::callable_dup(callable) };
         }
-        conn.this()
+        Some(conn)
     }
 
     pub(crate) fn port_required(self) -> bool {
@@ -353,7 +389,7 @@ impl Co {
         let _timeout = self.timeout(timeout, kind);
         let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
         // SAFETY: per the caller.
-        unsafe { co::vector(self.as_ptr(), op, vectors.as_ptr(), count) }
+        unsafe { co::vector(self.0, op, vectors.as_ptr(), count) }
     }
 
     /// `sendfile(file, offset, length)` of the file named up to the first NUL,
@@ -512,21 +548,6 @@ impl Co {
     pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
         self.0.ssl_verify(allow_self_signed)
     }
-
-    /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
-    /// # Safety
-    /// `hook` may be called with `arg` until then.
-    pub(crate) unsafe fn close_hook(
-        self,
-        hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
-        arg: *mut c_void,
-    ) {
-        let hook = move |socket| {
-            // SAFETY: per the caller, `hook` takes `arg` until the socket goes.
-            unsafe { hook(arg, socket) }
-        };
-        swoole_rs_hooks::socket_extra::set_close_hook(self.0, Box::new(hook));
-    }
 }
 
 /// `package_length_func`: the callable `value` makes replaces any earlier
@@ -645,6 +666,31 @@ pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
     // SAFETY: a callable `callable` made, freed once and held by no slot.
     unsafe { swoole_rs_phpruntime::callable_free(callable) };
     bailout::outcome(())
+}
+
+/// `sw_callable_create(value)`: none after a warning. The last owner's drop
+/// frees it, deferring a destructor's bailout.
+/// # Errors
+/// The warning's handler bailed out; the bailout stays pending.
+pub(crate) fn owned_callable(value: &Value) -> Result<Option<Rc<Callable>>, Bailout> {
+    Callable::new(value)
+}
+
+/// `callable->call(argv, retval)` inside `zend_try`, or as the event loop's
+/// callbacks are (`sw_zend_call_function_ex2`) with `from_loop`: whether the
+/// call succeeded.
+/// # Errors
+/// The callable bailed out.
+pub(crate) fn call(
+    callable: &Callable,
+    argv: &mut [zval],
+    retval: *mut zval,
+    from_loop: bool,
+) -> Result<bool, Bailout> {
+    let callable = ptr::from_ref(callable).cast_mut().cast();
+    // SAFETY: a callable the caller holds through the call, its live arguments,
+    // and a return slot that is null or writable.
+    unsafe { swoole_rs_phpruntime::callable_call(callable, argv, retval, from_loop) }
 }
 
 /// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether

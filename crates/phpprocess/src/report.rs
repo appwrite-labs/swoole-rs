@@ -1,5 +1,4 @@
 //! Swoole's PHP error macros (`php_swoole_private.h`).
-use std::ffi::CStr;
 use swoole_rs_zend::{E_ERROR, Message, bailout, report};
 
 pub(crate) const PHP_FATAL_ERROR: i32 = 503;
@@ -7,13 +6,10 @@ pub(crate) const INVALID_PARAMS: i32 = 505;
 pub(crate) const OPERATION_NOT_SUPPORT: i32 = 507;
 pub(crate) const PHP_RUNTIME_NOTICE: i32 = 510;
 
-pub(crate) fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+/// `errno`, and setting it (to 0 before a call whose -1 result is ambiguous).
+pub(crate) use swoole_rs_corebase::sys::{errno, set_errno};
 
 pub(crate) use swoole_rs_corebase::log::set_last_error;
-/// Set `errno` (to 0 before a call whose -1 result is ambiguous).
-pub(crate) use swoole_rs_corebase::set_errno;
 
 /// `SWOOLE_G(cli)`.
 pub(crate) fn cli() -> bool {
@@ -38,10 +34,7 @@ pub(crate) fn sys(level: i32, text: &Message) {
     set_last_error(error);
     let mut full = *text;
     full.push(b", Error: ");
-    // SAFETY: strerror has no preconditions.
-    let reason = unsafe { libc::strerror(error) };
-    // SAFETY: strerror returns a NUL-terminated message, as upstream reads it.
-    full.push(unsafe { CStr::from_ptr(reason) }.to_bytes());
+    full.push(swoole_rs_corebase::sys::strerror(error).as_bytes());
     full.push(format!("[{error}]").as_bytes());
     displayed(level, &full);
 }

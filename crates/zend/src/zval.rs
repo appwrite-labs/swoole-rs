@@ -17,9 +17,9 @@ use crate::{
         swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_update,
         swr_zend_try_ptr_dtor, swr_zend_try_symtable_update, swr_zend_zval_value_name,
         swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
-        zend_hash_add_new, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
-        zend_value, zval, zval_ptr_dtor,
+        zend_hash_add_new, zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert,
+        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
+        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -126,6 +126,16 @@ impl Value {
         (self.kind() == IS_OBJECT).then(|| unsafe { value::obj_of(self.as_ptr()) })
     }
 
+    /// `Z_OBJ_P` of an object with `class`'s handlers: one that `class`'s
+    /// create handler made, or a subclass's that inherited it.
+    #[must_use]
+    #[inline]
+    pub fn object_of(&self, class: &crate::Class) -> Option<*mut zend_object> {
+        let object = self.object()?;
+        // SAFETY: the zval holds the live object.
+        (unsafe { (*object).handlers } == class.handlers()).then_some(object)
+    }
+
     /// The [`Custom`](crate::Custom) data of a `T` object.
     #[must_use]
     #[inline]
@@ -140,6 +150,17 @@ impl Value {
     pub fn pointer(&self) -> Option<*mut c_void> {
         // SAFETY: a pointer zval holds `ptr`, at offset 0.
         (self.kind() == IS_PTR).then(|| unsafe { self.as_ptr().cast::<*mut c_void>().read() })
+    }
+
+    /// Property writes on the object this holds, under `scope` (Zend's view of
+    /// its properties; `None` for none), while it is borrowed.
+    #[must_use]
+    #[inline]
+    pub fn props(&self, scope: Option<&crate::Class>) -> Option<crate::Props<'_>> {
+        let object = self.object()?;
+        let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
+        // SAFETY: the zval holds the object while borrowed; a registered class or null.
+        Some(unsafe { crate::Props::new(scope, object) })
     }
 
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
@@ -429,6 +450,15 @@ pub struct Entries<'a> {
 impl<'a> Entries<'a> {
     /// The next element with its key, a string or an integer.
     pub fn next_keyed(&mut self) -> Option<(Key<'a>, &'a Value)> {
+        let (name, index, value) = self.next_stored()?;
+        let key = name.map_or(Key::Index(index), |name| Key::Name(name.bytes()));
+        Some((key, value))
+    }
+
+    /// The next element with its key as the table stores it: the string
+    /// (None for an integer key), and the integer, to put an element back
+    /// under (`zend::KeyValue`).
+    pub fn next_stored(&mut self) -> Option<(Option<&'a ZStr>, zend_ulong, &'a Value)> {
         let (mut key, mut index) = (ptr::null_mut(), 0);
         // SAFETY: a live table and our position in it; `key` and `index` are
         // writable locals.
@@ -442,11 +472,8 @@ impl<'a> Entries<'a> {
         };
         // SAFETY: null or an element of the borrowed table.
         let value = unsafe { Value::from_ptr(found) }?;
-        if key.is_null() {
-            return Some((Key::Index(index), value));
-        }
-        // SAFETY: the table keeps its key strings alive.
-        Some((Key::Name(unsafe { bytes(key) }), value))
+        // SAFETY: null or a key string, which the table keeps alive.
+        Some((unsafe { ZStr::from_ptr(key) }, index, value))
     }
 }
 
@@ -860,6 +887,20 @@ impl ArrayMut {
         unsafe { symtable_update(array, key, value) };
     }
 
+    /// `zend_hash_index_add`: the array takes over `value` under `index`, or
+    /// `value` is released when the index is taken.
+    #[inline]
+    pub fn insert_index(&mut self, index: zend_ulong, value: Owned) {
+        let Some(array) = self.separate().and_then(|_| self.0.array()) else {
+            return;
+        };
+        // SAFETY: a live table; it copies the zval in when it adds it.
+        let added = unsafe { zend_hash_index_add(array.as_ptr(), index, value.as_ptr()) };
+        if !added.is_null() {
+            std::mem::forget(value);
+        }
+    }
+
     /// `zend_hash_add_new`: the array takes over `value` under `key`, which the
     /// caller knows is absent, and references the key itself.
     #[inline]
@@ -876,13 +917,26 @@ impl ArrayMut {
     /// what was there (as [`release`] does), and references the key itself.
     #[inline]
     pub fn update(&mut self, key: &ZStr, value: Owned) {
+        self.update_at(key.as_ptr(), 0, value);
+    }
+
+    /// `zend_hash_index_update`, as [`ArrayMut::update`].
+    #[inline]
+    pub fn update_index(&mut self, index: zend_ulong, value: Owned) {
+        self.update_at(ptr::null_mut(), index, value);
+    }
+
+    /// [`ArrayMut::update`] under `key`, or under `index` when `key` is null.
+    #[inline]
+    fn update_at(&mut self, key: *mut zend_string, index: zend_ulong, value: Owned) {
         let Some(array) = self.separate().and_then(|_| self.0.array()) else {
             return;
         };
         let mut value = value.into_zval();
-        // SAFETY: as `add_new`.
+        // SAFETY: a live table and a borrowed key or null; the table takes the
+        // value and references the key itself.
         bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_hash_update(array.as_ptr(), key.as_ptr(), &raw mut value)
+            swr_zend_try_hash_update(array.as_ptr(), key, index, &raw mut value)
         }));
     }
 
