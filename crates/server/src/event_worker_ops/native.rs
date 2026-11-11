@@ -431,7 +431,7 @@ extern "C" fn on_pipe_receive(
 ) -> c_int {
     let mut ctx = worker_context(Reactor::running(reactor));
     ctx.info = ctx.bus().buffer();
-    ctx.socket = event.socket;
+    ctx.socket = event.socket_ptr();
     run(&mut ctx, RUN_PIPE_RECEIVE, 0);
     0
 }

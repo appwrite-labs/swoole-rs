@@ -226,9 +226,10 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
     match kind {
         3 if holds::<Mutex>(storage) => {
             let (lock, _) = mutex(storage);
+            // SAFETY: `lock` is an initialized mutex.
+            let try_lock = || unsafe { pthread_mutex_trylock(lock) };
             if operation & LOCK_NB != 0 {
-                // SAFETY: `lock` is an initialized mutex.
-                return unsafe { pthread_mutex_trylock(lock) };
+                return try_lock();
             }
             if timeout > 0 {
                 #[cfg(target_os = "linux")]
@@ -236,8 +237,7 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
                     // SAFETY: `lock` is an initialized mutex; the deadline is a live timespec.
                     return unsafe { pthread_mutex_timedlock(lock, &deadline(timeout)) };
                 }
-                // SAFETY: `lock` is an initialized mutex.
-                return poll(timeout, || unsafe { pthread_mutex_trylock(lock) });
+                return poll(timeout, try_lock);
             }
             // SAFETY: `lock` is an initialized mutex.
             unsafe { pthread_mutex_lock(lock) }
@@ -282,13 +282,13 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
         #[cfg(target_os = "linux")]
         5 if holds::<pthread_spinlock_t>(storage) => {
             let lock = storage.cast();
+            // SAFETY: `lock` is an initialized spinlock.
+            let try_lock = || unsafe { pthread_spin_trylock(lock) };
             if operation & LOCK_NB != 0 {
-                // SAFETY: `lock` is an initialized spinlock.
-                return unsafe { pthread_spin_trylock(lock) };
+                return try_lock();
             }
             if timeout > 0 {
-                // SAFETY: `lock` is an initialized spinlock.
-                return poll(timeout, || unsafe { pthread_spin_trylock(lock) });
+                return poll(timeout, try_lock);
             }
             // SAFETY: `lock` is an initialized spinlock.
             unsafe { pthread_spin_lock(lock) }
@@ -298,9 +298,13 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_locks_unlock(storage: *mut c_void, kind: i32) -> i32 {
-    match kind {
+    if kind == 3 && holds::<Mutex>(storage) {
         // SAFETY: an initialized mutex that this thread holds.
-        3 if holds::<Mutex>(storage) => unsafe { pthread_mutex_unlock(mutex(storage).0) },
+        return unsafe { pthread_mutex_unlock(mutex(storage).0) };
+    }
+    // After the mutex every Table row, task lock and default `Lock` is.
+    std::hint::cold_path();
+    match kind {
         // SAFETY: an initialized rwlock that this thread holds.
         1 if holds::<RwLock>(storage) => unsafe { pthread_rwlock_unlock(rwlock(storage).0) },
         #[cfg(target_os = "linux")]
@@ -407,16 +411,14 @@ impl Lock {
     /// `capabilities` names (bit 0 mutex, bit 1 rwlock); 0 or an errno.
     #[must_use]
     pub fn lock(&self, operation: i32, timeout: i32, capabilities: u32) -> i32 {
-        // SAFETY: a lock `new` initialized.
-        unsafe {
-            swr_v1_locks_lock(
-                self.storage.ptr(),
-                self.kind,
-                operation,
-                timeout,
-                capabilities,
-            )
+        let storage = self.storage.ptr();
+        // A blocking mutex lock, the common case, is small enough to inline.
+        if self.kind == 3 && operation & LOCK_NB == 0 && timeout <= 0 {
+            // SAFETY: a mutex `new` initialized.
+            return unsafe { pthread_mutex_lock(mutex(storage).0) };
         }
+        // SAFETY: a lock `new` initialized.
+        unsafe { swr_v1_locks_lock(storage, self.kind, operation, timeout, capabilities) }
     }
 
     /// `Lock::unlock()`: 0 or an errno.

@@ -145,7 +145,7 @@ extern "C" fn on_pipe_receive(
     let worker = unsafe { (*thread_globals()).worker };
     let mut task = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::of(pool, worker);
-    ctx.socket = event.socket.cast();
+    ctx.socket = event.socket_ptr().cast();
     ctx.buf = task.as_mut_ptr().cast();
     run(&mut ctx, RUN_TASK_ON_PIPE)
 }

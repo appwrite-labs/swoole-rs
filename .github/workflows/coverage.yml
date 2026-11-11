@@ -40,12 +40,15 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: steps.upstream.outputs.cache-hit != 'true'
+      - name: Build upstream
+        if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - run: cargo fetch --locked
+      - name: Fetch crates
+        run: cargo fetch --locked
       # The services phpt-build's cargo engine has. As `cargo --target`, the build target
       # keeps build scripts and proc macros uninstrumented.
-      - env:
+      - name: Build instrumented swoole.so
+        env:
           RUSTFLAGS: -Cinstrument-coverage
         run: |
           services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
@@ -60,6 +63,7 @@ jobs:
           path: target/phpt/
 
   phpt:
+    name: PHPT ${{ matrix.index }}/6
     needs: build
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
@@ -70,16 +74,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Every service upstream's PHPTs expect (corpus/upstream/services.yml).
-      - id: services
+      - name: List services
+        id: services
         run: echo "names=$(python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/phpt-env
         with:
           php: ${{ needs.build.outputs.php }}
           services: ${{ steps.services.outputs.names }}
-      - run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
-      - id: extensions
+      - name: Plan shard
+        run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
+      - name: List extensions
+        id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
-      - run: >
+      - name: Run PHPTs
+        run: >
           python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 60 --external-network
           ${{ steps.extensions.outputs.args }} --engine cargo=target/phpt/cargo.so
           --output target/coverage/phpt.json || [ $? -eq 1 ]
@@ -113,20 +121,26 @@ jobs:
         with:
           name: phpt-engines
           path: target/phpt
-      - run: sudo phpdismod -v ALL -s ALL xdebug
-      - run: python3 corpus/thirdparty/hyperf.py --prepare
-      - run: >
+      - name: Disable xdebug
+        run: sudo phpdismod -v ALL -s ALL xdebug
+      - name: Prepare hyperf
+        run: python3 corpus/thirdparty/hyperf.py --prepare
+      - name: Run corpus apps
+        run: >
           python3 corpus/run.py --php-extension pdo --php-extension pdo_sqlite --php-extension curl
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
           --engine cargo=target/phpt/cargo.so --output target/coverage/corpus.json || true
       # The differential suite as integrate's api-fuzz runs it (#2255): seed 0's programs and the cases.
       # The Cargo build links curl's CURLFile class, so curl loads first, as for the corpus above.
-      - run: >
+      - name: Run differential suite
+        run: >
           python3 tests/differential/fuzz.py --php-extension pdo --php-extension pdo_sqlite --php-extension curl
           --engine upstream=target/upstream/src/modules/swoole.so
           --engine cargo=target/phpt/cargo.so --seed 0 --programs 500 --cases tests/differential/cases || true
-      - run: python3 corpus/library/run.py --prepare
-      - working-directory: target/library/src
+      - name: Prepare swoole/library
+        run: python3 corpus/library/run.py --prepare
+      - name: Start library services
+        working-directory: target/library/src
         run: |
           echo '127.0.0.1 consul local.httpbin.org mongodb mysql nacos oracle pgsql php-fpm redis' | sudo tee -a /etc/hosts
           compose="docker compose -f docker-compose.yml -f docker-compose.host.yml"
@@ -138,7 +152,8 @@ jobs:
             sleep 5
           done
           $compose ps && exit 1
-      - run: python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json || true
+      - name: Run swoole/library suite
+        run: python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -153,7 +168,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rustup
-      - run: rustc --version && rustup component add llvm-tools
+      - name: Add llvm-tools
+        run: rustc --version && rustup component add llvm-tools
       - uses: actions/download-artifact@v4
         with:
           name: phpt-engines
@@ -163,7 +179,8 @@ jobs:
         with:
           pattern: profraw-*
           path: target/coverage/profraw
-      - run: >
+      - name: Report coverage
+        run: >
           python3 tools/coverage.py --engine target/phpt/cargo.so --profiles target/coverage/profraw
           --output target/coverage/report | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

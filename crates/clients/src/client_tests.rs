@@ -350,12 +350,7 @@ fn free(client: *mut Client) {
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.
 fn writable(client: *mut Client) -> c_int {
-    let mut event = swoole_rs_reactor::Event {
-        fd: 0,
-        reactor_id: 0,
-        fd_type: 0,
-        socket: core::ptr::null_mut(),
-    };
+    let mut event = unsafe { swoole_rs_reactor::Event::new(0, 0, 0, core::ptr::null_mut()) };
     // SAFETY: the mocked effects never touch the reactor.
     let reactor = unsafe { Running::new(core::ptr::null_mut()) };
     on_write(Handle(client), reactor, &mut event)

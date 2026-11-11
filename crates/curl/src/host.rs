@@ -28,8 +28,7 @@ extern "C" fn on_event<const BITMASK: c_int>(
     _: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    // SAFETY: the reactor's event names a live socket of the cURL fd type.
-    let Some(socket) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {
+    let Some(socket) = event.socket() else {
         return -1;
     };
     let object = socket.read(|socket| socket.object);
