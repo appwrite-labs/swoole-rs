@@ -195,7 +195,11 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "both coroutines open the file on the AIO pool, and whichever open completes first locks "
         "first; when the second's LOCK_SH wins, it holds it for 2 s and the first's < 1 s assert "
         'fails on every engine (upstream 7/26 iouring merge-tier runs and 6/40 in Docker, hybrid '
-        '7/40, #862; macOS upstream 5/18, cargo 2/18, #2728)'}
+        '7/40, #862; macOS upstream 5/18, cargo 2/18, #2728)',
+        'tests/swoole_runtime/file_hook/async_file.phpt':
+        "its 27 AIO reads finish in about 0.8 ms, and the other coroutine's 1 ms usleep fires only "
+        "when they cross a millisecond of the timer's whole-millisecond clock, so the count >= 1 "
+        'assert fails on both engines (Docker, 260 runs: upstream 125, cargo 143, #2772)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "

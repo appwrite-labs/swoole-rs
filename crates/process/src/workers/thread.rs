@@ -29,14 +29,14 @@ use super::ops::{
     OP_ON_WORKER_START, OP_ON_WORKER_STOP, OP_POOL_MAIN_LOOP, OP_PORT_ADD, OP_PORT_COUNT,
     OP_PORT_DGRAM, OP_PORT_LISTEN, OP_REACTOR_THREAD_MAIN, OP_RUNNING, OP_SELECT_WORKER,
     OP_SET_MASTER_THREAD_ID, OP_SET_NOT_SUPPORTED, OP_SINGLE_REACTOR_PIPE, OP_SPAWN_THREAD,
-    OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET, OP_TASK_START_CHECK, OP_TASK_WORKER_NUM,
-    OP_TERMINATE_MANAGER_THREAD, OP_THREAD_ENTER, OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS,
-    OP_THREAD_MANAGER, OP_THREAD_REACTOR_NUM, OP_THREAD_SUPPORTED, OP_TIMER_CREATE, OP_TIMER_FREE,
-    OP_TIMER_NEXT_MSEC, OP_TIMER_SELECT, OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM,
-    OP_WORKER_THREAD_START, OP_WORKER_TYPE, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY,
-    RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS, RUN_THREAD_BODY, RUN_THREAD_FACTORY_START,
-    RUN_THREAD_ID, RUN_THREAD_MAIN, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD,
-    RUN_THREAD_TERMINATE_MANAGER,
+    OP_START_MASTER_THREAD, OP_STOPPING, OP_STORE_LISTEN_SOCKET, OP_TASK_START_CHECK,
+    OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_ENTER, OP_THREAD_EXIT,
+    OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_THREAD_REACTOR_NUM, OP_THREAD_SUPPORTED,
+    OP_TIMER_CREATE, OP_TIMER_FREE, OP_TIMER_NEXT_MSEC, OP_TIMER_SELECT, OP_USER_WORKER_NUM,
+    OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_THREAD_START, OP_WORKER_TYPE, RUN_CREATE_THREAD_FACTORY,
+    RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS, RUN_THREAD_BODY,
+    RUN_THREAD_FACTORY_START, RUN_THREAD_ID, RUN_THREAD_MAIN, RUN_THREAD_MANAGER_WAIT,
+    RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER,
 };
 use super::{Host, SW_ERR, SW_OK};
 use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
@@ -81,8 +81,6 @@ pub struct ThreadManager {
     reloading: AtomicBool,
     reload_all: AtomicBool,
     reload: Mutex<Option<Reload>>,
-    /// Set by `Server::shutdown()` before it signals the master thread.
-    stopping: AtomicBool,
     threads: Box<[Arc<Thread>]>,
 }
 
@@ -114,14 +112,6 @@ impl ThreadManager {
                 std::process::abort();
             }
         }
-    }
-
-    /// The server is shutting down: a worker that exits from now on stays stopped.
-    /// Upstream respawns it until the master thread handles its `SIGTERM`, and a
-    /// respawned worker blocked for good (a user process in `Queue::pop(-1)`) then
-    /// stalls the shutdown's join forever.
-    pub fn stop(&self) {
-        self.stopping.store(true, Ordering::Release);
     }
 
     fn push(&self, wake: Wake) {
@@ -238,9 +228,7 @@ fn wait<H: Host>(h: &mut H) {
                 continue;
             }
             Some(Wake::Exit) => break,
-            Some(Wake::Exited(worker)) => {
-                restart(h, worker, !manager.stopping.load(Ordering::Acquire));
-            }
+            Some(Wake::Exited(worker)) => restart(h, worker),
             None => {}
         }
         if h.is(OP_HAS_TIMER) {
@@ -252,15 +240,18 @@ fn wait<H: Host>(h: &mut H) {
     }
 }
 
-/// Rejoin an exited worker thread, report an abnormal exit, and respawn it if `respawn`.
-fn restart<H: Host>(h: &mut H, worker: u64, respawn: bool) {
+/// Rejoin an exited worker thread, report an abnormal exit, and respawn it.
+fn restart<H: Host>(h: &mut H, worker: u64) {
     h.op(OP_SELECT_WORKER, worker);
     let id = h.get(OP_WORKER_ID);
     if h.get(OP_THREAD_EXIT_STATUS) != 0 {
         h.get(OP_CALL_WORKER_ERROR);
     }
     h.op(OP_JOIN_THREAD, id);
-    if !respawn {
+    // A worker that exits once the server is stopping stays down: the master is
+    // joining every thread, and a new one could block it forever (a user process
+    // re-run waits on input its first run consumed).
+    if h.is(OP_STOPPING) {
         return;
     }
     match h.get(OP_WORKER_TYPE) {
@@ -662,19 +653,20 @@ mod tests {
     }
 
     #[test]
-    fn once_the_server_is_stopping_an_exited_worker_is_joined_but_not_respawned() {
+    fn a_worker_exiting_while_the_server_stops_is_joined_not_respawned() {
         let manager = ThreadManager::default();
-        manager.stop();
         manager.push(Wake::Exited(0x1000));
         manager.push(Wake::Exit);
         let mut h = Script::with(&[
             (OP_THREAD_MANAGER, handle(&manager)),
-            (OP_WORKER_ID, 3),
+            (OP_WORKER_ID, 5),
             (OP_WORKER_TYPE, USER_WORKER),
+            (OP_RUNNING, 1),
+            (OP_STOPPING, 1),
         ]);
         run_op(&mut h, RUN_THREAD_MANAGER_WAIT, 0);
-        assert_eq!(h.args(OP_JOIN_THREAD), vec![3]);
-        assert_eq!(h.called(OP_SPAWN_THREAD), 0);
+        assert_eq!(h.args(OP_JOIN_THREAD), vec![5], "joined");
+        assert_eq!(h.called(OP_SPAWN_THREAD), 0, "not respawned");
     }
 
     #[test]
