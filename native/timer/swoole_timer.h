@@ -73,88 +73,8 @@ static_assert(offsetof(TimerNode, exec_msec) == 16 && offsetof(TimerNode, remove
 #pragma GCC diagnostic pop
 }  // namespace swoole
 
-extern "C" {
-swoole::Timer *swr_v1_timer_owner_new(bool manually_trigger);
-void swr_v1_timer_owner_free(swoole::Timer *timer);
-swr_v1_timer *swr_v1_timer_owner_queue(const swoole::Timer *timer);
-void *swr_v1_timer_owner_reactor(const swoole::Timer *timer);
-void swr_v1_timer_owner_reinit(swoole::Timer *timer, bool manually_trigger);
-swoole::TimerNode *swr_v1_timer_owner_add(
-    swoole::Timer *timer, long msec, bool persistent, void *data, swoole::TimerCallback callback);
-bool swr_v1_timer_owner_remove(swoole::Timer *timer, long id);
-void swr_v1_timer_owner_update(swoole::Timer *timer, const swoole::TimerNode *node);
-void swr_v1_timer_owner_delay(swoole::Timer *timer, const swoole::TimerNode *node, long delay_ms);
-// A C++ exception a callback or destructor throws aborts at Rust's frames (panic = "abort").
-void swr_v1_timer_owner_select(swoole::Timer *timer);
-void swr_v1_timer_owner_abandon(swoole::Timer *timer, void (*bailout)());
-}
-
 namespace swoole {
-// Rust owns the record: create it with swoole_timer_create (or swr_v1_timer_owner_new).
-class Timer {
-    swr_v1_timer *queue() const {
-        return swr_v1_timer_owner_queue(this);
-    }
-    swr_v1_timer_stats stats() const {
-        swr_v1_timer_stats stats{};
-        swr_v1_timer_stats_get(queue(), &stats);
-        return stats;
-    }
-
-  public:
-    Timer() = delete;
-    ~Timer() = delete;
-
-    Reactor *get_reactor() const {
-        return static_cast<Reactor *>(swr_v1_timer_owner_reactor(this));
-    }
-    TimerNode *add(long msec, bool persistent, void *data, TimerCallback callback) {
-        return swr_v1_timer_owner_add(this, msec, persistent, data, callback);
-    }
-    bool remove(long id) {
-        return swr_v1_timer_owner_remove(this, id);
-    }
-    bool remove(TimerNode *tnode) {
-        return tnode && remove(tnode->id);
-    }
-    void update(const TimerNode *tnode) {
-        swr_v1_timer_owner_update(this, tnode);
-    }
-    void delay(TimerNode *tnode, long delay_ms) {
-        swr_v1_timer_owner_delay(this, tnode, delay_ms);
-    }
-    void reinit(bool manually_trigger = false) {
-        swr_v1_timer_owner_reinit(this, manually_trigger);
-    }
-    void select() {
-        swr_v1_timer_owner_select(this);
-    }
-    // Only after a caught Zend bailout whose native selection will never resume.
-    void abandon_selection(void (*bailout)() = nullptr) {
-        swr_v1_timer_owner_abandon(this, bailout);
-    }
-    TimerNode *get(long id) const {
-        return static_cast<TimerNode *>(swr_v1_timer_token(queue(), id));
-    }
-    TimerNode *get(long id, const TimerNode::Type type) const {
-        TimerNode *tnode = get(id);
-        return (tnode && tnode->type == type) ? tnode : nullptr;
-    }
-    size_t count() const {
-        return stats().count;
-    }
-    uint64_t get_round() const {
-        return stats().round;
-    }
-    std::vector<int64_t> get_ids() const {
-        std::vector<int64_t> ids(count());
-        size_t copied = 0;
-        swr_v1_timer_ids(queue(), ids.data(), ids.size(), &copied);
-        ids.resize(copied);
-        return ids;
-    }
-};
-
+// Rust owns the timer (crates/timer/src/owner.rs); C++ only passes it around.
 static inline long sec2msec(const long sec) {
     return sec * 1000;
 }

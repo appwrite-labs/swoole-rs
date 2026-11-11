@@ -18,10 +18,7 @@ mod owner;
 #[cfg(feature = "upstream-symbols")]
 mod wrapper;
 #[cfg(feature = "upstream-symbols")]
-pub use owner::{
-    Owner, TimerNode, swr_v1_timer_owner_queue, swr_v1_timer_owner_reactor,
-    swr_v1_timer_owner_reinit,
-};
+pub use owner::{Owner, TimerNode, owner_queue, owner_reactor, owner_reinit};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -411,7 +408,7 @@ unsafe fn answer<T: Default>(out: *mut T, op: impl FnOnce() -> Option<(i32, T)>)
 /// The handle is null or live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_token(queue: *const Timer, id: i64) -> *mut c_void {
-    // SAFETY: null or a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
+    // SAFETY: null or a live queue (`owner_queue`), not concurrently mutated.
     unsafe { queue.as_ref() }.map_or(ptr::null_mut(), |state| state.token(id))
 }
 
@@ -419,7 +416,7 @@ pub unsafe extern "C" fn swr_v1_timer_token(queue: *const Timer, id: i64) -> *mu
 /// Handle and exclusive output must follow ABI v1 validity/disjointness rules.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_stats_get(queue: *const Timer, out: *mut TimerStats) -> i32 {
-    // SAFETY: null or a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
+    // SAFETY: null or a live queue (`owner_queue`), not concurrently mutated.
     let state = unsafe { queue.as_ref() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
     unsafe { answer(out, || state.map(|state| (OK, state.stats()))) }
@@ -438,7 +435,7 @@ pub unsafe extern "C" fn swr_v1_timer_ids(
     if !unsafe { zero(count) } || queue.is_null() {
         return INVALID;
     }
-    // SAFETY: non-null (checked above); a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
+    // SAFETY: non-null (checked above); a live queue (`owner_queue`), not concurrently mutated.
     let state = unsafe { &*queue };
     // SAFETY: `count` is non-null (checked above), valid, aligned and writable.
     unsafe { count.write(state.heap.len()) };

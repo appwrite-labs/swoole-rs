@@ -23,7 +23,7 @@ use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
 use crate::view;
-use swoole_rs_timer::{swr_v1_timer_owner_reactor, swr_v1_timer_owner_reinit};
+use swoole_rs_timer::{owner_reactor, owner_reinit};
 
 /// `SW_IPC_UNIXSOCK`, `SW_WORKER`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const IPC_UNIXSOCK: c_int = 1;
@@ -162,13 +162,11 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_TIMER_DETACHED => {
             let timer = timer();
             // SAFETY: this thread's live timer.
-            u64::from(
-                !timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer.cast()) }.is_null(),
-            )
+            u64::from(!timer.is_null() && unsafe { owner_reactor(timer.cast()) }.is_null())
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            unsafe { swr_v1_timer_owner_reinit(timer().cast(), false) };
+            unsafe { owner_reinit(timer().cast(), false) };
             0
         }
         OP_PORT_ADD => {
