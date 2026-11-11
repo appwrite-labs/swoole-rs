@@ -752,13 +752,24 @@ fn overflow_4() {
 }
 
 /// `no_idle_worker`'s client: 1024 packets on one connection, then SIGTERM to the master.
+/// The warning needs five reads within one 10 ms `onReceive`, but the reactor can take the
+/// whole burst in a few reads (arm64 Docker always does), so where upstream sleeps 3 s this
+/// sends a packet a millisecond until the master's once-a-second timer has logged it, for up
+/// to 10 s.
 fn no_idle_worker_client(serv: Server) {
     lock();
     let mut c = TcpStream::connect((TEST_HOST, serv.get_primary_port().port())).unwrap();
+    c.set_nodelay(true).unwrap();
     for _ in 0..1024 {
         let _ = c.write_all(PACKET);
     }
-    sleep(3.0);
+    for _ in 0..10_000 {
+        if read_text(TEST_LOG_FILE).is_some_and(|log| log.contains("No idle worker is available")) {
+            break;
+        }
+        let _ = c.write_all(PACKET);
+        micro_sleep(1000);
+    }
     drop(c);
     kill_pid(serv.get_master_pid());
 }
@@ -1780,13 +1791,20 @@ unsafe extern "C" fn abort_worker_receive(
     0
 }
 
+/// `abort_worker`'s `onWorkerStart`, which also counts the starts in counter 0.
 unsafe extern "C" fn abort_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    counter_incr(0, 1);
     if worker_id() == 0 {
         unlock();
     }
 }
 
 /// `TEST(server, abort_worker)`. The `new` Server leaks, as upstream's.
+///
+/// c1 reads EOF as soon as the worker holding it dies, but the manager retires that worker's
+/// sessions only once it has reaped it, so upstream's c2 can reach `onReceive` first (arm64
+/// Docker's does every time). The manager retires them before it starts the replacement, so
+/// c2 waits for that third worker start, for up to 10 s.
 fn abort_worker() {
     let server = new_server(MODE_BASE);
     server.config().worker_num = 2;
@@ -1795,6 +1813,7 @@ fn abort_worker() {
     assert_eq!(server.create(), 0);
 
     new_lock();
+    counter_init();
 
     thread_client(move || {
         lock();
@@ -1807,6 +1826,12 @@ fn abort_worker() {
         assert_eq!(rn, 0);
 
         drop(c1);
+        for _ in 0..10_000 {
+            if counter_get(0) > 2 {
+                break;
+            }
+            micro_sleep(1000);
+        }
 
         let mut c2 = TcpStream::connect((TEST_HOST, port)).unwrap();
         c2.write_all(b"info").unwrap();
