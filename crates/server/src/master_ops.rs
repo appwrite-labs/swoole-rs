@@ -2956,10 +2956,6 @@ mod tests {
 
     #[test]
     fn send_buffer_ops_queue_on_the_sockets_output() {
-        unsafe extern "C" {
-            #[link_name = "_ZdlPv"]
-            fn operator_delete(storage: *mut core::ffi::c_void);
-        }
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
         // SAFETY: plain records, for which zero is valid.
@@ -2994,8 +2990,7 @@ mod tests {
             assert_eq!(conn.close_queued, 1);
             let buffer = sock.output.out_buffer.cast::<CppBuffer>();
             assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);
-            swoole_rs_buffer::cpp::swr_cpp_buffer_drop(&mut *buffer);
-            operator_delete(buffer.cast());
+            swoole_rs_buffer::cpp::delete_buffer(buffer);
             crate::port_config::swr_v1_port_config_free(config);
             crate::swr_v1_server_state_free(state);
         }
