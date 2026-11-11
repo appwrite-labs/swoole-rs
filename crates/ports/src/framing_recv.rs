@@ -109,8 +109,21 @@ impl Packages for Callbacks {
     }
 }
 
-/// A [`Recv`] whose packages `K` measures and hands on.
-struct With<'a, K>(Recv<'a>, PhantomData<K>);
+/// A [`Recv`] whose packages `K` measures and hands on, and the `recv_wait` the
+/// socket holds: only this receive writes it, so a flag that didn't change costs no edit.
+struct With<'a, K>(Recv<'a>, bool, PhantomData<K>);
+
+impl<K> With<'_, K> {
+    /// `socket->recv_wait = flags & FLAG_WAIT`, when it differs.
+    #[inline(always)]
+    fn apply_wait(&mut self, flags: u32) {
+        let wait = flags & FLAG_WAIT != 0;
+        if wait != self.1 {
+            self.1 = wait;
+            self.0.socket.edit(|s| s.recv_wait = u8::from(wait));
+        }
+    }
+}
 
 fn socket_flags(socket: &SocketFields) -> u32 {
     (if socket.removed != 0 { FLAG_REMOVED } else { 0 })
@@ -195,11 +208,13 @@ fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str
 impl<K: Packages> Effects for With<'_, K> {
     #[inline(always)]
     fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
-        let result = effect::<K>(&self.0, op, arg, *flags);
+        self.apply_wait(*flags);
+        let result = effect::<K>(&self.0, op, arg);
         // A read or a length leaves the socket as it was; a callback or a failure
         // may remove, pause or close it.
         if !matches!(op, OP_RECV | OP_GET_LENGTH) || result < 0 {
             *flags = self.0.socket.read(socket_flags);
+            self.1 = *flags & FLAG_WAIT != 0;
         }
         result
     }
@@ -240,12 +255,11 @@ impl<K: Packages> Effects for With<'_, K> {
 /// Each call site's op is a constant, so the match folds: every frame's receive,
 /// length and dispatch run inline, and a failed receive and the rare ops don't.
 #[inline(always)]
-fn effect<K: Packages>(r: &Recv<'_>, op: u32, arg: u64, flags: u32) -> i64 {
+fn effect<K: Packages>(r: &Recv<'_>, op: u32, arg: u64) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
     let p = r.protocol();
     let s = r.socket;
-    s.edit(|s| s.recv_wait = u8::from(flags & FLAG_WAIT != 0));
     match op {
         OP_RECV => {
             let size = usize::try_from(arg).unwrap_or(usize::MAX);
@@ -398,10 +412,12 @@ pub(crate) unsafe fn receive<K: Packages>(
             socket,
             buffer,
         },
+        false,
         PhantomData,
     );
     let p = r.0.protocol();
     let (mut flags, skip) = socket.read(|s| (socket_flags(s), s.skip_recv != 0));
+    r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {
         head = fixed;
@@ -416,7 +432,7 @@ pub(crate) unsafe fn receive<K: Packages>(
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
     let status = recv(mode, head, &mut flags, &mut r);
-    socket.edit(|s| s.recv_wait = u8::from(flags & FLAG_WAIT != 0));
+    r.apply_wait(flags);
     status
 }
 
