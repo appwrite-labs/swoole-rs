@@ -353,12 +353,12 @@ pub(crate) fn decode(task: Packed<'_>, out: *mut zval) -> Result<bool, Bailout> 
     Ok(done)
 }
 
-/// `php_swoole_server_task_finish`: send `data` as the result of `req` (null:
+/// `php_swoole_server_task_finish`: send `data` as the result of `req` (none:
 /// this worker's current task).
 pub(crate) fn finish_task(
     server: view::Server<'_>,
     data: &Value,
-    req: *mut c_void,
+    req: Option<&DataHead>,
 ) -> Result<bool, Bailout> {
     let finished = encoded(data, |payload, serialized| {
         let flags = if serialized {
@@ -366,8 +366,7 @@ pub(crate) fn finish_task(
         } else {
             0
         };
-        // SAFETY: the task, or null.
-        unsafe { finish(server, payload, flags, req) }
+        finish(server, payload, flags, req)
     })?;
     Ok(finished.unwrap_or(false))
 }
@@ -778,7 +777,7 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
     }
     let outcome = outcome.and_then(|()| {
         if !retval.is_null() {
-            finish_task(server, &retval, task.as_ptr().cast_mut())?;
+            finish_task(server, &retval, Some(&task.head()))?;
         }
         Ok(())
     });

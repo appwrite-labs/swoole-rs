@@ -1392,8 +1392,7 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     let resp = server_response();
     serv.send(session, &resp);
 
-    // SAFETY: no current task.
-    let finished = unsafe { task_worker_ops::finish(serv.view(), &resp, 0, ptr::null()) };
+    let finished = task_worker_ops::finish(serv.view(), &resp, 0, None);
     expect(!finished, "!serv->finish(resp)");
 
     expect(

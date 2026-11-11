@@ -307,7 +307,7 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             if ctx.task.is_null() {
                 ctx.task = LATEST_TASK.get();
             }
-            0
+            u64::from(!ctx.task.is_null())
         }
         OP_INFO_TYPE => u64::from(ctx.task().kind),
         OP_TASK_EXT_FLAGS => u64::from(ctx.task().ext_flags),
