@@ -20,6 +20,10 @@ calls whose bodies are private to PHP (its README says why).
   and `vm_bailout.php` children that exit from PCRE/JSON warning handlers and a
   VM destructor inside stdext calls.
 - `exit_guard.py` runs in the ZTS variant (`variant.yml`).
+- `shutdown_exit.py` (ZTS variant) takes `--php`, `--engine upstream=DSO
+  --engine cargo=DSO` and `--output`: a thread leaves from a `__destruct` in
+  its request shutdown while objects with custom free handlers are live
+  (`shutdown_exit.php`); the shutdown finishes and the thread exits 235.
 
 The `swoole_stdext` originals and `phphelpers-runtime` run in the merge tier's
 `phpt-stdext` job on `--stdext` builds. On Linux PHP 8.2, `mb_ucfirst` is

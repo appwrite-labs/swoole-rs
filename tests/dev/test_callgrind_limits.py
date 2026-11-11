@@ -76,7 +76,7 @@ class Ratchet(unittest.TestCase):
 
     def test_every_merge_tier_workload_is_recorded(self):
         limits = callgrind.read_limits(ROOT / 'benchmarks/callgrind_limits')
-        workflow = ''.join((ROOT / '.github/workflows' / name).read_text() for name in ('merge.yml', 'variant.yml'))
+        workflow = ''.join((ROOT / '.github/workflows' / name).read_text() for name in ('callgrind.yml', 'variant.yml'))
         gated = {w for w in callgrind.WORKLOADS if f'--workload {w} ' in workflow or f'--workload {w}\n' in workflow}
         self.assertEqual(gated, set(limits))
 

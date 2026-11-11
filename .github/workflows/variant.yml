@@ -134,6 +134,12 @@ jobs:
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --build-manifest target/ext/build-manifest.json --output target/phpt/zts/guard.json
       - if: inputs.variant == 'zts'
+        name: Whole-thread exit during request shutdown
+        run: >
+          python3 tests/modules/phphelpers/shutdown_exit.py --php "$PHP"
+          --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
+          --output target/phpt/zts/shutdown-exit.json
+      - if: inputs.variant == 'zts'
         name: Collection facades under ZTS
         run: |
           for profile in complete column-bytes; do

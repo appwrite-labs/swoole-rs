@@ -215,9 +215,9 @@ fn task(call: &Call) -> &TaskData {
     })
 }
 
-/// A `Server\Task`'s `info`, as the `EventData *` `finish` reads its head from.
-pub(crate) fn task_info(call: &Call) -> *mut c_void {
-    task(call).info.as_ptr().cast()
+/// A `Server\Task`'s `info`, the head of the task it answers.
+pub(crate) fn task_info(call: &Call) -> DataHead {
+    task(call).info.get()
 }
 
 /// Bind a new `Server\Task` to the server and the head of the task it carries.

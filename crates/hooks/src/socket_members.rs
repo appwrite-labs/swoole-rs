@@ -15,7 +15,7 @@ use crate::sendfile::{FAILED, ZERO, send_range};
 use crate::setup::{Setup, swr_v1_hook_accept};
 use crate::shutdown::READ;
 use crate::socket_wait::{error_event, ready, wait_for};
-use crate::transfer::{ALL, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
+use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
 use crate::vector::{IoVector, vector_all};
@@ -27,7 +27,6 @@ use swoole_rs_corebase::sys::{self, strerror};
 use swoole_rs_reactor::{
     CLASS_DGRAM, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord, type_is,
 };
-use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
     sendfile as socket_sendfile_fd, socket_peek, socket_readv, socket_recv, socket_send,
     socket_ssl_get_peer_certificate_pem, socket_writev,
@@ -131,7 +130,8 @@ impl Setup for Accepting {
 macro_rules! call {
     (|$s:tt, $at:tt, $len:tt| $body:expr) => {
         |$s: *mut SocketRecord, $at: *mut u8, $len: usize| {
-            // SAFETY: the transfer's live network::Socket, over its buffer.
+            // SAFETY: the transfer's live network::Socket, over the buffer it lends
+            // (null for the vector and message calls, which carry their own).
             unsafe { $body }
         }
     };
@@ -140,13 +140,6 @@ macro_rules! call {
 /// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
 const BAD_HOST_ADDR: c_int = 722;
 const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
-
-/// An all-zero address, as `Address` starts: a stale scope id would misroute an
-/// interface-local IPv6 destination.
-pub(crate) fn empty_address() -> SocketAddress {
-    // SAFETY: the address is plain data: integers and the sockaddr union.
-    unsafe { core::mem::zeroed() }
-}
 
 /// `Address::assign(type, std::string(host), port, false)` into `address`; false
 /// with the last error set.
@@ -169,6 +162,13 @@ pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port
         log::set_last_error(error);
     }
     error == 0
+}
+
+/// setsockopt(2) of `value`'s bytes on `fd`.
+fn setsockopt(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> c_int {
+    let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
+    // SAFETY: the option's bytes and their length.
+    unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) }
 }
 
 /// A descriptor `Socket::sendfile` opened, closed when it goes.
@@ -224,22 +224,15 @@ impl Co {
         error == 0
     }
 
-    /// `Socket::recv_with_buffer(buf, n)`.
-    ///
-    /// # Safety
-    /// `out` holds `size` writable bytes, outside the socket's read buffer.
-    pub unsafe fn recv_with_buffer(self, out: *mut u8, size: usize) -> isize {
-        // SAFETY: as the caller promises.
-        recv_buffered(self, unsafe { core::slice::from_raw_parts_mut(out, size) })
+    /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
+    /// read buffer.
+    pub fn recv_with_buffer(self, out: &mut [u8]) -> isize {
+        recv_buffered(self, out)
     }
 
-    /// `Socket::recv_line(buf, maxlen)`, one buffered byte at a time.
-    ///
-    /// # Safety
-    /// `out` holds `limit` bytes and one more, outside the socket's read buffer.
-    pub unsafe fn recv_line(self, out: *mut u8, limit: usize) -> isize {
-        // SAFETY: as the caller promises.
-        let out = unsafe { core::slice::from_raw_parts_mut(out, limit + 1) };
+    /// `Socket::recv_line(buf, maxlen)` of at most `out.len()` bytes, one buffered
+    /// byte at a time, into `out`, which is outside the socket's read buffer.
+    pub fn recv_line(self, out: &mut [u8]) -> isize {
         recv_line(out, |at| recv_buffered(self, at))
     }
 
@@ -248,14 +241,13 @@ impl Co {
     #[must_use]
     pub fn set_option(self, level: c_int, name: c_int, value: &[u8]) -> bool {
         let fd = self.net(|record| record.fd).unwrap_or(-1);
-        let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
-        // SAFETY: the option's bytes.
-        if unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) } < 0 {
+        if setsockopt(fd, level, name, value) < 0 {
             log::sys_warning(
                 c"Socket::set_option",
                 format_args!(
-                    "setsockopt({}, {level}, {name}, {length}) failed",
-                    self.sock_fd()
+                    "setsockopt({}, {level}, {name}, {}) failed",
+                    self.sock_fd(),
+                    value.len()
                 ),
             );
             return false;
@@ -296,9 +288,7 @@ impl Co {
         if !available(self, READ) {
             return None;
         }
-        let owner = self.tls_owner();
-        // SAFETY: the live owner of the socket's context.
-        let needs_context = !owner.is_null() && unsafe { owner_fields(owner) }.context.is_null();
+        let needs_context = self.tls_fields().is_some_and(|tls| tls.context.is_null());
         if needs_context && !self.ssl_context_create() {
             return None;
         }
@@ -370,48 +360,15 @@ impl Co {
     }
 
     /// `Socket::transfer(event, buffer, length, flags, call)`: Rust's retry loop
-    /// over `call`, which gets the `network::Socket` at each try.
-    ///
-    /// # Safety
-    /// `buffer` holds `length` bytes or is null; `call` transfers on the
-    /// `network::Socket` it is given.
-    unsafe fn transfer<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
+    /// over `call`, which gets the `network::Socket` and the buffer at each try.
+    fn transfer(
         self,
-        event: u32,
         flags: u32,
-        buffer: *mut u8,
-        length: usize,
-        call: F,
+        buffer: Buffer<'_>,
+        mut call: impl FnMut(*mut SocketRecord, *mut u8, usize) -> isize,
     ) -> isize {
-        let mut call = call;
         let mut each = |at, length| call(self.socket(), at, length);
-        // SAFETY: as the caller promises.
-        unsafe { transfer(self, event, flags, buffer, length, &mut each) }
-    }
-
-    /// [`Co::transfer`] reading into the caller's buffer.
-    fn transfer_in<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
-        self,
-        flags: u32,
-        buf: &mut [impl swoole_rs_corebase::sys::ReadSlot],
-        call: F,
-    ) -> isize {
-        let (at, n) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
-        // SAFETY: the caller's `n` one-byte slots, any value valid, which `call`
-        // receives into.
-        unsafe { self.transfer(READ, flags, at, n, call) }
-    }
-
-    /// [`Co::transfer`] writing the caller's bytes, which a write only reads (its
-    /// wait may move them to the write buffer, a copy).
-    fn transfer_out<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
-        self,
-        flags: u32,
-        buf: &[u8],
-        call: F,
-    ) -> isize {
-        // SAFETY: the caller's bytes, of their length, only read.
-        unsafe { self.transfer(WRITE, flags, buf.as_ptr().cast_mut(), buf.len(), call) }
+        transfer(self, flags, buffer, &mut each)
     }
 
     /// `Socket::bind(host, port)`: `SO_REUSEADDR` (a failure is only logged), bind to
@@ -427,23 +384,19 @@ impl Co {
             return false;
         };
         let enable: c_int = 1;
-        // SAFETY: setsockopt(2) of an int on the socket's descriptor.
-        let reuse = unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEADDR,
-                (&raw const enable).cast(),
-                INT_LENGTH,
-            )
-        };
-        if reuse < 0 {
+        if setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &enable.to_ne_bytes(),
+        ) < 0
+        {
             log::sys_warning(
                 c"bind",
                 format_args!("setsockopt({}, SO_REUSEADDR) failed", self.sock_fd()),
             );
         }
-        let mut address = empty_address();
+        let mut address = SocketAddress::default();
         let bound = assign(&mut address, kind, host, port)
             && self.net(|record| record.bind(&address) >= 0 && record.get_name() >= 0)
                 == Some(true);
@@ -476,7 +429,7 @@ impl Co {
             set_err(self, libc::EPROTONOSUPPORT);
             return -1;
         }
-        let mut address = empty_address();
+        let mut address = SocketAddress::default();
         let mut assigned = assign(&mut address, kind, host, port);
         if !assigned && log::last_error() == BAD_HOST_ADDR {
             let ip = crate::resolve::system_gethostbyname(host, domain, timeout);
@@ -489,7 +442,6 @@ impl Co {
             return -1;
         }
         let to = (&raw mut address.addr).cast::<libc::sockaddr>();
-        let length = &raw mut address.len;
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             // SAFETY: the live view, the caller's buffer and the local address.
@@ -499,17 +451,15 @@ impl Co {
                     buf.as_ptr().cast_mut().cast(),
                     buf.len(),
                     to.cast(),
-                    length,
+                    &raw mut address.len,
                     0,
                 )
             };
         }
-        // SAFETY: the address's live length.
-        let to_length = unsafe { *length };
-        let call =
-            call!(|s, at, len| libc::sendto((*s).fields.fd, at.cast(), len, 0, to, to_length));
+        let length = address.len;
+        let call = call!(|s, at, len| libc::sendto((*s).fields.fd, at.cast(), len, 0, to, length));
         // Availability was checked above.
-        self.transfer_out(RETRY_INTERRUPTED | CHECKED, buf, call)
+        self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call)
     }
 
     /// The peer certificate's PEM, or empty with the error set when there is none.
@@ -535,7 +485,7 @@ impl Co {
             return ring::recv(&ops, buf);
         }
         let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
-        self.transfer_in(0, buf, call)
+        self.transfer(0, Buffer::read(buf), call)
     }
 
     /// `Socket::send(buf, n)`.
@@ -546,7 +496,7 @@ impl Co {
             return ring::send(&ops, ring::SEND, buf);
         }
         let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
-        self.transfer_out(0, buf, call)
+        self.transfer(0, Buffer::write(buf), call)
     }
 
     /// `Socket::recv_all(buf, n)`.
@@ -556,7 +506,7 @@ impl Co {
             return ring::recv_all(&ops, buf);
         }
         let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
-        self.transfer_in(ALL, buf, call)
+        self.transfer(ALL, Buffer::read(buf), call)
     }
 
     /// `Socket::send_all(buf, n)`.
@@ -567,7 +517,7 @@ impl Co {
             return ring::send_all(&ops, buf);
         }
         let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
-        self.transfer_out(ALL, buf, call)
+        self.transfer(ALL, Buffer::write(buf), call)
     }
 
     /// `Socket::read(buf, n)`.
@@ -577,7 +527,7 @@ impl Co {
             return ring::read(&ops, buf);
         }
         let call = call!(|s, at, len| libc::read((*s).fields.fd, at.cast(), len));
-        self.transfer_in(0, buf, call)
+        self.transfer(0, Buffer::read(buf), call)
     }
 
     /// `Socket::write(buf, n)`.
@@ -588,29 +538,27 @@ impl Co {
             return ring::send(&ops, ring::WRITE, buf);
         }
         let call = call!(|s, at, len| libc::write((*s).fields.fd, at.cast(), len));
-        self.transfer_out(0, buf, call)
+        self.transfer(0, Buffer::write(buf), call)
     }
 
-    /// `Socket::readv(io_vector)` or `writev`, or with `all` `readv_all` or
-    /// `writev_all`.
+    /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
+    /// for, or with `all` `readv_all` or `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &mut IoVector, write: bool, all: bool) -> isize {
+    pub fn vector(self, vector: &mut IoVector, all: bool) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::swr_v1_hook_uring_vector(&ops, vector, write, all);
+            return ring::swr_v1_hook_uring_vector(&ops, vector, all);
         }
+        let write = vector.write();
         let event = if write { WRITE } else { READ };
-        let io: unsafe extern "C" fn(*mut SocketRecord, *const c_void) -> isize =
-            if write { socket_writev } else { socket_readv };
+        let io = if write { socket_writev } else { socket_readv };
         let at = vector.as_ptr();
         if all {
             // SAFETY: the socket's current network::Socket, over the live vector.
             let call = || unsafe { io(self.socket(), at) };
             return vector_all(self, event, call, || vector.remaining());
         }
-        let call = call!(|s, _, _| io(s, at));
-        // SAFETY: no buffer; `call` transfers over the live vector.
-        unsafe { self.transfer(event, 0, null_mut(), 0, call) }
+        self.transfer(0, Buffer::none(event), call!(|s, _, _| io(s, at)))
     }
 
     /// `set_err(error, message)` with owned text. A failed copy (allocation) leaves
@@ -681,35 +629,31 @@ impl Co {
     /// `Socket::recvfrom(buf, n, addr, addrlen)`, retrying `EINTR` at once.
     ///
     /// # Safety
-    /// `buf` holds `n` writable bytes and `addr` and `addrlen` are as recvfrom(2)
-    /// takes them.
+    /// `addr` and `addrlen` are as recvfrom(2) takes them.
     pub unsafe fn recvfrom(
         self,
-        buf: *mut c_void,
-        n: usize,
+        buf: &mut [impl swoole_rs_corebase::sys::ReadSlot],
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t,
     ) -> isize {
         uring!(self, |ops| ops.io(
             ring::RECVFROM,
-            buf,
-            n,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
             addr.cast(),
             addrlen,
             0
         ));
         let fd = self.sock_fd();
         let call = call!(|_, at, len| libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen));
-        // SAFETY: as the caller promises; each try receives into the caller's buffer.
-        unsafe { self.transfer(READ, RETRY_INTERRUPTED, buf.cast(), n, call) }
+        self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
     }
 
     /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address.
     pub fn recvfrom_peer(self, buf: &mut [u8]) -> isize {
-        let (buf, n) = (buf.as_mut_ptr().cast(), buf.len());
         let receive = |addr, addrlen| {
-            // SAFETY: the caller's buffer, into the record's peer address.
-            unsafe { self.recvfrom(buf, n, addr, addrlen) }
+            // SAFETY: the record's peer address.
+            unsafe { self.recvfrom(buf, addr, addrlen) }
         };
         crate::transfer::recvfrom_peer(self, receive)
     }
@@ -729,8 +673,7 @@ impl Co {
         ));
         let fd = self.sock_fd();
         let call = call!(|_, _, _| libc::recvmsg(fd, msg, flags));
-        // SAFETY: as the caller promises.
-        unsafe { self.transfer(READ, 0, null_mut(), 0, call) }
+        self.transfer(0, Buffer::none(READ), call)
     }
 
     /// `Socket::sendmsg(msg, flags)`.
@@ -749,8 +692,7 @@ impl Co {
         ));
         let fd = self.sock_fd();
         let call = call!(|_, _, _| libc::sendmsg(fd, msg, flags));
-        // SAFETY: as the caller promises.
-        unsafe { self.transfer(WRITE, 0, null_mut(), 0, call) }
+        self.transfer(0, Buffer::none(WRITE), call)
     }
 
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait. The
@@ -814,25 +756,29 @@ mod tests {
         record: CoSocket,
     }
 
-    struct Object(Box<Native>);
+    /// The object, held raw: the network socket points back at it and the callbacks
+    /// reach it through that pointer, so a box owning it would be an aliasing owner.
+    struct Object(*mut Native);
 
     impl Object {
         fn new() -> Self {
-            let mut storage = Box::new(MaybeUninit::<Native>::uninit());
-            let native = storage.as_mut_ptr();
+            let native = Box::into_raw(Box::new(MaybeUninit::<Native>::uninit())).cast::<Native>();
             unsafe { init(&raw mut (*native).record) };
-            let mut native = unsafe { Box::from_raw(Box::into_raw(storage).cast::<Native>()) };
-            native.record.socket = SocketRecord::with_fd(-1, 6).into_raw();
-            native.record.sock_fd = 100;
-            let object = (&raw mut *native).cast::<c_void>();
-            native.record.socket_mut().object = object;
-            Self(native)
+            let mut object = Self(native);
+            let record = object.record();
+            record.socket = SocketRecord::with_fd(-1, 6).into_raw();
+            record.sock_fd = 100;
+            record.socket_mut().object = native.cast();
+            object
+        }
+        fn record(&mut self) -> &mut CoSocket {
+            unsafe { &mut (*self.0).record }
         }
         fn co(&mut self) -> Co {
-            unsafe { Co::of((&raw mut *self.0).cast()) }
+            unsafe { Co::of(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
-            unsafe { Event::new(-1, 0, 6, self.0.record.socket.cast()) }
+            unsafe { Event::new(-1, 0, 6, self.record().socket.cast()) }
         }
         fn bind(&mut self, event: u32, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
@@ -842,8 +788,9 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(self.0.record.socket);
-                crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut self.0.record);
+                SocketRecord::free(self.record().socket);
+                crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut (*self.0).record);
+                drop(Box::from_raw(self.0));
             }
         }
     }
@@ -860,14 +807,14 @@ mod tests {
     #[test]
     fn the_record_is_the_native_socket() {
         let mut object = Object::new();
-        assert_eq!(object.co().raw(), &raw mut object.0.record);
+        assert_eq!(object.co().raw(), unsafe { &raw mut (*object.0).record });
     }
 
     #[test]
     fn a_readable_event_resumes_the_reader_and_clears_the_error() {
         install();
         let mut object = Object::new();
-        object.0.record.err_code = libc::EAGAIN;
+        object.record().err_code = libc::EAGAIN;
         let mut co: c_long = 3;
         object.bind(READ, &raw mut co);
         let mut event = object.event();
@@ -875,7 +822,7 @@ mod tests {
             readable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
             0
         );
-        assert_eq!(object.0.record.err_code, 0);
+        assert_eq!(object.record().err_code, 0);
         assert_eq!(take(), ["last-error:0", "resume:3"]);
         // Nobody writes: a writable event wakes no one.
         assert_eq!(
@@ -892,7 +839,7 @@ mod tests {
         let (mut reader, mut writer): (c_long, c_long) = (1, 2);
         object.bind(READ, &raw mut reader);
         object.bind(WRITE, &raw mut writer);
-        object.0.record.socket_mut().removed = 0;
+        object.record().socket_mut().removed = 0;
         let mut event = object.event();
         error_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event);
         assert_eq!(
@@ -907,8 +854,8 @@ mod tests {
         let mut object = Object::new();
         let path = c"/nonexistent/swoole-rs-sendfile";
         assert!(!object.co().sendfile(path, 0, 0));
-        assert_eq!(object.0.record.err_code, libc::ENOENT);
-        let message = unsafe { CStr::from_ptr(object.0.record.err_msg) };
+        assert_eq!(object.record().err_code, libc::ENOENT);
+        let message = unsafe { CStr::from_ptr(object.record().err_msg) };
         assert_eq!(
             message.to_str().unwrap(),
             format!(
@@ -935,7 +882,7 @@ mod tests {
         install();
         let mut object = Object::new();
         assert!(object.co().accept(0.0).is_none());
-        assert_eq!(object.0.record.err_code, libc::EBADF);
+        assert_eq!(object.record().err_code, libc::EBADF);
         assert!(!take().iter().any(|entry| entry == "accepted"));
     }
 
@@ -950,24 +897,25 @@ mod tests {
     fn listen_stores_the_backlog_and_reports_a_closed_socket() {
         install();
         let mut object = Object::new();
-        object.0.record.sock_fd = -1;
+        object.record().sock_fd = -1;
         assert!(!object.co().listen(0));
-        assert_eq!(object.0.record.err_code, libc::EBADF);
-        assert_eq!(object.0.record.backlog, 0);
+        assert_eq!(object.record().err_code, libc::EBADF);
+        assert_eq!(object.record().backlog, 0);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no SOCK_DGRAM sockets")]
     fn options_go_to_the_network_sockets_descriptor() {
         let mut object = Object::new();
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        object.0.record.socket_mut().fd = fd;
+        object.record().socket_mut().fd = fd;
         let socket = object.co();
         assert!(socket.set_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1));
         let mut value = 0;
         assert!(socket.get_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &mut value));
         assert_ne!(value, 0);
         unsafe { libc::close(fd) };
-        object.0.record.socket_mut().fd = -1;
+        object.record().socket_mut().fd = -1;
         assert!(!socket.set_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1));
         assert!(!socket.get_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &mut value));
     }

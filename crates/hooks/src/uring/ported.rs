@@ -360,7 +360,6 @@ fn sendfile() {
                 Some(&mut offset),
                 TEST_JPG_SIZE,
                 -1.0,
-                0,
             );
             sent_tx.send(rv).unwrap();
         });

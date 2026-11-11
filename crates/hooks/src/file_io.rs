@@ -276,6 +276,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri's pipes have no /dev/fd entry: the path opens a host descriptor"
+    )]
     fn reads_a_stream_past_its_first_buffer() {
         let mut fds = [0; 2];
         // SAFETY: a writable pair.

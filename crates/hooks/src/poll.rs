@@ -236,21 +236,7 @@ pub fn socket_poll_rows(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i
 
 /// The hooked `poll(2)` in a coroutine with a nonzero timeout: a repeated fd counts
 /// once, through its first entry; the others' `revents` stay as they were.
-///
-/// # Safety
-/// `fds` holds `nfds` pollfds.
-pub unsafe fn swr_v1_hook_poll<S>(
-    fds: *mut libc::pollfd,
-    nfds: libc::nfds_t,
-    timeout: i32,
-    ops: &PollOps<S>,
-) -> i32 {
-    let fds: &mut [libc::pollfd] = if nfds == 0 {
-        &mut []
-    } else {
-        // SAFETY: the caller passes `nfds` pollfds.
-        unsafe { std::slice::from_raw_parts_mut(fds, usize::try_from(nfds).unwrap_or(0)) }
-    };
+pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps<S>) -> i32 {
     let mut first = Vec::new();
     let mut rows: Vec<PollFd> = Vec::new();
     for (i, polled) in fds.iter().enumerate() {
@@ -535,10 +521,7 @@ mod tests {
             entry(9, libc::POLLIN),
             entry(8, libc::POLLIN),
         ];
-        assert_eq!(
-            unsafe { swr_v1_hook_poll(fds.as_mut_ptr(), 3, 2000, &OPS) },
-            1
-        );
+        assert_eq!(swr_v1_hook_poll(&mut fds, 2000, &OPS), 1);
         assert_eq!(fds.map(|polled| polled.revents), [libc::POLLOUT, -1, 0]);
         assert_eq!(
             take(),

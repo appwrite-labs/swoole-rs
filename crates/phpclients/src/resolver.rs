@@ -33,10 +33,7 @@ static CONTEXT: CustomClass<Held> = CustomClass::new();
 mod native {
     use std::ffi::{c_int, c_void};
     use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
-    use swoole_rs_zend::{
-        Value, bailout,
-        sys::{swr_zend_efree, swr_zend_try_zval_dtor, zval},
-    };
+    use swoole_rs_zend::{Owned, Value, sys::zval};
 
     /// `*context = {}` with `with_port`: the old value is overwritten, not destroyed.
     pub(crate) fn swoole_name_resolver_context_reset(
@@ -66,37 +63,26 @@ mod native {
         context.kind = kind;
     }
 
-    /// The cluster in `private_data` (null for none), and `with_port`.
-    pub(super) fn swoole_name_resolver_context_get(
+    /// A reference of our own to the cluster in `private_data`, if any: the PHP calls
+    /// on it may reach the context.
+    pub(super) fn swoole_name_resolver_context_cluster(
         context: &NameResolverContext,
-        with_port: &mut bool,
-    ) -> *mut zval {
-        *with_port = context.with_port;
-        context.private_data.cast()
+    ) -> Option<Owned> {
+        let cluster = context.private_data.as_ref()?.downcast_ref::<Owned>()?;
+        Some(cluster.copy())
     }
 
-    /// The cluster's destructor: `zval_dtor` and `efree`.
-    unsafe extern "C" fn free_cluster(context: &mut NameResolverContext) {
-        let cluster = context.private_data.cast::<zval>();
-        // SAFETY: the context's cluster, an emalloc'd zval.
-        let bailed = unsafe { swr_zend_try_zval_dtor(cluster) };
-        // SAFETY: as above, released.
-        unsafe { swr_zend_efree(cluster.cast()) };
-        bailout::defer(super::trapped(bailed));
-    }
-
-    /// With a cluster (an emalloc'd zval the context takes): keep it in `private_data`
-    /// with its destructor, `cluster_` set and `final_` clear. Without: both flags as given.
+    /// With a cluster: keep it in `private_data` (dropped with the context), `cluster_`
+    /// set and `final_` clear. Without: both flags as given.
     pub(super) fn swoole_name_resolver_context_settle(
         context: &mut NameResolverContext,
-        cluster: *mut zval,
+        cluster: Option<Owned>,
         is_final: bool,
     ) {
-        if !cluster.is_null() {
-            context.private_data = cluster.cast();
-            context.dtor = Some(free_cluster);
+        context.cluster = cluster.is_some();
+        if let Some(cluster) = cluster {
+            context.private_data = Some(Box::new(cluster));
         }
-        context.cluster = !cluster.is_null();
         context.is_final = is_final;
     }
 
@@ -353,45 +339,37 @@ fn resolve(
     name: &[u8],
     context: &mut NameResolverContext,
 ) -> Result<Option<Vec<u8>>, bailout::Bailout> {
-    let mut with_port = false;
-    let mut cluster = native::swoole_name_resolver_context_get(context, &mut with_port);
-    // SAFETY: null or the context's cluster, an object zval it keeps until released below.
-    if let Some(kept) = unsafe { Value::from_ptr(cluster) } {
+    let mut cluster = native::swoole_name_resolver_context_cluster(context);
+    if let Some(kept) = &cluster {
         let count = call_method(kept, b"count", None)?.long();
         if bailout::pending() {
             return Ok(None);
         }
         if count == 0 {
             // No available node: release the cluster and resolve again.
+            cluster = None;
             // SAFETY: the release owns nothing; the cluster's destructor may run PHP.
             unsafe { bailout::trap_with(|| context.release()) }?;
-            cluster = ptr::null_mut();
         }
     }
-    if cluster.is_null() {
+    let cluster = if let Some(cluster) = cluster {
+        cluster
+    } else {
         let zname = Owned::string(ZString::new(name));
         let found = call_method(resolver, b"lookup", Some(&zname))?;
         let kind = found.kind();
         let answer = (kind == IS_STRING).then(|| found.bytes().unwrap_or_default().to_vec());
-        if kind == IS_OBJECT {
-            // SAFETY: Zend's request allocator (`ecalloc`), which the
-            // context's destructor frees.
-            cluster = unsafe { swr_zend_emalloc(mem::size_of::<zval>()) }.cast::<zval>();
-            // SAFETY: fresh storage; the context takes the result's reference.
-            unsafe { cluster.write(ManuallyDrop::into_inner(found).into_zval()) };
-        }
-        native::swoole_name_resolver_context_settle(context, cluster, kind == IS_STRING);
-        match kind {
-            IS_OBJECT => {}
-            IS_STRING => return Ok(answer),
+        // The context takes an object result's reference; any other is left, as upstream.
+        let found = (kind == IS_OBJECT).then(|| ManuallyDrop::into_inner(found));
+        let kept = found.as_ref().map(|found| found.copy());
+        native::swoole_name_resolver_context_settle(context, found, kind == IS_STRING);
+        match (kind, kept) {
+            (IS_OBJECT, Some(kept)) => kept,
+            (IS_STRING, _) => return Ok(answer),
             _ => return Ok(None),
         }
-    }
-    // SAFETY: the cluster the context keeps; nothing below releases it.
-    let Some(cluster) = (unsafe { Value::from_ptr(cluster) }) else {
-        return Ok(None);
     };
-    let node = call_method(cluster, b"pop", None)?;
+    let node = call_method(&cluster, b"pop", None)?;
     let Some(entry) = node.array() else {
         return Ok(None);
     };
@@ -400,8 +378,7 @@ fn resolve(
     };
     let mut result = host.to_vec();
     // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
-    native::swoole_name_resolver_context_get(context, &mut with_port);
-    if with_port {
+    if context.with_port {
         result.push(b':');
         let Some(port) = entry.find(b"port").and_then(Value::applied_long) else {
             return Ok(None);

@@ -174,7 +174,9 @@ fn finish<H: Host>(h: &mut H, flags: u64) -> bool {
         h.log(LOG_NO_TASK_WORKERS, 0, 0);
         return false;
     }
-    h.get(OP_SELECT_TASK);
+    if !h.is(OP_SELECT_TASK) {
+        return false;
+    }
     if u32::try_from(h.get(OP_INFO_TYPE)).ok() == Some(EVENT_PIPE_MESSAGE) {
         h.log(LOG_FINISH_IN_PIPE, 0, 0);
         return false;
@@ -347,7 +349,11 @@ mod tests {
         let mut h = Script::default();
         assert_eq!(run_op(&mut h, RUN_FINISH, 0), 0);
         assert_eq!(h.called(LOG_NO_TASK_WORKERS), 1);
-        let base = [(OP_TASK_WORKER_NUM, 1)];
+        // No task given and none running: nothing to answer, and no head is read.
+        let mut h = Script::with(&[(OP_TASK_WORKER_NUM, 1)]);
+        assert_eq!(run_op(&mut h, RUN_FINISH, 0), 0);
+        assert_eq!(h.called(OP_INFO_TYPE), 0);
+        let base = [(OP_TASK_WORKER_NUM, 1), (OP_SELECT_TASK, 1)];
         let mut h = Script::with(&base);
         h.facts.insert(OP_INFO_TYPE, u64::from(EVENT_PIPE_MESSAGE));
         assert_eq!(run_op(&mut h, RUN_FINISH, 0), 0);
@@ -373,6 +379,7 @@ mod tests {
         ] {
             let mut h = Script::with(&[
                 (OP_TASK_WORKER_NUM, 1),
+                (OP_SELECT_TASK, 1),
                 (OP_TASK_EXT_FLAGS, task_flags),
                 (OP_SOURCE_WORKER, 1),
                 (OP_PACK_RESULT, 1),
@@ -383,6 +390,7 @@ mod tests {
         }
         let mut h = Script::with(&[
             (OP_TASK_WORKER_NUM, 1),
+            (OP_SELECT_TASK, 1),
             (OP_TASK_EXT_FLAGS, TASK_NONBLOCK),
             (OP_SOURCE_WORKER, 1),
             (OP_PACK_RESULT, 1),
@@ -401,6 +409,7 @@ mod tests {
     fn finish_blocking_writes_the_slot_under_the_lock_then_notifies() {
         let mut h = Script::with(&[
             (OP_TASK_WORKER_NUM, 1),
+            (OP_SELECT_TASK, 1),
             (OP_SOURCE_WORKER, 1),
             (OP_RESULT_IN_SHM, 1),
             (OP_NOTIFY_RESULT, 8),
@@ -426,7 +435,11 @@ mod tests {
             ]
         );
 
-        let mut h = Script::with(&[(OP_TASK_WORKER_NUM, 1), (OP_SOURCE_WORKER, 1)]);
+        let mut h = Script::with(&[
+            (OP_TASK_WORKER_NUM, 1),
+            (OP_SELECT_TASK, 1),
+            (OP_SOURCE_WORKER, 1),
+        ]);
         assert_eq!(run_op(&mut h, RUN_FINISH, 0), 0);
         assert_eq!(
             (h.called(OP_UNLOCK_WORKER), h.called(LOG_LARGE_PACK)),
@@ -436,6 +449,7 @@ mod tests {
 
         let mut h = Script::with(&[
             (OP_TASK_WORKER_NUM, 1),
+            (OP_SELECT_TASK, 1),
             (OP_TASK_EXT_FLAGS, TASK_WAITALL),
             (OP_SOURCE_WORKER, 1),
             (OP_OPEN_RESULT_FILE, 1),

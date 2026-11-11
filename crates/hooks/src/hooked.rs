@@ -9,7 +9,7 @@ use crate::co_socket::Co;
 use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
-use crate::stdio::{Host, coroutine, offloaded, swr_v1_hook_close_fd};
+use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
 use core::mem::MaybeUninit;
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 use swoole_rs_corebase::{log, sys};
@@ -55,20 +55,27 @@ fn hooked(fd: c_int) -> Option<(&'static Host, Co)> {
     socket_map::get(fd).map(|socket| (host, socket))
 }
 
+/// A socket this module made or the map let go of, which nothing else holds:
+/// dropping it deletes it.
+struct Owned(Co);
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // SAFETY: only this module makes an `Owned`, of a socket nothing else holds.
+        unsafe { (SOCKETS.free)(self.0.this()) };
+    }
+}
+
 /// Map `fd` to `socket`, deleting the socket the map lets go.
 fn keep(fd: c_int, socket: Co, replace: bool) {
-    if let Some(released) = socket_map::insert(fd, socket, replace) {
-        // SAFETY: the map no longer holds it.
-        unsafe { (SOCKETS.free)(released.this()) };
-    }
+    drop(socket_map::insert(fd, socket, replace).map(Owned));
 }
 
 /// A new native socket's fd once the map holds it, or -1 (deleting it) if it has none.
 fn adopt(socket: Co) -> c_int {
     let fd = socket.sock_fd();
     if fd < 0 {
-        // SAFETY: nothing else holds it.
-        unsafe { (SOCKETS.free)(socket.this()) };
+        drop(Owned(socket));
         return -1;
     }
     keep(fd, socket, true);
@@ -82,18 +89,10 @@ fn ring(host: &Host) -> Option<&'static crate::uring::Host> {
 }
 
 /// Hooked `socket(2)`.
-///
-/// # Safety
-/// As for `socket`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_socket(
-    domain: c_int,
-    kind: c_int,
-    protocol: c_int,
-) -> c_int {
+pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
     if coroutine().is_none() {
-        // SAFETY: as the caller promises.
-        return unsafe { libc::socket(domain, kind, protocol) };
+        return sys::socket(domain, kind, protocol);
     }
     adopt((SOCKETS.open)(domain, kind, protocol))
 }
@@ -256,12 +255,14 @@ pub unsafe extern "C" fn swoole_coroutine_poll_fake(
         );
         return -1;
     }
-    // SAFETY: one pollfd, as the caller promises.
-    let fd = unsafe { &mut *fds };
+    // SAFETY: null or one pollfd, as the caller promises.
+    let Some(fd) = (unsafe { fds.as_mut() }) else {
+        set_errno(libc::EFAULT);
+        return -1;
+    };
     let socket = hooked(fd.fd).map(|(_, socket)| socket);
     match fd_poll_fake(fd, timeout, socket) {
-        // SAFETY: as the caller promises.
-        2 => unsafe { libc::poll(fds, nfds, timeout) },
+        2 => sys::poll(core::slice::from_mut(fd), timeout),
         result => result,
     }
 }
@@ -276,25 +277,31 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     nfds: nfds_t,
     timeout: c_int,
 ) -> c_int {
+    let fds: &mut [pollfd] = if nfds == 0 {
+        &mut []
+    } else if fds.is_null() {
+        set_errno(libc::EFAULT);
+        return -1;
+    } else {
+        // SAFETY: `nfds` pollfds, as the caller promises.
+        unsafe { core::slice::from_raw_parts_mut(fds, usize::try_from(nfds).unwrap_or(0)) }
+    };
     if timeout == 0 || coroutine().is_none() {
-        // SAFETY: as the caller promises.
-        return unsafe { libc::poll(fds, nfds, timeout) };
+        return sys::poll(fds, timeout);
     }
     #[cfg(feature = "iouring")]
-    if let Some(ring) = crate::stdio::host().and_then(ring).filter(|_| nfds == 1) {
-        // SAFETY: one pollfd, as the caller promises.
-        return crate::uring::poll(ring, unsafe { &mut *fds }, timeout);
+    if let Some(ring) = crate::stdio::host().and_then(ring)
+        && let [fd] = fds
+    {
+        return crate::uring::poll(ring, fd, timeout);
     }
-    // SAFETY: as the caller promises, in a coroutine.
-    unsafe { swr_v1_hook_poll(fds, nfds, timeout, &crate::poll::NATIVE) }
+    swr_v1_hook_poll(fds, timeout, &crate::poll::NATIVE)
 }
 
-/// Wrap the open `fd` in a nonblocking coroutine socket: 0, or -1 outside a coroutine.
-///
-/// # Safety
-/// `fd` is open and becomes the socket's.
+/// Wrap the open `fd` in a nonblocking coroutine socket, which takes it: 0, or -1
+/// outside a coroutine.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
+pub extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return -1;
     }
@@ -318,8 +325,7 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
     // `move_fd`, so its deletion leaves the fd open.
     unwrapped.set_sock_fd(-1);
     unwrapped.net(|record| record.fd = -1);
-    // SAFETY: the map let go of it.
-    unsafe { (SOCKETS.free)(unwrapped.this()) };
+    drop(Owned(unwrapped));
     0
 }
 
@@ -378,8 +384,8 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     let result = socket_map::close(
         fd,
         Co::close,
-        // SAFETY: a socket removed from the map, which nothing uses any more.
-        |socket| unsafe { (SOCKETS.free)(socket.this()) },
+        // A socket removed from the map, which nothing uses any more.
+        |socket| drop(Owned(socket)),
     );
     if result <= 0 {
         return result;
@@ -392,8 +398,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload))
 }
 
-/// Hooked `read(2)`: a coroutine socket reads; any other fd reads on the ring, or
-/// waits for readiness and reads on the pool.
+/// Hooked `read(2)`, as [`read`].
 ///
 /// # Safety
 /// As for `read`.
@@ -403,29 +408,33 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     buf: *mut c_void,
     count: size_t,
 ) -> ssize_t {
+    // SAFETY: the caller's buffer.
+    read(fd, unsafe { slots_mut(buf, count) })
+}
+
+/// The hooked `read(2)` into `buf`: a coroutine socket reads; any other fd reads on
+/// the ring, or waits for readiness and reads on the pool.
+pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     if coroutine().is_none() {
-        // SAFETY: as the caller promises.
-        return unsafe { libc::read(fd, buf, count) };
+        return sys::read(fd, buf);
     }
     if let Some(socket) = socket_map::get(fd) {
-        // SAFETY: the caller's buffer.
-        return socket.read(unsafe { slots_mut(buf, count) });
+        return socket.read(buf);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: the caller's buffer.
-        return unsafe { crate::uring::read(ring, fd, buf, count, -1.0) };
+        // SAFETY: `buf`'s slots.
+        return unsafe { crate::uring::read(ring, fd, buf.as_mut_ptr().cast(), buf.len(), -1.0) };
     }
-    let call = || {
+    on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
         let mut socket = blocking(fd, false);
-        // SAFETY: a record on this frame; the caller's buffer.
-        unsafe { swoole_rs_tls::upstream::socket_read_sync(&raw mut socket, buf, count) }
-    };
-    // SAFETY: native `async`, in a coroutine; the job only touches its record and the buffer.
-    unsafe { offloaded(Some(crate::stdio::NATIVE.offload), -1, call) }
+        let (at, count) = (buf.as_mut_ptr().cast(), buf.len());
+        // SAFETY: a record on this frame; `buf`'s slots.
+        unsafe { swoole_rs_tls::upstream::socket_read_sync(&raw mut socket, at, count) }
+    })
 }
 
-/// Hooked `write(2)`, as [`swoole_coroutine_read`].
+/// Hooked `write(2)`, as [`write`].
 ///
 /// # Safety
 /// As for `write`.
@@ -435,26 +444,29 @@ pub unsafe extern "C" fn swoole_coroutine_write(
     buf: *const c_void,
     count: size_t,
 ) -> ssize_t {
+    // SAFETY: the caller's buffer.
+    write(fd, unsafe { bytes(buf, count) })
+}
+
+/// The hooked `write(2)` of `buf`, as [`read`].
+pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     if coroutine().is_none() {
-        // SAFETY: as the caller promises.
-        return unsafe { libc::write(fd, buf, count) };
+        return sys::write(fd, buf);
     }
     if let Some(socket) = socket_map::get(fd) {
-        // SAFETY: the caller's buffer.
-        return socket.write(unsafe { bytes(buf, count) });
+        return socket.write(buf);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: the caller's buffer.
-        return unsafe { crate::uring::write(ring, fd, buf, count, -1.0) };
+        // SAFETY: `buf`'s bytes.
+        return unsafe { crate::uring::write(ring, fd, buf.as_ptr().cast(), buf.len(), -1.0) };
     }
-    let call = || {
+    on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
         let mut socket = blocking(fd, true);
-        // SAFETY: a record on this frame; the caller's buffer.
-        unsafe { swoole_rs_tls::upstream::socket_write_sync(&raw mut socket, buf, count) }
-    };
-    // SAFETY: native `async`, in a coroutine; the job only touches its record and the buffer.
-    unsafe { offloaded(Some(crate::stdio::NATIVE.offload), -1, call) }
+        let (at, count) = (buf.as_ptr().cast(), buf.len());
+        // SAFETY: a record on this frame; `buf`'s bytes.
+        unsafe { swoole_rs_tls::upstream::socket_write_sync(&raw mut socket, at, count) }
+    })
 }
 
 /// The caller's `len` bytes at `buf`.
@@ -541,8 +553,11 @@ pub(crate) mod tests {
         socket.network = SocketRecord::new();
         socket.network.fd = fd;
         socket.record.sock_fd = fd;
-        socket.record.socket = &raw mut socket.network;
-        unsafe { Co::new(Box::into_raw(socket).cast()) }
+        // The record's pointer comes from the raw one `free` reclaims, so it outlives
+        // the box giving the allocation up.
+        let socket = Box::into_raw(socket);
+        unsafe { (*socket).record.socket = &raw mut (*socket).network };
+        unsafe { Co::new(socket.cast()) }
     }
 
     fn open(domain: c_int, kind: c_int, _: c_int) -> Co {
@@ -596,6 +611,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sendmsg")]
     fn a_coroutine_transfers_on_mapped_fds_through_the_rust_members() {
         wrapped(|fd, peer| unsafe {
             let mut buf = [0u8; 16];
@@ -634,6 +650,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no accept on a socketpair")]
     fn a_coroutine_connects_accepts_and_waits_on_mapped_fds_through_the_rust_members() {
         use crate::co_io::test_host::{TIMER_OK, take};
         wrapped(|fd, _| unsafe {
@@ -697,6 +714,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no AF_UNIX sockets")]
     fn outside_a_coroutine_calls_go_to_libc() {
         let mut pair = [0; 2];
         unsafe {
@@ -796,5 +814,19 @@ pub(crate) mod tests {
             libc::close(pipe[0]);
             libc::close(pipe[1]);
         }
+    }
+
+    #[test]
+    fn polls_of_null_fds_fail_with_efault() {
+        with(Mode::Pool, || unsafe {
+            for result in [
+                swoole_coroutine_poll(core::ptr::null_mut(), 1, 10),
+                swoole_coroutine_poll_fake(core::ptr::null_mut(), 1, 10),
+            ] {
+                assert_eq!((result, sys::errno()), (-1, libc::EFAULT));
+            }
+            // No fds to read: libc's poll of none.
+            assert_eq!(swoole_coroutine_poll(core::ptr::null_mut(), 0, 0), 0);
+        });
     }
 }
