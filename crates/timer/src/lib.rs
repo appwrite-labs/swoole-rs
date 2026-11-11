@@ -27,7 +27,7 @@ use std::{mem, ptr};
 pub use wrapper::{
     php, swoole_timer_create, swoole_timer_del, swoole_timer_delay, swoole_timer_free,
     swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
-    swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec,
+    swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec, thread_timer_count,
 };
 
 const OK: i32 = 0;

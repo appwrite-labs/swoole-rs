@@ -17,10 +17,7 @@ use swoole_rs_cares_sys as sdk;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{
-    Event, ReactorDeferred, ReactorFields, Running, Socket, SocketRecord, event_api,
-    socket_upstream,
-};
+use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api, socket_upstream};
 
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
@@ -103,11 +100,6 @@ impl event_api::Deferred for Completion {
     }
     fn dispose(self) {}
 }
-/// The thread's live reactor fields.
-fn reactor_fields() -> *mut swoole_rs_reactor::ReactorFields {
-    // c-ares runs on a thread whose reactor is live.
-    event_api::current_prepared().map_or(ptr::null_mut(), |prepared| prepared.fields)
-}
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
 extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
     process(event, 0)
@@ -141,16 +133,8 @@ fn install() {
     unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
     // SAFETY: as above.
     unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
-    let queue = reactor_fields()
-        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, destroy_callbacks))
-        .cast::<*mut ReactorDeferred>();
-    // SAFETY: the live reactor's destroy queue; the call keeps no data.
-    if unsafe {
-        swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, cleanup, ptr::null_mut(), None)
-    } != 0
-    {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
-    }
+    // SAFETY: `cleanup` runs once, when the reactor goes; it keeps no data.
+    unsafe { event_api::on_destroy_with(cleanup, ptr::null_mut()) };
 }
 const FD: i32 = FdType::SW_FD_CARES as i32;
 /// `Socket::free` of a wrapper whose descriptor c-ares keeps: the record goes on the

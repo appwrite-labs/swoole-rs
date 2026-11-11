@@ -16,7 +16,7 @@
 //! more than two seconds.
 use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use std::mem::size_of;
 use std::sync::atomic::{
     AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
@@ -24,8 +24,7 @@ use std::sync::atomic::{
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 use std::{ptr, slice};
-use swoole_rs_locks::{swr_v1_locks_destroy, swr_v1_locks_init, swr_v1_locks_lock};
-use swoole_rs_locks::{swr_v1_locks_size, swr_v1_locks_unlock};
+use swoole_rs_locks::SharedMutex;
 
 /// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`.
 pub const TYPE_INT: u32 = 1;
@@ -41,8 +40,6 @@ const CONFLICT_PROPORTION: f32 = 0.2;
 const FORCE_UNLOCK_MS: u128 = 2000;
 const SPINLOCK_LOOP_N: u32 = 1024;
 const SW_ERROR_MALLOC_FAIL: c_int = 501;
-/// `swr_v1_locks` kind of a pthread mutex.
-const MUTEX: i32 = 3;
 
 /// The host's hash of a key as the caller passed it, whose row compares its
 /// first `compared` bytes: upstream's `hash_func(key, keylen)`, which
@@ -283,26 +280,6 @@ pub unsafe extern "C" fn release() {
     }
 }
 
-/// Storage for a pthread mutex and its attributes (`swr_v1_locks`).
-#[repr(C, align(8))]
-struct Lock(UnsafeCell<[u8; 128]>);
-
-impl Lock {
-    fn get(&self) -> *mut c_void {
-        self.0.get().cast()
-    }
-
-    fn lock(&self) {
-        // SAFETY: initialised by `Table::init`, destroyed only by `Table::destroy`.
-        unsafe { swr_v1_locks_lock(self.get(), MUTEX, 0, 0, 0) };
-    }
-
-    fn unlock(&self) {
-        // SAFETY: as above; this thread holds it.
-        unsafe { swr_v1_locks_unlock(self.get(), MUTEX) };
-    }
-}
-
 /// The counters `Swoole\Table::stats()` reports.
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -321,8 +298,8 @@ pub struct Stats {
 /// rows, and `cursor` is this process's cursor.
 #[repr(C)]
 pub struct Table {
-    mutex: Lock,
-    iterator_mutex: Lock,
+    mutex: SharedMutex,
+    iterator_mutex: SharedMutex,
     row_num: AtomicU32,
     conflict_max_level: AtomicU32,
     conflict_count: AtomicUsize,
@@ -459,9 +436,6 @@ impl Table {
         warning: Warning,
         error: Error,
     ) -> bool {
-        if swr_v1_locks_size(MUTEX) > size_of::<Lock>() {
-            return false;
-        }
         let size = if rows >= MAX_ROWS {
             MAX_ROWS
         } else {
@@ -475,8 +449,8 @@ impl Table {
             conflict
         };
         let table = Table {
-            mutex: Lock(UnsafeCell::new([0; 128])),
-            iterator_mutex: Lock(UnsafeCell::new([0; 128])),
+            mutex: SharedMutex::new(),
+            iterator_mutex: SharedMutex::new(),
             row_num: AtomicU32::new(0),
             conflict_max_level: AtomicU32::new(0),
             conflict_count: AtomicUsize::new(0),
@@ -501,14 +475,11 @@ impl Table {
         unsafe { this.write(table) };
         // SAFETY: written above.
         let table = unsafe { &mut *this };
-        // SAFETY: this header's unused lock storage.
-        if unsafe { swr_v1_locks_init(table.mutex.get(), MUTEX, 1) } != 0 {
+        if table.mutex.init() != 0 {
             return false;
         }
-        // SAFETY: as above.
-        if unsafe { swr_v1_locks_init(table.iterator_mutex.get(), MUTEX, 1) } != 0 {
-            // SAFETY: initialised above, never locked.
-            unsafe { swr_v1_locks_destroy(table.mutex.get(), MUTEX) };
+        if table.iterator_mutex.init() != 0 {
+            table.mutex.destroy();
             return false;
         }
         table.columns = Box::into_raw(Box::default());
@@ -701,10 +672,8 @@ impl Table {
             // SAFETY: made by `create`, freed only here.
             drop(unsafe { Box::from_raw(table.cursor) });
         }
-        // SAFETY: initialised by `init`, unlocked, destroyed once.
-        unsafe { swr_v1_locks_destroy(table.iterator_mutex.get(), MUTEX) };
-        // SAFETY: as above.
-        unsafe { swr_v1_locks_destroy(table.mutex.get(), MUTEX) };
+        table.iterator_mutex.destroy();
+        table.mutex.destroy();
         // The header is shared: forked processes see `ready()` turn false, as upstream's do.
         private(|tables| tables.retain(|t| t[0] != this.addr()));
         std::mem::replace(&mut table.memory, ptr::null_mut())
@@ -763,9 +732,9 @@ impl Table {
     #[must_use]
     pub fn available_slices(&self) -> u32 {
         let Some(pool) = self.pool() else { return 0 };
-        self.mutex.lock();
+        _ = self.mutex.lock();
         let (spare, _) = pool.slices();
-        self.mutex.unlock();
+        _ = self.mutex.unlock();
         spare
     }
 
@@ -932,35 +901,35 @@ impl Table {
     }
 
     fn alloc_row(&self) -> Option<Live> {
-        self.mutex.lock();
+        _ = self.mutex.lock();
         // Under the table's mutex.
         let row = self
             .pool()
             .map_or(ptr::null_mut(), fixed::alloc)
             .cast::<Row>();
-        self.mutex.unlock();
+        _ = self.mutex.unlock();
         (!row.is_null()).then_some(Live(row))
     }
 
     /// Return a collision row no chain links any more.
     fn free_row(&self, row: Live) {
-        self.mutex.lock();
+        _ = self.mutex.lock();
         row.clear();
         // A row this pool allocated, under the table's mutex.
         if let Some(pool) = self.pool() {
             fixed::free(pool, row.0.cast());
         }
-        self.mutex.unlock();
+        _ = self.mutex.unlock();
     }
 
     fn cursor<T>(&self, step: impl FnOnce(&mut Cursor, usize) -> T) -> Option<T> {
         if self.cursor.is_null() {
             return None;
         }
-        self.iterator_mutex.lock();
+        _ = self.iterator_mutex.lock();
         // SAFETY: this process's cursor (see the invariant), under the iterator mutex.
         let result = step(unsafe { &mut *self.cursor }, ROW + self.item_size);
-        self.iterator_mutex.unlock();
+        _ = self.iterator_mutex.unlock();
         Some(result)
     }
 

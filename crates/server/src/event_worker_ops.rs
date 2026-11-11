@@ -189,8 +189,7 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
 fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let worker = ctx.worker;
     match op {
-        // SAFETY: Rust's signal handler for the event worker.
-        OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, worker_signal_handler) },
+        OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
         OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker().into()),
         OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
         OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
@@ -281,11 +280,8 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `OP_SIGNAL_SET`: the signal number (-1 for SIGRTMIN) in the low word and the
 /// handler in the high word: 0 none, 1 `SIG_IGN`, 2 `own`.
-///
-/// # Safety
-/// `own` is a signal handler nothing unloads.
-pub(crate) unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe extern "C" fn(c_int)) {
-    use swoole_rs_reactor::signal_upstream::swoole_signal_set;
+pub(crate) fn swr_workers_signal_set(arg: u64, own: extern "C" fn(c_int)) {
+    use swoole_rs_reactor::signal_upstream::{self, Handler};
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the low word holds the signal number"
@@ -298,12 +294,11 @@ pub(crate) unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe ext
         return;
     }
     let handler = match arg >> 32 {
-        0 => 0,
-        1 => libc::SIG_IGN,
-        _ => own as usize,
+        0 => Handler::NONE,
+        1 => Handler::IGNORE,
+        _ => Handler::new(own),
     };
-    // SAFETY: a valid signal number and a handler per the caller.
-    _ = unsafe { swoole_signal_set(signo, handler, false) };
+    _ = signal_upstream::set(signo, handler, false);
 }
 
 /// `Worker_global_hook`: the worker start/stop and server shutdown hooks.

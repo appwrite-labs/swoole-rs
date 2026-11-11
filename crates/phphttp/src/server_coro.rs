@@ -437,8 +437,7 @@ fn construct(call: &Call) {
             exception(call, EINVAL, "host is empty");
             return None;
         }
-        // SAFETY: the host's bytes.
-        let kind = unsafe { swoole_rs_reactor::swr_v1_socket_host_type(host.as_ptr(), host.len()) };
+        let kind = swoole_rs_reactor::host_type(host);
         let Ok(socket) = co::make(-1, 0, kind.socket_type, 0, false) else {
             bailout::Bailout.defer();
             return None;

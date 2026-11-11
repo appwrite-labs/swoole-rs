@@ -1055,6 +1055,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-utilities",
