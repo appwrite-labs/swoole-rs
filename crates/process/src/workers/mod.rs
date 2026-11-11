@@ -6,7 +6,6 @@
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
-pub mod entry;
 mod event_worker;
 mod factory;
 mod log;
@@ -120,7 +119,6 @@ fn effect(op: u32) -> Option<u64> {
     const SEND_YIELD: c_int = 1010;
     const POLL_TIMEOUT: c_int = 6002;
     let int = |value: c_int| i64::from(value).cast_unsigned();
-    let globals = crate::worker_globals::thread_globals();
     Some(match op {
         // SAFETY: this thread's event loop.
         ops::OP_EVENT_INIT => int(unsafe { swoole_event_init(0) }),
@@ -164,10 +162,13 @@ fn effect(op: u32) -> Option<u64> {
             swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
             0
         }
-        // SAFETY: this thread's worker globals.
-        ops::OP_HAS_CURRENT_WORKER => u64::from(!unsafe { (*globals).worker }.is_null()),
-        // SAFETY: as above.
-        ops::OP_EXIT_TIME => unsafe { (*globals).exit_time }.cast_unsigned(),
+        ops::OP_HAS_CURRENT_WORKER => u64::from(!crate::worker_globals::current_worker().is_null()),
+        ops::OP_EXIT_TIME => crate::worker_globals::with_globals(|globals| {
+            globals
+                .exit_time
+                .load(core::sync::atomic::Ordering::Relaxed)
+        })
+        .cast_unsigned(),
         ops::OP_WORKER_STOPPED => {
             crate::worker_globals::worker_global_stopped();
             0

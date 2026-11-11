@@ -11,11 +11,10 @@ use swoole_rs_process::methods::swoole_get_worker_id;
 use swoole_rs_process::process_pool::PoolRef;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_process::workers::entry::Bytes;
 use swoole_rs_process::workers::ops::{
     OP_COMMAND_REPLY, OP_HAS_COMMAND, OP_LISTEN_TASK_PIPE, OP_POOL_INIT, OP_SET_ASYNC_LOOP,
-    OP_UNLIMIT_BUS_PIPES, OP_UNPACK_COMMAND, RUN_FINISH, RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE,
-    RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK,
+    OP_UNLIMIT_BUS_PIPES, OP_UNPACK_COMMAND, RUN_FINISH, RUN_INIT_TASK_WORKERS,
+    RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE, RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK,
 };
 
 use super::{Context, TaskPool};
@@ -182,31 +181,30 @@ fn run_with(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
     swoole_rs_process::workers::run_task_worker(ctx, operation, arg)
 }
 
-/// `Server::init_task_workers` over the server's task pool, and `Server::finish`
-/// (crates/process's entry.rs) of `task`'s result `bytes`.
+/// `Server::init_task_workers()` over the server's task pool.
+#[must_use]
+pub(crate) fn init_task_workers(serv: crate::view::Server<'_>) -> bool {
+    let mut ctx = Context::over(serv);
+    ctx.pool = Some(TaskPool::of(serv));
+    run_with(&mut ctx, RUN_INIT_TASK_WORKERS, 0) != 0
+}
+
+/// `Server::finish(data, data_len, flags, current_task)`: the task's result to the
+/// worker that sent it.
 ///
 /// # Safety
-/// `serv` is a live `Server`; for `RUN_FINISH`, `task` is null or a live
-/// `EventData` and `bytes` the method's live result.
-pub(crate) unsafe fn enter(
-    operation: u32,
-    serv: *mut c_void,
-    task: *mut c_void,
-    bytes: *mut c_void,
-    arg: u64,
-) -> i64 {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { crate::view::Server::from_raw(serv) };
+/// `current_task` is null or a live `EventData`.
+#[must_use]
+pub unsafe fn finish(
+    serv: crate::view::Server<'_>,
+    data: &[u8],
+    flags: c_int,
+    current_task: *const c_void,
+) -> bool {
     let mut buf = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::over(serv);
-    if operation == RUN_FINISH {
-        // SAFETY: as the caller guarantees.
-        let bytes = unsafe { &*bytes.cast::<Bytes>() };
-        ctx.task = task.cast();
-        ctx.buf = buf.as_mut_ptr().cast();
-        (ctx.data, ctx.data_len) = (bytes.data.cast(), bytes.length);
-    } else {
-        ctx.pool = Some(TaskPool::of(serv));
-    }
-    run_with(&mut ctx, operation, arg)
+    ctx.task = current_task.cast();
+    ctx.buf = buf.as_mut_ptr().cast();
+    (ctx.data, ctx.data_len) = (data.as_ptr(), data.len());
+    run_with(&mut ctx, RUN_FINISH, u64::from(flags.cast_unsigned())) != 0
 }

@@ -389,14 +389,14 @@ fn finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    finished(call, serv.raw(), ptr::null_mut());
+    finished(call, serv, ptr::null_mut());
 }
 
 fn task_finish(call: &Call) {
     // `$this` is a Task; an `E_ERROR` when it has no server.
-    let serv = crate::server::task_server(call);
-    // SAFETY: `serv` is the live server here.
-    if !unsafe { view::Server::from_raw(serv) }.is_started() {
+    // SAFETY: `$this`'s server is the live server here.
+    let serv = unsafe { view::Server::from_raw(crate::server::task_server(call)) };
+    if !serv.is_started() {
         fatal(E_WARNING, c"server is not running");
         return call.set_bool(false);
     }
@@ -407,7 +407,7 @@ fn task_finish(call: &Call) {
 }
 
 /// `php_swoole_server_task_finish` of the data argument into the return slot.
-fn finished(call: &Call, serv: *mut c_void, req: *mut c_void) {
+fn finished(call: &Call, serv: view::Server<'_>, req: *mut c_void) {
     let Some(data) = call.value(1) else {
         return call.set_bool(false);
     };
