@@ -11,7 +11,6 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::worker_globals::worker_global_detach;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_shutdown};
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     HOOK_BEFORE_SERVER_SHUTDOWN, HOOK_BEFORE_WORKER_START, OP_ABORT_WORKER, OP_ALL_CORE_WORKER_NUM,
     OP_CALL_WORKER_START, OP_CLEAR_TIMER, OP_CLOSE_CONNECTION, OP_CO_DISPATCH, OP_CONN_AT,
@@ -35,7 +34,14 @@ use crate::callbacks::{
 use crate::view;
 
 mod native;
-pub(crate) use native::enter;
+pub(crate) use native::{
+    accept_event, call_worker_error_callback, call_worker_start_callback,
+    call_worker_stop_callback, send_to_reactor_thread, start_event_worker, worker_signal_handler,
+    worker_start_callback,
+};
+pub use native::{
+    clean_worker_connections, drain_worker_pipe, kill_worker, stop_async_worker, worker_signal_init,
+};
 
 /// What an operation runs over.
 struct Context {
@@ -181,12 +187,11 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
 /// The effects on the worker, the server and the process.
 #[inline(always)]
 fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
+    let worker = ctx.worker;
     match op {
         // SAFETY: Rust's signal handler for the event worker.
-        OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, entry::worker_signal_handler) },
-        // SAFETY: the context's live server and worker.
-        OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
+        OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, worker_signal_handler) },
+        OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker().into()),
         OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
         OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
             SW_WORKER_IDLE
@@ -198,16 +203,13 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 logger.reopen();
             }
         }
-        // SAFETY: the context's live server and worker.
-        OP_CALL_WORKER_START => unsafe { entry::call_worker_start_callback(serv, worker.cast()) },
-        // SAFETY: as above.
-        OP_WORKER_START_CALLBACK => unsafe { entry::worker_start_callback(serv, worker.cast()) },
-        // SAFETY: as above.
-        OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
-        // SAFETY: the context's live server.
-        OP_WORKER_SIGNAL_INIT => unsafe { entry::worker_signal_init(serv) },
-        // SAFETY: as above.
-        OP_DRAIN_PIPES => unsafe { entry::drain_worker_pipe(serv) },
+        OP_CALL_WORKER_START => call_worker_start_callback(ctx.server(), ctx.worker().into()),
+        OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server(), ctx.worker().into()),
+        OP_WORKER_STOP_CALLBACK => {
+            call_worker_stop_callback(ctx.server(), ctx.worker().into());
+        }
+        OP_WORKER_SIGNAL_INIT => worker_signal_init(ctx.server()),
+        OP_DRAIN_PIPES => drain_worker_pipe(ctx.server()),
         OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
         OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker().into()),
         OP_RESET_WORKER_COUNTER => {

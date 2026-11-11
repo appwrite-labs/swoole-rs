@@ -13,7 +13,6 @@ use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
 use swoole_rs_process::workers::ops::{
     LOG_CALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CREATE_MESSAGE_BUS, OP_DESTROY_MESSAGE_BUS,
@@ -95,9 +94,9 @@ impl Context {
         u64::from(workers.event_count) + u64::from(workers.task_count) + workers.user_count as u64
     }
     /// The context's worker.
-    fn worker(&self) -> &WorkerRecord {
+    fn worker(&self) -> Worker<'_> {
         // SAFETY: the ops reading it run with a live worker in the context.
-        unsafe { &*self.worker }
+        unsafe { Worker::new(self.worker) }
     }
     /// The thread factory's threads.
     fn manager(&self) -> &ThreadManager {
@@ -218,9 +217,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let worker = ctx.worker();
             let status = ctx.manager().thread(worker.id().into()).exit_status() << 8;
             let status = ExitStatus::new(worker.pid(), status);
-            let status = (&raw const status).cast();
-            // SAFETY: the live server, its worker, and the status for the call.
-            unsafe { entry::call_worker_error_callback(serv, ctx.worker.cast(), status) };
+            crate::event_worker_ops::call_worker_error_callback(ctx.server(), worker, &status);
             0
         }
         OP_SPAWN_THREAD => {
@@ -409,8 +406,7 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_KILL_WORKER => {
             let id = c_int::try_from(arg.cast_signed()).ok()?;
-            // SAFETY: as above.
-            let _ = unsafe { entry::kill_worker(serv, id) };
+            _ = crate::event_worker_ops::kill_worker(ctx.server(), id);
             0
         }
         OP_TERMINATE_MANAGER_THREAD => {

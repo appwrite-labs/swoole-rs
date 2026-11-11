@@ -1,7 +1,7 @@
 //! A DTLS port's sessions on the reactor thread: `Server::accept_dtls_connection`
 //! and the datagram, read and close steps over them. crates/tls owns each
 //! session's queue and handshake; crates/ports stores them by fd.
-use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
 use std::ffi::CString;
 
@@ -214,17 +214,9 @@ pub(crate) unsafe fn on_packet(
             reactor_id: i16::from(reactor_id),
             ..DataHead::default()
         };
-        let ev = (&raw const ev).cast::<c_void>();
-        // SAFETY: the live server and the event, which outlives the call.
-        let sent = unsafe {
-            swoole_rs_process::workers::entry::send_to_reactor_thread(
-                serv,
-                ev,
-                size_of::<DataHead>(),
-                session_id as c_long,
-            )
-        };
-        sent < 0
+        // SAFETY: the live server.
+        let server = unsafe { crate::view::Server::from_raw(serv) };
+        crate::event_worker_ops::send_to_reactor_thread(server, &ev) < 0
     };
     if failed && let Some(close) = close {
         // SAFETY: the live reactor and the session's socket.
