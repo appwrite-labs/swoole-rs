@@ -5,6 +5,10 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 permissions: read-all
+# Batch runs write cflite, so they run one at a time; the lease covers anything else.
+concurrency:
+  group: cflite-batch
+  cancel-in-progress: false
 jobs:
   # Nightly: an hour across every fuzz/ target, growing ClusterFuzzLite's stored
   # corpus. The second schedule prunes that corpus. Crashes fail the job.
@@ -44,7 +48,7 @@ jobs:
           git init -q "$RUNNER_TEMP/cflite" && cd "$RUNNER_TEMP/cflite"
           git fetch -q --depth=1 "$REPO" cflite || exit 0
           commit=$(git commit-tree 'FETCH_HEAD^{tree}' -m 'ClusterFuzzLite corpus')
-          git push -q --force "$REPO" "$commit:refs/heads/cflite"
+          git push -q --force-with-lease="refs/heads/cflite:$(git rev-parse FETCH_HEAD)" "$REPO" "$commit:refs/heads/cflite"
       - if: failure() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
