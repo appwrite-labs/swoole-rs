@@ -762,17 +762,12 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     fn accept(&mut self) -> Option<i64> {
         // The listener's accept, in `start`'s coroutine, gives the connection its own
         // copy of the listener's length callable, which the connection's object frees.
-        let conn = self.server.listener.accept(0.0);
-        if conn.is_null() {
-            return None;
-        }
+        let conn = self.server.listener.accept(0.0)?;
         // The loop's reference to the connection object.
-        let zsocket = Owned::default();
-        // SAFETY: an empty slot and the new connection.
-        if unsafe { swoole_rs_phpclients::init_socket_object(zsocket.as_ptr(), conn) }.is_err() {
+        let Ok(zsocket) = swoole_rs_phpclients::init_socket_object(conn) else {
             self.bailed = true;
             return Some(0);
-        }
+        };
         let mut cid = 0;
         // A warning's error handler can exit(): start() re-raises it (#913).
         // SAFETY: the resolved cache, the connection object and the callable's
