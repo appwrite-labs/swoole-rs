@@ -572,19 +572,13 @@ def prune(root, older_than_hours):
 DOCKER_REPOSITORY = 'swoole-rs-dev'
 
 
-def docker_architecture():
-    """This host's architecture, or x86_64 under DOCKER_DEFAULT_PLATFORM=linux/amd64 (which
-    the docker CLI emulates on an arm64 host)."""
-    return 'x86_64' if os.environ.get('DOCKER_DEFAULT_PLATFORM') == 'linux/amd64' else os.uname().machine
-
-
 def docker_image():
-    """The dev image for the docker architecture and the current .devcontainer contents."""
+    """The dev image for this host's architecture and the current .devcontainer contents."""
     digest = hashlib.sha256()
     for path in sorted((ROOT / '.devcontainer').rglob('*')):
         if path.is_file():
             digest.update(path.relative_to(ROOT).as_posix().encode() + b'\0' + path.read_bytes())
-    return f'{DOCKER_REPOSITORY}:{docker_architecture()}-{digest.hexdigest()[:12]}'
+    return f'{DOCKER_REPOSITORY}:{os.uname().machine}-{digest.hexdigest()[:12]}'
 
 
 # Inside the container: the pinned toolchain, the locked crates and the pinned upstream
@@ -628,7 +622,7 @@ def docker(arguments):
         subprocess.run(['docker', 'build', '-t', image, str(ROOT / '.devcontainer')], check=True)
     common = Path(subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                                           cwd=ROOT, text=True).strip())
-    architecture = docker_architecture()
+    architecture = os.uname().machine
     mounts = [ROOT, common] if not common.is_relative_to(ROOT) else [ROOT]
     # Linux builds live in target/docker/<arch>/, seen inside at their usual paths, so
     # the host's own target/upstream and target/ext never hold another platform's.
