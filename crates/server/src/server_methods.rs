@@ -47,7 +47,7 @@ pub struct NativeContext {
 }
 
 impl NativeContext {
-    fn new(serv: *mut c_void) -> Self {
+    pub(crate) fn new(serv: *mut c_void) -> Self {
         Self {
             serv,
             reactor: ptr::null_mut(),

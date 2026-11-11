@@ -542,11 +542,13 @@ fn orphans() -> std::sync::MutexGuard<'static, Vec<usize>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// MSHUTDOWN: the event worker pool a bailed-out single worker left, then the
+/// MSHUTDOWN: the server and event worker pool a bailed-out single worker left, then the
 /// servers whose objects went in a process that isn't their master, now that no
 /// object can name them.
 pub extern "C" fn php_swoole_server_mshutdown() {
-    swoole_rs_server::reactor_process_ops::destroy_abandoned_pool();
+    // `free` leaves a server with a factory out of the orphans, so it joins them once.
+    let abandoned = swoole_rs_server::reactor_process_ops::release_abandoned_server();
+    orphans().extend(abandoned.map(|serv| serv as usize));
     for serv in std::mem::take(&mut *orphans()) {
         delete(serv as *mut c_void);
     }

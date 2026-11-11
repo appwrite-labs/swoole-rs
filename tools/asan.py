@@ -44,6 +44,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--jobs', type=int, default=min(os.cpu_count() or 2, 4))
     parser.add_argument('--timeout', type=int, default=120, help='Per PHPT, in seconds')
+    parser.add_argument('--gate', action='append', default=[], help='Only this gate phase; repeatable')
+    parser.add_argument('--case', action='append', default=[], help='Only this PHPT (run.py --case); repeatable')
     args = parser.parse_args()
     php = OUT / 'php'
     # One link recipe for every executable the run builds, whatever compiler name it calls.
@@ -80,14 +82,19 @@ def main():
     planned = json.loads(subprocess.check_output([*gates, '--plan'], cwd=ROOT, env=run, text=True))
     phases = [arg for entry in planned if entry['phase'] not in {'format', 'clippy', 'ownership', 'syscalls'}
               and not entry['phase'].endswith('-rust-asan') for arg in ['--phase', entry['phase']]]
+    # --gate and --case narrow the run to what they name; naming only one half skips the other.
+    if args.gate or args.case:
+        phases = [part for phase in args.gate for part in ('--phase', phase)]
+    cases = [part for case in args.case for part in ('--case', case)]
     failed = []
-    if subprocess.run([*gates, *phases, '--with-prerequisites', '--jobs', str(args.jobs),
+    if (phases or not args.case) and subprocess.run([*gates, *phases, '--with-prerequisites', '--jobs', str(args.jobs),
                        '--phase-timeout', '2400'], cwd=ROOT, env=run).returncode:
         failed.append('gates')
-    if subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=run).returncode \
+    if (cases or not args.gate) and (
+            subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=run).returncode
             or subprocess.run([sys.executable, 'corpus/upstream/run.py', '--timeout', str(args.timeout), '--php', php / 'bin/php',
-                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json'],
-                              cwd=ROOT, env=run).returncode:
+                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json', *cases],
+                              cwd=ROOT, env=run).returncode):
         failed.append('phpt')
     if found := len(list(reports.iterdir())):
         failed.append(f'{found} sanitizer reports in {reports}')
