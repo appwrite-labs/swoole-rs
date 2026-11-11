@@ -22,8 +22,8 @@ use std::{
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::{
-    php_swoole_get_recv_data, php_swoole_server_get_callback, php_swoole_server_isset_callback,
-    php_swoole_server_on_close, php_swoole_server_on_receive,
+    RecvData, php_swoole_get_recv_data, php_swoole_server_get_callback,
+    php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{ConnectionRecord, view};
@@ -210,13 +210,13 @@ fn cached(
 pub unsafe fn http_server_on_receive(server: *mut c_void, request: *mut c_void) -> c_int {
     // SAFETY: per the caller, `server` is a live `Server` for the call.
     let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: a `RecvData` begins with its `DataHead`.
-    let info = unsafe { *request.cast::<DataHead>() };
-    match receive(server, request, &info) {
+    // SAFETY: per the caller, the receive loop's `RecvData` for the call.
+    let request = unsafe { &*request.cast::<RecvData>() };
+    let info = &request.info;
+    match receive(server, request) {
         CLOSED => -1,
-        // SAFETY: the live server and its request.
-        TCP => unsafe { php_swoole_server_on_receive(server, request) },
-        WEBSOCKET => websocket::on_message(server.raw(), request, &info),
+        TCP => php_swoole_server_on_receive(server, request),
+        WEBSOCKET => websocket::on_message(server, request),
         HTTP2 => {
             let conn = server
                 .verified(info.fd)
@@ -225,13 +225,14 @@ pub unsafe fn http_server_on_receive(server: *mut c_void, request: *mut c_void) 
                 return -1;
             };
             // SAFETY: as above, with the session's connection.
-            unsafe { (http2.on_receive)(server.raw(), conn.cast(), request) }
+            unsafe { (http2.on_receive)(server, conn.cast(), request) }
         }
         _ => 0,
     }
 }
 
-fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c_int {
+fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+    let info = &request.info;
     let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
     let Some(conn) = server.verified(session) else {
         host::log(
@@ -282,7 +283,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
     let zdata = state.request.zdata.as_ptr();
     // SAFETY: the live server and its request; the data moves into the context.
-    unsafe { php_swoole_get_recv_data(server.raw(), zdata, request) };
+    unsafe { php_swoole_get_recv_data(server, zdata, request) };
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
     let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
@@ -377,12 +378,6 @@ pub(crate) fn call_port(
         return Ok(None);
     }
     call_handler(callback.cast(), args, enable_coroutine(server.raw())).map(Some)
-}
-
-/// `php_swoole_get_recv_data`: the request's payload into `zdata`.
-pub(crate) fn recv_data(server: *mut c_void, request: *mut c_void, zdata: *mut zval) {
-    // SAFETY: the live server, its request and an empty slot.
-    unsafe { php_swoole_get_recv_data(server, zdata, request) };
 }
 
 /// `http_server_process_request`: the handler with the request's objects.

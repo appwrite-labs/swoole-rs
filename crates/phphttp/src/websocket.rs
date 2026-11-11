@@ -16,9 +16,10 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_corebase::DataHead;
 use swoole_rs_phpruntime::co;
-use swoole_rs_phpserver::{php_swoole_server_get_ptr, php_swoole_server_zval_ptr};
+use swoole_rs_phpserver::{
+    RecvData, php_swoole_get_recv_data, php_swoole_server_get_ptr, php_swoole_server_zval_ptr,
+};
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
@@ -1011,28 +1012,24 @@ fn server_zval() -> zval {
 
 /// `swoole_websocket_onMessage`: a frame `Server::dispatch_frame` delivered,
 /// answered by policy or handed to `onMessage` as a Frame. A bailout in the
-/// handler is raised last, over this frame only. `server` and `request` are
-/// the live server and its `RecvData`.
-pub(crate) fn on_message(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int {
-    let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
-    let result = message(server, request, fd, server_fd, ext_flags);
+/// handler is raised last, over this frame only.
+pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> c_int {
+    let result = message(server, request);
     let code = *result.as_ref().unwrap_or(&OK);
     bailout::raise(result.map(|_| ()));
     code
 }
 
-fn message(
-    server: *mut Server,
-    request: *mut c_void,
-    fd: zend_long,
-    server_fd: c_int,
-    ext_flags: u16,
-) -> Result<c_int, bailout::Bailout> {
+fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout::Bailout> {
+    let info = &request.info;
+    let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
+    let server = view.raw();
     let Some(settings) = port_frames(server, fd) else {
         return Ok(ERR);
     };
     let mut data = Owned::default();
-    crate::server::recv_data(server, request, data.as_ptr());
+    // SAFETY: an empty slot for the payload.
+    unsafe { php_swoole_get_recv_data(view, data.as_ptr(), request) };
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = message_policy(opcode, settings);
     if delivery != 0 {
