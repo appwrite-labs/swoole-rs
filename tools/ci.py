@@ -394,10 +394,13 @@ UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expec
                 '.github/actions/upstream')
 # Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that made
 # the reports (all must exist, an outage can drop one, and have succeeded) and the paths of its own
-# build and environment. `phpt` is the merge tier's six phpt.yml shards, whose upstream.so phpt-build
+# build and environment. `phpt` is the merge tier's phpt.yml shards, as many as its `shards` input's
+# default (phpt.yml is part of the key, so a baseline's run had as many), whose upstream.so phpt-build
 # builds through .github/actions/upstream like every variant; each variant is one job running both engines.
+PHPT_SHARDS = len(json.loads(re.search(r"default: '(\[[\d, ]+\])'", (
+    Path(__file__).resolve().parents[1] / '.github/workflows/phpt.yml').read_text())[1]))
 BASELINES = {
-    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?(phpt \(\d+, upstream\)|upstream \d+)', 6,
+    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'phpt / upstream \d+', PHPT_SHARDS,
              ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
               '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
     **{variant: (f'phpt-{variant}', 'results/upstream.json', rf'{variant} / phpt', 1,

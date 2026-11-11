@@ -7,6 +7,7 @@ from fnmatch import fnmatchcase
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -482,6 +483,7 @@ def phase_dependencies(commands, reports):
 
 
 LOG_TAIL = 30  # lines of a failed phase's log kept in loop.json
+DISK_REFUSAL = re.compile(r'Build disk space low: [^"\n]*')
 PHASE_WEIGHTS = ROOT / 'tools/phase_weights.json'  # seconds per phase from a merge-tier run
 DEFAULT_WEIGHT = 2
 SHARD_CORES = 4  # a merge-tier runner's vCPUs
@@ -829,20 +831,12 @@ def main():
                     row['failed'] |= not outcome['passed']
                 if 'compile' in outcome:
                     row['compile'] = outcome['compile']
-                error = outcome.get('error')
-                compiler_guard = error == 'Compiler refused by unchanged 4GiB guard' and any(
-                    isinstance(command, dict) and command.get('blocked') == 'unchanged 4GiB guard'
-                    and isinstance(command.get('free_bytes'), dict) and any(
-                        type(free) is int and 0 <= free < 4 * 1024**3
-                        for free in command['free_bytes'].values())
-                    for command in (outcome.get('commands') if isinstance(outcome.get('commands'), list) else []))
-                disk_refused = isinstance(error, str) and (error.startswith('Build disk space low:')
-                    or error in {'Unchanged 4GiB guard', 'Unchanged4GiBguard'}
-                    and outcome.get('minimum_free_bytes') == 4 * 1024**3 and bool(outcome.get('blocked')))
-                if row['failed'] and (disk_refused or compiler_guard):
-                    row['infrastructure_error'] = error
             except (OSError, ValueError) as error:
                 row.update(failed=True, outcome_error=str(error))
+        # A gate's require_build_space refusal (tools/build_upstream.py), whether it reports the
+        # refusal or dies of it, stops the run like dev.py's own.
+        if row['failed'] and (refusal := DISK_REFUSAL.search(Path(row['log']).read_text(errors='replace'))):
+            row['infrastructure_error'] = refusal[0]
         print(f'  [{name}] {row["seconds"]:.3f}s; exit={result.returncode}; failed={row["failed"]}; {row["log"]}', flush=True)
         if row['failed']:
             annotate('error', f'{name} failed', f'exit {result.returncode}, {row["log"]}')
