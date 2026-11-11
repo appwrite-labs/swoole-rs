@@ -18,7 +18,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Array, Call, Value, bailout, report,
-    sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array, swr_zend_is_numeric_string},
+    sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array},
 };
 
 const SUCCESS: c_int = 0;
@@ -246,16 +246,7 @@ fn inet6(s: Sock, host: &[u8]) -> Result<Option<sockaddr_in6>, Stop> {
     let bytes = host.as_bytes();
     if let Some(at) = bytes.iter().position(|&b| b == b'%') {
         let scope = bytes.get(at + 1..).unwrap_or_default();
-        let (mut lval, mut dval) = (0, 0.0);
-        // SAFETY: the scope's bytes and writable outputs.
-        let kind = unsafe {
-            swr_zend_is_numeric_string(
-                scope.as_ptr().cast(),
-                scope.len(),
-                &raw mut lval,
-                &raw mut dval,
-            )
-        };
+        let (kind, lval, _) = swoole_rs_zend::numeric(scope);
         let mut scope_id = 0;
         if u32::from(kind) == IS_LONG {
             if lval > 0 {
