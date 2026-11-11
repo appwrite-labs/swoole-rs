@@ -402,9 +402,8 @@ pub(crate) fn strerror(code: c_int) -> String {
     extern "C" fn system(code: c_int) -> *const c_char {
         crate::socket::strerror(code).as_ptr()
     }
-    // SAFETY: known and system messages are static; the unknown-message buffer
-    // is only used on the PHP thread, as upstream's is.
-    let message = unsafe { swoole_rs_error::swr_v1_error_strerror(code, Some(system)) };
+    // Known and system messages are static; an unknown one is this thread's buffer.
+    let message = swoole_rs_error::strerror_with(code, Some(system));
     if message.is_null() {
         return String::new();
     }

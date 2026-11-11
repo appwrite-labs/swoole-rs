@@ -1,5 +1,5 @@
 //! The hybrid's Rust archive: every module crate, and `swoole_init` (src/init.rs).
-//! The C ABI queries are crates/error's.
+//! The C ABI queries are crates/error-ffi's.
 #![cfg_attr(
     not(test),
     deny(
@@ -11,6 +11,7 @@
 mod init;
 
 pub use swoole_rs_error::*;
+pub use swoole_rs_error_ffi::*;
 
 pub use swoole_rs_websocket::*;
 pub use swoole_rs_websocket_ffi::*;

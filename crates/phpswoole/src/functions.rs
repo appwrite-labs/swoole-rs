@@ -118,8 +118,8 @@ fn strerror(call: &Call) {
         // SAFETY: as above.
         unsafe { hstrerror(int(code)) }
     } else if kind == STRERROR_SWOOLE || (code > ERROR_BEGIN && code < ERROR_END) {
-        // SAFETY: Swoole's `swoole_strerror`, with the system fallback C++ passes.
-        unsafe { swoole_rs_error::swr_v1_error_strerror(int(code), Some(system_error)) }
+        // Swoole's `swoole_strerror`, with the system fallback C++ passes.
+        swoole_rs_error::strerror_with(int(code), Some(system_error))
     } else {
         system_error(int(code))
     };
@@ -193,7 +193,7 @@ fn error_log_ex(call: &Call) {
         let (level, error) = (int(level), int(error));
         set_last_error(error);
         if level >= swoole_rs_utilities::swoole_get_log_level()
-            && !swoole_rs_error::swoole_is_ignored_error(error)
+            && !swoole_rs_error_ffi::swoole_is_ignored_error(error)
         {
             log_put(level, &error_log_message(error, message));
         }
@@ -203,7 +203,7 @@ fn error_log_ex(call: &Call) {
 fn ignore_error(call: &Call) {
     let parsed = call.arity(1, 1).and_then(|()| call.long(1, 0));
     if let Some(error) = or_false(call, parsed) {
-        swoole_rs_error::swoole_ignore_error(int(error));
+        swoole_rs_error_ffi::swoole_ignore_error(int(error));
     }
 }
 

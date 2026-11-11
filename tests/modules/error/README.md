@@ -14,12 +14,13 @@ lifetime rules are in `native/error/contract.md`.
 Rust behaviour:
 
 - `src/core/error.cc` is not built: `swoole_strerror` and
-  `swoole_is_ignored_error` are Rust under their upstream symbols.
+  `swoole_is_ignored_error` are Rust under their upstream symbols. `crates/error` is
+  safe Rust; `crates/error-ffi` exports it to C.
 - Codes below 500 go to the OS `strerror`; known codes return
   immutable pointers; other codes are formatted without allocation.
-- Unknown messages use one mutable 32-byte buffer. Apple colon spelling, NUL,
-  trailing bytes and pointer reuse match native. Callers must serialize
-  unknown-buffer calls, as upstream requires; known lookups are thread-safe.
+- Unknown messages use each thread's 32-byte buffer. Apple colon spelling, NUL,
+  trailing bytes and pointer reuse within a thread match native; known lookups
+  are thread-safe.
 - Ignored errors use a lazy process-local Rust HashSet in a Rust static:
   idempotent insert, fallible allocation and copied-on-fork state match native.
   Concurrent mutation is excluded; initialized read-only access may be

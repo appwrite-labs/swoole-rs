@@ -10,7 +10,9 @@ for config in crates/*/cbindgen*.toml; do
     crate=$(dirname "$config")
     suffix=$(basename "$config" .toml)
     suffix=${suffix#cbindgen}
-    header=native/include/swoole_rs_$(basename "$crate")$suffix.h
+    # An -ffi crate exports its safe crate: crates/error-ffi writes swoole_rs_error.h.
+    name=$(basename "$crate")
+    header=native/include/swoole_rs_${name%-ffi}$suffix.h
     generated=$(mktemp)
     input=$crate
     if [ -n "$suffix" ] && [ -f "$crate/src/${suffix#_}.rs" ]; then

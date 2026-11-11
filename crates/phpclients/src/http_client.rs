@@ -18,7 +18,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_error::swr_v1_error_strerror;
+use swoole_rs_error::strerror_with;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
@@ -192,9 +192,8 @@ fn strerror<'a>(code: c_int) -> &'a CStr {
         // SAFETY: a pure query; the text stays valid until the next call.
         unsafe { libc::strerror(code) }
     }
-    // SAFETY: known and system messages are static; the unknown-message buffer
-    // is only used on the PHP thread, as upstream's is.
-    let message = unsafe { swr_v1_error_strerror(code, Some(system)) };
+    // Known and system messages are static; an unknown one is this thread's buffer.
+    let message = strerror_with(code, Some(system));
     if message.is_null() {
         c""
     } else {

@@ -16,7 +16,7 @@ libc = "=0.2.191"
 pq-sys = "=0.7.8"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-coroutine = { path = "../coroutine" }
-swoole-rs-error = { path = "../error" }
+swoole-rs-error-ffi = { path = "../error-ffi" }
 swoole-rs-hooks = { path = "../hooks" }
 swoole-rs-zend = { path = "../zend", optional = true }
 

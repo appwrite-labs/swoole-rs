@@ -71,7 +71,7 @@ pub unsafe extern "C" fn php_swoole_pgsql_handle_io_error(
         unsafe { swr_zend_pdo_forget_persistent(dbh.0) };
     }
     // SAFETY: per the caller.
-    unsafe { *message = swoole_rs_error::swoole_strerror(code) };
+    unsafe { *message = swoole_rs_error_ffi::swoole_strerror(code) };
     true
 }
 

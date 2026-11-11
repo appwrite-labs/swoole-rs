@@ -1,7 +1,7 @@
 #ifndef SWOOLE_RS_ERROR_H
 #define SWOOLE_RS_ERROR_H
 
-/* Generated from crates/error by cbindgen (tools/headers.sh); do not edit. */
+/* Generated from crates/error-ffi by cbindgen (tools/headers.sh); do not edit. */
 
 #include <stdint.h>
 
