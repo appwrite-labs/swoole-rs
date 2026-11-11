@@ -108,8 +108,9 @@ WORKLOADS = {
     'static': ('benchmarks/traffic', 'GET', '/static.txt', None, STATIC),
     # Database and network hooks (#2653), against benchmarks/hooks on the build with
     # --enable-swoole-pgsql, --enable-swoole-sqlite, --enable-swoole-curl and --enable-cares.
-    # pgsql needs PostgreSQL on PGSQL_HOST (root/root, database test) and --php-extension
-    # pdo_pgsql, sqlite --php-extension pdo_sqlite, curl --php-extension curl.
+    # pgsql needs PostgreSQL on PGSQL_HOST (root/root, database test) and --php-extension pdo
+    # but not pdo_pgsql (the build has its own driver), sqlite --php-extension pdo_sqlite, curl
+    # --php-extension curl.
     'pgsql': ('benchmarks/hooks', 'GET', '/pgsql', None, b'ok\n'),
     'sqlite': ('benchmarks/hooks', 'GET', '/sqlite', None, b'ok\n'),
     'curl': ('benchmarks/hooks', 'GET', '/curl', None, b'ok\n'),
@@ -431,8 +432,6 @@ def main():
     parser.add_argument('--output', type=Path, default=run / 'callgrind.json')
     parser.add_argument('--profiles', type=Path, nargs='?', const=run / 'profiles',
                         help='Keep the callgrind profiles in DIR/<workload>/<engine>/ (default under target/callgrind/)')
-    parser.add_argument('--append', action='store_true',
-                        help='Add these workloads to an existing --output, as a second pair of engines (a build variant) does')
     parser.add_argument('--max-ratio', type=float, help='Fail if first/second exceeds this for any workload')
     parser.add_argument('--limits', type=Path, help='DIR of files named by workload, each its recorded first/second ratio; '
                         'fail if one is exceeded by more than noise (overrides --max-ratio per workload)')
@@ -454,7 +453,7 @@ def main():
     if (args.max_ratio or args.limits) and len(engines) != 2:
         parser.error('--max-ratio and --limits need exactly two engines')
     recorded = read_limits(args.limits) if args.limits else {}
-    results = json.loads(args.output.read_text())['instructions_per_request'] if args.append else {}
+    results = {}
     failed = False
     for workload in args.workload or ['plaintext']:
         counts = results[workload] = {}
