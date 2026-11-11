@@ -118,7 +118,6 @@ impl Event {
 struct Loop<'a> {
     ops: &'a WaitOps,
     owner: *mut ReactorState,
-    fields: *const ReactorFields,
     backend: u32,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
     events: *const c_void,
@@ -185,7 +184,6 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let run = Loop {
         ops,
         owner,
-        fields,
         backend: view.backend,
         events: view.events,
         sockets: view.sockets,
@@ -435,10 +433,9 @@ use kqueue_signal::{EVENT_UNKNOWN_DATA, LOG_WARNING, dispatch_signal};
 
 /// Warns about an uncaught kernel wait failure (errno is the kernel's); `entries` is poll's.
 fn wait_failed(ops: &Loop<'_>, entries: c_int) {
-    // SAFETY: the live state's fields; no native effect runs during the warning.
-    let fields = unsafe { &*ops.fields };
-    // SAFETY: a single read of the live state.
-    let epfd = unsafe { (*ops.owner).backend_fd };
+    // SAFETY: the live state; no native effect runs during the warning.
+    let state = unsafe { &*ops.owner };
+    let (fields, epfd) = (&state.fields, state.backend_fd);
     let id = fields.id;
     // `Reactor::get_timeout_msec()`.
     let timeout = if fields.defer_tasks.is_null() {

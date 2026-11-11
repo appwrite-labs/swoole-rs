@@ -8,10 +8,8 @@
 )]
 use core::ffi::{c_int, c_void};
 
-use swoole_rs_reactor::reactor_upstream::{
-    prepared, reactor_change, reactor_interest, reactor_set_handler,
-};
-use swoole_rs_reactor::{Handler, ReactorFields, Running, Socket};
+use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, reactor_set_handler};
+use swoole_rs_reactor::{Handler, ReactorFields, ReactorPrepared, Running, Socket};
 
 /// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
 const ADD: u32 = 0;
@@ -46,8 +44,8 @@ impl Reactor {
         self.0
     }
     pub(crate) fn fields(&self) -> &mut ReactorFields {
-        // SAFETY: a live reactor, which begins with its prepared state.
-        let fields = unsafe { prepared(self.0) }.fields;
+        // A live reactor, which begins with its prepared state.
+        let fields = ReactorPrepared::of(self.0).fields;
         // SAFETY: as above.
         unsafe { &mut *fields }
     }
@@ -86,8 +84,8 @@ impl Reactor {
     }
     /// `reactor->set_default_error_handler(handler)`.
     pub(crate) fn set_error_handler(self, handler: Handler) {
-        // SAFETY: a live reactor.
-        let handlers = unsafe { prepared(self.0) }.handlers;
+        // A live reactor.
+        let handlers = ReactorPrepared::of(self.0).handlers;
         // SAFETY: its live handler tables, which nothing else borrows meanwhile.
         let handlers = unsafe { &mut *handlers };
         swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));

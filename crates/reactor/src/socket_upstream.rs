@@ -6,7 +6,7 @@
 //! upstream (Itanium) symbols and `socket.cc` no longer defines them.
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::log;
 
 /// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
@@ -322,18 +322,7 @@ pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord
 
 /// `Reactor::change`'s log: `code` 0 is `swoole_sys_warning`, else
 /// `swoole_error_log(SW_LOG_WARNING, code, ...)`, as from `origin`; then the backtrace.
-///
-/// # Safety
-/// Both strings are NUL-terminated.
-pub unsafe extern "C" fn swr_v1_reactor_log(
-    origin: *const c_char,
-    code: c_int,
-    message: *const c_char,
-) {
-    // SAFETY: as the caller promises.
-    let origin = unsafe { CStr::from_ptr(origin) };
-    // SAFETY: as the caller promises.
-    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+pub fn swr_v1_reactor_log(origin: &CStr, code: c_int, message: &str) {
     if code == 0 {
         log::sys_warning(origin, format_args!("{message}"));
     } else {
