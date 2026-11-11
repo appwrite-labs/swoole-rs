@@ -425,6 +425,18 @@ pub unsafe extern "C" fn swr_v1_utils_log_micros(
 }
 
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "utilities runs whole tests in a child; replacement_survives is ossupport's"
+)]
+mod isolated_process {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/isolated_process.rs"
+    ));
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
