@@ -374,11 +374,11 @@ fn dispatch(c: &mut Read<'_>, op: u32, length: u64) -> u64 {
         data: buffer(c).str,
     };
     // SAFETY: the live port.
-    let proto = unsafe { &raw const (*c.port).protocol }.cast();
-    let rdata = (&raw const data).cast();
+    let proto: *const c_void = unsafe { &raw const (*c.port).protocol }.cast();
+    let rdata: *const c_void = (&raw const data).cast();
     if op == OP_DISPATCH_TASK {
         // SAFETY: the port's protocol, the live socket and its data.
-        return status(unsafe { dispatch_task(proto, c.socket.as_ptr(), rdata) });
+        return status(unsafe { dispatch_task(proto.cast(), c.socket.as_ptr(), rdata.cast()) });
     }
     // SAFETY: as above, on the live server.
     let result = unsafe { dispatch_request(c.serv, proto, c.socket.as_ptr(), rdata) };

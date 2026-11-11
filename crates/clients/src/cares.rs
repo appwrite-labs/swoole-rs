@@ -24,13 +24,7 @@ mod co {
     use std::ffi::c_void;
     use swoole_rs_coroutine::{Coroutine, RC_CANCELED, RC_TIMEDOUT, STATE_WAITING};
 
-    pub(super) use swoole_rs_coroutine::resume;
-
-    // SAFETY: crates/coroutine's.
-    unsafe extern "C" {
-        #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-        pub(super) fn yield_ex(co: *mut c_void, timeout: f64) -> bool;
-    }
+    pub(super) use swoole_rs_coroutine::{resume, yield_ex};
 
     /// `Coroutine::get_current_safe()`.
     pub(super) fn current() -> *mut c_void {

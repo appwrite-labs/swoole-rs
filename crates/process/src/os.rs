@@ -4,8 +4,8 @@ use std::ffi::c_int;
 /// getpid(2).
 #[must_use]
 pub fn getpid() -> libc::pid_t {
-    // SAFETY: getpid(2) takes nothing and cannot fail.
-    unsafe { libc::getpid() }
+    // A pid fits pid_t; std calls getpid(2), which has no preconditions.
+    std::process::id().cast_signed()
 }
 
 /// kill(2): 0, or -1 with `errno` set.

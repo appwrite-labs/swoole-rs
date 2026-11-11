@@ -11,6 +11,7 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{
     DataHead,
     constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
@@ -27,12 +28,6 @@ use swoole_rs_zend::{
     },
     value::{empty_string, set_str},
 };
-
-unsafe extern "C" {
-    /// `String::pop` (crates/buffer).
-    #[link_name = "_ZN6swoole6String3popEm"]
-    fn string_pop(string: *mut c_void, init_size: usize) -> *mut u8;
-}
 
 /// `swoole::RecvData`.
 #[repr(C)]
@@ -168,8 +163,8 @@ pub unsafe fn php_swoole_get_recv_data(serv: *mut c_void, zdata: *mut zval, req:
         .filter(|buffer| !buffer.is_null())
     {
         let size = serv.config().recv_buffer_size;
-        // SAFETY: the connection's receive buffer, which holds the payload.
-        let data = unsafe { string_pop(buffer, size) };
+        // SAFETY: the connection's receive buffer, which holds the payload; nothing else borrows it.
+        let data = unsafe { &mut *buffer.cast::<CppString>() }.pop(size);
         // SAFETY: `pop` hands over its zend-allocated block of the payload.
         unsafe { assign_by_val(zdata, data, length) };
     } else {

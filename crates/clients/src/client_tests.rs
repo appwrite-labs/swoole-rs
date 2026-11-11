@@ -731,13 +731,13 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     };
     package.info.len = 4;
     assert_eq!(
-        on_package(core::ptr::null(), socket, &raw const package),
+        unsafe { on_package(core::ptr::null(), socket, &package) },
         OK
     );
     assert_eq!(taken(), ["call 2 4"]);
     sock().output.close_wait = 1;
     assert_eq!(
-        on_package(core::ptr::null(), socket, &raw const package),
+        unsafe { on_package(core::ptr::null(), socket, &package) },
         ERR
     );
     free(client);
