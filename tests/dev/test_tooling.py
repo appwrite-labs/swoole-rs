@@ -563,6 +563,8 @@ class Lanes(unittest.TestCase):
         self.assertIn('swoole_client_coro', families(['clients']))
         self.assertNotIn('swoole_server', families(['clients']))
         self.assertIn('swoole_server', families(None))
+        # Every family is the merge tier's run; together they overrun a candidate's phase cap.
+        self.assertEqual(families(sorted(dev.MODULES)), [])
 
     def test_integration_cannot_filter_or_use_development_build(self):
         from argparse import Namespace
@@ -589,6 +591,14 @@ class ChangedModules(unittest.TestCase):
         for path in ('crates/ext/build.rs', 'tools/build_ext.py', 'rust-toolchain.toml', '.cargo/config.toml'):
             self.assertEqual(self.changed(path), sorted(dev.MODULES), path)
         self.assertEqual(self.changed('crates/sqlite/src/lib.rs', 'crates/oci/src/lib.rs'), ['hooks'])
+
+    def test_the_zval_layer_selects_every_phpt_family_but_only_its_consumers_gates(self):
+        # Every class's zvals go through it, so a refcount slip shows only in a PHPT (#3044).
+        for path in ('crates/zend/src/lib.rs', 'crates/zend/src/host/mod.rs', 'crates/zend-sys/build.rs',
+                     'crates/phpswoole/src/lib.rs', 'crates/phpstubs/src/lib.rs'):
+            with patch.object(dev.subprocess, 'check_output', return_value=path):
+                self.assertEqual(dev.changed_modules('origin/main', consumers=False), sorted(dev.MODULES), path)
+                self.assertNotEqual(dev.changed_modules('origin/main'), sorted(dev.MODULES), path)
 
     def test_every_crate_has_an_owner(self):
         owned = [path for module in json.loads((dev.ROOT / 'migration/modules.json').read_text())['modules']

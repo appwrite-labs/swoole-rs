@@ -1,62 +1,29 @@
 //! Upstream's `SwooleG.name_resolvers`: the resolvers `swoole_name_resolver_lookup` asks
 //! in turn before the system lookup, and `NameResolver::Context`, a lookup's state.
 //! The list is process-wide, as `SwooleG` is; `SwooleG = {}` clears it.
+use core::any::Any;
 use core::ffi::{c_int, c_void};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-/// `NameResolver::Context`; native code asserts the same layout.
-#[repr(C)]
+/// `NameResolver::Context`. Native code only holds a pointer to one.
+#[derive(Default)]
 pub struct NameResolverContext {
     pub kind: c_int,
     pub timeout: f64,
-    pub private_data: *mut c_void,
+    /// A resolver's state kept for the rest of the lookup (the PHP resolver's
+    /// cluster), dropped with the context or by [`release`](Self::release).
+    pub private_data: Option<Box<dyn Any>>,
     pub with_port: bool,
     pub cluster: bool,
     pub is_final: bool,
-    /// Frees `private_data`; the context's destructor runs it when both are set.
-    pub dtor: Option<unsafe extern "C" fn(&mut NameResolverContext)>,
-}
-
-impl Default for NameResolverContext {
-    fn default() -> Self {
-        Self {
-            kind: 0,
-            timeout: 0.0,
-            private_data: core::ptr::null_mut(),
-            with_port: false,
-            cluster: false,
-            is_final: false,
-            dtor: None,
-        }
-    }
 }
 
 impl NameResolverContext {
-    /// `ctx->dtor(ctx); ctx->private_data = nullptr;` when there is something to free.
+    /// `ctx->dtor(ctx); ctx->private_data = nullptr;`.
     pub fn release(&mut self) {
-        if let Some(dtor) = self.dtor
-            && !self.private_data.is_null()
-        {
-            // SAFETY: the destructor whoever set `private_data` installed for it.
-            unsafe { dtor(self) };
-        }
-        self.private_data = core::ptr::null_mut();
+        self.private_data = None;
     }
 }
-
-impl Drop for NameResolverContext {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(
-    size_of::<NameResolverContext>() == 40
-        && core::mem::offset_of!(NameResolverContext, is_final) == 26
-        && core::mem::offset_of!(NameResolverContext, dtor) == 32,
-    "NameResolver::Context's layout moved"
-);
 
 /// A resolver: answers `name` for `context` into `out` and returns true, or returns
 /// false with nothing written. It may set `context.is_final` to end the lookup.

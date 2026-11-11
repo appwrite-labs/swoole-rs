@@ -213,8 +213,8 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 }
 
 /// `f` over the thread's `Reactor`'s socket registry (null as `None`); `None`
-/// without a reactor.
-pub fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
+/// without a reactor. `f` reaches no reactor: the registry is shared while it runs.
+fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
     let registry = current_prepared()?.registry;
     // SAFETY: a live reactor's registry or null, borrowed for this call alone.
     Some(f(unsafe { registry.as_ref() }))
@@ -227,12 +227,33 @@ pub fn current_prepared() -> Option<crate::ReactorPrepared> {
     (!reactor.is_null()).then(|| crate::ReactorPrepared::of(reactor))
 }
 
-/// A field of the thread's `Reactor`, written; `None` without one.
-pub fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
+/// `sw_reactor()->get_event_num()`: the sockets the thread's `Reactor` holds;
+/// `None` without one.
+#[must_use]
+pub fn swoole_event_num() -> Option<usize> {
+    with_registry(|registry| registry.map_or(0, crate::Registry::count))
+}
+
+/// A field of the thread's `Reactor`, written; `None` without one. `write` reaches
+/// no reactor (no `event_api` call, no handler or task): a nested call would be a
+/// second `&mut` to the same fields, which debug builds refuse.
+pub(crate) fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
     let fields = current_prepared()?.fields;
+    #[cfg(debug_assertions)]
+    assert!(!BORROWED.replace(true), "field_mut nested in field_mut");
     // SAFETY: a live reactor's fields, borrowed for this call alone; the loop
-    // reads them through its raw pointer, never across it.
-    Some(write(unsafe { &mut *fields }))
+    // reads them through its raw pointer, never across it, and `write` doesn't
+    // reach them again.
+    let written = write(unsafe { &mut *fields });
+    #[cfg(debug_assertions)]
+    BORROWED.set(false);
+    Some(written)
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Whether a [`field_mut`] borrow is live on this thread.
+    static BORROWED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
@@ -572,6 +593,25 @@ mod tests {
         swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor_state::tests::free(state.owner) };
         assert_eq!(take(), ["idle"]);
+    }
+
+    extern "C-unwind" fn noop(_: *mut c_void) {}
+
+    /// A second `&mut` to the fields while the first is live is refused before it
+    /// is made; Miri reports the nested borrow without the check (#3248).
+    #[test]
+    fn field_mut_refuses_a_nested_borrow() {
+        let state = crate::reactor_state::tests::state(3, 1);
+        swoole_rs_corebase::set_thread_reactor(state.owner.cast());
+        let nested = std::panic::catch_unwind(|| {
+            field_mut(|fields| {
+                on_destroy(noop);
+                fields.running = true;
+            })
+        });
+        assert!(nested.is_err());
+        swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
+        unsafe { crate::reactor_state::tests::free(state.owner) };
     }
 
     #[test]

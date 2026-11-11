@@ -198,7 +198,8 @@ impl UringSocketOps {
 
     /// `readv`/`writev`. The transfer borrows the remaining iovecs, so the vector
     /// advances here, once per transfer, after that borrow ends.
-    fn vector(&self, vector: &mut IoVector, write: bool) -> isize {
+    fn vector(&self, vector: &mut IoVector) -> isize {
+        let write = vector.write();
         let event = if write { EVENT_WRITE } else { EVENT_READ };
         let (host, fd) = (self.host(), self.tls.fd);
         self.transfer(event, false, || {
@@ -330,15 +331,14 @@ fn transfer_result(result: isize, total: usize) -> isize {
 pub(crate) fn swr_v1_hook_uring_vector(
     ops: &UringSocketOps,
     vector: &mut IoVector,
-    write: bool,
     all: bool,
 ) -> isize {
     if !all {
-        return ops.vector(vector, write);
+        return ops.vector(vector);
     }
     let mut total = 0usize;
     let result = loop {
-        let result = ops.vector(vector, write);
+        let result = ops.vector(vector);
         if result <= 0 {
             break result;
         }
@@ -626,7 +626,7 @@ mod tests {
             },
         ];
         // SAFETY: two iovecs over `buffer`, which outlives the vector.
-        let mut vector = unsafe { IoVector::new(source.as_ptr(), 2) }.unwrap();
+        let mut vector = unsafe { IoVector::new(source.as_ptr(), 2, false) }.unwrap();
         let mut calls = Vec::new();
         let mut transfer = |vector: &mut IoVector, results: &[isize]| {
             let mut results = results.iter().copied();

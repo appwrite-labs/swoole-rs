@@ -155,17 +155,17 @@ pub(crate) trait Host {
 /// The state of a server without one, which native code never passes.
 static NO_STATE: std::sync::LazyLock<ServerState> = std::sync::LazyLock::new(ServerState::new);
 
-struct Native<'a> {
+struct Native<'a, 'c> {
     state: Option<&'a ServerState>,
     /// master.cc's context, whose records `master_ops` answers ops from; null
     /// for the other runners.
     master: *mut server_methods::NativeContext,
-    /// master.cc's reactor-thread context, whose records `reactor_ops` answers ops
-    /// from; null for the other runners.
-    reactor: *mut reactor_ops::ReactorContext,
+    /// The reactor-thread context, whose records `reactor_ops` answers ops from;
+    /// `None` for the other runners.
+    reactor: Option<&'a mut reactor_ops::ReactorContext<'c>>,
 }
 
-impl Host for Native<'_> {
+impl Host for Native<'_, '_> {
     // Constant opcodes erase unrelated fact-table branches before native effects.
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
@@ -186,12 +186,10 @@ impl Host for Native<'_> {
             if let Some(value) = unsafe { state::native_fact(state, op, arg) } {
                 return Ok(value);
             }
-            if !self.reactor.is_null() {
-                // SAFETY: the reactor runner lends master.cc's live context with its state.
-                let answer = unsafe { reactor_ops::answer(self.reactor, state, op, arg) };
-                if let Some(value) = answer {
-                    return Ok(value);
-                }
+            if let Some(context) = self.reactor.as_deref_mut()
+                && let Some(value) = reactor_ops::answer(context, state, op, arg)
+            {
+                return Ok(value);
             }
         }
         // Only the method runner lends master.cc's context; the hot runners skip the call.
@@ -226,19 +224,16 @@ impl Host for Native<'_> {
 /// `operation` over a reactor-thread context without [`run`]'s match: the reads,
 /// writes and dispatches every message takes, whose detour through `run`'s frame
 /// cost about 120 instructions a message.
-///
-/// # Safety
-/// `context` lends synchronized server objects, live for the call.
 #[inline(always)]
-pub(crate) unsafe fn run_reactor_with<'s>(
-    context: &mut reactor_ops::ReactorContext,
+pub(crate) fn run_reactor_with<'s, 'c>(
+    context: &'s mut reactor_ops::ReactorContext<'c>,
     state: &'s ServerState,
-    operation: impl FnOnce(&mut Native<'s>) -> Effect<i64>,
+    operation: impl FnOnce(&mut Native<'s, 'c>) -> Effect<i64>,
 ) -> i64 {
     operation(&mut Native {
         state: Some(state),
         master: core::ptr::null_mut(),
-        reactor: core::ptr::from_mut(context),
+        reactor: Some(context),
     })
     .unwrap_or(SW_ERR)
 }
@@ -265,7 +260,7 @@ pub(crate) unsafe fn run_method(
     let mut native = Native {
         state,
         master: ctx,
-        reactor: core::ptr::null_mut(),
+        reactor: None,
     };
     match (operation, state) {
         // Outside `run`'s match, with the state known and no reactor context, so
@@ -419,7 +414,7 @@ mod mode_tests {
             // SAFETY: the fresh state, freed below.
             state: Some(unsafe { &*state }),
             master: core::ptr::null_mut(),
-            reactor: core::ptr::null_mut(),
+            reactor: None,
         };
         assert_eq!(host.get(OP_MODE), Ok(2));
         // SAFETY: created above and not used again.

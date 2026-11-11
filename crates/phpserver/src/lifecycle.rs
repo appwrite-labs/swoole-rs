@@ -16,6 +16,7 @@ use std::{
     rc::Rc,
     sync::atomic::Ordering,
 };
+use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
@@ -211,7 +212,7 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
-type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
+type Waiters = Rc<RefCell<VecDeque<(u64, Coroutine)>>>;
 
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
@@ -462,45 +463,46 @@ pub(crate) fn owns_shared() -> bool {
 /// # Safety
 /// Zend frees a Server object.
 pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
-    // The object's live server; the master deletes it below.
-    let handle = ServerObject(object);
-    let server = handle.server();
-    if let Some(server) = server {
-        if owns_shared() {
-            // SAFETY: freeing the object on the one thread that owns the config's slots.
-            let dispatch = std::mem::replace(
-                &mut unsafe { server.config_mut() }.private_data_3,
-                ptr::null_mut(),
-            );
-            bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
+    bailout::finish_after(|| {
+        // The object's live server; the master deletes it below.
+        let handle = ServerObject(object);
+        let server = handle.server();
+        if let Some(server) = server {
+            if owns_shared() {
+                // SAFETY: freeing the object on the one thread that owns the config's slots.
+                let dispatch = std::mem::replace(
+                    &mut unsafe { server.config_mut() }.private_data_3,
+                    ptr::null_mut(),
+                );
+                bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
+            }
+            // Each out of the object before it drops: the destructors can run PHP code
+            // that reaches the object (a `Connection\Iterator` calls its methods), so
+            // its data is borrowed per access, and the property stays until the end.
+            drop(handle.property(|p| std::mem::take(&mut p.callbacks)));
+            // `sw_zval_free`: each copy's reference goes.
+            drop(handle.property(|p| std::mem::take(&mut p.user_processes)));
+            for port in handle.property(|p| p.ports.clone()) {
+                // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
+                unsafe { crate::port::deref(port) };
+            }
+            handle.set_serv(ptr::null_mut());
         }
-        // Each out of the object before it drops: the destructors can run PHP code
-        // that reaches the object (a `Connection\Iterator` calls its methods), so
-        // its data is borrowed per access, and the property stays until the end.
-        drop(handle.property(|p| std::mem::take(&mut p.callbacks)));
-        // `sw_zval_free`: each copy's reference goes.
-        drop(handle.property(|p| std::mem::take(&mut p.user_processes)));
-        for port in handle.property(|p| p.ports.clone()) {
-            // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
-            unsafe { crate::port::deref(port) };
+        // The commands' callables go with it.
+        drop(handle.take_property());
+        // SAFETY: the object Zend is freeing.
+        unsafe { zend_object_std_dtor(object) };
+        if let Some(server) = server {
+            if fact(server, fact::MASTER) {
+                crate::thread::free_setting(server);
+                delete(server.raw());
+            } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
+                // Never started, or a base-mode start returned: upstream keeps it to the
+                // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
+                orphans().push(server.raw() as usize);
+            }
         }
-        handle.set_serv(ptr::null_mut());
-    }
-    // The commands' callables go with it.
-    drop(handle.take_property());
-    // SAFETY: the object Zend is freeing.
-    unsafe { zend_object_std_dtor(object) };
-    if let Some(server) = server {
-        if fact(server, fact::MASTER) {
-            crate::thread::free_setting(server);
-            delete(server.raw());
-        } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
-            // Never started, or a base-mode start returned: upstream keeps it to the
-            // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
-            orphans().push(server.raw() as usize);
-        }
-    }
-    bailout::finish();
+    });
 }
 
 /// `delete serv`, by its owner, once nothing refers to it.
@@ -641,7 +643,9 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Own
     let copy = zport.copy();
     // SAFETY: the Server object's `ports`, which its class declares; nothing
     // else borrows it, and no PHP code runs, while the Port is appended.
-    unsafe { Props::own(object).zend().array(c"ports") }.push(zport);
+    if let Some(ports) = unsafe { Props::own(object).zend().array(c"ports") } {
+        ports.push(zport);
+    }
     if let Some(props) = Props::of_value(&copy) {
         props.connections(serv, port.raw());
     }
@@ -903,7 +907,7 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
 struct Wait {
     return_value: *mut zval,
     json_decode: bool,
-    coroutine: *mut c_void,
+    coroutine: Coroutine,
     replied: bool,
 }
 
@@ -921,10 +925,9 @@ fn command_done(wait: *mut Wait) -> impl Fn(&[u8]) {
             // SAFETY: as above.
             unsafe { swr_zval_stringl(wait.return_value, message, length) };
         }
-        // SAFETY: the waiting coroutine.
-        if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
+        if wait.coroutine.is_suspending() == Some(true) {
             // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
-            unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
+            unsafe { wait.coroutine.wake(false) };
         } else {
             wait.replied = true;
         }
@@ -957,7 +960,9 @@ fn command(call: &Call) {
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
-    let coroutine = swoole_rs_phpcoroutines::current();
+    let Some(coroutine) = Coroutine::current() else {
+        return;
+    };
     let mut wait = Wait {
         return_value: call.return_value(),
         json_decode,
@@ -985,8 +990,8 @@ fn command(call: &Call) {
         return call.set_bool(false);
     }
     if !wait.replied {
-        // SAFETY: this call's coroutine; `command_done` resumes it.
-        unsafe { swoole_rs_phpcoroutines::suspend(coroutine) };
+        // `command_done` resumes it.
+        swoole_rs_phpcoroutines::suspend();
     }
 }
 
@@ -1106,7 +1111,13 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     Props::own(object).long(c"master_pid", i64::from(std::process::id()));
     // SAFETY: `$this`'s `setting`, which its class declares; nothing else borrows
     // it, and no PHP code runs, until its last write below.
-    let settings = unsafe { Props::own(object).zend().array(c"setting") };
+    let Some(settings) = (unsafe { Props::own(object).zend().array(c"setting") }) else {
+        // A pending bailout reports itself; otherwise PHP code left a non-array there.
+        if bailout::pending() {
+            return Err(Stop);
+        }
+        return stop(E_ERROR, c"Swoole\\Server::$setting must be an array");
+    };
     for (key, id) in [
         (c"worker_num", fact::WORKER_NUM),
         (c"task_worker_num", fact::TASK_WORKER_NUM),
@@ -1322,7 +1333,9 @@ pub fn php_swoole_server_send_yield(
     data: &[u8],
 ) -> Result<bool, bailout::Bailout> {
     swoole_rs_phpruntime::coroutine_check()?;
-    let co = swoole_rs_phpcoroutines::current();
+    let Some(co) = Coroutine::current() else {
+        return Ok(false);
+    };
     if data.is_empty() {
         return Ok(false);
     }
@@ -1336,8 +1349,8 @@ pub fn php_swoole_server_send_yield(
         });
         waiters.borrow_mut().push_back((token, co));
         let timeout = server.config().send_timeout;
-        // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
-        if !unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
+        // `onBufferEmpty` or `onClose` wakes it.
+        if !swoole_rs_phpcoroutines::suspend_for(timeout) {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
             return Ok(false);
         }
@@ -1365,10 +1378,10 @@ pub(crate) fn send_waiters(session_id: i64) -> *mut c_void {
         })
 }
 
-/// The next coroutine to wake, or null: `pop` takes it off the queue (a
-/// resume), else it stays first until its `send_yield` leaves (a cancel).
+/// The next coroutine to wake: `pop` takes it off the queue (a resume), else
+/// it stays first until its `send_yield` leaves (a cancel).
 /// `waiters` is from `send_waiters` and not yet freed.
-pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> *mut c_void {
+pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> Option<Coroutine> {
     // SAFETY: per the caller.
     let waiters = unsafe { &*waiters.cast::<Waiters>() };
     let mut queue = waiters.borrow_mut();
@@ -1377,7 +1390,7 @@ pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> *mut c_void {
     } else {
         queue.front().copied()
     };
-    next.map_or(ptr::null_mut(), |(_, co)| co)
+    next.map(|(_, co)| co)
 }
 
 /// Release what `send_waiters` took, once.
