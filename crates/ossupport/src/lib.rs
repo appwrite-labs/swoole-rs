@@ -25,10 +25,7 @@ mod file_record;
     target_os = "freebsd"
 ))]
 pub use file::swr_v1_os_sendfile;
-pub use file::{
-    FileIo, FileSize, Sendfile, file_close, file_open, file_size, read_all, swoole_sendfile,
-    swr_v1_os_sendfile_copy, write_all,
-};
+pub use file::{FileIo, FileSize, Sendfile, file_close, file_open, file_size, read_all, write_all};
 pub use file_api::*;
 pub use file_record::*;
 mod system;
