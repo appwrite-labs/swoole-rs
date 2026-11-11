@@ -3,10 +3,11 @@
 //! one `SocketOutput` block. Native code performs the four effects that need its
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
-use crate::catch_error;
+use crate::Socket;
 use std::ffi::{c_int, c_void};
-use swoole_rs_buffer::{
-    Buffer, swr_v1_buffer_append, swr_v1_buffer_append_iovec, swr_v1_buffer_stats,
+use swoole_rs_buffer::cpp::{
+    CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_append_iovec, swr_cpp_buffer_count,
+    swr_cpp_buffer_length,
 };
 
 /// `SwReturnCode::SW_WAIT`.
@@ -27,6 +28,22 @@ pub struct SocketOutput {
     pub send_wait: u8,
 }
 
+impl SocketOutput {
+    /// `out_buffer`, or `None` without one.
+    #[must_use]
+    pub fn buffer(&self) -> Option<&CppBuffer> {
+        // SAFETY: a socket's output buffer is null or the live `Buffer` it owns.
+        unsafe { self.out_buffer.cast::<CppBuffer>().as_ref() }
+    }
+
+    /// `Buffer::empty(out_buffer)`: none, or no entries.
+    #[must_use]
+    pub fn empty(&self) -> bool {
+        self.buffer()
+            .is_none_or(|buffer| swr_cpp_buffer_count(buffer) == 0)
+    }
+}
+
 /// What to append when the data can't all go out now: `length` bytes at `data`, or
 /// `count` iovecs at `iov` (`_writev`).
 #[repr(C)]
@@ -43,99 +60,53 @@ pub trait WriteEffects {
     /// `socket->set_fd_option(1, -1)`, which also sets `nonblock`.
     fn set_nonblock(&self);
     fn send(&self) -> isize;
-    /// `socket->out_buffer = new Buffer(chunk_size)`; its Rust handle.
-    fn create_buffer(&self) -> *mut Buffer;
+    /// `socket->out_buffer = new Buffer(chunk_size)`.
+    fn create_buffer(&self);
     /// `add_write_event` unless the socket already wants writes.
     fn watch_writable(&self);
 }
 
 /// `value` is the result when `outcome` is 0. Otherwise native code reports and
 /// returns `SW_ERR`: 1 packet larger than the buffer size, 2 output buffer overflow
-/// (both warnings), 3 send failed (last error from errno), 4 a buffer `status` to
-/// raise.
-#[repr(C)]
+/// (both warnings), 3 send failed (last error from errno).
 #[derive(Debug, PartialEq, Eq)]
 pub struct WriteResult {
     pub value: isize,
     pub outcome: i32,
-    pub status: i32,
 }
 
 fn done(value: isize) -> WriteResult {
-    WriteResult {
-        value,
-        outcome: 0,
-        status: 0,
-    }
+    WriteResult { value, outcome: 0 }
 }
 
-fn failed(outcome: i32, status: i32) -> WriteResult {
-    WriteResult {
-        value: -1,
-        outcome,
-        status,
-    }
-}
-
-/// A socket's output queue: its `out_buffer`'s Rust handle, or null. Nothing here
-/// holds a reference to it between calls, so the effects may change it.
-#[derive(Clone, Copy)]
-pub(crate) struct Queue(*mut Buffer);
-
-impl Queue {
-    /// # Safety
-    /// `buffer` is null or a live Rust buffer handle for as long as the queue is used.
-    pub(crate) const unsafe fn new(buffer: *mut Buffer) -> Self {
-        Self(buffer)
-    }
-
-    /// Its bytes and entries; (0, 0) for none.
-    fn stats(self) -> Result<(u32, usize), i32> {
-        let (mut length, mut count) = (0u32, 0usize);
-        // SAFETY: null or a live handle (`new`), borrowed for this call alone.
-        let buffer = unsafe { self.0.as_ref() };
-        if buffer.is_none() {
-            return Ok((0, 0));
-        }
-        match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
-            0 => Ok((length, count)),
-            status => Err(status),
-        }
-    }
-
-    /// `Buffer::empty`: null or no entries.
-    pub(crate) fn empty(self) -> Result<bool, i32> {
-        self.stats().map(|(_, count)| count == 0)
-    }
-
-    /// Bytes held, 0 when empty.
-    fn length(self) -> Result<u32, i32> {
-        self.stats()
-            .map(|(length, count)| if count == 0 { 0 } else { length })
-    }
+fn failed(outcome: i32) -> WriteResult {
+    WriteResult { value: -1, outcome }
 }
 
 /// `Reactor::write_func`: send what the kernel takes now and queue the rest, or
 /// queue it all behind earlier output.
 ///
 /// # Safety
-/// `output` is the socket's embedded block and `kernel_nobufs` its flag; `buffer` is
-/// its `out_buffer`'s Rust handle or null; `payload` is valid for the call.
+/// `payload` is valid for the call.
 pub unsafe fn swr_v1_reactor_write(
-    output: *mut SocketOutput,
-    kernel_nobufs: *mut bool,
-    buffer: *mut Buffer,
+    socket: Socket<'_>,
     default_buffer_size: u32,
-    payload: *const WritePayload,
+    payload: &WritePayload,
     ops: &impl WriteEffects,
 ) -> WriteResult {
-    // SAFETY: as the caller promises.
-    let output = unsafe { &mut *output };
-    // SAFETY: as above.
-    let payload = unsafe { &*payload };
     let length = payload.length;
-    if output.buffer_size == 0 {
-        output.buffer_size = default_buffer_size;
+    // Making the socket nonblocking leaves the queue as it is.
+    let (output, held) = socket.read(|record| {
+        let buffer = record.output.buffer();
+        let held = buffer
+            .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
+            .map(|buffer| swr_cpp_buffer_length(buffer));
+        (record.output, held)
+    });
+    let mut buffer_size = output.buffer_size;
+    if buffer_size == 0 {
+        buffer_size = default_buffer_size;
+        socket.edit(|record| record.output.buffer_size = buffer_size);
     }
     if output.nonblock == 0 {
         ops.set_nonblock();
@@ -145,24 +116,13 @@ pub unsafe fn swr_v1_reactor_write(
         clippy::cast_possible_truncation,
         reason = "upstream's (uint32_t) cast"
     )]
-    if length as u32 > output.buffer_size {
-        return failed(1, 0);
+    if length as u32 > buffer_size {
+        return failed(1);
     }
-    // SAFETY: `buffer` is the socket's handle or null.
-    let queue = unsafe { Queue::new(buffer) };
-    let queued = match queue.empty() {
-        Ok(empty) => !empty,
-        Err(status) => return failed(4, status),
-    };
-    let mut buffer = buffer;
     let mut sent = 0isize;
-    if queued {
-        let held = match queue.length() {
-            Ok(held) => held,
-            Err(status) => return failed(4, status),
-        };
-        if u64::from(held) + length as u64 > u64::from(output.buffer_size) {
-            return failed(2, 0);
+    if let Some(held) = held {
+        if u64::from(held) + length as u64 > u64::from(buffer_size) {
+            return failed(2);
         }
     } else {
         if output.ssl_send == 0 {
@@ -175,50 +135,52 @@ pub unsafe fn swr_v1_reactor_write(
                     break;
                 }
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                // SAFETY: the socket's own flag.
-                if unsafe { catch_error(errno, &mut *kernel_nobufs) } == SW_WAIT {
+                if socket.catch_error(errno) == SW_WAIT {
                     break;
                 }
                 if errno != libc::EINTR {
-                    return failed(3, 0);
+                    return failed(3);
                 }
             }
         }
-        if output.out_buffer.is_null() {
-            buffer = ops.create_buffer();
+        if socket.read(|record| record.output.out_buffer.is_null()) {
+            ops.create_buffer();
         }
         ops.watch_writable();
     }
     let offset = sent.max(0).unsigned_abs();
-    // SAFETY: a live, exclusive handle.
-    let buffer = unsafe { buffer.as_mut() };
-    let status = if payload.iov.is_null() {
-        let rest = length.saturating_sub(offset);
-        // SAFETY: `data` holds `length` bytes, and `offset` of them were sent.
-        unsafe { swr_v1_buffer_append(buffer, payload.data.wrapping_add(offset), rest) }
-    } else {
-        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-        // SAFETY: `iov` holds `count` iovecs; `offset` bytes of them were sent.
-        unsafe { swr_v1_buffer_append_iovec(buffer, payload.iov, payload.count, offset) }
-    };
-    if status != 0 {
-        return failed(4, status);
-    }
+    socket.read(|record| {
+        let Some(buffer) = record.output.buffer() else {
+            // `new Buffer` threw, which nothing catches.
+            std::process::abort();
+        };
+        if payload.iov.is_null() {
+            // At most `buffer_size` bytes, checked above.
+            let rest = u32::try_from(length.saturating_sub(offset)).unwrap_or(u32::MAX);
+            // SAFETY: `data` holds `length` bytes, and `offset` of them were sent.
+            unsafe { swr_cpp_buffer_append(buffer, payload.data.wrapping_add(offset), rest) };
+        } else {
+            let offset = libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX);
+            // SAFETY: `iov` holds `count` iovecs; `offset` bytes of them were sent.
+            unsafe { swr_cpp_buffer_append_iovec(buffer, payload.iov, payload.count, offset) };
+        }
+    });
     done(isize::try_from(length).unwrap_or(isize::MAX))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SocketRecord;
     use std::cell::RefCell;
-    use swoole_rs_buffer::{swr_v1_buffer_release, swr_v1_buffer_typed_create};
+    use swoole_rs_buffer::cpp::{delete_buffer, new_buffer};
 
     #[derive(Default)]
     struct Native {
         sends: Vec<isize>,
         errno: c_int,
         trace: Vec<&'static str>,
-        buffer: *mut Buffer,
+        record: usize,
     }
     thread_local! { static NATIVE: RefCell<Native> = RefCell::default(); }
 
@@ -233,43 +195,39 @@ mod tests {
                 (n.sends.remove(0), n.errno)
             });
             if sent < 0 {
-                unsafe { *libc_errno() = errno };
+                swoole_rs_corebase::sys::set_errno(errno);
             }
             sent
         }
-        fn create_buffer(&self) -> *mut Buffer {
-            NATIVE.with_borrow_mut(|n| {
+        fn create_buffer(&self) {
+            let record = NATIVE.with_borrow_mut(|n| {
                 n.trace.push("create");
-                n.buffer
-            })
+                n.record as *mut SocketRecord
+            });
+            let socket = unsafe { Socket::from_ptr(record) }.unwrap();
+            socket.edit(|record| record.output.out_buffer = new_buffer(0).cast());
         }
         fn watch_writable(&self) {
             NATIVE.with_borrow_mut(|n| n.trace.push("watch"));
         }
     }
-    #[cfg(target_os = "linux")]
-    unsafe fn libc_errno() -> *mut c_int {
-        unsafe { libc::__errno_location() }
-    }
-    #[cfg(target_os = "macos")]
-    unsafe fn libc_errno() -> *mut c_int {
-        unsafe { libc::__error() }
-    }
 
+    /// Writes `data` from a socket whose output block is `output`, which the write
+    /// updates; a buffer the write creates is measured, then freed.
     fn run(
         output: &mut SocketOutput,
-        buffer: *mut Buffer,
         data: &[u8],
         sends: Vec<isize>,
         errno: c_int,
     ) -> (WriteResult, Vec<&'static str>, u32) {
-        let mut fresh = std::ptr::null_mut();
-        assert_eq!(swr_v1_buffer_typed_create(0, Some(&mut fresh)), 0);
+        let mut record = SocketRecord::new();
+        record.output = *output;
+        let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
                 sends,
                 errno,
-                buffer: fresh,
+                record: socket.as_ptr() as usize,
                 ..Native::default()
             }
         });
@@ -279,20 +237,16 @@ mod tests {
             count: 0,
             length: data.len(),
         };
-        let mut nobufs = false;
-        let result = unsafe {
-            swr_v1_reactor_write(
-                output,
-                &raw mut nobufs,
-                buffer,
-                64,
-                &raw const payload,
-                &Ops,
-            )
-        };
-        let target = if buffer.is_null() { fresh } else { buffer };
-        let held = unsafe { Queue::new(target) }.length().unwrap();
-        unsafe { swr_v1_buffer_release(fresh) };
+        let result = unsafe { swr_v1_reactor_write(socket, 64, &payload, &Ops) };
+        let held = record
+            .output
+            .buffer()
+            .map_or(0, |buffer| swr_cpp_buffer_length(buffer));
+        if output.out_buffer.is_null() && !record.output.out_buffer.is_null() {
+            unsafe { delete_buffer(record.output.out_buffer.cast()) };
+            record.output.out_buffer = std::ptr::null_mut();
+        }
+        *output = record.output;
         (
             result,
             NATIVE.with_borrow_mut(|n| std::mem::take(&mut n.trace)),
@@ -316,7 +270,7 @@ mod tests {
     fn upstream_write_func_branches() {
         // Whole send: the default size is applied and the socket made nonblocking.
         let mut s = socket();
-        let (r, trace, held) = run(&mut s, std::ptr::null_mut(), b"hello", vec![5], 0);
+        let (r, trace, held) = run(&mut s, b"hello", vec![5], 0);
         assert_eq!(
             (r, trace, held, s.buffer_size),
             (done(5), vec!["nonblock", "send"], 0, 64)
@@ -327,7 +281,7 @@ mod tests {
             nonblock: 1,
             ..socket()
         };
-        let (r, trace, held) = run(&mut s, std::ptr::null_mut(), b"hello", vec![2], 0);
+        let (r, trace, held) = run(&mut s, b"hello", vec![2], 0);
         assert_eq!(
             (r, trace, held),
             (done(5), vec!["send", "create", "watch"], 3)
@@ -338,19 +292,13 @@ mod tests {
             nonblock: 1,
             ..socket()
         };
-        let (r, trace, held) = run(
-            &mut s,
-            std::ptr::null_mut(),
-            b"hey",
-            vec![-1, 3],
-            libc::EINTR,
-        );
+        let (r, trace, held) = run(&mut s, b"hey", vec![-1, 3], libc::EINTR);
         assert_eq!((r, trace, held), (done(3), vec!["send", "send"], 0));
         let mut s = SocketOutput {
             nonblock: 1,
             ..socket()
         };
-        let (r, trace, held) = run(&mut s, std::ptr::null_mut(), b"hey", vec![-1], libc::EAGAIN);
+        let (r, trace, held) = run(&mut s, b"hey", vec![-1], libc::EAGAIN);
         assert_eq!(
             (r, trace, held),
             (done(3), vec!["send", "create", "watch"], 3)
@@ -361,16 +309,13 @@ mod tests {
             nonblock: 1,
             ..socket()
         };
-        assert_eq!(
-            run(&mut s, std::ptr::null_mut(), b"x", vec![-1], libc::EPIPE).0,
-            failed(3, 0)
-        );
+        assert_eq!(run(&mut s, b"x", vec![-1], libc::EPIPE).0, failed(3));
         let mut s = SocketOutput {
             nonblock: 1,
             ssl_send: 1,
             ..socket()
         };
-        let (r, trace, held) = run(&mut s, std::ptr::null_mut(), b"tls", vec![], 0);
+        let (r, trace, held) = run(&mut s, b"tls", vec![], 0);
         assert_eq!((r, trace, held), (done(3), vec!["create", "watch"], 3));
 
         // Too large for the buffer size; queued output that would overflow.
@@ -379,23 +324,16 @@ mod tests {
             buffer_size: 2,
             ..socket()
         };
-        assert_eq!(
-            run(&mut s, std::ptr::null_mut(), b"abc", vec![], 0).0,
-            failed(1, 0)
-        );
-        let mut held_buffer = std::ptr::null_mut();
-        assert_eq!(swr_v1_buffer_typed_create(0, Some(&mut held_buffer)), 0);
-        assert_eq!(
-            unsafe { swr_v1_buffer_append(held_buffer.as_mut(), b"12345".as_ptr(), 5) },
-            0
-        );
+        assert_eq!(run(&mut s, b"abc", vec![], 0).0, failed(1));
+        let held_buffer = new_buffer(0);
+        unsafe { swr_cpp_buffer_append(&*held_buffer, b"12345".as_ptr(), 5) };
         let mut s = SocketOutput {
             nonblock: 1,
             buffer_size: 6,
             out_buffer: held_buffer.cast(),
             ..socket()
         };
-        assert_eq!(run(&mut s, held_buffer, b"ab", vec![], 0).0, failed(2, 0));
+        assert_eq!(run(&mut s, b"ab", vec![], 0).0, failed(2));
         // Behind queued output, it's appended without a send.
         let mut s = SocketOutput {
             nonblock: 1,
@@ -403,8 +341,8 @@ mod tests {
             out_buffer: held_buffer.cast(),
             ..socket()
         };
-        let (r, trace, held) = run(&mut s, held_buffer, b"ab", vec![], 0);
+        let (r, trace, held) = run(&mut s, b"ab", vec![], 0);
         assert_eq!((r, trace, held), (done(2), vec![], 7));
-        unsafe { swr_v1_buffer_release(held_buffer) };
+        unsafe { delete_buffer(held_buffer) };
     }
 }

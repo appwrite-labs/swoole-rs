@@ -158,8 +158,7 @@ pub(crate) fn pthread_self() -> libc::pthread_t {
 
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
-    // SAFETY: a socket's output buffer is null or the live `Buffer` it owns.
-    unsafe { socket.output.out_buffer.cast::<CppBuffer>().as_ref() }
+    socket.output.buffer()
 }
 
 /// The context's objects, each live when the op reading it runs.

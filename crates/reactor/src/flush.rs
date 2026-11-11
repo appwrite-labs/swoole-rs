@@ -1,10 +1,8 @@
 //! The reactor's writable handler and drain (upstream `Reactor::_writable_callback` and
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
 //! `crates/tls`'s `reactor_write.rs` supplies the effects.
-use crate::write::Queue;
-use crate::write::SocketOutput;
+use crate::Socket;
 use std::ffi::c_int;
-use swoole_rs_buffer::Buffer;
 
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -24,38 +22,27 @@ pub trait FlushEffects {
     /// `swoole_timer_del(socket->send_timer)`.
     fn delete_timer(&self);
     fn remove_write_event(&self);
-    /// drain only: `socket->wait_event(write timeout, SW_EVENT_WRITE)`, and `socket->removed`.
+    /// drain only: `socket->wait_event(write timeout, SW_EVENT_WRITE)`.
     fn wait_writable(&self) -> c_int;
-    fn removed(&self) -> bool;
-}
-
-/// `Buffer::empty`: null, no entries, or a handle that can't be read.
-fn empty(queue: Queue) -> bool {
-    queue.empty().unwrap_or(true)
 }
 
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
 /// can't proceed, then drop the send timer and, once empty, write interest.
-///
-/// # Safety
-/// `output` is the socket's embedded block; `buffer` is its `out_buffer`'s Rust handle
-/// or null. Both stay live across the effects, which may change them.
-pub unsafe fn swr_v1_reactor_flush(
-    output: *mut SocketOutput,
-    buffer: *mut Buffer,
-    ops: &impl FlushEffects,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let queue = unsafe { Queue::new(buffer) };
-    while !empty(queue) {
+pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_int {
+    // The read that finds the queue empty also takes the timer.
+    let timer = loop {
+        let (empty, timer) =
+            socket.read(|record| (record.output.empty(), record.output.send_timer));
+        if empty {
+            break timer;
+        }
         let result = match ops.front_kind() {
             CLOSE => return ops.close(),
             SENDFILE => ops.handle_sendfile(),
             _ => ops.handle_send(),
         };
         if result < 0 {
-            // SAFETY: the socket's block, read fresh after each effect.
-            let output = unsafe { &*output };
+            let output = socket.read(|record| record.output);
             if output.close_wait != 0 {
                 return ops.trigger_close();
             }
@@ -63,14 +50,17 @@ pub unsafe fn swr_v1_reactor_flush(
                 return SW_OK;
             }
         }
-    }
-    // SAFETY: as above; no reference to the block spans the effect.
-    if !unsafe { (*output).send_timer }.is_null() {
+    };
+    // Empty, unless deleting the timer queued output.
+    let mut empty = true;
+    if !timer.is_null() {
         ops.delete_timer();
-        // SAFETY: as above.
-        unsafe { (*output).send_timer = std::ptr::null_mut() };
+        empty = socket.edit(|record| {
+            record.output.send_timer = std::ptr::null_mut();
+            record.output.empty()
+        });
     }
-    if empty(queue) {
+    if empty {
         ops.remove_write_event();
     }
     SW_OK
@@ -78,24 +68,13 @@ pub unsafe fn swr_v1_reactor_flush(
 
 /// `Reactor::drain_write_buffer`: wait for writability and flush until the queue empties,
 /// the wait fails, or the socket starts closing or leaves the reactor.
-///
-/// # Safety
-/// As for [`swr_v1_reactor_flush`].
-pub unsafe fn swr_v1_reactor_drain(
-    output: *mut SocketOutput,
-    buffer: *mut Buffer,
-    ops: &impl FlushEffects,
-) {
-    // SAFETY: as the caller promises.
-    let queue = unsafe { Queue::new(buffer) };
-    while !empty(queue) {
+pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
+    while !socket.read(|record| record.output.empty()) {
         if ops.wait_writable() == SW_ERR {
             break;
         }
-        // SAFETY: as the caller promises.
-        unsafe { swr_v1_reactor_flush(output, buffer, ops) };
-        // SAFETY: the socket's block, read fresh after the flush.
-        if unsafe { (*output).close_wait } != 0 || ops.removed() {
+        swr_v1_reactor_flush(socket, ops);
+        if socket.read(|record| record.output.close_wait != 0 || record.removed != 0) {
             break;
         }
     }
@@ -104,11 +83,11 @@ pub unsafe fn swr_v1_reactor_drain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SocketOutput, SocketRecord};
     use std::cell::RefCell;
     use std::ffi::c_void;
-    use swoole_rs_buffer::{
-        TypedDetached, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_typed_create,
-        swr_v1_buffer_typed_pop,
+    use swoole_rs_buffer::cpp::{
+        CppBuffer, delete_buffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_pop,
     };
 
     #[derive(Default)]
@@ -118,7 +97,7 @@ mod tests {
         trace: Vec<&'static str>,
         buffer: usize,
         close_wait_on_fail: bool,
-        output: usize,
+        record: usize,
     }
     thread_local! { static NATIVE: RefCell<Native> = RefCell::default(); }
 
@@ -132,16 +111,13 @@ mod tests {
         }
         fn handle_send(&self) -> c_int {
             record("send");
-            let (result, buffer, close_wait, output) = NATIVE
-                .with_borrow_mut(|n| (n.sends.remove(0), n.buffer, n.close_wait_on_fail, n.output));
+            let (result, buffer, close_wait, record) = NATIVE
+                .with_borrow_mut(|n| (n.sends.remove(0), n.buffer, n.close_wait_on_fail, n.record));
             if result >= 0 {
-                let mut detached = TypedDetached::default();
-                swr_v1_buffer_typed_pop(
-                    unsafe { (buffer as *mut Buffer).as_mut() },
-                    Some(&mut detached),
-                );
+                swr_cpp_buffer_pop(unsafe { &*(buffer as *const CppBuffer) });
             } else if close_wait {
-                unsafe { (*(output as *mut SocketOutput)).close_wait = 1 };
+                let socket = unsafe { Socket::from_ptr(record as *mut SocketRecord) }.unwrap();
+                socket.edit(|record| record.output.close_wait = 1);
             }
             result
         }
@@ -165,9 +141,6 @@ mod tests {
         }
         fn wait_writable(&self) -> c_int {
             unreachable!("a flush never waits")
-        }
-        fn removed(&self) -> bool {
-            unreachable!("a flush never asks")
         }
     }
 
@@ -194,26 +167,28 @@ mod tests {
         sends: Vec<c_int>,
         close_wait: bool,
     ) -> (c_int, Vec<&'static str>) {
-        let mut buffer = std::ptr::null_mut();
-        assert_eq!(swr_v1_buffer_typed_create(1, Some(&mut buffer)), 0);
+        let buffer = new_buffer(1);
         for _ in 0..entries {
-            assert_eq!(
-                unsafe { swr_v1_buffer_append(buffer.as_mut(), b"x".as_ptr(), 1) },
-                0
-            );
+            unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) };
         }
+        let mut record = SocketRecord::new();
+        record.output = SocketOutput {
+            out_buffer: buffer.cast(),
+            ..*output
+        };
+        let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
                 kinds,
                 sends,
                 buffer: buffer as usize,
                 close_wait_on_fail: close_wait,
-                output: std::ptr::from_mut(output) as usize,
+                record: socket.as_ptr() as usize,
                 ..Native::default()
             }
         });
-        let result = unsafe { swr_v1_reactor_flush(output, buffer, &Ops) };
-        unsafe { swr_v1_buffer_release(buffer) };
+        let result = swr_v1_reactor_flush(socket, &Ops);
+        unsafe { delete_buffer(buffer) };
         (
             result,
             NATIVE.with_borrow_mut(|n| std::mem::take(&mut n.trace)),
@@ -270,20 +245,21 @@ mod tests {
     /// front entry and whose close marks the socket removed and clears the queue.
     mod gate {
         use super::super::*;
+        use crate::{SocketOutput, SocketRecord};
         use std::cell::RefCell;
         use std::collections::VecDeque;
         use std::ffi::c_void;
-        use swoole_rs_buffer::{
-            TypedDetached, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_typed_create,
-            swr_v1_buffer_typed_pop,
+        use swoole_rs_buffer::cpp::{
+            CppBuffer, delete_buffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_count,
+            swr_cpp_buffer_pop,
         };
 
         #[derive(Default)]
         struct Facade {
             kinds: VecDeque<c_int>,
             trace: Vec<String>,
-            removed: bool,
             buffer: usize,
+            record: usize,
         }
         thread_local! { static FACADE: RefCell<Facade> = RefCell::default(); }
 
@@ -295,14 +271,9 @@ mod tests {
                 f.kinds.pop_front();
                 f.buffer
             });
-            let mut detached = TypedDetached::default();
-            assert_eq!(
-                swr_v1_buffer_typed_pop(
-                    unsafe { (buffer as *mut Buffer).as_mut() },
-                    Some(&mut detached)
-                ),
-                0
-            );
+            let buffer = unsafe { &*(buffer as *const CppBuffer) };
+            assert_ne!(swr_cpp_buffer_count(buffer), 0);
+            swr_cpp_buffer_pop(buffer);
         }
         struct Ops;
         impl FlushEffects for Ops {
@@ -321,7 +292,9 @@ mod tests {
             }
             fn close(&self) -> c_int {
                 effect("close");
-                FACADE.with_borrow_mut(|f| f.removed = true);
+                let record = FACADE.with_borrow(|f| f.record) as *mut SocketRecord;
+                let socket = unsafe { Socket::from_ptr(record) }.unwrap();
+                socket.edit(|record| record.removed = 1);
                 while !FACADE.with_borrow(|f| f.kinds.is_empty()) {
                     pop();
                 }
@@ -341,29 +314,16 @@ mod tests {
                 effect("wait");
                 SW_OK
             }
-            fn removed(&self) -> bool {
-                FACADE.with_borrow(|f| f.removed)
-            }
         }
 
         fn run(kinds: &[c_int], timer: bool, drain: bool) -> Vec<String> {
-            let mut buffer = std::ptr::null_mut();
-            assert_eq!(swr_v1_buffer_typed_create(1, Some(&mut buffer)), 0);
+            let buffer = new_buffer(1);
             for _ in kinds {
-                assert_eq!(
-                    unsafe { swr_v1_buffer_append(buffer.as_mut(), b"x".as_ptr(), 1) },
-                    0
-                );
+                unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) };
             }
-            FACADE.with_borrow_mut(|f| {
-                *f = Facade {
-                    kinds: kinds.iter().copied().collect(),
-                    buffer: buffer as usize,
-                    ..Facade::default()
-                }
-            });
-            let mut output = SocketOutput {
-                out_buffer: std::ptr::null_mut(),
+            let mut record = SocketRecord::new();
+            record.output = SocketOutput {
+                out_buffer: buffer.cast(),
                 send_timer: if timer {
                     std::ptr::dangling_mut::<c_void>()
                 } else {
@@ -375,17 +335,25 @@ mod tests {
                 ssl_send: 0,
                 send_wait: 0,
             };
-            unsafe {
-                if drain {
-                    swr_v1_reactor_drain(&raw mut output, buffer, &Ops);
-                } else {
-                    assert_eq!(swr_v1_reactor_flush(&raw mut output, buffer, &Ops), SW_OK);
+            let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+            FACADE.with_borrow_mut(|f| {
+                *f = Facade {
+                    kinds: kinds.iter().copied().collect(),
+                    buffer: buffer as usize,
+                    record: socket.as_ptr() as usize,
+                    ..Facade::default()
                 }
-                swr_v1_buffer_release(buffer);
+            });
+            if drain {
+                swr_v1_reactor_drain(socket, &Ops);
+            } else {
+                assert_eq!(swr_v1_reactor_flush(socket, &Ops), SW_OK);
             }
+            unsafe { delete_buffer(buffer) };
+            let output = record.output;
+            let removed = record.removed;
             let mut trace = FACADE.with_borrow_mut(|f| {
                 let remaining = f.kinds.len();
-                let removed = u8::from(f.removed);
                 let mut trace = std::mem::take(&mut f.trace);
                 trace.push(format!("remaining={remaining}"));
                 trace.push(format!("removed={removed}"));
