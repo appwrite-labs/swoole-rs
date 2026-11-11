@@ -23,7 +23,10 @@ const EDIT: u32 = 1 << 31;
 
 /// How long a borrow waits for an overlapping one to end. Another thread's closure
 /// ends within it; a borrow nested on the waiting thread never does, and panics.
-const PATIENCE: Duration = if cfg!(test) {
+/// (Under Miri, whose threads run slowly in real time, a test's wait is longer.)
+const PATIENCE: Duration = if cfg!(miri) {
+    Duration::from_secs(1)
+} else if cfg!(test) {
     Duration::from_millis(10)
 } else {
     Duration::from_secs(1)
@@ -79,6 +82,8 @@ impl<'a> Borrow<'a> {
     #[cold]
     #[track_caller]
     fn wait(borrows: &AtomicU32, held: u32, since: &mut Option<Instant>, overlap: &str) {
+        #[cfg(test)]
+        let _waiting = Waiting::enter(borrows);
         let since = *since.get_or_insert_with(Instant::now);
         while borrows.load(Ordering::Relaxed) & held != 0 {
             assert!(since.elapsed() < PATIENCE, "{overlap}");
@@ -90,6 +95,44 @@ impl<'a> Borrow<'a> {
 impl Drop for Borrow<'_> {
     fn drop(&mut self) {
         self.borrows.fetch_sub(self.taken, Ordering::Release);
+    }
+}
+
+/// Test-only: the records a borrow is waiting on, by address, so a test can hold an
+/// edit until another thread's borrow is provably waiting for it.
+#[cfg(test)]
+static WAITING: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// Test-only: a borrow's entry in [`WAITING`] while it waits.
+#[cfg(test)]
+struct Waiting(usize);
+
+#[cfg(test)]
+impl Waiting {
+    fn waiting() -> std::sync::MutexGuard<'static, Vec<usize>> {
+        WAITING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn enter(borrows: &AtomicU32) -> Self {
+        let at = std::ptr::from_ref(borrows).addr();
+        Self::waiting().push(at);
+        Self(at)
+    }
+
+    fn on(borrows: &AtomicU32) -> bool {
+        Self::waiting().contains(&std::ptr::from_ref(borrows).addr())
+    }
+}
+
+#[cfg(test)]
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        let mut waiting = Self::waiting();
+        if let Some(index) = waiting.iter().position(|&at| at == self.0) {
+            waiting.swap_remove(index);
+        }
     }
 }
 
@@ -271,10 +314,16 @@ mod tests {
         let editing = std::sync::Barrier::new(2);
         let read = std::thread::scope(|scope| {
             scope.spawn(|| {
-                handle().unwrap().edit(|fields| {
+                let socket = handle().unwrap();
+                socket.edit(|fields| {
                     editing.wait();
-                    // B's read has started; this write races it unless it waits.
-                    std::thread::yield_now();
+                    // Hold the edit until B's read is provably waiting on it; under the
+                    // old immediate panic B would never wait, and this would time out.
+                    let began = std::time::Instant::now();
+                    while !Waiting::on(socket.borrows()) {
+                        assert!(began.elapsed() < Duration::from_secs(10), "B never waited");
+                        std::thread::yield_now();
+                    }
                     fields.fd = 4;
                 });
             });
