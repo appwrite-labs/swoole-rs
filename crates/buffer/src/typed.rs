@@ -60,15 +60,30 @@ pub unsafe extern "C" fn swr_v1_buffer_typed_push(
     } {
         return INVALID;
     }
-    if queue.entries.try_reserve(1).is_err() {
-        return NOMEM;
-    }
-    queue.entries.push_back(Entry::TypedToken(Token {
+    queue.push_token(Token {
         kind,
         value,
         dispose,
-    }));
-    OK
+    })
+}
+
+impl Buffer {
+    /// Enqueue a payload-free CLOSE marker.
+    pub fn push_close(&mut self) -> i32 {
+        self.push_token(Token {
+            kind: 2,
+            value: std::ptr::null_mut(),
+            dispose: None,
+        })
+    }
+
+    fn push_token(&mut self, token: Token) -> i32 {
+        if self.entries.try_reserve(1).is_err() {
+            return NOMEM;
+        }
+        self.entries.push_back(Entry::TypedToken(token));
+        OK
+    }
 }
 
 /// Copy initialized facts, with no borrowed Rust reference escaping the call.

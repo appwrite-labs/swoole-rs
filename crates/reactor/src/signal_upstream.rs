@@ -148,7 +148,7 @@ fn report(kind: u8, signo: i32, error: i32) {
 mod descriptor {
     use super::{
         EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK, c_int,
-        c_void, current, socket_free, swoole_event_add, swoole_event_del,
+        c_void, socket_free, swoole_event_add, swoole_event_del,
     };
     use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
     use crate::socket_upstream::make_socket_fd;
@@ -226,11 +226,7 @@ mod descriptor {
     }
 
     pub(super) fn erase_end() {
-        let Some(reactor) = current() else { return };
-        // SAFETY: the thread's live loop, borrowed for this change alone.
-        if let Some(owner) = unsafe { reactor.owner.as_mut() } {
-            crate::swr_v1_reactor_set_end(owner, PRIORITY_SIGNAL_CALLBACK, None);
-        }
+        crate::swr_v1_event_erase_end_callback(PRIORITY_SIGNAL_CALLBACK);
     }
 
     pub(super) static OPS_DESCRIPTOR: DescriptorOps = DescriptorOps {
@@ -259,14 +255,61 @@ static OPS: Ops = Ops {
     report,
 };
 
+/// A signal's handler as the signal loop holds it: none, `SIG_IGN`, or a function
+/// to call with the signal's number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Handler(usize);
+
+impl Handler {
+    pub const NONE: Self = Self(0);
+    pub const IGNORE: Self = Self(libc::SIG_IGN);
+
+    #[must_use]
+    pub fn new(handler: extern "C" fn(c_int)) -> Self {
+        Self(handler as usize)
+    }
+
+    /// # Safety
+    /// `handler` is 0, `SIG_IGN`, or a `SignalHandler` that is sound to call with
+    /// any signal number and that nothing unloads.
+    #[must_use]
+    pub const unsafe fn from_raw(handler: usize) -> Self {
+        Self(handler)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
+
+/// `swoole_signal_set(signo, handler, safety)`: the handler it replaced.
+#[must_use]
+pub fn set(signo: c_int, handler: Handler, safety: bool) -> Handler {
+    Handler(signal_loop::set(signo, handler.0, safety, &OPS))
+}
+
+/// `swoole_signal_get_handler(signo)`.
+#[must_use]
+pub fn get(signo: c_int) -> Handler {
+    Handler(signal_loop::get(signo, &OPS))
+}
+
+/// `swoole_signal_clear()`.
+pub fn clear() {
+    signal_loop::clear(&OPS);
+}
+
 /// `SignalHandler swoole_signal_set(int signo, SignalHandler handler, bool safety)`.
 ///
 /// # Safety
-/// `handler` is null or a function nothing unloads.
+/// `handler` is as [`Handler::from_raw`] requires.
 #[must_use]
 #[unsafe(export_name = "_Z17swoole_signal_setiPFviEb")]
 pub unsafe extern "C" fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize {
-    signal_loop::set(signo, handler, safety, &OPS)
+    // SAFETY: as the caller promises.
+    set(signo, unsafe { Handler::from_raw(handler) }, safety).0
 }
 
 /// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`.
@@ -282,7 +325,7 @@ pub unsafe extern "C" fn swoole_signal_callback(signo: c_int) {
 #[must_use]
 #[unsafe(export_name = "_Z25swoole_signal_get_handleri")]
 pub extern "C" fn swoole_signal_get_handler(signo: c_int) -> usize {
-    signal_loop::get(signo, &OPS)
+    get(signo).0
 }
 
 /// `uint32_t swoole_signal_get_listener_num()`.
@@ -293,10 +336,7 @@ pub extern "C" fn swoole_signal_get_listener_num() -> u32 {
 }
 
 /// `void swoole_signal_clear()`.
-///
-/// # Safety
-/// On the thread that owns the signal handlers.
 #[unsafe(export_name = "_Z19swoole_signal_clearv")]
-pub unsafe extern "C" fn swoole_signal_clear() {
-    signal_loop::clear(&OPS);
+pub extern "C" fn swoole_signal_clear() {
+    clear();
 }

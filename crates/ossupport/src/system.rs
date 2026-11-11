@@ -162,6 +162,12 @@ pub unsafe extern "C" fn swr_v1_os_set_isolation(
     let user = unsafe { CStr::from_ptr(user) };
     // SAFETY: as above.
     let root = unsafe { CStr::from_ptr(root) };
+    set_isolation(group, user, root);
+}
+
+/// `swoole_set_isolation`: drop to `group` and `user`, then chroot to `root`,
+/// warning at the step that fails.
+pub fn set_isolation(group: &CStr, user: &CStr, root: &CStr) {
     let origin = c"swoole_set_isolation";
     let (g, u, r) = (
         group.to_string_lossy(),

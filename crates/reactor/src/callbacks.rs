@@ -235,7 +235,14 @@ pub extern "C" fn swr_v1_reactor_isset_exit(owner: &ReactorState, id: c_int) -> 
 /// `sw_reactor()->set_end_callback(id, callback)`.
 pub fn swr_v1_event_set_end_callback(id: c_int, callback: EndFn) {
     if let Some(owner) = current() {
-        swr_v1_reactor_set_end(owner, id, Some(callback));
+        owner.callbacks.set_end(id, Some(End::Call(callback)));
+    }
+}
+
+/// `sw_reactor()->erase_end_callback(id)`.
+pub fn swr_v1_event_erase_end_callback(id: c_int) {
+    if let Some(owner) = current() {
+        owner.callbacks.set_end(id, None);
     }
 }
 

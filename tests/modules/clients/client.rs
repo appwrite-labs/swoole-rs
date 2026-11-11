@@ -137,17 +137,6 @@ unsafe extern "C" {
     );
     fn swr_v1_clients_ssl_context(state: *const c_void) -> *const c_void;
     fn swr_v1_clients_proxy_fields(state: *const c_void, http: bool) -> *mut ProxyFields;
-    fn swr_v1_clients_proxy(
-        state: *mut c_void,
-        http: bool,
-        host: *const c_char,
-        host_length: usize,
-        port: i64,
-        user: *const c_char,
-        user_length: usize,
-        password: *const c_char,
-        password_length: usize,
-    );
     fn swr_v1_clients_flag(state: *const c_void, name: u32) -> bool;
     fn swr_v1_clients_watermark(state: *mut c_void, high: bool) -> *mut u32;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
@@ -486,20 +475,16 @@ impl<'a> Client<'a> {
     }
 
     fn set_proxy(&self, http: bool, host: &str, port: c_int, user: &str, password: &str) {
-        // SAFETY: each text is readable for its length.
-        unsafe {
-            swr_v1_clients_proxy(
-                self.state,
-                http,
-                host.as_ptr().cast(),
-                host.len(),
-                i64::from(port),
-                user.as_ptr().cast(),
-                user.len(),
-                password.as_ptr().cast(),
-                password.len(),
-            );
-        }
+        // SAFETY: `state` is this test's live client.
+        let client = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
+        swoole_rs_clients::client::set_proxy(
+            client,
+            http,
+            host.as_bytes(),
+            i64::from(port),
+            user.as_bytes(),
+            password.as_bytes(),
+        );
     }
 
     fn set_socks5_proxy(&self, host: &str, port: c_int, user: &str, password: &str) {

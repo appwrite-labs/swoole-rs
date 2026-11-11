@@ -1180,35 +1180,20 @@ fn enable_ssl(this: Handle) -> Option<NonNull<OwnedTlsContext>> {
 
 /// `Client::set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which
 /// replaces the client's. A SOCKS5 proxy whose credentials are too long (logged)
-/// clears it.
-///
-/// # Safety
-/// `client` is live with a socket; each text lends its bytes for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_proxy(
-    client: *mut Client,
+/// clears it. The client aborts without a socket.
+pub fn set_proxy(
+    client: &Client,
     http: bool,
-    host: *const c_char,
-    host_length: usize,
+    host: &[u8],
     port: i64,
-    user: *const c_char,
-    user_length: usize,
-    password: *const c_char,
-    password_length: usize,
+    user: &[u8],
+    password: &[u8],
 ) {
-    let this = Handle(client);
+    // Only read through, as `Handle`'s methods do.
+    let this = Handle(core::ptr::from_ref(client).cast_mut());
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     let port = port as c_int;
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
-    let [host, user, password] = [
-        (host, host_length),
-        (user, user_length),
-        (password, password_length),
-    ]
-    .map(|(text, length)| {
-        // SAFETY: each text lends `length` bytes for the call.
-        unsafe { core::slice::from_raw_parts(text.cast::<u8>(), length) }
-    });
     let proxy = if http {
         Box::into_raw(swoole_rs_http_ffi::http_proxy(host, port, user, password))
     } else {
@@ -1223,7 +1208,7 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
             }
         }
     };
-    let previous = this.get().proxy_slot(which).replace(proxy);
+    let previous = client.proxy_slot(which).replace(proxy);
     // SAFETY: the replaced proxy, released once.
     unsafe { swr_v1_core_proxy_free(previous) };
 }
@@ -1711,20 +1696,14 @@ fn address_of(kind: c_int, host: &CStr, port: c_int, resolve: bool) -> Option<So
         kind,
         ..SocketAddress::default()
     };
-    let resolve = resolve
-        .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
-    // SAFETY: the local record's union and length, and the NUL-terminated host.
-    let error = unsafe {
-        crate::address::swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            address.kind,
-            host.as_ptr(),
-            host.to_bytes().len(),
-            port,
-            resolve,
-        )
-    };
+    let error = crate::address::assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        host.to_bytes_with_nul(),
+        port,
+        resolve,
+    );
     if error != 0 {
         log::set_last_error(error);
         return None;

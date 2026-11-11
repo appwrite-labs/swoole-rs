@@ -109,12 +109,10 @@ pub unsafe extern "C" fn swr_v1_server_static_mime(
     strings.values.iter().any(|value| **value == *bytes)
 }
 
-/// 0 count, 1 enabled, 2 enable, 3 replace with absent, 4 insert unique,
-/// 5 find (count when absent), 6 append preserving duplicates. The named index
-/// setter does its original duplicate lookup before appending.
+/// [`config`] for native code.
 /// # Safety
-/// Insertion/search lends `length` readable bytes (non-null even
-/// when empty). Writes use the original configuration's synchronization.
+/// Insertion/search (4 to 6) lends `length` readable bytes (non-null even when
+/// empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_static_config(
     state: &ServerState,
@@ -123,6 +121,20 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
     data: *const u8,
     length: usize,
 ) -> usize {
+    let bytes = if (4..=6).contains(&operation) {
+        // SAFETY: these operations lend the specified input range.
+        unsafe { core::slice::from_raw_parts(data, length) }
+    } else {
+        &[]
+    };
+    config(state, kind, operation, bytes)
+}
+
+/// Operation `operation` on the static collection `kind`: 0 count, 1 enabled,
+/// 2 enable, 3 replace with absent, 4 insert `bytes` unique, 5 find `bytes`
+/// (count when absent), 6 append `bytes` preserving duplicates. The named index
+/// setter does its original duplicate lookup before appending.
+pub(crate) fn config(state: &ServerState, kind: u32, operation: u32, bytes: &[u8]) -> usize {
     let Ok(kind) = usize::try_from(kind) else {
         return 0;
     };
@@ -149,8 +161,6 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
             0
         }
         4..=6 => {
-            // SAFETY: these operations lend the specified input range.
-            let bytes = unsafe { core::slice::from_raw_parts(data, length) };
             let found = strings.values.iter().position(|value| **value == *bytes);
             if operation == 4 || operation == 6 {
                 strings.enabled = true;

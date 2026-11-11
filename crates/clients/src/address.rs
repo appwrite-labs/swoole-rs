@@ -24,61 +24,85 @@ unsafe extern "C" {
 /// `network::gethostbyname(family, name, address)`: writes the address, < 0 on failure.
 pub type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
 
-/// `clients_parse_ip`: the host as an IP literal of `family` into `destination`.
-///
-/// # Safety
-/// `host` is NUL-terminated and `destination` holds the family's address.
-unsafe fn parse_ip(family: c_int, host: *const c_char, destination: *mut u8) -> bool {
-    // SAFETY: the caller passes a NUL-terminated host.
-    let text = unsafe { std::ffi::CStr::from_ptr(host) }.to_bytes();
+/// `clients_parse_ip`: the host as an IP literal of `family` into `destination`,
+/// which holds any family's address.
+fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
+    let text = host.to_bytes();
     // Other families, and the hosts crates/corebase leaves to it, go to the platform.
     if (family != libc::AF_INET && family != libc::AF_INET6) || platform_parses(family, text) {
-        // SAFETY: as above.
-        return unsafe { inet_pton(family, host, destination.cast()) } == 1;
+        // SAFETY: a NUL-terminated host and room for an IPv4 or IPv6 address; another
+        // family writes nothing.
+        return unsafe { inet_pton(family, host.as_ptr(), destination.as_mut_ptr().cast()) } == 1;
     }
     let version = if family == libc::AF_INET { 4 } else { 6 };
     let allow_zeroes = u8::from(cfg!(target_os = "macos"));
     let ip = swr_v1_clients_ip(version, text, allow_zeroes);
-    if ip.length == 0 {
-        return false;
-    }
     let length = usize::try_from(ip.length).unwrap_or(0);
-    // SAFETY: `destination` holds the family's `length`-byte address.
-    unsafe { std::ptr::copy_nonoverlapping(ip.bytes.as_ptr(), destination, length) };
-    true
+    match (destination.get_mut(..length), ip.bytes.get(..length)) {
+        (Some(to), Some(from)) if length != 0 => {
+            to.copy_from_slice(from);
+            true
+        }
+        _ => false,
+    }
 }
 
-/// An IP family's literal, else (when `resolve` is given) its resolved address.
-///
-/// # Safety
-/// As for [`parse_ip`]; `resolve` is native `gethostbyname`.
-unsafe fn host_address(
-    family: c_int,
-    host: *const c_char,
-    destination: *mut u8,
-    resolve: Option<Resolve>,
+/// [`assign`] with `resolve` for a host that is no IP literal: the address, or the
+/// `SW_ERROR_*` code.
+fn assign_with(
+    address: &mut AddressStorage,
+    length: &mut libc::socklen_t,
+    kind: c_int,
+    host: &[u8],
+    port: c_int,
+    resolve: impl FnOnce(c_int, &CStr) -> Result<[u8; 16], c_int>,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    if unsafe { parse_ip(family, host, destination) } {
-        return 0;
-    }
-    let Some(resolve) = resolve else {
+    let (Ok(name), Some((&0, bytes))) = (CStr::from_bytes_until_nul(host), host.split_last())
+    else {
         return BAD_HOST_ADDR;
     };
-    // SAFETY: as above.
-    if unsafe { resolve(family, host, destination.cast()) } < 0 {
-        return DNSLOOKUP_RESOLVE_FAILED;
-    }
-    0
+    swoole_rs_corebase::net_address::assign(address, length, kind, bytes, port, |family| {
+        let mut address = [0; 16];
+        if parse_ip(family, name, &mut address) {
+            return Ok(address);
+        }
+        resolve(family, name)
+    })
 }
 
-/// Fills `address` (the native sockaddr union) and `*length` for `kind`, `host` and
-/// `port`; 0, or the `SW_ERROR_*` code for native to set as the last error.
+/// `Address::assign(kind, host, port, resolve)`: fills `address` and `*length`;
+/// 0, or the `SW_ERROR_*` code for the caller to set as the last error. `host` is
+/// the host's bytes and the NUL that ends them (`std::string::c_str()`): a resolver
+/// reads it up to its first NUL. `resolve` looks up a host that is no IP literal
+/// with `gethostbyname`.
+pub fn assign(
+    address: &mut AddressStorage,
+    length: &mut libc::socklen_t,
+    kind: c_int,
+    host: &[u8],
+    port: c_int,
+    resolve: bool,
+) -> c_int {
+    assign_with(address, length, kind, host, port, |family, name| {
+        if !resolve {
+            return Err(BAD_HOST_ADDR);
+        }
+        let binary = swoole_rs_corebase::gethostbyname(family, name);
+        let binary = binary.ok_or(DNSLOOKUP_RESOLVE_FAILED)?;
+        let mut address = [0; 16];
+        for (byte, c) in address.iter_mut().zip(binary) {
+            *byte = c.to_ne_bytes()[0];
+        }
+        Ok(address)
+    })
+}
+
+/// [`assign`] for native code, whose `resolve` is native `gethostbyname` or null.
 ///
 /// # Safety
 /// `address` points to the union, `length` to its `socklen_t`, `host` to a
-/// NUL-terminated string of `host_length` bytes before any embedded NUL; `resolve`
-/// is native `gethostbyname` or null (`resolve_name` false).
+/// NUL-terminated string of `host_length` bytes before that NUL; `resolve` is
+/// native `gethostbyname` or null (`resolve_name` false).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_address_assign(
     address: *mut c_void,
@@ -93,15 +117,20 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
     let storage = unsafe { &mut *address.cast::<AddressStorage>() };
     // SAFETY: and its length.
     let size = unsafe { &mut *length };
-    // SAFETY: and `host_length` bytes of host.
-    let bytes = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), host_length) };
-    swoole_rs_corebase::net_address::assign(storage, size, kind, bytes, port, |family| {
-        let mut address = [0; 16];
-        // SAFETY: the NUL-terminated host and room for either family's address.
-        match unsafe { host_address(family, host, address.as_mut_ptr(), resolve) } {
-            0 => Ok(address),
-            error => Err(error),
+    // SAFETY: and `host_length` bytes of host, then its NUL.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(host.cast::<u8>(), host_length.saturating_add(1)) };
+    assign_with(storage, size, kind, bytes, port, |family, name| {
+        let Some(resolve) = resolve else {
+            return Err(BAD_HOST_ADDR);
+        };
+        let mut address = [0u8; 16];
+        // SAFETY: native `gethostbyname`, a terminated name and room for either
+        // family's address.
+        if unsafe { resolve(family, name.as_ptr(), address.as_mut_ptr().cast()) } < 0 {
+            return Err(DNSLOOKUP_RESOLVE_FAILED);
         }
+        Ok(address)
     })
 }
 
@@ -119,7 +148,31 @@ fn inet6(kind: c_int) -> bool {
     matches!(kind, TCP6 | UDP6 | RAW6)
 }
 
-/// `Address::addr_str`, including the original thread-local returned pointer.
+/// The bytes of an address of `family`: 4 for IPv4, 16 for IPv6, none for another.
+fn address_size(family: c_int) -> usize {
+    match family {
+        libc::AF_INET => 4,
+        libc::AF_INET6 => 16,
+        _ => 0,
+    }
+}
+
+/// `Address::addr_str`: `address` (of `family`) as text in this thread's scratch,
+/// which the next call overwrites; null when it does not format or `address` is too
+/// short for the family.
+#[must_use]
+pub fn address_string(family: c_int, address: &[u8]) -> *const c_char {
+    if address.len() < address_size(family) {
+        return std::ptr::null();
+    }
+    ADDRESS_SCRATCH.with(|scratch| {
+        // SAFETY: this thread alone accesses its fixed scratch; inet_ntop reads the
+        // family's bytes, writes at most its supplied capacity and retains neither.
+        unsafe { inet_ntop(family, address.as_ptr().cast(), scratch.get().cast(), 46) }
+    })
+}
+
+/// [`address_string`] for native code.
 /// # Safety
 /// `address` points to the address bytes for `family`, as required by `inet_ntop`.
 #[unsafe(no_mangle)]
@@ -127,11 +180,9 @@ pub unsafe extern "C" fn swr_v1_clients_address_string(
     family: c_int,
     address: *const c_void,
 ) -> *const c_char {
-    ADDRESS_SCRATCH.with(|scratch| {
-        // SAFETY: this thread alone accesses its fixed scratch; inet_ntop writes
-        // at most its supplied capacity and does not retain the address.
-        unsafe { inet_ntop(family, address, scratch.get().cast(), 46) }
-    })
+    // SAFETY: the family's address bytes, per the caller.
+    let address = unsafe { std::slice::from_raw_parts(address.cast(), address_size(family)) };
+    address_string(family, address)
 }
 
 /// `Address::verify_ip`, writing the same scratch as `addr_str` does.
@@ -139,10 +190,13 @@ pub unsafe extern "C" fn swr_v1_clients_address_string(
 /// `host` is a live NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool {
+    // SAFETY: the caller's NUL-terminated host.
+    let host = unsafe { CStr::from_ptr(host) };
     ADDRESS_SCRATCH.with(|scratch| {
         // SAFETY: the scratch holds the largest IP address; this thread alone
-        // accesses it and parse_ip retains neither input nor destination.
-        unsafe { parse_ip(family, host, scratch.get().cast()) }
+        // accesses it, and no borrow of it outlives this call.
+        let destination = unsafe { &mut *scratch.get().cast::<[u8; 16]>() };
+        parse_ip(family, host, destination)
     })
 }
 
@@ -152,17 +206,13 @@ pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *con
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const c_char {
     if inet4(address.kind) {
-        // inet4 selects the initialized IPv4 union member.
-        let ip = (&raw const address.addr.inet_v4)
-            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in, sin_addr));
-        // SAFETY: the field holds the selected family's address.
-        unsafe { swr_v1_clients_address_string(libc::AF_INET, ip.cast()) }
+        // SAFETY: inet4 selects the initialized IPv4 union member.
+        let ip = unsafe { address.addr.inet_v4.sin_addr.s_addr };
+        address_string(libc::AF_INET, &ip.to_ne_bytes())
     } else if inet6(address.kind) {
-        // inet6 selects the initialized IPv6 union member.
-        let ip = (&raw const address.addr.inet_v6)
-            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in6, sin6_addr));
-        // SAFETY: the field holds the selected family's address.
-        unsafe { swr_v1_clients_address_string(libc::AF_INET6, ip.cast()) }
+        // SAFETY: inet6 selects the initialized IPv6 union member.
+        let ip = unsafe { address.addr.inet_v6.sin6_addr.s6_addr };
+        address_string(libc::AF_INET6, &ip)
     } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
         // A local socket selects the initialized Unix union member.
         (&raw const address.addr.un)

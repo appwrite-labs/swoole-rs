@@ -106,8 +106,8 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     config.gs.free();
     // SAFETY: `swr_v1_server_new`'s bus, freed once.
     unsafe { crate::pool_native::free_bus(state.tables_ref().message_bus) };
-    // SAFETY: `swr_v1_server_new`'s state, not used again.
-    unsafe { crate::swr_v1_server_state_free(object.state) };
+    // SAFETY: `swr_v1_server_new`'s boxed state, not used again.
+    drop(unsafe { Box::from_raw(object.state) });
     if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
         swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
     }
