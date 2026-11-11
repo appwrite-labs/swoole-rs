@@ -546,21 +546,6 @@ impl Co {
     pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
         self.0.ssl_verify(allow_self_signed)
     }
-
-    /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
-    /// # Safety
-    /// `hook` may be called with `arg` until then.
-    pub(crate) unsafe fn close_hook(
-        self,
-        hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
-        arg: *mut c_void,
-    ) {
-        let hook = move |socket| {
-            // SAFETY: per the caller, `hook` takes `arg` until the socket goes.
-            unsafe { hook(arg, socket) }
-        };
-        swoole_rs_hooks::socket_extra::set_close_hook(self.0, Box::new(hook));
-    }
 }
 
 /// `package_length_func`: the callable `value` makes replaces any earlier

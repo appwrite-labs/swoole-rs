@@ -617,16 +617,7 @@ fn throw(message: &Message, code: i64) {
 fn log_warning(message: &CStr) {
     const SW_LOG_WARNING: i32 = 4;
     if let Some(logger) = swoole_rs_utilities::process_logger() {
-        let message = message.to_bytes();
-        // SAFETY: the live process logger, with the message's bytes.
-        unsafe {
-            swoole_rs_utilities::swr_v1_logger_put(
-                logger,
-                SW_LOG_WARNING,
-                message.as_ptr().cast(),
-                message.len(),
-            );
-        }
+        logger.put(SW_LOG_WARNING, message.to_bytes());
     }
 }
 
