@@ -4,16 +4,15 @@
 //! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
 //! they make is Rust's.
 use core::ffi::{c_int, c_long, c_void};
-use core::ptr;
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
 use crate::ops::{
     RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ,
-    RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT, RUN_RT_PIPE_WRITE, RUN_START_REACTOR_THREADS,
-    RUN_THREAD_SHUTDOWN,
+    RUN_REACTOR_THREAD_MAIN, RUN_RT_PIPE_WRITE, RUN_START_REACTOR_THREADS, RUN_THREAD_SHUTDOWN,
 };
+use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::view;
 
@@ -31,31 +30,20 @@ pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
 }
 
 /// Runs `op` over `ctx`.
-///
-/// # Safety
-/// `ctx.serv` is a live `Server` and the context's other objects are what `op` reads.
-pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
-    // SAFETY: per the caller.
-    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
-    // SAFETY: per the caller.
-    unsafe { crate::run_reactor_with(ctx, state, |h| crate::run(h, op, arg)) }
+pub(crate) fn run(op: u32, arg: u64, ctx: &mut ReactorContext<'_>) -> i64 {
+    let state = ctx.serv.state();
+    crate::run_reactor_with(ctx, state, |h| crate::run(h, op, arg))
 }
 
 /// `operation` over `ctx` with the `which` facts, outside [`run`]'s match.
-///
-/// # Safety
-/// As [`run`].
-unsafe fn run_with<'s>(
+fn run_with<'s, 'c>(
     which: Facts,
-    ctx: &mut ReactorContext,
-    operation: impl FnOnce(&mut crate::Native<'s>, u64) -> crate::Effect<i64>,
+    ctx: &'s mut ReactorContext<'c>,
+    operation: impl FnOnce(&mut crate::Native<'s, 'c>, u64) -> crate::Effect<i64>,
 ) -> c_int {
-    // SAFETY: per the caller.
-    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
-    // SAFETY: per the caller.
-    let facts = unsafe { facts(ctx, state, which) };
-    // SAFETY: per the caller.
-    int(unsafe { crate::run_reactor_with(ctx, state, |h| operation(h, facts)) })
+    let state = ctx.serv.state();
+    let facts = facts(&mut *ctx, state, which);
+    int(crate::run_reactor_with(ctx, state, |h| operation(h, facts)))
 }
 
 #[expect(
@@ -66,30 +54,29 @@ fn int(value: i64) -> c_int {
     value as c_int
 }
 
-/// `reactor->ptr`, a reactor thread's server.
+/// `reactor->ptr`, a server reactor's server.
 ///
 /// # Safety
-/// `reactor` is a live `Reactor`.
-unsafe fn server(reactor: *mut c_void) -> *mut c_void {
+/// `reactor` is a server's reactor, whose `ptr` is the live `Server` for `'a`.
+pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
     // SAFETY: per the caller.
-    unsafe { crate::reactor_handle::Reactor::of(reactor) }
-        .fields()
-        .ptr
+    unsafe { view::Server::from_raw(reactor.fields().ptr) }
 }
 
 /// A context over the reactor, `reactor->ptr` (a reactor thread's server) and the event.
-fn context(reactor: Running<'_>, event: &mut Event) -> ReactorContext {
-    let serv = crate::reactor_handle::Reactor::running(reactor)
-        .fields()
-        .ptr;
-    let mut ctx = ReactorContext::new(serv, reactor.as_ptr());
-    ctx.event = event;
+fn context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorContext<'a> {
+    let reactor = Reactor::running(reactor);
+    // SAFETY: the handlers below are registered only on server reactors.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
+    ctx.event = Some(event);
     ctx
 }
 
 /// [`context`] with the event's socket.
-fn event_context(reactor: Running<'_>, event: &mut Event) -> ReactorContext {
+fn event_context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorContext<'a> {
     let sock = event.socket_ptr().cast();
+    // SAFETY: null, or the event's socket, live while the event is.
+    let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(sock) };
     let mut ctx = context(reactor, event);
     ctx.sock = sock;
     ctx
@@ -100,52 +87,40 @@ fn event_context(reactor: Running<'_>, event: &mut Event) -> ReactorContext {
 
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
 pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let mut ctx = context(reactor, event);
-    // SAFETY: a server reactor's live server, and its event.
-    int(unsafe { run(RUN_PACKET_RECEIVED, 0, &mut ctx) })
+    int(run(RUN_PACKET_RECEIVED, 0, &mut context(reactor, event)))
 }
 
 /// `ReactorThread_onClose`: the peer closed.
 pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     let mut ctx = event_context(reactor, event);
-    // SAFETY: a server reactor's live server, and its event.
-    unsafe { run_with(Facts::PeerClose, &mut ctx, crate::conn_io::peer_close) }
+    run_with(Facts::PeerClose, &mut ctx, crate::conn_io::peer_close)
 }
 
 /// `ReactorThread_onPipeRead`: a worker's message.
 pub extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let mut ctx = context(reactor, event);
-    let id = usize::from(crate::reactor_handle::Reactor::running(reactor).fields().id);
-    // SAFETY: a server reactor's live server.
-    ctx.thread = thread(unsafe { view::Server::from_raw(ctx.serv) }.state(), id);
-    // SAFETY: a server reactor's live server, and its event.
-    int(unsafe { run(RUN_PIPE_READ, 0, &mut ctx) })
+    let id = usize::from(Reactor::running(reactor).fields().id);
+    ctx.thread = thread(ctx.serv.state(), id);
+    int(run(RUN_PIPE_READ, 0, &mut ctx))
 }
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let mut ctx = context(reactor, event);
-    // SAFETY: a server reactor's live server, and its event.
-    int(unsafe { run(RUN_RT_PIPE_WRITE, 0, &mut ctx) })
+    int(run(RUN_RT_PIPE_WRITE, 0, &mut context(reactor, event)))
 }
 
 /// `ReactorThread_onRead`: a connection is readable.
 pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let fd = c_long::from(event.fd());
     let mut ctx = event_context(reactor, event);
-    // SAFETY: a server reactor's live server.
-    ctx.conn = unsafe { view::Server::from_raw(ctx.serv) }
-        .state()
-        .connection_ptr(fd, 0);
-    // SAFETY: a server reactor's live server, and its event.
-    unsafe { run_with(Facts::Read, &mut ctx, crate::conn_io::read) }
+    ctx.conn = ctx.serv.state().connection_ptr(fd, 0);
+    run_with(Facts::Read, &mut ctx, crate::conn_io::read)
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.
 pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     let mut ctx = event_context(reactor, event);
-    // SAFETY: a server reactor's live server, and its event.
-    unsafe { run_with(Facts::Write, &mut ctx, crate::conn_io::write) }
+    run_with(Facts::Write, &mut ctx, crate::conn_io::write)
 }
 
 /// `static int Server::close_connection(Reactor *, Socket *)`.
@@ -157,10 +132,12 @@ pub unsafe extern "C-unwind" fn close_connection(
     socket: *mut SocketRecord,
 ) -> c_int {
     // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
-    ctx.sock = socket;
+    let reactor = unsafe { Reactor::of(reactor) };
     // SAFETY: per the caller.
-    unsafe { run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection) }
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
+    // SAFETY: per the caller.
+    ctx.sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
+    run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
 }
 
 /// `void ReactorThread::shutdown(Reactor *)`.
@@ -169,35 +146,47 @@ pub unsafe extern "C-unwind" fn close_connection(
 /// `thread` is the live `ReactorThread` that `reactor` belongs to.
 pub unsafe fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
     // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
-    ctx.thread = thread;
+    let reactor = unsafe { Reactor::of(reactor) };
     // SAFETY: per the caller.
-    unsafe { run(RUN_THREAD_SHUTDOWN, 0, &mut ctx) };
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
+    ctx.thread = thread;
+    run(RUN_THREAD_SHUTDOWN, 0, &mut ctx);
 }
 
 /// `int ReactorThread::init(Server *, Reactor *, uint16_t)`.
 ///
 /// # Safety
 /// `thread` is `serv`'s live `ReactorThread` and `reactor` its new reactor.
-pub unsafe fn thread_init(
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe fn thread_init(
     thread: *mut c_void,
-    serv: *mut c_void,
-    reactor: *mut c_void,
+    serv: view::Server<'_>,
+    reactor: Option<Reactor>,
     reactor_id: u16,
 ) -> c_int {
     let mut ctx = ReactorContext::new(serv, reactor);
     ctx.thread = thread;
-    // SAFETY: per the caller.
-    int(unsafe { run(RUN_RT_INIT, u64::from(reactor_id), &mut ctx) })
+    int(run(
+        crate::ops::RUN_RT_INIT,
+        u64::from(reactor_id),
+        &mut ctx,
+    ))
 }
 
 /// `void Server::init_reactor(Reactor *)`.
 ///
 /// # Safety
-/// `serv` is a live `Server` and `reactor` a live reactor of it.
+/// `serv` is a live `Server` and `reactor` a live reactor of it, on this thread.
 pub unsafe fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
     // SAFETY: per the caller.
-    unsafe { run(RUN_INIT_REACTOR, 0, &mut ReactorContext::new(serv, reactor)) };
+    let serv = unsafe { view::Server::from_raw(serv) };
+    // SAFETY: per the caller.
+    let reactor = unsafe { Reactor::of(reactor) };
+    run(
+        RUN_INIT_REACTOR,
+        0,
+        &mut ReactorContext::new(serv, Some(reactor)),
+    );
 }
 
 /// `int Server::start_reactor_threads()`.
@@ -205,9 +194,9 @@ pub unsafe fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
 /// # Safety
 /// `serv` is a live `Server`, in its master.
 pub unsafe extern "C-unwind" fn start_reactor_threads(serv: *mut c_void) -> c_int {
-    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
     // SAFETY: per the caller.
-    int(unsafe { run(RUN_START_REACTOR_THREADS, 0, &mut ctx) })
+    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+    int(run(RUN_START_REACTOR_THREADS, 0, &mut ctx))
 }
 
 /// `static void Server::reactor_thread_main_loop(Server *, int)`.
@@ -215,10 +204,10 @@ pub unsafe extern "C-unwind" fn start_reactor_threads(serv: *mut c_void) -> c_in
 /// # Safety
 /// `serv` is a live `Server`, on the reactor thread `reactor_id`.
 pub unsafe fn reactor_thread_main_loop(serv: *mut c_void, reactor_id: c_int) {
-    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
-    let id = i64::from(reactor_id).cast_unsigned();
     // SAFETY: per the caller.
-    unsafe { run(RUN_REACTOR_THREAD_MAIN, id, &mut ctx) };
+    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+    let id = i64::from(reactor_id).cast_unsigned();
+    run(RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
 }
 
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
@@ -280,14 +269,13 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let dispatched = if mode == crate::MODE_PROCESS {
         crate::factory::dispatch(state, (&raw mut task).cast())
     } else {
-        let mut ctx = ReactorContext::new(serv, ptr::null_mut());
-        ctx.sock = socket.as_ptr();
+        let mut ctx = ReactorContext::new(server, None);
+        ctx.sock = Some(socket);
         ctx.conn = conn;
         let task = &raw mut task;
         let base = mode == crate::MODE_BASE;
         let run = |h: &mut _| crate::base_factory::dispatch(h, task, base).map(i64::from);
-        // SAFETY: per the caller; the task outlives the run.
-        unsafe { crate::run_reactor_with(&mut ctx, state, run) == 1 }
+        crate::run_reactor_with(&mut ctx, state, run) == 1
     };
     // SAFETY: the live connection; the dispatch has returned.
     let c = unsafe { &*conn };
@@ -316,7 +304,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
 /// # Safety
 /// `serv` is a live `Server`, in its master.
 pub unsafe extern "C-unwind" fn join_reactor_thread(serv: *mut c_void) {
-    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
     // SAFETY: per the caller.
-    unsafe { run(RUN_JOIN_REACTOR_THREADS, 0, &mut ctx) };
+    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+    run(RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }

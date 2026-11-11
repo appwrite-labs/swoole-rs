@@ -125,6 +125,18 @@ pub fn finish() {
     }
 }
 
+/// A free or destructor handler's `body`, then [`finish`] of what it deferred.
+/// A bailout already pending is its deferrer's to raise: Zend frees objects
+/// while one waits (a whole-thread exit stays pending until its request's
+/// boundary), some outside any `zend_try`, where raising it aborts.
+pub fn finish_after(body: impl FnOnce()) {
+    let pending = pending();
+    body();
+    if !pending {
+        finish();
+    }
+}
+
 /// [`defer`] then [`finish`]: a handler's last step.
 pub fn raise(result: Result<(), Bailout>) {
     defer(result);
