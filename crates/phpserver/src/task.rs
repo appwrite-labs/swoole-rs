@@ -31,14 +31,13 @@ use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Value,
     bailout::Bailout,
-    long_zval, message, report,
+    kind, long_zval, message, report,
     string::bytes,
     sys::{
         IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
         swr_zval_is_true, swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval,
         zval_ptr_dtor,
     },
-    type_of,
     value::{array_init, count, table},
 };
 
@@ -794,8 +793,7 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         dtor(&mut args[1]);
     }
     let outcome = outcome.and_then(|()| {
-        // SAFETY: the callback's result, or undef.
-        if unsafe { type_of(&raw const retval) } != IS_NULL {
+        if kind(&retval) != IS_NULL {
             let finished = finish_task(server.raw(), &raw mut retval, task.as_ptr().cast_mut());
             dtor(&mut retval);
             finished?;
