@@ -22,3 +22,11 @@ values (`cargo test -p swoole-rs-ossupport --all-features os_`):
 | `os.thread_name` | `system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
 | `os.thread_id` | none: `swoole_thread_id_to_str` left the build with its one caller, the async-thread warnings, so there is no function to test |
 | `os.set_isolation` | `system::tests::os_set_isolation`, over `swr_v1_os_set_isolation` |
+
+`core-tests/src/os/file.cpp` tests `src/os/file.cc`, which is Rust
+(`crates/ossupport/src/file.rs`, `file_api.rs`, `file_record.rs`):
+
+| Upstream TEST | Where it runs |
+| --- | --- |
+| `file.open_twice` | `file_owner.py` (`ossupport-file-owner`): the unchanged body, compiled against the pin and against the Cargo SDK's `native/ossupport/swoole_file.h` |
+| the other eight | not yet ported (#3043) |
