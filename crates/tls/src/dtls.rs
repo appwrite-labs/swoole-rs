@@ -1,26 +1,19 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`, independent of native `SSLContext` lifetime.
-use core::cell::UnsafeCell;
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 use openssl_sys::{
     BIO, BIO_METHOD, BIO_clear_flags, BIO_get_data, BIO_meth_free, BIO_meth_new,
     BIO_meth_set_create__fixed_rust, BIO_meth_set_ctrl__fixed_rust,
     BIO_meth_set_destroy__fixed_rust, BIO_meth_set_read__fixed_rust,
-    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init,
-    ERR_clear_error, SSL, SSL_set_bio,
+    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init, SSL,
+    SSL_set_bio,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{Socket, SocketRecord};
-
-#[repr(C)]
-pub struct DtlsFields {
-    pub socket: *mut SocketRecord,
-    pub listened: bool,
-    pub peek: bool,
-}
 
 #[repr(C)]
 struct Buffer {
@@ -37,8 +30,24 @@ impl Drop for Datagram {
 }
 
 pub struct DtlsSession {
-    fields: UnsafeCell<DtlsFields>,
-    queue: VecDeque<Datagram>,
+    socket: *mut SocketRecord,
+    listened: Cell<bool>,
+    peek: Cell<bool>,
+    queue: RefCell<VecDeque<Datagram>>,
+}
+
+impl DtlsSession {
+    /// The session's socket.
+    #[must_use]
+    pub fn socket(&self) -> *mut SocketRecord {
+        self.socket
+    }
+
+    /// Whether `listen` has published the session.
+    #[must_use]
+    pub fn listened(&self) -> bool {
+        self.listened.get()
+    }
 }
 
 #[repr(C)]
@@ -52,19 +61,11 @@ pub struct DtlsReadView {
 #[must_use]
 pub fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> *mut DtlsSession {
     Box::into_raw(Box::new(DtlsSession {
-        fields: UnsafeCell::new(DtlsFields {
-            socket,
-            listened: false,
-            peek: false,
-        }),
-        queue: VecDeque::new(),
+        socket,
+        listened: Cell::new(false),
+        peek: Cell::new(false),
+        queue: RefCell::new(VecDeque::new()),
     }))
-}
-
-/// The session's socket, `listened` and `peek_mode`.
-#[must_use]
-pub fn dtls_fields(owner: &DtlsSession) -> *mut DtlsFields {
-    owner.fields.get()
 }
 
 /// # Safety
@@ -77,14 +78,10 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
 }
 
 /// # Safety
-/// owner is live; buffer is an exclusively transferred sw_malloc-compatible datagram.
+/// buffer is an exclusively transferred sw_malloc-compatible datagram.
 /// On allocation failure ownership remains with the caller.
-pub unsafe extern "C" fn swr_v1_tls_dtls_append_buffer(
-    owner: *mut DtlsSession,
-    buffer: *mut c_void,
-) -> c_int {
-    // SAFETY: the queue is exclusively accessed until the append returns.
-    let queue = unsafe { &mut (*owner).queue };
+pub unsafe fn swr_v1_tls_dtls_append_buffer(owner: &DtlsSession, buffer: *mut c_void) -> c_int {
+    let mut queue = owner.queue.borrow_mut();
     if queue.try_reserve(1).is_err() {
         return -1;
     }
@@ -92,19 +89,14 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_append_buffer(
     0
 }
 
-/// # Safety
-/// owner is live; data covers length initialized bytes, with nonnegative native length.
+/// A copy of `data` queued as one datagram.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the public native Buffer length is uint16_t"
 )]
-pub unsafe extern "C" fn swr_v1_tls_dtls_append(
-    owner: *mut DtlsSession,
-    data: *const u8,
-    length: usize,
-) -> c_int {
-    // SAFETY: this append exclusively accesses the queue.
-    let queue = unsafe { &mut (*owner).queue };
+pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
+    let length = data.len();
+    let mut queue = owner.queue.borrow_mut();
     if queue.try_reserve(1).is_err() {
         return -1;
     }
@@ -122,18 +114,17 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_append(
     // SAFETY: the fresh header is valid and its payload immediately follows it.
     let out = unsafe { ptr::addr_of_mut!((*buffer).data).cast::<u8>() };
     if length > 0 {
-        // SAFETY: the caller lends the initialized source; fresh storage cannot overlap it.
-        unsafe { ptr::copy_nonoverlapping(data, out, usize::from(length)) };
+        // SAFETY: the source covers `length` bytes; fresh storage cannot overlap it.
+        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), out, usize::from(length)) };
     }
     queue.push_back(Datagram(buffer));
     0
 }
 
 /// The front datagram's length, whether the queue is empty, and `peek_mode`.
-pub extern "C" fn swr_v1_tls_dtls_view(owner: &DtlsSession) -> DtlsReadView {
-    let queue = &owner.queue;
-    // SAFETY: no native scalar mutation overlaps this call.
-    let peek = unsafe { (*owner.fields.get()).peek };
+pub fn swr_v1_tls_dtls_view(owner: &DtlsSession) -> DtlsReadView {
+    let queue = owner.queue.borrow();
+    let peek = owner.peek.get();
     let length = queue.front().map_or(0, |front| {
         // SAFETY: every queued pointer owns an initialized Buffer.
         unsafe { (*front.0).length }
@@ -147,13 +138,13 @@ pub extern "C" fn swr_v1_tls_dtls_view(owner: &DtlsSession) -> DtlsReadView {
 
 /// # Safety
 /// data covers requested writable bytes for a nonnegative request.
-pub unsafe extern "C" fn swr_v1_tls_dtls_read(
-    owner: &mut DtlsSession,
+pub unsafe fn swr_v1_tls_dtls_read(
+    owner: &DtlsSession,
     data: *mut u8,
     requested: c_int,
 ) -> crate::ReadPlan {
-    let peek = owner.fields.get_mut().peek;
-    let queue = &mut owner.queue;
+    let peek = owner.peek.get();
+    let mut queue = owner.queue.borrow_mut();
     let Some(front) = queue.front() else {
         return crate::ReadPlan {
             length: -1,
@@ -179,8 +170,8 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_read(
 }
 
 /// The queued datagrams' total length.
-pub extern "C" fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
-    owner.queue.iter().fold(0usize, |total, buffer| {
+pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
+    owner.queue.borrow().iter().fold(0usize, |total, buffer| {
         // SAFETY: each queued pointer owns an initialized Buffer.
         total.wrapping_add(usize::from(unsafe { (*buffer.0).length }))
     })
@@ -194,7 +185,7 @@ pub extern "C" fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
     clippy::cast_possible_wrap,
     reason = "native BIO_CTRL_PENDING casts wrapping size_t total to long"
 )]
-pub unsafe extern "C" fn swr_v1_tls_dtls_control(
+pub unsafe fn swr_v1_tls_dtls_control(
     owner: &DtlsSession,
     tag: u32,
     observed: c_long,
@@ -202,13 +193,12 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_control(
     ptrval: *mut c_void,
 ) -> crate::ControlPlan {
     let observed = match tag {
-        0 => c_long::from(owner.queue.is_empty()),
+        0 => c_long::from(owner.queue.borrow().is_empty()),
         2 => swr_v1_tls_dtls_length(owner) as c_long,
         _ => observed,
     };
     if tag == 8 {
-        // SAFETY: native lends its scalar group exclusively during this call.
-        unsafe { (*owner.fields.get()).peek = value != 0 };
+        owner.peek.set(value != 0);
         return crate::ControlPlan {
             result: 1,
             effect: 0,
@@ -217,7 +207,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_control(
     if tag == 5 {
         if !ptrval.is_null() {
             // SAFETY: the enclosing native Session retains its live network socket.
-            if let Some(socket) = unsafe { socket_of(ptr::from_ref(owner)) } {
+            if let Some(socket) = unsafe { socket_of(owner) } {
                 let address = socket.read(|record| record.info.addr);
                 // SAFETY: native's peer destination is writable for the exact native address union.
                 unsafe {
@@ -236,11 +226,10 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_control(
 }
 
 /// `listen`'s action for `DTLSv1_listen`'s result, marking the session listened.
-pub extern "C" fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: c_int) -> u32 {
+pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: c_int) -> u32 {
     let action = crate::listen_plan(result);
     if action == 2 {
-        // SAFETY: nothing else reaches the scalar group during this completion.
-        unsafe { (*owner.fields.get()).listened = true };
+        owner.listened.set(true);
     }
     action
 }
@@ -293,9 +282,7 @@ unsafe fn session_of(bio: *mut BIO) -> *mut DtlsSession {
 /// `owner` is live, and its socket a live record while the handle is used.
 unsafe fn socket_of<'a>(owner: *const DtlsSession) -> Option<Socket<'a>> {
     // SAFETY: as the caller promises.
-    let fields = unsafe { (*owner).fields.get() };
-    // SAFETY: the live session's scalar group.
-    let socket = unsafe { (*fields).socket };
+    let socket = unsafe { (*owner).socket };
     // SAFETY: as the caller promises.
     unsafe { Socket::from_ptr(socket) }
 }
@@ -320,8 +307,8 @@ unsafe extern "C" fn bio_read(bio: *mut BIO, data: *mut c_char, length: c_int) -
     unsafe { BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY) };
     // SAFETY: OpenSSL calls this for the session's BIO.
     let session = unsafe { session_of(bio) };
-    // SAFETY: the BIO's live session, which nothing else reaches during the read.
-    let session = unsafe { &mut *session };
+    // SAFETY: the BIO's live session.
+    let session = unsafe { &*session };
     // SAFETY: OpenSSL lends `length` writable bytes.
     let plan = unsafe { swr_v1_tls_dtls_read(session, data.cast(), length) };
     if plan.retry != 0 {
@@ -417,7 +404,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     let Some(socket) = (unsafe { socket_of(owner) }) else {
         return false;
     };
-    if !socket.read(|record| record.ssl).is_null() {
+    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return false;
     }
     let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
@@ -431,7 +418,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
     let ssl = socket.edit(|record| {
         record.dtls = 1;
-        record.ssl
+        record.ssl()
     });
     // SAFETY: a BIO of the table above; OpenSSL returns null on failure.
     let bio = unsafe { BIO_new(methods()) };
@@ -448,25 +435,22 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
 /// a pending listen counts as success and a failure logs why.
 ///
 /// # Safety
-/// `owner` is live and its socket a live record holding an SSL.
-pub unsafe extern "C" fn swr_v1_tls_dtls_session_listen(owner: *mut DtlsSession) -> bool {
-    // SAFETY: as the caller promises.
-    let fields = unsafe { (*owner).fields.get() };
-    // SAFETY: the live session's scalar group.
-    if unsafe { (*fields).listened } {
+/// The session's socket is a live record.
+pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
+    if owner.listened() {
         return false;
     }
     // SAFETY: as the caller promises.
     let Some(socket) = (unsafe { socket_of(owner) }) else {
         return false;
     };
-    // SAFETY: this thread's error queue.
-    unsafe { ERR_clear_error() };
-    let ssl = socket.read(|record| record.ssl);
-    // SAFETY: as the caller promises.
-    let result = unsafe { DTLSv1_listen(ssl.cast(), ptr::null_mut()) };
-    // SAFETY: as the caller promises; DTLSv1_listen has returned.
-    if swr_v1_tls_dtls_listen(unsafe { &*owner }, result) != 0 {
+    crate::socket::clear_errors();
+    let Some(ssl) = crate::Ssl::of(socket) else {
+        return false;
+    };
+    // SAFETY: the record's live SSL.
+    let result = unsafe { DTLSv1_listen(ssl.as_ptr(), ptr::null_mut()) };
+    if swr_v1_tls_dtls_listen(owner, result) != 0 {
         return true;
     }
     let reason = crate::swr_v1_socket_ssl_peek_reason();
@@ -498,20 +482,17 @@ mod tests {
         fn handle(&self) -> *mut DtlsSession {
             self.0
         }
-        fn fields(&self) -> *mut DtlsFields {
-            dtls_fields(unsafe { &*self.0 })
+        fn session(&self) -> &DtlsSession {
+            unsafe { &*self.0 }
         }
         fn append(&self, bytes: &[u8]) {
-            assert_eq!(
-                unsafe { swr_v1_tls_dtls_append(self.handle(), bytes.as_ptr(), bytes.len()) },
-                0
-            );
+            assert_eq!(swr_v1_tls_dtls_append(self.session(), bytes), 0);
         }
         fn read(&self, count: usize) -> (crate::ReadPlan, Vec<u8>) {
             let mut bytes = vec![0x55; count];
             let result = unsafe {
                 swr_v1_tls_dtls_read(
-                    &mut *self.handle(),
+                    self.session(),
                     bytes.as_mut_ptr(),
                     count.try_into().unwrap(),
                 )
@@ -561,12 +542,12 @@ mod tests {
         owner.append(b"abcdef");
         owner.append(b"xyz");
         assert_eq!(owner.length(), 9);
-        unsafe { (*owner.fields()).peek = true };
+        owner.session().peek.set(true);
         let (plan, bytes) = owner.read(2);
         assert_eq!((plan.length, plan.consume, plan.retry), (2, 0, 0));
         assert_eq!(bytes, b"ab");
         assert_eq!(owner.length(), 9);
-        unsafe { (*owner.fields()).peek = false };
+        owner.session().peek.set(false);
         assert_eq!(owner.read(2).1, b"ab");
         assert_eq!(owner.length(), 3);
         let (plan, bytes) = owner.read(10);
@@ -591,22 +572,22 @@ mod tests {
         let data = unsafe { ptr::addr_of_mut!((*raw).data).cast::<u8>() };
         unsafe { ptr::copy_nonoverlapping(b"abc".as_ptr(), data, 3) };
         assert_eq!(
-            unsafe { swr_v1_tls_dtls_append_buffer(owner.handle(), raw.cast()) },
+            unsafe { swr_v1_tls_dtls_append_buffer(owner.session(), raw.cast()) },
             0
         );
         assert_eq!(owner.read(3).1, b"abc");
         assert_eq!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 0) }, 1);
-        assert!(!unsafe { (*owner.fields()).listened });
+        assert!(!owner.session().listened());
         assert_eq!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 1) }, 2);
-        assert!(unsafe { (*owner.fields()).listened });
+        assert!(owner.session().listened());
         unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 8, 0, -7, ptr::null_mut()) };
-        assert!(unsafe { (*owner.fields()).peek });
+        assert!(owner.session().peek.get());
         owner.append(b"abc");
         assert_eq!(
             unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 2, 0, 0, ptr::null_mut()) }.result,
             3
         );
-        unsafe { (*owner.fields()).peek = false };
+        owner.session().peek.set(false);
         assert_eq!(owner.read(3).1, b"abc");
         assert_eq!(
             unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 0, 0, 0, ptr::null_mut()) }.result,

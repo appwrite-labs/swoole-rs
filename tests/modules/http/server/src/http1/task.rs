@@ -129,8 +129,10 @@ impl TaskHost for TaskPool {
 
     fn read_notify(&mut self) -> isize {
         let mut notify = 0u64;
-        // SAFETY: as above, into a local of that size.
-        unsafe { socket_pair::read(self.pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+        // SAFETY: this worker's live notify pipe.
+        let pipe = unsafe { &*self.pipe };
+        // SAFETY: a local of that size.
+        unsafe { socket_pair::read(pipe, (&raw mut notify).cast(), size_of::<u64>()) }
     }
 
     fn lock(&mut self, on: bool) {

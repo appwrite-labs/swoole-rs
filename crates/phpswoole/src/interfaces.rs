@@ -136,9 +136,29 @@ fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
     array.insert_bytes(name, Some(text.as_bytes()));
 }
 
+/// A libc struct of plain data, for which all-zero is valid; implemented only here.
+#[cfg(target_os = "linux")]
+trait Plain {}
+
+#[cfg(target_os = "linux")]
+impl Plain for libc::ifreq {}
+
+#[cfg(target_os = "linux")]
+impl<const N: usize> Plain for [libc::ifreq; N] {}
+
+#[cfg(target_os = "linux")]
+impl Plain for libc::ifconf {}
+
+/// An all-zero `T`, as C's `{0}` initialiser makes one.
+#[cfg(target_os = "linux")]
+fn zeroed<T: Plain>() -> T {
+    // SAFETY: `Plain` types are plain data, valid all-zero.
+    unsafe { std::mem::zeroed() }
+}
+
 #[cfg(target_os = "linux")]
 fn local_mac(call: &Call) {
-    use std::mem::{size_of, size_of_val, zeroed};
+    use std::mem::{size_of, size_of_val};
     // The requests as `ioctl` takes them (an int on musl).
     const SIOCGIFCONF: libc::Ioctl = 0x8912;
     const SIOCGIFFLAGS: libc::Ioctl = 0x8913;
@@ -153,10 +173,8 @@ fn local_mac(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: plain data; all-zero is valid.
-    let mut buffer: [libc::ifreq; REQUESTS] = unsafe { zeroed() };
-    // SAFETY: as above.
-    let mut conf: libc::ifconf = unsafe { zeroed() };
+    let mut buffer: [libc::ifreq; REQUESTS] = zeroed();
+    let mut conf: libc::ifconf = zeroed();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -176,8 +194,7 @@ fn local_mac(call: &Call) {
     let mut array = OwnedArray::default();
     let count = usize::try_from(conf.ifc_len).unwrap_or(0) / size_of::<libc::ifreq>();
     for entry in buffer.iter().take(count) {
-        // SAFETY: plain data; all-zero is valid.
-        let mut request: libc::ifreq = unsafe { zeroed() };
+        let mut request: libc::ifreq = zeroed();
         let name = request.ifr_name.iter_mut().zip(&entry.ifr_name);
         for (slot, byte) in name.take(libc::IFNAMSIZ - 1) {
             *slot = *byte;
@@ -196,8 +213,9 @@ fn local_mac(call: &Call) {
             // SAFETY: SIOCGIFHWADDR filled the hardware address.
             let data = unsafe { request.ifr_ifru.ifru_hwaddr.sa_data };
             let bytes = data.map(|byte| byte.to_ne_bytes()[0]);
-            // SAFETY: the name is NUL-terminated within IFNAMSIZ.
-            let name = unsafe { CStr::from_ptr(request.ifr_name.as_ptr()) };
+            // NUL-terminated within IFNAMSIZ: the copy above left the last byte zero.
+            let name = request.ifr_name.map(|byte| byte.to_ne_bytes()[0]);
+            let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
             add_address(&mut array, name.to_bytes(), &bytes);
         }
     }

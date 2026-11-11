@@ -170,62 +170,44 @@ pub extern "C" fn set_blocking(this: &mut SocketPair, blocking: bool) {
 /// data when the pair is blocking.
 ///
 /// # Safety
-/// `this` is a live pair and `buffer` denotes `length` writable bytes.
+/// `buffer` denotes `length` writable bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole10SocketPair4readEPvm")
 )]
 #[must_use]
-pub unsafe extern "C" fn read(
-    this: *const SocketPair,
-    buffer: *mut c_void,
-    length: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let pair = unsafe { &*this };
-    let (blocking, socket) = (pair.blocking, pair.worker_socket);
-    if blocking {
-        // SAFETY: as the caller promises.
-        unsafe { socket_read_sync(socket, buffer, length) }
+pub unsafe extern "C" fn read(this: &SocketPair, buffer: *mut c_void, length: usize) -> isize {
+    let [_, Some(socket)] = ends(this) else {
+        return -1;
+    };
+    if this.blocking {
+        // SAFETY: the live end, and the caller's buffer.
+        unsafe { socket_read_sync(socket.as_ptr(), buffer, length) }
     } else {
         // SAFETY: as the caller promises.
-        let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-            return -1;
-        };
-        let fd = socket.fd();
-        // SAFETY: as the caller promises.
-        unsafe { libc::read(fd, buffer, length) }
+        unsafe { libc::read(socket.fd(), buffer, length) }
     }
 }
 
 /// `ssize_t SocketPair::write(const void *, size_t) const`: to the master end.
 ///
 /// # Safety
-/// `this` is a live pair and `buffer` denotes `length` readable bytes.
+/// `buffer` denotes `length` readable bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole10SocketPair5writeEPKvm")
 )]
 #[must_use]
-pub unsafe extern "C" fn write(
-    this: *const SocketPair,
-    buffer: *const c_void,
-    length: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let pair = unsafe { &*this };
-    let (blocking, socket) = (pair.blocking, pair.master_socket);
-    if blocking {
-        // SAFETY: as the caller promises.
-        unsafe { socket_write_sync(socket, buffer, length) }
+pub unsafe extern "C" fn write(this: &SocketPair, buffer: *const c_void, length: usize) -> isize {
+    let [Some(socket), _] = ends(this) else {
+        return -1;
+    };
+    if this.blocking {
+        // SAFETY: the live end, and the caller's buffer.
+        unsafe { socket_write_sync(socket.as_ptr(), buffer, length) }
     } else {
         // SAFETY: as the caller promises.
-        let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-            return -1;
-        };
-        let fd = socket.fd();
-        // SAFETY: as the caller promises.
-        unsafe { libc::write(fd, buffer, length) }
+        unsafe { libc::write(socket.fd(), buffer, length) }
     }
 }
 
@@ -248,14 +230,11 @@ pub extern "C" fn clean(this: &SocketPair) {
 }
 
 /// Frees the end in `slot`; false when it is already closed.
-///
-/// # Safety
-/// `slot` is null or a live socket nothing else uses.
-unsafe fn close_end(slot: &mut *mut SocketRecord) -> bool {
+fn close_end(slot: &mut *mut SocketRecord) -> bool {
     if slot.is_null() {
         return false;
     }
-    // SAFETY: as the caller promises.
+    // SAFETY: a pair's open end is a live socket, which only its close frees.
     unsafe { socket_free(*slot) };
     *slot = ptr::null_mut();
     true
@@ -269,15 +248,11 @@ unsafe fn close_end(slot: &mut *mut SocketRecord) -> bool {
 )]
 pub extern "C-unwind" fn close(pair: &mut SocketPair, which: c_int) -> bool {
     match which {
-        // SAFETY: the pair's open end, which only it frees.
-        CLOSE_MASTER => unsafe { close_end(&mut pair.master_socket) },
-        // SAFETY: as above.
-        CLOSE_WORKER => unsafe { close_end(&mut pair.worker_socket) },
+        CLOSE_MASTER => close_end(&mut pair.master_socket),
+        CLOSE_WORKER => close_end(&mut pair.worker_socket),
         _ => {
-            // SAFETY: as above.
-            unsafe { close_end(&mut pair.master_socket) };
-            // SAFETY: as above.
-            unsafe { close_end(&mut pair.worker_socket) };
+            close_end(&mut pair.master_socket);
+            close_end(&mut pair.worker_socket);
             true
         }
     }
@@ -309,16 +284,22 @@ mod tests {
         assert!(!pair.master_socket.is_null() && !pair.worker_socket.is_null());
         let sent = *b"wire";
         let mut received = [0_u8; 4];
-        assert_eq!(unsafe { write(this, sent.as_ptr().cast(), sent.len()) }, 4);
         assert_eq!(
-            unsafe { read(this, received.as_mut_ptr().cast(), received.len()) },
+            unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) },
+            4
+        );
+        assert_eq!(
+            unsafe { read(&*this, received.as_mut_ptr().cast(), received.len()) },
             4
         );
         assert_eq!(received, sent);
-        assert_eq!(unsafe { write(this, sent.as_ptr().cast(), sent.len()) }, 4);
+        assert_eq!(
+            unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) },
+            4
+        );
         set_blocking(unsafe { &mut *this }, false);
         clean(unsafe { &*this });
-        assert!(unsafe { read(this, received.as_mut_ptr().cast(), received.len()) } < 0);
+        assert!(unsafe { read(&*this, received.as_mut_ptr().cast(), received.len()) } < 0);
         set_timeout(unsafe { &mut *this }, 2.5);
         assert_eq!(pair.timeout, 2.5);
         assert_eq!(unsafe { (*pair.worker_socket).fields.timeouts.read }, 2.5);
