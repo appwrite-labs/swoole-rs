@@ -166,18 +166,11 @@ fn kind(object: ServerObject) -> c_int {
 /// `serv->start()` inside `zend_try`: the server runs PHP's callbacks, and one
 /// may bail out. The trap's `setjmp` sits in C just below `body`, whose frame
 /// owns nothing, so a bailout skips no destructor.
-fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
-    struct Start(*mut c_void, c_int);
-    unsafe extern "C" fn body(start: *mut c_void) {
-        // SAFETY: `start_server`'s record, live across the trap.
-        let start = unsafe { &mut *start.cast::<Start>() };
-        // SAFETY: a live server.
-        start.1 = server_methods::start(unsafe { view::Server::from_raw(start.0) });
-    }
-    let mut start = Start(serv, 0);
-    // SAFETY: as above.
-    unsafe { bailout::trap(body, (&raw mut start).cast()) }?;
-    Ok(start.1)
+fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
+    let mut started = 0;
+    // SAFETY: as above; the closure holds a view and a borrow, nothing to drop.
+    unsafe { bailout::trap_with(|| started = server_methods::start(serv)) }?;
+    Ok(started)
 }
 
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
@@ -185,23 +178,6 @@ fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
 fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
     /// `SW_USER_WORKER`.
     const USER_WORKER: c_int = 5;
-    struct Add<'a>(view::Server<'a>, *mut zval, i64);
-    unsafe extern "C" fn body(add: *mut c_void) {
-        // SAFETY: `add_worker`'s record, live across the trap. A bailout
-        // (an unconstructed process) jumps past this frame, which owns nothing.
-        let add = unsafe { &mut *add.cast::<Add<'_>>() };
-        // SAFETY: a live process object.
-        let worker = unsafe { swr_v1_phpprocess_worker(add.1, true) }.cast::<WorkerRecord>();
-        // SAFETY: a live server that has not started, and the process's worker.
-        let id = unsafe { swoole_rs_server::worker_methods::add_worker(add.0, worker) };
-        add.2 = if id >= 0 {
-            // SAFETY: the process's live worker.
-            unsafe { &mut *worker }.set_user_data(add.1.cast());
-            id.into()
-        } else {
-            -1
-        };
-    }
     if fact(serv, fact::WORKER_THREAD) {
         if crate::server::worker_type() != USER_WORKER {
             return -2;
@@ -218,12 +194,24 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
             - number(serv, fact::WORKER_NUM)
             - number(serv, fact::TASK_WORKER_NUM);
     }
-    let mut add = Add(serv, process, -3);
-    // SAFETY: as above.
-    match unsafe { bailout::trap(body, (&raw mut add).cast()) } {
-        Ok(()) => add.2,
-        Err(_) => -3,
-    }
+    let mut added = -3;
+    let add = || {
+        // SAFETY: a live process object.
+        let worker = unsafe { swr_v1_phpprocess_worker(process, true) }.cast::<WorkerRecord>();
+        // SAFETY: a live server that has not started, and the process's worker.
+        let id = unsafe { swoole_rs_server::worker_methods::add_worker(serv, worker) };
+        added = if id >= 0 {
+            // SAFETY: the process's live worker.
+            unsafe { &mut *worker }.set_user_data(process.cast());
+            id.into()
+        } else {
+            -1
+        };
+    };
+    // SAFETY: a bailout (an unconstructed process) jumps past `add`, which
+    // holds a view, a pointer and a borrow: nothing to drop.
+    let trapped = unsafe { bailout::trap_with(add) };
+    trapped.map_or(-3, |()| added)
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
@@ -1310,7 +1298,7 @@ fn start(call: &Call) {
     if before_start(object, serv).is_err() {
         return;
     }
-    match start_server(serv.raw()) {
+    match start_server(serv) {
         Err(bailout) => return bailout.defer(),
         Ok(..0) => {
             let error = server_methods::get_startup_error_message();
