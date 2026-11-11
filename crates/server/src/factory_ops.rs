@@ -63,11 +63,7 @@ const _: () = assert!(
     "crates/process FactoryContext layout"
 );
 
-// SAFETY: crates/reactor's body.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z14swoole_waitpidiPii"]
-    fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-}
+use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
@@ -495,11 +491,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: a task worker of it; arg is below task_worker_num.
         unsafe { Worker::new(pool.workers.wrapping_add(index)).pid() }
     };
-    let waitpid = |pid| {
-        let mut status = 0;
-        // SAFETY: a local status.
-        signed(unsafe { swoole_waitpid(pid, &raw mut status, 0) })
-    };
+    let waitpid = |pid| signed(swoole_waitpid(pid, None, 0));
     Some(match op {
         OP_ALLOC_CONNECTIONS => {
             let size = size_of::<ConnectionRecord>();

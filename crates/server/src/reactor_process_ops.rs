@@ -21,7 +21,7 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_ENTER, OP_WORKER_ID, OP_WORKER_SIGNAL_INIT, OP_WORKER_START_CALLBACK,
     OP_WORKER_STOP_CALLBACK,
 };
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Event, SocketRecord};
 
 use crate::ConnectionRecord;
 use crate::callbacks::CB_START;
@@ -48,15 +48,6 @@ impl Context {
         // SAFETY: the method that built the context lent its live server for the call.
         unsafe { view::Server::from_raw(self.serv) }
     }
-}
-
-/// `swoole::Event`.
-#[repr(C)]
-struct Event {
-    fd: c_int,
-    reactor_id: i16,
-    fd_type: c_int,
-    socket: *mut SocketRecord,
 }
 
 /// `Server::TASK_IPC_UNIXSOCK`, `SW_SERVER_EVENT_CLOSE`, `SW_SSL_STATE_READY`.

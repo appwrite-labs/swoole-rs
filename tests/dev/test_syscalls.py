@@ -152,6 +152,20 @@ class Run(unittest.TestCase):
             syscalls.run(engine, {'id': '11-buffer-lifecycle', 'entry': str(driver), 'mode': 'driver'}, None)
         self.assertEqual(engine, ['traced'])
 
+    def test_a_signal_for_traced_php_goes_to_strace_s_child(self):
+        engine = syscalls.Traced('cargo', Path('/x/swoole.so'), 'php', (), Path('/t/trace'))
+        with mock.patch.object(Path, 'read_text', autospec=True, return_value='4242\n') as read:
+            self.assertEqual(engine.pid(mock.Mock(pid=17)), 4242)
+        self.assertEqual(read.call_args.args[0], Path('/proc/17/task/17/children'))
+
+    def test_hyperf_runs_in_process_with_the_traced_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Path(directory, 'hyperf.py')
+            driver.write_text('def run(engine):\n    engine.append("traced")\n')
+            engine = []
+            syscalls.run(engine, {'id': '12-hyperf-skeleton', 'entry': str(driver), 'mode': 'driver'}, None)
+        self.assertEqual(engine, ['traced'])
+
     def test_main_fails_on_an_unexplained_difference_and_reports_every_one(self):
         def run_project(engine, project):
             extra = 'prctl(PR_SET_NAME, ""...) = 0\n' if engine.name == 'cargo' else 'listen(3, 128) = 0\n'

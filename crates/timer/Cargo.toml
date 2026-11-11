@@ -11,7 +11,7 @@ crate-type = ["rlib", "staticlib"]
 [features]
 # Define src/wrapper/timer.cc's swoole_timer_* API under its C++ symbols. Only crates/ffi,
 # whose builds apply the timer patch that deletes that file, turns it on.
-upstream-symbols = ["dep:swoole-rs-corebase", "dep:swoole-rs-reactor"]
+upstream-symbols = ["dep:swoole-rs-corebase", "dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols"]
 
 [dependencies]
 libc = "=0.2.191"

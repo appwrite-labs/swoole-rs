@@ -2,10 +2,40 @@
 //! `error_handler` and the two defaults): which native `ReactorHandler` runs for an
 //! fd type's read, write or error readiness.
 use std::ffi::{c_int, c_void};
+use std::marker::PhantomData;
 use std::ptr;
 
-/// `ReactorHandler`: `int (*)(Reactor *, Event *)`.
-pub type Handler = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+use crate::Event;
+
+/// `ReactorHandler`: `int (*)(Reactor *, Event *)`. The loop lends the handler its
+/// reactor and the event it prepared for this call.
+/// A handler runs only for the fd types and reactors it was registered with.
+pub type Handler = extern "C" fn(Running<'_>, &mut Event) -> c_int;
+
+/// The `Reactor *` a handler is called with: live, and on this thread, for the call.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Running<'a> {
+    raw: *mut c_void,
+    live: PhantomData<&'a c_void>,
+}
+
+impl Running<'_> {
+    /// # Safety
+    /// `raw` is a live `Reactor`, on this thread, while the handle is used.
+    #[must_use]
+    pub unsafe fn new(raw: *mut c_void) -> Self {
+        Self {
+            raw,
+            live: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn as_ptr(self) -> *mut c_void {
+        self.raw
+    }
+}
 
 /// `SW_MAX_FDTYPE`.
 const FD_TYPES: usize = 32;
@@ -135,18 +165,26 @@ pub extern "C" fn swr_v1_reactor_handlers_default(
 mod tests {
     use super::*;
 
-    unsafe extern "C" fn one(_: *mut c_void, _: *mut c_void) -> c_int {
+    extern "C" fn one(_: Running<'_>, _: &mut Event) -> c_int {
         1
     }
-    unsafe extern "C" fn two(_: *mut c_void, _: *mut c_void) -> c_int {
+    extern "C" fn two(_: Running<'_>, _: &mut Event) -> c_int {
         2
     }
-    unsafe extern "C" fn three(_: *mut c_void, _: *mut c_void) -> c_int {
+    extern "C" fn three(_: Running<'_>, _: &mut Event) -> c_int {
         3
     }
 
     fn call(handler: Option<Handler>) -> c_int {
-        handler.map_or(0, |h| unsafe { h(ptr::null_mut(), ptr::null_mut()) })
+        let mut event = Event {
+            fd: 0,
+            reactor_id: 0,
+            fd_type: 0,
+            socket: ptr::null_mut(),
+        };
+        handler.map_or(0, |h| {
+            h(unsafe { Running::new(ptr::null_mut()) }, &mut event)
+        })
     }
 
     #[test]

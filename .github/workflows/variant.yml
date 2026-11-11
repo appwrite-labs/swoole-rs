@@ -39,7 +39,8 @@ jobs:
               families='swoole_coroutine swoole_channel_coro swoole_coroutine_scheduler swoole_coroutine_system swoole_event';;
             # A thread-safe PHP, whose headers zend-sys binds (PHP_CONFIG), with sockets and curl
             # compiled in: upstream's own thread CI (SWOOLE_THREAD), and Thread\Atomic and Thread\Lock,
-            # which only exist in this build.
+            # which only exist in this build; also the collection facade fixtures
+            # (tests/modules/phpcollections).
             zts) php=$PWD/target/php-zts/bin/php
               run="--php $php" abi="--php $php --php-config $php-config" phpize="--phpize ${php}ize"
               build="--php-config $php-config --php-sockets --configure=--enable-swoole-thread" probe='^thread[ ]'
@@ -116,6 +117,15 @@ jobs:
           python3 tests/modules/phphelpers/exit_guard.py --php "$PHP" --php-config "$PHP-config"
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --build-manifest target/ext/build-manifest.json --output target/phpt/zts/guard.json
+      - if: inputs.variant == 'zts'
+        name: Collection facades under ZTS
+        run: |
+          for profile in complete column-bytes; do
+            python3 tests/modules/phpcollections/php_runtime.py --profile $profile --php "$PHP" \
+              --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
+              --build-manifest target/ext/build-manifest.json \
+              --output target/phpt/zts/collections-$profile.json
+          done
       - run: corpus/upstream/families.sh "target/phpt/$VARIANT" target/phpt/upstream.so target/phpt/cargo.so $FAMILIES $RUN
       - if: inputs.variant == 'zts'
         name: Thread server exit lifecycle companion
