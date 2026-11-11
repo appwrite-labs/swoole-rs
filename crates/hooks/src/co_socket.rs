@@ -490,6 +490,21 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
 /// leaves it without an fd.
 #[must_use]
 pub fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool) -> Co {
+    let (socket, result) = make_quiet(fd, domain, kind, protocol, family);
+    warn_created(socket, result);
+    socket
+}
+
+/// [`make`] before its warnings, whose PHP error handler may bail out: the socket
+/// and the bits [`warn_created`] reports, so the caller can own the socket first.
+#[must_use]
+pub fn make_quiet(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+    family: bool,
+) -> (Co, u32) {
     let how = match (family, fd < 0) {
         (true, true) => NEW_BY_FAMILY,
         (true, false) => NEW_FD_BY_FAMILY,
@@ -499,13 +514,17 @@ pub fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool
     let mut socket = Box::new(CoSocket::new(SocketState::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast();
     let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
-    swr_v1_hook_co_socket_created(&socket, result);
     // SAFETY: the record just made, with its state and metadata, which the caller owns.
     let socket = unsafe { Co::new(Box::into_raw(socket)) };
     if crate::stdio::host().is_some_and(|host| host.uring_socket) {
         crate::socket_extra::swr_v1_hook_co_socket_uring(socket);
     }
-    socket
+    (socket, result)
+}
+
+/// The warnings [`make_quiet`]'s `result` holds, over its socket.
+pub fn warn_created(socket: Co, result: u32) {
+    socket.with(|socket| swr_v1_hook_co_socket_created(socket, result));
 }
 
 /// `delete socket` of a socket Rust made or accepted: `~Socket`, then its storage.
