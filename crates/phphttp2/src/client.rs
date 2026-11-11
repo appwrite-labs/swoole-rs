@@ -260,13 +260,8 @@ impl Headers {
 
 type Streams<T = Stream> = IdMap<u32, T>;
 
-/// The socket's close hook (`socket_dtor`), which takes the reference to the
-/// conn `connect` gave it.
-/// # Safety
-/// `conn` is that reference, from `Rc::into_raw`, and the hook runs once.
-unsafe extern "C" fn socket_closed(conn: *mut c_void, _: *mut c_void) {
-    // SAFETY: per the caller.
-    let conn = unsafe { Rc::from_raw(conn.cast::<Conn>()) };
+/// The socket's close hook (`socket_dtor`), over the conn `connect` gave it.
+fn socket_closed(conn: &Conn) {
     conn.socket.set(None);
     conn.closed.set(true);
     conn.props().bool(c"connected", false);
@@ -383,9 +378,8 @@ impl Client {
         // SAFETY: the conn takes the new object's reference.
         *self.conn.zsocket.borrow_mut() = unsafe { Owned::object(object) };
         self.conn.socket.set(Some(socket));
-        let hook = Rc::into_raw(Rc::clone(&self.conn)).cast_mut().cast();
-        // SAFETY: the hook takes the reference `hook` holds, once.
-        unsafe { set_close_hook(socket, socket_closed, hook) };
+        let conn = Rc::clone(&self.conn);
+        set_close_hook(socket, Box::new(move |_| socket_closed(&conn)));
         socket.set_zero_copy(true);
         if self.ssl && !socket.enable_ssl() {
             return self.connect_failed(socket);
