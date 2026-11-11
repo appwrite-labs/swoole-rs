@@ -246,10 +246,7 @@ impl Handshaking for Handshake {
     fn create(&mut self) -> bool {
         #[cfg(feature = "iouring")]
         if self.uring() {
-            // SAFETY: the handshake's live socket; `create_session` makes its session.
-            return unsafe {
-                crate::uring_socket::tls_session(self.socket, || self.create_session())
-            };
+            return crate::uring_socket::tls_session(self.socket, || self.create_session());
         }
         self.create_session()
     }
@@ -259,8 +256,7 @@ impl Handshaking for Handshake {
         let socket = self.socket;
         #[cfg(feature = "iouring")]
         if self.uring() {
-            // SAFETY: the handshake's live socket, with its session.
-            return unsafe { crate::uring_socket::tls_step(socket) };
+            return crate::uring_socket::tls_step(socket);
         }
         let server = socket.ssl_is_server();
         let step = socket.with_network(|network| {

@@ -505,18 +505,16 @@ pub(crate) fn poll(ops: &UringSocketOps, event: u32, timeout: f64) -> bool {
 }
 
 /// `UringSocket::ssl_handshake`'s session: `create` makes the socket's own, then
-/// it runs over a pair of memory BIOs the ring pumps, on the socket's side.
-///
-/// # Safety
-/// `socket` is open, with an `SSLContext`.
-pub(crate) unsafe fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
+/// it runs over a pair of memory BIOs the ring pumps, on the socket's side. False
+/// when `create` fails or leaves no session.
+pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     if !create() {
         return false;
     }
-    let session = socket
-        .net(|network| network.ssl())
-        .unwrap_or(core::ptr::null_mut())
-        .cast::<ssl::SSL>();
+    let Some(session) = socket.with_network(swoole_rs_tls::Ssl::of).flatten() else {
+        return false;
+    };
+    let session = session.as_ptr();
     // SAFETY: OpenSSL's static memory BIO method.
     let method = unsafe { ssl::BIO_s_mem() };
     // SAFETY: as above (each call alike).
@@ -536,15 +534,13 @@ pub(crate) unsafe fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> b
     true
 }
 
-/// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed.
-///
-/// # Safety
-/// `socket` is a `UringSocket` with a session from [`tls_session`].
-pub(crate) unsafe fn tls_step(socket: Co) -> c_int {
-    let Some(ops) = of(socket) else {
+/// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed
+/// (as without a session from [`tls_session`]).
+pub(crate) fn tls_step(socket: Co) -> c_int {
+    let Some(ops) = of(socket).filter(|ops| !ops.tls.ssl.is_null()) else {
         return -1;
     };
-    // SAFETY: the live session.
+    // SAFETY: the socket's live session, which `of` read from its record.
     let rc = unsafe { ssl::SSL_do_handshake(ops.tls.ssl) };
     if rc == 1 {
         return 1;

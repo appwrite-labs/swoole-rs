@@ -199,11 +199,9 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     // The engine goes with it, with nothing in flight as the loop has ended.
 }
 
-/// `Iouring::callback`: the ring fd is readable.
-///
-/// # Safety
-/// None: the thread's instance owns the ring fd's record, so its object is unused.
-pub(crate) unsafe fn ready(_object: *mut c_void) -> c_int {
+/// `Iouring::callback`: the ring fd is readable. The thread's instance owns the ring
+/// fd's record, so the event's object isn't needed.
+pub(crate) fn ready() -> c_int {
     let woken = current().is_some_and(|engine| uring::wakeup(&engine));
     if woken { 0 } else { -1 }
 }

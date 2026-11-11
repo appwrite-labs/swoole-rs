@@ -92,10 +92,8 @@ pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
 
 /// `Iouring::callback`.
 #[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
-extern "C" fn iouring_ready(_: Running<'_>, event: &mut Event) -> c_int {
-    let (iouring, _) = fired(event);
-    // SAFETY: a `SW_FD_IOURING` socket, whose object is its instance.
-    unsafe { crate::iouring::ready(iouring) }
+extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
+    crate::iouring::ready()
 }
 
 /// `sw_reactor()->defer([co] { co->resume(); })`.
