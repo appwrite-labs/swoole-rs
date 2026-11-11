@@ -527,10 +527,7 @@ pub unsafe fn pop_message(pool: *const PoolRecord, data: *mut c_void, size: usiz
     unsafe(export_name = "_ZN6swoole6Worker15set_max_requestEjj")
 )]
 pub extern "C" fn worker_set_max_request(_worker: *mut WorkerRecord, max_request: u32, grace: u32) {
-    // SAFETY: the original random primitive.
-    unsafe {
-        worker_global_max_requests(max_request, grace, swoole_rs_corebase::swoole_system_random);
-    }
+    worker_global_max_requests(max_request, grace, swoole_rs_corebase::swoole_system_random);
 }
 
 /// `swoole::ExitStatus`: a child's pid and `waitpid` status.
