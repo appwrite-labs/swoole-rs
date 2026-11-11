@@ -190,12 +190,16 @@ def run_isolated(command, *, timeout=15, cwd=None, env=None):
         try:
             stop_process_group(proc)
         except PermissionError as error:
-            if result is None or proc.poll() is None:
+            if proc.poll() is None:
                 raise
-            # Preserve an exited diagnostic's actual failure/output; cleanup
-            # uncertainty must also make an otherwise successful run fail.
-            result.stderr += f'\nProcess-group cleanup failed: {error}\n'
-            result.returncode = result.returncode or 125
+            # macOS answers killpg with EPERM when the group's only members are zombies,
+            # such as a leader that exits between the SIGTERM wait and the SIGKILL. A run
+            # that timed out keeps its TimeoutExpired, which the caller reports.
+            if result is not None:
+                # Preserve an exited diagnostic's actual failure/output; cleanup
+                # uncertainty must also make an otherwise successful run fail.
+                result.stderr += f'\nProcess-group cleanup failed: {error}\n'
+                result.returncode = result.returncode or 125
 
 
 def request(port, path='/', method='GET', body=None, headers=None):
