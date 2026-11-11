@@ -69,7 +69,7 @@ pub struct AsyncOps {
     /// `co->yield()`.
     pub park: unsafe extern "C" fn(*mut c_void),
     /// `co->yield_ex(timeout)`: false on timeout or cancellation.
-    pub park_for: unsafe extern "C" fn(*mut c_void, f64) -> bool,
+    pub park_for: unsafe extern "C-unwind" fn(*mut c_void, f64) -> bool,
     /// `co->resume()`.
     pub resume: unsafe extern "C" fn(*mut c_void),
     /// `swoole_get_last_error()`.
@@ -239,7 +239,7 @@ mod tests {
             }
         }
     }
-    unsafe extern "C" fn park_for(co: *mut c_void, _: f64) -> bool {
+    unsafe extern "C-unwind" fn park_for(co: *mut c_void, _: f64) -> bool {
         if TIME_OUT.get() {
             return false;
         }

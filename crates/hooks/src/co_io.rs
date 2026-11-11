@@ -127,15 +127,10 @@ mod native {
     use crate::co_socket::{Co, Protocol};
     use crate::packet::ReadBuffer;
     use crate::shutdown::{READ, WRITE};
-    use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+    use core::ffi::{CStr, c_int, c_long, c_void};
     use swoole_rs_buffer::string::CppString;
+    use swoole_rs_coroutine::print_socket_bound_error;
     use swoole_rs_reactor::SocketRecord;
-
-    // SAFETY: crates/coroutine's.
-    unsafe extern "C-unwind" {
-        #[link_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl"]
-        fn print_socket_bound_error(fd: c_int, event: *const c_char, cid: c_long);
-    }
 
     pub(super) static HOST: Host = Host {
         timer_add,
