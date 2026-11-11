@@ -369,6 +369,7 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     // SAFETY: as the caller promises; this borrow ends before the callbacks run.
     let fields = unsafe { &mut (*state).fields };
     fields.destroyed = true;
+    crate::event_api::release_cycle_tasks(fields);
     let queue = fields.destroy_callbacks;
     // SAFETY: the state's own queue, which only the drain below frees.
     unsafe { crate::deferred::deferred_run(queue) };

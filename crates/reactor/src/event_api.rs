@@ -366,21 +366,45 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
         } else {
             &mut fields.idle_task
         };
-        let replaced = slot.data;
-        *slot = crate::ReactorTask {
+        replace_slot(slot, data)
+    });
+    if let Some(replaced) = replaced.flatten() {
+        // The reactor was just there.
+        let _kept = swoole_event_defer_value(replaced);
+    }
+}
+
+/// Put `data` (or nothing) in a cycle slot, and hand back the task it held if
+/// [`swoole_event_cycle`] put it there; any other callback is left to its owner.
+fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Option<Retired> {
+    let replaced = std::mem::replace(
+        task,
+        crate::ReactorTask {
             callback: data.map(|_| cycle_task as crate::DeferCall),
             data: data.map_or(std::ptr::null_mut(), <*mut Slot>::cast),
-        };
-        replaced
-    });
-    let Some(replaced) = replaced.filter(|data| !data.is_null()) else {
-        return;
-    };
-    // SAFETY: only this function sets these tasks' data, to an `Rc<Slot>` it gave
-    // up, which the reactor no longer holds.
-    let replaced = Retired(unsafe { Rc::from_raw(replaced.cast::<Slot>()) });
-    // The reactor was just there.
-    let _kept = swoole_event_defer_value(replaced);
+        },
+    );
+    let ours = replaced
+        .callback
+        .is_some_and(|callback| std::ptr::fn_addr_eq(callback, cycle_task as crate::DeferCall));
+    if !ours || replaced.data.is_null() {
+        return None;
+    }
+    // SAFETY: with `cycle_task` as its callback, the data is the `Rc<Slot>` that
+    // `swoole_event_cycle` gave up, which the slot no longer names.
+    Some(Retired(unsafe {
+        Rc::from_raw(replaced.data.cast::<Slot>())
+    }))
+}
+
+/// The reactor is being freed: release the cycle tasks [`swoole_event_cycle`] gave
+/// it, as a replaced task is released when the reactor goes first.
+pub(crate) fn release_cycle_tasks(fields: &mut crate::ReactorFields) {
+    for task in [&mut fields.idle_task, &mut fields.future_task] {
+        if let Some(retired) = replace_slot(task, None) {
+            retired.dispose();
+        }
+    }
 }
 
 /// Whether the thread reactor's future (`before`) or idle task is set.
@@ -507,6 +531,33 @@ mod tests {
         assert_eq!(take(), ["retired"]);
         swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor_state::tests::free(state.owner) };
+    }
+
+    /// A cycle task that records being dropped.
+    struct Dropped(&'static str);
+
+    impl CycleTask for Dropped {
+        fn run(&self) {}
+
+        fn retire(self: Box<Self>) {}
+    }
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            push(self.0);
+        }
+    }
+
+    #[test]
+    fn freeing_the_reactor_drops_its_cycle_tasks() {
+        let state = crate::reactor_state::tests::state(3, 1);
+        swoole_rs_corebase::set_thread_reactor(state.owner.cast());
+        swoole_event_cycle(false, Some(Box::new(Dropped("idle"))));
+        swoole_event_cycle(true, Some(Box::new(Dropped("future"))));
+        assert_eq!(take(), Vec::<String>::new());
+        swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
+        unsafe { crate::reactor_state::tests::free(state.owner) };
+        assert_eq!(take(), ["idle", "future"]);
     }
 
     #[test]
