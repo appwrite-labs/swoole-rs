@@ -51,7 +51,6 @@ use swoole_rs_process::process_pool::{
     OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, RAISE, RUN_MAIN, pool_run_op,
 };
 use swoole_rs_process::reload_task::ReloadTask;
-use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
@@ -575,8 +574,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             swoole_set_worker_type(SW_WORKER);
             swoole_set_worker_id(record.id());
             swoole_set_worker_pid(record.pid());
-            // SAFETY: this thread's worker globals.
-            unsafe { (*thread_globals()).worker = worker };
+            crate::worker_methods::set_current_worker(worker);
             0
         }
         OP_EVENT_INIT => {

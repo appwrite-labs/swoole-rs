@@ -407,8 +407,7 @@ fn worker_context(reactor: Reactor) -> Context {
 fn context(serv: *mut c_void, reactor: Reactor) -> Context {
     Context {
         serv,
-        // SAFETY: this thread's worker globals.
-        worker: unsafe { (*thread_globals()).worker },
+        worker: crate::worker_methods::current_worker(),
         info: core::ptr::null_mut(),
         reactor: reactor.ptr(),
         conn: core::ptr::null_mut(),

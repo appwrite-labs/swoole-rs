@@ -303,11 +303,11 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
             "a reactor thread writes only its own fds"
         );
     }
-    o.ctx.conn = o.connection(c_long::from(fd), 0);
-    // SAFETY: a table slot.
-    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+    let Some(conn) = o.state.connection(c_long::from(fd), 0) else {
+        o.ctx.conn = core::ptr::null_mut();
         return 0;
     };
+    o.ctx.conn = &raw mut *conn;
     if conn.active == 0 {
         return 0;
     }
@@ -325,11 +325,11 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
 /// the context's connection.
 fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
     let fd = o.event().fd();
-    o.ctx.conn = o.connection(c_long::from(fd), 0);
-    // SAFETY: a table slot.
-    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+    let Some(conn) = o.state.connection(c_long::from(fd), 0) else {
+        o.ctx.conn = core::ptr::null_mut();
         return 0;
     };
+    o.ctx.conn = &raw mut *conn;
     if conn.active == 0 {
         return 0;
     }
@@ -416,17 +416,13 @@ pub(crate) unsafe fn facts(ctx: &mut ReactorContext, state: &ServerState, which:
 }
 
 /// `Server::is_valid_connection`.
-///
-/// # Safety
-/// `conn` is null or a live connection whose socket is null or live.
-pub(crate) unsafe fn valid(conn: *const ConnectionRecord) -> bool {
-    // SAFETY: per the caller.
-    let Some(conn) = (unsafe { conn.as_ref() }) else {
+pub(crate) fn valid(conn: Option<&ConnectionRecord>) -> bool {
+    let Some(conn) = conn.filter(|conn| conn.active != 0) else {
         return false;
     };
-    // SAFETY: per the caller.
+    // SAFETY: an active connection's socket is null or live.
     let socket = unsafe { Socket::from_ptr(conn.socket.cast()) };
-    conn.active != 0 && socket.is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
+    socket.is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
 }
 
 fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Arguments<'_>) {
@@ -546,13 +542,12 @@ pub(crate) unsafe fn answer(
         OP_REACTOR_NUM => u64::from(o.config().reactor_num),
         OP_WORKER_NUM => u64::from(o.config().worker_num),
         OP_CONN_AT | OP_CC_VALID => {
-            let conn = o.connection(c_long::from(int(arg)), 0);
-            // SAFETY: a table slot, whose socket is null or live.
-            if !unsafe { valid(conn) } {
+            let conn = o.state.connection(c_long::from(int(arg)), 0);
+            if !valid(conn.as_deref()) {
                 return Some(0);
             }
             if op == OP_CONN_AT {
-                o.ctx.conn = conn;
+                o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
             }
             1
         }

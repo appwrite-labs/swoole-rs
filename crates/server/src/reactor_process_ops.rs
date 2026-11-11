@@ -287,10 +287,11 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     match op {
         OP_CONN_AT => {
             let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
-            let conn = server.at(fd).map_or(core::ptr::null_mut(), |c| &raw mut *c);
-            // SAFETY: null or a live connection whose socket is null or live.
-            let valid = unsafe { crate::reactor_ops::valid(conn) };
-            ctx.conn = if valid { conn } else { core::ptr::null_mut() };
+            let conn = server
+                .at(fd)
+                .filter(|conn| crate::reactor_ops::valid(Some(conn)));
+            let valid = conn.is_some();
+            ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
             return Some(u64::from(valid));
         }
         OP_EVENT_CONN_ACTIVE => {
