@@ -55,13 +55,18 @@ impl Custom for Held {
 fn constructed(call: &Call) -> Option<&Lock> {
     let lock = call.custom::<Held>()?.0.get();
     if lock.is_none() {
-        let message = c"must call constructor first";
-        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
-            WRONG_OPERATION,
-            message,
-        ));
+        unconstructed();
     }
     lock
+}
+
+#[cold]
+fn unconstructed() {
+    let message = c"must call constructor first";
+    bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+        WRONG_OPERATION,
+        message,
+    ));
 }
 
 method_table! {
@@ -149,10 +154,17 @@ pub(crate) fn check(call: &Call, result: i32) {
 /// [`check`] for a leaf handler: a failure's `errCode` write may leave a bailout,
 /// which this raises (no frame here owns anything that needs a drop).
 pub(crate) fn checked(call: &Call, result: i32) {
-    check(call, result);
-    if result != 0 {
-        bailout::finish();
+    if result == 0 {
+        call.set_bool(true);
+    } else {
+        refused(call, result);
     }
+}
+
+#[cold]
+fn refused(call: &Call, result: i32) {
+    check(call, result);
+    bailout::finish();
 }
 
 /// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)` in a leaf handler: raise a bailout
