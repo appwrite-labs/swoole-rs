@@ -5,8 +5,8 @@
 //! `native/timer/swoole_timer.h` is its C++ view.
 use crate::{
     BUSY, CLOSING, DEFERRED, EMPTY, OK, RELEASE, RELEASE_OVERFLOW, Timer as Queue, TimerView,
-    absolute_msec, swr_v1_timer_backend, swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add,
-    swr_v1_timer_relative_msec, swr_v1_timer_system_set,
+    absolute_msec, swr_v1_timer_add_delay, swr_v1_timer_backend, swr_v1_timer_delay_deadline,
+    swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec, swr_v1_timer_system_set,
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_long, c_void};
@@ -302,6 +302,7 @@ impl Owner {
             warning(c"add", format_args!("msec value[{msec}] is invalid"));
             return std::ptr::null_mut();
         }
+        let msec = swr_v1_timer_add_delay(msec, persistent);
         let node = Box::into_raw(Box::new(node));
         let now = self.relative_msec();
         let (status, view) = self
