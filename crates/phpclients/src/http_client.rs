@@ -12,7 +12,7 @@ use crate::{
 };
 use libc::{c_int, c_void};
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell, RefCell, RefMut},
     ffi::{CStr, CString},
     mem::MaybeUninit,
     ptr,
@@ -43,6 +43,7 @@ const SEND_FAILED: i64 = -4;
 /// `SW_ERROR_*`.
 const INVALID_PARAMS: c_int = 505;
 const NO_CONNECTION: c_int = 5001;
+const CO_HAS_BEEN_BOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
 const INVALID_PROTOCOL: c_int = 7102;
 const HANDSHAKE_FAILED: c_int = 8504;
 const PACK_FAILED: c_int = 8505;
@@ -150,6 +151,8 @@ struct Client {
     completed: Cell<bool>,
     event_stream: Cell<bool>,
     in_callback: Cell<bool>,
+    /// The response parser; whoever borrows it owns the socket's receive.
+    parser: RefCell<Parser>,
     has_upload_files: Cell<bool>,
     download_name: RefCell<Option<ZString>>,
     download_offset: Cell<i64>,
@@ -162,14 +165,14 @@ struct Client {
 /// One response's parser and the header name it last saw, with the client
 /// it reports to, shared: the callbacks can run `write_func`.
 struct Hooks<'a> {
-    parser: Parser,
+    parser: &'a mut Parser,
     client: &'a Client,
     field: (*const u8, usize),
 }
 
 impl Callbacks for Hooks<'_> {
     fn parser(&mut self) -> &mut Parser {
-        &mut self.parser
+        self.parser
     }
 
     fn on_header_field(&mut self, data: &[u8]) -> c_int {
@@ -392,6 +395,7 @@ impl Client {
             completed: Cell::new(false),
             event_stream: Cell::new(false),
             in_callback: Cell::new(false),
+            parser: RefCell::new(Parser::new(llhttp::RESPONSE)),
             has_upload_files: Cell::new(false),
             download_name: RefCell::default(),
             download_offset: Cell::new(0),
@@ -869,22 +873,11 @@ impl Client {
         false
     }
 
-    /// A request or receive from a callback during a response (`write_func`)
-    /// fails: the response it is in is still being received on this socket.
-    fn refuse_in_callback(&self) -> bool {
-        if self.in_callback.get() {
-            let message =
-                c"the client is receiving a response; call it again after this callback returns";
-            set_error_properties(self.props(), libc::EINPROGRESS, message);
-        }
-        self.in_callback.get()
-    }
-
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&self, path: &[u8]) -> bool {
-        if self.refuse_in_callback() {
+        let Some(mut parser) = self.receiver() else {
             return false;
-        }
+        };
         crate::resolver::swoole_name_resolver_context_reset(
             &mut self.resolve.borrow_mut(),
             self.use_default_port,
@@ -897,7 +890,7 @@ impl Client {
             if self.defer.get() {
                 return true;
             }
-            if !self.recv_response(0.0) || self.bailout.get() {
+            if !self.recv_response(&mut parser, 0.0) || self.bailout.get() {
                 return false;
             }
             let status = self.status.get();
@@ -911,8 +904,19 @@ impl Client {
         false
     }
 
-    fn recv_response(&self, timeout: f64) -> bool {
-        if !self.wait_response.get() || self.refuse_in_callback() {
+    /// The response parser, held for a whole request and receive. A request or
+    /// `recv()` while another holds it (from `write_func`, which runs inside the
+    /// parse, or from another coroutine) gets none and fails.
+    fn receiver(&self) -> Option<RefMut<'_, Parser>> {
+        let parser = self.parser.try_borrow_mut().ok();
+        if parser.is_none() {
+            set_error_properties(self.props(), CO_HAS_BEEN_BOUND, strerror(CO_HAS_BEEN_BOUND));
+        }
+        parser
+    }
+
+    fn recv_response(&self, parser: &mut Parser, timeout: f64) -> bool {
+        if !self.wait_response.get() {
             return false;
         }
         let Some(socket) = self.co() else {
@@ -922,8 +926,9 @@ impl Client {
         let mut total = 0_usize;
         let mut header_completed = false;
         let mut header_offset = 0_usize;
+        parser.reset();
         let mut hooks = Hooks {
-            parser: Parser::new(llhttp::RESPONSE),
+            parser,
             client: self,
             field: (ptr::null(), 0),
         };
@@ -2029,7 +2034,9 @@ fn recv(call: &Call) -> bool {
         client.recv_websocket_frame(call, timeout);
         return false;
     }
-    let result = client.recv_response(timeout);
+    let result = client
+        .receiver()
+        .is_some_and(|mut parser| client.recv_response(&mut parser, timeout));
     finish(client, call, result)
 }
 

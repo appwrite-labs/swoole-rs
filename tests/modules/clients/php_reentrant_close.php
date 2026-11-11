@@ -20,7 +20,7 @@ function http_reentry():array {
         check($client->set(['timeout'=>5,'write_func'=>static function($c,string $data)use(&$first,&$nested,$later):void{
             $first[]=$data;
             foreach(['get'=>static fn()=>$c->get('/'),'post'=>static fn()=>$c->post('/','x'),'recv'=>static fn()=>$c->recv()] as $name=>$call){
-                $nested[$name]=[$call(),$c->errCode===SOCKET_EINPROGRESS];
+                $nested[$name]=[$call(),$c->errCode===SWOOLE_ERROR_CO_HAS_BEEN_BOUND];
             }
             check($c->set(['write_func'=>$later,'timeout'=>5]),'replace write_func from itself');
         }]),'set write_func');

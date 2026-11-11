@@ -79,7 +79,8 @@ the factory fallback and hooked pair release.
 closes a persistent `Swoole\Client` from its `package_length_func` while `recv()`
 holds the connection: `recv()` fails with 5001, and the key's next connect is fresh.
 It also runs a `Coroutine\Http\Client` whose `write_func` calls `get()`, `post()`
-and `recv()` (each returns false with errCode `EINPROGRESS`), replaces itself and reads
+and `recv()` (each returns false with errCode `SWOOLE_ERROR_CO_HAS_BEEN_BOUND`: the
+response being parsed holds the client's parser), replaces itself and reads
 its client mid-response, while another coroutine calls `set()` and `getDefer()` across
 the `get()` and `download()` yields: every chunk and the downloaded file arrive intact.
 `php_property_array.py` (`clients-php-property-array`, every lane, Cargo build)
