@@ -15,7 +15,8 @@ pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 pub type ReactorClose = unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord) -> c_int;
 
-/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
+/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set,
+/// and set only by `swoole_event_cycle`, which owns what a set one holds.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReactorTask {
@@ -369,6 +370,7 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     // SAFETY: as the caller promises; this borrow ends before the callbacks run.
     let fields = unsafe { &mut (*state).fields };
     fields.destroyed = true;
+    crate::event_api::release_cycle_tasks(fields);
     let queue = fields.destroy_callbacks;
     // SAFETY: the state's own queue, which only the drain below frees.
     unsafe { crate::deferred::deferred_run(queue) };

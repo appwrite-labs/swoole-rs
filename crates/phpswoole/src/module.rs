@@ -392,7 +392,15 @@ unsafe extern "C" {
     safe fn swoole_init();
     /// native/phphelpers/host.c.
     safe fn swr_phpswoole_pcre_jit_off();
-    fn php_swoole_load_library();
+    /// The generated `php_swoole_library.h`'s, declared `void php_swoole_load_library()`:
+    /// unprototyped C, so it is called directly and never through a `void (*)(void)`,
+    /// which the undefined-behavior sanitizer's function-type check rejects.
+    safe fn php_swoole_load_library();
+}
+
+/// [`php_swoole_load_library`] as a `void (*)(void)`, for `swr_zend_try_hook`.
+extern "C" fn load_library_body() {
+    php_swoole_load_library();
 }
 
 /// MINIT's first step: Swoole's core, its after-fork hook, and the bug
@@ -431,7 +439,7 @@ extern "C" fn ready() {
 /// The library's code bailed out.
 pub fn load_library() -> Result<(), Bailout> {
     // SAFETY: the loader, a zend_try body.
-    if unsafe { swr_zend_try_hook(Some(php_swoole_load_library)) } == 0 {
+    if unsafe { swr_zend_try_hook(Some(load_library_body)) } == 0 {
         Ok(())
     } else {
         Err(Bailout)

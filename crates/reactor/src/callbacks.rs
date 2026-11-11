@@ -516,6 +516,8 @@ mod tests {
             execute_end(owner, false);
             assert!((*fields).running);
             assert_eq!(take(), [6, 6]);
+            // Not a cycle task, so freeing the reactor mustn't release it.
+            (*fields).idle_task.callback = None;
         });
     }
 }

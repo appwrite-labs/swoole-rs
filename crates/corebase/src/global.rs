@@ -361,12 +361,23 @@ mod tests {
     use super::*;
     use std::ffi::CStr;
 
-    /// Upstream's `time.get_seconds`: the wall clock's seconds against `time(NULL)`.
+    /// Upstream's `time.get_seconds`: the wall clock's seconds against the C library's.
+    /// glibc's `time(NULL)` reads `CLOCK_REALTIME_COARSE`, which trails the precise clock
+    /// by up to a tick, so just after a second boundary it reads one less than an earlier
+    /// precise reading. The reference reads `CLOCK_REALTIME`, the clock `time_now` uses.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no libc time")]
+    #[cfg_attr(miri, ignore = "Miri has no libc clock_gettime")]
     fn time_get_seconds() {
         let sec1 = time_now();
-        let sec2 = unsafe { libc::time(ptr::null_mut()) };
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts) },
+            0
+        );
+        let sec2 = ts.tv_sec;
         assert!(sec1 == sec2 || sec1 == sec2 - 1);
     }
 

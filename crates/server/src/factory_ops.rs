@@ -483,7 +483,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let (tables, config) = (ctx.tables(), ctx.config());
     // SAFETY: the server's shared counters, mapped for its life.
-    let gs = unsafe { &*config.gs.cast::<ServerCounters>() };
+    let gs = unsafe { &*config.gs.as_ptr().cast::<ServerCounters>() };
     let task_worker_pid = || {
         // SAFETY: the server's live task pool.
         let pool = unsafe { &*ctx.task_pool() };

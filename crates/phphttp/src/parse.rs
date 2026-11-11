@@ -703,8 +703,7 @@ fn on_headers_complete(state: &mut State) -> c_int {
 /// Swoole's `microtime()`.
 /// `$request->server`'s `request_time` and `request_time_float`.
 pub(crate) fn request_times(state: &mut State) {
-    // SAFETY: `time(NULL)`.
-    let now = unsafe { libc::time(ptr::null_mut()) };
+    let now = swoole_rs_corebase::time_now();
     add_server(state, Key::RequestTime, Owned::long(now));
     add_server(state, Key::RequestTimeFloat, Owned::double(microtime()));
 }

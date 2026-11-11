@@ -83,7 +83,7 @@ use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::hook;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
+use swoole_rs_memory::members::{Shm, sw_shm_calloc, sw_shm_free};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
@@ -198,7 +198,7 @@ impl Objects<'_> {
         unsafe { &mut *self.state.tables() }
     }
     fn gs(&self) -> &mut ServerCounters {
-        let gs = self.config().gs.cast::<ServerCounters>();
+        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: the server's shared counters, mapped for its life.
         unsafe { &mut *gs }
     }
@@ -1265,7 +1265,12 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_WORKER_COROUTINES | OP_WORKER_CONCURRENCY => {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
-            let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
+            let worker = o
+                .config()
+                .workers
+                .as_ptr()
+                .cast::<WorkerRecord>()
+                .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which the caller indexes.
             let worker = unsafe { &*worker };
             if op == OP_WORKER_COROUTINES {
@@ -1340,10 +1345,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_FREE_USER_WORKERS => {
-            let workers = core::mem::replace(&mut o.config().user_workers, core::ptr::null_mut());
-            if !workers.is_null() {
-                sw_shm_free(workers);
-            }
+            o.config().user_workers.free();
             0
         }
         OP_ALLOC_SESSIONS => {
@@ -1353,8 +1355,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ALLOC_PORT_GS => {
             let ports = o.tables().ports();
-            let list = shm_calloc::<PortCounters>(ports.len(), size_of::<PortCounters>());
-            o.tables().port_gs_list = list.cast();
+            o.tables().port_gs_list = Shm::calloc(ports.len(), size_of::<PortCounters>());
+            let list = o.tables().port_gs_list.as_ptr().cast::<PortCounters>();
             if list.is_null() {
                 return Some(0);
             }
@@ -1364,15 +1366,17 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             1
         }
         OP_ALLOC_WORKERS => {
-            let workers = shm_calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            let workers = Shm::calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            let ready = !workers.is_null();
             o.config().workers = workers;
-            u64::from(!workers.is_null())
+            u64::from(ready)
         }
         OP_ALLOC_TASK_RESULTS => {
             let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
-            let results = shm_calloc(o.config().worker_num as usize, size);
+            let results = Shm::calloc(o.config().worker_num as usize, size);
+            let ready = !results.is_null();
             o.config().task_results = results;
-            u64::from(!results.is_null())
+            u64::from(ready)
         }
         OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
         op => return forwarded(o, op, arg),
@@ -1458,7 +1462,12 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_INIT_TASK_WORKERS => u64::from(unsafe { entry::init_task_workers(serv) }),
         OP_DESTROY_WORKER => {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
-            let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
+            let worker = o
+                .config()
+                .workers
+                .as_ptr()
+                .cast::<WorkerRecord>()
+                .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
             let worker = unsafe { &mut *worker };
             // SAFETY: a worker `create_worker` set up; shutdown holds no lock of it.
@@ -2020,11 +2029,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let tables = o.tables();
             let config = o.config();
             sw_shm_free(core::mem::replace(&mut tables.session_list, core::ptr::null_mut()).cast());
-            sw_shm_free(core::mem::replace(
-                &mut tables.port_gs_list,
-                core::ptr::null_mut(),
-            ));
-            sw_shm_free(core::mem::replace(&mut config.workers, core::ptr::null_mut()).cast());
+            tables.port_gs_list.free();
+            config.workers.free();
             let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
             if !factory.is_null() {
                 // SAFETY: `delete factory_`: nothing names the factory afterwards.
@@ -2371,7 +2377,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_PIPE => {
             let ready = o.state.push_task_pipe();
             if !ready {
-                sw_shm_free(config.task_results);
+                config.task_results.free();
             }
             u64::from(ready)
         }
@@ -2717,6 +2723,22 @@ fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
     None
 }
 
+/// What `Server::destroy` frees of a base-mode server whose single worker bailed out
+/// of its loop: the base factory's connection list and counts, the server's lists and
+/// its factory. It runs none of the shutdown (callbacks, hooks, signals, ports), only
+/// marks the server shut down, so `swr_v1_server_delete` frees the rest.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) fn release_abandoned_base(serv: crate::view::Server<'_>) {
+    let mut ctx = NativeContext::new(serv.raw());
+    let mut o = Objects {
+        ctx: &mut ctx,
+        state: serv.state(),
+    };
+    o.gs().shutdown.store(1, SeqCst);
+    ops(&mut o, OP_DESTROY_FACTORY, MODE_BASE);
+    ops(&mut o, crate::ops::OP_FREE_SERVER, 0);
+}
+
 /// `Server::destroy_base_factory()`: the connection list and the connection counts.
 fn destroy_base_factory(o: &Objects<'_>) -> u64 {
     let tables = o.tables();
@@ -2897,12 +2919,14 @@ mod tests {
     fn allocation_ops_fill_the_config_tables_and_counters() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        let mut gs = ServerCounters::default();
         // SAFETY: a fresh state; every pointer the ops write is checked and freed below.
         unsafe {
             let config = &mut *(*state).config();
             config.worker_num = 3;
-            config.gs = (&raw mut gs).cast();
+            config.gs = Shm::calloc(1, size_of::<ServerCounters>());
+            let gs = config.gs.as_ptr().cast::<ServerCounters>();
+            gs.write(ServerCounters::default());
+            let gs = &*gs;
             assert_eq!(answer(&raw mut ctx, &*state, OP_SIGNAL_ACTIVE, 0), Some(0));
             for op in [
                 OP_ALLOC_WORKERS,
@@ -2915,19 +2939,17 @@ mod tests {
             assert_eq!((*gs.connection_nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
             assert_eq!((*tables.session_list.add(5)).fd, 0, "zeroed");
-            config.user_workers = sw_shm_calloc(1, 8);
+            config.user_workers = Shm::calloc(1, 8);
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
-            for allocation in [
-                config.workers,
-                config.task_results,
-                gs.connection_nums.cast(),
-                tables.session_list.cast(),
-            ] {
+            config.task_results.free();
+            config.workers.free();
+            for allocation in [gs.connection_nums.cast(), tables.session_list.cast()] {
                 sw_shm_free(allocation);
             }
             tables.session_list = core::ptr::null_mut();
+            config.gs.free();
             crate::swr_v1_server_state_free(state);
         }
     }

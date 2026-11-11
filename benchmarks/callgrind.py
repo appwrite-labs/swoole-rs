@@ -55,6 +55,7 @@ FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 H2BODY = PAYLOAD[:4000]
 STATIC = (Path(__file__).parent / 'traffic/static.txt').read_bytes()
 BOUNDARY = 'swoole-rs-benchmark'
+VARIANT_FILE = b'%d\n' % len((Path(__file__).parent / 'variants/server.php').read_bytes())
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -111,6 +112,10 @@ WORKLOADS = {
     'sqlite': ('benchmarks/hooks', 'GET', '/sqlite', None, b'ok\n'),
     'curl': ('benchmarks/hooks', 'GET', '/curl', None, b'ok\n'),
     'dns': ('benchmarks/hooks', 'GET', '/dns', None, b'ok\n'),
+    # Build variants (#2683), each on its own pair: a coroutine file read through io_uring on the
+    # --enable-iouring build, and a Swoole\Thread start and join on the ZTS --enable-swoole-thread one.
+    'uring-file': ('benchmarks/variants', 'GET', '/file', None, VARIANT_FILE),
+    'thread': ('benchmarks/variants', 'GET', '/thread', None, b'joined\n'),
 }
 TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 TLS.check_hostname, TLS.verify_mode = False, ssl.CERT_NONE
@@ -314,18 +319,26 @@ def instructions(engine, workload, requests, warmup, profiles=None):
         command = ['valgrind', '--tool=callgrind', '--trace-children=yes', '--instr-atstart=no',
                    f'--callgrind-out-file={out}/cg.%p',
                    *engine.command(ROOT / workload[0] / 'server.php')]
-        proc = subprocess.Popen(command, env={**os.environ, **peers(), 'TEST_PORT': str(port), 'TEST_DATA': data},
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        log = Path(out) / 'server.log'
+        with log.open('wb') as sink:
+            proc = subprocess.Popen(command, env={**os.environ, **peers(), 'TEST_PORT': str(port), 'TEST_DATA': data},
+                                    stdout=sink, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            wait_for_port(port, proc)
-            send(port, workload, warmup)
+            try:
+                wait_for_port(port, proc)
+                send(port, workload, warmup)
+            except Exception:
+                # The server's own words say why it exited, closed or answered wrongly.
+                print(log.read_text(errors='replace')[-4000:], file=sys.stderr, flush=True)
+                raise
             subprocess.run(['callgrind_control', '-i', 'on'], check=True, capture_output=True)
             send(port, workload, requests)
             subprocess.run(['callgrind_control', '-i', 'off'], check=True, capture_output=True)
             # Dump now: a signalled valgrind may exit without writing its profile.
             subprocess.run(['callgrind_control', '-d'], check=True, capture_output=True)
         finally:
-            os.killpg(proc.pid, signal.SIGTERM)
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=120)
         total = 0
         if profiles:

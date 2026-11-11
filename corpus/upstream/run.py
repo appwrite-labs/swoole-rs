@@ -206,11 +206,19 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "its 27 AIO reads finish in about 0.8 ms, and the other coroutine's 1 ms usleep fires only "
         "when they cross a millisecond of the timer's whole-millisecond clock, so the count >= 1 "
         'assert fails on both engines (Docker, 260 runs: upstream 125, cargo 143, #2772)',
+        'tests/swoole_http_client_coro/slow_server.phpt':
+        "the server's body is base64_encode(random_bytes(rand(1024, 65536))), and the client "
+        'asserts it is over 5 KiB; base64 of under 3840 bytes is not, so about 4.4% of runs '
+        "fail on every engine (#2887's queue run: cargo failed 2 of 3, upstream passed 24)",
         'tests/swoole_server/getClientInfo_in_callback_of_close_2.phpt':
         "the parent kills the SWOOLE_PROCESS server as soon as its client closes, and shutdown "
         "joins the reactor threads, whose destroy callback closes every connection, before it "
         "stops the worker; when that wins, onClose's getClientInfo() finds no session and the "
-        'isArray assert fails on both engines (Docker, 150 runs each: upstream 4, cargo 5, #2890)'}
+        'isArray assert fails on both engines (Docker, 150 runs each: upstream 4, cargo 5, #2890)',
+        'tests/swoole_coroutine_lock/lock.phpt':
+        "its three concurrent requests land on different SWOOLE_PROCESS workers, and when request "
+        "2's worker takes the shared lock before request 1's, the output is lock2, value 3, lock1 "
+        'on both engines (Docker, 150 runs each: upstream 20, cargo 19, #2923)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "

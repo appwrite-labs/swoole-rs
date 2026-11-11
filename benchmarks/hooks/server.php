@@ -1,7 +1,8 @@
 <?php
 // One round trip per request through a database or network hook (#2653), on the build with
 // --enable-swoole-pgsql, --enable-swoole-sqlite, --enable-swoole-curl and --enable-cares:
-// /pgsql and /sqlite run a prepared SELECT through hooked PDO, /curl a GET to callgrind.py's
+// /pgsql and /sqlite run a SELECT prepared once per worker through hooked PDO (the swoole
+// build's own pgsql driver, so PHP's pdo_pgsql isn't loaded), /curl a GET to callgrind.py's
 // HTTP peer (PEER_HTTP_PORT) with SWOOLE_HOOK_NATIVE_CURL, and /dns a c-ares lookup that
 // callgrind.py's resolver (PEER_DNS_PORT) answers. PostgreSQL is PGSQL_HOST (default
 // 127.0.0.1), root/root, database test; SQLite is a file under TEST_DATA. Each handle is the
@@ -28,10 +29,14 @@ $server->on('request', static function ($request, $response) use (&$handles): vo
     switch ($route) {
         case '/pgsql':
         case '/sqlite':
-            $handles[$route] ??= $route === '/pgsql'
+            // The statement is the worker's too: on both engines, a hooked pgsql statement freed
+            // when its request's coroutine ends leaves the connection busy for the next request
+            // ("another command is already in progress").
+            $handles[$route] ??= ($route === '/pgsql'
                 ? database('pgsql:host=' . (getenv('PGSQL_HOST') ?: '127.0.0.1') . ';dbname=test', 'root', 'root')
-                : database('sqlite:' . getenv('TEST_DATA') . '/bench.db');
-            $statement = $handles[$route]->prepare('SELECT name FROM bench_users WHERE id = ?');
+                : database('sqlite:' . getenv('TEST_DATA') . '/bench.db'))
+                ->prepare('SELECT name FROM bench_users WHERE id = ?');
+            $statement = $handles[$route];
             $statement->execute([42]);
             $ok = $statement->fetchColumn() === 'benchmark';
             break;

@@ -146,7 +146,7 @@ fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host> {
         let worker = serv.worker(id);
         // SAFETY: this worker's live record.
         host.lock = unsafe { (*worker).lock };
-        let results = serv.config().task_results.cast::<u8>();
+        let results = serv.config().task_results.as_ptr().cast::<u8>();
         let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
         result = results.wrapping_add(usize::from(id) * size);
     }

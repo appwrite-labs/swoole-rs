@@ -115,10 +115,8 @@ pub unsafe fn init_ipc_max_size(serv: view::Server<'_>) {
 /// # Safety
 /// `serv` is shutting down.
 pub unsafe fn destroy_task_workers(serv: view::Server<'_>) {
-    let results = serv.config().task_results;
-    if !results.is_null() {
-        swoole_rs_memory::members::sw_shm_free(results);
-    }
+    // SAFETY: the server is shutting down on this thread, with no other reference to the field.
+    unsafe { serv.config_mut() }.task_results.free();
     let pool = serv.task_pool();
     // SAFETY: the server's live task pool.
     unsafe { swoole_rs_process::methods::destroy(pool) };
@@ -190,11 +188,10 @@ pub unsafe fn create_event_workers(serv: view::Server<'_>) -> bool {
 pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.user_worker_num();
-    let copies = swoole_rs_memory::members::sw_shm_calloc(count, size).cast::<WorkerRecord>();
-    // SAFETY: per the caller.
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     let config = unsafe { serv.config_mut() };
-    config.user_workers = copies.cast();
+    config.user_workers = swoole_rs_memory::members::Shm::calloc(count, size);
+    let copies = config.user_workers.as_ptr().cast::<WorkerRecord>();
     if copies.is_null() {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);
@@ -239,15 +236,18 @@ mod tests {
     #[test]
     fn abort_and_reset() {
         let state = crate::swr_v1_server_state_new();
-        let mut gs = Box::new(unsafe { core::mem::zeroed::<crate::shared::ServerShared>() });
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
         let serv = unsafe { view::Server::from_raw(head.as_ptr().cast_mut().cast()) };
         unsafe { serv.config_mut() }.mode_ = 1;
-        unsafe { serv.config_mut() }.gs = (&raw mut *gs).cast();
-        let mut workers = [*WorkerRecord::boxed(), *WorkerRecord::boxed()];
-        let (worker, other) = (&raw mut workers[0], &raw mut workers[1]);
+        unsafe { serv.config_mut() }.gs =
+            swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
+        let workers = swoole_rs_memory::members::Shm::calloc(2, size_of::<WorkerRecord>());
+        let worker = workers.as_ptr().cast::<WorkerRecord>();
+        let other = worker.wrapping_add(1);
+        unsafe { worker.write(*WorkerRecord::boxed()) };
+        unsafe { other.write(*WorkerRecord::boxed()) };
         unsafe { serv.config_mut() }.worker_num = 2;
-        unsafe { serv.config_mut() }.workers = worker.cast();
+        unsafe { serv.config_mut() }.workers = workers;
         unsafe { (*worker).set_pid(79) };
         unsafe { (*other).set_pid(79) };
         assert_eq!(get_worker_by_pid(serv, 79), worker);
@@ -294,6 +294,8 @@ mod tests {
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
         unsafe { (*serv.state().tables()).session_list = core::ptr::null_mut() };
+        unsafe { serv.config_mut() }.workers.free();
+        unsafe { serv.config_mut() }.gs.free();
         unsafe { crate::swr_v1_server_state_free(state) };
     }
 }

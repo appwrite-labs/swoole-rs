@@ -52,6 +52,8 @@ class PhptGate(unittest.TestCase):
             self.assertIsNotNone(racy({'path': path}, {'capabilities': ['thread_context']}))
             self.assertIsNone(racy({'path': path}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_server/close_max_fd.phpt'}, {'capabilities': []}))
+        self.assertIsNotNone(racy({'path': 'tests/swoole_server/getClientInfo_in_callback_of_close_2.phpt'}, {'capabilities': []}))
+        self.assertIsNotNone(racy({'path': 'tests/swoole_coroutine_lock/lock.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_runtime/file_lock/async_file.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_runtime/file_hook/async_file.phpt'}, {'capabilities': []}))
         enable_ssl = 'tests/swoole_client_async/enableSSL.phpt'

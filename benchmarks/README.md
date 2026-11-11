@@ -128,6 +128,14 @@ would shift every other workload's record, so they run on a second pair, and
 `--append` adds their results to the main pair's `--output`, which stays the one
 result the ratchet reads.
 
+Two run only on a build variant (#2683), against `benchmarks/variants`. `uring-file`
+reads a file with `Coroutine\System::readFile`, which the `--enable-iouring` build
+does through io_uring, and `thread` starts and joins a `Swoole\Thread`, which needs
+the ZTS PHP and `--enable-swoole-thread`. The merge tier's `variant.yml` counts each
+one on the pair its variant already builds (release profile, not `release-lto`), so
+their records compare only with themselves. Their results go in the variant's
+`phpt-<variant>` artifact, which the ratchet doesn't read: lower those records by hand.
+
 ```sh
 python3 tools/build_ext.py --profile release-lto
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits \
