@@ -16,19 +16,19 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Object, Owned, Value,
+    Owned, Value,
     bailout::{self, Bailout},
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset,
-        swr_zend_zval_release, zend_class_entry, zend_object, zend_object_handlers, zend_string,
-        zval,
+        swr_zend_efree, swr_zend_http_property_offset, swr_zend_zval_release, zend_class_entry,
+        zend_object, zend_string, zval,
     },
-    unset_property_deny,
     value::set_long,
 };
 
-/// Either class's object: its context, none once released or before one is set.
-pub(crate) type Holder = Object<Option<Ctx>>;
+/// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
+/// (`struct { swoole::http::Context *ctx; zend_object std; }`): its context,
+/// none once released or before one is set.
+pub(crate) type Holder = std::cell::Cell<Option<Ctx>>;
 
 /// A live `swoole::http::Context`: the only way to reach its state. Only
 /// [`Ctx::of`], whose callers promise the context lives as long as the handle
@@ -79,35 +79,6 @@ impl Ctx {
     }
 }
 
-/// The context of an object of either class (none once released or before
-/// one is set).
-/// # Safety
-/// `object` is a live `Swoole\Http\Request` or `Swoole\Http\Response`.
-#[must_use]
-pub(crate) unsafe fn context_of(object: *const zend_object) -> Option<Ctx> {
-    // SAFETY: per the caller; only the handle is copied out.
-    unsafe { *Holder::data(object.cast_mut()) }
-}
-
-/// The method's `$this` context.
-pub(crate) fn this(call: &swoole_rs_zend::Call) -> Option<Ctx> {
-    // SAFETY: the classes' methods are non-static, so `$this` is one of ours.
-    unsafe { context_of(call.this()) }
-}
-
-/// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.
-pub(crate) fn configure(
-    entry: &mut zend_class_entry,
-    handlers: &mut zend_object_handlers,
-    create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-    free: unsafe extern "C" fn(*mut zend_object),
-) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Holder::install(entry, handlers, create, free);
-}
-
 /// `Swoole\Http\Response`'s declared `fd` slot (MINIT).
 static RESPONSE_FD: AtomicU32 = AtomicU32::new(0);
 
@@ -131,16 +102,18 @@ pub(crate) enum Kind {
 /// pointing at `ctx`.
 pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut zend_object> {
     let class = match kind {
-        Kind::Request => &crate::request::REQUEST,
-        Kind::Response => &crate::response::RESPONSE,
+        Kind::Request => &*crate::request::REQUEST,
+        Kind::Response => &*crate::response::RESPONSE,
     };
     // The context keeps the object's reference.
     slot.value = class.create_object().into_zval();
     slot.ptr = &raw mut slot.value;
-    let std = slot.object()?;
-    // SAFETY: one of our objects, laid out as a `Holder`.
-    unsafe { *Holder::data(std) = Some(ctx) };
-    Some(std)
+    let object = slot.get()?;
+    match kind {
+        Kind::Request => object.custom::<crate::request::Data>()?.0.set(Some(ctx)),
+        Kind::Response => object.custom::<crate::response::Data>()?.0.set(Some(ctx)),
+    }
+    object.object()
 }
 
 /// A new object in `slot`, pointing at `ctx`, with its `fd` property (the
@@ -440,7 +413,7 @@ mod tests {
     fn std_follows_the_context_pointer_as_in_upstream() {
         // `struct HttpRequestObject { HttpContext *ctx; zend_object std; }`
         assert_eq!(
-            Holder::OFFSET,
+            swoole_rs_zend::Object::<crate::request::Data>::OFFSET,
             size_of::<*mut Context>(),
             "std right after ctx"
         );
