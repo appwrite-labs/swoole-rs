@@ -16,8 +16,7 @@ use swoole_rs_zend::{
     sys::{
         IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_PUBLIC, swr_zend_efree, swr_zend_emalloc,
         swr_zend_runtime_instanceof, swr_zend_string_init, swr_zend_string_release,
-        swr_zend_try_zval_dtor, swr_zend_zval_release, swr_zval_str, swr_zval_try_addref,
-        zend_lookup_class, zval,
+        swr_zend_try_zval_dtor, swr_zend_zval_release, swr_zval_str, zend_lookup_class, zval,
     },
     value,
 };
@@ -270,10 +269,13 @@ pub unsafe fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
         warn(true, &format!("Class \"{class}\" not found"));
         return false;
     }
-    // SAFETY: per the caller, an object.
-    let object = unsafe { value::obj_of(resolver) };
-    // SAFETY: a live object.
-    let object_ce = unsafe { (*object).ce };
+    // SAFETY: per the caller, a live object zval.
+    let Some(resolver) = (unsafe { Value::from_ptr(resolver) }) else {
+        return false;
+    };
+    let Some(object_ce) = resolver.class() else {
+        return false;
+    };
     // SAFETY: a live object's class and a registered class.
     if !unsafe { swr_zend_runtime_instanceof(object_ce, ce) } {
         warn(
@@ -282,14 +284,10 @@ pub unsafe fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
         );
         return false;
     }
-    // SAFETY: a live zval.
-    unsafe { swr_zval_try_addref(resolver) };
     // SAFETY: Zend's request allocator (`sw_zval_dup`); the list owns the copy.
     let copy = unsafe { swr_zend_emalloc(mem::size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: a live zval.
-    let held = unsafe { *resolver };
-    // SAFETY: fresh storage for one zval.
-    unsafe { copy.write(held) };
+    // SAFETY: fresh storage for one zval, which takes a reference of its own.
+    unsafe { copy.write(resolver.copy().into_zval()) };
     // The list keeps the copy until remove or RSHUTDOWN.
     native::swoole_name_resolver_php_add(copy);
     true
@@ -402,8 +400,8 @@ unsafe fn resolve(
     if !cluster.is_null() {
         // SAFETY: the kept cluster object.
         unsafe { call_method(cluster, b"count", &mut retval, ptr::null_mut()) }?;
-        // SAFETY: the call's result (IS_UNDEF if it threw).
-        let count = unsafe { value::get_long(&raw const retval) };
+        // The call's result (IS_UNDEF if it threw).
+        let count = Value::of(&mut retval).long();
         if bailout::pending() {
             return Ok(None);
         }
@@ -455,8 +453,7 @@ unsafe fn resolve(
     retval = UNDEF;
     // SAFETY: the cluster object.
     unsafe { call_method(cluster, b"pop", &mut retval, ptr::null_mut()) }?;
-    // SAFETY: the call's result, which `retval` holds until released below.
-    let Some(node) = unsafe { Value::from_ptr(&raw const retval) }.and_then(Value::array) else {
+    let Some(node) = Value::of(&mut retval).array() else {
         return Ok(None);
     };
     let Some(host) = node.find(b"host").and_then(Value::bytes) else {

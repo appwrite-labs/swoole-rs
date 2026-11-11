@@ -18,13 +18,11 @@ use swoole_rs_zend::{
     kind,
     string::bytes,
     sys::{
-        IS_ARRAY_EX, IS_NULL, IS_STRING, swr_zend_property_slot, swr_zend_string_persistent,
-        swr_zend_string_release, swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread,
-        zend_array_dup, zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval,
-        zval_ptr_dtor,
+        IS_ARRAY_EX, IS_NULL, swr_zend_string_persistent, swr_zend_string_release,
+        swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_array_dup,
+        zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval, zval_ptr_dtor,
     },
-    type_of,
-    value::{str_of, table},
+    value::table,
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -124,7 +122,7 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
         return Ok(());
     }
     // SAFETY: the Server object, which declares `bootstrap`.
-    let slot = unsafe { swr_zend_property_slot(object.raw(), c"bootstrap".as_ptr(), 9) };
+    let slot = unsafe { swoole_rs_zend::property(object.raw(), c"bootstrap") };
     if string_of(slot).is_empty() {
         let (mut path, mut argc): (*const c_char, c_int) = (ptr::null(), 0);
         // SAFETY: two writable out-parameters.
@@ -159,15 +157,8 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
 }
 
 /// A string property's bytes (upstream reads it as a string); empty otherwise.
-fn string_of<'a>(slot: *mut zval) -> &'a [u8] {
-    // SAFETY: a live property slot.
-    if unsafe { type_of(slot) } != IS_STRING {
-        return b"";
-    }
-    // SAFETY: a string slot.
-    let string = unsafe { str_of(slot) };
-    // SAFETY: a live string.
-    unsafe { bytes(string) }
+fn string_of(slot: &Value) -> &[u8] {
+    slot.bytes().unwrap_or_default()
 }
 
 /// `init_arguments()`'s array, copied for the threads.
@@ -183,9 +174,8 @@ fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
     fci.retval = &raw mut result;
     // SAFETY: `call_user_function(NULL, nullptr, &init_arguments, &result, 0, nullptr)`.
     unsafe { bailout::call(&raw mut fci, ptr::null_mut()) }?;
-    // SAFETY: the call's result.
-    let argv = unsafe { Value::from_ptr(&raw const result) }
-        .and_then(Value::array)
+    let argv = Value::of(&mut result)
+        .array()
         .map(Arguments::copy)
         .transpose();
     // SAFETY: the result this call owns.

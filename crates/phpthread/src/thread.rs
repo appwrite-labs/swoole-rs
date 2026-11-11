@@ -207,7 +207,7 @@ fn get_exit_status(call: &Call) {
 }
 
 fn get_arguments(call: &Call) {
-    run::arguments(call.return_value());
+    run::arguments(call);
 }
 
 fn get_id(call: &Call) {

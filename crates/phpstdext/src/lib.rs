@@ -34,7 +34,7 @@ pub use typed::{
 
 use std::ffi::c_int;
 use swoole_rs_zend::{
-    sys::{IS_INDIRECT, IS_REFERENCE, zend_execute_data, zend_op, zend_reference, znode_op, zval},
+    sys::{IS_INDIRECT, zend_execute_data, zend_op, znode_op, zval},
     type_of,
 };
 
@@ -118,22 +118,4 @@ unsafe fn ptr_ptr_var(frame: *mut zend_execute_data, var: u32) -> *mut zval {
         return unsafe { value.zv };
     }
     slot
-}
-
-/// `ZVAL_DEREF`.
-/// # Safety
-/// `value` is a live zval.
-#[inline]
-unsafe fn deref(value: *mut zval) -> *mut zval {
-    // SAFETY: per the caller.
-    if unsafe { type_of(value) } == IS_REFERENCE {
-        // SAFETY: as above.
-        let inner = unsafe { (*value).value };
-        // SAFETY: a reference zval holds `ref_`.
-        let reference = unsafe { inner.ref_ };
-        return reference
-            .wrapping_byte_add(std::mem::offset_of!(zend_reference, val))
-            .cast();
-    }
-    value
 }

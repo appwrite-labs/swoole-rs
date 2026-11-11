@@ -13,13 +13,12 @@ use std::{
 use swoole_rs_zend::{
     Class, Minit, Props,
     bailout::Bailout,
-    object_of,
     sys::{
         IS_RESOURCE_EX, PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        object_init_ex, swr_zend_register_stream_constant, swr_zend_stream_close,
-        swr_zend_stream_expose, swr_zend_stream_fd, swr_zend_stream_from_zval,
-        swr_zend_stream_open, swr_zend_stream_select_fd, swr_zend_string_release,
-        swr_zend_thread_main_request, zend_string, zend_value, zval,
+        swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_expose,
+        swr_zend_stream_fd, swr_zend_stream_from_zval, swr_zend_stream_open,
+        swr_zend_stream_select_fd, swr_zend_string_release, swr_zend_thread_main_request,
+        zend_string, zend_value, zval,
     },
 };
 
@@ -43,9 +42,7 @@ fn errno() -> i64 {
 /// In a request; `out` is writable and holds nothing.
 unsafe fn error(out: *mut zval, errno: i64) {
     // SAFETY: per the caller; a registered class.
-    unsafe { object_init_ex(out, ERROR.entry()) };
-    // SAFETY: an object zval just made.
-    let std = unsafe { object_of(out) };
+    let std = unsafe { swoole_rs_zend::init_object(out, ERROR.entry()) };
     // SAFETY: the class's own readonly property, set in its scope.
     unsafe { Props::new(ERROR.entry(), std) }.long(c"code", errno);
 }

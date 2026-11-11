@@ -5,9 +5,8 @@ use swoole_rs_zend::{
     Call, handlers,
     sys::{
         swr_zend_array_init, swr_zend_emalloc, swr_zend_treat_string, swr_zend_try_json_decode_ex,
-        zend_array_count, zend_long, zend_string, zval,
+        zend_long, zend_string, zval,
     },
-    value::table,
 };
 
 unsafe extern "C" {
@@ -120,12 +119,8 @@ fn str_is_empty(call: &Call) {
 }
 
 fn array_is_empty(call: &Call) {
-    if let Ok(array) = call.arity(1, 1).and_then(|()| call.array(1)) {
-        // SAFETY: a live array argument.
-        // SAFETY: as above.
-        let ht = unsafe { table(array) };
-        // SAFETY: a live table.
-        call.set_bool(unsafe { zend_array_count(ht) } == 0);
+    if let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) {
+        call.set_bool(array.count() == 0);
     }
 }
 
