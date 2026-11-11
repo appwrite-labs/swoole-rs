@@ -5,8 +5,10 @@ use core::ffi::{c_int, c_void};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::swoole_get_worker_id;
+use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::entry::Bytes;
 use swoole_rs_process::workers::ops::{
@@ -49,11 +51,11 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(handler.is_some())
         }
         OP_UNPACK_COMMAND => {
-            let buffer = swoole_rs_corebase::thread_buffer();
-            let unpack = swoole_rs_process::task_file::unpack;
-            // SAFETY: the live command task and this thread's buffer.
-            let Some((data, length, _)) = (unsafe { unpack(ctx.task.cast_mut().cast(), buffer) })
-            else {
+            let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
+            // SAFETY: the live command task.
+            let task = unsafe { Packed::from_raw(ctx.task.cast()) };
+            // SAFETY: this thread's live buffer.
+            let Some((data, length, _)) = task.unpack(unsafe { &mut *buffer }) else {
                 return Some(0);
             };
             ctx.packet = (length, data);
