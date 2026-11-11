@@ -251,7 +251,7 @@ pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
     Ok(imported)
 }
 
-/// The dispatch and port operations of `swr_v1_server_run`.
+/// The dispatch and port operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use crate::ops::{
         RUN_ADD_PORT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS,
