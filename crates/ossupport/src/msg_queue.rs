@@ -121,7 +121,7 @@ impl QueueRecord {
     #[must_use]
     pub fn push(&self, node: &[u8]) -> bool {
         let Some((kind, length)) = node_parts(node) else {
-            log::set_last_error(libc::EINVAL);
+            invalid();
             return false;
         };
         loop {
@@ -150,7 +150,7 @@ impl QueueRecord {
     /// warns unless it is `ENOMSG` or `EINTR`.
     pub fn pop(&self, node: &mut [u8]) -> isize {
         let Some((kind, size)) = node_parts(node) else {
-            log::set_last_error(libc::EINVAL);
+            invalid();
             return -1;
         };
         // SAFETY: `node` is a writable `long` type and `size` payload bytes.
@@ -210,6 +210,13 @@ impl QueueRecord {
         let queue = Self::new(key, true, 0);
         queue.ready().then(|| Box::new(queue))
     }
+}
+
+/// A node shorter than a `long`: `EINVAL` in errno and the last error, as a failed
+/// call leaves them.
+fn invalid() {
+    swoole_rs_corebase::sys::set_errno(libc::EINVAL);
+    log::set_last_error(libc::EINVAL);
 }
 
 /// A `QueueNode`'s type and payload length, or `None` when it is shorter than a `long`.

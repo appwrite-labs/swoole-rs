@@ -303,21 +303,40 @@ pub fn swoole_signal_unblock_all() {
     swoole_rs_corebase::signal_unblock_all();
 }
 
-/// `char *swoole_signal_to_str(int)`: `strsignal`'s text in a static 64-byte
-/// buffer, with `": <signo>"` appended when the text has no colon. It may run in a
-/// signal frame (an unregistered signal's warning), so it does not allocate.
+/// [`swoole_signal_to_str`]'s text, in a buffer of its own.
+pub struct SignalName([u8; 64]);
+
+impl SignalName {
+    #[must_use]
+    pub fn as_cstr(&self) -> &CStr {
+        CStr::from_bytes_until_nul(&self.0).unwrap_or_default()
+    }
+}
+
+/// `strsignal`'s text, with `": <signo>"` appended when the text has no colon. It
+/// may run in a signal frame (an unregistered signal's warning), so it does not
+/// allocate.
+#[must_use]
+pub fn signal_name(signo: c_int) -> SignalName {
+    // SAFETY: strsignal accepts any number.
+    let name = unsafe { libc::strsignal(signo) };
+    // SAFETY: strsignal returns a C string.
+    let text = unsafe { CStr::from_ptr(name) };
+    let mut buf = [0; 64];
+    signal_text(text.to_bytes(), signo, &mut buf);
+    SignalName(buf)
+}
+
+/// `char *swoole_signal_to_str(int)`: [`signal_name`] in upstream's static 64-byte
+/// buffer.
 pub fn swoole_signal_to_str(signo: c_int) -> *mut c_char {
     struct Buffer(std::cell::UnsafeCell<[u8; 64]>);
     // SAFETY: upstream's function-static buffer, shared as upstream shares it.
     unsafe impl Sync for Buffer {}
     static BUF: Buffer = Buffer(std::cell::UnsafeCell::new([0; 64]));
-    // SAFETY: strsignal accepts any number.
-    let name = unsafe { libc::strsignal(signo) };
-    // SAFETY: strsignal returns a C string.
-    let text = unsafe { CStr::from_ptr(name) };
     // SAFETY: the static buffer, written here only, as upstream writes it.
     let buf = unsafe { &mut *BUF.0.get() };
-    signal_text(text.to_bytes(), signo, buf);
+    *buf = signal_name(signo).0;
     buf.as_mut_ptr().cast()
 }
 
