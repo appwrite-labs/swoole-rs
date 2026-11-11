@@ -95,10 +95,9 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     {
         crate::server_methods::destroy(serv);
     }
-    let ports = (0..).map(|index| serv.port_at(index));
-    for port in ports.take_while(|port| !port.is_null()) {
+    for port in serv.ports() {
         // SAFETY: a live port, deleted once.
-        unsafe { port_delete(port) };
+        unsafe { port_delete(port.raw()) };
     }
     let object_ptr = serv.raw();
     // SAFETY: the object `swr_v1_server_new` boxed, freed once.

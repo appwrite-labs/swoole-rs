@@ -746,8 +746,8 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     };
     let conn_socket = || o.conn().socket.cast::<SocketRecord>();
     let port = || {
-        let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-        Some(port)
+        let port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
+        Some(*port)
     };
     Some(match op {
         OP_REACTOR_DEL => change(o.ctx.sock, 2, 0),
@@ -765,14 +765,14 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // listen UDP port
             let port = port()?;
             // SAFETY: one of the server's live ports.
-            let config = unsafe { port_config::of(port) };
+            let config = unsafe { port.config_mut() };
             let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
             let fd = socket.fd();
             // The connection table's slot for the listening fd.
             let serv_sock = o.state.connection(c_long::from(fd), 0)?;
             serv_sock.fd = fd;
             serv_sock.socket_type = config.r#type;
-            serv_sock.object = port;
+            serv_sock.object = port.raw();
             config.thread_id = pthread_self();
             change(socket.as_ptr(), 0, SW_EVENT_READ)
         }
@@ -1004,8 +1004,8 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             ] {
                 reactor.set_handler(fd_type, event, handler);
             }
-            for &port in o.tables().ports() {
-                (crate::port_config::methods().init_protocol)(port);
+            for port in o.tables().ports() {
+                (crate::port_config::methods().init_protocol)(port.raw());
             }
             0
         }

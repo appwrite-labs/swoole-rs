@@ -51,10 +51,8 @@ fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.
 fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
     let mut address = SocketAddress {
-        // SAFETY: the sockaddr union is plain data.
-        addr: unsafe { core::mem::zeroed() },
-        len: 0,
         kind,
+        ..SocketAddress::default()
     };
     // SAFETY: the union and its length, and the host's bytes.
     let error = unsafe {
@@ -82,15 +80,17 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// # Safety
 /// `serv` is a live server, `port` one of its live DTLS ports.
 unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *mut DtlsSession {
+    // SAFETY: as the caller guarantees.
+    let Some(listen) = (unsafe { crate::view::Port::from_raw(port) }) else {
+        return ptr::null_mut();
+    };
     let (kind, number, host) = {
-        // SAFETY: as the caller guarantees; the borrow ends here.
-        let config = unsafe { port_config::of(port) };
+        let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
         let host = CString::new(config.host_bytes()).unwrap_or_default();
         (config.r#type, config.port, host)
     };
-    // SAFETY: as the caller guarantees.
-    let server_fd = unsafe { crate::view::port_fd(port) };
+    let server_fd = listen.fd();
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
     // SAFETY: null, or the socket just made, which only this thread uses.
     let Some(socket) = (unsafe { Socket::from_ptr(sock) }) else {

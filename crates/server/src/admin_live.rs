@@ -28,16 +28,7 @@ const THREAD_REACTOR: u8 = 2;
 
 /// `register_admin_server_commands(serv)`: adds upstream's admin commands, whose
 /// `get_memory_info` reports `php_memory()`.
-///
-/// # Safety
-/// `serv` is a live `Server` that has not started.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_admin_register(
-    serv: *mut c_void,
-    php_memory: extern "C" fn() -> usize,
-) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub fn admin_register(serv: view::Server<'_>, php_memory: extern "C" fn() -> usize) {
     PHP_MEMORY.get_or_init(|| php_memory);
     let config = serv.config();
     let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread;
@@ -363,10 +354,11 @@ impl Facts for Live<'_> {
 
     fn ports(&mut self) -> Vec<Port> {
         let serv = self.serv;
-        let tables = self.tables;
-        (0..tables.ports().len())
-            .filter_map(|index| tables.port_config(index))
-            .map(|config| {
+        self.tables
+            .ports()
+            .iter()
+            .map(|port| {
+                let config = port.config();
                 let host = config.host_bytes();
                 let protocols = (crate::port_config::methods().get_protocols)(config);
                 let connections = serv.port_connections(config);

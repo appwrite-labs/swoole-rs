@@ -97,16 +97,9 @@ fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<
     let server_fd = state.connection(session_id, 1)?.server_fd;
     // A listening socket's record holds its `ListenPort` as the object.
     let port = state.connection(server_fd.into(), 0)?.object;
-    if port.is_null() {
-        return None;
-    }
-    // SAFETY: a `ListenPort` is a box of its settings pointer (`server_object`), whose
-    // `gs` is the port's shared counters.
-    let config = unsafe { *port.cast::<*const crate::port_config::PortConfig>() };
-    // SAFETY: a port's settings live as long as the port.
-    let gs = unsafe { config.as_ref() }?.gs;
-    // SAFETY: a non-null `gs` is the port's slot in `port_gs_list`.
-    unsafe { gs.cast::<PortCounters>().as_ref() }
+    // SAFETY: null, or one of the server's ports, which live as long as it.
+    let port = unsafe { crate::view::Port::from_raw(port) }?;
+    port.config().counters().map(|gs| &*gs)
 }
 
 /// `Server::send`'s counts: the server's and the session's port's responses and bytes,
@@ -246,36 +239,6 @@ pub unsafe extern "C" fn swr_v1_server_port_shared_init(storage: *mut core::ffi:
     };
 }
 
-/// Reads the active per-worker counts, or the single shared count in process mode.
-///
-/// # Safety
-/// `counters` is a mapped live port record; its non-null `connection_nums` loan has
-/// `workers` initialized aligned atomic cells for this call.
-#[must_use]
-pub unsafe fn swr_v1_server_port_connections(
-    storage: *const core::ffi::c_void,
-    workers: u32,
-) -> usize {
-    let counters = storage.cast::<PortCounters>();
-    // SAFETY: the caller lends the live port counter record.
-    let cells = unsafe { (*counters).cells() };
-    if cells.is_null() {
-        // SAFETY: the record's aligned atomic count is live for the call.
-        return unsafe {
-            (*counters)
-                .connection_num
-                .load(core::sync::atomic::Ordering::Relaxed)
-        } as usize;
-    }
-    let mut count = 0_usize;
-    for index in 0..workers as usize {
-        // SAFETY: index is below the caller's loaned atomic-cell count.
-        let cell = unsafe { &*cells.wrapping_add(index) };
-        count = count.wrapping_add(cell.load(core::sync::atomic::Ordering::Relaxed) as usize);
-    }
-    count
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,18 +338,5 @@ mod tests {
             (*(*state).config()).gs.free();
             swr_v1_server_state_free(state);
         }
-    }
-
-    #[test]
-    fn port_counts_use_the_shared_worker_cells_when_present() {
-        let mut counters = PortCounters::default();
-        counters.connection_num.store(99, Ordering::Relaxed);
-        let storage = core::ptr::from_ref(&counters).cast();
-        assert_eq!(unsafe { swr_v1_server_port_connections(storage, 2) }, 99);
-        let mut cells = [AtomicU32::new(3), AtomicU32::new(5)];
-        counters.connection_nums = crate::records::tests::naming(&mut cells);
-        let storage = core::ptr::from_ref(&counters).cast();
-        assert_eq!(unsafe { swr_v1_server_port_connections(storage, 2) }, 8);
-        assert_eq!(unsafe { swr_v1_server_port_connections(storage, 0) }, 0);
     }
 }
