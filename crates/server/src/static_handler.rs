@@ -5,7 +5,6 @@
 //! the server's configuration.
 use crate::view;
 use core::cell::RefCell;
-use core::ffi::c_void;
 use swoole_rs_http::{
     BOUNDARY_SIZE, Calendar, HttpStaticContext, HttpStaticTask, StaticEffects, http_date,
 };
@@ -57,40 +56,35 @@ impl StaticEffects for Native {
         swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
     }
     fn overflow(&self) {
-        errno::set(libc::EOVERFLOW);
+        swoole_rs_corebase::sys::set_errno(libc::EOVERFLOW);
     }
 }
 impl Calendar for Native {}
 impl Effects for Native {}
 
 /// A `StaticHandler` for one request URI on one server.
-pub struct StaticHandler<E: Effects = Native> {
-    server: view::Server<'static>,
+pub struct StaticHandler<'a, E: Effects = Native> {
+    server: view::Server<'a>,
     /// Borrowed for one call at a time; no effect calls back into the handler.
     context: RefCell<HttpStaticContext>,
     effects: E,
 }
 
-impl StaticHandler {
-    /// # Safety
-    /// `server` is a live `Server` that outlives the handler.
+impl<'a> StaticHandler<'a> {
+    /// A handler of `url` over `server`.
     #[must_use]
-    pub unsafe fn new(server: *mut c_void, url: &[u8]) -> Option<Self> {
-        // SAFETY: per the caller.
-        unsafe { Self::with_effects(server, url, Native) }
+    pub fn new(server: view::Server<'a>, url: &[u8]) -> Option<Self> {
+        Self::with_effects(server, url, Native)
     }
 }
 
-impl<E: Effects> StaticHandler<E> {
-    /// # Safety
-    /// `server` is a live `Server` that outlives the handler.
+impl<'a, E: Effects> StaticHandler<'a, E> {
+    /// A handler of `url` over `server`, with `effects`.
     #[must_use]
-    pub unsafe fn with_effects(server: *mut c_void, url: &[u8], effects: E) -> Option<Self> {
+    pub fn with_effects(server: view::Server<'a>, url: &[u8], effects: E) -> Option<Self> {
         Some(Self {
             context: RefCell::new(HttpStaticContext::new(url, PATH_MAX)?),
-            // SAFETY: the caller vouches that `server` is live and outlives the handler,
-            // which keeps it private.
-            server: unsafe { view::Server::from_raw(server) },
+            server,
             effects,
         })
     }
@@ -213,19 +207,6 @@ impl<E: Effects> StaticHandler<E> {
     #[must_use]
     pub fn content_type(&self) -> Vec<u8> {
         self.context.borrow_mut().content_type(&self.effects)
-    }
-}
-
-mod errno {
-    pub(super) fn set(value: libc::c_int) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        // SAFETY: returns this thread's errno slot, live for the thread.
-        let slot = unsafe { libc::__errno_location() };
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        // SAFETY: returns this thread's errno slot, live for the thread.
-        let slot = unsafe { libc::__error() };
-        // SAFETY: `slot` is this thread's errno.
-        unsafe { slot.write(value) };
     }
 }
 

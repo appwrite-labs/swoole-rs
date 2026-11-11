@@ -672,8 +672,7 @@ fn alarm(call: &Call) {
         it_value: interval,
     };
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-    // SAFETY: `timer` is a valid itimerval; the old value is not wanted.
-    let set = unsafe { libc::setitimer(kind as _, &raw const timer, ptr::null_mut()) };
+    let set = swoole_rs_corebase::sys::setitimer(kind as c_int, &timer);
     if set < 0 {
         sys(E_WARNING, &message!("setitimer() failed"));
         call.set_bool(false);
@@ -964,10 +963,7 @@ fn exit(call: &Call) {
         swoole_rs_reactor::swoole_event_free();
     }
     #[expect(clippy::cast_possible_truncation, reason = "0..=255")]
-    // SAFETY: exits the process, as upstream does.
-    unsafe {
-        libc::exit(code as c_int)
-    }
+    std::process::exit(code as c_int)
 }
 
 fn close(call: &Call) {

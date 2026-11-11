@@ -22,8 +22,7 @@ pub(crate) use swoole_rs_tls::upstream::socket_free;
 pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
     // SAFETY: the caller's live record.
     let fd = unsafe { (*socket).fields.fd };
-    // SAFETY: close(2) has no memory preconditions.
-    unsafe { libc::close(fd) };
+    swoole_rs_corebase::sys::close(fd);
     // SAFETY: Rust allocated the record and nothing uses it after.
     unsafe { SocketRecord::free(socket) };
 }
@@ -126,10 +125,8 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
     }
     config.listening = true;
     let fd = socket.fd();
-    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
     for (level, option, name, value) in listen_options(config) {
-        // SAFETY: `value` is a live c_int of `size` bytes.
-        if unsafe { libc::setsockopt(fd, level, option, (&raw const value).cast(), size) } != 0 {
+        if swoole_rs_corebase::sys::setsockopt(fd, level, option, &value) != 0 {
             log::sys_warning(
                 c"ListenPort::listen",
                 format_args!("setsockopt({name}) failed"),
@@ -155,10 +152,7 @@ fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
 
 /// An int option set to 1; 0 or -1 as setsockopt(2).
 fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
-    let one: c_int = 1;
-    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
-    // SAFETY: `one` is a live c_int of `size` bytes.
-    unsafe { libc::setsockopt(fd, level, option, (&raw const one).cast(), size) }
+    swoole_rs_corebase::sys::setsockopt::<c_int>(fd, level, option, &1)
 }
 
 /// `ListenPort::create_socket()`: keeps the port's socket unless the server
@@ -213,8 +207,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
         return fail();
     }
     let mut address = SocketAddress {
-        // SAFETY: the sockaddr union is plain data.
-        addr: unsafe { std::mem::zeroed() },
+        addr: swoole_rs_corebase::sys::zeroed(),
         len: 0,
         kind,
     };

@@ -257,6 +257,16 @@ fn invalid(call: &Call) {
     crate::server::invalid(call.this());
 }
 
+/// The port's bound server; an `E_ERROR`, which does not return, when unbound.
+fn bound_server(call: &Call) -> view::Server<'_> {
+    let serv = data(call).property.serv.get();
+    if serv.is_null() {
+        invalid(call);
+    }
+    // SAFETY: the port's bound server, live while the port is.
+    unsafe { view::Server::from_raw(serv) }
+}
+
 fn construct(call: &Call) {
     call.throw_error(c"please use the Swoole\\Server->listen method");
     call.set_bool(false);
@@ -266,12 +276,7 @@ fn destruct(_: &Call) {}
 
 fn on(call: &Call) {
     let slots = &data(call).property.callbacks;
-    let serv = data(call).property.serv.get();
-    if serv.is_null() {
-        invalid(call);
-    }
-    // SAFETY: the port's bound server, live while the port is.
-    let serv = unsafe { view::Server::from_raw(serv) };
+    let serv = bound_server(call);
     if crate::io::closed(serv) {
         crate::server::fatal(
             E_WARNING,
@@ -377,13 +382,11 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let data = data(call);
-    let (port, serv) = (data.port.get(), data.property.serv.get());
-    if port.is_null() || serv.is_null() {
+    let port = data(call).port.get();
+    if port.is_null() {
         invalid(call);
     }
-    // SAFETY: the port's bound server, live while the port is.
-    let serv = unsafe { view::Server::from_raw(serv) };
+    let serv = bound_server(call);
     if apply_settings(port, serv, settings).is_err() {
         return call.set_bool(false);
     }

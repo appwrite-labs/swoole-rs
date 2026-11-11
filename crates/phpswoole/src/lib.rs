@@ -87,8 +87,7 @@ fn log_put(level: c_int, message: &[u8]) {
 #[unsafe(no_mangle)]
 pub static mut swoole_exception_ce: *mut zend_class_entry = ptr::null_mut();
 #[unsafe(no_mangle)]
-// SAFETY: a table of nullable pointers and an offset, for which zero is valid.
-pub static mut swoole_exception_handlers: zend_object_handlers = unsafe { std::mem::zeroed() };
+pub static mut swoole_exception_handlers: zend_object_handlers = swoole_rs_zend::zeroed();
 #[unsafe(no_mangle)]
 pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
 

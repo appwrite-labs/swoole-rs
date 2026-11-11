@@ -71,8 +71,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
     if !current.is_null() {
         return current;
     }
-    // SAFETY: a plain C record, for which zero is valid; the template fills its header.
-    let mut entry: zend_module_entry = unsafe { std::mem::zeroed() };
+    let mut entry: zend_module_entry = swoole_rs_zend::zeroed();
     // SAFETY: a live record.
     unsafe { swr_zend_module_template(&raw mut entry) };
     entry.deps = Box::leak(deps().into_boxed_slice()).as_ptr();

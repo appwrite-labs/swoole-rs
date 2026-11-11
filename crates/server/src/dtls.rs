@@ -42,9 +42,7 @@ pub(crate) struct DgramPacket {
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
-    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
-    // SAFETY: `value` is a live c_int of `size` bytes.
-    unsafe { libc::setsockopt(fd, level, option, (&raw const value).cast(), size) };
+    swoole_rs_corebase::sys::setsockopt(fd, level, option, &value);
 }
 
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.
@@ -74,7 +72,11 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 ///
 /// # Safety
 /// `serv` is a live server, `port` one of its live DTLS ports.
-unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *mut DtlsSession {
+unsafe fn accept(
+    serv: crate::view::Server<'_>,
+    port: *mut c_void,
+    sa: &SocketAddress,
+) -> *mut DtlsSession {
     // SAFETY: as the caller guarantees.
     let Some(listen) = (unsafe { crate::view::Port::from_raw(port) }) else {
         return ptr::null_mut();
@@ -116,9 +118,7 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
         if kind == SOCK_UDP6 {
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
         }
-        let peer = (&raw const sa.addr).cast::<libc::sockaddr>();
-        // SAFETY: the peer's address of its length.
-        if unsafe { libc::connect(fd, peer, sa.len) } < 0 {
+        if sa.connect(fd) < 0 {
             let (host, port) = swoole_rs_tls::upstream::peer(sa);
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
             break 'setup;
@@ -128,8 +128,10 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
         // SAFETY: the live server and port, and the socket just made.
-        conn = unsafe { crate::server_methods::add_connection(serv, port, sock.cast(), server_fd) }
-            .cast();
+        conn = unsafe {
+            crate::server_methods::add_connection(serv.raw(), port, sock.cast(), server_fd)
+        }
+        .cast();
         if conn.is_null() {
             break 'setup;
         }
@@ -162,7 +164,7 @@ fn appended(status: c_int) {
 /// `serv` and `reactor` are live, `port` is the DTLS port the packet arrived on and
 /// `pkt` the received packet.
 pub(crate) unsafe fn on_packet(
-    serv: *mut c_void,
+    serv: crate::view::Server<'_>,
     single_thread: bool,
     reactor: *mut c_void,
     close: Option<swoole_rs_reactor::ReactorClose>,
@@ -209,9 +211,7 @@ pub(crate) unsafe fn on_packet(
             reactor_id: i16::from(reactor_id),
             ..DataHead::default()
         };
-        // SAFETY: the live server.
-        let server = unsafe { crate::view::Server::from_raw(serv) };
-        crate::event_worker_ops::send_to_reactor_thread(server, &ev) < 0
+        crate::event_worker_ops::send_to_reactor_thread(serv, &ev) < 0
     };
     if failed && let Some(close) = close {
         // SAFETY: the live reactor and the session's socket.

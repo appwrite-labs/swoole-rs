@@ -14,7 +14,6 @@ use libc::{c_int, c_void};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     ffi::{CStr, CString},
-    mem::MaybeUninit,
     ptr,
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
@@ -1792,15 +1791,12 @@ fn add_file(call: &Call) {
     let offset = offset.max(0);
     let mut length = length.max(0);
     let c_path = c_bytes(path);
-    let mut stat = MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: a NUL-terminated path and a writable stat buffer.
-    if unsafe { libc::stat(c_path.as_ptr(), stat.as_mut_ptr()) } < 0 {
+    let Some(stat) = swoole_rs_corebase::sys::stat(&c_path) else {
         let message = [&b"stat("[..], c_path.to_bytes(), b") failed"].concat();
         sys_error(&message);
         return call.set_bool(false);
-    }
-    // SAFETY: stat filled it.
-    let size = unsafe { stat.assume_init() }.st_size;
+    };
+    let size = stat.st_size;
     if size == 0 {
         let shown = filename.map_or(&b"(null)"[..], |filename| filename);
         let message = [&b"cannot send empty file["[..], shown, b"]"].concat();

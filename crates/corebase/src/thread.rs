@@ -53,18 +53,17 @@ impl Thread {
         let entry = unsafe {
             std::mem::transmute::<extern "C" fn(Box<Body>) -> *mut c_void, Routine>(entry)
         };
-        let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
+        let mut thread: libc::pthread_t = crate::sys::zeroed();
         let code = crate::with_signals_blocked(|| {
             // SAFETY: default attributes; `entry` owns `body` once the thread starts.
-            unsafe { libc::pthread_create(thread.as_mut_ptr(), ptr::null(), entry, body.cast()) }
+            unsafe { libc::pthread_create(&raw mut thread, ptr::null(), entry, body.cast()) }
         });
         if code != 0 {
             // SAFETY: no thread started, so the box is still ours.
             drop(unsafe { Box::from_raw(body) });
             return Err(code);
         }
-        // SAFETY: a successful `pthread_create` wrote the handle.
-        *handle = Some(Handle(unsafe { thread.assume_init() }));
+        *handle = Some(Handle(thread));
         Ok(())
     }
 

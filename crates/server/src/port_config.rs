@@ -203,8 +203,8 @@ impl PortConfig {
             ssl: 0,
             port: 0,
             socket: core::ptr::null_mut(),
-            // SAFETY: pthread_t is an integer or pointer; zero is the original native empty sentinel.
-            thread_id: unsafe { core::mem::zeroed() },
+            // Zero is the original native empty sentinel.
+            thread_id: swoole_rs_corebase::sys::zeroed(),
             heartbeat_idle_time: 0,
             open_eof_check: false,
             open_http_protocol: false,

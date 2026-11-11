@@ -3,14 +3,12 @@
 //! timeouts and `listen`. Native code keeps the `Socket` fields (bitfields, which it
 //! copies in and out) and the warning text.
 use std::io::Error;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 
 /// `setsockopt(fd, level, name, &value, sizeof(value)) == 0`, for the plain option
 /// values (`int`, `timeval`, `linger`).
-fn set<T: Copy>(fd: c_int, level: c_int, name: c_int, value: T) -> bool {
-    let length = libc::socklen_t::try_from(size_of::<T>()).unwrap_or(0);
-    // SAFETY: `value` is a local of `length` bytes; fd validity is the kernel's to check.
-    unsafe { libc::setsockopt(fd, level, name, (&raw const value).cast::<c_void>(), length) == 0 }
+fn set<T: swoole_rs_corebase::sys::Pod>(fd: c_int, level: c_int, name: c_int, value: T) -> bool {
+    swoole_rs_corebase::sys::setsockopt(fd, level, name, &value) == 0
 }
 
 /// `setsockopt` of an `int` option, without logging a failure.

@@ -86,8 +86,7 @@ fn connect<T>(family: c_int, address: &T) -> io::Result<OwnedFd> {
 fn open(peer: &Peer) -> io::Result<OwnedFd> {
     match peer {
         Peer::Unix(path) => {
-            // SAFETY: sockaddr_un is plain data; all zeroes is a valid value.
-            let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+            let mut address: libc::sockaddr_un = swoole_rs_corebase::sys::zeroed();
             address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or_default();
             if path.len() >= address.sun_path.len() {
                 return Err(io::ErrorKind::InvalidInput.into());
@@ -98,8 +97,7 @@ fn open(peer: &Peer) -> io::Result<OwnedFd> {
             connect(libc::AF_UNIX, &address)
         }
         Peer::Tcp(peer) => {
-            // SAFETY: sockaddr_in is plain data; all zeroes is a valid value.
-            let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            let mut address: libc::sockaddr_in = swoole_rs_corebase::sys::zeroed();
             address.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or_default();
             address.sin_port = peer.port().to_be();
             address.sin_addr.s_addr = u32::from(*peer.ip()).to_be();

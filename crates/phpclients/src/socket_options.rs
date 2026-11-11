@@ -503,19 +503,7 @@ pub(crate) fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `getsockopt` into `T`, with the length it reported.
-pub(crate) fn getsockopt<T>(
-    fd: c_int,
-    level: c_int,
-    name: c_int,
-    out: &mut T,
-) -> Option<socklen_t> {
-    let mut length = socklen_t::try_from(size_of::<T>()).unwrap_or(0);
-    // SAFETY: `out` is writable for `length` bytes.
-    let status =
-        unsafe { libc::getsockopt(fd, level, name, ptr::from_mut(out).cast(), &raw mut length) };
-    (status == 0).then_some(length)
-}
+pub(crate) use swoole_rs_corebase::sys::getsockopt;
 
 /// `getOption(int $level, int $opt_name): mixed`.
 fn get_option(call: &Call) {
@@ -589,8 +577,7 @@ fn get_option(call: &Call) {
     }
     #[cfg(target_os = "linux")]
     if name_int == libc::TCP_INFO {
-        // SAFETY: an all-zero `tcp_info` is a valid out value.
-        let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+        let mut info: libc::tcp_info = swoole_rs_corebase::sys::zeroed();
         if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_none() {
             return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
         }
@@ -794,8 +781,7 @@ fn domain(fd: c_int) -> Option<c_int> {
             return Some(domain);
         }
     }
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut address: libc::sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     let mut length = socklen_t::try_from(size_of::<libc::sockaddr_storage>()).unwrap_or(0);
     // SAFETY: `address` is writable for `length` bytes.
     let status = unsafe { libc::getsockname(fd, (&raw mut address).cast(), &raw mut length) };
@@ -815,12 +801,10 @@ fn socketpair(call: &Call) {
         reason = "(int) casts, as upstream's"
     )]
     let (domain, kind, protocol) = (domain as c_int, kind as c_int, protocol as c_int);
-    let mut pair: [c_int; 2] = [-1; 2];
-    // SAFETY: two writable descriptors.
-    if unsafe { libc::socketpair(domain, kind, protocol, pair.as_mut_ptr()) } != 0 {
+    let Some(pair) = swoole_rs_corebase::sys::socketpair(domain, kind, protocol) else {
         warn_sys("failed to create socket", errno());
         return call.set_bool(false);
-    }
+    };
     swoole_rs_phpruntime::check_reactor();
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
     let mut sockets = OwnedArray::default();

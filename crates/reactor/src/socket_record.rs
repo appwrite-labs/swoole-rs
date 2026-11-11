@@ -365,8 +365,7 @@ impl SocketFields {
     /// close(2) failed, with errno set.
     pub fn release(&mut self) -> bool {
         if self.is_local() && self.bound != 0 && self.get_name() == 0 {
-            // SAFETY: the Unix arm of the address getsockname(2) just wrote.
-            let path = unsafe { self.info.addr.un.sun_path };
+            let path = self.info.addr.unix().sun_path;
             // c_char is i8 or u8 by target; its one byte either way.
             let path = path.map(|byte| byte.to_ne_bytes()[0]);
             if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path)

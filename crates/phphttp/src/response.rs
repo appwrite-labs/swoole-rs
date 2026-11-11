@@ -11,7 +11,6 @@ use crate::{
 };
 use std::{
     ffi::{c_int, c_void},
-    mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
@@ -253,12 +252,9 @@ fn end(call: &Call) {
 
 /// `stat(2)` of a file name, as `php_swoole_sys_error` reports its failure.
 fn stat(file: &ZStr) -> Result<libc::stat, ()> {
-    let mut stat = MaybeUninit::<libc::stat>::uninit();
     let path = file.c_str();
-    // SAFETY: a NUL-terminated path and a writable buffer.
-    if unsafe { libc::stat(path.as_ptr(), stat.as_mut_ptr()) } == 0 {
-        // SAFETY: stat succeeded, so it filled the buffer.
-        return Ok(unsafe { stat.assume_init() });
+    if let Some(stat) = swoole_rs_corebase::sys::stat(path) {
+        return Ok(stat);
     }
     let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     let reason = swoole_rs_corebase::sys::strerror(error);
@@ -723,10 +719,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         }
     } else {
         fd = object.long();
-        let core = swoole_rs_corebase::swr_v1_core_server();
-        // SAFETY: null or the process's live server.
-        server =
-            (!core.is_null()).then(|| unsafe { swoole_rs_server::view::Server::from_raw(core) });
+        // SAFETY: the running server, which nothing deletes during this method.
+        server = unsafe { swoole_rs_server::view::Server::current() };
     }
     if server.is_some_and(|server| !server.is_started()) {
         return refuse(call, "server is not running");

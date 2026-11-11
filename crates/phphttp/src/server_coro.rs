@@ -777,16 +777,7 @@ fn nul_terminated(text: &[u8]) -> &[u8] {
 /// `SO_REUSEPORT`, as `set_reuse_port()`; a failure is ignored.
 fn set_reuse_port(fd: c_int) {
     let enable: c_int = 1;
-    // SAFETY: an option of the socket's own descriptor.
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_REUSEPORT,
-            (&raw const enable).cast(),
-            libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default(),
-        )
-    };
+    swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &enable);
 }
 
 fn handle(call: &Call) {

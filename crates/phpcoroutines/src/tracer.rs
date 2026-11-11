@@ -129,18 +129,7 @@ per_thread! {
 
 /// `swoole_thread_get_native_id()`.
 fn native_thread_id() -> c_long {
-    #[cfg(target_vendor = "apple")]
-    {
-        let mut id = 0u64;
-        // SAFETY: the calling thread, a writable id.
-        unsafe { libc::pthread_threadid_np(0, &raw mut id) };
-        id.cast_signed()
-    }
-    #[cfg(not(target_vendor = "apple"))]
-    {
-        // SAFETY: gettid takes no arguments.
-        unsafe { libc::syscall(libc::SYS_gettid) }
-    }
+    swoole_rs_corebase::sys::gettid()
 }
 
 /// `swoole_coroutine_get_id()`: the running coroutine, -1 outside one.

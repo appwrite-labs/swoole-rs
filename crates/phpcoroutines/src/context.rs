@@ -75,10 +75,8 @@ pub(crate) struct Context {
 
 impl Context {
     const EMPTY: Self = Self {
-        // SAFETY: all-zero is a valid C struct of pointers and integers.
-        vm: unsafe { mem::zeroed() },
-        // SAFETY: as above.
-        call: unsafe { mem::zeroed() },
+        vm: swoole_rs_zend::zeroed(),
+        call: swoole_rs_zend::zeroed(),
         return_value: swoole_rs_zend::UNDEF,
         co: ptr::null_mut(),
         fiber: ptr::null_mut(),
@@ -412,8 +410,7 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
     let function = unsafe { &*handler };
     // SAFETY: every zend_function starts with its type.
     if !fiber.is_null() && unsafe { function.type_ } == USER_FUNCTION {
-        // SAFETY: all-zero is an empty frame.
-        let mut frame: zend_execute_data = unsafe { mem::zeroed() };
+        let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
         // SAFETY: a user function's op array.
         frame.opline = unsafe { function.op_array.opcodes };
         frame.func = handler;

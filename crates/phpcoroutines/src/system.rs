@@ -3,10 +3,7 @@
 //! system calls stay the C++ `swoole::coroutine::System`: its static members
 //! by their own symbols; the resolver's lookups are crates/hooks'.
 use crate::host;
-use std::{
-    ffi::{CStr, CString, c_int, c_long},
-    mem,
-};
+use std::ffi::{CStr, CString, c_int, c_long};
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
@@ -299,8 +296,7 @@ fn statvfs(call: &Call) {
         value_error(call, c"Path cannot be empty");
         return;
     }
-    // SAFETY: all-zero is a valid statvfs.
-    let mut stat: libc::statvfs = unsafe { mem::zeroed() };
+    let mut stat: libc::statvfs = swoole_rs_corebase::sys::zeroed();
     // SAFETY: a NUL-terminated path and a writable struct; on failure it stays zeroed.
     unsafe { swoole_coroutine_statvfs(path.as_ptr().cast(), &raw mut stat) };
     call.set_array();

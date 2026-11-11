@@ -1549,16 +1549,8 @@ pub unsafe extern "C-unwind" fn make_server_socket(
     // datagram sockets can allow duplicate binds.
     if type_is(kind, CLASS_TCP) {
         let enable: c_int = 1;
-        // SAFETY: the new socket's descriptor and a local option.
-        let set = unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEADDR,
-                (&raw const enable).cast(),
-                libc::socklen_t::try_from(std::mem::size_of::<c_int>()).unwrap_or(4),
-            )
-        };
+        let set =
+            swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable);
         if set < 0 {
             log::sys_warning(
                 ORIGIN,
