@@ -357,11 +357,12 @@ class Ci(unittest.TestCase):
             artifacts = [{'id': 11, 'head_sha': base, 'head_repository_id': 2}, {'id': 10, 'head_sha': base},
                          {'id': 9, 'head_sha': base}, {'id': 8, 'head_sha': base}, {'id': 8, 'head_sha': base},
                          {'id': 7, 'head_sha': old}]
-            shards = [[f'phpt / phpt ({index}, upstream)', 'success'] for index in range(1, 7)]
-            jobs = {'11': shards, '10': shards[:5] + [['phpt / phpt (6, upstream)', '']], '9': shards[1:],
-                    # Shard jobs named by phpt.yml since #2676.
-                    '8': [[f'phpt / upstream {index}', 'success'] for index in range(1, 7)]
-                    + [['phpt / cargo 1', 'failure'], ['phpt / gate', 'failure']], '7': shards}
+            # As many upstream shards as phpt.yml runs by default (#2775 made it nine, not six).
+            sys.path.insert(0, str(ROOT))
+            from tools.ci import PHPT_SHARDS
+            shards = [[f'phpt / upstream {index}', 'success'] for index in range(1, PHPT_SHARDS + 1)]
+            jobs = {'11': shards, '10': shards[:-1] + [[f'phpt / upstream {PHPT_SHARDS}', '']], '9': shards[1:],
+                    '8': shards + [['phpt / cargo 1', 'failure'], ['phpt / gate', 'failure']], '7': shards}
             php = {'8': '8.3.6'}
             state = {'runs': {}, 'flags': (), 'cwd': repo, 'artifacts': artifacts, 'jobs': jobs, 'php': php,
                      'report': 'upstream-1.json'}
