@@ -457,6 +457,16 @@ pub(crate) unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_o
     object
 }
 
+/// Whether this thread releases the callables stored on the native server and its
+/// ports. A thread-mode worker thread's Server and Port objects sit over the one
+/// server the master configured and frees, so only the master empties those slots:
+/// a worker thread never writes them while others read them.
+pub(crate) fn owns_shared() -> bool {
+    /// `THREAD_WORKER`, which only thread mode's worker threads are entered as.
+    const THREAD_WORKER: u8 = 4;
+    swoole_rs_corebase::thread_kind() != THREAD_WORKER
+}
+
 /// The Server class's `free_obj`.
 /// # Safety
 /// Zend frees a Server object.
@@ -469,11 +479,14 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: the object's live server; the master deletes it below.
     let server = (!data.serv.is_null()).then(|| unsafe { view::Server::from_raw(data.serv) });
     if let Some(server) = server {
-        let config = server.config_ptr();
-        // SAFETY: the live config's slot; another thread's object freeing over the same
-        // config takes it only through `take_shared` too.
-        let dispatch = unsafe { crate::port::take_shared(&raw mut (*config).private_data_3) };
-        bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
+        if owns_shared() {
+            // SAFETY: freeing the object on the one thread that owns the config's slots.
+            let dispatch = std::mem::replace(
+                &mut unsafe { server.config_mut() }.private_data_3,
+                ptr::null_mut(),
+            );
+            bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
+        }
         for &callable in property.callbacks.iter().filter(|cb| !cb.is_null()) {
             // SAFETY: a callable the property owned.
             unsafe { swoole_rs_phpruntime::callable_free(callable) };

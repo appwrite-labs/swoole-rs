@@ -137,19 +137,10 @@ impl PortConfig {
 /// `port` is a live `ListenPort`, and nothing else accesses its settings while
 /// the borrow lasts.
 pub unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
-    // SAFETY: per the caller.
-    let config = unsafe { ptr(port) };
+    // SAFETY: per the caller; a `ListenPort` is crate::object's box of this pointer.
+    let config = unsafe { *port.cast::<*mut PortConfig>() };
     // SAFETY: the port's settings live as long as it.
     unsafe { &mut *config }
-}
-
-/// The settings of a `ListenPort`, for fields other threads may touch at once.
-///
-/// # Safety
-/// `port` is a live `ListenPort`.
-pub unsafe fn ptr(port: *mut c_void) -> *mut PortConfig {
-    // SAFETY: per the caller; a `ListenPort` is crate::object's box of this pointer.
-    unsafe { *port.cast::<*mut PortConfig>() }
 }
 
 /// The protocol a new port starts with: network-u32 length framing and the

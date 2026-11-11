@@ -120,12 +120,6 @@ impl<'a> Server<'a> {
         unsafe { &mut *self.fields().config }
     }
 
-    /// The server's configuration, for fields other threads may touch at once.
-    #[must_use]
-    pub fn config_ptr(self) -> *mut ServerConfig {
-        self.fields().config
-    }
-
     /// `&serv->message_bus`, the server's own `MessageBus`.
     #[must_use]
     pub fn message_bus(self) -> *mut c_void {
