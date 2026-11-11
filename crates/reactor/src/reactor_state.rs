@@ -15,7 +15,8 @@ pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 pub type ReactorClose = unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord) -> c_int;
 
-/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
+/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set,
+/// and set only by `swoole_event_cycle`, which owns what a set one holds.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReactorTask {
