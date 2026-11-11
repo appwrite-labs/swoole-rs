@@ -800,8 +800,8 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
             server.raw(),
             data.as_ptr(),
             ptr::from_ref(request).cast_mut().cast(),
-        )
-    };
+        );
+    }
     let result = redis(server, fd, &data, coroutine_enabled(server));
     relay(result.is_err());
     result.unwrap_or(SW_ERR)
