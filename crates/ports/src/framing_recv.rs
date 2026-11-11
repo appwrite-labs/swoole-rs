@@ -249,9 +249,10 @@ fn effect<K: Packages>(r: &Recv<'_>, op: u32, arg: u64, flags: u32) -> i64 {
     s.edit(|s| s.recv_wait = u8::from(flags & FLAG_WAIT != 0));
     match op {
         OP_RECV => {
-            let tail = b.spare();
-            let size = usize::try_from(arg).unwrap_or(usize::MAX).min(tail.len());
-            let n = swoole_rs_tls::upstream::recv(s, tail.get_mut(..size).unwrap_or_default(), 0);
+            let size = usize::try_from(arg).unwrap_or(usize::MAX);
+            // The loop asks for at most the buffer's free tail.
+            let tail = b.spare().get_mut(..size).unwrap_or_default();
+            let n = swoole_rs_tls::upstream::recv(s, tail, 0);
             if n >= 0 {
                 return n as i64;
             }

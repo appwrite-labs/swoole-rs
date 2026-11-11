@@ -406,12 +406,24 @@ unsafe fn pool_send_message(
     len: usize,
 ) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::send_message(pool.cast(), worker_id, message, len) }
+    unsafe {
+        pm::send_message(
+            &*pool.cast(),
+            worker_id,
+            std::slice::from_raw_parts(message.cast(), len),
+        )
+    }
 }
 
 unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> c_int {
+    let data = if data.is_null() {
+        &[]
+    } else {
+        // SAFETY: as the caller guarantees.
+        unsafe { std::slice::from_raw_parts(data.cast(), length as usize) }
+    };
     // SAFETY: as the caller guarantees.
-    unsafe { pm::response(pool.cast(), data.cast(), length) }
+    pm::response(unsafe { &*pool.cast() }, data)
 }
 
 unsafe fn pool_add_worker(pool: *const Pool, worker: *mut Worker) {

@@ -14,7 +14,8 @@ use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::ptr::NonNull;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
-use swoole_rs_corebase::{log, set_errno, sys::ReadSlot};
+use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
@@ -487,6 +488,69 @@ pub unsafe extern "C" fn socket_send(
     unsafe { socket_record_send(socket, buffer, length, flags, tls_send, steady_ms) }
 }
 
+/// [`socket_recv`] into `buffer`.
+pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
+    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    // SAFETY: the buffer's writable bytes; the TLS call is valid for the socket.
+    unsafe { socket_record_recv(socket, at, length, flags, tls_recv, steady_ms) }
+}
+
+/// [`socket_send`] of `data`.
+#[must_use]
+pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
+    let (at, length) = (data.as_ptr().cast(), data.len());
+    // SAFETY: the data's bytes; the TLS call is valid for the socket.
+    unsafe { socket_record_send(socket, at, length, flags, tls_send, steady_ms) }
+}
+
+/// [`socket_recv_sync`] into `buffer`.
+pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
+    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    // SAFETY: a live record and the buffer's writable bytes.
+    unsafe {
+        sync(
+            socket.as_ptr(),
+            Io::Recv,
+            SYNC_RECV,
+            at,
+            length,
+            flags,
+            false,
+        )
+    }
+}
+
+/// [`socket_send_sync`] of `data`.
+#[must_use]
+pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
+    let (at, length) = (data.as_ptr().cast(), data.len());
+    // SAFETY: a live record and the data's bytes.
+    unsafe {
+        sync(
+            socket.as_ptr(),
+            Io::Send,
+            SYNC_SEND,
+            at,
+            length,
+            flags,
+            true,
+        )
+    }
+}
+
+/// [`socket_recvfrom_sync_address`] into `buffer` and `address`.
+pub fn recvfrom_sync(
+    socket: Socket<'_>,
+    buffer: &mut [impl ReadSlot],
+    flags: c_int,
+    address: &mut SocketAddress,
+) -> isize {
+    let io = Io::RecvFrom((&raw mut address.addr).cast(), &raw mut address.len);
+    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    // SAFETY: a live record, the buffer's writable bytes and the address's storage.
+    unsafe { sync(socket.as_ptr(), io, SYNC_ONCE, at, length, flags, false) }
+}
+
 /// `ssize_t Socket::peek(void *, size_t, int) const`.
 ///
 /// # Safety
@@ -509,21 +573,7 @@ pub unsafe extern "C" fn socket_peek(
     unsafe { socket_record_peek(socket, buffer, length, flags, tls_peek) }
 }
 
-/// [`socket_send`] of `data` over a handle.
-pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
-    let (buffer, length) = (data.as_ptr().cast(), data.len());
-    // SAFETY: `data`'s bytes; the TLS call is valid for the socket.
-    unsafe { socket_record_send(socket, buffer, length, flags, tls_send, steady_ms) }
-}
-
-/// [`socket_recv`] into `buffer` over a handle.
-pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
-    // SAFETY: `buffer`'s bytes; the TLS call is valid for the socket.
-    unsafe { socket_record_recv(socket, at, length, flags, tls_recv, steady_ms) }
-}
-
-/// [`socket_peek`] into `buffer` over a handle.
+/// [`socket_peek`] into `buffer`.
 pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
     let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
     // SAFETY: `buffer`'s bytes; the TLS call is valid for the socket.
@@ -709,24 +759,6 @@ pub unsafe fn socket_send_sync(
 ) -> isize {
     // SAFETY: as the caller promises.
     unsafe { sync(socket, Io::Send, SYNC_SEND, buffer, length, flags, true) }
-}
-
-/// [`socket_send_sync`] of `data` over a handle.
-#[must_use]
-pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
-    let (buffer, length) = (data.as_ptr().cast(), data.len());
-    // SAFETY: a live record and `data`'s bytes.
-    unsafe {
-        sync(
-            socket.as_ptr(),
-            Io::Send,
-            SYNC_SEND,
-            buffer,
-            length,
-            flags,
-            true,
-        )
-    }
 }
 
 /// `ssize_t Socket::recv_sync(void *, size_t, int)`: `MSG_WAITALL` is cleared for

@@ -241,7 +241,11 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_EVENT_WORKER_PID => pid(workers.event_workers.wrapping_add(index(arg))),
         OP_TASK_POOL_WORKER_NUM => u64::from(task_pool.worker_num()),
-        OP_TASK_WORKER_PID => pid(task_pool.workers().wrapping_add(index(arg))),
+        OP_TASK_WORKER_PID => signed(
+            task_pool
+                .worker(index(arg))
+                .map_or(0, swoole_rs_process::worker_record::Worker::pid),
+        ),
         OP_WORKER_REGISTRY => config.worker_registry as u64,
         OP_RUNNING => u64::from(config.running),
         OP_RELOAD_INIT => u64::from(pool.reload_init),
@@ -470,9 +474,10 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_POP_MESSAGE => {
-            let (msg, size) = ((&raw mut ctx.msg).cast(), size_of::<EventData>());
-            // SAFETY: the live event pool and the context's message.
-            signed(unsafe { methods::pop_message(ctx.workers().event_pool, msg, size) })
+            let (msg, size) = ((&raw mut ctx.msg).cast::<u8>(), size_of::<EventData>());
+            // SAFETY: the context's message, which the box's message overwrites.
+            let msg = unsafe { core::slice::from_raw_parts_mut(msg, size) };
+            signed(methods::pop_message(ctx.pool(), msg))
         }
         OP_MESSAGE_TYPE => u64::from(ctx.msg.info.kind),
         OP_ON_WORKER_MESSAGE => {

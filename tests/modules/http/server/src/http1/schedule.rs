@@ -208,7 +208,12 @@ fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Wor
 
     let avg_elem = average_combined(&init_counter, &counter);
     for i in 0..worker_num {
-        assert!((counter[i] + init_counter[i]) as i64 >= avg_elem as i64 * 2 - 10);
+        // The starting loads are random; on a failure, print them so the draw can be
+        // replayed against upstream's scheduler (#3281).
+        assert!(
+            (counter[i] + init_counter[i]) as i64 >= avg_elem as i64 * 2 - 10,
+            "worker {i}: started {init_counter:?}, scheduled {counter:?}, avg_elem {avg_elem}"
+        );
     }
     serv.delete();
 }

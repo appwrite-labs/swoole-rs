@@ -136,7 +136,7 @@ impl Read<'_> {
     }
 
     fn send_bytes(&self, packet: &[u8]) {
-        send(self.socket, packet, 0);
+        _ = send(self.socket, packet, 0);
     }
 
     /// One receive of `mode` through the port's protocol, its packages handled by `K`.
