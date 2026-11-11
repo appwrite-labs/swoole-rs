@@ -264,7 +264,9 @@ mod tests {
             assert!(pool.take(b"absent").is_null());
             let mut random = 0x0009_1cd8_1a63_u64;
             let mut checks = 0;
-            for _ in 0..100_000 {
+            // Miri interprets each round some thousand times slower: it checks a sample.
+            let rounds = if cfg!(miri) { 1_000 } else { 100_000 };
+            for _ in 0..rounds {
                 random = random
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
@@ -303,13 +305,14 @@ mod tests {
                     checks += 1;
                 }
             }
-            assert_eq!(checks, 700_000);
+            assert_eq!(checks, rounds * keys.len());
         }
         assert_eq!(destroyed(), 0);
     }
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fork")]
     fn fork_keeps_parent_fifo_and_never_destroys_native_tokens() {
         let mut tokens = tokens();
         let pointers = tokens

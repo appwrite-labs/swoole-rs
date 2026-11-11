@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn sendfile_checks() {
         let file = |name: &core::ffi::CStr, offset: u64| {
-            let address = u64::try_from(name.as_ptr().addr()).unwrap();
+            let address = u64::try_from(name.as_ptr().expose_provenance()).unwrap();
             Script::with(&[
                 (OP_SENDFILE_NAME_MAX, 100),
                 (OP_SENDFILE_NAME, address),

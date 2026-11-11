@@ -83,7 +83,6 @@ pub unsafe fn init_event_worker(serv: view::Server<'_>, worker: *mut WorkerRecor
     swr_v1_worker_init(unsafe { swoole_rs_process::worker_record::Worker::new(worker) });
     let config = serv.config();
     swoole_rs_process::methods::worker_set_max_request(
-        worker,
         config.max_request,
         config.max_request_grace,
     );
@@ -216,6 +215,7 @@ mod tests {
     /// `swr_v1_server_new` or `create()`, so the test lends the server its shared record, the
     /// two event workers and the session table those would have allocated.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn abort_and_reset() {
         let state = crate::swr_v1_server_state_new();
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];

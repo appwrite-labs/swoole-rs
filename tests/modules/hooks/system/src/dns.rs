@@ -5,10 +5,14 @@
 //! is Rust's (`swr_v1_core_name_resolver_*`), its `each` a remove; `GethostbynameRequest` and `GetaddrinfoRequest`
 //! are views of the resolver record, so the cases drive that record
 //! (`swr_v1_core_resolver_*`) as `network::gethostbyname`/`getaddrinfo` do; the
-//! lookup itself goes through `swoole_name_resolver_lookup_run`, its C entry.
+//! lookup itself is crates/hooks' `resolve::name_resolver_lookup`.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fs;
+
+use swoole_rs_corebase::{
+    NameResolverContext as Context, swr_v1_core_name_resolver_add, swr_v1_core_name_resolver_remove,
+};
 
 use super::{
     AF_INET, AF_INET6, EAI_NONAME, SOCK_STREAM, coroutine_cancel, current, go, last_error, run,
@@ -20,44 +24,12 @@ const SW_DNS_SERVER_PORT: c_int = 53;
 const TYPE_USER: c_int = 2;
 const TEST_HTTP_DOMAIN: &CStr = c"www.gov.cn";
 
-/// `swoole::NameResolver::Context`.
-#[repr(C)]
-struct Context {
-    kind: c_int,
-    timeout: f64,
-    private_data: *mut c_void,
-    with_port: bool,
-    cluster: bool,
-    is_final: bool,
-    dtor: Option<unsafe extern "C" fn(*mut Context)>,
-}
-
-impl Context {
-    /// `ctx = {type}`.
-    fn of(kind: c_int) -> Self {
-        Self {
-            kind,
-            timeout: 0.0,
-            private_data: std::ptr::null_mut(),
-            with_port: false,
-            cluster: false,
-            is_final: false,
-            dtor: None,
-        }
+/// `ctx = {type}`.
+fn context_of(kind: c_int) -> Context {
+    Context {
+        kind,
+        ..Context::default()
     }
-}
-
-/// Where a resolver writes its answer.
-type Assign = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
-
-/// `swoole_name_resolver_lookup_call`.
-#[repr(C)]
-struct LookupCall {
-    name: *const c_char,
-    length: usize,
-    context: *mut Context,
-    out: *mut c_void,
-    assign: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
 }
 
 #[repr(C)]
@@ -116,26 +88,6 @@ unsafe extern "C-unwind" {
     ) -> bool;
     fn swr_v1_clients_set_dns_server(server: *const u8, length: usize);
     fn swr_v1_clients_set_hosts_path(path: *const u8, length: usize);
-    /// `swoole_name_resolver_add({resolve, private_data, kind}, append)`.
-    fn swr_v1_core_name_resolver_add(
-        resolve: unsafe extern "C" fn(
-            *mut c_void,
-            *const c_char,
-            usize,
-            *mut Context,
-            *mut c_void,
-            Assign,
-        ) -> bool,
-        private_data: *mut c_void,
-        kind: c_int,
-        append: bool,
-    );
-    /// `swoole_name_resolver_each` removing the first resolver `same` accepts.
-    fn swr_v1_core_name_resolver_remove(
-        same: unsafe extern "C" fn(*mut c_void, c_int, *mut c_void) -> bool,
-        argument: *mut c_void,
-    ) -> *mut c_void;
-    fn swoole_name_resolver_lookup_run(call: *mut LookupCall);
 
     fn swr_v1_core_resolver_create(
         family: c_int,
@@ -242,26 +194,11 @@ fn dns_server() -> (String, c_int) {
     read()
 }
 
-unsafe extern "C" fn assign(out: *mut c_void, text: *const c_char, length: usize) {
-    // SAFETY: `out` is the caller's String; `text` holds `length` bytes.
-    let text = unsafe { std::slice::from_raw_parts(text.cast::<u8>(), length) };
-    // SAFETY: as above.
-    *unsafe { &mut *out.cast::<String>() } = String::from_utf8(text.to_vec()).unwrap();
-}
-
 /// `swoole_name_resolver_lookup(host_name, ctx)`.
 fn name_resolver_lookup(host_name: &str, ctx: &mut Context) -> String {
-    let mut out = String::new();
-    let mut call = LookupCall {
-        name: host_name.as_ptr().cast(),
-        length: host_name.len(),
-        context: ctx,
-        out: (&raw mut out).cast(),
-        assign,
-    };
-    // SAFETY: the call's pointers outlive it.
-    unsafe { swoole_name_resolver_lookup_run(&mut call) };
-    out
+    let mut out = Vec::new();
+    swoole_rs_hooks::resolve::name_resolver_lookup(host_name.as_bytes(), ctx, &mut out);
+    String::from_utf8(out).unwrap()
 }
 
 /// `GethostbynameRequest req(name, family); network::gethostbyname(&req)`: the status
@@ -472,56 +409,39 @@ fn gethosts() {
 }
 
 fn name_resolver_test_fn_1() {
-    let mut ctx = Context::of(AF_INET);
+    let mut ctx = context_of(AF_INET);
     ctx.timeout = 1.0;
     assert_eq!("127.0.0.1", name_resolver_lookup("localhost", &mut ctx));
 }
 
-/// The user resolver: upstream's lambda, its answer through `assign`; true when it
+/// The user resolver: upstream's lambda, its answer in `out`; true when it
 /// returned a non-empty string.
-unsafe extern "C" fn user_resolve(
-    _: *mut c_void,
-    name: *const c_char,
-    length: usize,
-    ctx: *mut Context,
-    out: *mut c_void,
-    assign: Assign,
-) -> bool {
-    // SAFETY: the lookup's name.
-    let domain = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
+fn user_resolve(_: *mut c_void, domain: &[u8], ctx: &mut Context, out: &mut Vec<u8>) -> bool {
     if domain == b"name1" {
-        // SAFETY: the lookup's output.
-        unsafe { assign(out, c"127.0.0.2".as_ptr(), 9) };
+        *out = b"127.0.0.2".to_vec();
         return true;
     } else if domain == b"www.baidu.com" {
-        // SAFETY: the lookup's live context.
-        unsafe { (*ctx).is_final = true };
+        ctx.is_final = true;
     }
     false
 }
 
-/// The traversal's body: remove the user resolver.
-unsafe extern "C" fn remove_user(_: *mut c_void, kind: c_int, _: *mut c_void) -> bool {
-    kind == TYPE_USER
-}
-
 fn name_resolver_test_fn_2() {
-    // SAFETY: a resolver that keeps no state.
-    unsafe { swr_v1_core_name_resolver_add(user_resolve, std::ptr::null_mut(), TYPE_USER, true) };
+    swr_v1_core_name_resolver_add(user_resolve, std::ptr::null_mut(), TYPE_USER, true);
 
-    let mut ctx = Context::of(AF_INET);
+    let mut ctx = context_of(AF_INET);
     assert_eq!("127.0.0.2", name_resolver_lookup("name1", &mut ctx));
 
-    let mut ctx = Context::of(AF_INET);
+    let mut ctx = context_of(AF_INET);
     assert_eq!("", name_resolver_lookup("www.baidu.com", &mut ctx));
 
-    let mut ctx = Context::of(AF_INET);
+    let mut ctx = context_of(AF_INET);
     assert_eq!("127.0.0.1", name_resolver_lookup("localhost", &mut ctx));
 
-    // SAFETY: a predicate over the resolver's kind.
-    unsafe { swr_v1_core_name_resolver_remove(remove_user, std::ptr::null_mut()) };
+    // The traversal's body: remove the user resolver.
+    swr_v1_core_name_resolver_remove(|_, kind| kind == TYPE_USER);
 
-    let mut ctx = Context::of(AF_INET);
+    let mut ctx = context_of(AF_INET);
     let ip = name_resolver_lookup("www.baidu.com", &mut ctx);
     assert!(verify_ip(AF_INET, &ip));
 }
@@ -537,7 +457,7 @@ fn name_resolve_2() {
 }
 
 fn name_resolve_fail() {
-    let mut ctx = Context::of(AF_INET);
+    let mut ctx = context_of(AF_INET);
     let ip = name_resolver_lookup("www.baidu.com-not-exists", &mut ctx);
     assert!(ip.is_empty());
     assert_eq!(last_error(), SW_ERROR_DNSLOOKUP_RESOLVE_FAILED);

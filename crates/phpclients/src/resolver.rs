@@ -6,7 +6,7 @@
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{
-    ffi::{c_char, c_int, c_void},
+    ffi::{c_int, c_void},
     mem::{self, ManuallyDrop},
     ptr,
 };
@@ -17,9 +17,8 @@ use swoole_rs_zend::{
     sys::{
         IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_efree, swr_zend_emalloc,
         swr_zend_runtime_instanceof, swr_zend_try_zval_dtor, swr_zend_zval_release,
-        zend_lookup_class, zval,
+        zend_lookup_class, zend_object, zval,
     },
-    value,
 };
 
 /// `AF_INET`, `__construct`'s default family.
@@ -101,15 +100,6 @@ mod native {
         context.is_final = is_final;
     }
 
-    /// `ctx->dtor(ctx); ctx->private_data = nullptr;`, a `bailout::trap` body (the
-    /// cluster's destructor may run PHP).
-    /// # Safety
-    /// `context` is live with a cluster.
-    pub(super) unsafe extern "C" fn swoole_name_resolver_context_release(context: *mut c_void) {
-        // SAFETY: as the caller promises.
-        unsafe { &mut *context.cast::<NameResolverContext>() }.release();
-    }
-
     /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})`.
     pub(super) fn swoole_name_resolver_php_add(resolver: *mut zval) {
         swoole_rs_corebase::swr_v1_core_name_resolver_add(
@@ -120,25 +110,18 @@ mod native {
         );
     }
 
-    /// A PHP resolver whose object is `resolver`'s, or any PHP resolver when it is null.
-    unsafe extern "C" fn php_same(kept: *mut c_void, kind: c_int, resolver: *mut c_void) -> bool {
-        // SAFETY: both are live object zvals when `resolver` is set.
-        kind == TYPE_PHP
-            && (resolver.is_null() || unsafe { super::same(kept.cast(), resolver.cast()) })
-    }
-
     /// Remove the first PHP resolver for `resolver`'s object (any, when `None`) and
     /// return its kept zval, or null if there was none (or `resolver` is no object).
     pub fn swoole_name_resolver_php_remove(resolver: Option<&Value>) -> *mut zval {
-        let resolver = match resolver {
-            None => std::ptr::null_mut(),
-            Some(resolver) if resolver.object().is_some() => resolver.as_ptr(),
-            Some(_) => return std::ptr::null_mut(),
+        let object = match resolver.map(Value::object) {
+            None => None,
+            Some(Some(object)) => Some(object),
+            Some(None) => return std::ptr::null_mut(),
         };
-        // SAFETY: `php_same` reads only the kept zvals and `resolver`, null or a live
-        // object zval.
-        unsafe { swoole_rs_corebase::swr_v1_core_name_resolver_remove(php_same, resolver.cast()) }
-            .cast()
+        let same = |kept: *mut c_void, kind| {
+            kind == TYPE_PHP && object.is_none_or(|object| super::object_of(kept) == Some(object))
+        };
+        swoole_rs_corebase::swr_v1_core_name_resolver_remove(same).cast()
     }
 }
 
@@ -219,33 +202,16 @@ fn lookup(call: &Call) {
     let Some(context) = context_of(held.and_then(Value::custom::<Held>)) else {
         return;
     };
+    // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
+    let context = unsafe { &mut *context };
     let mut result = Vec::new();
-    let mut run = swoole_rs_hooks::resolve::LookupCall {
-        name: name.as_ptr().cast(),
-        length: name.len(),
-        // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
-        context: unsafe { &mut *context },
-        out: (&raw mut result).cast(),
-        assign: assign_vec,
-    };
-    // SAFETY: C++'s `swoole_name_resolver_lookup` over `run`; a PHP resolver
-    // may bail out, which the trap catches.
-    match unsafe {
-        bailout::trap(
-            swoole_rs_hooks::resolve::swoole_name_resolver_lookup_run,
-            (&raw mut run).cast(),
-        )
-    } {
+    let lookup = || swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
+    // SAFETY: the lookup holds only borrows of this frame; a PHP resolver may bail
+    // out, which the trap catches.
+    match unsafe { bailout::trap_with(lookup) } {
         Ok(()) => call.set_zstring(ZString::new(&result)),
         Err(bailout) => bailout.defer(),
     }
-}
-
-unsafe extern "C" fn assign_vec(out: *mut c_void, text: *const c_char, length: usize) {
-    // SAFETY: `text` holds `length` bytes.
-    let text = unsafe { std::slice::from_raw_parts(text.cast::<u8>(), length) };
-    // SAFETY: `out` is the caller's `Vec<u8>`.
-    unsafe { *out.cast::<Vec<u8>>() = text.to_vec() };
 }
 
 /// `swoole_name_resolver_add(Swoole\NameResolver $ns): bool`.
@@ -292,15 +258,11 @@ pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
     true
 }
 
-/// `sw_php_spl_object_hash` equality: the same object handle.
-unsafe extern "C" fn same(kept: *mut zval, resolver: *mut zval) -> bool {
-    let handle = |zv: *mut zval| {
-        // SAFETY: both are live object zvals.
-        let object = unsafe { value::obj_of(zv) };
-        // SAFETY: a live object.
-        unsafe { (*object).handle }
-    };
-    handle(kept) == handle(resolver)
+/// The object of a PHP resolver's kept zval; `sw_php_spl_object_hash` equality is
+/// the same object.
+fn object_of(kept: *mut c_void) -> Option<*mut zend_object> {
+    // SAFETY: every `TYPE_PHP` resolver's data is the live zval copy `add` made.
+    unsafe { Value::from_ptr(kept.cast()) }.and_then(Value::object)
 }
 
 /// `swoole_name_resolver_remove(Swoole\NameResolver $ns): bool`.
@@ -354,34 +316,24 @@ fn call_method(
     Ok(retval)
 }
 
-/// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver`
-/// for `name`, keeping a returned cluster in the context and popping a node
-/// from it. Writes the result through `assign` and returns whether it is non-empty,
-/// then raises a bailout the PHP code caused.
-/// # Safety
-/// `resolver` is a live object zval the list holds, `name` holds `length` bytes,
-/// `context` is a live `NameResolver::Context *` and `assign` writes `out`.
-unsafe extern "C" fn lookup_php(
+/// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver` (the
+/// kept zval, registered only by [`php_swoole_name_resolver_add`]) for `name`, keeping
+/// a returned cluster in the context and popping a node from it. Writes the result to
+/// `out` and returns whether it is non-empty, then raises a bailout the PHP code caused.
+fn lookup_php(
     resolver: *mut c_void,
-    name: *const c_char,
-    length: usize,
-    context: *mut swoole_rs_corebase::NameResolverContext,
-    out: *mut c_void,
-    assign: swoole_rs_corebase::Assign,
+    name: &[u8],
+    context: &mut NameResolverContext,
+    out: &mut Vec<u8>,
 ) -> bool {
-    // SAFETY: per the caller.
-    let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
-    // SAFETY: per the caller.
+    // SAFETY: the zval copy `add` registered with this function, which the list holds
+    // until a remove unlinks it.
     let resolver = unsafe { Value::from_ptr(resolver.cast()) };
-    // SAFETY: per the caller.
-    let result = resolver.map_or(Ok(None), |resolver| unsafe {
-        resolve(resolver, name, context)
-    });
+    let result = resolver.map_or(Ok(None), |resolver| resolve(resolver, name, context));
     let answered = match result {
         Ok(Some(text)) => {
-            // SAFETY: per the caller.
-            unsafe { assign(out, text.as_ptr().cast(), text.len()) };
-            !text.is_empty()
+            *out = text;
+            !out.is_empty()
         }
         Ok(None) => false,
         Err(bailout) => {
@@ -396,17 +348,13 @@ unsafe extern "C" fn lookup_php(
 /// The lookup's steps, as upstream's; `None` is an empty result. Upstream
 /// returns early from some steps without releasing a call's result; so does
 /// this ([`call_method`]'s `ManuallyDrop`).
-/// # Safety
-/// As [`lookup_php`].
-unsafe fn resolve(
+fn resolve(
     resolver: &Value,
     name: &[u8],
-    context: *mut NameResolverContext,
+    context: &mut NameResolverContext,
 ) -> Result<Option<Vec<u8>>, bailout::Bailout> {
     let mut with_port = false;
-    // SAFETY: a live context.
-    let mut cluster =
-        native::swoole_name_resolver_context_get(unsafe { &*context }, &mut with_port);
+    let mut cluster = native::swoole_name_resolver_context_get(context, &mut with_port);
     // SAFETY: null or the context's cluster, an object zval it keeps until released below.
     if let Some(kept) = unsafe { Value::from_ptr(cluster) } {
         let count = call_method(kept, b"count", None)?.long();
@@ -415,8 +363,8 @@ unsafe fn resolve(
         }
         if count == 0 {
             // No available node: release the cluster and resolve again.
-            // SAFETY: the release of a live context with a cluster.
-            unsafe { bailout::trap(native::swoole_name_resolver_context_release, context.cast()) }?;
+            // SAFETY: the release owns nothing; the cluster's destructor may run PHP.
+            unsafe { bailout::trap_with(|| context.release()) }?;
             cluster = ptr::null_mut();
         }
     }
@@ -432,12 +380,7 @@ unsafe fn resolve(
             // SAFETY: fresh storage; the context takes the result's reference.
             unsafe { cluster.write(ManuallyDrop::into_inner(found).into_zval()) };
         }
-        // SAFETY: a live context.
-        native::swoole_name_resolver_context_settle(
-            unsafe { &mut *context },
-            cluster,
-            kind == IS_STRING,
-        );
+        native::swoole_name_resolver_context_settle(context, cluster, kind == IS_STRING);
         match kind {
             IS_OBJECT => {}
             IS_STRING => return Ok(answer),
@@ -457,8 +400,7 @@ unsafe fn resolve(
     };
     let mut result = host.to_vec();
     // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
-    // SAFETY: a live context.
-    native::swoole_name_resolver_context_get(unsafe { &*context }, &mut with_port);
+    native::swoole_name_resolver_context_get(context, &mut with_port);
     if with_port {
         result.push(b':');
         let Some(port) = entry.find(b"port").and_then(Value::applied_long) else {

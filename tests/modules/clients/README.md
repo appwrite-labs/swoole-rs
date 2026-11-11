@@ -81,6 +81,10 @@ holds the connection: `recv()` fails with 5001, and the key's next connect is fr
 It also runs a `Coroutine\Http\Client` whose `write_func` replaces itself and reads
 its client mid-response, while another coroutine calls `set()` and `getDefer()` across
 the `get()` and `download()` yields: every chunk and the downloaded file arrive intact.
+`php_enable_ssl.py` (`clients-php-enable-ssl`, every lane, Cargo build) calls `enableSSL()`
+on a sync and an Async `Client` made without `SWOOLE_SSL`, against a self-signed local peer
+(its certificate made with `openssl req`): `ssl_verify_peer` alone fails the handshake,
+`ssl_cafile` naming the certificate passes it, and an `ssl_host_name` it doesn't name fails it.
 
 ```sh
 python3 tests/modules/clients/php_http.py --build-manifest BUILD_MANIFEST \
