@@ -27,15 +27,14 @@ mod typed;
 
 pub use assignment::{swr_v1_phpstdext_assign, swr_v1_phpstdext_assign_op};
 pub use invoke::swr_v1_phpstdext_method_call;
-pub use typed::{
-    swr_v1_phpstdext_check, swr_v1_phpstdext_foreach_begin, swr_v1_phpstdext_operation,
-    swr_v1_phpstdext_unset,
-};
+pub use typed::{swr_v1_phpstdext_foreach_begin, swr_v1_phpstdext_unset};
 
-use std::ffi::c_int;
+use std::{ffi::c_int, marker::PhantomData};
 use swoole_rs_zend::{
-    sys::{IS_INDIRECT, zend_execute_data, zend_op, znode_op, zval},
-    type_of,
+    Value,
+    sys::{
+        IS_CONST, IS_CV, IS_INDIRECT, IS_UNUSED, IS_VAR, zend_execute_data, zend_op, znode_op, zval,
+    },
 };
 
 /// `ZEND_USER_OPCODE_CONTINUE` and `ZEND_USER_OPCODE_DISPATCH`; the C shim
@@ -85,37 +84,145 @@ pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
     unsafe { typed::install() };
 }
 
-/// `EX_VAR(var)`.
-#[inline]
-fn ex_var(frame: *mut zend_execute_data, var: u32) -> *mut zval {
-    frame.wrapping_byte_add(var as usize).cast()
+/// A live frame at the instruction of the user opcode handler Zend passed it
+/// to, for `'a`.
+#[derive(Clone, Copy)]
+struct Frame<'a> {
+    ptr: *mut zend_execute_data,
+    live: PhantomData<&'a zend_execute_data>,
 }
 
-/// `RT_CONSTANT(opline, node)`.
-/// # Safety
-/// `node` is a constant operand of `opline`.
-#[inline]
-unsafe fn rt_constant(opline: *const zend_op, node: znode_op) -> *mut zval {
-    // SAFETY: a constant operand holds its literal's offset.
-    let offset = unsafe { node.constant }.cast_signed();
-    opline
-        .wrapping_byte_offset(offset as isize)
-        .cast_mut()
-        .cast()
-}
-
-/// `_get_zval_ptr_ptr_var(var)`: the variable, through an indirection.
-/// # Safety
-/// `var` is a live variable slot of `frame`.
-#[inline]
-unsafe fn ptr_ptr_var(frame: *mut zend_execute_data, var: u32) -> *mut zval {
-    let slot = ex_var(frame, var);
-    // SAFETY: per the caller.
-    if unsafe { type_of(slot) } == IS_INDIRECT {
-        // SAFETY: as above.
-        let value = unsafe { (*slot).value };
-        // SAFETY: an indirect zval holds `zv`.
-        return unsafe { value.zv };
+impl<'a> Frame<'a> {
+    /// # Safety
+    /// `frame` is the live frame Zend passed a user opcode handler, which
+    /// outlives `'a`.
+    unsafe fn new(frame: *mut zend_execute_data) -> Self {
+        Self {
+            ptr: frame,
+            live: PhantomData,
+        }
     }
-    slot
+
+    fn as_ptr(self) -> *mut zend_execute_data {
+        self.ptr
+    }
+
+    /// `EX(opline)`.
+    fn opline(self) -> *const zend_op {
+        // SAFETY: a live frame.
+        unsafe { (*self.ptr).opline }
+    }
+
+    /// `EX(opline) = opline`.
+    fn jump(self, opline: *const zend_op) {
+        // SAFETY: a live frame.
+        unsafe { (*self.ptr).opline = opline };
+    }
+
+    /// The current instruction.
+    fn op(self) -> Op<'a> {
+        // SAFETY: the frame's current instruction.
+        unsafe { Op::at(self, self.opline()) }
+    }
+}
+
+/// An operand's `var` or `constant`: a byte offset either way.
+fn offset(node: znode_op) -> u32 {
+    // SAFETY: every member of the union is a `u32`.
+    unsafe { node.var }
+}
+
+const _: () = assert!(
+    size_of::<znode_op>() == size_of::<u32>(),
+    "znode_op holds one u32 on 64-bit builds"
+);
+
+/// An instruction of a live frame's function: its fields, copied so no
+/// borrow of the script outlives a VM effect.
+#[derive(Clone, Copy)]
+struct Op<'a> {
+    frame: Frame<'a>,
+    at: *const zend_op,
+    op1: znode_op,
+    op2: znode_op,
+    result: znode_op,
+    extended_value: u32,
+    op1_type: u8,
+    op2_type: u8,
+    result_type: u8,
+}
+
+impl<'a> Op<'a> {
+    /// # Safety
+    /// `at` is an instruction of `frame`'s function.
+    unsafe fn at(frame: Frame<'a>, at: *const zend_op) -> Self {
+        // SAFETY: per the caller, a live plain C record.
+        let op = unsafe { &*at };
+        Self {
+            frame,
+            at,
+            op1: op.op1,
+            op2: op.op2,
+            result: op.result,
+            extended_value: op.extended_value,
+            op1_type: op.op1_type,
+            op2_type: op.op2_type,
+            result_type: op.result_type,
+        }
+    }
+
+    /// The `OP_DATA` instruction after this one.
+    /// # Safety
+    /// This instruction is followed by its `OP_DATA` (`ASSIGN_DIM`, `ASSIGN_DIM_OP`).
+    unsafe fn data(self) -> Self {
+        // SAFETY: per the caller.
+        unsafe { Self::at(self.frame, self.at.wrapping_add(1)) }
+    }
+
+    /// An operand of type `kind`: its literal, its slot, or None if unused.
+    fn operand(self, kind: u8, node: znode_op) -> Option<&'a Value> {
+        let operand = match u32::from(kind) {
+            IS_UNUSED => return None,
+            // `RT_CONSTANT(opline, node)`.
+            IS_CONST => self
+                .at
+                .wrapping_byte_offset(offset(node).cast_signed() as isize)
+                .cast(),
+            // `EX_VAR(node.var)`.
+            _ => self
+                .frame
+                .ptr
+                .wrapping_byte_add(offset(node) as usize)
+                .cast(),
+        };
+        // SAFETY: a constant operand's offset leads from its instruction to
+        // the literal the script holds, and a variable operand's to a live
+        // slot of its frame; `Value` is a transparent zval.
+        unsafe { Value::from_ptr(operand) }
+    }
+
+    fn op1(self) -> Option<&'a Value> {
+        self.operand(self.op1_type, self.op1)
+    }
+
+    fn op2(self) -> Option<&'a Value> {
+        self.operand(self.op2_type, self.op2)
+    }
+
+    /// The result slot, if the result is used.
+    fn result(self) -> Option<&'a Value> {
+        self.operand(self.result_type, self.result)
+    }
+
+    /// `_get_zval_ptr_ptr_var`: op1's variable, through an indirection.
+    fn op1_indirect(self) -> Option<&'a Value> {
+        let slot = self.op1()?;
+        if !matches!(u32::from(self.op1_type), IS_VAR | IS_CV) || slot.kind() != IS_INDIRECT {
+            return Some(slot);
+        }
+        // SAFETY: an indirect zval holds `zv`, at offset 0.
+        let target = unsafe { slot.as_ptr().cast::<*mut zval>().read() };
+        // SAFETY: the live slot it points to.
+        unsafe { Value::from_ptr(target) }
+    }
 }
