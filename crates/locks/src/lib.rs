@@ -792,14 +792,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_init")]
     fn safe_locks_lock_and_refuse_what_they_cannot_hold() {
         let lock = super::Lock::private(MUTEX).expect("a mutex");
         assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), 0);
         assert_eq!(lock.unlock(), 0);
         assert!(super::Lock::private(42).is_none(), "no such kind");
-        let short = Box::leak(Box::new([AtomicU64::new(0)]));
-        assert!(super::Lock::shared(MUTEX, short).is_none(), "too small");
+        // Taken back after the refusal, which keeps no reference, so Miri sees no leak.
+        let short = Box::into_raw(Box::new([AtomicU64::new(0)]));
+        assert!(
+            super::Lock::shared(MUTEX, unsafe { &mut *short }).is_none(),
+            "too small"
+        );
+        drop(unsafe { Box::from_raw(short) });
     }
 
     // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.
