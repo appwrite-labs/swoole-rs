@@ -11,7 +11,7 @@ use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, offloaded, swr_v1_hook_close_fd};
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::SocketRecord;
 
 /// `SW_ERROR_INVALID_PARAMS`.
@@ -365,8 +365,10 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     let Some((_, socket)) = hooked(fd) else {
         let mut poll = swr_v1_hook_fd_poll(fd, event);
         #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) cast")]
-        // SAFETY: one pollfd.
-        let ready = unsafe { libc::poll(&raw mut poll, 1, (timeout * 1000.0) as c_int) };
+        let ready = sys::poll(
+            core::slice::from_mut(&mut poll),
+            (timeout * 1000.0) as c_int,
+        );
         return if ready == 1 { 0 } else { -1 };
     };
     let saved = fd_wait(socket, event.cast_unsigned(), timeout);
@@ -381,8 +383,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
-        // SAFETY: closing an fd touches no memory.
-        return unsafe { libc::close(fd) };
+        return sys::close(fd);
     }
     let result = socket_map::close(
         fd,
