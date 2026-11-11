@@ -8,7 +8,6 @@ use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
-use swoole_rs_hooks::socket_members::{get_read_buffer, get_write_buffer};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
@@ -110,10 +109,8 @@ impl Co {
         if !self.ssl_context().is_null() {
             return None;
         }
-        // SAFETY: a live socket.
-        let proxy = unsafe { co::http_proxy(self.as_ptr()) }.cast::<ProxyState>();
         // SAFETY: the socket owns its proxy state, if any.
-        unsafe { proxy.as_ref() }
+        unsafe { self.handle().http_proxy().as_ref() }
     }
 
     /// After the settings: no proxy handshake for plain HTTP proxying.
@@ -182,15 +179,13 @@ impl Co {
 
     /// `connect(host, port)` under the timeout `configure_http` set.
     pub(crate) fn connect_http(self, host: &[u8], port: c_int) -> bool {
-        // SAFETY: a live socket and the host's bytes.
-        unsafe { co::connect(self.as_ptr(), host.as_ptr().cast(), host.len(), port, 0) }
+        self.handle().connect_host(host, port)
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
     #[expect(clippy::cast_sign_loss, reason = "an event bit")]
     pub(crate) fn check_bound(self, event: c_int) {
-        // SAFETY: a live socket.
-        unsafe { co::check_bound(self.as_ptr(), event as u32) };
+        self.handle().check_bound(event as u32);
     }
 
     /// The write buffer becomes `data`, then `send_all` of it: whether all went.
@@ -199,32 +194,24 @@ impl Co {
         buffer.clear();
         // SAFETY: the caller's bytes.
         unsafe { buffer.append(data.as_ptr(), data.len()) };
-        let (data, length) = (buffer.as_ptr(), buffer.len());
-        // SAFETY: the buffer's bytes, which the send only reads.
-        unsafe { co::send_all(self.as_ptr(), data.cast(), length) }.cast_unsigned() == length
+        self.send_all(buffer.view())
     }
 
     /// `send_all(data)`: whether all went.
     pub(crate) fn send_all(self, data: &[u8]) -> bool {
-        // SAFETY: a live socket and the caller's bytes.
-        unsafe { co::send_all(self.as_ptr(), data.as_ptr().cast(), data.len()) }.cast_unsigned()
-            == data.len()
+        self.handle().send_all(data).cast_unsigned() == data.len()
     }
 
     /// `get_write_buffer()`, made on first use.
     pub(crate) fn write_buffer<'a>(self) -> &'a mut CppString {
-        // SAFETY: a live socket.
-        let buffer = unsafe { get_write_buffer(self.as_ptr()) }.cast::<CppString>();
         // SAFETY: its write buffer, which lives as long.
-        unsafe { &mut *buffer }
+        unsafe { &mut *self.handle().buffer(true) }
     }
 
     /// `get_read_buffer()`, made on first use.
     pub(crate) fn input<'a>(self) -> &'a mut CppString {
-        // SAFETY: a live socket.
-        let buffer = unsafe { get_read_buffer(self.as_ptr()) }.cast::<CppString>();
         // SAFETY: its read buffer, which lives as long.
-        unsafe { &mut *buffer }
+        unsafe { &mut *self.handle().buffer(false) }
     }
 
     /// `recv` into the read buffer's room past its length.
@@ -232,8 +219,9 @@ impl Co {
         let buffer = self.input();
         let room = buffer.size() - buffer.len();
         let at = buffer.as_mut_ptr().wrapping_add(buffer.len());
-        // SAFETY: a live socket and the buffer's `room` writable bytes at `at`.
-        unsafe { co::recv(self.as_ptr(), at.cast(), room) }
+        // SAFETY: the buffer's `room` writable bytes at `at`.
+        self.handle()
+            .recv(unsafe { std::slice::from_raw_parts_mut(at, room) })
     }
 
     /// A read `TimeoutController` (0: the default read timeout).
@@ -259,8 +247,7 @@ impl Co {
 
     /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.
     pub(crate) fn peer_cert_pem(self) -> Vec<u8> {
-        // SAFETY: a live socket.
-        unsafe { co::peer_cert(self.as_ptr()) }
+        self.handle().peer_cert()
     }
 }
 
