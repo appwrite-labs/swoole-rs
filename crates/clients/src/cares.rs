@@ -156,23 +156,30 @@ const FD: i32 = FdType::SW_FD_CARES as i32;
 /// `Socket::free` of a wrapper whose descriptor c-ares keeps: the record goes on the
 /// next deferred pass while a reactor runs, as the event being handled may hold it.
 unsafe fn free(socket: *mut SocketRecord) {
-    unsafe extern "C-unwind" fn dealloc(socket: *mut c_void) {
-        // SAFETY: the detached wrapper, unused since.
-        unsafe { SocketRecord::free(socket.cast()) };
-    }
     // SAFETY: a live wrapper; c-ares retains the OS descriptor.
     if let Some(wrapper) = unsafe { Socket::from_ptr(socket) } {
         wrapper.edit(|wrapper| wrapper.fd = -1);
     }
-    let reactor = event_api::swr_v1_event_reactor();
-    if reactor.is_null() {
-        // SAFETY: as above.
-        unsafe { dealloc(socket.cast()) };
+    let detached = Detached(socket);
+    let Err(Detached(socket)) = (if event_api::swr_v1_event_reactor().is_null() {
+        Err(detached)
     } else {
-        // SAFETY: the available thread reactor's queue; `dealloc` frees the
-        // detached wrapper once.
-        unsafe { swoole_rs_reactor::swoole_event_defer(dealloc, socket.cast()) };
+        event_api::swoole_event_defer_value(detached)
+    }) else {
+        return;
+    };
+    // SAFETY: the detached wrapper, unused since.
+    unsafe { SocketRecord::free(socket) };
+}
+/// A detached wrapper the next deferred pass frees (a freed reactor leaks it, as
+/// upstream's).
+struct Detached(*mut SocketRecord);
+impl event_api::Deferred for Detached {
+    fn run(self) {
+        // SAFETY: the detached wrapper, which nothing has used since `free`.
+        unsafe { SocketRecord::free(self.0) };
     }
+    fn dispose(self) {}
 }
 unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {
     let events = if readable != 0 {
