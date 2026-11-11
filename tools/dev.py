@@ -293,6 +293,9 @@ def plan(args, reports):
     if 'tls' in modules:
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))
+    if 'hooks' in modules:
+        script('hooks-select-handler-arrays', 'tests/modules/hooks/select_handler_arrays.py', *php,
+               '--engine', f'cargo={cargo}', *report('hooks-select-handler-arrays'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file,async}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool,wait,async}.cpp, os.daemon and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
