@@ -1058,10 +1058,11 @@ fn close(this: Handle) -> c_int {
         socket_ssl_close(saved);
     }
     if this.socket_type() == SOCK_UNIX_DGRAM {
-        // SAFETY: a Unix datagram socket's address is the union's Unix member.
-        let path = saved.read(|socket| unsafe { socket.info.addr.un.sun_path.as_ptr() });
-        // SAFETY: the NUL-terminated path it bound.
-        unsafe { libc::unlink(path) };
+        let path = saved.read(|socket| socket.info.addr.unix().sun_path);
+        let path = path.map(|byte| byte.to_ne_bytes()[0]);
+        if let Ok(path) = CStr::from_bytes_until_nul(&path) {
+            swoole_rs_corebase::sys::unlink(path);
+        }
     }
     if this.flag(ASYNC) {
         if saved.read(|socket| socket.removed) == 0 {
@@ -1573,17 +1574,16 @@ fn bind_unix(this: Handle) -> c_int {
     let socket = this.socket();
     let pid = std::process::id();
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
+    let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
     let ret = socket.edit(|socket| {
-        // SAFETY: the address union's Unix member, which this socket's family uses.
-        let address = unsafe { &mut socket.info.addr.un };
+        let address = socket.info.addr.unix_mut();
         for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
             *slot = c_char::from_ne_bytes([byte]);
         }
         #[expect(clippy::cast_possible_truncation, reason = "AF_UNIX fits sa_family_t")]
         let family = libc::AF_UNIX as libc::sa_family_t;
         address.sun_family = family;
-        // SAFETY: the NUL-terminated path just written.
-        unsafe { libc::unlink(address.sun_path.as_ptr()) };
+        swoole_rs_corebase::sys::unlink(&bound);
         #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_un)")]
         let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
         // SAFETY: binds the client's descriptor to its own address storage.

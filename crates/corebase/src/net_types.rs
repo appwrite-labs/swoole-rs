@@ -27,6 +27,42 @@ impl Default for SocketAddress {
     }
 }
 
+impl AddressStorage {
+    /// The family, which every member starts with.
+    #[must_use]
+    pub const fn family(&self) -> libc::sa_family_t {
+        // SAFETY: every member is plain bytes, so any of them reads whatever was stored.
+        unsafe { self.ss.sa_family }
+    }
+
+    /// The storage as an IPv4 address.
+    #[must_use]
+    pub const fn v4(&self) -> &libc::sockaddr_in {
+        // SAFETY: as for `family`.
+        unsafe { &self.inet_v4 }
+    }
+
+    /// The storage as an IPv6 address.
+    #[must_use]
+    pub const fn v6(&self) -> &libc::sockaddr_in6 {
+        // SAFETY: as for `family`.
+        unsafe { &self.inet_v6 }
+    }
+
+    /// The storage as a Unix address.
+    #[must_use]
+    pub const fn unix(&self) -> &libc::sockaddr_un {
+        // SAFETY: as for `family`.
+        unsafe { &self.un }
+    }
+
+    /// The storage as a Unix address, to fill.
+    pub const fn unix_mut(&mut self) -> &mut libc::sockaddr_un {
+        // SAFETY: as for `family`, and any bytes written are a value of every member.
+        unsafe { &mut self.un }
+    }
+}
+
 impl SocketAddress {
     /// The storage's size, the most a call reads or writes of it.
     pub const CAPACITY: libc::socklen_t = crate::sys::socklen::<AddressStorage>();

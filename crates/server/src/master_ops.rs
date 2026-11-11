@@ -1724,8 +1724,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 unsafe { &(*packet).socket_addr }
             };
             if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
-                // SAFETY: an inet4 address.
-                u64::from(u32::from_be(unsafe { addr.addr.inet_v4.sin_addr.s_addr }))
+                u64::from(u32::from_be(addr.addr.v4().sin_addr.s_addr))
             } else {
                 let v6 = (&raw const addr.addr).cast::<c_char>();
                 // SAFETY: the address's storage holds a whole `sockaddr_in6`.
