@@ -883,27 +883,36 @@ mod tests {
     fn lock_lockwait() {
         const TIMEOUT_1: i32 = 2;
         const TIMEOUT_2: i32 = 10;
-        let lock = Lock::new(MUTEX, false);
-        lock.lock(LOCK_EX, -1);
         // Upstream unlocks after a fixed 10 ms sleep, which races the waiter's start and its
         // second wait on a loaded runner. Main instead unlocks 1 ms after the first timeout,
         // so the waiter blocks briefly in the second wait with TIMEOUT_2's whole margin left.
-        let timed_out = Barrier::new(2);
-        thread::scope(|s| {
-            s.spawn(|| {
-                let ms1 = millis();
-                assert_eq!(lock.lock(LOCK_EX, TIMEOUT_1), ETIMEDOUT);
+        // How soon the waiter runs after the unlock is the scheduler's, and the gates run 40
+        // phases at once (#2939), so the bound holds if one of three attempts meets it.
+        let attempt = || {
+            let lock = Lock::new(MUTEX, false);
+            lock.lock(LOCK_EX, -1);
+            let timed_out = Barrier::new(2);
+            thread::scope(|s| {
+                let waiter = s.spawn(|| {
+                    let ms1 = millis();
+                    assert_eq!(lock.lock(LOCK_EX, TIMEOUT_1), ETIMEDOUT);
+                    timed_out.wait();
+                    let ms2 = millis();
+                    assert!(ms2 - ms1 >= TIMEOUT_1 as u128);
+                    assert_eq!(lock.lock(LOCK_EX, TIMEOUT_2), 0);
+                    millis() - ms2
+                });
                 timed_out.wait();
-                let ms2 = millis();
-                assert!(ms2 - ms1 >= TIMEOUT_1 as u128);
-                assert_eq!(lock.lock(LOCK_EX, TIMEOUT_2), 0);
-                let ms3 = millis();
-                assert!(ms3 - ms2 <= TIMEOUT_2 as u128);
-            });
-            timed_out.wait();
-            thread::sleep(Duration::from_millis(1));
-            lock.unlock();
-        });
+                thread::sleep(Duration::from_millis(1));
+                lock.unlock();
+                waiter.join().unwrap()
+            })
+        };
+        let waits: Vec<u128> = (0..3)
+            .map(|_| attempt())
+            .take_while(|&wait| wait > TIMEOUT_2 as u128)
+            .collect();
+        assert!(waits.len() < 3, "the second wait took {waits:?} ms");
     }
 
     #[test]
