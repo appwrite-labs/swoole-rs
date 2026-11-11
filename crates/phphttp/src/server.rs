@@ -201,13 +201,8 @@ fn cached(
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
 /// `onReceive`, or parse it into a new context and run its handler. A
 /// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
-/// # Safety
-/// `server` is the live server and `request` its `RecvData`.
-pub unsafe fn http_server_on_receive(server: *mut c_void, request: *mut c_void) -> c_int {
-    // SAFETY: per the caller, `server` is a live `Server` for the call.
-    let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: per the caller, the receive loop's `RecvData` for the call.
-    let request = unsafe { &*request.cast::<RecvData>() };
+#[must_use]
+pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let info = request.info();
     match receive(server, request) {
         CLOSED => -1,
@@ -237,11 +232,12 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         );
         return CLOSED;
     };
-    let port = server.port_by_server_fd(server_fd);
-    // SAFETY: the connection's live port.
-    let config = unsafe { view::port(port) };
-    // SAFETY: the live server and port.
-    let isset = |kind| unsafe { php_swoole_server_isset_callback(server, port, kind) };
+    // A live connection's listening port.
+    let Some(port) = server.port_by_server_fd(server_fd) else {
+        return CLOSED;
+    };
+    let config = port.config();
+    let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol && isset(ON_REQUEST);
     let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
@@ -265,7 +261,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     if swr_v1_clients_address_loopback(&conn.info) {
         facts.loopback = if conn.info.kind == SOCK_TCP6 { 6 } else { 4 };
     }
-    facts.cache = can_cache(server)
+    facts.cache = can_cache_session_addr(server)
         .then(|| usize::try_from(conn.fd).ok())
         .flatten();
     facts.coroutine = enable_coroutine(server);
@@ -297,14 +293,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 /// `swoole_http_server_can_cache_session_addr`: a keep-alive session's
 /// addresses stay cached until its close, so only when that close reaches
 /// the same worker.
-/// # Safety
-/// `server` is the live server.
-pub unsafe fn can_cache_session_addr(server: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    can_cache(unsafe { view::Server::from_raw(server) })
-}
-
-fn can_cache(server: view::Server<'_>) -> bool {
+#[must_use]
+pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
     let config = server.config();
     config.mode_ == MODE_BASE
         || (config.mode_ == MODE_PROCESS && config.dispatch_mode == DISPATCH_FDMOD)
@@ -520,7 +510,7 @@ fn http2_connection(
         remote_port,
         loopback,
         server_fd: conn.server_fd,
-        cache: can_cache(server)
+        cache: can_cache_session_addr(server)
             .then(|| usize::try_from(conn.fd).ok())
             .flatten(),
         static_handler: server.config().enable_static_handler,
@@ -607,13 +597,7 @@ pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
 
 /// `php_swoole_http_server_onClose`: forget the session's addresses, then
 /// the server's `onClose`.
-/// # Safety
-/// `server` is the live server and `info` the closed session's.
-pub unsafe fn http_server_on_close(server: *mut c_void, info: *mut c_void) {
-    // SAFETY: per the caller, the closed session's head.
-    let info = unsafe { &*info.cast::<DataHead>() };
-    // SAFETY: per the caller, `server` is a live `Server` for the call.
-    let server = unsafe { view::Server::from_raw(server) };
+pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
     let session = info.fd;
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd)

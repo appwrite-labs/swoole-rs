@@ -4,14 +4,14 @@
 use core::ffi::{c_int, c_void};
 use core::ptr::{null, null_mut};
 
+use crate::factory_ops::run;
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
-use swoole_rs_process::process_pool::PoolRecord;
+use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
-use swoole_rs_process::workers::factory_methods::run;
 use swoole_rs_process::workers::ops::{
     LOG_UNKNOWN_COMMAND, OP_ALL_WORKER_NUM, OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS,
     OP_COMMAND_REPLY, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS,
@@ -146,9 +146,8 @@ impl Context {
     }
     /// The server's worker registry.
     fn registry(&self) -> &mut registry::WorkerRegistry {
-        let registry = self.config().worker_registry.cast();
         // SAFETY: the server's live registry, which only the manager writes.
-        unsafe { &mut *registry }
+        unsafe { self.server().registry_mut() }
     }
     /// The event pool's reload task, for the ops that run while the manager reloads.
     fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {
@@ -250,7 +249,7 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WAIT_STATUS => signed(ctx.wait_status),
         OP_WAIT_ERROR => signed(ctx.wait_error),
         OP_READ_MESSAGE => u64::from(pool.read_message),
-        OP_HAS_ON_WORKER_MESSAGE => u64::from(!pool.on_worker_message.is_null()),
+        OP_HAS_ON_WORKER_MESSAGE => u64::from(pool.on_worker_message.is_some()),
         OP_RELOAD_WARN => methods::reload_warn as *const () as u64,
         OP_IS_MANAGER => {
             let pid = std::process::id().cast_signed();
@@ -302,7 +301,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let pid = std::process::id().cast_signed();
             ctx.counters().manager_pid = pid;
             let event_pool = ctx.pool();
-            event_pool.on_worker_message = entry::read_worker_message as *const c_void;
+            event_pool.on_worker_message = Some(read_worker_message);
             event_pool.max_wait_time = config.max_wait_time;
             event_pool.master_pid = pid;
             ctx.task_pool().master_pid = pid;
@@ -413,7 +412,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SPAWN_USER_WORKER => {
             // The manager spawns the pending workers by index, below their count.
             let &worker = ctx.registry().pending().get(index(arg))?;
-            spawn(RUN_SPAWN_USER_WORKER, worker)
+            spawn(RUN_SPAWN_USER_WORKER, worker.cast())
         }
         OP_WORKER_BY_PID => {
             ctx.worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
@@ -421,7 +420,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CHECK_EXIT_STATUS => {
             let status = exit_status(arg);
-            let (worker, status) = (ctx.worker.cast(), (&raw const status).cast());
+            let (worker, status) = (ctx.worker, &raw const status);
             // SAFETY: the context's live server, the worker found and its exit status.
             unsafe { run(serv, RUN_CHECK_EXIT_STATUS, worker, null_mut(), status, 0) };
             return Some(0);
@@ -485,14 +484,11 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_MESSAGE_TYPE => u64::from(ctx.msg.info.kind),
         OP_ON_WORKER_MESSAGE => {
-            type OnMessage = unsafe extern "C-unwind" fn(*mut PoolRecord, *mut EventData);
-            let pool = ctx.workers().event_pool;
-            let on_message = ctx.pool().on_worker_message;
-            // SAFETY: the pool's `void (*)(ProcessPool *, EventData *)`.
-            let on_message =
-                unsafe { core::mem::transmute::<*const c_void, Option<OnMessage>>(on_message) }?;
-            // SAFETY: the live pool and the message popped from it.
-            unsafe { on_message(pool, &raw mut ctx.msg) };
+            let msg = (&raw mut ctx.msg).cast();
+            let pool = ctx.pool();
+            let on_message = pool.on_worker_message?;
+            // SAFETY: the message popped from the pool.
+            unsafe { on_message(pool.into(), msg) };
             0
         }
         OP_STOP_MESSAGE_WORKER => {
@@ -524,6 +520,16 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         _ => return None,
     })
+}
+
+/// `pool->onWorkerMessage`: `Server::read_worker_message` over the pool and the
+/// message it popped.
+///
+/// # Safety
+/// `msg` is the live `EventData` the pool popped.
+unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_void) {
+    // SAFETY: the live pool, and the message as the caller guarantees.
+    unsafe { entry::read_worker_message(pool.raw().cast(), msg) }
 }
 
 /// `Manager_signal_handler`: the manager's signals over `SwooleG.server`.

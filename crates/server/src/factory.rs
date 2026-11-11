@@ -6,9 +6,10 @@ use core::ffi::{c_int, c_long, c_void};
 
 use core::ptr;
 
+use crate::base_factory::SendData;
+use crate::factory_ops::run;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::workers::entry;
-use swoole_rs_process::workers::factory_methods::{SendData, run};
 use swoole_rs_process::workers::ops::{
     EVENT_CLOSE, RUN_PROCESS_DISPATCH, RUN_PROCESS_END, RUN_PROCESS_FACTORY_SHUTDOWN,
     RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH,

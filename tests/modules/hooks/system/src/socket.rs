@@ -20,7 +20,7 @@ use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_hooks::co_socket::{self, Co};
-use swoole_rs_hooks::{TimeoutScope, co_io, packet};
+use swoole_rs_hooks::{TimeoutScope, co_io, packet, vector::IoVector};
 
 // glibc's values (the core-tests build is Linux).
 pub(super) const ECONNREFUSED: c_int = 111;
@@ -205,14 +205,6 @@ struct SockAddrIn {
     zero: [u8; 8],
 }
 
-/// `swr_v1_reactor_iov_prepared` (crates/reactor/src/iov_owned.rs).
-#[repr(C)]
-struct IovPrepared {
-    owner: *mut c_void,
-    fields: *mut c_void,
-    status: c_int,
-}
-
 unsafe extern "C" {
     fn swr_v1_hook_co_socket_connect_host(
         socket: *mut Record,
@@ -221,8 +213,6 @@ unsafe extern "C" {
         port: c_int,
     ) -> bool;
 
-    fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: c_int) -> IovPrepared;
-    fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
     #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
     fn socket_get_read_buffer(this: *mut c_void) -> *mut CppString;
     #[link_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv"]
@@ -578,29 +568,14 @@ impl Sock {
         pem
     }
 
-    /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it: the
-    /// members read only the vector's first field, its owner.
+    /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it.
     fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
-        // SAFETY: `iov`'s live vectors.
-        let prepared = unsafe {
-            swr_v1_reactor_iov_prepare(iov.as_ptr(), c_int::try_from(iov.len()).unwrap())
-        };
-        assert_eq!(prepared.status, 0);
-        let mut owner = prepared.owner;
-        let vector = (&raw mut owner).cast::<c_void>();
-        let co = self.co();
-        // SAFETY: the live vector.
-        let result = unsafe {
-            match op {
-                READV => co.readv(vector),
-                READV_ALL => co.readv_all(vector),
-                WRITEV => co.writev(vector),
-                _ => co.writev_all(vector),
-            }
-        };
-        // SAFETY: the owner prepare made, released once.
-        unsafe { swr_v1_reactor_iov_destroy(owner) };
-        result
+        let count = c_int::try_from(iov.len()).unwrap();
+        // SAFETY: `iov`'s live vectors, an iovec's layout.
+        let vector = unsafe { IoVector::new(iov.as_ptr().cast(), count) }.unwrap();
+        let write = matches!(op, WRITEV | WRITEV_ALL);
+        self.co()
+            .vector(&vector, write, matches!(op, READV_ALL | WRITEV_ALL))
     }
 }
 
@@ -2184,7 +2159,6 @@ unsafe extern "C-unwind" {
     fn swr_case_numeric_host_owner_and_independent_copies();
     fn swr_case_hints_vectors_and_failure_publication();
     fn swr_case_native_output_append_exception_is_contained();
-    fn swr_case_actual_async_numeric_results();
 }
 
 fn numeric_host_owner_and_independent_copies() {
@@ -2203,8 +2177,22 @@ fn native_output_append_exception_is_contained() {
 }
 
 fn actual_async_numeric_results() {
-    // SAFETY: in a coroutine.
-    run(|| unsafe { swr_case_actual_async_numeric_results() });
+    run(|| {
+        let host = swoole_rs_hooks::resolve::system_gethostbyname(b"127.0.0.1", AF_INET, 2.0);
+        assert_eq!(host, b"127.0.0.1");
+        let addresses = swoole_rs_hooks::resolve::system_getaddrinfo(
+            b"127.0.0.1",
+            AF_INET,
+            SOCK_STREAM,
+            0,
+            b"",
+            2.0,
+        );
+        assert!(!addresses.is_empty());
+        for address in addresses {
+            assert_eq!(address, b"127.0.0.1");
+        }
+    });
 }
 
 /// `rust_socket_scopes.<name>`: the timeout scope, whose C++ API left the hybrid

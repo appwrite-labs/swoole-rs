@@ -16,7 +16,7 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-static REQUEST: CustomClass<Data> = CustomClass::new();
+pub(crate) static REQUEST: CustomClass<Data> = CustomClass::new();
 
 /// A request object's context.
 pub(crate) struct Data(pub(crate) Holder);

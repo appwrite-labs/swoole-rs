@@ -237,8 +237,7 @@ pub fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
 
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
 /// nothing without one.
-#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
-pub(crate) fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
+pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
     field_mut(|fields| {
         let queue = &raw mut fields.destroy_callbacks;
         // SAFETY: the live reactor's destroy queue; `call` is safe with any data.
@@ -445,32 +444,14 @@ pub trait Deferred: Sized + 'static {
     fn dispose(self);
 }
 
-/// # Safety
-/// `data` is `swoole_event_defer_value`'s box, handed back once.
-unsafe extern "C-unwind" fn deferred_run<T: Deferred>(data: *mut c_void) {
-    // SAFETY: as above; the box is freed before `run`, which may bail out.
-    let value = *unsafe { Box::from_raw(data.cast::<T>()) };
-    T::run(value);
-}
-
-/// # Safety
-/// As [`deferred_run`].
-unsafe extern "C-unwind" fn deferred_dispose<T: Deferred>(data: *mut c_void) {
-    // SAFETY: as above.
-    let value = *unsafe { Box::from_raw(data.cast::<T>()) };
-    T::dispose(value);
-}
-
 /// `sw_reactor()->defer(...)` of `value`, which comes back without a reactor.
 /// # Errors
 /// There is no reactor.
 pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
-    let Some(fields) = current_prepared().map(|prepared| prepared.fields) else {
+    if current_prepared().is_none() {
         return Err(value);
-    };
-    let data = Box::into_raw(Box::new(value)).cast();
-    // SAFETY: the live reactor's fields; the queue hands `data` back once.
-    unsafe { crate::defer(fields, deferred_run::<T>, data, Some(deferred_dispose::<T>)) };
+    }
+    field_mut(|fields| crate::deferred::defer_value(fields, value));
     Ok(())
 }
 

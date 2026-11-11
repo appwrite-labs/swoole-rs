@@ -157,9 +157,9 @@ fn listen(call: &Call) {
         let host = CString::new(host).unwrap_or_default();
         server_methods::add_port(serv, kind, &host, port)
     };
-    if ls.is_null() {
+    let Some(ls) = ls else {
         return call.set_bool(false);
-    }
+    };
     // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
     let zport =
         unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };
@@ -394,7 +394,7 @@ fn finish(call: &Call) {
 
 fn task_finish(call: &Call) {
     // `$this` is a Task; an `E_ERROR` when it has no server.
-    let serv = crate::server::task_server(call.this());
+    let serv = crate::server::task_server(call);
     // SAFETY: `serv` is the live server here.
     if !unsafe { view::Server::from_raw(serv) }.is_started() {
         fatal(E_WARNING, c"server is not running");
@@ -403,7 +403,7 @@ fn task_finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    finished(call, serv, crate::server::task_info(call.this()));
+    finished(call, serv, crate::server::task_info(call));
 }
 
 /// `php_swoole_server_task_finish` of the data argument into the return slot.

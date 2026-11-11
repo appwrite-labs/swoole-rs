@@ -8,8 +8,8 @@ use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{
-    Call, Client, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op, swr_v1_clients_listen,
-    swr_v1_clients_new, swr_v1_clients_run,
+    Client, Handle, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op, swr_v1_clients_listen,
+    swr_v1_clients_new,
 };
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -1357,7 +1357,9 @@ fn server_response() -> Vec<u8> {
 /// `ListenPort::get_connection_num()` of the primary port.
 fn primary_port_connection_num(serv: Server) -> usize {
     // SAFETY: the running server's primary port.
-    unsafe { serv.view().port_connection_num(serv.get_primary_port().0) }
+    serv.view().port_connection_num(
+        unsafe { swoole_rs_ffi::view::Port::from_raw(serv.get_primary_port().0) }.unwrap(),
+    )
 }
 
 /// One `SyncClient` request: connect, send `packet`, read up to 1024 bytes, close.
@@ -1690,13 +1692,15 @@ fn process_single_thread() {
 static CLEAN_CLIENT: AtomicPtr<Client> = AtomicPtr::new(ptr::null_mut());
 static CLEAN_PORT: AtomicU16 = AtomicU16::new(0);
 
-/// `ac.get_client()->op(...)`, once `set` fills the call's arguments: its result.
-fn client_run(op: Op, set: impl FnOnce(&mut Call)) -> i64 {
-    let mut call = Call::new(CLEAN_CLIENT.load(Ordering::SeqCst), op);
-    set(&mut call);
-    // SAFETY: the live client; the call's pointers hold what its operation uses.
-    unsafe { swr_v1_clients_run((&raw mut call).cast()) };
-    call.result
+/// `ac.get_client()`.
+fn clean_client() -> Handle {
+    // SAFETY: the client `test_clean_worker` made, live until it frees it.
+    unsafe { Handle::new(CLEAN_CLIENT.load(Ordering::SeqCst)) }
+}
+
+/// `ac.get_client()->op(...)`: its result.
+fn client_run(op: Op<'_>) -> i64 {
+    clean_client().run(op)
 }
 
 /// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
@@ -1708,9 +1712,9 @@ unsafe extern "C" fn clean_client_event(
 ) {
     match event {
         ON_CONNECT => {
-            client_run(Op::Send, |call| {
-                call.data = TEST_STR.as_ptr().cast();
-                call.length = TEST_STR.len();
+            client_run(Op::Send {
+                data: TEST_STR.as_bytes(),
+                flags: 0,
             });
         }
         ON_ERROR => eprintln!("WARNING: connect failed, error={error}"),
@@ -1729,10 +1733,11 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
     swr_v1_clients_listen(client, ptr::null_mut(), events, clean_client_event);
     let host = CString::new(TEST_HOST).unwrap();
-    let connected = client_run(Op::Connect, |call| {
-        call.data = host.as_ptr();
-        call.a = CLEAN_PORT.load(Ordering::SeqCst).into();
-        call.timeout = -1.0;
+    let connected = client_run(Op::Connect {
+        host: &host,
+        port: CLEAN_PORT.load(Ordering::SeqCst).into(),
+        timeout: -1.0,
+        flags: 0,
     }) >= 0;
     expect(connected, "ac.connect(TEST_HOST, port->get_port())");
 }
@@ -1745,7 +1750,7 @@ unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
     let worker = current_worker().cast();
     // SAFETY: the running server and this process's worker.
     unsafe { entry::clean_worker_connections(serv, worker) };
-    client_run(Op::Shutdown, |call| call.a = SHUT_RDWR.into());
+    client_run(Op::Shutdown(SHUT_RDWR));
     // SAFETY: as above.
     unsafe { entry::stop_async_worker(serv, worker) };
 }
@@ -1801,7 +1806,8 @@ fn test_clean_worker(mode: c_int) {
     assert_eq!(counter_get(2), 0); // Server on_close
     assert_eq!(counter_get(3), 0); // Client on_receive
     assert_no_failure();
-    client_run(Op::Free, |_| {});
+    // SAFETY: the client this test made, deleted once.
+    unsafe { clean_client().free() };
     serv.delete();
 }
 

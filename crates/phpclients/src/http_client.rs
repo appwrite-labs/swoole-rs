@@ -226,13 +226,13 @@ fn ce() -> *mut zend_class_entry {
 
 /// Property access on a client object.
 mod props {
-    use super::{CStr, Call, Value, ce, zend_object};
+    use super::{CLIENT, CStr, Call, Value, zend_object};
     use swoole_rs_zend::{Props, sys::swr_zend_property_not_null};
 
-    /// Writes on `$this`, a client method's object, under the client class.
-    pub(super) fn this(call: &Call) -> Props<'_> {
-        // SAFETY: `$this` is live for the call; the class declares every name written.
-        unsafe { Props::new(ce(), call.this()) }
+    /// Writes on `$this`, a client method's object, under the client class;
+    /// None in a static call.
+    pub(super) fn this(call: &Call) -> Option<Props<'_>> {
+        call.props(Some(&CLIENT))
     }
 
     /// `sw_zend_read_property_not_null_ex`: the property unless it is null.
@@ -271,7 +271,9 @@ fn return_property(call: &Call, name: &CStr) {
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
 /// drop the socket and say so on the object.
 fn socket_closed(conn: &Conn, socket: Co) {
-    let written = std::mem::replace(&mut socket.record().write_buffer, ptr::null_mut());
+    let written = socket.handle().write_buffer();
+    // SAFETY: null, as before the socket's first write; the conn owns the old buffer.
+    unsafe { socket.handle().set_write_buffer(ptr::null_mut()) };
     let saved = conn.written.replace(written);
     // SAFETY: the buffer the conn took from its last socket, freed once.
     unsafe { native::swoole_http_client_coro_buffer_free(saved) };
@@ -1642,9 +1644,11 @@ fn construct(call: &Call) {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
-    props::this(call).bytes(c"host", host);
-    props::this(call).long(c"port", port);
-    props::this(call).bool(c"ssl", ssl);
+    if let Some(props) = props::this(call) {
+        props.bytes(c"host", host);
+        props.long(c"port", port);
+        props.bool(c"ssl", ssl);
+    }
     if host.is_empty() {
         call.throw(&EXCEPTION, c"host is empty", i64::from(libc::EINVAL));
         return call.set_bool(false);
@@ -1690,7 +1694,9 @@ fn set_method(call: &Call) {
     let Ok(method) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    props::this(call).bytes(c"requestMethod", method);
+    if let Some(props) = props::this(call) {
+        props.bytes(c"requestMethod", method);
+    }
     call.set_bool(true);
 }
 
@@ -1702,7 +1708,9 @@ fn set_array_property(call: &Call, name: &CStr) {
     };
     // SAFETY: an array argument the frame owns.
     unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array.as_ptr()) };
-    props::this(call).value(name, array);
+    if let Some(props) = props::this(call) {
+        props.value(name, array);
+    }
     call.set_bool(true);
 }
 
@@ -1731,7 +1739,9 @@ fn set_data(call: &Call) {
     let Some(data) = call.arity(1, 1).ok().and(call.value(1)) else {
         return call.set_bool(false);
     };
-    props::this(call).value(c"requestBody", data);
+    if let Some(props) = props::this(call) {
+        props.value(c"requestBody", data);
+    }
     call.set_bool(true);
 }
 
@@ -1744,8 +1754,11 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
             Upload::Number(number) => file.insert_long(key.to_bytes(), *number),
         }
     }
+    let Some(props) = props::this(call) else {
+        return call.set_bool(false);
+    };
     // SAFETY: nothing else borrows `uploadFiles`, and no PHP runs while adding.
-    let files = unsafe { props::this(call).array(c"uploadFiles") };
+    let files = unsafe { props.array(c"uploadFiles") };
     // The next-index insert fails once the array's next key would pass
     // `ZEND_LONG_MAX`; upstream returns false then.
     let count = |files: &ArrayMut| files.array().map_or(0, Array::count);
@@ -1929,7 +1942,7 @@ fn get(call: &Call) -> bool {
     let Some(path) = path_arg(call) else {
         return false;
     };
-    props::this(call).bytes(c"requestMethod", b"GET");
+    client.props().bytes(c"requestMethod", b"GET");
     let result = client.exec(path);
     finish(client, call, result)
 }
@@ -1941,9 +1954,9 @@ fn post(call: &Call) -> bool {
         call.set_bool(false);
         return false;
     };
-    props::this(call).bytes(c"requestMethod", b"POST");
+    client.props().bytes(c"requestMethod", b"POST");
     if let Some(data) = call.value(2) {
-        props::this(call).value(c"requestBody", data);
+        client.props().value(c"requestBody", data);
     }
     let result = client.exec(path);
     finish(client, call, result)
@@ -1960,9 +1973,9 @@ fn download(call: &Call) -> bool {
         return false;
     };
     if let Some(file) = call.value(2) {
-        props::this(call).value(c"downloadFile", file);
+        client.props().value(c"downloadFile", file);
     }
-    props::this(call).long(c"downloadOffset", offset);
+    client.props().long(c"downloadOffset", offset);
     let result = client.exec(path);
     finish(client, call, result)
 }

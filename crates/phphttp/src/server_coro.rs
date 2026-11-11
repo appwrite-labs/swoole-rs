@@ -340,13 +340,13 @@ fn http2_begin(socket: Co) {
         )
     };
     socket.set_open_length_check(true);
-    socket.with(|record| {
-        record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
-        record.protocol.package_length_offset = 0;
-        record.protocol.package_body_offset = 0;
-        record.protocol.get_package_length =
-            swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
-    });
+    let mut protocol = socket.protocol();
+    protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
+    protocol.package_length_offset = 0;
+    protocol.package_body_offset = 0;
+    protocol.get_package_length =
+        swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+    socket.set_protocol(protocol);
 }
 
 /// `recv_wait`: the socket waits for a request.
@@ -912,8 +912,7 @@ impl Connection<'_> {
     }
 
     fn package_max_length(&self) -> usize {
-        self.socket
-            .with(|record| record.protocol.package_max_length as usize)
+        self.socket.protocol().package_max_length as usize
     }
 }
 
@@ -937,9 +936,8 @@ fn on_accept(call: &Call) {
     // SAFETY: the object's live socket, which the server's array keeps.
     let socket = unsafe { Co::of(socket) };
     // The request allocator first.
-    socket.with(|record| {
-        record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
-    });
+    // SAFETY: the static zend string allocator.
+    unsafe { socket.set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator()) };
     let buffer = socket.buffer(false);
     let handshake = !socket.tls_owner().is_null() && !socket.ssl_handshake();
     if handshake {
@@ -1002,9 +1000,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
             let length = buffer.len();
-            let free = std::ptr::from_mut(buffer.spare()) as *mut [u8];
-            // SAFETY: the buffer's free space, which the receive only writes.
-            let received = conn.socket.recv(unsafe { &mut *free });
+            let received = conn.socket.recv(buffer.spare());
             if received <= 0 {
                 break;
             }

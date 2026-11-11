@@ -355,10 +355,10 @@ impl Worker<'_> {
 /// it shares with the pool, nor touch one the message bus owns; without
 /// `onMessage`, a message-queue pool's process pushes and pops the pool's
 /// queue. Returns the copy's pipe fd, or -1 unless the pool talks over unix
-/// sockets.
+/// sockets, or for an `id` the pool has no worker for.
 ///
 /// # Safety
-/// `pool` is a created pool with a worker `id`; `copy` is a writable record.
+/// `pool` is a created pool; `copy` is a writable record.
 pub unsafe fn copy_for_process(
     pool: *const crate::process_pool::PoolRecord,
     id: usize,
@@ -369,7 +369,11 @@ pub unsafe fn copy_for_process(
     const MSGQUEUE_BALANCE: u8 = 2;
     // SAFETY: the caller lends a created pool.
     let pool = unsafe { &*pool };
-    // SAFETY: the pool's worker `id`, copied by value as upstream's `new Worker(...)` does.
+    if id >= pool.worker_num as usize {
+        return -1;
+    }
+    // SAFETY: a created pool's `workers` holds its `worker_num` records; copied by value
+    // as upstream's `new Worker(...)` does.
     let mut worker = unsafe { pool.workers.wrapping_add(id).read() };
     let mut pipe = -1;
     if pool.ipc_mode == IPC_UNIXSOCK {
@@ -387,7 +391,7 @@ pub unsafe fn copy_for_process(
         worker.pipe_current = core::ptr::null_mut();
         worker.pipe_object = core::ptr::null_mut();
     }
-    if pool.ipc_mode == IPC_MSGQUEUE && pool.on_message.is_null() {
+    if pool.ipc_mode == IPC_MSGQUEUE && pool.on_message.is_none() {
         worker.queue = pool.queue;
         worker.msgqueue_mode = MSGQUEUE_BALANCE;
     }
@@ -424,6 +428,11 @@ mod tests {
     // the right field.
     #[test]
     fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
+        extern "C-unwind" fn on_message(
+            _: crate::process_pool::PoolRef<'_>,
+            _: &crate::process_pool::RecvData,
+        ) {
+        }
         let mut fds = [7 as c_int, 9];
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         workers[1].id = u32::MAX;
@@ -433,8 +442,15 @@ mod tests {
         workers[1].pipe_object = core::ptr::dangling_mut();
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers = workers.as_mut_ptr();
+        pool.worker_num = 2;
         pool.ipc_mode = 1;
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
+        // A worker the pool doesn't have: no copy.
+        assert_eq!(
+            unsafe { copy_for_process(&raw const pool, 2, &raw mut copy) },
+            -1
+        );
+        assert_eq!(copy.pid, 0);
         // Another process's worker: the master's end of its pipe.
         assert_eq!(
             unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
@@ -459,7 +475,7 @@ mod tests {
             -1
         );
         assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue, 2));
-        pool.on_message = 4 as *const c_void;
+        pool.on_message = Some(on_message);
         assert_eq!(
             unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
             -1

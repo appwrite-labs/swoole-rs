@@ -5,6 +5,7 @@
 use crate::RecvData;
 use crate::port::PortProperty;
 use crate::server::{ServerData, THREAD};
+use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::UnsafeCell,
     ffi::{CStr, CString, c_int, c_long, c_void},
@@ -20,7 +21,7 @@ use swoole_rs_corebase::{
 use swoole_rs_process::{
     methods::worker_is_running, worker_globals, worker_record, workers::entry,
 };
-use swoole_rs_server::{port_config, server_methods, view};
+use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
     Object, bailout, object_of, string,
     sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
@@ -62,12 +63,9 @@ pub unsafe fn php_swoole_server_get_ptr(zobject: *mut zval) -> *mut c_void {
 }
 
 /// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.
-fn port_property<'a>(port: *mut c_void) -> Option<&'a PortProperty> {
-    if port.is_null() {
-        return None;
-    }
-    // SAFETY: a live `ListenPort`.
-    let config = unsafe { port_config::of(port) };
+fn port_property<'a>(port: Option<view::Port<'_>>) -> Option<&'a PortProperty> {
+    // SAFETY: a live `ListenPort`, whose property link only this thread touches.
+    let config = unsafe { port?.config_mut() };
     let property =
         crate::server::port_property(config.object_id, &mut config.ptr, ptr::null_mut(), false);
     // SAFETY: null, or the property its Port object holds while the port lives.
@@ -75,16 +73,15 @@ fn port_property<'a>(port: *mut c_void) -> Option<&'a PortProperty> {
 }
 
 /// The port's callback `kind`, or null.
-fn port_callback(port: *mut c_void, kind: c_int) -> *mut c_void {
+fn port_callback(port: Option<view::Port<'_>>, kind: c_int) -> *mut c_void {
     port_property(port).map_or(ptr::null_mut(), |property| property.callback(kind))
 }
 
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
-/// # Safety
-/// `serv` is a live Server and `port` null or one of its ports.
-pub unsafe fn php_swoole_server_isset_callback(
+#[must_use]
+pub fn php_swoole_server_isset_callback(
     serv: view::Server<'_>,
-    port: *mut c_void,
+    port: Option<view::Port<'_>>,
     kind: c_int,
 ) -> bool {
     let primary = serv.port_at(0);
@@ -99,11 +96,10 @@ pub fn php_swoole_server_get_callback(
     server_fd: c_int,
     kind: c_int,
 ) -> *mut c_void {
-    let port = serv.port_by_server_fd(server_fd);
-    if port.is_null() {
+    let Some(port) = serv.port_by_server_fd(server_fd) else {
         return ptr::null_mut();
-    }
-    let callback = port_callback(port, kind);
+    };
+    let callback = port_callback(Some(port), kind);
     if !callback.is_null() {
         return callback;
     }
@@ -163,10 +159,10 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &mut zval, req: &
 #[must_use]
 pub fn php_swoole_create_dir(path: &[u8]) -> bool {
     let path = path.split(|&b| b == 0).next().unwrap_or_default();
+    // `access(path, F_OK) == 0`: it resolves, symbolic links followed.
+    let exists = std::path::Path::new(std::ffi::OsStr::from_bytes(path)).exists();
     let path = CString::new(path).unwrap_or_default();
     // SAFETY: a NUL-terminated path.
-    let exists = unsafe { libc::access(path.as_ptr(), libc::F_OK) } == 0;
-    // SAFETY: as above.
     exists || unsafe { swr_zend_mkdir_recursive(path.as_ptr()) }
 }
 

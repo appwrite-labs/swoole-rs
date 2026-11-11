@@ -54,7 +54,6 @@ impl DerefMut for SocketRecord {
 /// `network::Socket`'s fields. Pointers to native objects (`Buffer`, `TimerNode`,
 /// `String`, `SSL`, the owner) are opaque here.
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct SocketFields {
     pub fd: c_int,
     /// `swFdType`.
@@ -85,7 +84,8 @@ pub struct SocketFields {
     pub chunk_size: u32,
     pub output: SocketOutput,
     pub object: *mut c_void,
-    pub ssl: *mut c_void,
+    /// Null or a live `SSL` the record owns: only [`Self::set_ssl`] sets it.
+    ssl: *mut c_void,
     pub tls: SocketTlsState,
     pub timeouts: SocketTimeouts,
     pub last_received_time: f64,
@@ -257,6 +257,25 @@ impl SocketRecord {
 }
 
 impl SocketFields {
+    /// The record's `SSL`, or null without one.
+    #[must_use]
+    pub fn ssl(&self) -> *mut c_void {
+        self.ssl
+    }
+
+    /// Sets the record's `SSL`.
+    /// # Safety
+    /// `ssl` is null or a live `SSL` the record owns from now on: nothing frees it
+    /// before [`Self::take_ssl`] hands it back.
+    pub unsafe fn set_ssl(&mut self, ssl: *mut c_void) {
+        self.ssl = ssl;
+    }
+
+    /// Clears the record's `SSL`, handing it (or null) back to the caller.
+    pub fn take_ssl(&mut self) -> *mut c_void {
+        std::mem::replace(&mut self.ssl, ptr::null_mut())
+    }
+
     /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
     #[must_use]
     pub fn is_tcp(&self) -> bool {
@@ -302,8 +321,8 @@ impl SocketFields {
         if self.is_local() && self.bound != 0 && self.get_name() == 0 {
             // SAFETY: the Unix arm of the address getsockname(2) just wrote.
             let path = unsafe { self.info.addr.un.sun_path };
-            #[expect(clippy::cast_sign_loss, reason = "the path's bytes, as C reads them")]
-            let path = path.map(|byte| byte as u8);
+            // c_char is i8 or u8 by target; its one byte either way.
+            let path = path.map(|byte| byte.to_ne_bytes()[0]);
             if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path)
                 && !path.is_empty()
             {
@@ -313,11 +332,12 @@ impl SocketFields {
         self.fd == -1 || sys::close(self.fd) == 0
     }
 
-    /// `Socket::dup`: a copy of every field, owning `dup(fd)`, not borrowed.
+    /// `Socket::dup`: a copy of every field, owning `dup(fd)`, not borrowed. It
+    /// shares this record's SSL, as upstream's copy does.
     #[must_use]
     pub fn dup(&self) -> *mut SocketRecord {
         let mut copy = SocketRecord {
-            fields: *self,
+            fields: Self { ..*self },
             borrows: AtomicU32::new(0),
         };
         copy.fd = sys::dup(copy.fd);

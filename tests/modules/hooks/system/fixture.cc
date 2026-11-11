@@ -87,9 +87,6 @@ static void parse_result(const GetaddrinfoRequest &request, std::vector<std::str
         retval.emplace_back(address.bytes);
     }
 }
-typedef void (*swr_put)(void *out, const char *data, size_t length);
-extern "C" bool swr_v1_system_gethostbyname(const char *, size_t, long, double, swr_put, void *);
-extern "C" bool swr_v1_system_getaddrinfo(const char *, long, long, long, const char *, double, swr_put, void *);
 
 void operator delete(void *p) noexcept {
     std::free(p);
@@ -264,18 +261,4 @@ void swr_case_native_output_append_exception_is_contained() {
     ASSERT_EQ(output.size(), 3u);
 }
 
-// rust_dns_request.actual_async_numeric_results, in a coroutine.
-void swr_case_actual_async_numeric_results() {
-    std::string host;
-    ASSERT_TRUE(swr_v1_system_gethostbyname("127.0.0.1", 9, AF_INET, 2, [](void *out, const char *data, size_t length) {
-        static_cast<std::string *>(out)->assign(data, length);
-    }, &host));
-    ASSERT_EQ(host, "127.0.0.1");
-    std::vector<std::string> addresses;
-    ASSERT_TRUE(swr_v1_system_getaddrinfo("127.0.0.1", AF_INET, SOCK_STREAM, 0, "", 2, [](void *out, const char *data, size_t length) {
-        static_cast<std::vector<std::string> *>(out)->emplace_back(data, length);
-    }, &addresses));
-    ASSERT_FALSE(addresses.empty());
-    for (const auto &address : addresses) ASSERT_EQ(address, "127.0.0.1");
-}
 }

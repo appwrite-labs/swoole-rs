@@ -17,7 +17,7 @@ use openssl_sys::{
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
-use swoole_rs_corebase::{log, swr_v1_core_string_set};
+use swoole_rs_corebase::{log, swr_v1_core_string_set, sys};
 use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
@@ -51,21 +51,25 @@ struct TlsState {
 
 /// The port's TLS state, made on first use.
 fn state(config: &mut PortConfig) -> &mut TlsState {
-    if config.tls.is_null() {
-        let state = TlsState {
+    let state = config.tls.get_or_insert_with(|| {
+        Box::new(Box::new(TlsState {
             sni: Vec::new(),
             dtls: HashMap::new(),
-        };
-        config.tls = Box::into_raw(Box::new(state)).cast();
-    }
-    // SAFETY: the port's own box, made above or earlier, borrowed with its record.
-    unsafe { &mut *config.tls.cast::<TlsState>() }
+        }))
+    });
+    // Only this module stores the state, so it is always a `TlsState`.
+    state
+        .downcast_mut()
+        .unwrap_or_else(|| std::process::abort())
 }
 
 /// The port's SNI contexts; none before the state exists.
 fn sni(config: &PortConfig) -> &[(Vec<u8>, *const OwnedTlsContext)] {
-    // SAFETY: the port's own box, null or live, borrowed with its record.
-    unsafe { config.tls.cast::<TlsState>().as_ref() }.map_or(&[], |state| &state.sni)
+    let state = config
+        .tls
+        .as_ref()
+        .and_then(|state| state.downcast_ref::<TlsState>());
+    state.map_or(&[], |state| &state.sni)
 }
 
 /// `edit`'s result over the fields of the live `context`.
@@ -80,12 +84,13 @@ fn edit<R>(context: &OwnedTlsContext, edit: impl FnOnce(&mut OwnedTlsFields) -> 
 pub(crate) fn tls_free(config: &mut PortConfig) {
     // SAFETY: the port's reference (or null), released once.
     unsafe { swr_v1_tls_owner_free(core::mem::replace(&mut config.ssl_context, ptr::null())) };
-    if config.tls.is_null() {
+    let Some(state) = config
+        .tls
+        .take()
+        .and_then(|state| state.downcast::<TlsState>().ok())
+    else {
         return;
-    }
-    // SAFETY: the port's own box, taken once.
-    let state = unsafe { Box::from_raw(config.tls.cast::<TlsState>()) };
-    config.tls = ptr::null_mut();
+    };
     for (_, context) in state.sni {
         // SAFETY: a reference the state held, released once.
         unsafe { swr_v1_tls_owner_free(context) };
@@ -249,7 +254,9 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
         return false;
     }
     // SAFETY: the live socket `PortMethods` takes, which only this thread touches.
-    let ssl = unsafe { Socket::from_ptr(sock) }.map_or(ptr::null_mut(), |s| s.read(|s| s.ssl));
+    let ssl = unsafe { Socket::from_ptr(sock) }.map_or(ptr::null_mut(), |s| {
+        s.read(swoole_rs_reactor::SocketFields::ssl)
+    });
     // SAFETY: the SSL just made; the port outlives its connections.
     if unsafe { SSL_set_ex_data(ssl.cast(), swr_v1_tls_port_index(), port) } == 0 {
         log::warning(
@@ -416,14 +423,36 @@ pub(crate) fn close(port: *mut c_void) {
         config.socket = ptr::null_mut();
     }
     if matches!(config.r#type, 5 | 6) {
-        // SAFETY: the host's NUL-terminated path.
-        unsafe { libc::unlink(config.host().data) };
+        let mut path = config.host_bytes().to_vec();
+        path.push(0);
+        if let Ok(path) = CStr::from_bytes_until_nul(&path) {
+            sys::unlink(path);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use swoole_rs_utilities::sni_wildcard_matches;
+
+    #[test]
+    fn the_tls_state_lives_in_the_port_until_freed() {
+        let config = swoole_rs_server::port_config::swr_v1_port_config_new(0);
+        let config = unsafe { &mut *config };
+        assert_eq!(super::sni(config).len(), 0);
+        super::state(config)
+            .sni
+            .push((b"a".to_vec(), core::ptr::null()));
+        super::state(config)
+            .dtls
+            .insert(3, (core::ptr::null_mut(), core::ptr::null()));
+        assert_eq!(super::sni(config).len(), 1);
+        assert_eq!(super::state(config).dtls.len(), 1);
+        super::tls_free(config);
+        assert!(config.tls.is_none());
+        assert_eq!(super::sni(config).len(), 0);
+        drop(unsafe { Box::from_raw(config) });
+    }
 
     /// `TEST(server, ssl_matches_wildcard_name)`: upstream's 44 live `EXPECT`s, in its
     /// order (its commented-out ones stay out), each as `(subject, cert, expected)`.

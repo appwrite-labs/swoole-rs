@@ -12,7 +12,7 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
 use swoole_rs_tls::{
-    DtlsSession, dtls_fields, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
+    DtlsSession, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
     swr_v1_tls_dtls_session_listen,
 };
 
@@ -51,10 +51,8 @@ fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.
 fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
     let mut address = SocketAddress {
-        // SAFETY: the sockaddr union is plain data.
-        addr: unsafe { core::mem::zeroed() },
-        len: 0,
         kind,
+        ..SocketAddress::default()
     };
     // SAFETY: the union and its length, and the host's bytes.
     let error = unsafe {
@@ -82,15 +80,17 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// # Safety
 /// `serv` is a live server, `port` one of its live DTLS ports.
 unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *mut DtlsSession {
+    // SAFETY: as the caller guarantees.
+    let Some(listen) = (unsafe { crate::view::Port::from_raw(port) }) else {
+        return ptr::null_mut();
+    };
     let (kind, number, host) = {
-        // SAFETY: as the caller guarantees; the borrow ends here.
-        let config = unsafe { port_config::of(port) };
+        let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
         let host = CString::new(config.host_bytes()).unwrap_or_default();
         (config.r#type, config.port, host)
     };
-    // SAFETY: as the caller guarantees.
-    let server_fd = unsafe { crate::view::port_fd(port) };
+    let server_fd = listen.fd();
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
     // SAFETY: null, or the socket just made, which only this thread uses.
     let Some(socket) = (unsafe { Socket::from_ptr(sock) }) else {
@@ -182,16 +182,14 @@ pub(crate) unsafe fn on_packet(
     if session.is_null() {
         return -1;
     }
-    let data = (&raw const pkt.data).cast::<u8>();
-    // SAFETY: the live session, and the packet's `length` received bytes.
-    appended(unsafe {
-        swr_v1_tls_dtls_append(session, data, usize::try_from(length).unwrap_or(0))
-    });
     // SAFETY: the live session.
-    let fields = dtls_fields(unsafe { &*session });
-    // SAFETY: as above.
-    let socket = unsafe { (*fields).socket };
-    // SAFETY: the live session over its live socket.
+    let session = unsafe { &*session };
+    let data = (&raw const pkt.data).cast::<u8>();
+    // SAFETY: the packet's `length` received bytes.
+    let data = unsafe { std::slice::from_raw_parts(data, usize::try_from(length).unwrap_or(0)) };
+    appended(swr_v1_tls_dtls_append(session, data));
+    let socket = session.socket();
+    // SAFETY: the session's live socket.
     if !unsafe { swr_v1_tls_dtls_session_listen(session) } {
         // SAFETY: the reactor and the session's socket.
         return i64::from(unsafe { crate::reactor_entry::close_connection(reactor, socket) });
@@ -259,14 +257,12 @@ pub(crate) unsafe fn on_read(port: *mut c_void, sock: Socket<'_>, fd: c_int) -> 
     }
     // SAFETY: the port's live record.
     let session = (port_config::methods().dtls_session)(unsafe { port_config::of(port) }, fd);
-    // SAFETY: the socket's live session, which takes the buffer.
+    // SAFETY: the socket's live session.
+    let session = unsafe { &*session };
+    // SAFETY: the session takes the buffer.
     appended(unsafe { swr_v1_tls_dtls_append_buffer(session, buffer.cast()) });
-    // SAFETY: as above.
-    let fields = dtls_fields(unsafe { &*session });
-    // SAFETY: as above.
-    let listened = unsafe { (*fields).listened };
-    // SAFETY: as above.
-    !listened && !unsafe { swr_v1_tls_dtls_session_listen(session) }
+    // SAFETY: the session's live socket.
+    !session.listened() && !unsafe { swr_v1_tls_dtls_session_listen(session) }
 }
 
 /// `Server::close_connection`'s `delete` of the socket's DTLS session.

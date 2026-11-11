@@ -1,27 +1,23 @@
 //! `Swoole\Server\Port`: registration, objects and every method over the
 //! `ListenPort` and Server these configure.
 use crate::{
+    callable::Callable,
     port_settings,
     settings::{Settings, Stop},
 };
 use std::{
     ffi::{c_char, c_int, c_void},
-    mem::MaybeUninit,
     ptr,
 };
 use swoole_rs_phpstubs::server_port;
-use swoole_rs_ports::{
-    swr_v1_ports_callback_hook, swr_v1_ports_callback_property, swr_v1_ports_class_property,
-    swr_v1_ports_event,
-};
+use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
-        zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
-        zend_update_property, zval,
+        zend_declare_property_null, zend_object, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -30,10 +26,11 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
 const CALLBACKS: usize = 12;
 
-/// `swoole::ServerPortProperty`: pointers only, so Rust lays it out as C++ does.
+/// `swoole::ServerPortProperty`: pointers only, so Rust lays it out as C++ does
+/// (a callback slot is a `zend::Function *`, null when empty).
 #[repr(C)]
 pub struct PortProperty {
-    callbacks: [*mut c_void; CALLBACKS],
+    callbacks: [Option<Callable>; CALLBACKS],
     serv: *mut c_void,
     port: *mut c_void,
     zsetting: *mut zval,
@@ -44,9 +41,8 @@ impl PortProperty {
     pub(crate) fn callback(&self, kind: c_int) -> *mut c_void {
         usize::try_from(kind)
             .ok()
-            .and_then(|kind| self.callbacks.get(kind))
-            .copied()
-            .unwrap_or(ptr::null_mut())
+            .and_then(|kind| self.callbacks.get(kind)?.as_ref())
+            .map_or(ptr::null_mut(), Callable::as_raw)
     }
 }
 
@@ -70,9 +66,8 @@ pub(crate) static PORT: Class = Class::new();
 /// descriptor, kept alive by an extra reference as upstream's
 /// `php_swoole_convert_to_socket`; false if `dup` fails. Registered only when
 /// Swoole was built with ext/sockets. `port` is a live `ListenPort`.
-pub(crate) fn socket(port: *mut c_void, call: &Call) {
-    // SAFETY: a live port, as above.
-    let fd = unsafe { swoole_rs_server::view::port_fd(port) };
+pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
+    let fd = port.fd();
     // SAFETY: a descriptor the port owns.
     let fd = unsafe { libc::dup(fd) };
     if fd < 0 {
@@ -125,14 +120,18 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned,
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
 /// # Safety
-/// `object` is a `Swoole\Server\Port` this class created; the caller owns nothing to drop.
-pub(crate) unsafe fn bound_port(object: *mut zend_object) -> *mut c_void {
+/// `object` is a `Swoole\Server\Port` this class created, bound for `'a`; the caller
+/// owns nothing to drop.
+pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_server::view::Port<'a> {
     // SAFETY: one of ours, per the contract.
     let port = unsafe { Port::data(object) }.port;
-    if port.is_null() {
+    // SAFETY: null, or the object's live port.
+    let port = unsafe { swoole_rs_server::view::Port::from_raw(port) };
+    port.unwrap_or_else(|| {
         crate::server::invalid(object);
-    }
-    port
+        // The `E_ERROR` above bailed out.
+        std::process::abort()
+    })
 }
 
 /// `php_swoole_server_port_deref`: drop the callables and the port's link,
@@ -144,7 +143,8 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
     let data = unsafe { Port::data(object) };
     if !data.property.serv.is_null() {
         for slot in &mut data.property.callbacks {
-            free_callable(take(slot));
+            // Out of its slot first: a destructor this runs may reach the slot again.
+            drop(slot.take());
         }
         data.property.serv = ptr::null_mut();
     }
@@ -284,49 +284,46 @@ fn on(call: &Call) {
     let Ok(name) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    let cb = call.zval(2);
-    // SAFETY: the argument's bytes for this call.
-    let event = unsafe { swr_v1_ports_event(name.as_ptr(), name.len(), 1) };
-    let Ok(index) = usize::try_from(event.index) else {
+    let Some((index, property)) = swoole_rs_ports::event(name, true) else {
         let name =
             String::from_utf8_lossy(name.split(|&byte| byte == 0).next().unwrap_or_default());
         crate::lifecycle::runtime_warning(message!("unknown event types[{name}]").as_cstr());
         return call.set_bool(false);
     };
-    // SAFETY: `$this`, the catalog's property name and the callback argument.
-    unsafe {
-        zend_update_property(
-            PORT.entry(),
-            call.this(),
-            event.property.data.cast(),
-            event.property.len,
-            cb,
-        );
+    let Some(cb) = call.value(2) else {
+        return call.set_bool(false);
+    };
+    // The Port class's own private property, which runs no PHP code.
+    bailout::defer(call.update_property(Some(&PORT), property, cb));
+    if bailout::pending() {
+        return;
     }
     // The property write, the release and the create can each run PHP that
     // calls on() again, so no borrow of the slot lives across them.
-    let Some(old) = data(call).property.callbacks.get_mut(index).map(take) else {
+    let Some(old) = data(call)
+        .property
+        .callbacks
+        .get_mut(index)
+        .map(Option::take)
+    else {
         return call.set_bool(false);
     };
-    free_callable(old);
+    drop(old);
     if swoole_rs_zend::bailout::pending() {
         return;
     }
-    // SAFETY: the callback argument.
-    let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };
-    if callable.is_null() {
+    let Some(callable) = Callable::create(cb) else {
         return call.set_bool(false);
-    }
-    if let Some(slot) = data(call).property.callbacks.get_mut(index) {
+    };
+    let kept = match data(call).property.callbacks.get_mut(index) {
         // A nested on() stored its callable, and the property, after this one's
         // write: keep that pair and drop ours.
-        free_callable(if slot.is_null() {
-            std::mem::replace(slot, callable)
-        } else {
-            callable
-        });
-    }
-    crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
+        Some(slot) if slot.is_none() => slot.replace(callable),
+        _ => Some(callable),
+    };
+    drop(kept);
+    let event = i32::try_from(index).unwrap_or(-1);
+    crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event));
     call.set_bool(true);
 }
 
@@ -336,35 +333,18 @@ fn get_callback(call: &Call) {
     }
     let name = call.value(1).map(Value::string);
     let name = name.as_ref().map_or(&[][..], ZString::bytes);
-    // SAFETY: the name's bytes.
-    let property = unsafe { swr_v1_ports_callback_property(name.as_ptr(), name.len()) };
-    if !property.data.is_null() {
-        let mut rv = MaybeUninit::<zval>::uninit();
-        // SAFETY: `$this`, the catalog's property name and a writable scratch zval.
-        let value = unsafe {
-            zend_read_property(
-                PORT.entry(),
-                call.this(),
-                property.data.cast(),
-                property.len,
-                true,
-                rv.as_mut_ptr(),
-            )
-        };
-        // SAFETY: Zend returned a live zval, which the object or `rv` holds.
-        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
-            // `RETURN_ZVAL(property, 1, 0)`.
-            return call.set_owned(value.copy());
-        }
+    match swoole_rs_ports::callback_property(name) {
+        // `RETURN_ZVAL(property, 1, 0)`, null when unset.
+        Some(property) => call.set_property(Some(&PORT), property),
+        None => call.set_null(),
     }
-    call.set_null();
 }
 
 fn get_socket(call: &Call) {
-    let port = data(call).port;
-    if port.is_null() {
-        invalid(call);
-    }
+    // SAFETY: null, or the object's live port.
+    let Some(port) = (unsafe { swoole_rs_server::view::Port::from_raw(data(call).port) }) else {
+        return invalid(call);
+    };
     socket(port, call);
 }
 

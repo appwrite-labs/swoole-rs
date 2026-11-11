@@ -100,7 +100,6 @@ const TEST_STR: &[u8] = b"hello world, hello swoole\n";
 const GREETING: &[u8] = b"hello world, hello swoole";
 
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
-type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
 
 /// `swoole::String`.
 #[repr(C)]
@@ -164,16 +163,6 @@ unsafe extern "C-unwind" {
         errors: bool,
         buffer: *const SharedPtr,
         status: *mut c_int,
-    ) -> bool;
-    fn swr_v1_system_getaddrinfo(
-        host: *const c_char,
-        family: c_long,
-        socktype: c_long,
-        protocol: c_long,
-        service: *const c_char,
-        timeout: f64,
-        put: Put,
-        out: *mut c_void,
     ) -> bool;
 }
 
@@ -266,13 +255,6 @@ fn write_file(file: &CStr, buf: &[u8], lock: bool, flags: c_int) -> isize {
     unsafe { system_write_file(file.as_ptr(), buf.as_ptr().cast(), buf.len(), lock, flags) }
 }
 
-unsafe extern "C" fn put_bytes(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: `out` is the caller's Vec; `data` holds `length` bytes.
-    unsafe {
-        (*out.cast::<Vec<Vec<u8>>>()).push(std::slice::from_raw_parts(data.cast(), length).to_vec())
-    };
-}
-
 /// `System::getaddrinfo`.
 fn getaddrinfo(
     host: &CStr,
@@ -282,23 +264,17 @@ fn getaddrinfo(
     service: &CStr,
     timeout: f64,
 ) -> Vec<String> {
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    // SAFETY: `put_bytes` appends to `out`.
-    unsafe {
-        swr_v1_system_getaddrinfo(
-            host.as_ptr(),
-            c_long::from(family),
-            c_long::from(socktype),
-            c_long::from(protocol),
-            service.as_ptr(),
-            timeout,
-            put_bytes,
-            (&raw mut out).cast(),
-        )
-    };
-    out.into_iter()
-        .map(|address| String::from_utf8(address).unwrap())
-        .collect()
+    swoole_rs_hooks::resolve::system_getaddrinfo(
+        host.to_bytes(),
+        family,
+        socktype,
+        protocol,
+        service.to_bytes(),
+        timeout,
+    )
+    .into_iter()
+    .map(|address| String::from_utf8(address).unwrap())
+    .collect()
 }
 
 /// `System::socket_poll` over core-tests' one-entry map.

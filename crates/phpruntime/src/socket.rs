@@ -7,7 +7,7 @@ use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
-    E_ERROR,
+    E_ERROR, Owned, Value,
     bailout::{self, Bailout},
     sys::{swr_zval_stringl, zval, zval_ptr_dtor},
 };
@@ -169,7 +169,7 @@ impl Socket {
 
     /// The coroutine socket of hooked `fd`, if any.
     pub(crate) fn of_fd(fd: i32) -> Option<Self> {
-        Self::wrap(swoole_rs_hooks::socket_map::get(fd), false)
+        Self::wrap(swoole_rs_hooks::socket_map::get(fd)?.this(), false)
     }
 
     fn wrap(socket: *mut c_void, owned: bool) -> Option<Self> {
@@ -343,7 +343,7 @@ impl Socket {
 
     /// The connection's `SSL *`, or null.
     pub(crate) fn ssl(&self) -> *mut openssl_sys::SSL {
-        self.with_record(std::ptr::null_mut(), |record| record.ssl.cast())
+        self.with_record(std::ptr::null_mut(), |record| record.ssl().cast())
     }
 
     pub(crate) fn ssl_handshake(&self) -> bool {
@@ -369,46 +369,45 @@ impl Socket {
         use swoole_rs_tls::upstream::{
             socket_ssl_get_peer_cert_chain, swr_v1_socket_ssl_read_x509,
         };
-        self.with_record(Vec::new(), |record| {
-            let chain = socket_ssl_get_peer_cert_chain(record).cast::<OPENSSL_STACK>();
-            if chain.is_null() {
-                return Vec::new();
-            }
-            // SAFETY: the SSL's live chain.
-            let count = unsafe { OPENSSL_sk_num(chain) };
-            let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
-            (0..count)
-                .filter_map(|index| {
-                    // SAFETY: an index within the live chain.
-                    let cert = unsafe { OPENSSL_sk_value(chain, index) };
-                    // SAFETY: that certificate, written into the local buffer.
-                    let written = unsafe {
-                        swr_v1_socket_ssl_read_x509(
-                            cert.cast(),
-                            pem.as_mut_ptr().cast(),
-                            pem.len(),
-                            false,
-                        )
-                    };
-                    let written = usize::try_from(written).ok().filter(|&n| n > 0)?;
-                    pem.get(..written).map(<[u8]>::to_vec)
-                })
-                .collect()
-        })
+        let chain = self.co().with_network(socket_ssl_get_peer_cert_chain);
+        let chain = chain
+            .unwrap_or(std::ptr::null_mut())
+            .cast::<OPENSSL_STACK>();
+        if chain.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: the SSL's live chain.
+        let count = unsafe { OPENSSL_sk_num(chain) };
+        let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: an index within the live chain.
+                let cert = unsafe { OPENSSL_sk_value(chain, index) };
+                // SAFETY: that certificate, written into the local buffer.
+                let written = unsafe {
+                    swr_v1_socket_ssl_read_x509(
+                        cert.cast(),
+                        pem.as_mut_ptr().cast(),
+                        pem.len(),
+                        false,
+                    )
+                };
+                let written = usize::try_from(written).ok().filter(|&n| n > 0)?;
+                pem.get(..written).map(<[u8]>::to_vec)
+            })
+            .collect()
     }
 
     /// `php_swoole_socket_set_ssl(socket, settings)`.
     /// # Errors
     /// A warning's error handler bailed out.
-    /// # Safety
-    /// `settings` is a live array.
-    pub(crate) unsafe fn set_ssl(&self, settings: *mut zval) -> Result<bool, Bailout> {
-        let socket = self.raw();
+    pub(crate) fn set_ssl(&self, settings: &Value) -> Result<bool, Bailout> {
+        let (socket, settings) = (self.raw(), settings.as_ptr());
         let mut applied = false;
         let apply = || {
             if let Some(families) = swoole_rs_phpswoole::families() {
-                // SAFETY: a live socket and, per the caller, settings array;
-                // crates/phpclients' settings apply the SSL ones (2).
+                // SAFETY: a live socket and settings value, which crates/phpclients
+                // ignores unless it is an array; its settings apply the SSL ones (2).
                 applied = unsafe { (families.socket_settings)(socket, settings, 2) };
             }
         };
@@ -419,12 +418,12 @@ impl Socket {
     }
 }
 
-/// `openssl_x509_read(pem)` into `retval`, which the caller then owns.
+/// `openssl_x509_read(pem)`.
 /// # Errors
 /// The call bailed out.
-/// # Safety
-/// `retval` is writable.
-pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bailout> {
+pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
+    let certificate = Owned::default();
+    let retval = certificate.as_ptr();
     let read = || {
         // SAFETY: zero is an undefined zval, which the next line fills.
         let mut string: zval = unsafe { std::mem::zeroed() };
@@ -445,8 +444,10 @@ pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bail
         // SAFETY: the string this body made.
         unsafe { zval_ptr_dtor(&raw mut string) };
     };
-    // SAFETY: the body holds the borrowed bytes, a plain zval and the caller's slot.
-    unsafe { bailout::trap_with(read) }
+    // SAFETY: the body holds the borrowed bytes, a plain zval and the slot of
+    // `certificate`, which lives outside it.
+    unsafe { bailout::trap_with(read) }?;
+    Ok(certificate)
 }
 
 /// How a warning is raised.
@@ -526,10 +527,8 @@ pub mod co {
     use libc::{c_char, c_int, c_void, iovec};
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
+    use swoole_rs_hooks::vector::IoVector;
     use swoole_rs_hooks::{TimeoutScope, co_socket::swr_v1_hook_co_socket_free};
-    use swoole_rs_reactor::{
-        swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare, swr_v1_reactor_iov_view,
-    };
     use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
@@ -612,28 +611,14 @@ pub mod co {
         vectors: *const iovec,
         count: c_int,
     ) -> (isize, c_int, usize) {
-        // SAFETY: per the caller, `count` readable vectors.
-        let prepared = unsafe { swr_v1_reactor_iov_prepare(vectors, count) };
-        if prepared.status != 0 {
+        // SAFETY: per the caller, `count` vectors valid for the operation.
+        let Some(vector) = (unsafe { IoVector::new(vectors, count) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             std::process::abort();
-        }
-        // Each member reads only an `IOVector`'s first field, its owner.
-        let mut owner = prepared.owner;
-        let vector = (&raw mut owner).cast::<c_void>();
-        let member = match op {
-            0 => Co::readv,
-            1 => Co::readv_all,
-            2 => Co::writev,
-            _ => Co::writev_all,
         };
-        // SAFETY: per the caller, over the live vector.
-        let result = unsafe { member(socket, vector) };
-        // SAFETY: the live owner.
-        let state = swr_v1_reactor_iov_view(unsafe { &*owner });
-        // SAFETY: the owner `prepare` made, released once.
-        unsafe { swr_v1_reactor_iov_destroy(owner) };
-        (result, state.index, state.offset_bytes)
+        let result = socket.vector(&vector, op >= 2, op & 1 == 1);
+        let (index, offset) = vector.stopped();
+        (result, index, offset)
     }
 
     /// `set_err(code, message)`, copying the message.

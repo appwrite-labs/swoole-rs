@@ -8,6 +8,7 @@ use crate::server::DATA;
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
+    sync::OnceLock,
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
@@ -25,9 +26,9 @@ use swoole_rs_server::callbacks::{
 };
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
-    E_WARNING, Owned, OwnedArray, ZString,
+    E_WARNING, Owned, OwnedArray, Value, ZString,
     bailout::{self, Bailout},
-    long_zval, message, object_of, report,
+    long_zval, message, report,
     sys::{
         ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
@@ -738,13 +739,30 @@ extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -
     php_swoole_server_on_receive(server, request)
 }
 
+/// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
+pub struct HttpHooks {
+    /// `php_swoole_http_server_onReceive`.
+    pub on_receive: fn(view::Server<'_>, &RecvData) -> c_int,
+    /// `php_swoole_http_server_onClose`.
+    pub on_close: fn(view::Server<'_>, &DataHead),
+    /// `swoole_http_server_can_cache_session_addr`.
+    pub can_cache_session_addr: fn(view::Server<'_>) -> bool,
+}
+
+static HTTP: OnceLock<&'static HttpHooks> = OnceLock::new();
+
+/// Keep crates/phphttp's hooks; the first registration stands.
+pub fn register_http(hooks: &'static HttpHooks) {
+    HTTP.get_or_init(|| hooks);
+}
+
+/// The registered HTTP hooks.
+pub(crate) fn http() -> Option<&'static HttpHooks> {
+    HTTP.get().copied()
+}
+
 extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    let Some(families) = swoole_rs_phpswoole::families() else {
-        return SW_OK;
-    };
-    let request = ptr::from_ref(request).cast_mut().cast();
-    // SAFETY: the Server's own event.
-    unsafe { (families.http.on_receive)(server.raw(), request) }
+    http().map_or(SW_OK, |http| (http.on_receive)(server, request))
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
@@ -758,9 +776,10 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
         );
         return SW_ERR;
     };
-    let port = server.port_by_fd(conn.fd);
-    // SAFETY: null, or the connection's live port.
-    if port.is_null() || !unsafe { view::port(port) }.open_redis_protocol {
+    if !server
+        .port_of_fd(conn.fd)
+        .is_some_and(|port| port.open_redis_protocol)
+    {
         return php_swoole_server_on_receive(server, request);
     }
     let Some(redis) = crate::server::redis_receive() else {
@@ -878,9 +897,10 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     // SAFETY: the session's live connection slot.
     if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
-        // SAFETY: the session's live port.
-        let websocket = !port.is_null() && unsafe { view::port(port) }.open_websocket_protocol;
-        if websocket && crate::lifecycle::isset(server, port, ON_DISCONNECT) {
+        let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
+        if websocket
+            && crate::instance::php_swoole_server_isset_callback(server, port, ON_DISCONNECT)
+        {
             cb = port_callback(server, info.server_fd, ON_DISCONNECT);
         }
     }
@@ -904,11 +924,9 @@ extern "C" fn on_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
 }
 
 extern "C" fn on_http_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
-    let Some(families) = swoole_rs_phpswoole::families() else {
-        return;
-    };
-    // SAFETY: the Server's own event.
-    unsafe { (families.http.on_close)(server.raw(), ptr::from_ref(info).cast_mut().cast()) };
+    if let Some(http) = http() {
+        (http.on_close)(server, info);
+    }
 }
 
 extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: &DataHead) {
@@ -950,11 +968,12 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
         // The worker `addProcess` made holds its process object.
         worker.user_data().cast::<zval>()
     };
-    // SAFETY: the process object.
-    let object = unsafe { object_of(process) };
-    let ce = crate::lifecycle::process_class();
-    // SAFETY: a live `Swoole\Process` object.
-    unsafe { swoole_rs_zend::Props::new(ce, object) }.long(c"id", id);
+    // SAFETY: the process object, which the worker or the Server object holds.
+    let props = unsafe { Value::from_ptr(process) }
+        .and_then(|process| process.props(Some(swoole_rs_phpprocess::process_class())));
+    if let Some(props) = props {
+        props.long(c"id", id);
+    }
     let gs = server.counters();
     let props = Props::server(server_object);
     props.long(c"master_pid", i64::from(gs.master_pid));

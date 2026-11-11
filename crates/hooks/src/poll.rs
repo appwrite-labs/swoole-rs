@@ -137,9 +137,7 @@ fn poll_now(fds: &[Cell<PollFd>]) -> bool {
             revents: 0,
         })
         .collect();
-    let count = libc::nfds_t::try_from(list.len()).unwrap_or(libc::nfds_t::MAX);
-    // SAFETY: `list` holds `count` pollfds.
-    let ready = unsafe { libc::poll(list.as_mut_ptr(), count, 0) };
+    let ready = swoole_rs_corebase::sys::poll(&mut list, 0);
     if ready > 0 {
         for (entry, polled) in fds.iter().zip(&list) {
             let mut row = entry.get();
