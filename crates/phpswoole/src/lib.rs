@@ -37,7 +37,7 @@ mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
-pub use functions::mime_type;
+pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;

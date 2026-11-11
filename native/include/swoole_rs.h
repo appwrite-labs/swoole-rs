@@ -304,12 +304,6 @@ uint16_t swr_v1_server_local_addr_index(const swr_v1_server_state *state, bool v
  * commands, whose get_memory_info reports php_memory(). */
 void swr_v1_server_admin_register(void *serv, size_t (*php_memory)(void));
 
-typedef struct { const char *name; uint64_t value; } swr_v1_server_fact;
-
-/* The TCP_INFO fields of *info (struct tcp_info; tcp_connection_info on Apple) in
- * upstream's order, at most cap of them into out; returns how many. Linux and Apple. */
-size_t swr_v1_server_tcp_info(const void *info, swr_v1_server_fact *out, size_t cap);
-
 #ifdef __cplusplus
 }
 #endif

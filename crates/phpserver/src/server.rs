@@ -425,10 +425,8 @@ method_table! {
     ];
 }
 
-// `swoole_last_error()` (crates/phpswoole), which `getLastError()` aliases.
-unsafe extern "C" {
-    fn zif_swoole_last_error(frame: *mut z::zend_execute_data, value: *mut z::zval);
-}
+// `swoole_last_error()`, which `getLastError()` aliases.
+use swoole_rs_phpswoole::zif_swoole_last_error;
 
 /// `php_swoole_server_minit`: `Swoole\Server` and its classes, then
 /// `Swoole\Server\Port`.

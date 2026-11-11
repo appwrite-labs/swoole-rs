@@ -8,6 +8,7 @@ use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, swr_string_drop};
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
+use swoole_rs_websocket_ffi::frame_api::get_package_length;
 use swoole_rs_zend::{
     Array, Call, Value, bailout, set_object, string,
     sys::{zend_object, zval, zval_ptr_dtor},
@@ -58,8 +59,6 @@ unsafe extern "C" {
     fn get_read_buffer(socket: Socket) -> *mut CppString;
     #[link_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv"]
     fn get_write_buffer(socket: Socket) -> *mut CppString;
-    #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-    fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
     fn swoole_coroutine_open(path: *const c_char, flags: c_int, mode: mode_t) -> c_int;
@@ -267,7 +266,7 @@ impl Co {
         record.protocol.package_length_size = WEBSOCKET_HEADER_LEN;
         record.protocol.package_length_offset = 0;
         record.protocol.package_body_offset = 0;
-        record.protocol.get_package_length = websocket_package_length as *mut c_void;
+        record.protocol.get_package_length = get_package_length as *mut c_void;
     }
 
     /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.
