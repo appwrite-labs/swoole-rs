@@ -165,16 +165,17 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 /// Upstream does not close here: the engine may be shutting down, and closing
 /// would resume other coroutines.
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees a socket object, live until this returns.
-    let sock = unsafe { Sock::new(std) };
-    // SAFETY: Zend transfers the object's core/resource custody to this final release.
-    let released = unsafe { owner::release(sock) };
-    let result = released.and_then(|()| {
-        // SAFETY: core custody has finished; now run the object's property destructors.
-        unsafe { SocketObject::try_dtor(std) }
+    swoole_rs_zend::bailout::finish_after(|| {
+        // SAFETY: Zend frees a socket object, live until this returns.
+        let sock = unsafe { Sock::new(std) };
+        // SAFETY: Zend transfers the object's core/resource custody to this final release.
+        let released = unsafe { owner::release(sock) };
+        let result = released.and_then(|()| {
+            // SAFETY: core custody has finished; now run the object's property destructors.
+            unsafe { SocketObject::try_dtor(std) }
+        });
+        swoole_rs_zend::bailout::defer(result);
     });
-    swoole_rs_zend::bailout::defer(result);
-    swoole_rs_zend::bailout::finish();
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {

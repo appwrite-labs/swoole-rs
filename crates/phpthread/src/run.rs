@@ -128,6 +128,11 @@ unsafe extern "C" fn epilogue(_start: *mut c_void) {
     if unsafe { swr_zend_guard_pending() } != 0 {
         swoole_rs_reactor::event_api::swoole_event_bail_out();
     }
+    clear_exit();
+}
+
+/// The thread-exit mark goes: nothing is left for the exit to leave.
+fn clear_exit() {
     // SAFETY: no preconditions.
     unsafe { swr_zend_guard_clear() };
 }
@@ -153,9 +158,15 @@ pub extern "C" fn thread_bailout() {
             swoole_rs_phpcoroutines::yield_coroutine(co);
         }
     }
+    let script = BAILOUT.get();
+    if script.is_null() {
+        // The script is over: the exit ends the request-shutdown step Zend
+        // runs it in, and the rest of the shutdown runs as usual.
+        clear_exit();
+    }
     // SAFETY: the thread's script scope, or Zend's current one; this frame
     // owns nothing.
-    unsafe { swr_zend_bailout_to(BAILOUT.get()) };
+    unsafe { swr_zend_bailout_to(script) };
 }
 
 extern "C" fn guard_context() -> *mut c_void {

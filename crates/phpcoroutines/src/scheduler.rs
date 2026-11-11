@@ -87,16 +87,17 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees one of our objects.
-    let list = mem::take(&mut unsafe { SchedulerObject::data(std) }.list);
-    if let Some(tasks) = list {
-        for task in *tasks {
-            bailout::defer(task.callable.release());
+    bailout::finish_after(|| {
+        // SAFETY: Zend frees one of our objects.
+        let list = mem::take(&mut unsafe { SchedulerObject::data(std) }.list);
+        if let Some(tasks) = list {
+            for task in *tasks {
+                bailout::defer(task.callable.release());
+            }
         }
-    }
-    // SAFETY: as above.
-    unsafe { SchedulerObject::dtor(std) };
-    bailout::finish();
+        // SAFETY: as above.
+        unsafe { SchedulerObject::dtor(std) };
+    });
 }
 
 swoole_rs_zend::handlers! {

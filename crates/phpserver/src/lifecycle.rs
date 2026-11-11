@@ -454,47 +454,48 @@ pub(crate) fn owns_shared() -> bool {
 /// # Safety
 /// Zend frees a Server object.
 pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
-    // The object's live server; the master deletes it below.
-    let handle = ServerObject(object);
-    let server = handle.server();
-    // SAFETY: per the caller.
-    let data = unsafe { Object::<ServerData>::data(object) };
-    // SAFETY: `create` boxed it; nothing else frees it.
-    let mut property = unsafe { Box::from_raw(data.property.cast::<Property>()) };
-    data.property = ptr::null_mut();
-    if let Some(server) = server {
-        if owns_shared() {
-            // SAFETY: freeing the object on the one thread that owns the config's slots.
-            let dispatch = std::mem::replace(
-                &mut unsafe { server.config_mut() }.private_data_3,
-                ptr::null_mut(),
-            );
-            bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
+    bailout::finish_after(|| {
+        // The object's live server; the master deletes it below.
+        let handle = ServerObject(object);
+        let server = handle.server();
+        // SAFETY: per the caller.
+        let data = unsafe { Object::<ServerData>::data(object) };
+        // SAFETY: `create` boxed it; nothing else frees it.
+        let mut property = unsafe { Box::from_raw(data.property.cast::<Property>()) };
+        data.property = ptr::null_mut();
+        if let Some(server) = server {
+            if owns_shared() {
+                // SAFETY: freeing the object on the one thread that owns the config's slots.
+                let dispatch = std::mem::replace(
+                    &mut unsafe { server.config_mut() }.private_data_3,
+                    ptr::null_mut(),
+                );
+                bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
+            }
+            drop(std::mem::take(&mut property.callbacks));
+            // `sw_zval_free`: each copy's reference goes.
+            drop(std::mem::take(&mut property.user_processes));
+            for &port in &property.ports {
+                // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
+                unsafe { crate::port::deref(port) };
+            }
+            data.serv = ptr::null_mut();
         }
-        drop(std::mem::take(&mut property.callbacks));
-        // `sw_zval_free`: each copy's reference goes.
-        drop(std::mem::take(&mut property.user_processes));
-        for &port in &property.ports {
-            // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
-            unsafe { crate::port::deref(port) };
+        // The commands' callables go with it.
+        drop(property);
+        // SAFETY: the object Zend is freeing.
+        unsafe { zend_object_std_dtor(object) };
+        if let Some(server) = server {
+            if fact(server, fact::MASTER) {
+                crate::thread::free_setting(server);
+                delete(server.raw());
+            } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
+                // Never started, or a base-mode start returned: upstream keeps it to the
+                // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
+                orphans().push(server.raw() as usize);
+            }
         }
-        data.serv = ptr::null_mut();
-    }
-    // The commands' callables go with it.
-    drop(property);
-    // SAFETY: the object Zend is freeing.
-    unsafe { zend_object_std_dtor(object) };
-    if let Some(server) = server {
-        if fact(server, fact::MASTER) {
-            crate::thread::free_setting(server);
-            delete(server.raw());
-        } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
-            // Never started, or a base-mode start returned: upstream keeps it to the
-            // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
-            orphans().push(server.raw() as usize);
-        }
-    }
-    bailout::finish();
+    });
 }
 
 /// `delete serv`, by its owner, once nothing refers to it.

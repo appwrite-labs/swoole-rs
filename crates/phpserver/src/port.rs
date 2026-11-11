@@ -88,11 +88,12 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    unsafe { deref(std) };
-    // SAFETY: as above.
-    unsafe { Port::dtor(std) };
-    swoole_rs_zend::bailout::finish();
+    swoole_rs_zend::bailout::finish_after(|| {
+        // SAFETY: Zend frees an object this class created.
+        unsafe { deref(std) };
+        // SAFETY: as above.
+        unsafe { Port::dtor(std) };
+    });
 }
 
 /// A new Port object bound to `port` and its server `serv`.

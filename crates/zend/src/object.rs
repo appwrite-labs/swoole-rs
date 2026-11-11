@@ -256,15 +256,12 @@ unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_o
 /// # Safety
 /// Zend calls it once, with one of `T`'s objects whose last reference went.
 unsafe extern "C" fn free<T: Custom>(std: *mut zend_object) {
-    // A bailout pending before is its deferrer's to raise.
-    let pending = bailout::pending();
-    // SAFETY: per Zend; nothing borrows the data any more.
-    unsafe { Object::<T>::data_ptr(std).drop_in_place() };
-    // SAFETY: as above.
-    unsafe { zend_object_std_dtor(std) };
-    if !pending {
-        bailout::finish();
-    }
+    bailout::finish_after(|| {
+        // SAFETY: per Zend; nothing borrows the data any more.
+        unsafe { Object::<T>::data_ptr(std).drop_in_place() };
+        // SAFETY: as above.
+        unsafe { zend_object_std_dtor(std) };
+    });
 }
 
 /// `T`'s `dtor_obj` handler: `__destruct`, then [`Custom::destruct`].
@@ -274,15 +271,12 @@ unsafe extern "C" fn destruct<T: Custom>(std: *mut zend_object) {
     // SAFETY: per Zend; a bailout from `__destruct` crosses only this frame,
     // which owns nothing yet.
     unsafe { zend_objects_destroy_object(std) };
-    // A bailout pending before is its deferrer's to raise.
-    let pending = bailout::pending();
-    // SAFETY: a live object of `T`'s class, which outlives this call.
-    if let Some(data) = unsafe { custom::<T>(std) } {
-        data.destruct();
-    }
-    if !pending {
-        bailout::finish();
-    }
+    bailout::finish_after(|| {
+        // SAFETY: a live object of `T`'s class, which outlives this call.
+        if let Some(data) = unsafe { custom::<T>(std) } {
+            data.destruct();
+        }
+    });
 }
 
 /// The handlers [`Minit::register_object`](crate::Minit::register_object)
