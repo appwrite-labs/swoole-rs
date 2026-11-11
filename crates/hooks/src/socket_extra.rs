@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn tls_slot_is_the_extra_records_owner() {
         let extra = SocketExtra::alloc();
-        let owner = swoole_rs_tls::swr_v1_tls_owner_new(swoole_rs_tls::swr_v1_tls_warning).owner;
+        let owner = swoole_rs_tls::swr_v1_tls_owner_new().owner;
         unsafe { (*extra).tls = owner };
         assert_eq!(unsafe { (*extra).tls }, owner);
         unsafe { SocketExtra::free(extra) };

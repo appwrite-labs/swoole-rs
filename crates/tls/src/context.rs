@@ -110,7 +110,7 @@ impl TlsStr {
 }
 
 /// Logs `"<function>(): <message>"` at warning level.
-pub type Warn = extern "C" fn(function: *const c_char, message: *const c_char);
+pub type Warn = fn(function: &CStr, message: &str);
 
 /// Reads an owner's current passphrase.
 pub type PassphraseOf = extern "C" fn(owner: *const c_void) -> TlsStr;
@@ -158,9 +158,8 @@ struct Method<'a> {
 
 impl Method<'_> {
     fn warn(&self, message: &[u8]) {
-        let mut text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
-        text.push(0);
-        (self.config.warn)(self.function.as_ptr(), text.as_ptr().cast());
+        let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
+        (self.config.warn)(self.function, &String::from_utf8_lossy(&text));
     }
 
     /// Upstream's `ssl_error`: pops one error and appends its reason and code.
@@ -836,14 +835,10 @@ mod tests {
 
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    extern "C" fn record(function: *const c_char, message: *const c_char) {
-        // SAFETY: the NUL-terminated strings `Method::warn` passes.
-        let (function, message) = unsafe { (CStr::from_ptr(function), CStr::from_ptr(message)) };
-        LOG.lock().unwrap().push(format!(
-            "{}(): {}",
-            function.to_string_lossy(),
-            message.to_string_lossy()
-        ));
+    fn record(function: &CStr, message: &str) {
+        LOG.lock()
+            .unwrap()
+            .push(format!("{}(): {message}", function.to_string_lossy()));
     }
 
     extern "C" fn no_passphrase(_owner: *const c_void) -> TlsStr {
