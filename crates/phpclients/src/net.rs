@@ -61,15 +61,24 @@ pub(crate) const INVALID_PARAMS: c_int = 505;
 /// One connection: the `network::Client` and what the PHP layer keeps with it
 /// (upstream's `keep`, `server_id`, `reuse_count`, `buffer` and
 /// `ssl_wait_handshake` client fields).
+///
+/// The object shares it (`Rc`, cells), so PHP code a method runs can re-enter
+/// the object and even release the connection while the method still holds it.
 pub(crate) struct Conn {
     pub(crate) cli: Cli,
     key: Vec<u8>,
     keep: bool,
     reuse_count: u32,
-    /// `cli->buffer`'s bytes, and its size (0: no buffer).
+    /// `cli->buffer`: taken for the length of a framed `recv`.
+    frame: Cell<Frame>,
+    pub(crate) ssl_wait: Cell<bool>,
+}
+
+/// `cli->buffer`'s bytes, and its size (0: no buffer).
+#[derive(Default)]
+struct Frame {
     buffer: Vec<u8>,
-    buffer_size: usize,
-    pub(crate) ssl_wait: bool,
+    size: usize,
 }
 
 impl Conn {
@@ -79,9 +88,21 @@ impl Conn {
             key: Vec::new(),
             keep: false,
             reuse_count: 0,
-            buffer: Vec::new(),
-            buffer_size: 0,
-            ssl_wait: false,
+            frame: Cell::default(),
+            ssl_wait: Cell::new(false),
+        }
+    }
+
+    /// The connection for the pool: the same client and state, apart from any
+    /// handle a re-entered method still holds (upstream pools the pointer).
+    fn detach(&self) -> Self {
+        Self {
+            cli: self.cli,
+            key: self.key.clone(),
+            keep: self.keep,
+            reuse_count: self.reuse_count,
+            frame: Cell::new(self.frame.take()),
+            ssl_wait: Cell::new(self.ssl_wait.get()),
         }
     }
 
@@ -145,7 +166,8 @@ impl Conn {
 /// Cells, so PHP code a method runs can re-enter the same object's methods
 /// while it holds the data: nothing borrows it mutably.
 pub(crate) struct Data {
-    pub(crate) conn: Cell<*mut Conn>,
+    /// The connection; all-zero is none.
+    conn: Cell<Option<Rc<Conn>>>,
     /// `getSocket()`'s socket (`IS_UNDEF`: none); zeroed bytes are `IS_UNDEF`.
     zsocket: Cell<Owned>,
     /// The async callbacks, by [`crate::async_net`] slot; all-zero is none.
@@ -155,6 +177,24 @@ pub(crate) struct Data {
 }
 
 impl Data {
+    /// The object's connection, if it holds one.
+    pub(crate) fn conn(&self) -> Option<Rc<Conn>> {
+        let held = self.conn.take();
+        self.conn.set(held.clone());
+        held
+    }
+
+    pub(crate) fn has_conn(&self) -> bool {
+        let held = self.conn.take();
+        let has = held.is_some();
+        self.conn.set(held);
+        has
+    }
+
+    pub(crate) fn set_conn(&self, conn: Option<Rc<Conn>>) {
+        drop(self.conn.replace(conn));
+    }
+
     /// A new reference to `getSocket()`'s socket, if it has one.
     fn zsocket(&self) -> Option<Owned> {
         let held = self.zsocket.take();
@@ -216,9 +256,10 @@ pub(crate) type ClientObject = Object<Data>;
 pub(crate) static CLIENT: Class = Class::new();
 static EXCEPTION: Class = Class::new();
 /// A persistent connection the pool owns until a client takes it back.
-struct Pooled(*mut Conn);
-// SAFETY: the pool only moves the pointer; whichever request takes it back owns
-// the connection, as with upstream's process-wide `long_connections`.
+struct Pooled(Box<Conn>);
+// SAFETY: the pool only moves the connection, whose client is a raw pointer;
+// whichever request takes it back owns it, as with upstream's process-wide
+// `long_connections`.
 unsafe impl Send for Pooled {}
 
 /// The persistent connections (`long_connections`), keyed by server id.
@@ -336,9 +377,8 @@ pub(crate) fn this(call: &Call) -> &Data {
 }
 
 /// The object's connection.
-pub(crate) fn conn<'a>(call: &Call) -> Option<&'a mut Conn> {
-    // SAFETY: the object owns its connection while it holds it.
-    unsafe { this(call).conn.get().as_mut() }
+pub(crate) fn conn(call: &Call) -> Option<Rc<Conn>> {
+    this(call).conn()
 }
 
 /// `php_swoole_client_get_type`: the socket type without the client flags.
@@ -419,9 +459,7 @@ pub(crate) fn bailed<T>(result: Result<T, Bailout>) -> Option<T> {
 
 /// `php_swoole_client_free`: release the connection's timer, length callable,
 /// pool entry and client, then the exported socket.
-pub(crate) fn release(object: Obj, conn: *mut Conn) -> Result<(), Bailout> {
-    // SAFETY: the connection the object held or the pool gave back, released once.
-    let conn = unsafe { Box::from_raw(conn) };
+pub(crate) fn release(object: Obj, conn: &Conn) -> Result<(), Bailout> {
     if conn.keep
         && let Some(pool) = long_connections().as_mut()
     {
@@ -431,13 +469,13 @@ pub(crate) fn release(object: Obj, conn: *mut Conn) -> Result<(), Bailout> {
     let data = object.data();
     // The reference the object took in getSocket().
     drop(data.zsocket.take());
-    data.conn.set(ptr::null_mut());
+    data.set_conn(None);
     destroyed
 }
 
 /// `php_swoole_client_get_cli_safe`: the connected client; else errCode and a
 /// warning say it is not connected.
-pub(crate) fn connected<'a>(call: &Call) -> Option<&'a mut Conn> {
+pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
     let object = Obj::this(call);
     if let Some(conn) = conn(call)
         && conn.has_socket()
@@ -465,8 +503,7 @@ pub(crate) fn connected<'a>(call: &Call) -> Option<&'a mut Conn> {
                 conn.set_flag(state::ACTIVE, true);
                 return Some(conn);
             }
-            let conn = ptr::from_mut(conn);
-            bailed(release(object, conn))?;
+            bailed(release(object, &conn))?;
         }
     }
     set_last_error(NO_CONNECTION);
@@ -525,7 +562,7 @@ pub(crate) fn settings(object: Obj) -> Option<*mut zval> {
 }
 
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.
-fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
+fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, false)?;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
     let int_port = port as i32;
@@ -544,26 +581,25 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
             key
         }
     };
-    let mut conn: *mut Conn = ptr::null_mut();
+    let mut conn = None;
     if kind & FLAG_KEEP != 0 {
         let taken = long_connections().as_mut().and_then(|pool| pool.take(&key));
-        if let Some(Pooled(taken)) = taken {
-            conn = taken;
-            // SAFETY: a pooled connection, now this object's.
-            let pooled = unsafe { &mut *conn };
+        if let Some(Pooled(mut pooled)) = taken {
             if pooled.alive() {
                 pooled.reuse_count += 1;
                 object
                     .props()
                     .long(c"reuseCount", i64::from(pooled.reuse_count));
+                conn = Some(pooled);
             } else {
                 bailed(pooled.call(Op::Close).run())?;
-                bailed(release(object, conn))?;
-                conn = ptr::null_mut();
+                bailed(release(object, &pooled))?;
             }
         }
     }
-    if conn.is_null() {
+    let mut connection = if let Some(conn) = conn {
+        *conn
+    } else {
         #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
         let cli = match native::create(socket_type(kind) as c_int, false) {
             Ok(cli) => cli,
@@ -573,12 +609,10 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
                 return None;
             }
         };
-        let mut fresh = Box::new(Conn::new(cli));
+        let mut fresh = Conn::new(cli);
         fresh.key = key;
-        conn = Box::into_raw(fresh);
-    }
-    // SAFETY: the connection just taken or made.
-    let connection = unsafe { &mut *conn };
+        fresh
+    };
     object.props().long(c"sock", i64::from(connection.fd()));
     if kind & FLAG_KEEP != 0 {
         connection.keep = true;
@@ -586,7 +620,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
     if kind & SOCK_SSL != 0 {
         bailed(connection.call(Op::EnableSsl).run())?;
     }
-    Some(conn)
+    Some(Rc::new(connection))
 }
 
 /// `__construct(int $type, bool $async = false, string $id = '')`.
@@ -631,7 +665,7 @@ pub(crate) fn destructing(call: &Call) -> bool {
 
 /// `__destruct()`: close a held connection through `Swoole\Client::close`.
 fn destruct(call: &Call) {
-    if !destructing(call) || this(call).conn.get().is_null() {
+    if !destructing(call) || !this(call).has_conn() {
         return;
     }
     // SAFETY: a live client object; `Swoole\Client::close` with no arguments.
@@ -648,18 +682,26 @@ fn set(call: &Call) {
     let Some(settings) = call.value(1).filter(|settings| settings.array().is_some()) else {
         return call.set_bool(false);
     };
-    let settings = settings.as_ptr();
-    // SAFETY: `$this` is live; `settings` is a live array.
+    merge_setting(call, &CLIENT, settings);
+    call.set_bool(true);
+}
+
+/// `set()`'s `php_array_merge` of `settings` into `$this->setting` (made an
+/// array first, under `scope`); nothing when `settings` is no array.
+pub(crate) fn merge_setting(call: &Call, scope: &Class, settings: &Value) {
+    if settings.array().is_none() {
+        return;
+    }
+    // SAFETY: a client method's live `$this`, a registered class and a live array.
     unsafe {
         z::swr_zend_property_merge(
-            CLIENT.entry(),
+            scope.entry(),
             call.this(),
             c"setting".as_ptr(),
             7,
-            settings,
+            settings.as_ptr(),
         );
     };
-    call.set_bool(true);
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0.5, int $sock_flag = 0): bool`.
@@ -680,7 +722,7 @@ fn connect(call: &Call) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);
-    if !this(call).conn.get().is_null() {
+    if this(call).has_conn() {
         warn(
             ErrorKind::Fatal,
             "connection to the server has already been established",
@@ -690,9 +732,7 @@ fn connect(call: &Call) {
     let Some(conn) = connection(object, host, port) else {
         return call.set_bool(false);
     };
-    this(call).conn.set(conn);
-    // SAFETY: the object's connection.
-    let conn = unsafe { &mut *conn };
+    this(call).set_conn(Some(conn.clone()));
     if conn.keep && conn.flag(state::ACTIVE) {
         object.props().bool(c"reuse", true);
         return call.set_bool(true);
@@ -739,7 +779,7 @@ fn connect(call: &Call) {
             strerror(error),
         );
         warn(ErrorKind::Core, &message);
-        bailed(release(object, ptr::from_mut(conn)));
+        bailed(release(object, &conn));
         return call.set_bool(false);
     }
     call.set_bool(true);
@@ -791,13 +831,12 @@ fn sendto(call: &Call) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);
-    if this(call).conn.get().is_null() {
+    if !this(call).has_conn() {
         let Some(conn) = connection(object, host, port) else {
             return call.set_bool(false);
         };
-        // SAFETY: the connection just made.
-        unsafe { &*conn }.set_flag(state::ACTIVE, true);
-        this(call).conn.set(conn);
+        conn.set_flag(state::ACTIVE, true);
+        this(call).set_conn(Some(conn));
     }
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
@@ -884,61 +923,62 @@ fn recv_failed(call: &Call, error: c_int) {
 
 /// `recv` under `open_eof_check`: one package up to and including the EOF,
 /// keeping what follows for the next call.
-fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
+fn recv_eof(call: &Call, conn: &Conn, frame: &mut Frame, framing: &Protocol) {
     let eof = &framing.package_eof;
     let eof = eof
         .get(..usize::from(framing.package_eof_len))
         .unwrap_or(eof);
     let max = framing.package_max_length as usize;
-    if conn.buffer_size == 0 {
-        conn.buffer_size = BUFFER_SIZE_BIG;
-        conn.buffer.clear();
+    if frame.size == 0 {
+        frame.size = BUFFER_SIZE_BIG;
+        frame.buffer.clear();
     }
-    let mut find = !conn.buffer.is_empty();
+    let mut find = !frame.buffer.is_empty();
     loop {
         if !find {
-            let length = conn.buffer.len();
-            let room = (conn.buffer_size - length.min(conn.buffer_size)).min(BUFFER_SIZE_BIG);
-            conn.buffer.resize(length + room, 0);
-            let target = conn.buffer.as_mut_ptr().wrapping_add(length);
+            let length = frame.buffer.len();
+            let room = (frame.size - length.min(frame.size)).min(BUFFER_SIZE_BIG);
+            frame.buffer.resize(length + room, 0);
+            let target = frame.buffer.as_mut_ptr().wrapping_add(length);
             let read = receive(conn, target, room, 0);
             let Some(read) = bailed(read) else {
-                conn.buffer.truncate(length);
+                frame.buffer.truncate(length);
                 return call.set_bool(false);
             };
             if read < 0 {
                 let error = errno();
-                conn.buffer.clear();
+                frame.buffer.clear();
                 return recv_failed(call, error);
             } else if read == 0 {
-                conn.buffer.clear();
+                frame.buffer.clear();
                 return call.set_empty_string();
             }
-            conn.buffer
+            frame
+                .buffer
                 .truncate(length + usize::try_from(read).unwrap_or(0));
-            if conn.buffer.len() < eof.len() {
+            if frame.buffer.len() < eof.len() {
                 continue;
             }
         }
         find = false;
-        if let Some(at) = position(&conn.buffer, eof) {
+        if let Some(at) = position(&frame.buffer, eof) {
             let end = at + eof.len();
-            let package = ZString::new(conn.buffer.get(..end).unwrap_or_default());
-            if conn.buffer.len() > end {
-                conn.buffer.drain(..end);
-                conn.buffer_size = BUFFER_SIZE_BIG;
+            let package = ZString::new(frame.buffer.get(..end).unwrap_or_default());
+            if frame.buffer.len() > end {
+                frame.buffer.drain(..end);
+                frame.size = BUFFER_SIZE_BIG;
             } else {
-                conn.buffer.clear();
-                conn.buffer_size = 0;
+                frame.buffer.clear();
+                frame.size = 0;
             }
             return call.set_zstring(package);
         }
-        if conn.buffer.len() == max {
+        if frame.buffer.len() == max {
             warn(ErrorKind::Error, "no package eof");
-            conn.buffer.clear();
+            frame.buffer.clear();
             return call.set_bool(false);
-        } else if conn.buffer.len() == conn.buffer_size && conn.buffer_size < max {
-            conn.buffer_size = (conn.buffer_size * 2).min(max);
+        } else if frame.buffer.len() == frame.size && frame.size < max {
+            frame.size = (frame.size * 2).min(max);
         }
     }
 }
@@ -957,35 +997,37 @@ fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Returns the string and its length so far, or None when it has returned.
 fn recv_length(
     call: &Call,
-    conn: &mut Conn,
+    conn: &Conn,
+    frame: &mut Frame,
     framing: &Protocol,
     mut length: i64,
 ) -> Option<(ZBuf, i64)> {
-    if conn.buffer_size == 0 {
-        conn.buffer_size = BUFFER_SIZE_STD;
+    if frame.size == 0 {
+        frame.size = BUFFER_SIZE_STD;
     }
-    conn.buffer.clear();
+    frame.buffer.clear();
     let header =
         usize::from(framing.package_length_offset) + usize::from(framing.package_length_size);
     loop {
-        let have = conn.buffer.len();
+        let have = frame.buffer.len();
         let want = header.saturating_sub(have);
-        conn.buffer.resize(have + want, 0);
-        let target = conn.buffer.as_mut_ptr().wrapping_add(have);
+        frame.buffer.resize(have + want, 0);
+        let target = frame.buffer.as_mut_ptr().wrapping_add(have);
         let read = receive(conn, target, want, 0);
         let Some(read) = bailed(read) else {
             call.set_bool(false);
             return None;
         };
         if read <= 0 {
-            conn.buffer.truncate(have);
+            frame.buffer.truncate(have);
             break;
         }
-        conn.buffer
+        frame
+            .buffer
             .truncate(have + usize::try_from(read).unwrap_or(0));
         let mut measure = conn.call(Op::PackageLength);
-        measure.buffer = conn.buffer.as_mut_ptr().cast();
-        measure.length = conn.buffer.len();
+        measure.buffer = frame.buffer.as_mut_ptr().cast();
+        measure.length = frame.buffer.len();
         let Some(measured) = bailed(measure.run()) else {
             call.set_bool(false);
             return None;
@@ -995,15 +1037,15 @@ fn recv_length(
             break;
         }
     }
-    let buffered = conn.buffer.len();
+    let buffered = frame.buffer.len();
     #[expect(clippy::cast_possible_wrap, reason = "lengths below 4 GiB")]
     let (header_length, have) = (header as i64, buffered as i64);
     if length < 0 {
         call.set_empty_string();
         return None;
     } else if length == header_length {
-        conn.buffer.resize(header.max(buffered), 0);
-        call.set_zstring(ZString::new(conn.buffer.get(..header).unwrap_or_default()));
+        frame.buffer.resize(header.max(buffered), 0);
+        call.set_zstring(ZString::new(frame.buffer.get(..header).unwrap_or_default()));
         return None;
     } else if length > i64::from(framing.package_max_length) {
         #[expect(
@@ -1014,17 +1056,17 @@ fn recv_length(
         call.set_empty_string();
         return None;
     } else if length == have {
-        call.set_zstring(ZString::new(&conn.buffer));
+        call.set_zstring(ZString::new(&frame.buffer));
         return None;
     } else if length < have {
         let end = usize::try_from(length).unwrap_or(0);
-        call.set_zstring(ZString::new(conn.buffer.get(..end).unwrap_or_default()));
-        conn.buffer.drain(..end);
+        call.set_zstring(ZString::new(frame.buffer.get(..end).unwrap_or_default()));
+        frame.buffer.drain(..end);
         return None;
     }
     let total = usize::try_from(length).unwrap_or(0);
     let mut package = ZBuf::with_capacity(total.max(header));
-    package.extend_from_slice(&conn.buffer);
+    package.extend_from_slice(&frame.buffer);
     set_last_error(0);
     let rest = total.saturating_sub(buffered);
     let read = receive_into(conn, &mut package, rest, i64::from(libc::MSG_WAITALL));
@@ -1064,9 +1106,14 @@ fn recv(call: &Call) {
         )
     };
     let (package, read) = if eof_check {
-        return recv_eof(call, conn, &framing);
+        let mut frame = conn.frame.take();
+        recv_eof(call, &conn, &mut frame, &framing);
+        return conn.frame.set(frame);
     } else if length_check {
-        let Some(received) = recv_length(call, conn, &framing, length) else {
+        let mut frame = conn.frame.take();
+        let received = recv_length(call, &conn, &mut frame, &framing, length);
+        conn.frame.set(frame);
+        let Some(received) = received else {
             return;
         };
         received
@@ -1078,7 +1125,7 @@ fn recv(call: &Call) {
         let size = usize::try_from(length).unwrap_or(0);
         let mut package = ZBuf::with_capacity(size);
         set_last_error(0);
-        let Some(read) = bailed(receive_into(conn, &mut package, size, flags)) else {
+        let Some(read) = bailed(receive_into(&conn, &mut package, size, flags)) else {
             return call.set_bool(false);
         };
         (package, read)
@@ -1177,9 +1224,7 @@ fn close(call: &Call) {
         return call.set_bool(false);
     };
     let object = Obj::this(call);
-    let conn_ptr = this(call).conn.get();
-    // SAFETY: the object's connection, if any.
-    let Some(conn) = (unsafe { conn_ptr.as_mut() }).filter(|conn| conn.has_socket()) else {
+    let Some(conn) = this(call).conn().filter(|conn| conn.has_socket()) else {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
@@ -1197,7 +1242,7 @@ fn close(call: &Call) {
         let Some(result) = bailed(conn.call(Op::Close).run()) else {
             return call.set_bool(false);
         };
-        bailed(release(object, conn_ptr));
+        bailed(release(object, &conn));
         return call.set_bool(result >= 0);
     }
     let pushed = {
@@ -1206,17 +1251,17 @@ fn close(call: &Call) {
             *pool = Pool::create();
         }
         pool.as_mut()
-            .map(|pool| pool.push(&conn.key, Pooled(conn_ptr)))
+            .map(|pool| pool.push(&conn.key, Pooled(Box::new(conn.detach()))))
     };
     if !matches!(pushed, Some(Ok(()))) {
         std::process::abort();
     }
-    this(call).conn.set(ptr::null_mut());
+    this(call).set_conn(None);
     call.set_bool(true);
 }
 
 /// `php_swoole_client_enable_ssl_encryption`.
-pub(crate) fn enable_ssl(call: &Call, conn: &mut Conn) -> bool {
+pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
     if !matches!(conn.socket_type(), SOCK_TCP | SOCK_TCP6) {
         warn(ErrorKind::Fatal, "cannot use enableSSL");
         return false;
@@ -1247,7 +1292,7 @@ fn enable_ssl_method(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    if !enable_ssl(call, conn) {
+    if !enable_ssl(call, &conn) {
         return call.set_bool(false);
     }
     call.set_bool(bailed(conn.call(Op::SslHandshake).run()) == Some(0));

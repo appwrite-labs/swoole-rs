@@ -19,15 +19,15 @@ use swoole_rs_clients::client::{
 use swoole_rs_clients::swr_v1_clients_port;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, Minit,
+    Call, Class, E_ERROR, Minit, Owned, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    set_object, string,
+    set_object,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers, zval,
         zval_ptr_dtor,
     },
-    unset_property_deny, update_property, value,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -159,9 +159,8 @@ fn execute(object: Obj, slot: usize) -> Result<(), Bailout> {
 /// and drop the reference `connect()` took.
 fn execute_and_release(object: Obj, slot: usize) -> Result<(), Bailout> {
     execute(object, slot)?;
-    let conn = object.data().conn.get();
-    if !conn.is_null() {
-        net::release(object, conn)?;
+    if let Some(conn) = object.data().conn() {
+        net::release(object, &conn)?;
     }
     // SAFETY: `zval_delref_p`: the reference `connect()` took.
     unsafe { (*object.as_ptr()).gc.refcount -= 1 };
@@ -171,10 +170,9 @@ fn execute_and_release(object: Obj, slot: usize) -> Result<(), Bailout> {
 fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result<(), Bailout> {
     match kind {
         ON_CONNECT => {
-            // SAFETY: a connected client's object holds its connection.
-            let conn = unsafe { &mut *object.data().conn.get() };
-            if conn.ssl_wait {
-                conn.ssl_wait = false;
+            if let Some(conn) = object.data().conn()
+                && conn.ssl_wait.replace(false)
+            {
                 return execute(object, SSL_READY);
             }
             execute(object, CONNECT)
@@ -183,9 +181,7 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
             let callable = callback(object.data(), RECEIVE);
             // SAFETY: the client lends `length` bytes for the call.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
-            let mut payload = swoole_rs_zend::long_zval(0);
-            // SAFETY: a fresh string; the zval takes its reference.
-            unsafe { value::set_str(&raw mut payload, string::copy(bytes)) };
+            let payload = Owned::string(ZString::new(bytes)).into_zval();
             let mut argv = [object_zval(object), payload];
             let called = callable.map_or(Ok(false), |callable| invoke(&callable, &mut argv));
             // SAFETY: our reference to the payload.
@@ -247,26 +243,20 @@ fn destruct(call: &Call) {
     if !destructing(call) {
         return;
     }
-    let conn = net::this(call).conn.get();
-    if conn.is_null() {
+    let Some(conn) = net::this(call).conn() else {
+        return;
+    };
+    if !conn.flag(state::CLOSED) && bailed(conn.call(Op::Close).run()).is_none() {
         return;
     }
-    // SAFETY: the object's connection.
-    if !unsafe { &*conn }.flag(state::CLOSED) {
-        // SAFETY: as above.
-        if bailed(unsafe { &*conn }.call(Op::Close).run()).is_none() {
-            return;
-        }
-    }
     // A close callback may have freed it already.
-    let conn = net::this(call).conn.get();
-    if !conn.is_null() {
-        bailed(net::release(Obj::this(call), conn));
+    if let Some(conn) = net::this(call).conn() {
+        bailed(net::release(Obj::this(call), &conn));
     }
 }
 
 /// `php_swoole_client_async_new`: an async client for the object's type.
-fn connection(object: Obj, port: i64) -> Option<*mut Conn> {
+fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, true)?;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
     let int_port = port as i32;
@@ -284,15 +274,13 @@ fn connection(object: Obj, port: i64) -> Option<*mut Conn> {
             return None;
         }
     };
-    let conn = Box::new(Conn::new(cli));
+    let conn = Conn::new(cli);
     object.props().long(c"sock", i64::from(conn.fd()));
-    let conn = Box::into_raw(conn);
     // `SW_SOCK_SSL`.
     if kind & (1 << 9) != 0 {
-        // SAFETY: the connection just made.
-        bailed(unsafe { &*conn }.call(Op::EnableSsl).run())?;
+        bailed(conn.call(Op::EnableSsl).run())?;
     }
-    Some(conn)
+    Some(Rc::new(conn))
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0.5, int $sock_flag = 0): bool`.
@@ -314,7 +302,7 @@ fn connect(call: &Call) {
     }
     let object = Obj::this(call);
     let data = net::this(call);
-    if !data.conn.get().is_null() {
+    if data.has_conn() {
         warn(
             ErrorKind::Fatal,
             "connection to the server has already been established",
@@ -325,11 +313,9 @@ fn connect(call: &Call) {
         warn(ErrorKind::Fatal, "async client is not initialized");
         return call.set_bool(false);
     }
-    let Some(conn) = connection(object, port) else {
+    let Some(fresh) = connection(object, port) else {
         return call.set_bool(false);
     };
-    // SAFETY: the connection just made, not yet the object's.
-    let fresh = unsafe { &mut *conn };
     if let Some(zset) = net::settings(object)
         && crate::settings::apply(fresh.cli, zset).is_none()
     {
@@ -376,10 +362,8 @@ fn connect(call: &Call) {
             }
         }
     }
-    // SAFETY: a live client; it raises its events on this object.
-    let cli = unsafe { &*fresh.cli.0 };
-    state::swr_v1_clients_listen(cli, object.as_ptr().cast(), events, async_event);
-    net::this(call).conn.set(conn);
+    state::swr_v1_clients_listen(fresh.cli.get(), object.as_ptr().cast(), events, async_event);
+    net::this(call).set_conn(Some(fresh.clone()));
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object.as_ptr()).gc.refcount += 1 };
 
@@ -415,10 +399,10 @@ fn connect(call: &Call) {
         warn_sys(&format!("connect to server[{host}:{port}] failed"), failure);
         object.props().long(c"errCode", i64::from(failure));
     }
-    // SAFETY: the object's connection, if an error callback did not free it.
-    if let Some(remaining) = unsafe { net::this(call).conn.get().as_ref() }
+    // The object's connection, if an error callback did not free it.
+    if let Some(remaining) = net::this(call).conn()
         && events & bit(ON_ERROR) == 0
-        && bailed(net::release(object, ptr::from_ref(remaining).cast_mut())).is_some()
+        && bailed(net::release(object, &remaining)).is_some()
     {
         // SAFETY: the reference taken above.
         unsafe { (*object.as_ptr()).gc.refcount -= 1 };
@@ -440,7 +424,6 @@ fn on(call: &Call) {
     let Ok(name) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    let zcallback = call.zval(2);
     let object = Obj::this(call);
     let Some(callable) = call
         .value(2)
@@ -463,10 +446,18 @@ fn on(call: &Call) {
         drop(callable);
         return call.set_bool(false);
     };
-    // SAFETY: `$this` is live; Zend copies the value.
-    unsafe { update_property(ASYNC.entry(), object.as_ptr(), property, zcallback) };
+    set_property(call, 2, property);
     replace(object, slot, callable);
     call.set_bool(true);
+}
+
+/// `zend_update_property(swoole_client_async_ce, ZEND_THIS, name, zcallback)`:
+/// the property takes a copy of argument `n`, the callback.
+fn set_property(call: &Call, n: u32, name: &CStr) {
+    let callback = call.value(n);
+    if let (Some(props), Some(callback)) = (call.props(Some(&ASYNC)), callback) {
+        props.value(name, callback);
+    }
 }
 
 /// The first event `name` names: upstream's `strncasecmp(event, name, len)`
@@ -509,8 +500,7 @@ fn enable_ssl(call: &Call) {
     if call.arity(0, 1).is_err() {
         return call.set_bool(false);
     }
-    let zcallback = call.zval(1);
-    if zcallback.is_null() {
+    if call.zval(1).is_null() {
         call.throw(
             swoole_rs_phpswoole::exception(),
             c"require `onSslReady` callback",
@@ -521,7 +511,7 @@ fn enable_ssl(call: &Call) {
     let Some(conn) = net::connected(call) else {
         return call.set_bool(false);
     };
-    if !net::enable_ssl(call, conn) {
+    if !net::enable_ssl(call, &conn) {
         return call.set_bool(false);
     }
     if bailed(conn.call(Op::SslWait).run()).is_none_or(|result| result < 0) {
@@ -538,10 +528,9 @@ fn enable_ssl(call: &Call) {
     let Some(Some(callable)) = created else {
         return call.set_bool(false);
     };
-    // SAFETY: `$this` is live; Zend copies the value.
-    unsafe { update_property(ASYNC.entry(), object.as_ptr(), c"onSSLReady", zcallback) };
+    set_property(call, 1, c"onSSLReady");
     replace(object, SSL_READY, callable);
-    conn.ssl_wait = true;
+    conn.ssl_wait.set(true);
     if let Some(socket) = conn.cli.net() {
         socket.edit(|record| record.tls.state = SSL_STATE_WAIT_STREAM);
     }
