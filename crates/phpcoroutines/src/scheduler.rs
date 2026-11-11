@@ -11,7 +11,7 @@ use std::{
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
-    Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, OwnedArray, Parsed,
+    Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, Parsed, Value,
     bailout::{self, Bailout},
     kind, message,
     sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL, zval},
@@ -239,31 +239,45 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
             host::fatal_error(E_WARNING, c"name_resolver must be an array");
         }
     }
-    with_options(|current| {
-        // zend_hash_merge(current, options, zval_add_ref, overwrite)
-        let mut entries = options.entries();
-        while let Some((name, index, value)) = entries.next_stored() {
+    // zend_hash_merge(current, options, zval_add_ref, overwrite)
+    let mut entries = options.entries();
+    while let Some((name, index, value)) = entries.next_stored() {
+        with_options(|current| {
+            let old = current.array().and_then(|array| match name {
+                Some(name) => array.find(name.bytes()),
+                None => array.index(index),
+            });
+            let old = old.map(Value::copy);
             match name {
                 Some(name) => current.update(name, value.copy()),
                 None => current.update_index(index, value.copy()),
             }
-        }
-    });
+            old
+        });
+    }
 }
 
-/// Edit this thread's options, an empty array until the first edit. They are
-/// out of the cell meanwhile: a destructor an overwrite runs may reach them.
-fn with_options(edit: impl FnOnce(&mut OwnedArray)) {
+/// Edit this thread's options, an empty array until the first edit. The edit
+/// returns a copy of the value it overwrites, released once the options are
+/// back in the cell: a destructor that runs then and calls `Co::set()` edits
+/// them as they now are, as upstream's does.
+fn with_options(edit: impl FnOnce(&mut OwnedArray) -> Option<Owned>) {
     let mut options = OPTIONS
         .with(RefCell::take)
         .map_or_else(OwnedArray::default, ManuallyDrop::into_inner);
-    edit(&mut options);
+    let old = edit(&mut options);
     OPTIONS.with(|o| o.replace(Some(ManuallyDrop::new(options))));
+    drop(old);
 }
 
 /// `PHPCoroutine::set_hook_flags`: the flags, recorded in the options too.
 pub fn set_hook_flags(flags: u32) {
-    with_options(|options| options.insert_long(b"hook_flags", i64::from(flags)));
+    with_options(|options| {
+        let old = options.array().and_then(|array| array.find(b"hook_flags"));
+        let old = old.map(Value::copy);
+        options.insert_long(b"hook_flags", i64::from(flags));
+        old
+    });
     runtime::store_hook_flags(flags);
 }
 

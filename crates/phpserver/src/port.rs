@@ -2,7 +2,7 @@
 //! `ListenPort` and Server these configure.
 use crate::{
     callable::Callable,
-    port_settings,
+    port_settings::{self, Source as _},
     settings::{Settings, Stop},
 };
 use std::{
@@ -401,14 +401,12 @@ fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Res
         },
         port,
     };
-    // SAFETY: a bound port; set() is its only user while it runs.
-    let config = unsafe { port_config::of(port) };
-    port_settings::apply(&source, config)?;
-    if config.ssl == 0 {
+    port_settings::apply(&source)?;
+    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context));
+    if ssl == 0 {
         return Ok(());
     }
-    let dgram = port_settings::is_dgram(config.r#type);
-    port_settings::tls(&source, config.ssl_context, dgram)
+    port_settings::tls(&source, context, port_settings::is_dgram(kind))
 }
 
 swoole_rs_zend::handlers! {

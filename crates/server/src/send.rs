@@ -21,7 +21,7 @@ use crate::records::VERIFIED_TLS;
 use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK, ServerState};
 use std::ffi::c_void;
 use swoole_rs_corebase::microtime;
-use swoole_rs_reactor::{Socket, socket_record_send, steady_ms};
+use swoole_rs_reactor::{socket_record_send, steady_ms};
 
 /// `ServerEventType`.
 const SEND_DATA: u64 = 2;
@@ -68,8 +68,7 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> Option<i64> {
     let state = state?;
     let conn = state.connection(send.info.fd, VERIFIED_TLS)?;
-    // SAFETY: a live connection's socket record.
-    let socket = unsafe { Socket::from_ptr(conn.socket.cast()) }?;
+    let socket = conn.socket()?;
     if conn.overflow != 0
         || socket.read(|record| {
             record.direct_send == 0

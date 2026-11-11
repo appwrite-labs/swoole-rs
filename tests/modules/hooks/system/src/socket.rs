@@ -404,8 +404,9 @@ impl Sock {
     }
 
     fn recv_line(&self, buf: *mut u8, n: usize) -> isize {
-        // SAFETY: `buf` holds `n` writable bytes and one more.
-        unsafe { self.co().recv_line(buf.cast(), n) }
+        // SAFETY: `buf` holds `n` writable bytes.
+        self.co()
+            .recv_line(unsafe { std::slice::from_raw_parts_mut(buf, n) })
     }
 
     fn recv_packet(&self, timeout: f64) -> isize {
@@ -571,11 +572,11 @@ impl Sock {
     /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it.
     fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
         let count = c_int::try_from(iov.len()).unwrap();
-        // SAFETY: `iov`'s live vectors, an iovec's layout.
-        let mut vector = unsafe { IoVector::new(iov.as_ptr().cast(), count) }.unwrap();
         let write = matches!(op, WRITEV | WRITEV_ALL);
+        // SAFETY: `iov`'s live vectors, an iovec's layout.
+        let mut vector = unsafe { IoVector::new(iov.as_ptr().cast(), count, write) }.unwrap();
         self.co()
-            .vector(&mut vector, write, matches!(op, READV_ALL | WRITEV_ALL))
+            .vector(&mut vector, matches!(op, READV_ALL | WRITEV_ALL))
     }
 }
 
@@ -1665,11 +1666,10 @@ fn test_sendto_recvfrom(sock_type: c_int) {
         let mut addr_length = u32::try_from(size_of::<SockAddrIn>()).unwrap();
 
         // receive data from server
-        // SAFETY: the buffer and the address storage.
+        // SAFETY: the address storage.
         let result = unsafe {
             sock_client.co().recvfrom(
-                data_from_server.as_mut_ptr().cast(),
-                server_length,
+                &mut data_from_server[..server_length],
                 (&raw mut serveraddr).cast(),
                 &raw mut addr_length,
             )

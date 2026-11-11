@@ -159,7 +159,7 @@ as inconclusive.
 
 Before that, the PR tier's `phpt` job runs the families of the modules a PR
 touches (each module in `migration/modules.json` lists its `phpt_families`; every family
-for a change to shared build inputs) through the same `phpt.yml`, on the Cargo build alone,
+for a change to shared build inputs or to the zval layer, `ZVAL_PATHS` in `tools/dev.py`) through the same `phpt.yml`, on the Cargo build alone,
 in one shard per 150 of their tests, at most 9 (`inventory.py --plan`), with the services those families reach. Upstream doesn't change between PRs, so the gate takes upstream's
 reports and `upstream.so` from main's latest merge-tier run whose upstream shards passed
 (`tools/ci.py phpt-baseline`), cut to those families. That baseline holds only while
