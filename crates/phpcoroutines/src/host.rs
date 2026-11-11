@@ -191,8 +191,7 @@ fn native(co: *const swoole_rs_coroutine::Coroutine) -> Co {
 }
 
 pub(crate) fn count() -> usize {
-    // SAFETY: this thread's scheduler.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_count(scheduler()) }
+    swoole_rs_coroutine::coroutine_count()
 }
 
 /// `Coroutine::get_current()`: null outside a coroutine.
@@ -243,8 +242,7 @@ pub(crate) fn current_cid() -> c_long {
 }
 
 pub(crate) fn by_cid(cid: c_long) -> Co {
-    // SAFETY: this thread's scheduler.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_get(scheduler(), cid) }
+    swoole_rs_coroutine::coroutine_get(cid)
 }
 
 /// The task of `co`, null for none.
@@ -283,15 +281,11 @@ pub(crate) fn execute_time(cid: c_long) -> c_long {
 pub(crate) fn list(cids: &mut [c_long]) -> usize {
     let mut before = c_long::MAX;
     for (n, slot) in cids.iter_mut().enumerate() {
-        // SAFETY: this thread's scheduler and a writable id.
-        if unsafe {
-            swoole_rs_coroutine::swr_v1_coroutine_older(scheduler(), before, &raw mut before)
-        }
-        .is_null()
-        {
+        let Some((cid, _)) = swoole_rs_coroutine::coroutine_older(before) else {
             return n;
-        }
-        *slot = before;
+        };
+        before = cid;
+        *slot = cid;
     }
     cids.len()
 }
@@ -601,8 +595,7 @@ fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
         swoole_rs_coroutine::ON_CLOSE,
     ];
     for (slot, callback) in slots.into_iter().zip(callbacks) {
-        // SAFETY: this thread's scheduler.
-        unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_callback(scheduler(), slot, callback) };
+        swoole_rs_coroutine::set_callback(slot, callback);
     }
 }
 
@@ -728,8 +721,7 @@ pub(crate) fn event_wait() {
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
     let size = swoole_rs_phpswoole::php_swoole_parse_to_size(size);
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
-    // SAFETY: this thread's scheduler.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_stack_size(scheduler(), size) };
+    swoole_rs_coroutine::set_stack_size(size);
 }
 
 pub(crate) fn add_name_resolver(resolver: *mut zval) {

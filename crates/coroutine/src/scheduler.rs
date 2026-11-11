@@ -83,6 +83,34 @@ extern "C" fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler {
     scheduler()
 }
 
+/// `Coroutine::count()` on this thread.
+#[must_use]
+pub fn coroutine_count() -> usize {
+    with_scheduler(|s| s.count())
+}
+
+/// `Coroutine::get_by_cid` on this thread: the facade, or null.
+#[must_use]
+pub fn coroutine_get(cid: c_long) -> *mut c_void {
+    with_scheduler(|s| s.get(cid))
+}
+
+/// [`Scheduler::older_native`] on this thread.
+#[must_use]
+pub fn coroutine_older(before: c_long) -> Option<(c_long, *mut c_void)> {
+    with_scheduler(|s| s.older_native(before))
+}
+
+/// [`Scheduler::set_stack_size`] on this thread.
+pub fn set_stack_size(size: usize) {
+    with_scheduler(|s| s.set_stack_size(size));
+}
+
+/// [`Scheduler::set_callback`] on this thread.
+pub fn set_callback(slot: u32, function: crate::SwapCallback) {
+    with_scheduler(|s| s.set_callback(slot, function));
+}
+
 /// `f` over this thread's scheduler.
 pub(crate) fn with_scheduler<R>(f: impl FnOnce(&mut Scheduler) -> R) -> R {
     // SAFETY: this thread's scheduler, live for the thread; the callers' `f`s

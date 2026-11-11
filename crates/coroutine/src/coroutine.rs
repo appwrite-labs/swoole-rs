@@ -102,7 +102,7 @@ pub struct Scheduler {
     pub bailout: bool,
 }
 
-/// Swap callback slots for [`swr_v1_coroutine_set_callback`].
+/// Swap callback slots for [`Scheduler::set_callback`].
 pub const ON_YIELD: u32 = 0;
 pub const ON_RESUME: u32 = 1;
 pub const ON_CLOSE: u32 = 2;
@@ -145,6 +145,15 @@ impl Scheduler {
             self.peak_num = count;
         }
         !self.activated
+    }
+
+    /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
+    pub fn set_callback(&mut self, slot: u32, function: SwapCallback) {
+        match slot {
+            ON_YIELD => self.on_yield = function,
+            ON_RESUME => self.on_resume = function,
+            _ => self.on_close = function,
+        }
     }
 
     pub fn set_stack_size(&mut self, size: usize) {
@@ -393,27 +402,6 @@ macro_rules! operation {
         /// the call; coroutines are linked only to live coroutines.
         pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
     };
-}
-
-operation! {
-    fn swr_v1_coroutine_set_stack_size(s: *mut Scheduler, size: usize) {
-        // SAFETY: the caller lends the scheduler exclusively.
-        unsafe { (*s).set_stack_size(size) };
-    }
-}
-
-operation! {
-    /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_set_callback(s: *mut Scheduler, slot: u32, function: SwapCallback) {
-        // SAFETY: the caller lends the scheduler exclusively.
-        let s = unsafe { &mut *s };
-        match slot {
-            ON_YIELD => s.on_yield = function,
-            ON_RESUME => s.on_resume = function,
-            _ => s.on_close = function,
-        }
-    }
 }
 
 operation! {

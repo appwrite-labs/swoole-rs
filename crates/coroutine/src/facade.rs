@@ -13,8 +13,7 @@ use crate::scheduler::{
 };
 use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{
-    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, STACK_MARK, STACK_PROTECT, swr_v1_coroutine_get,
-    swr_v1_coroutine_iterator_each, swr_v1_coroutine_iterator_reset, swr_v1_coroutine_print_list,
+    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, STACK_MARK, STACK_PROTECT, Scheduler,
     swr_v1_coroutine_run, swr_v1_coroutine_timeout,
 };
 use core::ffi::{c_char, c_int, c_long, c_void};
@@ -259,8 +258,8 @@ pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
 /// `static void Coroutine::print_list()`.
 #[unsafe(export_name = "_ZN6swoole9Coroutine10print_listEv")]
 extern "C-unwind" fn print_list() {
-    // SAFETY: this thread's scheduler and Swoole's open stdout stream.
-    unsafe { swr_v1_coroutine_print_list(scheduler(), swoole_get_stdout_stream().cast()) };
+    // SAFETY: Swoole's open stdout stream.
+    with_scheduler(|s| unsafe { s.print_list(swoole_get_stdout_stream().cast()) });
 }
 
 /// `static void Coroutine::print_socket_bound_error(int, const char *, long)`:
@@ -325,8 +324,7 @@ extern "C" fn swoole_coroutine_get_id() -> c_long {
 /// `swoole::Coroutine *swoole_coroutine_get(long cid)`, for gdb.
 #[unsafe(export_name = "_Z20swoole_coroutine_getl")]
 extern "C" fn swoole_coroutine_get(cid: c_long) -> *mut c_void {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_get(scheduler(), cid) }
+    with_scheduler(|s| s.get(cid))
 }
 
 /// `size_t swoole_coroutine_count()`, for gdb.
@@ -339,13 +337,11 @@ pub extern "C" fn swoole_coroutine_count() -> usize {
 /// `void swoole_coroutine_iterator_reset()`, for gdb.
 #[unsafe(export_name = "_Z31swoole_coroutine_iterator_resetv")]
 extern "C" fn swoole_coroutine_iterator_reset() {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_iterator_reset(scheduler()) };
+    with_scheduler(Scheduler::iterator_reset);
 }
 
 /// `swoole::Coroutine *swoole_coroutine_iterator_each()`, for gdb.
 #[unsafe(export_name = "_Z30swoole_coroutine_iterator_eachv")]
 extern "C" fn swoole_coroutine_iterator_each() -> *mut c_void {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_iterator_each(scheduler()) }
+    with_scheduler(Scheduler::iterator_each)
 }
