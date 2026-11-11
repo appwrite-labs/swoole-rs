@@ -82,7 +82,9 @@ pub(crate) fn add_connection<H: Host>(h: &mut H) -> crate::Effect<bool> {
 }
 
 /// Takes the next free session slot after `session_round`, then sets up the
-/// socket and connection.
+/// socket and connection. Inlined into `accept`, whose runner's constant
+/// context folds each op's checks (#2964).
+#[inline(always)]
 fn add<H: Host>(h: &mut H, server_fd: u64) -> crate::Effect<bool> {
     h.get(OP_CONN_RESET)?;
     h.get(OP_SPIN_LOCK)?;
