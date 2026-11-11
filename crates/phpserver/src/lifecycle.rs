@@ -643,7 +643,9 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Own
     let copy = zport.copy();
     // SAFETY: the Server object's `ports`, which its class declares; nothing
     // else borrows it, and no PHP code runs, while the Port is appended.
-    unsafe { Props::own(object).zend().array(c"ports") }.push(zport);
+    if let Some(ports) = unsafe { Props::own(object).zend().array(c"ports") } {
+        ports.push(zport);
+    }
     if let Some(props) = Props::of_value(&copy) {
         props.connections(serv, port.raw());
     }
@@ -1109,7 +1111,13 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     Props::own(object).long(c"master_pid", i64::from(std::process::id()));
     // SAFETY: `$this`'s `setting`, which its class declares; nothing else borrows
     // it, and no PHP code runs, until its last write below.
-    let settings = unsafe { Props::own(object).zend().array(c"setting") };
+    let Some(settings) = (unsafe { Props::own(object).zend().array(c"setting") }) else {
+        // A pending bailout reports itself; otherwise PHP code left a non-array there.
+        if bailout::pending() {
+            return Err(Stop);
+        }
+        return stop(E_ERROR, c"Swoole\\Server::$setting must be an array");
+    };
     for (key, id) in [
         (c"worker_num", fact::WORKER_NUM),
         (c"task_worker_num", fact::TASK_WORKER_NUM),
