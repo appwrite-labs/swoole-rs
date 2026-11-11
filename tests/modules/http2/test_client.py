@@ -67,10 +67,10 @@ def test_coroutines_share_a_client(engine):
                 conn.settimeout(10)
                 assert read(conn, len(PREFACE)) == PREFACE
                 conn.sendall(frame(4, 0, 0))
-                # Both requests' HEADERS and the PING come while the first
-                # coroutine waits in recv(); only then do the responses go.
+                # Both requests' HEADERS, the second's body and the PING come while
+                # the first coroutine waits in recv(); only then do the responses go.
                 seen = set()
-                while not {(1, 1), (1, 3), (6, 0)} <= seen:
+                while not {(1, 1), (1, 3), (0, 3), (6, 0)} <= seen:
                     head = read(conn, 9)
                     read(conn, int.from_bytes(head[:3], 'big'))
                     kind, stream = head[3], int.from_bytes(head[5:], 'big') & 0x7fffffff
@@ -90,6 +90,6 @@ def test_coroutines_share_a_client(engine):
         thread.join(10)
     assert php.returncode == 0, php.stdout + php.stderr
     assert php.stdout.splitlines() == [
-        'send 1', 'active 1', 'exists true', 'send 3', 'current 5', 'ping true',
+        'send 1', 'active 1', 'exists true', 'body, current 5', 'send 3', 'current 5', 'ping true',
         'recv 1 200 one', 'recv 3 200 ', 'active 0', 'close true',
     ], php.stdout + php.stderr

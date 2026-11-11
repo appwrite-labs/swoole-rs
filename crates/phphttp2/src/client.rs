@@ -688,30 +688,31 @@ impl Client {
         }
         let mut frame = self.build_header(request);
         let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
+        // The id is taken before a send yields or the body's conversion runs PHP
+        // code, so an overlapping send gets the next one. A failed send gives it
+        // back unless a later send has taken one since.
         let id = self.stream_id.get();
+        self.stream_id.set(id + 2);
         self.create_stream(id, flags);
         let header_flags = sw_rs_http2_headers_flags(u32::from(empty), 1, flags);
         let header = frame_header(TYPE_HEADERS, frame.len() - FRAME_HEADER, header_flags, id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
         }
-        if !self.send(&frame) {
+        let flag = if flags & STREAM_PIPELINE_REQUEST != 0 {
+            0
+        } else {
+            FLAG_END_STREAM
+        };
+        let sent = self.send(&frame)
+            && (empty
+                || body_bytes(data).is_some_and(|body| self.send_data(id, body.bytes(), flag)));
+        if !sent {
+            if self.stream_id.get() == id + 2 {
+                self.stream_id.set(id);
+            }
             return 0;
         }
-        if !empty {
-            let flag = if flags & STREAM_PIPELINE_REQUEST != 0 {
-                0
-            } else {
-                FLAG_END_STREAM
-            };
-            let Some(body) = body_bytes(data) else {
-                return 0;
-            };
-            if !self.send_data(id, body.bytes(), flag) {
-                return 0;
-            }
-        }
-        self.stream_id.set(id + 2);
         id
     }
 

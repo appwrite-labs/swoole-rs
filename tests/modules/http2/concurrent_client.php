@@ -20,7 +20,18 @@ Co\run(static function (): void {
     echo 'active ', $client->stats('active_stream_num'), "\n";
     echo 'exists ', var_export($client->isStreamExist(1), true), "\n";
     $request->path = '/two';
-    echo 'send ', $client->send($request), "\n";
+    // Converting the body runs PHP code mid-send: the stream id is already taken.
+    $request->data = new class($client) {
+        public function __construct(private Swoole\Coroutine\Http2\Client $client) {}
+
+        public function __toString(): string
+        {
+            echo 'body, current ', $this->client->stats('current_stream_id'), "\n";
+            return 'two';
+        }
+    };
+    $id = $client->send($request);
+    echo "send $id\n";
     echo 'current ', $client->stats('current_stream_id'), "\n";
     echo 'ping ', var_export($client->ping(), true), "\n";
     $done->pop(5);
