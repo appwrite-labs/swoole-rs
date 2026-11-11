@@ -126,15 +126,9 @@ pub unsafe extern "C" fn swr_v1_tls_owner_free(owner: *const OwnedTlsContext) {
 /// OpenSSL's reason text for `error`, or `(null)` as printf shows a missing one.
 #[must_use]
 pub fn reason_text(error: std::os::raw::c_ulong) -> String {
-    // SAFETY: OpenSSL's static string table (null for an unknown code).
-    let reason = unsafe { openssl_sys::ERR_reason_error_string(error) };
-    if reason.is_null() {
-        return "(null)".to_owned();
-    }
-    // SAFETY: a NUL-terminated static string.
-    unsafe { std::ffi::CStr::from_ptr(reason) }
-        .to_string_lossy()
-        .into_owned()
+    crate::reason_string(error).map_or_else(|| "(null)".into(), |reason| {
+        reason.to_string_lossy().into_owned()
+    })
 }
 /// `tls_host_name`'s slot.
 const TLS_HOST_NAME: usize = 8;
@@ -405,12 +399,10 @@ pub struct OwnedTlsSessionResult {
 /// and the context/automatic hostname precedence. Native only formats diagnostics.
 /// # Safety
 /// All pointers are live/exclusive, hostname is stable, and TLS is initialized.
-/// grease, when supplied by `BoringSSL`, is a nonthrowing SSL configuration leaf.
 pub unsafe fn swr_v1_tls_owner_socket_session(
     owner: *const OwnedTlsContext,
     socket: *mut swoole_rs_reactor::SocketRecord,
     hostname: *const StringSlot,
-    grease: Option<unsafe extern "C" fn(*mut openssl_sys::SSL, bool)>,
 ) -> OwnedTlsSessionResult {
     // SAFETY: as the caller promises.
     let Some(record) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
@@ -429,36 +421,26 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     let owner_ref = unsafe { &*owner };
     // SAFETY: exclusive leaf snapshot of the owner configuration.
     let fields = unsafe { *owner_ref.fields.get() };
-    let mut error = 0;
-    // The record's TLS group has `SocketTls`'s asserted C layout.
-    let (tls, output, fd) = record.edit(|record| {
-        (
-            (&raw mut record.tls).cast::<crate::SocketTls>(),
-            (&raw mut record.ssl).cast(),
-            record.fd,
-        )
+    let index = crate::swr_v1_tls_connection_index();
+    let (status, error, ssl) = record.edit(|record| {
+        let mut error = 0;
+        // SAFETY: the owner's live context; OpenSSL calls nothing back while making the SSL.
+        let status = unsafe {
+            crate::swr_v1_socket_ssl_new(
+                &mut record.tls,
+                fields.context,
+                record.fd,
+                0,
+                index,
+                socket.cast(),
+                &mut record.ssl,
+                &mut error,
+            )
+        };
+        (status, error, record.ssl.cast::<openssl_sys::SSL>())
     });
-    // SAFETY: caller lends exclusive socket fields and a live owner/context.
-    let status = unsafe {
-        crate::swr_v1_socket_ssl_new(
-            tls,
-            fields.context,
-            fd,
-            0,
-            crate::swr_v1_tls_connection_index(),
-            socket.cast(),
-            output,
-            &raw mut error,
-        )
-    };
     if status != 0 {
         return OwnedTlsSessionResult { status, error };
-    }
-    // The preceding successful creation populated this session slot.
-    let ssl = record.read(|record| record.ssl.cast::<openssl_sys::SSL>());
-    if let Some(grease) = grease {
-        // SAFETY: the optional native leaf accepts the live session and does not reenter.
-        unsafe { grease(ssl, fields.grease != 0) };
     }
     // SAFETY: the owner keeps the explicit hostname slot alive throughout configuration.
     let explicit =
@@ -746,7 +728,6 @@ mod tests {
                     prepared.owner,
                     socket,
                     Arc::as_ptr(&hostname),
-                    None,
                 );
                 assert_eq!(result.status, 0);
                 let ssl = (*socket).fields.ssl.cast::<openssl_sys::SSL>();
@@ -767,7 +748,7 @@ mod tests {
                     0
                 );
                 assert_eq!(
-                    swr_v1_tls_owner_socket_session(ptr::null(), socket, ptr::null(), None).status,
+                    swr_v1_tls_owner_socket_session(ptr::null(), socket, ptr::null()).status,
                     0
                 );
                 openssl_sys::SSL_free(ssl);

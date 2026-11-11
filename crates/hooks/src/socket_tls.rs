@@ -96,7 +96,7 @@ impl Co {
         let hostname = unsafe { &raw const (*self.extra()).strings[2] };
         // SAFETY: the live owner, network::Socket and slot; TLS is initialised.
         let result =
-            unsafe { swr_v1_tls_owner_socket_session(owner, self.socket(), hostname, None) };
+            unsafe { swr_v1_tls_owner_socket_session(owner, self.socket(), hostname) };
         let origin = c"Socket::ssl_create";
         match result.status {
             0 => return true,

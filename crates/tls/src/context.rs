@@ -4,7 +4,7 @@
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use openssl_sys::{
-    BIO, BIO_ctrl, DTLS_method, ERR_clear_error, ERR_get_error, ERR_reason_error_string, EVP_MD,
+    BIO, BIO_ctrl, DTLS_method, EVP_MD,
     EVP_PKEY, EVP_PKEY_free, EVP_sha1, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,
     SSL_CTRL_SET_GROUPS_LIST, SSL_CTX, SSL_CTX_check_private_key, SSL_CTX_clear_options,
     SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_new,
@@ -159,16 +159,8 @@ impl Method<'_> {
 
     /// Upstream's `ssl_error`: pops one error and appends its reason and code.
     fn ssl_error(&self, message: &[u8]) {
-        // SAFETY: pops this thread's OpenSSL error queue.
-        let code = unsafe { ERR_get_error() };
-        // SAFETY: returns a static string or null.
-        let reason = unsafe { ERR_reason_error_string(code) };
-        let reason: &[u8] = if reason.is_null() {
-            b"(null)"
-        } else {
-            // SAFETY: OpenSSL's static, NUL-terminated reason string.
-            unsafe { CStr::from_ptr(reason) }.to_bytes()
-        };
+        let code = crate::socket::pop_error();
+        let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
         #[expect(
             clippy::cast_possible_wrap,
             reason = "upstream stores ERR_get_error's unsigned long in a long and prints %ld"
@@ -251,16 +243,14 @@ impl Method<'_> {
             ));
             return false;
         }
-        // SAFETY: clears this thread's error queue.
-        unsafe { ERR_clear_error() };
+        crate::socket::clear_errors();
         // SAFETY: a NUL-terminated path.
         let names = unsafe { SSL_load_client_CA_file(file.data) };
         if names.is_null() {
             self.ssl_error(&quoted(b"SSL_load_client_CA_file(\"", file, b"\") failed"));
             return false;
         }
-        // SAFETY: clears this thread's error queue.
-        unsafe { ERR_clear_error() };
+        crate::socket::clear_errors();
         // SAFETY: a live context takes ownership of the list.
         unsafe { SSL_CTX_set_client_CA_list(self.ctx, names) };
         true
@@ -774,6 +764,7 @@ pub(crate) unsafe fn create_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openssl_sys::ERR_clear_error;
 
     /// `SSLContext::create`: a configured context, or null after logging why. Writes
     /// the normalized protocol mask back to `config.protocols`.
