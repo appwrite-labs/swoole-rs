@@ -371,7 +371,9 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SOCK_FD => sign(o.edit_sock(|s| s.fd)),
         OP_SSL_CLEAR => {
-            o.edit_sock(|s| s.ssl = core::ptr::null_mut());
+            o.edit_sock(|s| {
+                s.take_ssl();
+            });
             0
         }
         OP_CHUNK_SIZE => {
@@ -437,7 +439,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             });
             0
         }
-        OP_SOCK_SSL => u64::from(o.read_conn_socket(|s| !s.ssl.is_null())),
+        OP_SOCK_SSL => u64::from(o.read_conn_socket(|s| !s.ssl().is_null())),
         OP_ACCEPT => u64::from(o.accept()),
         OP_SET_NODELAY => u64::from(o.edit_sock(|s| s.set_tcp_nodelay(1))),
         OP_REACTOR_ADD_READ => sign(o.change(o.conn_socket(), 0, SW_EVENT_READ)),
@@ -477,7 +479,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 // SAFETY: the address of the family, in the socket's live record.
                 let addr = unsafe { core::slice::from_raw_parts(addr, if v6 { 16 } else { 4 }) };
                 let index = crate::local_addr::index(state, v6, addr);
-                (sock.fd, !sock.ssl.is_null(), port, index)
+                (sock.fd, !sock.ssl().is_null(), port, index)
             });
             conn.fd = fd;
             conn.reactor_id = o.ctx.reactor_id;

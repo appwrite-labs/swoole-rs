@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
-    client::{Call, Client, ClientRecord, Op, swr_v1_clients_run},
+    client::{self, Client, ClientRecord, Op},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::co_socket::Co as Handle;
@@ -552,7 +552,7 @@ impl Co {
     /// `get_ssl() != nullptr`.
     pub(crate) fn has_ssl(self) -> bool {
         self.net()
-            .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
+            .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
     }
 
     /// The peer certificate; the socket has TLS.
@@ -612,10 +612,34 @@ impl Cli {
         unsafe { Net::from_ptr(self.record().socket) }
     }
 
-    /// A [`Call`] of `op` on this client.
-    pub(crate) fn call(self, op: Op) -> Call {
-        Call::new(self.0, op)
+    /// crates/clients' handle on the client.
+    pub(crate) fn handle(self) -> client::Handle {
+        // SAFETY: a live client, as the type promises.
+        unsafe { client::Handle::new(self.0) }
     }
+
+    /// Run `op` inside `zend_try`.
+    /// # Errors
+    /// PHP code it ran bailed out.
+    pub(crate) fn run(self, op: Op<'_>) -> Result<i64, Bailout> {
+        let (handle, mut result) = (self.handle(), 0);
+        // SAFETY: crates/clients' operations own nothing a bailout would skip
+        // dropping, and the closure holds only `op`'s borrows and scalars.
+        unsafe { bailout::trap_with(|| result = handle.run(op)) }?;
+        Ok(result)
+    }
+
+    /// Run an `op` that cannot reach PHP code (a sync client's send or plain
+    /// receive), without the `zend_try` frame.
+    pub(crate) fn run_plain(self, op: Op<'_>) -> i64 {
+        self.handle().run(op)
+    }
+}
+
+/// `bytes` as C's `%s` reads them: up to the first NUL.
+pub(crate) fn c_text(bytes: &[u8]) -> CString {
+    let text = bytes.split(|&b| b == 0).next().unwrap_or_default();
+    CString::new(text).unwrap_or_default()
 }
 
 /// `new Client(type, async)`: the client, or the errno of its failed socket.
@@ -636,34 +660,13 @@ pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
     if !callable.is_null() {
         callable_free(callable)?;
     }
-    cli.call(Op::Free).run().map(drop)
-}
-
-/// Running a [`Call`] from a PHP method.
-pub(crate) trait Run {
-    /// Run the call inside `zend_try`.
-    /// # Errors
-    /// PHP code it ran bailed out.
-    fn run(&mut self) -> Result<i64, Bailout>;
-
-    /// Run a call that cannot reach PHP code (a sync client's send or plain
-    /// receive), without the `zend_try` frame.
-    fn run_plain(&mut self) -> i64;
-}
-
-impl Run for Call {
-    fn run(&mut self) -> Result<i64, Bailout> {
-        // SAFETY: a call on a live client, holding what its operation reads and
-        // writes; the body owns nothing.
-        unsafe { bailout::trap(swr_v1_clients_run, ptr::from_mut(self).cast()) }?;
-        Ok(self.result)
-    }
-
-    fn run_plain(&mut self) -> i64 {
-        // SAFETY: as in `run`; the caller rules out callbacks and errors.
-        unsafe { swr_v1_clients_run(ptr::from_mut(self).cast()) };
-        self.result
-    }
+    let handle = cli.handle();
+    let free = || {
+        // SAFETY: `destroy` is the client's last operation.
+        unsafe { handle.free() };
+    };
+    // SAFETY: as in `Cli::run`.
+    unsafe { bailout::trap_with(free) }
 }
 
 /// `sw_callable_create(value)`: the callable, or null after a warning.

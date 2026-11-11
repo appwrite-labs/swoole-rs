@@ -14,7 +14,7 @@ const BACKLOG: c_int = 512;
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
 /// one its timers read.
-pub type SteadyMs = unsafe extern "C" fn() -> f64;
+pub type SteadyMs = extern "C" fn() -> f64;
 
 /// `swoole::time<std::chrono::milliseconds>(true)`: the steady clock in milliseconds.
 #[must_use]
@@ -148,7 +148,7 @@ fn io_of(socket: Socket<'_>, tls: TlsIo) -> (c_int, bool, bool, Option<(TlsIo, *
             record.fd,
             record.output.nonblock != 0,
             record.dont_restart != 0,
-            (!record.ssl.is_null()).then_some((tls, socket.as_ptr().cast())),
+            (!record.ssl().is_null()).then_some((tls, socket.as_ptr().cast())),
         )
     })
 }
@@ -158,7 +158,7 @@ fn io_of(socket: Socket<'_>, tls: TlsIo) -> (c_int, bool, bool, Option<(TlsIo, *
 /// reads as end of stream.
 ///
 /// # Safety
-/// `buffer` denotes `length` writable bytes; `tls` and `now` are valid for the socket.
+/// `buffer` denotes `length` writable bytes; `tls` is valid for the socket.
 pub unsafe fn socket_record_recv(
     socket: Socket<'_>,
     buffer: *mut c_void,
@@ -177,8 +177,7 @@ pub unsafe fn socket_record_recv(
             !record.recv_timer.is_null()
         })
     {
-        // SAFETY: the caller's clock.
-        let time = unsafe { now() };
+        let time = now();
         socket.edit(|record| record.last_received_time = time);
     } else if total < 0 {
         // Nothing since the call has touched errno.
@@ -194,7 +193,7 @@ pub unsafe fn socket_record_recv(
 /// a send timer, `last_sent_time`.
 ///
 /// # Safety
-/// `buffer` denotes `length` readable bytes; `tls` and `now` are valid for the socket.
+/// `buffer` denotes `length` readable bytes; `tls` is valid for the socket.
 pub unsafe fn socket_record_send(
     socket: Socket<'_>,
     buffer: *const c_void,
@@ -212,8 +211,7 @@ pub unsafe fn socket_record_send(
             !record.output.send_timer.is_null()
         })
     {
-        // SAFETY: the caller's clock.
-        let time = unsafe { now() };
+        let time = now();
         socket.edit(|record| record.last_sent_time = time);
     }
     sent
@@ -240,7 +238,7 @@ pub unsafe fn socket_record_peek(
 #[must_use]
 pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
     let tls = socket.tls;
-    if !socket.ssl.is_null() && (tls.want_read != 0 || tls.want_write != 0) {
+    if !socket.ssl().is_null() && (tls.want_read != 0 || tls.want_write != 0) {
         use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
         if tls.want_write != 0 {
             SW_EVENT_WRITE as c_int
@@ -261,11 +259,12 @@ mod tests {
     fn native_event_want_preserves_write_priority_and_default() {
         let mut socket: SocketRecord = unsafe { std::mem::zeroed() };
         for ssl in [false, true] {
-            socket.ssl = if ssl {
+            let live = if ssl {
                 std::ptr::dangling_mut()
             } else {
                 std::ptr::null_mut()
             };
+            unsafe { socket.set_ssl(live) };
             for read in [0, 1] {
                 for write in [0, 1] {
                     for default in [-1, 0, 512, 1024] {
@@ -289,7 +288,7 @@ mod tests {
         unreachable!("plain sockets never take the TLS call")
     }
 
-    unsafe extern "C" fn clock() -> f64 {
+    extern "C" fn clock() -> f64 {
         42.0
     }
 

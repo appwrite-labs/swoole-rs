@@ -279,11 +279,10 @@ pub unsafe fn ssl_sendfile(
     kernel_nobufs: &mut bool,
 ) -> SslSendfileResult {
     const CHUNK: usize = 65536;
-    let mut buffer = vec![0_u8; CHUNK];
+    let mut buffer = vec![0_u8; size.min(CHUNK)];
     // SAFETY: the caller's offset.
     let at = unsafe { *offset };
-    // SAFETY: up to `CHUNK` bytes into the local buffer.
-    let n = unsafe { libc::pread(file_fd, buffer.as_mut_ptr().cast(), size.min(CHUNK), at) };
+    let n = swoole_rs_corebase::sys::pread(file_fd, &mut buffer, at);
     if n <= 0 {
         return SslSendfileResult { value: -1, warn: 2 };
     }

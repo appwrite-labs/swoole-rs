@@ -254,7 +254,9 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
         return false;
     }
     // SAFETY: the live socket `PortMethods` takes, which only this thread touches.
-    let ssl = unsafe { Socket::from_ptr(sock) }.map_or(ptr::null_mut(), |s| s.read(|s| s.ssl));
+    let ssl = unsafe { Socket::from_ptr(sock) }.map_or(ptr::null_mut(), |s| {
+        s.read(swoole_rs_reactor::SocketFields::ssl)
+    });
     // SAFETY: the SSL just made; the port outlives its connections.
     if unsafe { SSL_set_ex_data(ssl.cast(), swr_v1_tls_port_index(), port) } == 0 {
         log::warning(

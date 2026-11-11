@@ -109,8 +109,10 @@ impl TaskHost for Host {
 
     fn read_notify(&mut self) -> isize {
         let mut notify = 0u64;
-        // SAFETY: as above, into a local of that size.
-        unsafe { socket_pair::read(self.pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+        // SAFETY: as above.
+        let pipe = unsafe { &*self.pipe };
+        // SAFETY: a local of that size.
+        unsafe { socket_pair::read(pipe, (&raw mut notify).cast(), size_of::<u64>()) }
     }
 
     fn lock(&mut self, on: bool) {
@@ -747,12 +749,12 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
         let props = Props::init(&mut args[1], &TASK);
-        crate::server::task_bind(props.object(), server.raw(), &task.head());
         props.long(c"worker_id", info.worker_id);
         props.long(c"id", info.id);
         props.value(c"data", &mut data);
         props.double(c"dispatch_time", info.time);
         props.long(c"flags", info.flags);
+        crate::server::task_bind(Value::of(&mut args[1]), server.raw(), &task.head());
         2
     } else {
         args[1] = long_zval(info.id);
