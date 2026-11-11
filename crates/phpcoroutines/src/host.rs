@@ -81,7 +81,7 @@ pub(crate) fn flag(bit: u32) -> bool {
             !serv.is_null()
                 && unsafe { swoole_rs_server::view::Server::from_raw(serv) }.is_started()
         }
-        FATAL => last_error_fatal() || reactor().is_some_and(|(fields, _)| fields.bailout),
+        FATAL => last_error_fatal() || swoole_rs_reactor::event_api::swoole_event_bailed_out(),
         // `sw_is_main_thread()`.
         // SAFETY: no preconditions.
         MAIN_THREAD => !cfg!(zts) || unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() },
@@ -105,37 +105,21 @@ fn last_error_fatal() -> bool {
     }
 }
 
-/// The thread's event loop (`sw_reactor()`), if it has one: its fields and its
-/// socket registry. Callers hold the borrow only for one read or push.
-fn reactor() -> Option<(
-    &'static mut swoole_rs_reactor::ReactorFields,
-    *mut swoole_rs_reactor::Registry,
-)> {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    if reactor.is_null() {
-        return None;
-    }
-    // SAFETY: the thread's live loop, which begins with its prepared state.
-    let prepared = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) };
-    // SAFETY: the loop's fields, live until `swoole_event_free`.
-    unsafe { prepared.fields.as_mut() }.map(|fields| (fields, prepared.registry))
-}
-
 /// Queue `f(data)` on the running loop: on its deferred tasks, or (`destroy`)
 /// on the callbacks its free runs.
 fn reactor_push(destroy: bool, f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    // Upstream dereferences `sw_reactor()` here unchecked.
-    let Some((fields, _)) = reactor() else {
-        std::process::abort()
-    };
-    let queue = if destroy {
-        &raw mut fields.destroy_callbacks
-    } else {
-        &raw mut fields.defer_tasks
-    };
-    // SAFETY: the loop's live queue; `data` stays with the task.
-    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) } != 0 {
-        // Upstream throws std::bad_alloc, which no frame here could catch.
+    let pushed = swoole_rs_reactor::event_api::field_mut(|fields| {
+        let queue = if destroy {
+            &raw mut fields.destroy_callbacks
+        } else {
+            &raw mut fields.defer_tasks
+        };
+        // SAFETY: the loop's live queue; `data` stays with the task.
+        unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) }
+    });
+    // Upstream dereferences `sw_reactor()` here unchecked, and throws std::bad_alloc,
+    // which no frame here could catch.
+    if pushed != Some(0) {
         std::process::abort();
     }
 }
@@ -191,8 +175,7 @@ fn native(co: *const swoole_rs_coroutine::Coroutine) -> Co {
 }
 
 pub(crate) fn count() -> usize {
-    // SAFETY: this thread's scheduler.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_count(scheduler()) }
+    swoole_rs_coroutine::coroutine_count()
 }
 
 /// `Coroutine::get_current()`: null outside a coroutine.
@@ -243,8 +226,7 @@ pub(crate) fn current_cid() -> c_long {
 }
 
 pub(crate) fn by_cid(cid: c_long) -> Co {
-    // SAFETY: this thread's scheduler.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_get(scheduler(), cid) }
+    swoole_rs_coroutine::coroutine_get(cid)
 }
 
 /// The task of `co`, null for none.
@@ -272,35 +254,28 @@ pub(crate) fn elapsed(cid: c_long) -> c_long {
 /// `Coroutine::get_execute_time`.
 pub(crate) fn execute_time(cid: c_long) -> c_long {
     let co = running_or(cid);
-    if co.is_null() {
-        return -1;
-    }
-    // SAFETY: a live coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_execute_usec(state(co), now_us()) }
+    // SAFETY: a live coroutine or null.
+    unsafe { state(co).as_ref() }.map_or(-1, |co| co.execute_usec(now_us()))
 }
 
 /// The live coroutines' ids, newest first, up to `cids.len()`; how many.
 pub(crate) fn list(cids: &mut [c_long]) -> usize {
     let mut before = c_long::MAX;
     for (n, slot) in cids.iter_mut().enumerate() {
-        // SAFETY: this thread's scheduler and a writable id.
-        if unsafe {
-            swoole_rs_coroutine::swr_v1_coroutine_older(scheduler(), before, &raw mut before)
-        }
-        .is_null()
-        {
+        let Some((cid, _)) = swoole_rs_coroutine::coroutine_older(before) else {
             return n;
-        }
-        *slot = before;
+        };
+        before = cid;
+        *slot = cid;
     }
     cids.len()
 }
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    if let Some((_, registry)) = reactor() {
-        // SAFETY: the live loop's registry.
-        let count = swoole_rs_reactor::swr_v1_reactor_registry_count(unsafe { registry.as_ref() });
+    if let Some(count) = swoole_rs_reactor::event_api::with_registry(|registry| {
+        swoole_rs_reactor::swr_v1_reactor_registry_count(registry)
+    }) {
         stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
     }
     #[cfg(feature = "iouring")]
@@ -360,7 +335,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
 
 pub(crate) fn set_task(co: Co, task: *mut c_void) {
     // SAFETY: a live coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_task(state(co), task) };
+    unsafe { (*state(co)).task = task };
 }
 
 /// The task of `co`'s origin, null for the main context.
@@ -533,10 +508,10 @@ unsafe extern "C" fn main(args: *mut c_void) {
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
 /// main context: the loop stops, then PHP bails out.
 extern "C" fn bail_out(_: *mut c_void) {
-    if let Some((fields, _)) = reactor() {
+    swoole_rs_reactor::event_api::field_mut(|fields| {
         fields.running = false;
         fields.bailout = true;
-    }
+    });
     bailout::raise(Err(bailout::Bailout));
 }
 
@@ -553,11 +528,13 @@ unsafe extern "C" fn defers(context: *mut c_void) {
         if task.is_null() {
             return;
         }
+        let fci = task
+            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fci))
+            .cast::<swoole_rs_zend::sys::zend_fcall_info>();
+        let fcc = task
+            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
+            .cast::<swoole_rs_zend::sys::zend_fcall_info_cache>();
         // SAFETY: a kept callable.
-        let fci = unsafe { &raw mut (*task).fci };
-        // SAFETY: as above.
-        let fcc = unsafe { &raw mut (*task).fcc };
-        // SAFETY: as above.
         if unsafe { swoole_rs_zend::host::call_anyway(fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
@@ -601,13 +578,12 @@ fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
         swoole_rs_coroutine::ON_CLOSE,
     ];
     for (slot, callback) in slots.into_iter().zip(callbacks) {
-        // SAFETY: this thread's scheduler.
-        unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_callback(scheduler(), slot, callback) };
+        swoole_rs_coroutine::set_callback(slot, callback);
     }
 }
 
 /// The reactor's destroy callback.
-unsafe extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
+extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
     bailout::raise(crate::runtime::deactivate());
 }
 
@@ -646,17 +622,12 @@ pub(crate) fn coro_hook(stop: bool, task: *mut c_void) {
 
 /// `swoole::time<std::chrono::microseconds>(true)`: the steady clock.
 pub(crate) fn now_us() -> c_long {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
-    now.tv_sec * 1_000_000 + now.tv_nsec / 1000
+    swoole_rs_corebase::sys::clock_gettime(clock)
+        .map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
 }
 
 /// `Timer::get_absolute_msec()`.
@@ -728,8 +699,7 @@ pub(crate) fn event_wait() {
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
     let size = swoole_rs_phpswoole::php_swoole_parse_to_size(size);
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
-    // SAFETY: this thread's scheduler.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_stack_size(scheduler(), size) };
+    swoole_rs_coroutine::set_stack_size(size);
 }
 
 pub(crate) fn add_name_resolver(resolver: *mut zval) {

@@ -319,7 +319,7 @@ fn get_status(call: &Call) {
 
 /// `coro_begin_silence_handler`: `@` remembers the reporting level a switch
 /// restores.
-unsafe extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
+extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
     // SAFETY: Zend's executor globals.
     let reporting = unsafe { swr_zend_error_reporting() };
     context::current().set_silence(Some(reporting));
@@ -327,7 +327,7 @@ unsafe extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
 }
 
 /// `coro_end_silence_handler`.
-unsafe extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
+extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
     context::current().set_silence(None);
     DISPATCH
 }

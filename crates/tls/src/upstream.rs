@@ -1458,14 +1458,10 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.
-///
-/// # Safety
-/// `socket` is a live record and `host` NUL-terminated.
-unsafe fn bind_host(socket: Socket<'_>, host: *const c_char, port: c_int) -> c_int {
+fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
     let kind = socket.read(|record| record.socket_type);
     let mut address = SocketAddress::default();
-    // SAFETY: as the caller promises.
-    let text = unsafe { CStr::from_ptr(host) }.to_bytes();
+    let text = host.to_bytes();
     let (storage, length) = (&mut address.addr, &mut address.len);
     let error = assign(storage, length, kind, text, port, |family| {
         // SAFETY: the platform's.
@@ -1475,7 +1471,7 @@ unsafe fn bind_host(socket: Socket<'_>, host: *const c_char, port: c_int) -> c_i
         let mut bytes = [0; 16];
         // SAFETY: the NUL-terminated host and room for either family's address.
         let parsed = platform_parses(family, text)
-            && unsafe { inet_pton(family, host, bytes.as_mut_ptr().cast()) } == 1;
+            && unsafe { inet_pton(family, host.as_ptr(), bytes.as_mut_ptr().cast()) } == 1;
         if parsed {
             Ok(bytes)
         } else {
@@ -1535,9 +1531,9 @@ pub unsafe extern "C-unwind" fn make_server_socket(
         }
     }
     // SAFETY: as the caller promises.
-    let host = unsafe { CStr::from_ptr(address) }.to_string_lossy();
-    // SAFETY: the caller's address.
-    if unsafe { bind_host(record, address, port) } < 0 {
+    let address = unsafe { CStr::from_ptr(address) };
+    let host = address.to_string_lossy();
+    if bind_host(record, address, port) < 0 {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),

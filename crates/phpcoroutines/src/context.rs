@@ -182,45 +182,43 @@ impl Ctx {
             .cast()
     }
 
+    /// The VM state, borrowed for `f`, which neither switches nor reaches the context.
+    fn with_vm<R>(self, f: impl FnOnce(&mut swr_zend_coroutine_vm) -> R) -> R {
+        // SAFETY: a live context's VM state; the borrow ends with `f`.
+        f(unsafe { &mut *self.vm() })
+    }
+
     /// The VM state saved by the last switch out: the frame it stopped in.
     pub(crate) fn execute_data(self) -> *mut zend_execute_data {
-        // SAFETY: a live context's VM state; a field read.
-        unsafe { (*self.vm()).execute_data }
+        self.with_vm(|vm| vm.execute_data)
     }
 
     /// Its VM stack chain.
     pub(crate) fn vm_stack(self) -> swoole_rs_zend::sys::zend_vm_stack {
-        // SAFETY: as above.
-        unsafe { (*self.vm()).vm_stack }
+        self.with_vm(|vm| vm.vm_stack)
     }
 
     /// The exception a cancellation left pending, and its class.
     pub(crate) fn exception(self) -> (*mut zend_object, *mut zend_class_entry) {
-        let vm = self.vm();
-        // SAFETY: as above; two field reads.
-        let exception = unsafe { (*vm).exception };
-        // SAFETY: as above.
-        (exception, unsafe { (*vm).exception_class })
+        self.with_vm(|vm| (vm.exception, vm.exception_class))
     }
 
     /// Leave `exception` of class `class` pending, thrown when the coroutine resumes.
     pub(crate) fn set_exception(self, exception: *mut zend_object, class: *mut zend_class_entry) {
-        let vm = self.vm();
-        // SAFETY: as above; two field writes.
-        unsafe { (*vm).exception = exception };
-        // SAFETY: as above.
-        unsafe { (*vm).exception_class = class };
+        self.with_vm(|vm| {
+            vm.exception = exception;
+            vm.exception_class = class;
+        });
     }
 
     /// `@`'s state: on with the reporting level a switch restores, or off.
     pub(crate) fn set_silence(self, reporting: Option<c_int>) {
-        let vm = self.vm();
-        // SAFETY: as above; field writes.
-        unsafe { (*vm).in_silence = reporting.is_some() };
-        if let Some(reporting) = reporting {
-            // SAFETY: as above.
-            unsafe { (*vm).ori_error_reporting = reporting };
-        }
+        self.with_vm(|vm| {
+            vm.in_silence = reporting.is_some();
+            if let Some(reporting) = reporting {
+                vm.ori_error_reporting = reporting;
+            }
+        });
     }
 
     /// The defer tasks, borrowed for `f`, which neither switches nor reaches the context.
@@ -361,8 +359,10 @@ pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
     // copied over. All-zero bytes are `Context::EMPTY` except `defer`.
     // SAFETY: fresh storage for one context.
     unsafe { ctx.write_bytes(0, 1) };
-    // SAFETY: a raw place in the storage above; nothing reads it.
-    let defer = unsafe { &raw mut (*ctx).defer };
+    // Its place in the storage above; nothing reads it.
+    let defer = ctx
+        .wrapping_byte_add(mem::offset_of!(Context, defer))
+        .cast::<Vec<*mut swr_zend_callable>>();
     // SAFETY: a write, so the zeroed `defer` is never read or dropped.
     unsafe { defer.write(Vec::new()) };
     // SAFETY: every field now holds a valid value, and the context lives until `on_close`.
@@ -489,9 +489,10 @@ pub(crate) unsafe fn close(context: *mut c_void) {
     // Upstream only drops the references (Z_TRY_DELREF), leaking a callable or
     // return value the coroutine held last, such as `go([new Foo, 'bar'])`'s array.
     let call = ctx.call();
-    // SAFETY: a live context; `open` added this reference.
-    let function_name = unsafe { &raw mut (*call).fci.function_name };
-    // SAFETY: as above.
+    let function_name = call
+        .wrapping_byte_add(mem::offset_of!(swr_zend_callable, fci.function_name))
+        .cast::<zval>();
+    // SAFETY: a live context's callable; `open` added this reference.
     unsafe { zval_ptr_dtor(function_name) };
     // SAFETY: as above.
     let undef = unsafe { &mut *function_name };

@@ -15,8 +15,10 @@
 )]
 use core::ffi::c_void;
 
-pub use commands::{CommandFn, CommandReply, swr_v1_server_command_result};
-pub use server_methods::{swr_v1_server_add_command, swr_v1_server_command};
+pub use commands::{CommandCallback, CommandHandler};
+pub use server_methods::{
+    swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_result,
+};
 
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod admin;

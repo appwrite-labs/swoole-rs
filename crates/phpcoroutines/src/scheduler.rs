@@ -31,10 +31,14 @@ struct Task {
     count: i64,
 }
 
-/// `SchedulerObject`: the queued tasks (null until the first) and whether
+/// `SchedulerObject`: the queued tasks (none until the first) and whether
 /// `start()` is running. All-zero is a fresh scheduler.
 struct Scheduler {
-    list: *mut VecDeque<Task>,
+    #[expect(
+        clippy::box_collection,
+        reason = "Zend zeroes the object: a null Box is None, while an empty queue is not all-zero"
+    )]
+    list: Option<Box<VecDeque<Task>>>,
     started: bool,
 }
 
@@ -90,13 +94,8 @@ fn discard(callable: *mut c_void) -> Result<(), Bailout> {
 
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees one of our objects.
-    let list = mem::replace(
-        &mut unsafe { SchedulerObject::data(std) }.list,
-        ptr::null_mut(),
-    );
-    if !list.is_null() {
-        // SAFETY: boxed by `queue`, owned by this object.
-        let tasks = unsafe { Box::from_raw(list) };
+    let list = mem::take(&mut unsafe { SchedulerObject::data(std) }.list);
+    if let Some(tasks) = list {
         for task in *tasks {
             bailout::defer(discard(task.callable));
         }
@@ -134,11 +133,7 @@ fn refuse(call: &Call, state: &str, method: &str) {
 /// Queue a task with its callable kept past the call.
 fn queue(scheduler: &mut Scheduler, callable: Parsed, count: i64) {
     let callable = callable.keep(None);
-    if scheduler.list.is_null() {
-        scheduler.list = Box::into_raw(Box::default());
-    }
-    // SAFETY: the scheduler's own queue.
-    unsafe { &mut *scheduler.list }.push_back(Task {
+    scheduler.list.get_or_insert_default().push_back(Task {
         callable: callable.into_raw(),
         count,
     });
@@ -188,16 +183,14 @@ fn start(call: &Call) {
         return;
     }
     this(call).started = true;
-    let list = this(call).list;
-    if list.is_null() {
+    if this(call).list.is_none() {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
     // Each step pops before creating, so no frame here owns a task while a
     // coroutine runs.
-    // SAFETY: the scheduler's own queue, live until the end of `start`.
-    while let Some(task) = unsafe { &mut *list }.pop_front() {
+    while let Some(task) = this(call).list.as_mut().and_then(|list| list.pop_front()) {
         let callable = task.callable.cast::<swr_zend_callable>();
         for _ in 0..task.count {
             // SAFETY: a kept callable; no reference outlives this statement.
@@ -215,10 +208,8 @@ fn start(call: &Call) {
         }
     }
     host::event_wait();
-    // SAFETY: the queue is empty and owned by this object.
-    drop(unsafe { Box::from_raw(list) });
     let scheduler = this(call);
-    scheduler.list = ptr::null_mut();
+    scheduler.list = None;
     scheduler.started = false;
     call.set_bool(true);
 }

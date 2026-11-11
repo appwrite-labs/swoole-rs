@@ -36,24 +36,20 @@ impl File {
     /// One read of up to `buf.len()` bytes at `offset`, on the thread pool
     /// when `pooled`; `None` if it failed.
     fn read(&self, offset: i64, buf: &mut [u8], pooled: bool) -> Option<usize> {
-        let mut read = Read {
-            fd: self.0,
-            offset,
-            buf: buf.as_mut_ptr(),
-            length: buf.len(),
-            result: -1,
+        let fd = self.0;
+        let mut result = -1;
+        let mut read = || {
+            // SAFETY: the buffer's writable bytes.
+            result = unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) };
         };
-        let context = (&raw mut read).cast();
         if pooled {
-            // SAFETY: the read's context outlives the job, which the coroutine waits for.
-            if !unsafe { async_job(read_job, context) } {
+            if !async_job(&mut read) {
                 return None;
             }
         } else {
-            // SAFETY: as above, on this thread.
-            unsafe { read_job(context) };
+            read();
         }
-        usize::try_from(read.result).ok()
+        usize::try_from(result).ok()
     }
 }
 
@@ -62,22 +58,6 @@ impl Drop for File {
         // SAFETY: the descriptor `open` made, closed once.
         unsafe { libc::close(self.0) };
     }
-}
-
-/// One `pread` for [`File::read`].
-struct Read {
-    fd: libc::c_int,
-    offset: i64,
-    buf: *mut u8,
-    length: usize,
-    result: isize,
-}
-
-unsafe extern "C" fn read_job(context: *mut c_void) {
-    // SAFETY: the `Read` `File::read` lends.
-    let read = unsafe { &mut *context.cast::<Read>() };
-    // SAFETY: the buffer's `length` writable bytes.
-    read.result = unsafe { libc::pread(read.fd, read.buf.cast(), read.length, read.offset) };
 }
 
 /// The text up to its first NUL, as a C string reads it.
