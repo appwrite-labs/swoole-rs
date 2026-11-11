@@ -11,3 +11,6 @@ crate-type = ["rlib"]
 
 [lints]
 workspace = true
+
+[dependencies]
+swoole-rs-locale = { path = "../locale" }

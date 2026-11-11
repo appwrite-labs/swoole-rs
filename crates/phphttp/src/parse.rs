@@ -12,10 +12,10 @@ use swoole_rs_corebase::log;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_httpbindings::{
-    RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
-    swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
-    swr_v1_httpbindings_form_source, swr_v1_httpbindings_request_url, swr_v1_httpbindings_tokens,
-    swr_v1_httpbindings_trim_quotes,
+    RequestHeader, request_header, request_key, swr_v1_httpbindings_body_prefix,
+    swr_v1_httpbindings_compression, swr_v1_httpbindings_form_source,
+    swr_v1_httpbindings_request_url, swr_v1_httpbindings_trim_quotes, token_list_contains,
+    token_list_fast,
 };
 use swoole_rs_server::view;
 use swoole_rs_zend::sys::{
@@ -433,12 +433,8 @@ fn on_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
 }
 
 fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
-    let mut parts = UrlParts::default();
     // SAFETY: llhttp's span.
-    if unsafe { swr_v1_httpbindings_request_url(Text { data: at, length }, Some(&mut parts)) } != 0
-    {
-        return -1;
-    }
+    let parts = swr_v1_httpbindings_request_url(unsafe { std::slice::from_raw_parts(at, length) });
     state.request.path = estrndup(at, parts.path_length);
     #[expect(
         clippy::cast_possible_truncation,
@@ -533,24 +529,15 @@ fn set_error_reason(state: &mut State, reason: &'static &'static str) {
 
 /// `swoole_http_token_list_contains_value(at, length, "websocket")`, with
 /// its pointer-sized fast comparison.
-fn contains_websocket(at: *const u8, length: usize) -> i32 {
-    let value = c"websocket".as_ptr().cast::<u8>();
+fn contains_websocket(value: &[u8]) -> i32 {
     let fast = size_of::<*const c_char>() - 1;
-    // SAFETY: llhttp's span; mode 0 only reads it.
-    let result = unsafe { swr_v1_httpbindings_tokens(at.cast_mut(), length, value, fast, 0) };
-    if result != 2 {
-        return i32::from(result == 1);
+    if let Some(found) = token_list_fast(value, c"websocket", fast) {
+        return i32::from(found);
     }
-    if length >= STACK_BUFFER_SIZE {
+    if value.len() >= STACK_BUFFER_SIZE {
         return -1;
     }
-    let mut scratch = Vec::with_capacity(length + 1);
-    // SAFETY: llhttp's span of `length` bytes.
-    scratch.extend_from_slice(unsafe { std::slice::from_raw_parts(at, length) });
-    scratch.push(0);
-    // SAFETY: a writable copy with its terminator.
-    let found = unsafe { swr_v1_httpbindings_tokens(scratch.as_mut_ptr(), length, value, fast, 1) };
-    i32::from(found == 1)
+    i32::from(token_list_contains(value, c"websocket"))
 }
 
 /// An Upgrade: websocket request on a server's WebSocket port starts its
@@ -603,7 +590,7 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
                 return USER;
             }
             state.parse.header_value_len += length;
-            match contains_websocket(at, length) {
+            match contains_websocket(value_) {
                 -1 => {
                     set_error_reason(state, &"Upgrade header value exceeds the maximum length");
                     return USER;
@@ -633,7 +620,7 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
             };
             multipart_init(state, boundary, boundary_len);
         }
-        RequestHeader::Compression => compression_method(state, at, length),
+        RequestHeader::Compression => compression_method(state, value_),
         RequestHeader::Append => {}
     }
     let value_ = stringl(at, length);
@@ -743,9 +730,9 @@ fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
         .as_ref()
         .map_or(state.request.body_length, |body| body.len());
     let beginning = received == 0;
+    // SAFETY: llhttp's span.
+    let span = unsafe { std::slice::from_raw_parts(at, length) };
     if state.recv_chunked != 0 {
-        // SAFETY: llhttp's span.
-        let span = unsafe { std::slice::from_raw_parts(at, length) };
         state
             .parse
             .chunked_body
@@ -756,15 +743,7 @@ fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
         state.request.body_length += length;
     }
     if state.mt_parser.is_some() && state.recv_chunked == 0 {
-        let mut prefix = 0;
-        // SAFETY: llhttp's span.
-        unsafe {
-            swr_v1_httpbindings_body_prefix(
-                Text { data: at, length },
-                u32::from(beginning),
-                Some(&mut prefix),
-            )
-        };
+        let prefix = swr_v1_httpbindings_body_prefix(span, beginning);
         if !multipart_parse(state, at.wrapping_add(prefix), length - prefix) {
             return -1;
         }
@@ -784,11 +763,11 @@ fn on_message_complete(state: &mut State) -> c_int {
     {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
-        let mut prefix = 0;
-        // SAFETY: the dechunked body.
-        unsafe {
-            swr_v1_httpbindings_body_prefix(Text { data: body, length }, 1, Some(&mut prefix))
-        };
+        let prefix = state
+            .parse
+            .chunked_body
+            .as_deref()
+            .map_or(0, |body| swr_v1_httpbindings_body_prefix(body, true));
         if !multipart_parse(state, body.wrapping_add(prefix), length - prefix) {
             return -1;
         }
@@ -949,15 +928,14 @@ pub(crate) fn multipart_parse(state: &mut State, at: *const u8, length: usize) -
 }
 
 /// `Context::set_compression_method`.
-pub(crate) fn compression_method(state: &mut State, at: *const u8, length: usize) {
+pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream truncates to uint32_t"
     )]
-    let length = length as u32 as usize;
+    let length = value.len() as u32 as usize;
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
-    // SAFETY: the header value's span.
-    let method = unsafe { swr_v1_httpbindings_compression(Text { data: at, length }, codecs) };
+    let method = swr_v1_httpbindings_compression(value.get(..length).unwrap_or_default(), codecs);
     state.accept_compression = u8::from(method > 0);
     if method > 0 {
         #[expect(clippy::cast_possible_truncation, reason = "methods are 1 to 4")]
@@ -980,15 +958,8 @@ fn trimmed(text: &[u8], length: usize) -> Box<[u8]> {
     for (slot, byte) in buffer.iter_mut().zip(text).take(FORM_KEYLEN - 1) {
         *slot = *byte;
     }
-    let mut result = Trimmed::default();
-    // SAFETY: the buffer holds `length` (< FORM_KEYLEN) writable bytes.
-    if unsafe { swr_v1_httpbindings_trim_quotes(buffer.as_mut_ptr(), length, Some(&mut result)) }
-        != 0
-    {
-        result = Trimmed { offset: 0, length };
-    }
-    let trimmed = buffer.get(result.offset..result.offset + result.length);
-    trimmed.unwrap_or_default().into()
+    let span = buffer.get(..length).unwrap_or_default();
+    swr_v1_httpbindings_trim_quotes(span).into()
 }
 
 /// A NUL-terminated copy (`estrndup`).

@@ -7,7 +7,7 @@ use crate::{
     state::State,
 };
 use std::sync::atomic::Ordering::Relaxed;
-use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
+use swoole_rs_httpbindings::swr_v1_httpbindings_request_option;
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
@@ -170,12 +170,7 @@ fn create_request(call: &Call) {
 fn option(state: &mut State, name: &[u8], value: &Value) {
     let capabilities = CAPABILITIES.load(Relaxed);
     let wanted = u32::from(capabilities & 8 != 0) | u32::from(capabilities & 1 != 0) << 1;
-    let text = Text {
-        data: name.as_ptr(),
-        length: name.len(),
-    };
-    // SAFETY: the key's bytes, borrowed for the call.
-    let option = unsafe { swr_v1_httpbindings_request_option(text, wanted) };
+    let option = swr_v1_httpbindings_request_option(name, wanted);
     let truth = || u8::from(value.truthy());
     match option {
         1 => state.parse_cookie = truth(),

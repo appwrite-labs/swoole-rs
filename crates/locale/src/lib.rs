@@ -1,6 +1,6 @@
 //! libc's locale- and timezone-dependent calendar and case comparison over owned
-//! values, for the HTTP static handler's dates and crates/http's header matching,
-//! so that crates/http holds no `unsafe`.
+//! values, for the HTTP static handler's dates and crates/http's and
+//! crates/httpbindings' header matching, so that neither holds `unsafe`.
 #![cfg_attr(
     not(test),
     deny(
@@ -64,6 +64,17 @@ pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
     let length = length.min(left.len()).min(right.len());
     // SAFETY: both slices hold at least `length` readable bytes.
     unsafe { libc::strncasecmp(left.as_ptr().cast(), right.as_ptr().cast(), length) == 0 }
+}
+/// `isspace(c)` in the current locale, of the byte as the native `char` C passes.
+#[must_use]
+pub fn isspace(byte: u8) -> bool {
+    // SAFETY: an int in `char`'s range, which glibc and macOS libc both classify.
+    unsafe { libc::isspace(i32::from(std::ffi::c_char::from_ne_bytes([byte]))) != 0 }
+}
+/// `left` and `right` are equal as `strncasecmp` compares them in the current locale.
+#[must_use]
+pub fn case_equal(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && case_prefix(left, right)
 }
 /// True when libc's case-insensitive comparison differs at this first byte pair in
 /// every locale, so the call can be skipped: `tolower` keeps ASCII in ASCII except

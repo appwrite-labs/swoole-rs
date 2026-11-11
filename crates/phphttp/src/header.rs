@@ -408,10 +408,7 @@ fn build(
             let encoding =
                 swr_v1_httpbindings_encoding(i32::from(state.compression_method), codecs);
             out.extend_from_slice(b"Content-Encoding: ");
-            // SAFETY: a static label.
-            out.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(encoding.data, encoding.length)
-            });
+            out.extend_from_slice(encoding.to_bytes());
             out.extend_from_slice(b"\r\n");
         }
         if flags & CONTENT_LENGTH == 0 {
@@ -581,8 +578,6 @@ pub(crate) fn compress_body<'a>(
     }
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
     let encoding = swr_v1_httpbindings_encoding(i32::from(state.compression_method), codecs);
-    // SAFETY: a static NUL-terminated label.
-    let encoding = unsafe { CStr::from_ptr(encoding.data.cast()) };
     Some((encoding, compressed(state)))
 }
 
