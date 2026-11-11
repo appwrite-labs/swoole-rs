@@ -7,14 +7,16 @@
 use crate::{
     http_native::{self as native, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
-    native::{Co, Socket, swoole_rs_php_error, unconstructed},
+    native::{Co, swoole_rs_php_error, unconstructed},
     socket::Sock,
 };
 use libc::{c_char, c_int, c_void};
 use std::{
+    cell::{Cell, RefCell},
     ffi::{CStr, CString},
     mem::MaybeUninit,
     ptr,
+    rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
@@ -82,20 +84,28 @@ pub(crate) struct Data {
 
 type ClientObject = Object<Data>;
 
-/// What the socket's close hook changes, allocated apart from the client so
-/// the hook never writes through a live `&mut Client`.
+/// What the socket's close hook changes, shared with the hook apart from the
+/// client so the hook never writes through a live `&mut Client`.
 struct Conn {
     object: *mut zend_object,
-    socket: Socket,
-    zsocket: Owned,
-    /// The write buffer the closed socket left (`tmp_write_buffer`).
-    written: *mut c_void,
+    socket: Cell<Option<Co>>,
+    zsocket: RefCell<Owned>,
+    /// The write buffer the closed socket left (`tmp_write_buffer`): a popped
+    /// `new String` the conn owns, or null.
+    written: Cell<*mut c_void>,
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        // SAFETY: the saved write buffer, which only the conn owns, freed once.
+        unsafe { native::swoole_http_client_coro_buffer_free(self.written.get()) };
+    }
 }
 
 /// Upstream's `swoole::coroutine::http::Client`.
 struct Client {
     object: *mut zend_object,
-    conn: *mut Conn,
+    conn: Rc<Conn>,
     host: Vec<u8>,
     socket_type: i64,
     port: u16,
@@ -257,28 +267,19 @@ fn return_property(call: &Call, name: &CStr) {
     call.set_owned(property.dereferenced().copy());
 }
 
-/// A reference to the client's socket object for the rest of a call
-/// (`SW_CLIENT_PRESERVE_SOCKET`), so a close inside it cannot free the socket.
-fn hold(zsocket: &Value) -> Option<Owned> {
-    zsocket.object().map(|_| zsocket.copy())
-}
-
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
 /// drop the socket and say so on the object.
-/// # Safety
-/// `conn` is the live `Conn` the client registered; `written` is the socket's
-/// popped write buffer (or null), which this takes over.
-pub(crate) unsafe fn socket_closed(conn: *mut c_void, written: *mut c_void) {
-    // SAFETY: per the caller; no other reference to the conn is live across
-    // this hook.
-    let conn = unsafe { &mut *conn.cast::<Conn>() };
-    let saved = std::mem::replace(&mut conn.written, written);
-    // SAFETY: the buffer the conn held, freed once.
+fn socket_closed(conn: &Conn, socket: Co) {
+    let written = std::mem::replace(&mut socket.record().write_buffer, ptr::null_mut());
+    let saved = conn.written.replace(written);
+    // SAFETY: the buffer the conn took from its last socket, freed once.
     unsafe { native::swoole_http_client_coro_buffer_free(saved) };
-    conn.socket = ptr::null_mut();
+    conn.socket.set(None);
     conn.props().bool(c"connected", false);
     conn.props().null(c"socket");
-    drop(std::mem::take(&mut conn.zsocket));
+    // Emptied before the socket object's reference goes.
+    let zsocket = conn.zsocket.take();
+    drop(zsocket);
 }
 
 /// `php_swoole_http_parse_set_cookies`: one `Set-Cookie` value into the
@@ -328,12 +329,12 @@ impl Client {
         } else {
             port
         };
-        let conn = Box::into_raw(Box::new(Conn {
+        let conn = Rc::new(Conn {
             object,
-            socket: ptr::null_mut(),
-            zsocket: Owned::default(),
-            written: ptr::null_mut(),
-        }));
+            socket: Cell::new(None),
+            zsocket: RefCell::default(),
+            written: Cell::new(ptr::null_mut()),
+        });
         let mut host = host.to_vec();
         Box::new(Self {
             object,
@@ -386,22 +387,15 @@ impl Client {
     }
 
     /// The live socket, read fresh: the close hook may have cleared it.
-    fn socket(&self) -> Socket {
-        // SAFETY: the conn lives as long as the client.
-        unsafe { (*self.conn).socket }
-    }
-
-    /// The live socket, while the client has one.
     fn co(&self) -> Option<Co> {
-        let socket = self.socket();
-        // SAFETY: a socket the conn holds is live until its close hook clears it.
-        (!socket.is_null()).then(|| unsafe { Co::new(socket) })
+        self.conn.socket.get()
     }
 
-    /// The socket object, while the close hook leaves it.
-    fn zsocket(&self) -> &Value {
-        // SAFETY: as above; callers copy or read it before the hook can run.
-        unsafe { &(*self.conn).zsocket }
+    /// A reference to the socket object for the rest of a call
+    /// (`SW_CLIENT_PRESERVE_SOCKET`), so a close inside it cannot free the socket.
+    fn hold(&self) -> Option<Owned> {
+        let zsocket = self.conn.zsocket.borrow();
+        zsocket.object().map(|_| zsocket.copy())
     }
 
     fn set_error(&self, code: c_int, message: &CStr, status: i64) {
@@ -511,7 +505,7 @@ impl Client {
     }
 
     fn connect(&mut self) -> bool {
-        if !self.socket().is_null() {
+        if self.co().is_some() {
             return true;
         }
         if self.body.capacity() == 0 {
@@ -529,11 +523,9 @@ impl Client {
         let Some(socket) = Sock::of(&zsocket).and_then(Sock::co) else {
             return false;
         };
-        // SAFETY: the conn lives as long as the client, and nothing else
-        // borrows it; its old socket is empty.
-        let conn = unsafe { &mut *self.conn };
-        conn.zsocket = zsocket;
-        conn.socket = socket.as_ptr();
+        let published = zsocket.copy();
+        *self.conn.zsocket.borrow_mut() = zsocket;
+        self.conn.socket.set(Some(socket));
         if self.ssl && !socket.enable_ssl() {
             self.set_socket_error(socket, CONNECT_FAILED);
             self.close(true);
@@ -544,12 +536,13 @@ impl Client {
         self.apply_setting(settings, false);
         self.websocket = false;
         self.accept_websocket_compression = false;
-        // SAFETY: the client's resolve context and conn outlive its socket.
+        let conn = Rc::clone(&self.conn);
+        // SAFETY: the client's resolve context outlives its socket.
         unsafe {
             socket.configure_http(
                 self.connect_timeout,
                 (&raw mut *self.resolve).cast(),
-                self.conn.cast(),
+                Box::new(move |_| socket_closed(&conn, socket)),
             );
         }
         if !socket.connect_http(&self.host, c_int::from(self.port)) {
@@ -557,7 +550,7 @@ impl Client {
             self.close(true);
             return false;
         }
-        self.props().value(c"socket", self.zsocket());
+        self.props().value(c"socket", &published);
         self.props().bool(c"connected", true);
         true
     }
@@ -1272,11 +1265,10 @@ impl Drop for Client {
         if let Some(fd) = self.download_file.take() {
             native::swoole_http_client_coro_file_close(fd);
         }
-        // SAFETY: the conn the client allocated; the socket hook no longer runs
-        // for it once the socket is closed or released below.
-        let conn = unsafe { Box::from_raw(self.conn) };
-        // SAFETY: the saved write buffer, freed once.
-        unsafe { native::swoole_http_client_coro_buffer_free(conn.written) };
+        // Emptied first, as the close hook does, in case releasing it runs the
+        // hook; the conn, with its saved write buffer, goes with the client.
+        let zsocket = self.conn.zsocket.take();
+        drop(zsocket);
     }
 }
 
@@ -1997,7 +1989,7 @@ fn recv(call: &Call) -> bool {
         call.set_bool(false);
         return false;
     };
-    let _hold = hold(client.zsocket());
+    let _hold = client.hold();
     if client.websocket {
         client.recv_websocket_frame(call, timeout);
         return false;
@@ -2023,7 +2015,7 @@ fn push(call: &Call) {
     let Some(data) = call.value(1) else {
         return call.set_bool(false);
     };
-    let _hold = hold(client.zsocket());
+    let _hold = client.hold();
     let result = client.push(data, opcode, flags & FLAGS_ALL, CLOSE_NORMAL);
     call.set_bool(result);
 }
@@ -2031,7 +2023,7 @@ fn push(call: &Call) {
 /// `close(): bool`.
 fn close(call: &Call) {
     let client = client(call);
-    let Some(_hold) = hold(client.zsocket()) else {
+    let Some(_hold) = client.hold() else {
         // A failed request already closed its socket; keep its error.
         if client.get_long(c"errCode") == 0 {
             set_error_properties(client.props(), NO_CONNECTION, strerror(NO_CONNECTION));
@@ -2064,10 +2056,9 @@ fn get_header_out(call: &Call) {
     let buffer = if let Some(socket) = client.co() {
         Some(&*socket.write_buffer())
     } else {
-        // SAFETY: the conn lives as long as the client.
-        let saved = unsafe { (*client.conn).written }.cast::<CppString>();
-        // SAFETY: the buffer the socket's close left, or null.
-        unsafe { saved.as_ref() }
+        // SAFETY: the buffer the socket's close left, or null, which the conn
+        // keeps until the next close.
+        unsafe { client.conn.written.get().cast::<CppString>().as_ref() }
     };
     let Some(buffer) = buffer else {
         return call.set_bool(false);
