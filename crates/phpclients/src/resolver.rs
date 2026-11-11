@@ -12,11 +12,11 @@ use std::{
 use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Minit, UNDEF, Value, ZString, bailout, method_table,
+    Call, Custom, CustomClass, Minit, Owned, UNDEF, Value, ZString, bailout, method_table,
     sys::{
-        IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_PUBLIC, swr_zend_efree, swr_zend_emalloc,
-        swr_zend_runtime_instanceof, swr_zend_string_init, swr_zend_string_release,
-        swr_zend_try_zval_dtor, swr_zend_zval_release, swr_zval_str, zend_lookup_class, zval,
+        IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_efree, swr_zend_emalloc,
+        swr_zend_runtime_instanceof, swr_zend_try_zval_dtor, swr_zend_zval_release,
+        zend_lookup_class, zval,
     },
     value,
 };
@@ -262,13 +262,10 @@ fn add(call: &Call) {
 /// `php_swoole_name_resolver_add`: register `resolver` (an object) if it is a
 /// `Swoole\NameResolver`, holding a reference to it.
 pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
-    // SAFETY: a request-allocated name, released below.
-    let name =
-        unsafe { swr_zend_string_init(RESOLVER_CLASS.as_ptr().cast(), RESOLVER_CLASS.len()) };
+    let name = ZString::new(RESOLVER_CLASS);
     // SAFETY: a live name; autoloads as upstream's known string does.
-    let ce = unsafe { zend_lookup_class(name) };
-    // SAFETY: our reference.
-    unsafe { swr_zend_string_release(name) };
+    let ce = unsafe { zend_lookup_class(name.as_ptr()) };
+    drop(name);
     let class = String::from_utf8_lossy(RESOLVER_CLASS);
     if ce.is_null() {
         warn(true, &format!("Class \"{class}\" not found"));
@@ -413,20 +410,13 @@ unsafe fn resolve(
         }
     }
     if cluster.is_null() {
-        let mut zname = UNDEF;
-        // SAFETY: a request-allocated copy of the name.
-        let copy = unsafe { swr_zend_string_init(name.as_ptr().cast(), name.len()) };
-        // SAFETY: `zname` owns the copy.
-        unsafe { swr_zval_str(&raw mut zname, copy) };
+        let zname = Owned::string(ZString::new(name));
         retval = UNDEF;
         // SAFETY: the resolver object and a string argument.
-        let called = unsafe { call_method(resolver, b"lookup", &mut retval, &raw mut zname) };
-        called?;
-        // SAFETY: `zname`'s string; strings run no destructors.
-        unsafe { swr_zend_string_release(copy) };
-        // SAFETY: the call's result, which `retval` holds.
-        let found = unsafe { Value::from_ptr(&raw const retval) };
-        let kind = found.map_or(IS_UNDEF, Value::kind);
+        unsafe { call_method(resolver, b"lookup", &mut retval, zname.as_ptr()) }?;
+        drop(zname);
+        // The call's result, which `retval` holds.
+        let kind = Value::of(&mut retval).kind();
         if kind == IS_OBJECT {
             // SAFETY: Zend's request allocator (`ecalloc`), which the
             // context's destructor frees.
@@ -443,9 +433,8 @@ unsafe fn resolve(
         match kind {
             IS_OBJECT => {}
             IS_STRING => {
-                return Ok(Some(
-                    found.and_then(Value::bytes).unwrap_or_default().to_vec(),
-                ));
+                let found = Value::of(&mut retval).bytes();
+                return Ok(Some(found.unwrap_or_default().to_vec()));
             }
             _ => return Ok(None),
         }

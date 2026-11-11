@@ -56,9 +56,7 @@ impl Slot {
     /// Property writes on the slot's object, under its own class; None
     /// before the context sets the slot.
     pub(crate) fn props(&self) -> Option<Props<'_>> {
-        let object = self.object()?;
-        // SAFETY: the context's reference keeps the object live while the slot is borrowed.
-        Some(unsafe { Props::new(std::ptr::null_mut(), object) }.own())
+        self.get()?.props(None).map(Props::own)
     }
 }
 

@@ -19,12 +19,11 @@ use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, handlers, push_string, set_key,
+    Call, Class, Invalid, Owned, Value, ZStr, ZString, handlers, push_string, set_key,
     sys::{
         IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
         zend_string,
     },
-    type_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -131,11 +130,6 @@ pub fn response_minit(args: &MinitArgs) {
     crate::header::minit(ce);
     context::response_minit(ce);
     crate::parse::minit(codecs);
-}
-
-/// The registered class entry.
-pub(crate) fn entry() -> *mut zend_class_entry {
-    RESPONSE.entry()
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.

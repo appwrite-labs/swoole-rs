@@ -28,11 +28,10 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Minit, Owned, Props, Value, ZStr, ZString, bailout, handlers, init_object,
-    method_table,
+    Array, Call, Class, Minit, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
     string::{self},
     sys::{
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
+        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
         ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
         swr_zend_ws_property_not_null, swr_zval_str, zend_ce_stringable, zend_class_entry,
         zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
