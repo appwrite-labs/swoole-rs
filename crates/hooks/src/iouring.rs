@@ -183,12 +183,8 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
 
 /// The exit condition: requests in flight or waiting keep the loop running.
 extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
-    let iouring = INSTANCE.get();
-    // SAFETY: null or the thread's live instance.
-    if let Some(iouring) = unsafe { iouring.as_ref() }
-        // SAFETY: the instance's engine, live or null.
-        && unsafe { iouring.engine.as_ref() }
-            .is_none_or(|engine| engine.task_num() == 0 && engine.waiting_num() == 0)
+    if !INSTANCE.get().is_null()
+        && with_engine(|engine| engine.task_num() == 0 && engine.waiting_num() == 0).unwrap_or(true)
     {
         *event_num -= 1;
     }
@@ -197,10 +193,7 @@ extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
 
 /// The end-of-loop callback: submit what the loop queued.
 extern "C-unwind" fn submit() {
-    // SAFETY: null or the thread's live engine, from the event loop.
-    if let Some(engine) = unsafe { current().as_mut() } {
-        engine.submit_queued();
-    }
+    with_engine(Uring::submit_queued);
 }
 
 /// The reactor's destroy callback: `delete SwooleTG.iouring`.
@@ -275,15 +268,15 @@ fn interrupt() {
 /// `Iouring::waitpid`.
 ///
 /// # Safety
-/// `status` is valid.
+/// `status` is null or a valid status word.
 unsafe fn waitpid(
     pid: libc::pid_t,
     status: *mut c_int,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    // SAFETY: the caller's contract.
-    unsafe { uring::waitpid(&HOST, pid, status, options, timeout) }
+    // SAFETY: the caller's contract: null or a valid status word.
+    uring::waitpid(&HOST, pid, unsafe { status.as_mut() }, options, timeout)
 }
 
 /// The thread's engine, or null before the first request (`SwooleTG.iouring`).
@@ -292,13 +285,20 @@ fn current() -> *mut Uring {
     unsafe { INSTANCE.get().as_ref() }.map_or(ptr::null_mut(), |iouring| iouring.engine)
 }
 
+/// `f` over the thread's engine once it has one. Only this module calls it, and no
+/// `f` re-enters the engine or resumes a coroutine.
+fn with_engine<R>(f: impl FnOnce(&mut Uring) -> R) -> Option<R> {
+    // SAFETY: null or the thread's live engine, which no other borrow reaches while
+    // `f` runs: the engine's own borrows end before any coroutine switch.
+    unsafe { current().as_mut() }.map(f)
+}
+
 /// `Co::stats()`'s `io_uring` counts once the thread has an engine: requests in
 /// flight, requests waiting for room in the ring, and the submission queue's use
 /// in percent.
 #[must_use]
 pub fn stats() -> Option<(u32, usize, f32)> {
-    // SAFETY: null or the thread's live engine, read with no other access.
-    unsafe { current().as_ref() }.map(|engine| {
+    with_engine(|engine| {
         (
             engine.task_num(),
             engine.waiting_num(),

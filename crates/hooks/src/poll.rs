@@ -33,7 +33,7 @@ pub struct PollOps {
     /// `Coroutine::get_current_safe()`.
     pub current: extern "C" fn() -> *mut c_void,
     /// `co->yield()`.
-    pub park: fn(*mut c_void),
+    pub park: fn(),
     /// `co->resume()`.
     pub resume: fn(*mut c_void),
 }
@@ -183,7 +183,7 @@ fn poll_sockets(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps) -> bool {
         task.timer.set((ops.timer_add)(timeout, ptr));
     }
     // Callbacks reach `task` while `co` is parked.
-    (ops.park)(task.co);
+    (ops.park)();
     task.success.get()
 }
 
@@ -303,7 +303,7 @@ pub static NATIVE: PollOps = PollOps {
     timer_del: native::timer_del,
     defer: native::defer,
     current: crate::wait_event::native::current,
-    park: native::park,
+    park: crate::resolve::park,
     resume: native::resume,
 };
 
@@ -342,11 +342,6 @@ pub(crate) mod native {
     pub(super) fn defer(task: *mut c_void) {
         // SAFETY: the task stays parked until the deferred completion runs.
         unsafe { crate::reactor_handlers::defer(super::swr_v1_hook_poll_completed, task, None) };
-    }
-
-    pub(super) fn park(co: *mut c_void) {
-        // SAFETY: the current coroutine.
-        unsafe { crate::resolve::park(co) };
     }
 
     pub(crate) fn resume(co: *mut c_void) {
@@ -400,7 +395,7 @@ mod tests {
         std::ptr::dangling_mut()
     }
     /// The reactor runs while parked: fire an event (or the timer), then the defer.
-    fn park(_: *mut c_void) {
+    fn park() {
         log("park".into());
         let task = TASK.get() as *mut c_void;
         match FIRE.get() {

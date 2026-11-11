@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::mem::offset_of;
 use std::{mem, ptr};
@@ -5,7 +6,8 @@ use std::{mem, ptr};
 // Slice invariant: every slice pointer reachable from a pool's `head`, `tail` or a
 // slice's links is one of `slice_num` slices, each `size_of::<Slice>() + slice_size`
 // bytes, laid out inside `memory` by `construct`. Strides may be odd, so slice headers
-// are only read and written unaligned, through `field` addresses.
+// are only read and written unaligned, through [`Slices`], which also refuses any
+// address that is not a slice's.
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -14,54 +16,99 @@ pub struct Slice {
     next: *mut Slice,
     prev: *mut Slice,
 }
+/// `swoole::FixedPool`'s header. Only `construct` makes one, in place, in front of its
+/// slices (the slice invariant), and it stays there, so a `&Fixed` is a constructed
+/// pool. It is not `Sync`: threads and processes that share an arena (a table's)
+/// serialize allocation and release with the arena's mutex before they reach it.
+/// Immutable ABI getters may observe the configuration meanwhile, so only the queue
+/// fields change, through their cells.
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct Fixed {
     pub(crate) memory: *mut u8,
     pub(crate) size: usize,
-    head: *mut Slice,
-    tail: *mut Slice,
+    head: Cell<*mut Slice>,
+    tail: Cell<*mut Slice>,
     slice_num: u32,
-    slice_use: u32,
+    slice_use: Cell<u32>,
     pub(crate) slice_size: u32,
     pub(crate) shared: u8,
     pub(crate) allocated: u8,
 }
 
-// The address of one field at `offset` inside `base`, computed without dereferencing it.
+/// The address of one field at `offset` inside `base`, computed without dereferencing it.
 fn field<B, T>(base: *mut B, offset: usize) -> *mut T {
     base.wrapping_byte_add(offset).cast()
 }
-fn next(node: *mut Slice) -> *mut *mut Slice {
-    field(node, offset_of!(Slice, next))
-}
-fn prev(node: *mut Slice) -> *mut *mut Slice {
-    field(node, offset_of!(Slice, prev))
-}
-fn lock(node: *mut Slice) -> *mut u8 {
-    field(node, offset_of!(Slice, lock))
+
+/// A pool's slice headers, bounds-checked against its arena.
+struct Slices {
+    memory: *mut u8,
+    stride: usize,
+    count: usize,
 }
 
-impl Fixed {
-    // Allocation/release are externally serialized, but immutable ABI getters
-    // may observe configuration. Never give Rust an exclusive whole-header
-    // reference or rewrite those immutable fields during a queue operation.
-    unsafe fn publish_queue(&self, target: *mut Fixed) {
-        // Callers pass the live, aligned pool header; only the queue fields are written.
-        // SAFETY: as above.
-        unsafe { field::<_, *mut Slice>(target, offset_of!(Fixed, head)).write(self.head) };
-        // SAFETY: as above.
-        unsafe { field::<_, *mut Slice>(target, offset_of!(Fixed, tail)).write(self.tail) };
-        // SAFETY: as above.
-        unsafe { field::<_, u32>(target, offset_of!(Fixed, slice_use)).write(self.slice_use) };
+impl Slices {
+    /// The slice at `node`'s address, rebuilt from the arena, if it is one.
+    fn at(&self, node: *mut Slice) -> Option<*mut Slice> {
+        let offset = node.addr().checked_sub(self.memory.addr())?;
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "slice headers are only accessed unaligned (see the slice invariant)"
+        )]
+        (offset % self.stride == 0 && offset / self.stride < self.count)
+            .then(|| self.memory.wrapping_add(offset).cast::<Slice>())
+    }
+
+    fn get(&self, node: *mut Slice) -> Option<Slice> {
+        let node = self.at(node)?;
+        // SAFETY: a slice header of the pool (`at`), read unaligned; access to headers is
+        // serialized (see `Fixed`).
+        Some(unsafe { node.read_unaligned() })
+    }
+
+    /// Writes one header field (`T` at `offset`) of the slice at `node`, if it is one.
+    fn set<T>(&self, node: *mut Slice, offset: usize, value: T) {
+        debug_assert!(
+            offset + mem::size_of::<T>() <= mem::size_of::<Slice>(),
+            "a field of the slice header"
+        );
+        if let Some(node) = self.at(node) {
+            // SAFETY: a field inside a slice header of the pool (`at`; callers pass a
+            // field's offset and type), written unaligned; access to headers is
+            // serialized (see `Fixed`).
+            unsafe { field::<_, T>(node, offset).write_unaligned(value) };
+        }
+    }
+
+    fn set_next(&self, node: *mut Slice, next: *mut Slice) {
+        self.set(node, offset_of!(Slice, next), next);
+    }
+
+    fn set_prev(&self, node: *mut Slice, prev: *mut Slice) {
+        self.set(node, offset_of!(Slice, prev), prev);
+    }
+
+    fn set_lock(&self, node: *mut Slice, lock: u8) {
+        self.set(node, offset_of!(Slice, lock), lock);
     }
 }
 
 impl Fixed {
+    fn nodes(&self) -> Slices {
+        Slices {
+            memory: self.memory,
+            stride: mem::size_of::<Slice>() + self.slice_size as usize,
+            count: self.slice_num as usize,
+        }
+    }
+
     /// Spare and total slices, as `get_number_of_spare_slice` and
     /// `get_number_of_total_slice` read them.
     pub(crate) fn slices(&self) -> (u32, u32) {
-        (self.slice_num.wrapping_sub(self.slice_use), self.slice_num)
+        (
+            self.slice_num.wrapping_sub(self.slice_use.get()),
+            self.slice_num,
+        )
     }
 }
 
@@ -81,24 +128,17 @@ pub(crate) struct DebugRecord {
 }
 
 /// The next slice `FixedPool::debug` prints, walking the live links from the head.
-///
-/// # Safety
-/// `pool` is a constructed pool; traversal is serialized with pool mutation.
-pub(crate) unsafe fn debug_step(
+pub(crate) fn debug_step(
     pool: &Fixed,
     cursor: &mut DebugCursor,
     max_lines: i32,
 ) -> Option<DebugRecord> {
     let slice = if cursor.line == 0 {
-        pool.head
+        pool.head.get()
     } else {
         cursor.next
     };
-    if slice.is_null() {
-        return None;
-    }
-    // SAFETY: a slice of this pool (see the slice invariant), read unaligned.
-    let node = unsafe { slice.read_unaligned() };
+    let node = pool.nodes().get(slice)?;
     let record = DebugRecord {
         slice,
         prev: node.prev,
@@ -165,7 +205,7 @@ impl Layout {
 /// False, touching nothing, if `arena` is misaligned.
 ///
 /// # Safety
-/// `arena` covers `plan.total` exclusive bytes.
+/// `arena` covers `plan.total` exclusive bytes, which stay put while the pool is used.
 pub(crate) unsafe fn construct(arena: *mut Fixed, plan: Layout, shared: bool, owned: bool) -> bool {
     if !arena.is_aligned() {
         return false;
@@ -175,7 +215,7 @@ pub(crate) unsafe fn construct(arena: *mut Fixed, plan: Layout, shared: bool, ow
     // upstream does: a repr(C) value write can copy uninitialized Rust padding.
     // SAFETY: as above.
     unsafe { ptr::write_bytes(arena.cast::<u8>(), 0, mem::size_of::<Fixed>()) };
-    // SAFETY: as above; the header is now initialized.
+    // SAFETY: as above; the header is now initialized (all-zero is a valid `Fixed`).
     let p = unsafe { &mut *arena };
     p.memory = arena.cast::<u8>().wrapping_add(mem::size_of::<Fixed>());
     p.size = plan.usable;
@@ -184,60 +224,44 @@ pub(crate) unsafe fn construct(arena: *mut Fixed, plan: Layout, shared: bool, ow
     p.shared = shared.into();
     p.allocated = owned.into();
     // Table row sizes may be odd: slice headers require unaligned loads/stores.
-    let stride = mem::size_of::<Slice>() + p.slice_size as usize;
-    p.tail = p.memory.cast();
-    for i in 0..p.slice_num as usize {
+    let nodes = p.nodes();
+    p.tail.set(p.memory.cast());
+    for i in 0..nodes.count {
+        let node = p.memory.wrapping_add(i * nodes.stride);
+        // `slice_num * stride <= usable` (`Layout::new`), so slice `i` lies inside `memory`.
+        // SAFETY: as above; the pool is exclusive during construction.
+        unsafe { ptr::write_bytes(node, 0, mem::size_of::<Slice>()) };
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "slice headers are only accessed unaligned (see the slice invariant)"
         )]
-        // `slice_num * stride <= usable` (`Layout::new`), so slice `i` lies inside `memory`.
-        let node = p.memory.wrapping_add(i * stride).cast::<Slice>();
-        // SAFETY: as above; the pool is exclusive during construction.
-        unsafe { ptr::write_bytes(node.cast::<u8>(), 0, mem::size_of::<Slice>()) };
-        // SAFETY: as above.
-        unsafe { next(node).write_unaligned(p.head) };
-        if !p.head.is_null() {
-            // SAFETY: `head` is the previously initialized slice.
-            unsafe { prev(p.head).write_unaligned(node) };
-        }
-        p.head = node;
+        let node = node.cast::<Slice>();
+        nodes.set_next(node, p.head.get());
+        nodes.set_prev(p.head.get(), node);
+        p.head.set(node);
     }
     true
 }
 
 /// A spare slice, or null.
-///
-/// # Safety
-/// `pool` is a constructed pool; allocation is serialized.
-pub(crate) unsafe fn alloc(pool: *mut Fixed) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    let mut p = unsafe { pool.read() };
-    let node = p.head;
-    // Every slice touched below is a slice of this pool (see the slice invariant);
-    // allocation is externally serialized.
-    // SAFETY: as above.
-    if node.is_null() || unsafe { node.read_unaligned().lock } != 0 {
+pub(crate) fn alloc(pool: &Fixed) -> *mut c_void {
+    let nodes = pool.nodes();
+    let Some(node) = nodes.at(pool.head.get()) else {
         return ptr::null_mut();
-    }
+    };
+    let Some(value) = nodes.get(node).filter(|value| value.lock == 0) else {
+        return ptr::null_mut();
+    };
     // At least two nodes always remain in the combined idle/busy list.
-    // SAFETY: as above.
-    let value = unsafe { node.read_unaligned() };
-    p.slice_use += 1;
-    p.head = value.next;
-    // SAFETY: as above.
-    unsafe { prev(p.head).write_unaligned(ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { next(p.tail).write_unaligned(node) };
-    // SAFETY: as above.
-    unsafe { lock(node).write(1) };
-    // SAFETY: as above.
-    unsafe { next(node).write_unaligned(ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { prev(node).write_unaligned(p.tail) };
-    p.tail = node;
-    // SAFETY: `pool` is the live, aligned header read above.
-    unsafe { p.publish_queue(pool) };
+    let tail = pool.tail.get();
+    pool.slice_use.set(pool.slice_use.get() + 1);
+    pool.head.set(value.next);
+    nodes.set_prev(value.next, ptr::null_mut());
+    nodes.set_next(tail, node);
+    nodes.set_lock(node, 1);
+    nodes.set_next(node, ptr::null_mut());
+    nodes.set_prev(node, tail);
+    pool.tail.set(node);
     node.cast::<u8>()
         .wrapping_add(mem::size_of::<Slice>())
         .cast()
@@ -245,59 +269,41 @@ pub(crate) unsafe fn alloc(pool: *mut Fixed) -> *mut c_void {
 
 /// Returns `data`'s slice to the head of the pool; false if `data` is no allocated
 /// slice of it.
-///
-/// # Safety
-/// `pool` is a constructed pool; release is serialized.
-pub(crate) unsafe fn free(pool: *mut Fixed, data: *mut c_void) -> bool {
-    // SAFETY: as the caller promises.
-    let mut p = unsafe { pool.read() };
-    let Some(offset) = data
-        .addr()
-        .checked_sub(p.memory.addr() + mem::size_of::<Slice>())
-    else {
-        return false;
-    };
-    let stride = mem::size_of::<Slice>() + p.slice_size as usize;
-    if offset % stride != 0 || offset / stride >= p.slice_num as usize {
-        return false;
-    }
+pub(crate) fn free(pool: &Fixed, data: *mut c_void) -> bool {
+    let nodes = pool.nodes();
     #[expect(
         clippy::cast_ptr_alignment,
         reason = "slice headers are only accessed unaligned (see the slice invariant)"
     )]
-    // `offset` is a whole number of strides below `slice_num` (checked above), so `node` is a
-    // slice of this pool (see the slice invariant); release is externally serialized.
-    let node = p.memory.wrapping_add(offset).cast::<Slice>();
-    // SAFETY: as above.
-    let value = unsafe { node.read_unaligned() };
-    if value.lock != 1 || p.slice_use == 0 {
+    let slice = data
+        .cast::<u8>()
+        .wrapping_sub(mem::size_of::<Slice>())
+        .cast::<Slice>();
+    let Some(node) = nodes.at(slice) else {
+        return false;
+    };
+    let Some(value) = nodes.get(node) else {
+        return false;
+    };
+    if value.lock != 1 || pool.slice_use.get() == 0 {
         return false;
     }
-    // Every link below is a slice of this pool (see the slice invariant).
-    // SAFETY: as above.
-    unsafe { lock(node).write_unaligned(0) };
-    p.slice_use -= 1;
-    if node != p.head {
-        if node == p.tail {
-            // SAFETY: as above.
-            unsafe { next(value.prev).write_unaligned(ptr::null_mut()) };
-            p.tail = value.prev;
+    nodes.set_lock(node, 0);
+    pool.slice_use.set(pool.slice_use.get() - 1);
+    let head = pool.head.get();
+    if node != head {
+        if node == pool.tail.get() {
+            nodes.set_next(value.prev, ptr::null_mut());
+            pool.tail.set(value.prev);
         } else {
-            // SAFETY: as above.
-            unsafe { next(value.prev).write_unaligned(value.next) };
-            // SAFETY: as above.
-            unsafe { prev(value.next).write_unaligned(value.prev) };
+            nodes.set_next(value.prev, value.next);
+            nodes.set_prev(value.next, value.prev);
         }
-        // SAFETY: as above.
-        unsafe { next(node).write_unaligned(p.head) };
-        // SAFETY: as above.
-        unsafe { prev(node).write_unaligned(ptr::null_mut()) };
-        // SAFETY: as above.
-        unsafe { prev(p.head).write_unaligned(node) };
-        p.head = node;
+        nodes.set_next(node, head);
+        nodes.set_prev(node, ptr::null_mut());
+        nodes.set_prev(head, node);
+        pool.head.set(node);
     }
-    // SAFETY: `pool` is the live, aligned header read above.
-    unsafe { p.publish_queue(pool) };
     true
 }
 

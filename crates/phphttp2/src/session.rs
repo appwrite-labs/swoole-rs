@@ -14,20 +14,8 @@ use swoole_rs_http2::{
     hpack::{Decoder, Encoder},
     sw_rs_http2_default_settings,
 };
-use swoole_rs_phphttp::http2::Ctx;
+use swoole_rs_phphttp::http2::{Ctx, Handler};
 use swoole_rs_zend::bailout;
-
-/// What a session's handler gets: the stream's context, the session's
-/// default context and the data it was created with.
-#[repr(C)]
-pub struct SessionRequest {
-    pub ctx: Ctx,
-    pub default_ctx: Ctx,
-    pub data: *mut c_void,
-}
-
-/// `onRequest` for a finished request, C++ (a bailout is trapped around it).
-pub type SessionHandler = unsafe extern "C" fn(*mut c_void);
 
 pub(crate) type Session = Rc<SessionState>;
 
@@ -82,8 +70,7 @@ pub(crate) struct SessionState {
     pub(crate) is_coro: bool,
     /// The connection's context: frames that belong to no stream go out on it.
     pub(crate) default_ctx: Ctx,
-    handle: SessionHandler,
-    data: *mut c_void,
+    handle: Handler,
 }
 
 /// `http2::Stream`.
@@ -125,14 +112,7 @@ fn defaults() -> [u32; 6] {
 const INIT_WINDOW_SIZE: usize = 3;
 
 impl SessionState {
-    fn new(
-        fd: i64,
-        default_ctx: Ctx,
-        max_body_size: u32,
-        is_coro: bool,
-        handle: SessionHandler,
-        data: *mut c_void,
-    ) -> Self {
+    fn new(fd: i64, default_ctx: Ctx, max_body_size: u32, is_coro: bool, handle: Handler) -> Self {
         // The peer need not send every setting: start from the defaults.
         let local = defaults();
         Self {
@@ -152,7 +132,6 @@ impl SessionState {
             is_coro,
             default_ctx,
             handle,
-            data,
         }
     }
 
@@ -207,14 +186,7 @@ impl SessionState {
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
     pub(crate) fn handle(&self, stream: &StreamState) {
-        let mut request = SessionRequest {
-            ctx: stream.ctx,
-            default_ctx: self.default_ctx,
-            data: self.data,
-        };
-        // SAFETY: C++'s handler, called with the request it expects.
-        let result = unsafe { bailout::trap(self.handle, (&raw mut request).cast()) };
-        bailout::defer(result);
+        bailout::defer((self.handle)(stream.ctx, self.default_ctx));
     }
 }
 
@@ -253,17 +225,14 @@ impl Drop for StreamState {
 }
 
 /// A session for connection `fd` (`swoole_http2_server_session_new`), unless
-/// it has one. `handle` gets each finished request with `data`.
-/// # Safety
-/// `default_ctx` is a live context that outlives the session; `handle` may be
-/// called with a `SessionRequest`.
-pub(crate) unsafe fn session_new(
+/// it has one. `handle` gets each finished request; `default_ctx` outlives
+/// the session.
+pub(crate) fn session_new(
     fd: i64,
     default_ctx: Ctx,
     max_body_size: u32,
     is_coro: bool,
-    handle: SessionHandler,
-    data: *mut c_void,
+    handle: Handler,
 ) {
     SESSIONS.with_borrow_mut(|sessions| {
         sessions.entry(fd).or_insert_with(|| {
@@ -273,7 +242,6 @@ pub(crate) unsafe fn session_new(
                 max_body_size,
                 is_coro,
                 handle,
-                data,
             ))
         });
     });

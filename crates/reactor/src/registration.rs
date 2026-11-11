@@ -230,18 +230,13 @@ mod kqueue {
     /// `ReactorKqueue::del`'s kernel calls for the registered `events`. Each failed
     /// filter's errno goes in `errors` (read, write; 0 when it took); a failure other
     /// than EBADF or ENOENT stops there and returns -1, else 0.
-    ///
-    /// # Safety
-    /// `errors` points to two writable ints.
-    pub(crate) unsafe fn kqueue_del(
+    pub(crate) fn kqueue_del(
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
         events: c_int,
-        errors: *mut c_int,
+        errors: &mut [c_int; 2],
     ) -> c_int {
-        // SAFETY: as the caller promises.
-        let errors = unsafe { &mut *errors.cast::<[c_int; 2]>() };
         *errors = [0; 2];
         let filters: [(bool, Filter); 2] = [
             (events & SW_EVENT_READ != 0, read),
@@ -279,7 +274,7 @@ mod kqueue {
                 assert_eq!(kqueue_set(kq, fds[0], token, SW_EVENT_READ), 0);
                 // The write filter is gone, so deleting it again reports ENOENT and continues.
                 let both = SW_EVENT_READ | SW_EVENT_WRITE;
-                assert_eq!(kqueue_del(kq, fds[0], token, both, errors.as_mut_ptr()), 0);
+                assert_eq!(kqueue_del(kq, fds[0], token, both, &mut errors), 0);
                 assert_eq!(errors, [0, libc::ENOENT]);
                 // A bad descriptor fails the first call.
                 assert_eq!(kqueue_add(kq, -1, token, SW_EVENT_READ), 1);
