@@ -2,7 +2,7 @@
 use super::*;
 use std::cell::RefCell;
 use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_new};
-use swoole_rs_reactor::SocketFields;
+use swoole_rs_reactor::{Socket, SocketFields};
 
 #[derive(Default)]
 struct Mock {
@@ -59,16 +59,8 @@ pub(super) mod ops {
     pub(in super::super) fn kernel_timeout(_: Handle, timeout: f64) {
         log(format!("kernel {timeout}"));
     }
-    pub(in super::super) fn assign(
-        _: Handle,
-        host: *const c_char,
-        port: c_int,
-        resolve: bool,
-    ) -> bool {
-        // SAFETY: the operations pass NUL-terminated hosts.
-        let host = unsafe { CStr::from_ptr(host) }
-            .to_string_lossy()
-            .into_owned();
+    pub(in super::super) fn assign(_: Handle, host: &CStr, port: c_int, resolve: bool) -> bool {
+        let host = host.to_string_lossy().into_owned();
         log(format!("assign {host}:{port} {resolve}"));
         if host == "dns.test" {
             log::set_last_error(ERROR_BAD_HOST_ADDR);
@@ -259,11 +251,11 @@ pub(super) fn socket_ssl_connect(_: Socket<'_>) -> c_int {
     }
     OK
 }
-pub(super) fn socket_ssl_verify(_: &SocketFields, allow_self_signed: bool) -> bool {
+pub(super) fn socket_ssl_verify(_: Socket<'_>, allow_self_signed: bool) -> bool {
     log(format!("ssl verify {allow_self_signed}"));
     true
 }
-pub(super) fn socket_ssl_check_host(_: &SocketFields, _: &CStr) -> bool {
+pub(super) fn socket_ssl_check_host(_: Socket<'_>, _: &CStr) -> bool {
     log("ssl host");
     true
 }
@@ -346,7 +338,8 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
 }
 
 fn free(client: *mut Client) {
-    super::free(Handle(client));
+    // SAFETY: the test's live client, not used afterwards.
+    unsafe { Handle(client).free() };
 }
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.
@@ -363,7 +356,7 @@ fn flag(client: *mut Client, name: u32) -> bool {
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
-    super::connect(Handle(client), host.as_ptr(), 80, timeout, flags)
+    super::connect(Handle(client), host, 80, timeout, flags)
 }
 
 #[test]
@@ -392,15 +385,8 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
     }
     let client = client(1, true, false);
     Handle(client).fields().protocol.get_package_length = Some(twice);
-    let mut call = Call::new(client, Op::PackageLength);
-    call.buffer = c"abc".as_ptr().cast_mut();
-    call.length = 3;
-    // SAFETY: a live client and three bytes.
-    unsafe { swr_v1_clients_run((&raw mut call).cast()) };
-    assert_eq!(call.result, 6);
-    let mut call = Call::new(client, Op::Free);
-    // SAFETY: the live client, not used afterwards.
-    unsafe { swr_v1_clients_run((&raw mut call).cast()) };
+    assert_eq!(Handle(client).run(Op::PackageLength(b"abc")), 6);
+    free(client);
     assert_eq!(taken(), ["event 2 0", "free"]);
 }
 
@@ -684,27 +670,18 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
 }
 
 #[test]
-fn datagram_peer_snapshot_is_independent_and_may_target_its_source() {
+fn datagram_peer_is_a_snapshot() {
     let client = client(2, false, false);
     let fields = client.cast::<ClientRecord>();
     unsafe {
         (*fields).remote_addr.len = 17;
         (*fields).remote_addr.kind = 4;
-        let mut result = core::mem::MaybeUninit::uninit();
-        assert_eq!(
-            swr_v1_clients_get_peer_name(client, result.as_mut_ptr()),
-            OK
-        );
-        let result = result.assume_init();
-        (*fields).remote_addr.len = 29;
-        assert_eq!(result.len, 17);
-        assert_eq!(result.kind, 4);
-        assert_eq!(
-            swr_v1_clients_get_peer_name(client, &raw mut (*fields).remote_addr),
-            OK
-        );
-        assert_eq!((*fields).remote_addr.len, 29);
     }
+    let mut result = SocketAddress::default();
+    assert_eq!(Handle(client).peer_name(&mut result), OK);
+    unsafe { (*fields).remote_addr.len = 29 };
+    assert_eq!(result.len, 17);
+    assert_eq!(result.kind, 4);
     free(client);
 }
 

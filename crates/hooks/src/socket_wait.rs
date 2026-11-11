@@ -33,7 +33,7 @@ impl Wait {
                 if record.output.close_wait != 0 {
                     return CLOSE_WAIT;
                 }
-                let tls = !record.ssl.is_null();
+                let tls = !record.ssl().is_null();
                 let mut status = record.events.cast_unsigned() & (READ | WRITE);
                 if core::mem::take(&mut record.kernel_nobufs) {
                     status |= NOBUFS;
@@ -260,7 +260,7 @@ mod tests {
         record.output.close_wait = u8::from(status & CLOSE_WAIT != 0);
         record.kernel_nobufs = status & NOBUFS != 0;
         if status & (WANT_READ | WANT_WRITE) != 0 {
-            record.ssl = core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+            unsafe { record.set_ssl(core::ptr::NonNull::<u8>::dangling().as_ptr().cast()) };
         }
         record.tls.want_read = u8::from(status & WANT_READ != 0);
         record.tls.want_write = u8::from(status & WANT_WRITE != 0);
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn wants_count_only_with_a_tls_session() {
         let mut s = socket(WANT_WRITE);
-        unsafe { s.0.record() }.ssl = core::ptr::null_mut();
+        unsafe { s.0.record() }.take_ssl();
         assert!(wait_on(&mut s, READ, None));
         assert_eq!(effects(), ["set:512", "yield:512", "remove:512"]);
     }

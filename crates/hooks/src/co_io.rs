@@ -176,17 +176,10 @@ mod native {
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
     pub(super) fn suspend(socket: Co, co: *mut c_void, event: u32) {
-        /// # Safety
-        /// `data` is the [`tag`] of the record whose wait the coroutine is suspended in.
-        unsafe extern "C-unwind" fn cancel(_: *mut c_void, data: *mut c_void) -> bool {
-            // SAFETY: per the caller.
-            let (socket, event) = unsafe { untag(data) };
-            socket.cancel(event)
-        }
-        let data = tag(socket, event != READ);
+        let event = if event == READ { READ } else { WRITE };
         // SAFETY: the current coroutine, waiting on the live record, whose frames own
         // nothing with a destructor.
-        unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
+        unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event)) };
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
@@ -237,19 +230,14 @@ mod native {
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
-        // SAFETY: the live record's read String, which the packet receive fills.
-        let buf = unsafe { (*socket.read_buffer().cast::<CppString>()).as_mut_ptr() };
+        // The record's read String, which the packet receive fills.
+        let buf = socket.with_buffer(false, CppString::as_mut_ptr);
         let mut packet = PacketLength {
             buf,
             buf_size: size,
             header_len: 0,
         };
-        let (protocol, callback) = socket.with(|record| {
-            (
-                &raw const record.protocol,
-                record.protocol.get_package_length,
-            )
-        });
+        let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
         let Some(call) = callback else {
             return -1;
         };
@@ -266,8 +254,9 @@ mod native {
     const LOG_WARNING: c_int = 4;
 
     fn packet_fail(socket: Co, kind: u32, length: isize) {
+        use super::Message;
         let (error, message) = match kind {
-            0 => (NOT_FOUND, c"get package length failed".as_ptr()),
+            0 => (NOT_FOUND, Message::Static(c"get package length failed")),
             1 => {
                 use swoole_rs_clients::address::{
                     swr_v1_clients_address_host, swr_v1_clients_address_port,
@@ -292,14 +281,13 @@ mod native {
                         length.cast_unsigned()
                     ),
                 );
-                (TOO_LARGE, swoole_rs_error::swoole_get_last_error_msg())
+                (TOO_LARGE, Message::LastError)
             }
             _ => (
                 TOO_LARGE,
-                c"no package eof, package_max_length exceeded".as_ptr(),
+                Message::Static(c"no package eof, package_max_length exceeded"),
             ),
         };
-        // Each message is static or the thread's sw_error.
         super::borrowed_err(socket, error, message);
     }
 
@@ -367,15 +355,12 @@ pub(crate) use swoole_rs_corebase::set_errno;
 
 /// `set_err(e)`: the record's code and message, errno and the last error.
 pub(crate) fn set_err(socket: Co, error: c_int) {
-    socket.set_err_code(error);
-    set_errno(error);
-    (NATIVE.set_last_error)(error);
     let message = if error == 0 {
-        c"".as_ptr()
+        Message::Static(c"")
     } else {
-        (NATIVE.strerror)(error)
+        Message::Strerror
     };
-    socket.set_err_msg(message);
+    borrowed_err(socket, error, message);
 }
 
 /// `check_return_value`: clear the error after a success; publish errno after a
@@ -1110,7 +1095,7 @@ mod tests {
         assert_eq!((co.err_code(), errno()), (libc::EACCES, libc::EINVAL));
         assert_eq!(take(), Vec::<String>::new());
         let borrowed = c"borrowed";
-        borrowed_err(co, libc::EIO, borrowed.as_ptr());
+        borrowed_err(co, libc::EIO, Message::Static(borrowed));
         assert_eq!(co.err_msg(), borrowed.as_ptr());
         assert_eq!(errno(), libc::EIO);
         assert_eq!(take(), ["last-error:5"]);
@@ -1133,15 +1118,39 @@ mod tests {
 pub(crate) fn default_err(socket: Co, last_error: c_int) {
     let error = if last_error == 0 { errno() } else { last_error };
     socket.set_err_code(error);
-    socket.set_err_msg((NATIVE.strerror)(error));
+    set_message(socket, error, Message::Strerror);
 }
 
-/// `set_err(error, message)` with a static message.
-pub(crate) fn borrowed_err(socket: Co, error: c_int, message: *const c_char) {
+/// An error message the record borrows rather than owns.
+#[derive(Clone, Copy)]
+pub(crate) enum Message {
+    Static(&'static CStr),
+    /// `swoole_strerror(error)`.
+    Strerror,
+    /// The thread's last error message.
+    #[cfg_attr(
+        test,
+        expect(dead_code, reason = "only the native host's packet failures use it")
+    )]
+    LastError,
+}
+
+fn set_message(socket: Co, error: c_int, message: Message) {
+    let text = match message {
+        Message::Static(text) => text.as_ptr(),
+        Message::Strerror => (NATIVE.strerror)(error),
+        Message::LastError => swoole_rs_error::swoole_get_last_error_msg(),
+    };
+    // SAFETY: static, swoole_strerror's or the thread's last error message.
+    unsafe { socket.set_err_msg(text) };
+}
+
+/// `set_err(error, message)` with a message the record does not own.
+pub(crate) fn borrowed_err(socket: Co, error: c_int, message: Message) {
     socket.set_err_code(error);
     set_errno(error);
     (NATIVE.set_last_error)(error);
-    socket.set_err_msg(message);
+    set_message(socket, error, message);
 }
 
 /// `set_err(error, message)` with owned text: the code, errno and last error, then
@@ -1155,8 +1164,10 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
     socket.set_err_code(error);
     set_errno(error);
     (NATIVE.set_last_error)(error);
-    // SAFETY: the record's live metadata; its first slot owns the error string.
-    let slot = unsafe { &raw const (*socket.extra()).strings[0] };
+    // The metadata's first slot owns the error string.
+    let Some(slot) = socket.with_extra(|extra| &raw const extra.strings[0]) else {
+        return -1;
+    };
     // SAFETY: the slot and the message's bytes; the native cache contains every
     // exception below Rust.
     let status = unsafe {
@@ -1165,7 +1176,8 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
     if status == 0 {
         // SAFETY: the assignment left stable, terminated bytes in the slot.
         let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
-        socket.set_err_msg(view.data);
+        // SAFETY: the record's own error string, as above.
+        unsafe { socket.set_err_msg(view.data) };
     }
     status
 }

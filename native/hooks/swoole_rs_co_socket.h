@@ -47,12 +47,12 @@ void swr_v1_hook_co_socket_release(swr_v1_co_socket *socket);
 enum { SWR_CO_SOCKET_BY_FAMILY, SWR_CO_SOCKET_BY_TYPE, SWR_CO_SOCKET_FD_BY_TYPE, SWR_CO_SOCKET_FD_BY_FAMILY };
 uint32_t swr_v1_hook_co_socket_new(
     swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
-/* Socket::created: a failed socket(2) becomes the last error; the others are warnings. */
-void swr_v1_hook_co_socket_created(const swr_v1_co_socket *socket, uint32_t result);
-/* UringSocket's constructors (swoole_rs_coroutine_socket.h): with io_uring, Rust runs the socket's
- * members through the ring (crates/hooks/src/uring_socket.rs). Rust's `Co` is the
- * record's pointer (`#[repr(transparent)]`). */
+/* Rust's `Co` is the record's pointer (`#[repr(transparent)]`). */
 typedef swr_v1_co_socket *swr_v1_co;
+/* Socket::created: a failed socket(2) becomes the last error; the others are warnings. */
+void swr_v1_hook_co_socket_created(swr_v1_co socket, uint32_t result);
+/* UringSocket's constructors (swoole_rs_coroutine_socket.h): with io_uring, Rust runs the socket's
+ * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co socket);
 /* Socket::connect(host, port) (crates/hooks/src/connect.rs), through the socket's proxies. */
 bool swr_v1_hook_co_socket_connect_host(swr_v1_co_socket *socket, const char *host, size_t length, int port);

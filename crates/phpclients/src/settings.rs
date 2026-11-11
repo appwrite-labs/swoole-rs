@@ -181,26 +181,9 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
 
 /// `bind(address, port)`, which logs a failed `SO_REUSEADDR` itself.
 fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
-    unsafe extern "C" fn reuse_failed(fd: c_int) {
-        swoole_rs_corebase::log::sys_warning(
-            c"bind",
-            format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
-        );
-    }
-    let mut host = address.to_vec();
-    host.push(0);
     #[expect(clippy::cast_possible_truncation, reason = "clamped to a port")]
-    // SAFETY: a live client with a socket; a NUL-terminated host.
-    let bound = unsafe {
-        swoole_rs_clients::client::swr_v1_clients_bind(
-            cli.0,
-            host.as_ptr().cast(),
-            address.len(),
-            port as c_int,
-            reuse_failed,
-        )
-    };
-    bound >= 0
+    let port = port as c_int;
+    cli.handle().bind(&crate::native::c_text(address), port) >= 0
 }
 
 /// `php_swoole_client_check_setting(cli, settings)`: false on an invalid

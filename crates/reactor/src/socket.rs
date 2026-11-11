@@ -141,7 +141,8 @@ impl<'a> Socket<'a> {
     /// # Safety
     /// A non-null `record` is a live `network::Socket` for the handle's lifetime, which
     /// nothing frees or reaches through a Rust reference to its fields meanwhile (native
-    /// code and raw pointers may, between this handle's calls).
+    /// code and raw pointers may, between this handle's calls). Its `ssl` is null or a
+    /// live `SSL` it owns, as [`SocketFields::set_ssl`] requires.
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
         Some(Self {

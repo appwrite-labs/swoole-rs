@@ -17,9 +17,11 @@
 use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
 use std::ffi::{c_int, c_void};
-use std::mem::{offset_of, size_of};
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::mem::size_of;
+use std::sync::atomic::{
+    AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
+};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 use std::{ptr, slice};
 use swoole_rs_locks::{swr_v1_locks_destroy, swr_v1_locks_init, swr_v1_locks_lock};
@@ -52,98 +54,123 @@ pub type Warning = fn(message: &[u8]);
 /// `swoole_set_last_error`.
 pub type Error = fn(code: c_int);
 
-/// A row header, then `item_size` bytes of column data.
+/// A row header, then `item_size` bytes of column data. Other processes read
+/// and write it at once, so every field is an atomic or a cell: fields other
+/// than the lock change only under the bucket's lock, and `active` is also read
+/// before it (`del`, the iterator), as upstream does.
 #[repr(C)]
 pub struct Row {
     lock: AtomicU32,
     lock_pid: AtomicI32,
-    active: u8,
-    key_len: u8,
-    next: *mut Row,
-    key: [u8; KEY_SIZE],
+    active: AtomicU8,
+    key_len: AtomicU8,
+    next: AtomicPtr<Row>,
+    key: UnsafeCell<[u8; KEY_SIZE]>,
 }
 const ROW: usize = size_of::<Row>();
 
+impl Row {
+    /// An unlocked, inactive row with no key or link.
+    const fn empty() -> Self {
+        Self {
+            lock: AtomicU32::new(0),
+            lock_pid: AtomicI32::new(0),
+            active: AtomicU8::new(0),
+            key_len: AtomicU8::new(0),
+            next: AtomicPtr::new(ptr::null_mut()),
+            key: UnsafeCell::new([0; KEY_SIZE]),
+        }
+    }
+}
+
 /// A row of a created table, or the iterator's copy of one, read and written
-/// in place: other processes share it. Fields other than the lock change only
-/// under the bucket's lock.
+/// in place.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Live(*mut Row);
 
 impl Live {
-    fn at<T>(self, offset: usize) -> *mut T {
-        self.0.wrapping_byte_add(offset).cast()
+    fn row(self) -> &'static Row {
+        // SAFETY: a live row; its fields are atomics or cells, so a shared
+        // reference holds while other processes change them.
+        unsafe { &*self.0 }
     }
 
     fn lock_word(self) -> &'static AtomicU32 {
-        // SAFETY: a live row (see `Live`); the word is only accessed atomically.
-        unsafe { &*self.at::<AtomicU32>(offset_of!(Row, lock)) }
+        &self.row().lock
     }
 
     fn owner(self) -> &'static AtomicI32 {
-        // SAFETY: as above.
-        unsafe { &*self.at::<AtomicI32>(offset_of!(Row, lock_pid)) }
+        &self.row().lock_pid
     }
 
     fn active(self) -> bool {
-        // SAFETY: a live row; `del` reads this before taking the lock, as upstream does.
-        unsafe { ptr::read_volatile(self.at::<u8>(offset_of!(Row, active))) != 0 }
+        self.row().active.load(Ordering::Relaxed) != 0
     }
 
     fn next(self) -> Option<Live> {
-        // SAFETY: a live row; links only point at rows of the same table.
-        let next = unsafe { self.at::<*mut Row>(offset_of!(Row, next)).read() };
+        // Links only point at rows of the same table.
+        let next = self.row().next.load(Ordering::Relaxed);
         (!next.is_null()).then_some(Live(next))
     }
 
     fn set_next(self, next: Option<Live>) {
         let next = next.map_or(ptr::null_mut(), |row| row.0);
-        // SAFETY: a live row, under its bucket's lock.
-        unsafe { self.at::<*mut Row>(offset_of!(Row, next)).write(next) };
+        self.row().next.store(next, Ordering::Relaxed);
     }
 
     fn key_len(self) -> u8 {
-        // SAFETY: a live row.
-        unsafe { self.at::<u8>(offset_of!(Row, key_len)).read() }
+        self.row().key_len.load(Ordering::Relaxed)
     }
 
     fn key(self) -> &'static [u8] {
         let length = usize::from(self.key_len()).min(KEY_SIZE - 1);
-        // SAFETY: a live row holds `key_len` (at most 63) key bytes.
-        unsafe { slice::from_raw_parts(self.at::<u8>(offset_of!(Row, key)), length) }
+        // SAFETY: a live row holds `key_len` (at most 63) key bytes, which change
+        // only under the bucket's lock.
+        unsafe { slice::from_raw_parts(self.row().key.get().cast::<u8>(), length) }
     }
 
     fn data(self) -> *mut u8 {
-        self.at(ROW)
+        self.0.wrapping_byte_add(ROW).cast()
     }
 
-    /// Zero the header from `offset` on.
-    fn zero(self, offset: usize) {
-        // SAFETY: a live row; `offset` is inside its header.
-        unsafe { ptr::write_bytes(self.at::<u8>(offset), 0, ROW - offset) };
+    /// `TableRow::clear()`: zero the header from `lock_pid` on.
+    fn clear(self) {
+        self.owner().store(0, Ordering::Relaxed);
+        self.set_next(None);
+        self.set_key(&[], 0);
     }
 
     /// `init_row`: a fresh, active row for a key of at most 63 bytes.
     fn claim(self, key: &[u8]) {
-        self.zero(offset_of!(Row, active));
-        // SAFETY: a live row; the key fits its 64 bytes.
-        unsafe { ptr::copy_nonoverlapping(key.as_ptr(), self.at(offset_of!(Row, key)), key.len()) };
-        #[expect(clippy::cast_possible_truncation, reason = "clamped to 63 bytes")]
-        let length = key.len() as u8;
-        // SAFETY: as above.
-        unsafe { self.at::<u8>(offset_of!(Row, key_len)).write(length) };
-        // SAFETY: as above.
-        unsafe { self.at::<u8>(offset_of!(Row, active)).write(1) };
+        self.set_next(None);
+        self.set_key(key, 1);
+    }
+
+    /// The key, NUL-padded, its length and `active`.
+    fn set_key(self, key: &[u8], active: u8) {
+        let row = self.row();
+        let mut bytes = [0; KEY_SIZE];
+        let key = key.get(..KEY_SIZE - 1).unwrap_or(key);
+        for (to, from) in bytes.iter_mut().zip(key) {
+            *to = *from;
+        }
+        // SAFETY: a live row's key, under the bucket's lock.
+        unsafe { row.key.get().write(bytes) };
+        #[expect(clippy::cast_possible_truncation, reason = "at most 63 bytes")]
+        row.key_len.store(key.len() as u8, Ordering::Relaxed);
+        row.active.store(active, Ordering::Relaxed);
     }
 
     /// Move `from`'s key and data into this row (a deleted bucket row).
     fn take(self, from: Live, item_size: usize) {
-        let (key, key_len) = (offset_of!(Row, key), from.key_len());
-        let length = usize::from(key_len) + 1;
-        // SAFETY: two live rows of one table, under the bucket's lock.
-        unsafe { ptr::copy_nonoverlapping(from.at::<u8>(key), self.at(key), length) };
-        // SAFETY: as above.
-        unsafe { self.at::<u8>(offset_of!(Row, key_len)).write(key_len) };
+        let key_len = from.key_len();
+        let (key, from_key) = (
+            self.row().key.get().cast::<u8>(),
+            from.row().key.get().cast(),
+        );
+        // SAFETY: two live rows of one table, under the bucket's lock; the key and its NUL.
+        unsafe { ptr::copy_nonoverlapping(from_key, key, usize::from(key_len) + 1) };
+        self.row().key_len.store(key_len, Ordering::Relaxed);
         // SAFETY: as above; both rows hold `item_size` data bytes.
         unsafe { ptr::copy_nonoverlapping(from.data(), self.data(), item_size) };
     }
@@ -328,11 +355,9 @@ struct Plan {
     slices: usize,
 }
 
-/// Whether to spin before yielding (`SW_CPU_NUM > 1`).
+/// Whether to spin before yielding (`SW_CPU_NUM > 1`, `SwooleG.cpu_num`).
 fn multicore() -> bool {
-    static MULTICORE: OnceLock<bool> = OnceLock::new();
-    // SAFETY: sysconf has no memory preconditions.
-    *MULTICORE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } > 1)
+    swoole_rs_corebase::swr_v1_core_cpu_num() > 1
 }
 
 /// `SW_SPINLOCK_LOOP_N` rounds of doubling pauses, trying after each.
@@ -623,7 +648,8 @@ impl Table {
             let row = first.wrapping_add(i * plan.stride).cast::<Row>();
             // SAFETY: per the caller; bucket `i` lies in the arena.
             unsafe { rows.wrapping_add(i).write(row) };
-            Live(row).zero(0);
+            // SAFETY: as above; the row isn't shared yet.
+            unsafe { row.write(Row::empty()) };
         }
         #[expect(
             clippy::cast_ptr_alignment,
@@ -884,7 +910,7 @@ impl Table {
             if root.key() != key {
                 return false;
             }
-            root.zero(offset_of!(Row, lock_pid));
+            root.clear();
             return true;
         };
         if root.key() == key {
@@ -919,7 +945,7 @@ impl Table {
     /// Return a collision row no chain links any more.
     fn free_row(&self, row: Live) {
         self.mutex.lock();
-        row.zero(offset_of!(Row, lock_pid));
+        row.clear();
         // A row this pool allocated, under the table's mutex.
         if let Some(pool) = self.pool() {
             fixed::free(pool, row.0.cast());

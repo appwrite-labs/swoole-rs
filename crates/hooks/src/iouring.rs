@@ -69,11 +69,8 @@ fn instance() -> *mut Uring {
 /// # Safety
 /// As `swoole_rs_coroutine::yield_with_cancel`: `co` is the running coroutine.
 unsafe fn suspend(co: *mut c_void, event: *mut c_void) {
-    extern "C-unwind" fn cancel(_co: *mut c_void, event: *mut c_void) -> bool {
-        uring::cancel(&HOST, event)
-    }
     // SAFETY: the current coroutine, suspended in `event`'s operation.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, event) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event)) };
 }
 
 fn submit_failed() {

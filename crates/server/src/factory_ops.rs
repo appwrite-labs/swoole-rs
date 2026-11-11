@@ -448,15 +448,12 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             swoole_rs_process::worker_globals::set_current_worker(worker);
         }
         OP_POOL_MAIN_LOOP => {
-            type MainLoop =
-                unsafe extern "C-unwind" fn(*mut PoolRecord, *mut WorkerRecord) -> c_int;
             let pool = ctx.workers().event_pool;
             // SAFETY: its live event pool.
-            let main_loop = unsafe { (*pool).main_loop };
-            // SAFETY: the pool's `main_loop`, set before its workers start.
-            let main_loop = unsafe { core::mem::transmute::<*const c_void, MainLoop>(main_loop) };
-            // SAFETY: the pool and one of its workers.
-            let _code = unsafe { main_loop(pool, worker) };
+            let pool = unsafe { &mut *pool };
+            if let Some(main_loop) = pool.main_loop {
+                let _code = main_loop(pool.into(), ctx.worker());
+            }
         }
         OP_START_EVENT_WORKER => {
             // SAFETY: the context's live server and worker.

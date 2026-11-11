@@ -3,29 +3,16 @@
 // (Swoole contributors).
 //! A resolver request record (crates/corebase) as a Rust owner: the pool handlers'
 //! bodies, the completion check and the blocking `network::gethostbyname`.
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_corebase::{
-    ResolverRequest, log, swr_v1_clients_gethostbyname, swr_v1_core_resolver_create,
-    swr_v1_core_resolver_finish, swr_v1_core_resolver_free, swr_v1_core_resolver_host,
-    swr_v1_core_resolver_lookup, swr_v1_core_resolver_next, swr_v1_core_resolver_view,
-    swr_v1_core_string_view,
+    ResolverCompletion, ResolverRequest, log, ntop, swr_v1_core_resolver_free,
 };
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 pub const RESOLVE_FAILED: c_int = 711;
 const RESOLVE_TIMEOUT: c_int = 712;
 const AIO_TIMEOUT: c_int = 4003;
-
-// SAFETY: libc's.
-unsafe extern "C" {
-    fn inet_ntop(
-        family: c_int,
-        source: *const c_void,
-        output: *mut c_char,
-        size: libc::socklen_t,
-    ) -> *const c_char;
-}
 
 /// A request record, freed with this.
 pub struct Request(*mut ResolverRequest);
@@ -40,18 +27,7 @@ impl Request {
         name: &[u8],
         service: &[u8],
     ) -> Self {
-        // SAFETY: both spans are initialized.
-        let prepared = unsafe {
-            swr_v1_core_resolver_create(
-                family,
-                socktype,
-                protocol,
-                name.as_ptr().cast(),
-                name.len(),
-                service.as_ptr().cast(),
-                service.len(),
-            )
-        };
+        let prepared = ResolverRequest::create(family, socktype, protocol, name, service);
         if prepared.owner.is_null() {
             std::alloc::handle_alloc_error(std::alloc::Layout::new::<ResolverRequest>());
         }
@@ -72,49 +48,28 @@ impl Request {
     /// The text address `host` wrote.
     #[must_use]
     pub fn address(&self) -> Vec<u8> {
-        address(self.get())
+        self.get().address()
     }
 
     /// The text addresses `lookup` found.
     #[must_use]
     pub fn addresses(&self) -> Vec<Vec<u8>> {
-        let mut cursor = 0;
-        let mut found = Vec::new();
-        loop {
-            // SAFETY: the finished request's addresses.
-            let text = unsafe { swr_v1_core_resolver_next(self.get(), &mut cursor) };
-            if !text.valid {
-                return found;
-            }
-            let end = text
-                .bytes
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(text.bytes.len());
-            found.push(
-                text.bytes
-                    .iter()
-                    .take(end)
-                    .map(|&byte| u8::from_ne_bytes(byte.to_ne_bytes()))
-                    .collect(),
-            );
-        }
+        self.get().addresses()
     }
 
     /// `coroutine::async`'s outcome over this request: the error, or none.
     /// `request_error` reads the record's own error, once the pool finished.
     #[must_use]
     pub fn failed(&self, retval: isize, error: c_int, request_error: bool) -> Option<c_int> {
-        let slot = if request_error {
-            // SAFETY: the record's error slot.
-            unsafe { &raw const (*swr_v1_core_resolver_view(self.get()).fields).error }
-        } else {
-            core::ptr::null()
+        let request = || {
+            if request_error {
+                self.get().fields().error
+            } else {
+                0
+            }
         };
-        // SAFETY: the slot is read only when the pool finished.
-        let done = unsafe {
-            swr_v1_core_resolver_finish(retval, error, slot, AIO_TIMEOUT, RESOLVE_TIMEOUT)
-        };
+        let done =
+            ResolverCompletion::after_await(retval, error, request, AIO_TIMEOUT, RESOLVE_TIMEOUT);
         done.failed.then_some(done.error)
     }
 }
@@ -137,25 +92,17 @@ fn checked(status: c_int) -> isize {
 /// The text address `host` wrote into `owner`.
 #[must_use]
 pub fn address(owner: &ResolverRequest) -> Vec<u8> {
-    let view = swr_v1_core_resolver_view(owner);
-    // SAFETY: the record's live address slot.
-    let text = unsafe { swr_v1_core_string_view(view.address) };
-    if text.length == 0 {
-        return Vec::new();
-    }
-    // SAFETY: the slot holds `length` bytes until it changes.
-    unsafe { core::slice::from_raw_parts(text.data.cast::<u8>(), text.length) }.to_vec()
+    owner.address()
 }
 
 /// `async::handler_gethostbyname`'s body, on a pool thread: its `(retval, error)`.
 #[must_use]
 pub fn host(owner: &ResolverRequest) -> (isize, c_int) {
-    // SAFETY: the record is exclusive to this handler.
-    let status = checked(unsafe { swr_v1_core_resolver_host(owner) });
+    let status = checked(owner.host());
     (status, if status < 0 { RESOLVE_FAILED } else { 0 })
 }
 
-extern "C" fn unknown_family(_: *mut c_void, family: c_int) -> bool {
+fn unknown_family(family: c_int) -> bool {
     log::warning(
         c"getaddrinfo",
         format_args!("unknown socket family[{family}]"),
@@ -166,14 +113,8 @@ extern "C" fn unknown_family(_: *mut c_void, family: c_int) -> bool {
 /// `async::handler_getaddrinfo`'s body, on a pool thread: its `(retval, error)`.
 #[must_use]
 pub fn lookup(owner: &ResolverRequest) -> (isize, c_int) {
-    // SAFETY: the record is exclusive to this handler; the warning keeps no context.
-    let status = checked(unsafe {
-        swr_v1_core_resolver_lookup(owner, unknown_family, core::ptr::null_mut())
-    });
-    // SAFETY: the record's fields, written above on this thread.
-    (status, unsafe {
-        (*swr_v1_core_resolver_view(owner).fields).error
-    })
+    let status = checked(owner.lookup(unknown_family));
+    (status, owner.fields().error)
 }
 
 /// `name` as `std::string::c_str()` reads it: up to its first NUL.
@@ -191,17 +132,13 @@ pub fn c_name(name: &[u8]) -> CString {
 #[must_use]
 pub fn gethostbyname(kind: c_int, name: &[u8]) -> Vec<u8> {
     let name = c_name(name);
-    let mut binary = [0 as c_char; 16];
-    // SAFETY: a NUL-terminated name and room for either family.
-    if unsafe { swr_v1_clients_gethostbyname(kind, name.as_ptr(), binary.as_mut_ptr()) } != 0 {
+    let Some(binary) = swoole_rs_corebase::gethostbyname(kind, &name) else {
         log::set_last_error(RESOLVE_FAILED);
         return Vec::new();
-    }
-    let mut text = [0 as c_char; 46];
-    // SAFETY: a complete address and bounded output.
-    if unsafe { inet_ntop(kind, binary.as_ptr().cast(), text.as_mut_ptr(), 46) }.is_null() {
+    };
+    let Some(text) = binary.first_chunk().and_then(|binary| ntop(kind, binary)) else {
         return Vec::new();
-    }
+    };
     CStr::from_bytes_until_nul(&text.map(|byte| u8::from_ne_bytes(byte.to_ne_bytes())))
         .map(|text| text.to_bytes().to_vec())
         .unwrap_or_default()

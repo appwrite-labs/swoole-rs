@@ -439,9 +439,10 @@ pub unsafe extern "C" fn response(pool: *const PoolRecord, data: *const u8, leng
 /// `ProcessPool::send_message(worker_id, message, length)`: to the worker's
 /// master pipe, through the message bus when the pool has one.
 ///
+/// False for a `worker_id` the pool has no worker for.
+///
 /// # Safety
-/// `pool` is a created `ProcessPool` with a worker `worker_id`; `message` holds
-/// `length` bytes.
+/// `pool` is a created `ProcessPool`; `message` holds `length` bytes.
 #[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_ZNK6swoole11ProcessPool12send_messageEjPKcm")]
 #[must_use]
@@ -468,7 +469,10 @@ pub unsafe extern "C" fn send_message(
     let pool = unsafe { &*pool };
     // `get_worker`: the pool's record for `worker_id`.
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
-    // SAFETY: as the caller guarantees.
+    if index >= pool.worker_num as usize {
+        return false;
+    }
+    // SAFETY: a created pool's `workers` holds its `worker_num` records.
     let pipe = unsafe { Worker::new(pool.workers.wrapping_add(index)).pipe_master() };
     if pool.message_bus.is_null() {
         // SAFETY: the worker's pipe and the caller's bytes.
