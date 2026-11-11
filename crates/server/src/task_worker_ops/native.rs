@@ -135,15 +135,17 @@ extern "C-unwind" fn loop_async(pool: *mut PoolRecord, worker: *mut WorkerRecord
 struct EventData([u8; super::EVENT_DATA_SIZE]);
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
-extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: the reactor running this handler, whose `ptr` is the task pool.
-    let pool = unsafe { Reactor::of(reactor) }.fields().ptr.cast();
+extern "C" fn on_pipe_receive(
+    reactor: swoole_rs_reactor::Running<'_>,
+    event: &mut swoole_rs_reactor::Event,
+) -> c_int {
+    // The reactor running this handler, whose `ptr` is the task pool.
+    let pool = Reactor::running(reactor).fields().ptr.cast();
     // SAFETY: this thread's worker globals.
     let worker = unsafe { (*thread_globals()).worker };
     let mut task = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::of(pool, worker);
-    // SAFETY: the reactor's live event.
-    ctx.socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket }.cast();
+    ctx.socket = event.socket.cast();
     ctx.buf = task.as_mut_ptr().cast();
     run(&mut ctx, RUN_TASK_ON_PIPE)
 }

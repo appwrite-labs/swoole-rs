@@ -2659,25 +2659,21 @@ fn release_pipe_buffers(state: &ServerState) {
 /// whole reply goes to its waiting callback. The callback may resume a coroutine:
 /// this frame owns nothing that needs a drop then.
 ///
-/// # Safety
-/// `reactor` is the master's live reactor, whose `ptr` is the server, and `event`
-/// its event on the command pipe.
+/// Registered only on the master's reactor, whose `ptr` is the live server, for its
+/// command pipe.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe extern "C" fn accept_command_result(
-    reactor: *mut core::ffi::c_void,
-    event: *mut core::ffi::c_void,
+extern "C" fn accept_command_result(
+    reactor: swoole_rs_reactor::Running<'_>,
+    event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let serv = unsafe { crate::reactor_handle::Reactor::of(reactor) }
+    let serv = crate::reactor_handle::Reactor::running(reactor)
         .fields()
         .ptr;
-    // SAFETY: the live server.
+    // SAFETY: the master reactor's live server.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();
     let bus = server_message_bus(state);
-    // SAFETY: the event the reactor passes.
-    let sock = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
-    // SAFETY: its live socket.
-    let Some(sock) = (unsafe { Socket::from_ptr(sock.cast()) }) else {
+    // SAFETY: the event's live socket.
+    let Some(sock) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {
         return 0;
     };
     if bus.read(sock) <= 0 {

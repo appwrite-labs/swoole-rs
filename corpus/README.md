@@ -69,7 +69,7 @@ upstream workers. The restart test explicitly reuses only its database directory
 ## Syscalls
 
 `syscalls.py` (the `syscalls` phase on Linux, in the integrate lane and when the reactor
-changes) runs projects 1–11 under `strace -f` on both engines, twice each, and compares
+changes) runs projects 1–12 (the candidate lane leaves out 12, which needs `hyperf.py --prepare`) under `strace -f` on both engines, twice each, and compares
 what the calls carry: socket options, socket and accept flags, `fcntl` and `ioctl` modes,
 epoll registrations, send and receive flags, clone flags, signal dispositions, and each
 result's errno. Fds, addresses, ports, lengths and buffers are dropped. A signature every

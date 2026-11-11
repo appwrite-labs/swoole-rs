@@ -57,7 +57,7 @@ use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
     swoole_event_write, swr_v1_event_current,
 };
-use swoole_rs_reactor::{Event, Socket};
+use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select, swr_v1_timer_add_plain, swr_v1_timer_owner_reinit,
@@ -412,19 +412,16 @@ extern "C-unwind" fn worker_exit() {
 }
 
 /// The pool of the loop `OP_EVENT_INIT` made: its `ptr`.
-fn reactor_pool(reactor: *mut c_void) -> Pool {
-    // SAFETY: the thread's live loop.
-    unsafe { crate::objects::Reactor::of(reactor) }
+fn reactor_pool(reactor: Running<'_>) -> Pool {
+    crate::objects::Reactor::running(reactor)
         .fields()
         .ptr
         .cast()
 }
 
 /// `ProcessPool::recv_packet`: the event loop's pipe handler under the stream protocol.
-unsafe extern "C" fn recv_packet(reactor: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
     let pool = reactor_pool(reactor);
-    // SAFETY: the event the loop passes.
-    let event = unsafe { &*event.cast::<Event>() };
     // SAFETY: the pool's IPC state.
     let packet = pool_ipc_packet(unsafe {
         &mut *record(pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>()
@@ -450,11 +447,9 @@ unsafe extern "C" fn recv_packet(reactor: *mut c_void, event: *mut c_void) -> c_
 }
 
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
-unsafe extern "C" fn recv_message(reactor: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn recv_message(reactor: Running<'_>, event: &mut Event) -> c_int {
     let pool = reactor_pool(reactor);
-    // SAFETY: the event the loop passes.
-    let sock = unsafe { (*event.cast::<Event>()).socket };
-    if bus_read(pool, sock) > 0 {
+    if bus_read(pool, event.socket) > 0 {
         bus_deliver(pool);
     }
     0

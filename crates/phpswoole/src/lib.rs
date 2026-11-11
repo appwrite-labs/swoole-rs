@@ -31,6 +31,7 @@ mod memory;
 mod module;
 mod optional;
 mod options;
+pub mod reactor;
 mod serialize;
 mod table;
 mod vm;
