@@ -1414,13 +1414,6 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
 pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     {
-        // SAFETY: src/core/buffer.cc's and the C++ runtime's.
-        unsafe extern "C-unwind" {
-            #[link_name = "_ZN6swoole6BufferD1Ev"]
-            fn buffer_drop(buffer: *mut c_void);
-            #[link_name = "_ZdlPv"]
-            fn operator_delete(storage: *mut c_void);
-        }
         // SAFETY: as the caller promises.
         let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
             return;
@@ -1439,10 +1432,8 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
         }
         for buffer in buffers {
             if !buffer.is_null() {
-                // SAFETY: `delete buffer`: the socket owns each `new Buffer`.
-                unsafe { buffer_drop(buffer) };
-                // SAFETY: as above.
-                unsafe { operator_delete(buffer) };
+                // SAFETY: the socket owns each `new Buffer`, and this is its last use.
+                unsafe { swoole_rs_buffer::cpp::delete_buffer(buffer.cast()) };
             }
         }
         if let Some((_, reactor)) = swoole_rs_reactor::socket_upstream::event_reactor() {
