@@ -629,7 +629,7 @@ pub unsafe extern "C" fn swr_v1_utils_log(
     let threshold = swoole_get_log_level();
     let failed = || {
         // SAFETY: swoole_strerror returns a NUL-terminated message.
-        let reason = unsafe { CStr::from_ptr(swoole_rs_error::swoole_strerror(code)) };
+        let reason = unsafe { CStr::from_ptr(swoole_rs_error_ffi::swoole_strerror(code)) };
         let code = code.to_string();
         let tail = [b", Error: ", reason.to_bytes(), b"[", code.as_bytes(), b"]"];
         [origin, b"(): ", message, &tail.concat()].concat()
@@ -647,7 +647,9 @@ pub unsafe extern "C" fn swr_v1_utils_log(
         }
         log::LOG_NOTICE if SW_LOG_NOTICE >= threshold => (SW_LOG_NOTICE, message.to_vec()),
         log::LOG_INFO if SW_LOG_INFO >= threshold => (SW_LOG_INFO, message.to_vec()),
-        log::LOG_ERROR if level >= threshold && !swoole_rs_error::swoole_is_ignored_error(code) => {
+        log::LOG_ERROR
+            if level >= threshold && !swoole_rs_error_ffi::swoole_is_ignored_error(code) =>
+        {
             let code = code.to_string();
             (
                 level,

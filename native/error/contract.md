@@ -14,10 +14,10 @@
   code, does the known lookup and formats unknown codes. Codes below the pinned
   500 boundary go to the native formatter, which calls system `strerror`.
 
-Unknown messages are formatted without allocating into one 32-byte static
+Unknown messages are formatted without allocating into each thread's 32-byte
 buffer. Byte layout matches the native `snprintf` buffer: Apple colon spelling,
-signed decimal, NUL position, retained trailing bytes and pointer lifetime.
-Callers must serialize use of that buffer, as with the original mutable static.
+signed decimal, NUL position, retained trailing bytes and, within a thread,
+pointer reuse. A thread's next unknown code overwrites its message.
 Known-message lookups are safe to run concurrently.
 
 Known limitation: known-error throughput was measured at 0.59x upstream, and a

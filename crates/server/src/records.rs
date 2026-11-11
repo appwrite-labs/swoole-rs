@@ -63,8 +63,10 @@ pub struct ConnectionRecord {
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 #[repr(C)]
 pub struct ServerTables {
-    pub connection_list: *mut ConnectionRecord,
-    pub session_list: *mut SessionRecord,
+    /// `ConnectionRecord`s, `max_connection` of them.
+    pub connection_list: Shm,
+    /// `SessionRecord`s, `SW_SESSION_LIST_SIZE` of them.
+    pub session_list: Shm,
     pub port_gs_list: Shm,
     pub max_connection: u32,
     pub enable_accept_timer: *mut c_void,
@@ -84,6 +86,16 @@ pub struct PortList {
 }
 
 impl ServerTables {
+    /// The connection slots, or null before they're mapped.
+    pub(crate) fn connections(&self) -> *mut ConnectionRecord {
+        self.connection_list.as_ptr().cast()
+    }
+
+    /// The session slots, or null before they're mapped.
+    pub(crate) fn sessions(&self) -> *mut SessionRecord {
+        self.session_list.as_ptr().cast()
+    }
+
     /// The listen ports.
     pub(crate) fn ports(&self) -> &[*mut c_void] {
         let PortList { items, count } = self.ports;
@@ -98,8 +110,8 @@ impl ServerTables {
 impl Default for ServerTables {
     fn default() -> Self {
         Self {
-            connection_list: core::ptr::null_mut(),
-            session_list: core::ptr::null_mut(),
+            connection_list: Shm::NULL,
+            session_list: Shm::NULL,
             port_gs_list: Shm::NULL,
             max_connection: 0,
             enable_accept_timer: core::ptr::null_mut(),
@@ -133,7 +145,7 @@ impl crate::ServerState {
         reason = "a slot of the shared session table, written under the server's own synchronization"
     )]
     pub(crate) fn session(&self, id: libc::c_long) -> Option<&mut SessionRecord> {
-        let sessions = self.tables_ref().session_list;
+        let sessions = self.tables_ref().sessions();
         let index = usize::try_from(id % 1_048_576).ok()?;
         if sessions.is_null() {
             return None;
@@ -175,7 +187,7 @@ impl crate::ServerState {
         // SAFETY: the live table of `max_connection + 1` slots; `fd` is inside it.
         let value = unsafe {
             &mut *tables
-                .connection_list
+                .connections()
                 .wrapping_add(fd.cast_unsigned() as usize)
         };
         let found = match kind {
@@ -223,9 +235,17 @@ pub extern "C" fn swr_v1_server_connection(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
+
+    /// A table field naming a test's own records, so several states can share them as
+    /// processes share a mapping. Nothing frees it: the test owns `items`.
+    pub(crate) fn naming<T>(items: &mut [T]) -> Shm {
+        // SAFETY: `Shm` is `repr(transparent)` over its payload pointer, and no code under
+        // test frees these tables.
+        unsafe { core::mem::transmute::<*mut c_void, Shm>(items.as_mut_ptr().cast()) }
+    }
 
     #[test]
     fn retirement_scans_table_edges_without_truncating_worker_identity() {
@@ -239,7 +259,7 @@ mod tests {
             .collect();
         sessions[0].reactor_bits = 0x5a12_3401;
         sessions[1_048_575].reactor_bits = 0x5a12_3401;
-        unsafe { (*(*state).tables()).session_list = sessions.as_mut_ptr() };
+        unsafe { (*(*state).tables()).session_list = naming(&mut sessions) };
         unsafe { &*state }.retire_sessions(257);
         assert!(sessions.iter().all(|slot| slot.fd == 23));
         unsafe { &*state }.retire_sessions(1);
@@ -275,8 +295,8 @@ mod tests {
         connections[2].session_id = 1;
         unsafe {
             let tables = &mut *(*state).tables();
-            tables.session_list = sessions.as_mut_ptr();
-            tables.connection_list = connections.as_mut_ptr();
+            tables.session_list = naming(&mut sessions);
+            tables.connection_list = naming(&mut connections);
             tables.max_connection = 2;
             assert_eq!(
                 swr_v1_server_session(&*state, 1),

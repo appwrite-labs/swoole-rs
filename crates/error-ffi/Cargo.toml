@@ -1,0 +1,20 @@
+[package]
+name = "swoole-rs-error-ffi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_error_ffi"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[features]
+# swoole_strerror, the ignored-error and last-error functions under their upstream C++
+# symbols (crates/ffi enables it).
+upstream-symbols = []
+
+[dependencies]
+swoole-rs-error = { path = "../error" }

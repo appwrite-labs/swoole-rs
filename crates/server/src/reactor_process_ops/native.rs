@@ -178,7 +178,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let gs = port.counters()?;
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the worker's slot of them.
-            unsafe { &*gs.connection_nums.wrapping_add(id) }.store(0, Ordering::Relaxed);
+            unsafe { &*gs.cells().wrapping_add(id) }.store(0, Ordering::Relaxed);
             sign(ctx.reactor_handle().add(socket(port.socket)?, EVENT_READ))
         }
         OP_REACTOR_SETUP => {

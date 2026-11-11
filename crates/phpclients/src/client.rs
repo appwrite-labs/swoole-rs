@@ -10,7 +10,7 @@ use crate::{
 };
 use libc::{c_char, c_int};
 use std::{ffi::CStr, ptr};
-use swoole_rs_error::swr_v1_error_strerror;
+use swoole_rs_error::strerror_with;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
@@ -169,9 +169,8 @@ fn report_object(props: Props, code: c_int, message: &CStr) {
 
 /// `swoole_strerror(code)`.
 fn error_message<'a>(code: c_int) -> &'a CStr {
-    // SAFETY: known and system messages are static; the unknown-message buffer
-    // is only used on the PHP thread, as upstream's is.
-    let message = unsafe { swr_v1_error_strerror(code, Some(system_error)) };
+    // Known and system messages are static; an unknown one is this thread's buffer.
+    let message = strerror_with(code, Some(system_error));
     if message.is_null() {
         c""
     } else {

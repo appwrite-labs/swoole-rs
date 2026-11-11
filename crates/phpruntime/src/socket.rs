@@ -557,7 +557,7 @@ pub use swoole_rs_phpswoole::check_reactor;
 #[must_use]
 pub fn strerror(code: i32) -> &'static CStr {
     // SAFETY: Swoole's static message table or strerror's text.
-    unsafe { CStr::from_ptr(swoole_rs_error::swoole_strerror(code)) }
+    unsafe { CStr::from_ptr(swoole_rs_error_ffi::swoole_strerror(code)) }
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine Swoole raises a fatal

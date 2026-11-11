@@ -5,28 +5,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Message text derived from Swoole v6.2.2 src/core/error.cc,
 // Copyright Swoole contributors; original author Tianfeng Han <rango@swoole.com>.
-//! Swoole error dispatch and ignored state; native code supplies OS messages.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+//! Swoole error codes, messages, the last-error buffer and the ignored set; crates/error-ffi
+//! exports them to C and supplies OS messages.
+#![forbid(unsafe_code)]
 
 use std::ffi::c_char;
 
-// The archive's ABI queries live here, not in crates/ffi, whose object holds
-// swoole_init: a C consumer that asks for them links no lifecycle.
 /// Return the supported C ABI version.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_abi_version() -> u32 {
+#[must_use]
+pub fn swr_v1_abi_version() -> u32 {
     1
 }
 
 /// Return the migrated kernels: every module, as the bits `MODULES` in `tools/check_migration.py` names.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_feature_bits() -> u64 {
+#[must_use]
+pub fn swr_v1_feature_bits() -> u64 {
     (1 << 28) - 1
 }
 
@@ -180,15 +173,15 @@ messages! {
 }
 
 /// Return an immutable process-lifetime message, never to be freed; unknown is null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_error_message(code: i32) -> *const c_char {
+#[must_use]
+pub fn swr_v1_error_message(code: i32) -> *const c_char {
     known_message(code)
 }
 
 /// Resolve known codes, invoking an optional nonthrowing native formatter only on misses.
 /// The formatter must not enter Zend, retain Rust state, or unwind through this frame.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_error_resolve(
+#[must_use]
+pub fn swr_v1_error_resolve(
     code: i32,
     fallback: Option<extern "C" fn(i32) -> *const c_char>,
 ) -> *const c_char {
@@ -198,24 +191,6 @@ pub extern "C" fn swr_v1_error_resolve(
     } else {
         known
     }
-}
-
-unsafe extern "C" {
-    safe fn strerror(code: i32) -> *const c_char;
-}
-
-extern "C" fn system_error(code: i32) -> *const c_char {
-    strerror(code)
-}
-
-/// `const char *swoole_strerror(int)`: system messages below 500, as upstream.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z15swoole_strerrori")
-)]
-pub extern "C" fn swoole_strerror(code: i32) -> *const c_char {
-    // SAFETY: the formatter is libc's message table; unknown-message use is serialized as upstream.
-    unsafe { swr_v1_error_strerror(code, Some(system_error)) }
 }
 
 /// `SW_ERROR_MSG_SIZE`: the bytes of each thread's last-error message.
@@ -230,8 +205,7 @@ thread_local! {
 /// `sw_error`: this thread's last-error message buffer, `SW_ERROR_MSG_SIZE` bytes that
 /// live as long as the thread. C++ formats log lines into it.
 #[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_error_buffer() -> *mut c_char {
+pub fn swr_v1_error_buffer() -> *mut c_char {
     LAST_ERROR.with(|buffer| buffer.as_ptr().cast::<c_char>().cast_mut())
 }
 
@@ -252,48 +226,37 @@ pub fn set_last_error_msg(text: &[u8]) -> usize {
 }
 
 /// `const char *swoole_get_last_error_msg()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z25swoole_get_last_error_msgv")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_last_error_msg() -> *const c_char {
+pub fn swoole_get_last_error_msg() -> *const c_char {
     swr_v1_error_buffer()
 }
 
 /// `void swoole_clear_last_error_msg()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z27swoole_clear_last_error_msgv")
-)]
-pub extern "C" fn swoole_clear_last_error_msg() {
+pub fn swoole_clear_last_error_msg() {
     LAST_ERROR.with(|buffer| buffer[0].set(0));
 }
 
 /// `void swoole_throw_error(int)`. Upstream threw a `swoole::Exception`; the extension
 /// catches none, so it terminated. This reports the code and aborts.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_throw_errori")
-)]
-pub extern "C" fn swoole_throw_error(code: i32) -> ! {
+pub fn swoole_throw_error(code: i32) -> ! {
     use std::io::Write;
     writeln!(std::io::stderr(), "swoole_throw_error({code})").ok();
     std::process::abort();
 }
 
-/// Resolve system, known and unknown errors without heap allocation.
-/// # Safety
-/// Calls which return the mutable unknown-message buffer must be externally
-/// serialized, as in the original snprintf buffer. Known-message calls are pure.
-/// The optional system formatter must not unwind, enter Zend or retain Rust state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_error_strerror(
+/// Resolve system, known and unknown errors without heap allocation. Below
+/// `SW_ERROR_BEGIN`, `system` formats the code; it must not unwind, enter Zend or retain
+/// Rust state. An unknown code's message is this thread's buffer, which the thread's next
+/// unknown code overwrites.
+#[must_use]
+pub fn strerror_with(
     code: i32,
     system: Option<extern "C" fn(i32) -> *const c_char>,
 ) -> *const c_char {
     use std::io::Write;
-    static mut UNKNOWN: [u8; 32] = [0; 32];
+    thread_local! {
+        static UNKNOWN: [std::cell::Cell<c_char>; 32] = const { [const { std::cell::Cell::new(0) }; 32] };
+    }
     if code < ErrorCode::SW_ERROR_BEGIN as i32 {
         return system.map_or(std::ptr::null(), |format| format(code));
     }
@@ -301,46 +264,25 @@ pub unsafe extern "C" fn swr_v1_error_strerror(
     if !known.is_null() {
         return known;
     }
-    // SAFETY: The caller serializes unknown-message use. No mutable reference
-    // survives this call; the C-string pointer and storage lifetime match upstream.
-    let buffer = unsafe { &mut *std::ptr::addr_of_mut!(UNKNOWN) };
-    let mut remaining = &mut buffer[..31];
     let colon = if cfg!(target_vendor = "apple") {
         ":"
     } else {
         ""
     };
-    // The longest prefix + int32 decimal representation is 26 bytes including NUL.
+    // The longest prefix + int32 decimal representation is 26 bytes including NUL,
+    // so the zeroed tail always terminates it.
+    let mut text = [0u8; 32];
+    let mut remaining = text.as_mut_slice();
     if write!(remaining, "Unknown error{colon} {code}").is_err() {
         return std::ptr::null();
     }
-    let used = 31 - remaining.len();
-    let Some(end) = buffer.get_mut(used) else {
-        return std::ptr::null();
-    };
-    *end = 0;
-    buffer.as_ptr().cast()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn last_error_buffer_is_per_thread_and_clears() {
-        let buffer = swr_v1_error_buffer();
-        unsafe { buffer.copy_from_nonoverlapping(c"sentinel".as_ptr(), 9) };
-        assert_eq!(swoole_get_last_error_msg(), buffer.cast_const());
-        assert_eq!(unsafe { std::ffi::CStr::from_ptr(buffer) }, c"sentinel");
-        let other = std::thread::spawn(|| {
-            let other = swr_v1_error_buffer();
-            (other as usize, unsafe { *other })
-        })
-        .join()
-        .unwrap();
-        assert_ne!(other.0, buffer as usize, "each thread has its own buffer");
-        assert_eq!(other.1, 0);
-        swoole_clear_last_error_msg();
-        assert_eq!(unsafe { *buffer }, 0);
-    }
+    let used = 32 - remaining.len();
+    // Only the message and its NUL: like snprintf, the bytes after it keep a longer
+    // earlier message's tail.
+    UNKNOWN.with(|buffer| {
+        for (cell, &byte) in buffer.iter().zip(text.iter().take(used + 1)) {
+            cell.set(c_char::from_ne_bytes([byte]));
+        }
+        buffer.as_ptr().cast()
+    })
 }

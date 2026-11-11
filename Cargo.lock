@@ -460,6 +460,13 @@ name = "swoole-rs-error"
 version = "0.1.0"
 
 [[package]]
+name = "swoole-rs-error-ffi"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-error",
+]
+
+[[package]]
 name = "swoole-rs-ext"
 version = "0.1.0"
 dependencies = [
@@ -480,6 +487,7 @@ dependencies = [
  "swoole-rs-coroutine",
  "swoole-rs-curl",
  "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-firebird",
  "swoole-rs-hooks",
  "swoole-rs-http",
@@ -550,6 +558,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
@@ -713,7 +722,7 @@ dependencies = [
  "pq-sys",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
- "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-hooks",
  "swoole-rs-zend",
 ]
@@ -903,7 +912,7 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-corebase",
- "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-hooks",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -964,6 +973,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-firebird",
  "swoole-rs-framing",
  "swoole-rs-hooks",
@@ -1175,6 +1185,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-crc32",
  "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-locks",
 ]
 

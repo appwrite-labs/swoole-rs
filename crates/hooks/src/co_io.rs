@@ -103,7 +103,7 @@ pub(crate) struct Ops {
 #[cfg(not(test))]
 pub(crate) static NATIVE: Ops = Ops {
     set_last_error: swoole_rs_corebase::log::set_last_error,
-    strerror: |error| swoole_rs_error::swoole_strerror(error),
+    strerror: |error| swoole_rs_error_ffi::swoole_strerror(error),
     current: || crate::wait_event::native::current(),
     cid: native::cid,
     bound_error: native::bound_error,

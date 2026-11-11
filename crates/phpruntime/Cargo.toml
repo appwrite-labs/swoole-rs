@@ -16,7 +16,7 @@ crate-type = ["rlib"]
 upstream-symbols = []
 # Native curl (crates/ffi's curl, with --enable-swoole-curl): its MINIT and MSHUTDOWN.
 curl = []
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-corebase", "dep:swoole-rs-error", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-utilities", "dep:swoole-rs-tls"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-corebase", "dep:swoole-rs-error-ffi", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-utilities", "dep:swoole-rs-tls"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -25,7 +25,7 @@ swoole-rs-hooks = { path = "../hooks" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
-swoole-rs-error = { path = "../error", optional = true }
+swoole-rs-error-ffi = { path = "../error-ffi", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-utilities = { path = "../utilities", optional = true }
 swoole-rs-tls = { path = "../tls", optional = true }
