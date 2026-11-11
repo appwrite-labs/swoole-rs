@@ -77,6 +77,8 @@ fn process(factory: *mut c_void, op: u32, send: *mut SendData, arg: u64) -> bool
     // SAFETY: the server's live process factory, whose server and send are live.
     let serv = unsafe { (*factory.cast::<Factory>()).server };
     // SAFETY: as above.
+    let serv = unsafe { crate::view::Server::from_raw(serv) };
+    // SAFETY: as above.
     unsafe { run(serv, op, ptr::null_mut(), send, ptr::null(), arg) != 0 }
 }
 

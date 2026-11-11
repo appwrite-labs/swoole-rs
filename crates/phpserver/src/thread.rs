@@ -58,17 +58,16 @@ fn thread_mode(serv: view::Server<'_>) -> bool {
 /// `__construct`'s check: 0 no server yet, 1 this worker thread's server
 /// (in `existing`), 2 not the main thread, 3 a server already exists.
 pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
-    let current = swoole_rs_corebase::swr_v1_core_server();
+    // SAFETY: the process's server, which outlives every request.
+    let current = unsafe { view::Server::current() };
     if !crate::server::THREAD.load(Ordering::Relaxed) {
-        return if current.is_null() { 0 } else { 3 };
+        return if current.is_none() { 0 } else { 3 };
     }
-    if !current.is_null() {
-        // SAFETY: the process's live server, which outlives every request.
-        let server = unsafe { view::Server::from_raw(current) };
-        if server.is_worker_thread() {
-            *existing = Some(server);
-            return 1;
-        }
+    if let Some(server) = current
+        && server.is_worker_thread()
+    {
+        *existing = Some(server);
+        return 1;
     }
     // SAFETY: a pure TSRM read.
     if unsafe { swr_zend_tsrm_is_main_thread() } {

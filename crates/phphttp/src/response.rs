@@ -723,10 +723,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         }
     } else {
         fd = object.long();
-        let core = swoole_rs_corebase::swr_v1_core_server();
-        // SAFETY: null or the process's live server.
-        server =
-            (!core.is_null()).then(|| unsafe { swoole_rs_server::view::Server::from_raw(core) });
+        // SAFETY: the running server, which nothing deletes during this method.
+        server = unsafe { swoole_rs_server::view::Server::current() };
     }
     if server.is_some_and(|server| !server.is_started()) {
         return refuse(call, "server is not running");

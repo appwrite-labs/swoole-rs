@@ -548,7 +548,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     let Some(http2) = crate::http2::server() else {
         return context::release_objects(ctx);
     };
-    if facts.static_handler && (http2.static_file)(server.raw(), ctx)? {
+    if facts.static_handler && (http2.static_file)(server, ctx)? {
         return context::release_objects(ctx);
     }
     let state = ctx.state();
@@ -629,13 +629,12 @@ struct Worker {
 /// `sw_server()` and `sw_worker()`'s counters; none when this process is no
 /// server worker.
 fn worker() -> Option<Worker> {
-    let server = swoole_rs_corebase::swr_v1_core_server();
+    // SAFETY: a worker's server, which outlives the worker's requests.
+    let server = unsafe { view::Server::<'static>::current() }?;
     let current = swoole_rs_process::worker_globals::current_worker();
-    if server.is_null() || current.is_null() {
+    if current.is_null() {
         return None;
     }
-    // SAFETY: `server` is the live server here.
-    let server = unsafe { view::Server::from_raw(server) };
     Some(Worker {
         // SAFETY: the current worker's live record.
         concurrency: unsafe { &raw mut (*current).concurrency },
