@@ -307,11 +307,17 @@ impl Call {
     }
 
     /// Passed argument `n` as a string, reporting `expected` if it is none.
+    #[inline]
     pub(crate) fn parse_str(&self, n: u32, expected: zend_expected_type) -> Result<&ZStr, Invalid> {
+        self.arg_value(n)
+            .str()
+            .map_or_else(|| self.coerce_str(n, expected), Ok)
+    }
+
+    /// [`Self::parse_str`] of an argument that is no string.
+    #[cold]
+    fn coerce_str(&self, n: u32, expected: zend_expected_type) -> Result<&ZStr, Invalid> {
         let arg = self.arg_value(n);
-        if let Some(string) = arg.str() {
-            return Ok(string);
-        }
         let mut out = ptr::null_mut();
         if coerce(swr_zend_try_parse_str, arg, &mut out, n)? {
             // SAFETY: Zend left the converted string in the argument slot,

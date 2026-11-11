@@ -388,14 +388,15 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             record.main_loop,
             record.on_worker_stop,
         );
-        // SAFETY: the context's live worker, which the hooks take.
-        let worker = unsafe { Worker::new(worker) };
+        let worker = ctx.worker();
         let pool = pool_native::pool_ref(pool);
         match (op, start, main_loop, stop) {
             (OP_ON_WORKER_START, Some(hook), ..) | (OP_ON_WORKER_STOP, .., Some(hook)) => {
-                hook(pool, worker);
+                // SAFETY: the pool that holds the hook, and the worker it lends.
+                unsafe { hook(pool, worker) };
             }
-            (OP_POOL_MAIN_LOOP, _, Some(main_loop), _) => _ = main_loop(pool, worker),
+            // SAFETY: as above.
+            (OP_POOL_MAIN_LOOP, _, Some(main_loop), _) => _ = unsafe { main_loop(pool, worker) },
             _ => {}
         }
         0

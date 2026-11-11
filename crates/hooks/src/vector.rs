@@ -12,30 +12,40 @@ use swoole_rs_reactor::{
     ReactorIov, swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare, swr_v1_reactor_iov_view,
 };
 
-/// A `network::IOVector` over the caller's iovecs, destroyed on drop. Its owner is
-/// its only member, so a pointer to it is the `IOVector *` the `network::Socket`
-/// calls read (they read only the first member).
+/// A `network::IOVector` over the caller's iovecs, destroyed on drop, and the
+/// direction it was made for. Its owner is its first member, so a pointer to it is
+/// the `IOVector *` the `network::Socket` calls read (they read only that member).
 #[repr(C)]
-pub struct IoVector(NonNull<ReactorIov>);
+pub struct IoVector {
+    owner: NonNull<ReactorIov>,
+    write: bool,
+}
 
 impl IoVector {
-    /// A vector over a copy of the `count` iovecs at `vectors`; none when the copy
-    /// fails, where `IOVector`'s constructor throws.
+    /// A vector over a copy of the `count` iovecs at `vectors`, to write from when
+    /// `write` and to read into otherwise; none when the copy fails, where
+    /// `IOVector`'s constructor throws.
     ///
     /// # Safety
     /// `vectors` holds `count` iovecs, and their buffers stay valid while the
-    /// vector lives: readable for a write over it, writable for a read.
-    pub unsafe fn new(vectors: *const libc::iovec, count: c_int) -> Option<Self> {
+    /// vector lives: readable when `write`, writable otherwise.
+    #[must_use]
+    pub unsafe fn new(vectors: *const libc::iovec, count: c_int, write: bool) -> Option<Self> {
         // SAFETY: as the caller promises.
         let prepared = unsafe { swr_v1_reactor_iov_prepare(vectors, count) };
         NonNull::new(prepared.owner)
             .filter(|_| prepared.status == 0)
-            .map(Self)
+            .map(|owner| Self { owner, write })
+    }
+
+    /// Whether the vector was made to write from.
+    pub(crate) const fn write(&self) -> bool {
+        self.write
     }
 
     fn owner(&self) -> &ReactorIov {
         // SAFETY: the owner `new` made, live until drop.
-        unsafe { self.0.as_ref() }
+        unsafe { self.owner.as_ref() }
     }
 
     /// The iovec index and byte offset where the transfers stopped.
@@ -69,7 +79,7 @@ impl IoVector {
     #[cfg(feature = "iouring")]
     pub(crate) fn update(&mut self, result: isize) {
         // SAFETY: the live owner; no reference to it is held across the call.
-        unsafe { swoole_rs_reactor::swr_v1_reactor_iov_advance(self.0.as_ptr(), result) };
+        unsafe { swoole_rs_reactor::swr_v1_reactor_iov_advance(self.owner.as_ptr(), result) };
     }
 
     /// The `IOVector *` the `network::Socket` calls take.
@@ -81,7 +91,7 @@ impl IoVector {
 impl Drop for IoVector {
     fn drop(&mut self) {
         // SAFETY: the owner `new` made, released once.
-        unsafe { swr_v1_reactor_iov_destroy(self.0.as_ptr()) };
+        unsafe { swr_v1_reactor_iov_destroy(self.owner.as_ptr()) };
     }
 }
 

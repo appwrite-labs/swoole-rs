@@ -10,7 +10,6 @@
 #![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
     reason = "upstream's C conversions between ssize_t, size_t, uint32_t and int"
 )]
 use core::cell::{Cell, UnsafeCell};
@@ -50,6 +49,7 @@ use swoole_rs_process::process_pool::{
     OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, PoolRef, RAISE, RUN_MAIN, RecvData, pool_run_op,
 };
 use swoole_rs_process::reload_task::ReloadTask;
+use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
@@ -115,8 +115,7 @@ fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
 
 /// [`record`]'s pool as the handle its callbacks take.
 pub(crate) fn pool_ref<'a>(pool: Pool) -> PoolRef<'a> {
-    // SAFETY: as `record`.
-    unsafe { PoolRef::new(pool) }
+    PoolRef::from(record(pool))
 }
 
 fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
@@ -124,15 +123,15 @@ fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
     unsafe { &mut *worker }
 }
 
+/// The pool's IPC state, borrowed for one step.
+fn ipc<'a>(pool: Pool) -> &'a mut swoole_rs_process::pool::PoolIpc {
+    // SAFETY: a live pool's IPC state lives as long as the pool.
+    unsafe { &mut *record(pool).ipc() }
+}
+
 /// The pool's stream listener socket, or null.
 fn listener(pool: Pool) -> *mut c_void {
-    // SAFETY: a live pool's IPC state lives as long as the pool.
-    let ipc = unsafe {
-        &*record(pool)
-            .ipc()
-            .cast::<swoole_rs_process::pool::PoolIpc>()
-    };
-    swr_v1_process_pool_ipc_listener(ipc)
+    swr_v1_process_pool_ipc_listener(ipc(pool))
 }
 
 /// [`worker_of`]'s worker as a [`Record`] handle.
@@ -150,10 +149,12 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `pool->onMessage(pool, &msg)`.
+/// `pool->onMessage(pool, &msg)`, whose `data` points at `info.len` bytes.
 fn on_message(pool: Pool, msg: &RecvData) {
     if let Some(on_message) = record(pool).on_message {
-        on_message(pool_ref(pool), msg);
+        // SAFETY: the pool that holds the callback, and the message its caller read:
+        // `data` points at `info.len` bytes.
+        unsafe { on_message(pool_ref(pool), msg) };
     }
 }
 
@@ -400,7 +401,8 @@ thread_local! {
 extern "C-unwind" fn worker_exit() {
     let (pool, worker) = EXITING.get();
     if let Some(on_worker_exit) = record(pool).on_worker_exit {
-        on_worker_exit(pool_ref(pool), handle(worker));
+        // SAFETY: the pool that holds the callback, and the worker exiting.
+        unsafe { on_worker_exit(pool_ref(pool), handle(worker)) };
     }
     // The loop running this end callback.
     let reactor = crate::objects::Reactor::thread();
@@ -420,12 +422,7 @@ fn reactor_pool(reactor: Running<'_>) -> Pool {
 /// `ProcessPool::recv_packet`: the event loop's pipe handler under the stream protocol.
 extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
     let pool = reactor_pool(reactor);
-    // SAFETY: the pool's IPC state.
-    let packet = pool_ipc_packet(unsafe {
-        &mut *record(pool)
-            .ipc()
-            .cast::<swoole_rs_process::pool::PoolIpc>()
-    });
+    let packet = pool_ipc_packet(ipc(pool));
     let size = record(pool).max_packet_size as usize;
     // SAFETY: the packet buffer holds `max_packet_size` bytes.
     let fd = fd(event.socket_ptr().cast());
@@ -439,7 +436,8 @@ extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
     }
     let info = DataHead {
         reactor_id: -1,
-        len: n as u32,
+        // The bytes read: none when the read failed.
+        len: u32::try_from(n).unwrap_or(0),
         ..DataHead::default()
     };
     on_message(pool, &RecvData { info, data: packet });
@@ -710,19 +708,22 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_ON_WORKER_NOT_FOUND => {
             if let Some(not_found) = record(pool).on_worker_not_found {
-                not_found(pool_ref(pool), &exit_status(arg));
+                // SAFETY: the pool that holds the callback, and the reaped status.
+                unsafe { not_found(pool_ref(pool), &exit_status(arg)) };
             }
         }
         OP_WORKER_ERROR => {
             let status = exit_status(arg);
             worker_report_error(handle(worker), &status);
             if let Some(on_worker_error) = record(pool).on_worker_error {
-                on_worker_error(pool_ref(pool), handle(worker), &status);
+                // SAFETY: the pool that holds the callback, its worker and its status.
+                unsafe { on_worker_error(pool_ref(pool), handle(worker), &status) };
             }
         }
         OP_ON_AFTER_RELOAD => {
             if let Some(on_after_reload) = record(pool).on_after_reload {
-                on_after_reload(pool_ref(pool));
+                // SAFETY: the pool that holds the callback.
+                unsafe { on_after_reload(pool_ref(pool)) };
             }
         }
         OP_KILL_TIMER => {
@@ -794,16 +795,20 @@ impl PoolNative for Native {
             CB_WORKER_STOP => (None, r.on_worker_stop),
             CB_MAIN_LOOP => {
                 if let Some(main_loop) = r.main_loop {
-                    c.set_result(main_loop(pool_ref(pool), handle(worker)) as isize);
+                    // SAFETY: the pool that holds the callback, and its worker.
+                    let code = unsafe { main_loop(pool_ref(pool), handle(worker)) };
+                    c.set_result(code as isize);
                 }
                 return;
             }
             _ => return,
         };
         if let Some(f) = pool_fn {
-            f(pool_ref(pool));
+            // SAFETY: the pool that holds the callback.
+            unsafe { f(pool_ref(pool)) };
         } else if let Some(f) = worker_fn {
-            f(pool_ref(pool), handle(worker));
+            // SAFETY: the pool that holds the callback, and its worker.
+            unsafe { f(pool_ref(pool), handle(worker)) };
         }
     }
 
@@ -921,9 +926,12 @@ impl PoolNative for Native {
     fn task(&self, c: &mut PoolCall) {
         let (pool, worker) = pool_worker(c);
         if let Some(on_task) = record(pool).on_task {
-            // SAFETY: the task the worker read into the call's buffer.
-            let task = unsafe { &mut *c.data().cast::<DataHead>() };
-            c.set_result(on_task(pool_ref(pool), handle(worker), task) as isize);
+            // SAFETY: the task the worker read into the call's buffer, its head and
+            // the `len` bytes after it.
+            let task = unsafe { Packed::from_raw(c.data().cast()) };
+            // SAFETY: the pool that holds the callback, its worker and that task.
+            let code = unsafe { on_task(pool_ref(pool), handle(worker), task) };
+            c.set_result(code as isize);
         }
     }
 

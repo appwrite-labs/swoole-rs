@@ -2,7 +2,6 @@
  * (array_init, smart_str, zval_get_string), version (php_url_encode_hash_ex's
  * signature before 8.3, zend_is_true's return type) and budget (OBJ_PROP, Z_*_P). */
 #include "shim_http_client.h"
-#include "ext/standard/php_array.h"
 #include "ext/standard/php_http.h"
 #include "zend_smart_str.h"
 #include "zend_attributes.h"
@@ -24,31 +23,6 @@ zval *swr_zend_property_not_null(zend_object *object, const char *name, size_t l
     zval *property = zend_read_property(object->ce, object, name, length, 0, &rv);
     uint8_t type = Z_TYPE_P(property);
     return (type == IS_NULL || UNEXPECTED(type == IS_UNDEF)) ? NULL : property;
-}
-
-zval *swr_zend_property_array(zend_class_entry *ce, zend_object *object, const char *name, size_t length) {
-    zval rv;
-    zval *property = zend_read_property(ce, object, name, length, 0, &rv);
-    if (Z_TYPE_P(property) != IS_ARRAY) {
-        if (UNEXPECTED(property == &EG(uninitialized_zval))) {
-            zval empty;
-            array_init(&empty);
-            zend_update_property(ce, object, name, length, &empty);
-            zval_ptr_dtor(&empty);
-            property = zend_read_property(ce, object, name, length, 1, &rv);
-        } else {
-            zval_ptr_dtor(property);
-            array_init(property);
-        }
-    }
-    /* Callers add to it in place: a shared or immutable array is copied first. */
-    SEPARATE_ARRAY(property);
-    return property;
-}
-
-void swr_zend_property_merge(zend_class_entry *ce, zend_object *object, const char *name, size_t length, zval *settings) {
-    zval *property = swr_zend_property_array(ce, object, name, length);
-    php_array_merge(Z_ARRVAL_P(property), Z_ARRVAL_P(settings));
 }
 
 void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zval *element) {

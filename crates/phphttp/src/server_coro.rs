@@ -27,7 +27,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Array, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props, Value,
     ZString, bailout, handlers, method_table, string,
-    sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, swr_zend_property_merge, zend_long, zval},
+    sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
 static SERVER: CustomClass<Data> = CustomClass::new();
@@ -428,7 +428,6 @@ fn construct(call: &Call) {
             ))
         });
         let (host, port, ssl, reuse_port) = parsed.ok()?;
-        let object = call.this();
         let (data, props) = (call.custom::<Data>()?, call.props(Some(&SERVER))?);
         if data.0.get().is_some() {
             call.throw_constructed_twice();
@@ -471,12 +470,10 @@ fn construct(call: &Call) {
         }
         if ssl {
             // ssl_check_context runs once the user has set the protocols.
-            // SAFETY: a live object; the shim converts `settings` to an array.
-            let settings = unsafe {
-                z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8)
-            };
-            // SAFETY: the live settings array.
-            unsafe { z::add_assoc_bool_ex(settings, c"open_ssl".as_ptr(), 8, true) };
+            // SAFETY: nothing else borrows `settings` while one key is added.
+            if let Some(settings) = unsafe { props.array(c"settings") } {
+                settings.insert_bool(b"open_ssl", true);
+            }
         }
         if ssl {
             let _enabled = socket.enable_ssl();
@@ -572,7 +569,6 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     use swoole_rs_httpbindings::{
         AcceptErrors, Action, SettingsCursor, accept_loop, swr_v1_httpbindings_settings,
     };
-    let object = call.this();
     let (Some(server), Some(props)) = (server_of(call), call.props(Some(&SERVER))) else {
         return Ok(None);
     };
@@ -580,11 +576,12 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
-    // SAFETY: a live object; the shim converts `settings` to an array.
-    let settings =
-        unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
+    // SAFETY: `settings` is only read from here on.
+    let Some(settings) = (unsafe { props.array(c"settings") }) else {
+        return Ok(None);
+    };
     // SAFETY: a live socket and the settings array.
-    if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings) } {
+    if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings.as_ptr()) } {
         props.long(c"errCode", EINVAL);
         #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
         let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
@@ -592,8 +589,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         server.running.set(false);
         return Ok(Some(false));
     }
-    // SAFETY: the live settings array.
-    let Some(table) = unsafe { Value::from_ptr(settings) }.and_then(Value::array) else {
+    let Some(table) = settings.array() else {
         return Ok(None);
     };
     let mut cursor = SettingsCursor::default();
@@ -832,16 +828,8 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let settings = call.zval(1);
-    // SAFETY: a live object of the class and the passed array.
-    unsafe {
-        swr_zend_property_merge(
-            SERVER.entry(),
-            call.this(),
-            c"settings".as_ptr(),
-            8,
-            settings,
-        );
+    if let (Some(props), Ok(settings)) = (call.props(Some(&SERVER)), call.array(1)) {
+        props.merge(c"settings", settings);
     }
     call.set_bool(true);
 }
@@ -858,8 +846,7 @@ fn shutdown(call: &Call) {
     if let Some(connections) = server.clients.array() {
         connections.for_each(|key, connection| {
             let ArrayKey::Index(index) = key else { return };
-            // SAFETY: a socket object in the server's array.
-            let socket = unsafe { get_socket(connection.as_ptr()) };
+            let socket = get_socket(connection);
             // SAFETY: the object's live socket.
             let socket = unsafe { Co::of(socket) };
             let waiting_now =
@@ -929,8 +916,10 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     };
-    // SAFETY: a coroutine socket object.
-    let socket = unsafe { get_socket(zconn) };
+    let socket = call
+        .value(1)
+        .map(Value::dereferenced)
+        .map_or(ptr::null_mut(), get_socket);
     // SAFETY: the object's live socket, which the server's array keeps.
     let socket = unsafe { Co::of(socket) };
     // The request allocator first.
@@ -1114,7 +1103,8 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         released?;
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
-        if !running || !keep_alive || unsafe { is_socket_closed(conn.zconn) } {
+        let zconn = unsafe { Value::from_ptr(conn.zconn) };
+        if !running || !keep_alive || zconn.is_none_or(is_socket_closed) {
             break;
         }
         header_completed = false;

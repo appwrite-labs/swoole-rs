@@ -11,6 +11,7 @@
 //! the bailout trap; when it bails out, the export returns [`RAISE`] and its
 //! native caller raises the bailout again once the Rust frames are gone.
 
+use crate::task_file::Packed;
 use crate::worker_record::Worker;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -217,26 +218,28 @@ pub struct RecvData {
 /// The pool's callbacks, in `ProcessPool`'s C layout (`swoole_rs_process_views.h`).
 /// Each takes the live pool and the objects of the event, which the pool lends for
 /// the call. `C-unwind`, as a PHP bailout longjmps over them.
-pub type PoolFn = extern "C-unwind" fn(PoolRef<'_>);
-/// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
-pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
-/// `main_loop`: the worker's loop, and its exit code.
-pub type MainLoopFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
-/// `onTask`: an `EventData` the worker read, whose head is followed by the
-/// payload its `len` counts.
-pub type TaskFn =
-    extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &mut swoole_rs_corebase::DataHead) -> c_int;
-/// `onMessage`.
-pub type MessageFn = extern "C-unwind" fn(PoolRef<'_>, &RecvData);
-/// `onWorkerMessage`: an `EventData` the master popped.
 ///
 /// # Safety
-/// The message is a live `EventData` for the call.
+/// Every callback trusts its arguments beyond their types, so each is `unsafe`: the
+/// pool is the one whose record holds the callback (its owner set `ptr`), and the
+/// other arguments are the ones the pool lends for that event.
+pub type PoolFn = unsafe extern "C-unwind" fn(PoolRef<'_>);
+/// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`; the safety of [`PoolFn`].
+pub type WorkerFn = unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
+/// `main_loop`: the worker's loop, and its exit code; the safety of [`PoolFn`].
+pub type MainLoopFn = unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
+/// `onTask`: the task the worker read; the safety of [`PoolFn`].
+pub type TaskFn = unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
+/// `onMessage`; the safety of [`PoolFn`], and `data` points at `info.len` bytes.
+pub type MessageFn = unsafe extern "C-unwind" fn(PoolRef<'_>, &RecvData);
+/// `onWorkerMessage`: an `EventData` the master popped; the safety of [`PoolFn`].
 pub type EventFn = unsafe extern "C-unwind" fn(PoolRef<'_>, *mut c_void);
-/// `onWorkerError`.
-pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
-/// `onWorkerNotFound`: 1 when the pid was handled.
-pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
+/// `onWorkerError`; the safety of [`PoolFn`].
+pub type ErrorFn =
+    unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
+/// `onWorkerNotFound`: 1 when the pid was handled; the safety of [`PoolFn`].
+pub type NotFoundFn =
+    unsafe extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
 
 /// What every export runs over (`crates/server/src/pool_native.rs`): the pool's
 /// native objects, which this crate can't depend on, and its callbacks. Each takes
@@ -877,10 +880,8 @@ impl<H: PoolHost> Pool<H> {
             self.op(OP_MAIN_LOOP, MAIN_ASYNC);
         }
         for index in 0..self.worker_num() {
-            let worker = self.worker(index);
+            let worker = self.worker_at(index);
             let id = u32::from(self.start_id()) + index;
-            // SAFETY: one of the pool's records.
-            let worker = unsafe { Worker::new(worker) };
             worker.set_pool(self.p.cast());
             worker.set_id(id);
             worker.set_kind(self.kind());

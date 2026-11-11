@@ -3,7 +3,6 @@
 //! windows and HPACK codecs. Each stream owns its request's
 //! `swoole::http::Context`, a copy of the session's settings context, released
 //! with the stream.
-use libc::c_void;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -89,7 +88,7 @@ pub(crate) struct StreamState {
     /// back from `$header` once it is complete.
     pub(crate) negotiates: Cell<bool>,
     /// The coroutine waiting for the peer to open the window.
-    waiting: Cell<*mut c_void>,
+    waiting: Cell<Option<swoole_rs_phpcoroutines::Coroutine>>,
 }
 
 thread_local! {
@@ -164,7 +163,7 @@ impl SessionState {
             request_received: Cell::new(false),
             bad_length: Cell::new(false),
             negotiates: Cell::new(false),
-            waiting: Cell::new(std::ptr::null_mut()),
+            waiting: Cell::new(None),
         });
         let replaced = self.streams.borrow_mut().insert(id, stream.clone());
         drop(replaced);
@@ -203,16 +202,13 @@ impl Drop for SessionState {
 impl StreamState {
     /// Suspend the current coroutine until `wake`.
     pub(crate) fn wait(&self) {
-        // SAFETY: in a coroutine; the slot lives as long as the stream, which
-        // the caller holds.
-        unsafe { swoole_rs_phpcoroutines::park(&self.waiting) };
+        swoole_rs_phpcoroutines::park(&self.waiting);
     }
 
     pub(crate) fn wake(&self) {
-        let coroutine = self.waiting.get();
-        if !coroutine.is_null() {
+        if let Some(coroutine) = self.waiting.get() {
             // SAFETY: the coroutine suspended in `wait`.
-            unsafe { swoole_rs_phpcoroutines::wake(coroutine, false) };
+            unsafe { coroutine.wake(false) };
         }
     }
 }

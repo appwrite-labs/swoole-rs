@@ -442,7 +442,8 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: its live event pool.
             let pool = unsafe { &mut *pool };
             if let Some(main_loop) = pool.main_loop {
-                let _code = main_loop(pool.into(), ctx.worker());
+                // SAFETY: the pool that holds the loop, and the context's worker of it.
+                let _code = unsafe { main_loop(pool.into(), ctx.worker()) };
             }
         }
         OP_START_EVENT_WORKER => {

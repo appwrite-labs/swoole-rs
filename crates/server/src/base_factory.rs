@@ -157,9 +157,7 @@ pub(crate) fn dispatch<H: Host>(
     // SAFETY: native code lends a live `SendData` for the call.
     let info = unsafe { &mut (*task).info };
     if is_stream_event(info.kind) {
-        let conn = connection(h, info.fd, 0)?;
-        // SAFETY: a non-null lookup is a connection record.
-        if conn.is_null() || unsafe { record(conn) }.active == 0 {
+        let Some(c) = h.state()?.connection(info.fd, 0).filter(|c| c.active != 0) else {
             log::warning(
                 c"BaseFactory::dispatch",
                 format_args!(
@@ -168,9 +166,7 @@ pub(crate) fn dispatch<H: Host>(
                 ),
             );
             return Ok(false);
-        }
-        // SAFETY: as above.
-        let c = unsafe { record(conn) };
+        };
         // server active close, discard data.
         if c.closed.load(Ordering::Relaxed) != 0 {
             log::warning(
@@ -217,20 +213,18 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
         return Ok(false);
     }
     let conn = if dgram {
-        core::ptr::null_mut()
+        None
     } else {
-        connection(h, task.info.fd, VERIFIED_TLS)?
+        let conn = h.state()?.connection(task.info.fd, VERIFIED_TLS);
+        let Some(c) = conn.filter(|c| c.closed.load(Ordering::Relaxed) == 0) else {
+            return Ok(false);
+        };
+        Some(c)
     };
-    // SAFETY: a non-null lookup is a connection record.
-    if !dgram && (conn.is_null() || unsafe { record(conn) }.closed.load(Ordering::Relaxed) != 0) {
-        return Ok(false);
-    }
     // SAFETY: the current worker's record, which this worker loop owns.
     let worker = unsafe { Worker::new(worker) };
     worker.set_status(WORKER_BUSY);
-    if !dgram {
-        // SAFETY: as above.
-        let c = unsafe { record(conn) };
+    if let Some(c) = conn {
         if task.info.len > 0 {
             c.recv_queued_bytes
                 .fetch_sub(task.info.len, Ordering::SeqCst);
@@ -259,9 +253,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
 pub(crate) fn notify<H: Host>(h: &mut H, info: *mut DataHead) -> crate::Effect<bool> {
     // SAFETY: native code lends a live `DataHead` for the call.
     let head = unsafe { &mut *info };
-    let conn = connection(h, head.fd, 0)?;
-    // SAFETY: a non-null lookup is a connection record.
-    if conn.is_null() || unsafe { record(conn) }.active == 0 {
+    let Some(c) = h.state()?.connection(head.fd, 0).filter(|c| c.active != 0) else {
         log::warning(
             c"BaseFactory::notify",
             format_args!(
@@ -270,9 +262,7 @@ pub(crate) fn notify<H: Host>(h: &mut H, info: *mut DataHead) -> crate::Effect<b
             ),
         );
         return Ok(false);
-    }
-    // SAFETY: as above.
-    let c = unsafe { record(conn) };
+    };
     if c.closed.load(Ordering::Relaxed) != 0 {
         log::warning(
             c"BaseFactory::notify",
@@ -494,7 +484,7 @@ mod tests {
             s.state = crate::ServerState::with_tables(ServerTables {
                 session_list: crate::records::tests::naming_at(self.sessions.as_mut_ptr()),
                 connection_list: crate::records::tests::naming_at(self.connections.as_mut_ptr()),
-                max_connection: 2,
+                max_connection: 3,
                 ..ServerTables::default()
             });
             s

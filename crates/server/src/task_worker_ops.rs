@@ -165,9 +165,10 @@ impl<'a> Context<'a> {
 }
 
 thread_local! {
-    /// The task this task worker runs (`TaskWorker_onTask`'s), which `Server::finish`
-    /// answers when it is given none.
-    static LATEST_TASK: Cell<*const DataHead> = const { Cell::new(core::ptr::null()) };
+    /// A copy of the head of the task this task worker last ran (`TaskWorker_onTask`'s),
+    /// which `Server::finish` answers when it is given none. A copy, not a pointer:
+    /// the task's buffer is gone once its callback returns.
+    static LATEST_TASK: Cell<Option<DataHead>> = const { Cell::new(None) };
 }
 
 /// `swoole::WorkerType::SW_TASK_WORKER`, `SW_SERVER_EVENT_FINISH`, `SW_PIPE_MASTER`.
@@ -299,15 +300,10 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             0
         }
         OP_SET_LATEST_TASK => {
-            LATEST_TASK.set(ctx.task);
+            LATEST_TASK.set(Some(*ctx.task()));
             0
         }
-        OP_SELECT_TASK => {
-            if ctx.task.is_null() {
-                ctx.task = LATEST_TASK.get();
-            }
-            0
-        }
+        OP_SELECT_TASK => u64::from(!ctx.task.is_null()),
         OP_INFO_TYPE => u64::from(ctx.task().kind),
         OP_TASK_EXT_FLAGS => u64::from(ctx.task().ext_flags),
         OP_ON_PIPE_MESSAGE => {

@@ -40,6 +40,9 @@ pub(crate) trait Source {
     fn sni(&self) -> Step;
     /// `port->ssl_init()`.
     fn ssl_init(&self) -> bool;
+    /// `f` over the port's settings, borrowed for `f` alone. `f` runs no PHP
+    /// code; every read above can, and that code may `set()` the same port.
+    fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R;
 }
 
 fn u8_of(v: i64) -> u8 {
@@ -82,82 +85,91 @@ pub(crate) fn is_dgram(kind: c_int) -> bool {
 }
 
 /// `package_eof`: the length is published as a `uint8_t` before it is checked.
-fn set_eof(s: &impl Source, c: &mut PortConfig, eof: &[u8]) -> Step {
+fn set_eof(s: &impl Source, eof: &[u8]) -> Step {
     // The low byte: a `uint8_t`.
     let eof_len = eof.len().to_le_bytes()[0];
-    c.protocol.package_eof_len = eof_len;
+    let copied = s.config(|c| {
+        c.protocol.package_eof_len = eof_len;
+        let destination = c.protocol.package_eof.get_mut(..eof.len());
+        destination.map(|destination| destination.copy_from_slice(eof))
+    });
     if eof_len == 0 {
         return Err(s.fatal(E_ERROR, c"package_eof cannot be an empty string"));
     }
-    let Some(destination) = c.protocol.package_eof.get_mut(..eof.len()) else {
+    if copied.is_none() {
         return Err(s.fatal(E_ERROR, c"package_eof max length is 8"));
-    };
-    destination.copy_from_slice(eof);
+    }
     Ok(())
 }
 
 /// `package_length_offset` and `package_body_offset`: published, then checked.
-fn offset(s: &impl Source, v: i64, field: &mut u16, error: &CStr) -> Step {
-    *field = u16_of(v);
-    if usize::from(*field) > SW_IPC_BUFFER_SIZE {
+fn offset(s: &impl Source, v: i64, field: fn(&mut PortConfig) -> &mut u16, error: &CStr) -> Step {
+    let v = u16_of(v);
+    s.config(|c| *field(c) = v);
+    if usize::from(v) > SW_IPC_BUFFER_SIZE {
         return Err(s.fatal(E_ERROR, error));
     }
     Ok(())
 }
 
 /// Every option but TLS, in upstream's order.
-pub(crate) fn apply(s: &impl Source, c: &mut PortConfig) -> Step {
-    sockets(s, c)?;
-    websocket(s, c)?;
-    framing(s, c)
+pub(crate) fn apply(s: &impl Source) -> Step {
+    sockets(s)?;
+    websocket(s)?;
+    framing(s)
 }
 
 /// The socket and protocol options up to the WebSocket ones.
-fn sockets(s: &impl Source, c: &mut PortConfig) -> Step {
+fn sockets(s: &impl Source) -> Step {
     if let Some(v) = s.long(c"backlog")? {
-        c.backlog = u16_of(v);
+        s.config(|c| c.backlog = u16_of(v));
     }
     if let Some(v) = s.size(c"socket_buffer_size")? {
-        c.socket_buffer_size = buffer(v);
+        s.config(|c| c.socket_buffer_size = buffer(v));
     }
     if let Some(v) = s.size(c"kernel_socket_recv_buffer_size")? {
-        c.kernel_socket_recv_buffer_size = buffer(v);
+        s.config(|c| c.kernel_socket_recv_buffer_size = buffer(v));
     }
     if let Some(v) = s.size(c"kernel_socket_send_buffer_size")? {
-        c.kernel_socket_send_buffer_size = buffer(v);
+        s.config(|c| c.kernel_socket_send_buffer_size = buffer(v));
     }
     if let Some(v) = s.long(c"heartbeat_idle_time")? {
-        c.heartbeat_idle_time = u16_of(v);
+        s.config(|c| c.heartbeat_idle_time = u16_of(v));
     }
     if let Some(v) = s.size(c"buffer_high_watermark")? {
-        c.buffer_high_watermark = u32_of(v);
+        s.config(|c| c.buffer_high_watermark = u32_of(v));
     }
     if let Some(v) = s.size(c"buffer_low_watermark")? {
-        c.buffer_low_watermark = u32_of(v);
+        s.config(|c| c.buffer_low_watermark = u32_of(v));
     }
-    c.open_tcp_nodelay = s.truth(c"open_tcp_nodelay").unwrap_or(true);
+    let on = s.truth(c"open_tcp_nodelay").unwrap_or(true);
+    s.config(|c| c.open_tcp_nodelay = on);
     if let Some(v) = s.long(c"tcp_defer_accept")? {
-        c.tcp_defer_accept = i32_of(v);
+        s.config(|c| c.tcp_defer_accept = i32_of(v));
     }
     if let Some(on) = s.truth(c"open_tcp_keepalive") {
-        c.open_tcp_keepalive = on;
+        s.config(|c| c.open_tcp_keepalive = on);
     }
     if let Some(on) = s.truth(c"open_eof_check") {
-        c.open_eof_check = on;
+        s.config(|c| c.open_eof_check = on);
     }
     if let Some(on) = s.truth(c"open_eof_split") {
-        c.protocol.split_by_eof = on;
-        c.open_eof_check |= on;
+        s.config(|c| {
+            c.protocol.split_by_eof = on;
+            c.open_eof_check |= on;
+        });
     }
     if let Some(eof) = s.bytes(c"package_eof")? {
-        set_eof(s, c, &eof)?;
+        set_eof(s, &eof)?;
     }
     if let Some(on) = s.truth(c"open_http_protocol") {
-        c.open_http_protocol = on;
+        s.config(|c| c.open_http_protocol = on);
     }
     if let Some(on) = s.truth(c"open_websocket_protocol") {
-        c.open_websocket_protocol = on;
-        c.open_http_protocol |= on;
+        s.config(|c| {
+            c.open_websocket_protocol = on;
+            c.open_http_protocol |= on;
+        });
     }
     Ok(())
 }
@@ -168,45 +180,50 @@ fn sockets(s: &impl Source, c: &mut PortConfig) -> Step {
     clippy::cast_sign_loss,
     reason = "upstream's implicit conversions to the uint8_t fields"
 )]
-fn framing(s: &impl Source, c: &mut PortConfig) -> Step {
+fn framing(s: &impl Source) -> Step {
     if let Some(on) = s.truth(c"open_http2_protocol") {
-        c.open_http2_protocol = on;
-        c.open_http_protocol |= on;
+        s.config(|c| {
+            c.open_http2_protocol = on;
+            c.open_http_protocol |= on;
+        });
     }
     if let Some(on) = s.truth(c"open_mqtt_protocol") {
-        c.open_mqtt_protocol = on;
+        s.config(|c| c.open_mqtt_protocol = on);
     }
     if let Some(v) = s.long(c"open_redis_protocol")? {
-        c.open_redis_protocol = v != 0;
+        s.config(|c| c.open_redis_protocol = v != 0);
     }
     if let Some(v) = s.double(c"max_idle_time")? {
         // SW_MAX: a NaN takes the minimum.
-        c.max_idle_time = if v > TIMER_MIN_SEC { v } else { TIMER_MIN_SEC };
+        s.config(|c| c.max_idle_time = if v > TIMER_MIN_SEC { v } else { TIMER_MIN_SEC });
     }
     if let Some(v) = s.long(c"tcp_keepidle")? {
-        c.tcp_keepidle = i32_of(v);
+        s.config(|c| c.tcp_keepidle = i32_of(v));
     }
     if let Some(v) = s.long(c"tcp_keepinterval")? {
-        c.tcp_keepinterval = i32_of(v);
+        s.config(|c| c.tcp_keepinterval = i32_of(v));
     }
     if let Some(v) = s.long(c"tcp_keepcount")? {
-        c.tcp_keepcount = i32_of(v);
+        s.config(|c| c.tcp_keepcount = i32_of(v));
     }
     if let Some(v) = s.long(c"tcp_user_timeout")? {
-        c.tcp_user_timeout = i32_of(v);
+        s.config(|c| c.tcp_user_timeout = i32_of(v));
     }
     if let Some(on) = s.truth(c"tcp_fastopen") {
-        c.tcp_fastopen = on.into();
+        s.config(|c| c.tcp_fastopen = on.into());
     }
     if let Some(on) = s.truth(c"open_length_check") {
-        c.open_length_check = on;
+        s.config(|c| c.open_length_check = on);
     }
     if let Some(kind) = s.bytes(c"package_length_type")? {
         // `str_v.val()[0]`: an empty string's NUL.
         let kind = kind.first().copied().unwrap_or(0);
-        c.protocol.package_length_type = kind;
-        c.protocol.package_length_size = swoole_type_size(c_char::from_ne_bytes([kind])) as u8;
-        if c.protocol.package_length_size == 0 {
+        let size = swoole_type_size(c_char::from_ne_bytes([kind])) as u8;
+        s.config(|c| {
+            c.protocol.package_length_type = kind;
+            c.protocol.package_length_size = size;
+        });
+        if size == 0 {
             return Err(s.fatal(
                 E_ERROR,
                 c"unknown package_length_type, see pack(). Link: https://php.net/pack",
@@ -215,7 +232,7 @@ fn framing(s: &impl Source, c: &mut PortConfig) -> Step {
     }
     if let Some(v) = s.long(c"package_length_offset")? {
         let error = c"'package_length_offset' value is too large";
-        offset(s, v, &mut c.protocol.package_length_offset, error)?;
+        offset(s, v, |c| &mut c.protocol.package_length_offset, error)?;
     }
     let body = match s.long(c"package_body_offset")? {
         Some(v) => Some(v),
@@ -223,21 +240,26 @@ fn framing(s: &impl Source, c: &mut PortConfig) -> Step {
     };
     if let Some(v) = body {
         let error = c"'package_body_offset' value is too large";
-        offset(s, v, &mut c.protocol.package_body_offset, error)?;
+        offset(s, v, |c| &mut c.protocol.package_body_offset, error)?;
     }
     if let Some(callable) = s.callable(c"package_length_func")? {
-        c.protocol.get_package_length = Some(s.length_func());
-        let previous = std::mem::replace(&mut c.protocol.private_data_1, callable);
+        let length_func = s.length_func();
+        let previous = s.config(|c| {
+            c.protocol.get_package_length = Some(length_func);
+            std::mem::replace(&mut c.protocol.private_data_1, callable)
+        });
         if !previous.is_null() {
             s.release(previous);
         }
-        c.protocol.package_length_size = 0;
-        c.protocol.package_length_type = 0;
-        c.protocol.package_length_offset = SW_IPC_BUFFER_SIZE as u16;
+        s.config(|c| {
+            c.protocol.package_length_size = 0;
+            c.protocol.package_length_type = 0;
+            c.protocol.package_length_offset = SW_IPC_BUFFER_SIZE as u16;
+        });
         s.single_thread();
     }
     if let Some(v) = s.size(c"package_max_length")? {
-        c.protocol.package_max_length = u32_of(v);
+        s.config(|c| c.protocol.package_max_length = u32_of(v));
     }
     Ok(())
 }
@@ -245,22 +267,24 @@ fn framing(s: &impl Source, c: &mut PortConfig) -> Step {
 /// `php_swoole_server_set_websocket_option`: the frames the port passes on
 /// (`open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2) and its
 /// handshake's `Sec-WebSocket-Protocol`.
-fn websocket(s: &impl Source, c: &mut PortConfig) -> Step {
+fn websocket(s: &impl Source) -> Step {
     for (key, bit) in [
         (c"open_websocket_close_frame", 1),
         (c"open_websocket_ping_frame", 2),
         (c"open_websocket_pong_frame", 4),
     ] {
         if let Some(on) = s.truth(key) {
-            c.websocket_frames = if on {
-                c.websocket_frames | bit
-            } else {
-                c.websocket_frames & !bit
-            };
+            s.config(|c| {
+                c.websocket_frames = if on {
+                    c.websocket_frames | bit
+                } else {
+                    c.websocket_frames & !bit
+                };
+            });
         }
     }
     if let Some(protocol) = s.bytes(c"websocket_subprotocol")? {
-        c.websocket_protocol = Some(Box::new(protocol));
+        s.config(|c| c.websocket_protocol = Some(Box::new(protocol)));
     }
     Ok(())
 }
@@ -452,12 +476,22 @@ impl Source for Zend<'_> {
         // SAFETY: an SSL port.
         unsafe { swoole_rs_ports::lifecycle::ssl_init(self.port) }
     }
+
+    fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R {
+        // SAFETY: a bound port, live for set(); the borrow ends with `f`, which runs
+        // no PHP code, so no other borrow of the settings is live meanwhile.
+        f(unsafe { swoole_rs_server::port_config::of(self.port) })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, collections::HashMap};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::HashMap,
+        ptr::NonNull,
+    };
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
     use swoole_rs_server::port_config::swr_v1_port_config_new;
 
@@ -492,6 +526,11 @@ mod tests {
     struct Table {
         values: HashMap<&'static str, Fixture>,
         trace: RefCell<Vec<String>>,
+        /// The settings `apply` below hands over.
+        config: Cell<Option<NonNull<PortConfig>>>,
+        /// A `set()` of the same port that reading `tcp_keepidle` runs, as a PHP
+        /// conversion can.
+        nested: Option<Box<Table>>,
     }
 
     impl Table {
@@ -503,8 +542,20 @@ mod tests {
         fn get(&self, key: &CStr, kind: &str) -> Option<Fixture> {
             let key = key.to_str().unwrap();
             self.trace.borrow_mut().push(format!("{kind}:{key}"));
+            if let Some(nested) = &self.nested
+                && key == "tcp_keepidle"
+            {
+                nested.config.set(self.config.get());
+                assert!(super::apply(&**nested).is_ok());
+            }
             self.values.get(key).cloned()
         }
+    }
+
+    /// `super::apply` over `c`.
+    fn apply(table: &Table, c: &mut PortConfig) -> Step {
+        table.config.set(Some(NonNull::from(c)));
+        super::apply(table)
     }
 
     impl Source for Table {
@@ -552,6 +603,9 @@ mod tests {
         fn ssl_init(&self) -> bool {
             self.trace.borrow_mut().push("ssl_init".into());
             true
+        }
+        fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R {
+            f(unsafe { self.config.get().unwrap().as_mut() })
         }
     }
 
@@ -888,6 +942,25 @@ mod tests {
             c.websocket_protocol.as_deref().map(Vec::as_slice),
             Some(&b"chat"[..])
         );
+    }
+
+    #[test]
+    fn a_conversion_may_set_the_same_port() {
+        // The nested set() lands mid-way; the outer one goes on writing after it.
+        let nested = Table::default()
+            .with("backlog", fixture(9))
+            .with("package_max_length", fixture(3));
+        let table = Table {
+            nested: Some(Box::new(nested)),
+            ..Table::default()
+                .with("backlog", fixture(5))
+                .with("tcp_keepidle", fixture(7))
+        };
+        let mut c = port();
+        assert!(apply(&table, &mut c).is_ok());
+        assert_eq!(c.backlog, 9);
+        assert_eq!(c.tcp_keepidle, 7);
+        assert_eq!(c.protocol.package_max_length, 3);
     }
 
     fn warning(_function: &CStr, _message: &str) {}

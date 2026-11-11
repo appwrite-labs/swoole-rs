@@ -152,8 +152,8 @@ impl Sock {
 
     fn vector(&self, iov: &mut [libc::iovec], write: bool, all: bool) -> isize {
         let count = c_int::try_from(iov.len()).unwrap();
-        let mut vector = unsafe { IoVector::new(iov.as_ptr(), count) }.expect("IOVector");
-        swr_v1_hook_uring_vector(&self.ops, &mut vector, write, all)
+        let mut vector = unsafe { IoVector::new(iov.as_ptr(), count, write) }.expect("IOVector");
+        swr_v1_hook_uring_vector(&self.ops, &mut vector, all)
     }
 
     fn set_buffer_size(&self, option: c_int, size: c_int) {

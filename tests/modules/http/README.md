@@ -297,6 +297,13 @@ python3 -m pytest tests/modules/http/test_smuggling.py \
 A connection is read until the server closes it or sends nothing for a second; the
 cases run 32 at a time, so the phase takes about five seconds.
 
+`test_header_reentry.py` (`http-header-reentry`, Cargo build only) sends responses
+from `header_reentry.php`. In each one, a header or trailer value's `__toString`
+replaces or writes into `$response->header` (or `->trailer`, or a nested
+header array) while the response is being built. Each response must carry the
+headers as they were when sending began, and the server must answer the next
+request (#3263).
+
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,
 including parameter and property defaults, against upstream.

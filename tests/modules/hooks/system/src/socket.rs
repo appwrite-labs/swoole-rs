@@ -572,11 +572,11 @@ impl Sock {
     /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it.
     fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
         let count = c_int::try_from(iov.len()).unwrap();
-        // SAFETY: `iov`'s live vectors, an iovec's layout.
-        let mut vector = unsafe { IoVector::new(iov.as_ptr().cast(), count) }.unwrap();
         let write = matches!(op, WRITEV | WRITEV_ALL);
+        // SAFETY: `iov`'s live vectors, an iovec's layout.
+        let mut vector = unsafe { IoVector::new(iov.as_ptr().cast(), count, write) }.unwrap();
         self.co()
-            .vector(&mut vector, write, matches!(op, READV_ALL | WRITEV_ALL))
+            .vector(&mut vector, matches!(op, READV_ALL | WRITEV_ALL))
     }
 }
 
