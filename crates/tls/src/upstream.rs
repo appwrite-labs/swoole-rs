@@ -976,8 +976,9 @@ pub unsafe fn sendfile(
         return unsafe { ssl_sendfile(socket, fd, offset, length) };
     }
     // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
-    // SAFETY: the socket's and the file's descriptors, and the caller's offset.
-    let sent = unsafe { swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, offset, length) };
+    // SAFETY: the caller's writable offset.
+    let offset = unsafe { offset.as_mut() };
+    let sent = swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, offset, length);
     if cfg!(not(target_os = "linux")) && sent.warn != 0 {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }
