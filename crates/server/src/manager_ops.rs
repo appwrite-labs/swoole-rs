@@ -146,9 +146,8 @@ impl Context {
     }
     /// The server's worker registry.
     fn registry(&self) -> &mut registry::WorkerRegistry {
-        let registry = self.config().worker_registry.cast();
         // SAFETY: the server's live registry, which only the manager writes.
-        unsafe { &mut *registry }
+        unsafe { self.server().registry_mut() }
     }
     /// The event pool's reload task, for the ops that run while the manager reloads.
     fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {

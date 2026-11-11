@@ -132,7 +132,7 @@ impl PortInfo {
 // unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
 use swoole_rs_error::swoole_get_last_error_msg;
 use swoole_rs_phpprocess::swr_v1_phpprocess_worker;
-use swoole_rs_server::{swr_v1_server_admin_register, swr_v1_server_delete, swr_v1_server_new};
+use swoole_rs_server::{admin_register, swr_v1_server_delete, swr_v1_server_new};
 
 /// `instanceof_function(ce, parent)`.
 fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
@@ -287,8 +287,7 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
 fn put(serv: view::Server<'_>, which: u32) {
     match which {
         install::ALLOCATORS => crate::dispatch::use_zend_strings(serv),
-        // SAFETY: a live server that has not started.
-        install::ADMIN_COMMANDS => unsafe { swr_v1_server_admin_register(serv.raw(), php_memory) },
+        install::ADMIN_COMMANDS => admin_register(serv, php_memory),
         _ => crate::dispatch::install(serv, which),
     }
 }

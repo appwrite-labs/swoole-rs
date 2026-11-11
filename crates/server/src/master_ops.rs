@@ -483,10 +483,9 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     let at = core::mem::offset_of!(libc::sockaddr_in, sin_addr);
                     (&raw const info.addr.inet_v4).cast::<u8>().wrapping_add(at)
                 };
-                // SAFETY: the live state and an address of the family.
-                let index = unsafe {
-                    crate::local_addr::swr_v1_server_local_addr_index(Some(state), v6, addr)
-                };
+                // SAFETY: the address of the family, in the socket's live record.
+                let addr = unsafe { core::slice::from_raw_parts(addr, if v6 { 16 } else { 4 }) };
+                let index = crate::local_addr::index(state, v6, addr);
                 (sock.fd, !sock.ssl.is_null(), port, index)
             });
             conn.fd = fd;

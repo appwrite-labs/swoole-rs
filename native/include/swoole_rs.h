@@ -294,15 +294,6 @@ enum {
 typedef struct swr_v1_server_state swr_v1_server_state;
 swr_v1_server_state *swr_v1_server_state_new(void);
 void swr_v1_server_state_free(swr_v1_server_state *state);
-/* Server::get_startup_error_message: message, or code as text when it is empty and code > 0. */
-const char *swr_v1_server_startup_error(const char *message, int code);
-
-/* The number of a local interface address in the table Server::create read. */
-uint16_t swr_v1_server_local_addr_index(const swr_v1_server_state *state, bool v6, const uint8_t *addr);
-
-/* register_admin_server_commands(serv) (crates/server/src/admin_live.rs): upstream's admin
- * commands, whose get_memory_info reports php_memory(). */
-void swr_v1_server_admin_register(void *serv, size_t (*php_memory)(void));
 
 #ifdef __cplusplus
 }

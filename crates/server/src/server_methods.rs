@@ -322,7 +322,8 @@ pub fn get_startup_error_message() -> *const c_char {
     // The calling thread's error text, always terminated.
     let message = swoole_rs_error::swoole_get_last_error_msg();
     // SAFETY: as above.
-    unsafe { crate::swr_v1_server_startup_error(message, log::swr_v1_core_last_error()) }
+    let message = unsafe { CStr::from_ptr(message) };
+    crate::state::startup_error(message, log::swr_v1_core_last_error())
 }
 
 /// `Server::set_max_connection(max)`.

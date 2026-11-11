@@ -471,17 +471,9 @@ thread_local! {
 
 /// `Server::get_startup_error_message`: the last error message, or the last error
 /// code as text when there is no message. The text lives until the thread's next call.
-///
-/// # Safety
-/// `message` is a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_startup_error(
-    message: *const c_char,
-    code: c_int,
-) -> *const c_char {
-    // SAFETY: the caller passes a terminated string.
-    if !unsafe { CStr::from_ptr(message) }.is_empty() || code <= 0 {
-        return message;
+pub(crate) fn startup_error(message: &CStr, code: c_int) -> *const c_char {
+    if !message.is_empty() || code <= 0 {
+        return message.as_ptr();
     }
     ERROR_TEXT.with(|text| {
         let mut text = text.borrow_mut();
@@ -875,8 +867,7 @@ mod tests {
     #[test]
     fn startup_error_falls_back_to_the_code() {
         let text = |message: &CStr, code| {
-            // SAFETY: a terminated message.
-            let out = unsafe { swr_v1_server_startup_error(message.as_ptr(), code) };
+            let out = startup_error(message, code);
             // SAFETY: the message or this thread's text.
             unsafe { CStr::from_ptr(out) }.to_owned()
         };

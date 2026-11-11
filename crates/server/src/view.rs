@@ -12,6 +12,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
 use std::sync::Arc;
+use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -347,16 +348,31 @@ impl<'a> Server<'a> {
             .cast()
     }
 
+    /// The server's worker registry, which `ServerState` boxed for the server's life.
+    #[must_use]
+    pub fn registry(self) -> &'a WorkerRegistry {
+        let registry = self.config().worker_registry.cast::<WorkerRegistry>();
+        // SAFETY: the server's live registry, whose writers the server's own
+        // synchronization keeps apart from readers (`registry_mut`).
+        unsafe { &*registry }
+    }
+
+    /// The server's worker registry, to write.
+    ///
+    /// # Safety
+    /// No other reference to the registry is live meanwhile, and no other thread
+    /// reads it (only the master configures it, and only the manager tracks pids).
+    #[must_use]
+    pub unsafe fn registry_mut(self) -> &'a mut WorkerRegistry {
+        let registry = self.config().worker_registry.cast::<WorkerRegistry>();
+        // SAFETY: per the caller; the registry lives as long as the server.
+        unsafe { &mut *registry }
+    }
+
     /// `Server::get_user_worker_num()`: the user workers added so far.
     #[must_use]
     pub fn user_worker_num(self) -> usize {
-        let registry = self.config().worker_registry;
-        // SAFETY: the server's live registry, configured only by the master.
-        unsafe {
-            (*registry.cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>())
-                .pending()
-                .len()
-        }
+        self.registry().pending().len()
     }
 
     /// The server's worker arrays and counts.

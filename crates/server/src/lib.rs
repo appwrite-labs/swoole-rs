@@ -101,18 +101,15 @@ pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 pub use state::{
-    ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
-    swr_v1_server_text_slot,
+    ServerState, swr_v1_server_state_free, swr_v1_server_state_new, swr_v1_server_text_slot,
 };
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub use admin::swr_v1_server_admin_register;
+pub use admin::admin_register;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use server_object::{swr_v1_server_delete, swr_v1_server_new};
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;
-
-pub use local_addr::swr_v1_server_local_addr_index;
 
 /// One native fact or effect on the server in `context`.
 pub type ServerCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
