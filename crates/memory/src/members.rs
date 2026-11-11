@@ -426,37 +426,15 @@ upstream! {
     }
     "_Z14sw_shm_protectPvi", "_Z14sw_shm_protectPvi" =>
     /// `int sw_shm_protect(void *ptr, int flags)`.
-    #[expect(
-        clippy::not_unsafe_ptr_arg_deref,
-        reason = "upstream's C signature; callers pass a live sw_shm_malloc payload"
-    )]
-    pub extern "C" fn sw_shm_protect(payload: *mut c_void, flags: c_int) -> c_int {
-        // SAFETY: `payload` is a live mapping's payload.
+    ///
+    /// # Safety
+    /// `payload` is a live `sw_shm_malloc` payload.
+    pub unsafe extern "C" fn sw_shm_protect(payload: *mut c_void, flags: c_int) -> c_int {
+        // SAFETY: per the caller.
         let (base, total) = unsafe { extent(payload) };
         // SAFETY: the mapping its header describes.
         unsafe { libc::mprotect(base, total, flags) }
     }
-}
-
-/// `void *sw_shm_realloc(void *ptr, size_t new_size)`: copies what fits.
-#[must_use]
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "upstream's C signature; callers pass a live sw_shm_malloc payload"
-)]
-pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_void {
-    let fresh = sw_shm_malloc(size);
-    if fresh.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: `payload` is a live mapping's payload.
-    let old = unsafe { extent(payload) }.1;
-    // SAFETY: `fresh` is a new one.
-    let new = unsafe { extent(fresh) }.1;
-    // SAFETY: two disjoint live payloads, each `total - 8` bytes.
-    unsafe { ptr::copy_nonoverlapping(payload.cast::<u8>(), fresh.cast::<u8>(), old.min(new) - 8) };
-    unmap(payload);
-    fresh
 }
 
 // ---------------------------------------------------------------- Table

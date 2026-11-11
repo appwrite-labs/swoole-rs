@@ -255,13 +255,14 @@ fn dtor(value: &mut zval) {
 /// Returns argc.
 fn receive_args(
     server: view::Server<'_>,
-    request: *mut c_void,
-    info: &DataHead,
+    request: &RecvData,
     event_object: bool,
     args: &mut [zval; 4],
 ) -> usize {
+    let info = &request.info;
     let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
     let recv_data = php_swoole_get_recv_data;
+    let request = ptr::from_ref(request).cast_mut().cast();
     if event_object {
         let props = Props::init(&mut args[1], &DATA[EVENT]);
         props.long(c"fd", fd);
@@ -592,7 +593,8 @@ const UNIX_DGRAM: c_int = 6;
 /// `websocket::STATUS_ACTIVE`.
 const WEBSOCKET_ACTIVE: u8 = 3;
 
-/// `RecvData`: the event's head, then its payload.
+/// `RecvData`: the event's head, then its payload. Native code lends each
+/// receive slot its request for the call.
 #[repr(C)]
 struct RecvData {
     info: DataHead,
@@ -728,19 +730,20 @@ pub unsafe fn php_swoole_server_on_receive(
     server: view::Server<'_>,
     request: *mut c_void,
 ) -> c_int {
-    receive(server, request)
+    // SAFETY: per the caller.
+    receive(server, unsafe { &*request.cast() })
 }
 
 /// `php_swoole_server_onReceive`: the port's `onReceive`, if any.
-fn receive(server: view::Server<'_>, request: *mut c_void) -> c_int {
-    let info = head(request);
+fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+    let info = &request.info;
     let cb = port_callback(server, info.server_fd, ON_RECEIVE);
     if cb.is_null() {
         return SW_OK;
     }
     let config = server.config();
     let mut args = [zserv(), undef(), undef(), undef()];
-    let argc = receive_args(server, request, info, config.event_object, &mut args);
+    let argc = receive_args(server, request, config.event_object, &mut args);
     let called = invoke(
         cb,
         args.get_mut(..argc).unwrap_or_default(),
@@ -758,22 +761,23 @@ fn receive(server: view::Server<'_>, request: *mut c_void) -> c_int {
     SW_OK
 }
 
-extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: *mut c_void) -> c_int {
+extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
     receive(server, request)
 }
 
-extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: *mut c_void) -> c_int {
+extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
     let Some(families) = swoole_rs_phpswoole::families() else {
         return SW_OK;
     };
+    let request = ptr::from_ref(request).cast_mut().cast();
     // SAFETY: the Server's own event.
     unsafe { (families.http.on_receive)(server.raw(), request) }
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
-extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: *mut c_void) -> c_int {
-    let fd = head(request).fd;
+extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+    let fd = request.info.fd;
     let Some(conn) = server.by_session(fd) else {
         log::warning(
             c"php_swoole_redis_server_onReceive",
@@ -791,24 +795,29 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: *mut c
     };
     let data = swoole_rs_zend::Owned::default();
     // SAFETY: the live server and its received request; `data` takes the payload.
-    unsafe { php_swoole_get_recv_data(server.raw(), data.as_ptr(), request) };
+    unsafe {
+        php_swoole_get_recv_data(
+            server.raw(),
+            data.as_ptr(),
+            ptr::from_ref(request).cast_mut().cast(),
+        )
+    };
     let result = redis(server, fd, &data, coroutine_enabled(server));
     relay(result.is_err());
     result.unwrap_or(SW_ERR)
 }
 
-extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: *mut c_void) -> c_int {
-    // SAFETY: an onPacket event's payload is its `DgramPacket`.
-    let packet = unsafe { (*request.cast::<RecvData>()).data };
+extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+    let packet = request.data;
     #[expect(clippy::cast_ptr_alignment, reason = "read unaligned")]
     let dgram = packet.cast::<DgramPacket>();
-    // SAFETY: as above.
+    // SAFETY: an onPacket event's payload is its `DgramPacket`.
     let DgramPacket {
         socket_type,
         socket_addr,
         length,
     } = unsafe { dgram.read_unaligned() };
-    let info = head(request);
+    let info = &request.info;
     let addr = &socket_addr.addr;
     let text = |family, ip: *const c_void| {
         // SAFETY: the address of `family` in the packet's sender.

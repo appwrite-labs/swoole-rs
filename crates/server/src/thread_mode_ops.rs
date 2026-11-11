@@ -159,8 +159,11 @@ impl swoole_rs_process::workers::Answer for Context {
 }
 
 /// A thread's body inside `worker_thread_start`: [`RUN_THREAD_MAIN`] over the context.
-extern "C" fn thread_main(main: *mut c_void) {
-    // SAFETY: `OP_WORKER_THREAD_START`'s live context, lent for the call.
+///
+/// # Safety
+/// `main` is `OP_WORKER_THREAD_START`'s live `(Context, u64)`, lent for the call.
+unsafe extern "C" fn thread_main(main: *mut c_void) {
+    // SAFETY: per the caller.
     let (ctx, arg) = unsafe { *main.cast::<(Context, u64)>() };
     ctx.run(RUN_THREAD_MAIN, arg);
 }
