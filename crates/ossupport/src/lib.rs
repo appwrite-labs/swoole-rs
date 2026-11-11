@@ -25,10 +25,7 @@ mod file_record;
     target_os = "freebsd"
 ))]
 pub use file::swr_v1_os_sendfile;
-pub use file::{
-    FileIo, FileSize, Sendfile, file_close, file_open, file_size, read_all, swoole_sendfile,
-    swr_v1_os_sendfile_copy, write_all,
-};
+pub use file::{FileIo, FileSize, Sendfile, file_close, file_open, file_size, read_all, write_all};
 pub use file_api::*;
 pub use file_record::*;
 mod system;
@@ -37,9 +34,9 @@ pub use system::swoole_daemon;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 pub use system::swoole_get_cpu_affinity;
 pub use system::{
-    swoole_random_bytes, swoole_thread_get_name, swoole_thread_set_name, swr_v1_os_is_root_user,
-    swr_v1_os_set_isolation, swr_v1_os_set_process_death_signal, swr_v1_os_thread_get_name,
-    swr_v1_os_thread_native_id, swr_v1_os_thread_set_name,
+    swoole_random_bytes, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
+    swr_v1_os_set_process_death_signal, swr_v1_os_thread_native_id, thread_get_name,
+    thread_set_name,
 };
 mod msg_queue;
 pub use msg_queue::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};

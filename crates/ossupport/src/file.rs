@@ -1,7 +1,7 @@
 //! `swoole::File` IO loops, `file_get_size` and the sendfile variants (upstream `src/os/{file,sendfile,base}.cc`). Rust runs the
 //! syscalls; native code keeps the descriptors and logs warnings, so every
 //! function returns right after the failing call with its errno intact.
-use libc::{c_char, c_int, off_t};
+use libc::{c_int, off_t};
 use std::ffi::CStr;
 use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
@@ -65,17 +65,22 @@ pub fn file_close(fd: c_int) -> bool {
     fd != -1 && sys::close(fd) == 0
 }
 
-/// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere.
-/// # Safety
-/// `filename` is a writable NUL-terminated `XXXXXX` template.
-pub(crate) unsafe fn tmpfile(filename: *mut c_char) -> c_int {
+/// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere, over
+/// the `XXXXXX` template up to the first NUL in `template`; -1 with `EINVAL` when
+/// there is none.
+pub(crate) fn tmpfile(template: &mut [u8]) -> c_int {
+    if !template.contains(&0) {
+        sys::set_errno(libc::EINVAL);
+        return -1;
+    }
+    let filename = template.as_mut_ptr().cast();
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: a writable template per the contract.
+    // SAFETY: a writable template, NUL-terminated within the slice.
     unsafe {
         libc::mkostemp(filename, libc::O_WRONLY | libc::O_CREAT)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    // SAFETY: a writable template per the contract.
+    // SAFETY: a writable template, NUL-terminated within the slice.
     unsafe {
         libc::mkstemp(filename)
     }
@@ -142,58 +147,20 @@ pub struct Sendfile {
     pub warn: u32,
 }
 
-/// Linux's direct sendfile syscall, preserving a nullable offset and its errno.
-/// # Safety
-/// offset is null or an exclusively writable `off_t`; descriptors follow sendfile(2).
+/// `swoole_sendfile` (upstream `src/os/sendfile.cc`) on Linux: the direct syscall,
+/// from `offset` (advanced) or the file's own position, with its errno.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub unsafe extern "C" fn swr_v1_os_sendfile(
+#[must_use]
+pub fn swr_v1_os_sendfile(
     out_fd: c_int,
     in_fd: c_int,
-    offset: *mut off_t,
+    offset: Option<&mut off_t>,
     size: usize,
 ) -> Sendfile {
-    // SAFETY: the caller forwards the syscall's descriptor/offset contract.
+    let offset = offset.map_or(std::ptr::null_mut(), std::ptr::from_mut);
+    // SAFETY: `offset` is null or a live, exclusively borrowed `off_t`.
     let result = unsafe { libc::sendfile(out_fd, in_fd, offset, size) };
     Sendfile { result, warn: 0 }
-}
-
-/// The `!HAVE_SENDFILE` fallback: one `pread` of at most `SW_BUFFER_SIZE_BIG`
-/// bytes at `*offset`, written once; the offset advances by what was written.
-pub extern "C" fn swr_v1_os_sendfile_copy(
-    out_fd: c_int,
-    in_fd: c_int,
-    offset: &mut off_t,
-    size: usize,
-) -> Sendfile {
-    #[expect(
-        clippy::large_stack_arrays,
-        reason = "upstream's SW_BUFFER_SIZE_BIG stack buffer"
-    )]
-    let mut buf = [0_u8; 65536];
-    let amount = size.min(buf.len());
-    let n = sys::pread(in_fd, buf.get_mut(..amount).unwrap_or_default(), *offset);
-    if n <= 0 {
-        return Sendfile {
-            result: -1,
-            warn: 1,
-        };
-    }
-    let written = sys::write(out_fd, buf.get(..n.unsigned_abs()).unwrap_or_default());
-    if written < 0 {
-        return Sendfile {
-            result: written,
-            warn: 2,
-        };
-    }
-    *offset += isize_to_off(written);
-    Sendfile {
-        result: written,
-        warn: 0,
-    }
-}
-
-const fn isize_to_off(value: isize) -> off_t {
-    value as off_t
 }
 
 /// One Darwin `sendfile`: `length` is in/out, so a retry sends what the
@@ -225,24 +192,23 @@ fn sendfile_once(out_fd: c_int, in_fd: c_int, at: off_t, length: &mut off_t) -> 
     (ret, sent)
 }
 
-/// The kqueue platforms' `sendfile`: retried on `EINTR`, the offset advanced by
-/// every call's progress; success returns the (Darwin: reported) length.
-/// # Safety
-/// `offset` points to a valid, exclusively borrowed `off_t`.
+/// `swoole_sendfile` on the kqueue platforms: retried on `EINTR`, `offset` (from 0
+/// without one) advanced by every call's progress; success returns the (Darwin:
+/// reported) length.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
-pub unsafe extern "C" fn swr_v1_os_sendfile(
+#[must_use]
+pub fn swr_v1_os_sendfile(
     out_fd: c_int,
     in_fd: c_int,
-    offset: *mut off_t,
+    offset: Option<&mut off_t>,
     size: usize,
 ) -> Sendfile {
+    let mut start = 0;
+    let offset = offset.unwrap_or(&mut start);
     let mut length = to_off(size);
     loop {
-        // SAFETY: `offset` is valid per the contract.
-        let at = unsafe { *offset };
-        let (ret, sent) = sendfile_once(out_fd, in_fd, at, &mut length);
-        // SAFETY: `offset` is valid per the contract.
-        unsafe { *offset += sent };
+        let (ret, sent) = sendfile_once(out_fd, in_fd, *offset, &mut length);
+        *offset += sent;
         match ret {
             -1 if errno() == libc::EINTR => {}
             -1 => {
@@ -264,59 +230,6 @@ pub unsafe extern "C" fn swr_v1_os_sendfile(
                 };
             }
         }
-    }
-}
-
-/// `ssize_t swoole_sendfile(int out_fd, int in_fd, off_t *offset, size_t size)`
-/// (upstream `src/os/sendfile.cc`): Linux's syscall, the kqueue platforms' loop,
-/// or one copied chunk where there is no `sendfile`. `off_t` mangles as `long`,
-/// or Darwin's `long long`.
-/// # Safety
-/// As `swr_v1_os_sendfile` (`swr_v1_os_sendfile_copy` without a `sendfile`).
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_vendor = "apple"),
-    unsafe(export_name = "_Z15swoole_sendfileiiPxm")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_vendor = "apple")),
-    unsafe(export_name = "_Z15swoole_sendfileiiPlm")
-)]
-pub unsafe extern "C" fn swoole_sendfile(
-    out_fd: c_int,
-    in_fd: c_int,
-    offset: *mut off_t,
-    size: usize,
-) -> isize {
-    let origin = c"swoole_sendfile";
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_vendor = "apple",
-        target_os = "freebsd"
-    ))]
-    {
-        // SAFETY: as the caller promises.
-        let sent = unsafe { swr_v1_os_sendfile(out_fd, in_fd, offset, size) };
-        if sent.warn != 0 {
-            swoole_rs_corebase::log::sys_warning(origin, format_args!("sendfile failed"));
-        }
-        sent.result
-    }
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_vendor = "apple",
-        target_os = "freebsd"
-    )))]
-    {
-        // SAFETY: as the caller promises.
-        let sent = swr_v1_os_sendfile_copy(out_fd, in_fd, unsafe { &mut *offset }, size);
-        match sent.warn {
-            1 => swoole_rs_corebase::log::sys_warning(origin, format_args!("pread() failed")),
-            2 => swoole_rs_corebase::log::sys_warning(origin, format_args!("write() failed")),
-            _ => {}
-        }
-        sent.result
     }
 }
 
@@ -419,31 +332,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sendfile_copy_moves_one_chunk_and_advances_the_offset() {
-        let source = scratch(b"0123456789");
-        let sink = scratch(b"");
-        let mut offset: off_t = 2;
-        let sent = swr_v1_os_sendfile_copy(sink.as_raw_fd(), source.as_raw_fd(), &mut offset, 5);
-        assert_eq!(
-            (sent, offset),
-            (Sendfile { result: 5, warn: 0 }, 7),
-            "five bytes from offset two"
-        );
-        let sent = swr_v1_os_sendfile_copy(sink.as_raw_fd(), source.as_raw_fd(), &mut offset, 0);
-        assert_eq!(
-            sent,
-            Sendfile {
-                result: -1,
-                warn: 1
-            },
-            "an empty read warns"
-        );
-        let mut buf = [0_u8; 8];
-        let io = read_all(sink.as_raw_fd(), &mut buf);
-        assert_eq!(&buf[..io.done], b"23456", "written to the sink");
-    }
-
     #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
     #[test]
     fn kqueue_sendfile_sends_the_range_and_advances_the_offset() {
@@ -452,8 +340,7 @@ mod tests {
         let (sink, mut peer) =
             std::os::unix::net::UnixStream::pair().unwrap_or_else(|e| unreachable!("{e}"));
         let mut offset: off_t = 3;
-        let sent =
-            unsafe { swr_v1_os_sendfile(sink.as_raw_fd(), source.as_raw_fd(), &raw mut offset, 4) };
+        let sent = swr_v1_os_sendfile(sink.as_raw_fd(), source.as_raw_fd(), Some(&mut offset), 4);
         assert_eq!(
             (sent, offset),
             (Sendfile { result: 4, warn: 0 }, 7),
@@ -470,7 +357,7 @@ mod tests {
     fn open_close_and_tmpfile_follow_upstream() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut template = *b"/tmp/swr-ossupport-XXXXXX\0";
-        let fd = unsafe { tmpfile(template.as_mut_ptr().cast()) };
+        let fd = tmpfile(&mut template);
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
         let reopened = file_open(fd, path, libc::O_RDONLY, 0);

@@ -13,9 +13,8 @@ use swoole_rs_clients::client::{
 };
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_process::workers::entry;
 use swoole_rs_server::callbacks as cb;
-use swoole_rs_server::worker_methods;
+use swoole_rs_server::{event_worker_ops, manager_ops, task_worker_ops, worker_methods};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -163,8 +162,7 @@ fn pid() -> c_int {
 
 /// `serv->reload(reload_all_workers)`.
 fn reload(serv: Server, reload_all_workers: bool) -> bool {
-    // SAFETY: the running server.
-    unsafe { entry::reload(serv.0, reload_all_workers) }
+    manager_ops::reload(serv.view(), reload_all_workers)
 }
 
 fn shutdown(serv: Server) -> bool {
@@ -824,8 +822,8 @@ fn restart_worker_process() {
         (*pool.add(1)).workers = serv.config().workers.cast();
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
-        entry::restart_worker_process(serv.0, (&raw const fake_exit).cast());
     }
+    _ = manager_ops::restart_worker_process(serv.view(), &fake_exit);
 
     wait_all_child_processes();
 
@@ -1006,8 +1004,7 @@ fn current_worker() -> *mut WorkerRecord {
 }
 
 fn kill_worker(serv: Server, worker_id: c_int) -> bool {
-    // SAFETY: the running server.
-    unsafe { entry::kill_worker(serv.0, worker_id) }
+    event_worker_ops::kill_worker(serv.view(), worker_id)
 }
 
 /// `test_kill_worker`'s `Options`.
@@ -1050,8 +1047,7 @@ unsafe extern "C" fn kill_on_receive(
 
 unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
     server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
-    // SAFETY: the running server.
-    unsafe { entry::drain_worker_pipe(serv) };
+    event_worker_ops::drain_worker_pipe(Server(serv).view());
 }
 
 unsafe extern "C" fn kill_self_on_worker_stop(
@@ -1396,9 +1392,8 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     let resp = server_response();
     serv.send(session, &resp);
 
-    // SAFETY: the running server; `resp` holds its bytes; no current task.
-    let finished =
-        unsafe { entry::finish(serv.0, resp.as_ptr().cast(), resp.len(), 0, ptr::null()) };
+    // SAFETY: no current task.
+    let finished = unsafe { task_worker_ops::finish(serv.view(), &resp, 0, ptr::null()) };
     expect(!finished, "!serv->finish(resp)");
 
     expect(
@@ -1747,12 +1742,12 @@ unsafe extern "C" fn clean_on_start(_: *mut c_void, serv: *mut c_void) {
 }
 
 unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
-    let worker = current_worker().cast();
-    // SAFETY: the running server and this process's worker.
-    unsafe { entry::clean_worker_connections(serv, worker) };
+    let serv = Server(serv).view();
+    // SAFETY: this process's worker.
+    let worker = unsafe { Worker::new(current_worker()) };
+    event_worker_ops::clean_worker_connections(serv, worker);
     client_run(Op::Shutdown(SHUT_RDWR));
-    // SAFETY: as above.
-    unsafe { entry::stop_async_worker(serv, worker) };
+    event_worker_ops::stop_async_worker(serv, worker);
 }
 
 unsafe extern "C" fn clean_on_connect(_: *mut c_void, serv: *mut c_void, _: *mut DataHead) {

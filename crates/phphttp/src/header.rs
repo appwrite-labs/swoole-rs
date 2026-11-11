@@ -1,9 +1,9 @@
 //! The HTTP/1 response header and trailer, and body compression, as
 //! `swoole::http::Context::build_header`, `build_trailer` and `compress` did
 //! them. Each send leases reusable storage until its IO completes.
+use crate::host;
 use crate::parse::CAPABILITIES;
 use crate::state::{Slot, State};
-use crate::{host, send};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -442,13 +442,13 @@ fn build(
 /// # Errors
 /// A header value's `__toString` bailed out.
 pub(crate) fn header<R>(
-    ctx: *mut host::Context,
+    mut ctx: crate::context::Ctx,
     body: *const c_char,
     length: usize,
     f: impl FnOnce(&mut Vec<u8>) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        build(send::state(ctx), body, length, out)?;
+        build(ctx.state(), body, length, out)?;
         Ok(f(out))
     })
 }
@@ -458,11 +458,11 @@ pub(crate) fn header<R>(
 /// # Errors
 /// A trailer value's `__toString` bailed out.
 pub(crate) fn trailer<R>(
-    ctx: *mut host::Context,
+    mut ctx: crate::context::Ctx,
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        if let Some(trailer) = property(&send::state(ctx).response.zobject, 2) {
+        if let Some(trailer) = property(&ctx.state().response.zobject, 2) {
             each(trailer, |key, value_| {
                 let Ok(name) = key else { return Ok(()) };
                 if value_.is_null() {

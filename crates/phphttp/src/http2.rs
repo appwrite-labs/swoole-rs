@@ -3,9 +3,7 @@
 use crate::{
     context::{self, free},
     header,
-    host::Context,
     parse::{self, CAPABILITIES},
-    send,
 };
 use std::{
     ffi::{CStr, c_int, c_void},
@@ -18,14 +16,10 @@ use swoole_rs_zend::{
     sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval},
 };
 
-/// A live context the HTTP/2 server holds: a connection's settings context
-/// or a stream's. Only [`Ctx::server_context`], [`Ctx::stream_context`] and
-/// the server's C entry points (whose callers promise a live context) make
-/// one; what the server reads and does over it is safe, until a `release_*`
-/// ends it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct Ctx(*mut Context);
+/// The HTTP/2 server's contexts: a connection's settings context
+/// ([`Ctx::server_context`]) or a stream's ([`Ctx::stream_context`]), live
+/// until a `release_*` ends them.
+pub use crate::context::Ctx;
 
 /// What the HTTP/2 server reads and writes of a context.
 #[derive(Clone, Copy)]
@@ -121,26 +115,16 @@ fn compression() -> bool {
 }
 
 impl Ctx {
-    /// The handle of one of this crate's live HTTP/2 contexts.
-    pub(crate) fn of(ctx: *mut Context) -> Self {
-        Self(ctx)
-    }
-
-    /// The context the handle names.
-    pub(crate) fn raw(self) -> *mut Context {
-        self.0
-    }
-
     /// `Context::set_header(key, value, false)` of a string value.
     pub fn set_header(self, key: &[u8], value: &[u8]) {
-        crate::response::set_header_bytes(self.0, key, value);
+        crate::response::set_header_bytes(self, key, value);
     }
 
     /// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
     /// use), or the response object.
     #[must_use]
-    pub fn value(self, which: Value) -> *mut zval {
-        let state = send::state(self.0);
+    pub fn value(mut self, which: Value) -> *mut zval {
+        let state = self.state();
         let property = match which {
             Value::Response => return state.response.zobject.ptr,
             Value::Server => parse::Property::Server,
@@ -157,7 +141,9 @@ impl Ctx {
     /// The bytes are read before the next append.
     #[must_use]
     pub unsafe fn data<'a>(self) -> &'a [u8] {
-        send::state(self.0)
+        // SAFETY: the handle's live context, and per the caller, the bytes
+        // are read before the next append.
+        unsafe { &*self.raw().cast::<crate::state::State>() }
             .request
             .h2_data
             .as_deref()
@@ -165,36 +151,39 @@ impl Ctx {
     }
 
     /// Start the request body (`SW_HTTP2_DATA_BUFFER_SIZE` reserved), unless
-    /// it has started.
-    pub fn data_start(self) {
-        send::state(self.0)
-            .request
-            .h2_data
-            .get_or_insert_with(|| Box::new(Vec::with_capacity(DATA_BUFFER_SIZE)));
+    /// it has started: the bytes it holds.
+    #[must_use]
+    pub fn data_start(mut self) -> usize {
+        self.body().len()
     }
 
     /// Append a DATA frame's payload to the request body.
-    pub fn data_append(self, payload: &[u8]) {
-        self.data_start();
-        if let Some(data) = send::state(self.0).request.h2_data.as_mut() {
-            data.extend_from_slice(payload);
-        }
+    pub fn data_append(mut self, payload: &[u8]) {
+        self.body().extend_from_slice(payload);
+    }
+
+    /// The request body, started on first use.
+    fn body(&mut self) -> &mut Vec<u8> {
+        self.state()
+            .request
+            .h2_data
+            .get_or_insert_with(|| Box::new(Vec::with_capacity(DATA_BUFFER_SIZE)))
     }
 
     /// `parse_multipart_data` over the whole body.
     #[must_use]
-    pub fn multipart(self) -> bool {
-        let state = send::state(self.0);
+    pub fn multipart(mut self) -> bool {
+        let state = self.state();
         let data = state.request.h2_data.take().unwrap_or_default();
         let parsed = parse::multipart_parse(state, &data);
-        send::state(self.0).request.h2_data = Some(data);
+        self.state().request.h2_data = Some(data);
         parsed
     }
 
     /// The context's `field` (0 for a compression field without compression).
     #[must_use]
-    pub fn get(self, field: Field) -> u32 {
-        let state = send::state(self.0);
+    pub fn get(mut self, field: Field) -> u32 {
+        let state = self.state();
         match field {
             Field::End => state.end.into(),
             Field::SendHeader => state.send_header.into(),
@@ -220,8 +209,8 @@ impl Ctx {
         clippy::cast_possible_truncation,
         reason = "upstream's narrower fields"
     )]
-    pub fn set(self, field: Field, value: u32) {
-        let state = send::state(self.0);
+    pub fn set(mut self, field: Field, value: u32) {
+        let state = self.state();
         match field {
             Field::End => state.end = value as u8,
             Field::SendHeader => state.send_header = value as u8,
@@ -237,62 +226,58 @@ impl Ctx {
     /// `ctx->send`.
     #[must_use]
     pub fn send(self, data: &[u8]) -> bool {
-        context::send(self.0, data)
+        context::send(self, data)
     }
 
     /// `ctx->close`.
     pub fn close(self) {
-        context::close(self.0);
+        context::close(self);
     }
 
     /// `compression_types` lists the response's content type.
     #[must_use]
-    pub fn compressible(self, kind: &[u8]) -> bool {
-        compression() && context::compression_type(send::state(self.0), Some(kind))
+    pub fn compressible(mut self, kind: &[u8]) -> bool {
+        compression() && context::compression_type(self.state(), Some(kind))
     }
 
     /// `Context::set_compression_method` from a request's `accept-encoding`.
-    pub fn compression_method(self, accept_encoding: &[u8]) {
-        parse::compression_method(send::state(self.0), accept_encoding);
+    pub fn compression_method(mut self, accept_encoding: &[u8]) {
+        parse::compression_method(self.state(), accept_encoding);
     }
 
-    /// `Context::compress`: the encoding's name and the compressed body, or
-    /// `None` to send `body` as it is. The bytes live until the next compression.
-    /// # Safety
-    /// The bytes are read before the next compression.
+    /// `Context::compress`: the encoding's name and the compressed body's
+    /// length, or `None` to send `body` as it is.
     #[must_use]
-    pub unsafe fn compress<'a>(self, body: &[u8]) -> Option<(&'static CStr, &'a [u8])> {
-        header::compress_body(send::state(self.0), body)
+    pub fn compress(mut self, body: &[u8]) -> Option<(&'static CStr, usize)> {
+        header::compress_body(self.state(), body).map(|(encoding, body)| (encoding, body.len()))
     }
 
     /// The body the last [`Ctx::compress`] made.
-    /// # Safety
-    /// The bytes are read before the next compression.
     #[must_use]
-    pub unsafe fn compressed<'a>(self) -> &'a [u8] {
-        header::compressed(send::state(self.0))
+    pub fn compressed(mut self) -> Vec<u8> {
+        header::compressed(self.state()).to_vec()
     }
 
     /// The connection's session id.
     #[must_use]
-    pub fn fd(self) -> i64 {
-        send::state(self.0).fd
+    pub fn fd(mut self) -> i64 {
+        self.state().fd
     }
 
     /// `~Stream`: the stream lets go of its context, which is complete.
     /// # Safety
     /// A stream's context, released once; no copy of the handle is used after.
-    pub unsafe fn release_stream(self) {
-        let state = send::state(self.0);
+    pub unsafe fn release_stream(mut self) {
+        let state = self.state();
         state.stream_id = 0;
         state.end = 1;
         // SAFETY: per the caller.
-        unsafe { free(self.0) };
+        unsafe { free(self) };
     }
 
     /// The static handler answers the request: no server hook counts it.
-    pub fn unhook(self) {
-        let state = send::state(self.0);
+    pub fn unhook(mut self) {
+        let state = self.state();
         state.before_request = 0;
         state.after_response = 0;
     }
@@ -303,7 +288,7 @@ impl Ctx {
     /// Nothing else references the context, and no copy of the handle is used after.
     pub unsafe fn release_default(self) {
         // SAFETY: per the caller.
-        unsafe { free(self.0) };
+        unsafe { free(self) };
     }
 
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
@@ -316,35 +301,35 @@ impl Ctx {
     /// settings, for session `fd`, kept alive and counted by the request hooks.
     #[must_use]
     pub fn server_context(server: view::Server<'_>, fd: i64) -> Self {
-        let ctx = context::alloc();
-        context::init(send::state(ctx), server);
-        let state = send::state(ctx);
+        let mut ctx = context::alloc();
+        context::init(ctx.state(), server);
+        let state = ctx.state();
         state.fd = fd;
         state.http2 = 1;
         state.keepalive = 1;
         state.before_request = 1;
-        Self(ctx)
+        ctx
     }
 
     /// A stream's context: a copy of this settings context's, with its request
     /// and response objects and the request's `streamId`.
     #[must_use]
-    pub fn stream_context(self, fd: i64, stream_id: u32) -> Self {
-        let ctx = context::context_new(fd);
-        context::copy_settings(send::state(ctx), send::state(self.0));
-        let state = send::state(ctx);
+    pub fn stream_context(mut self, fd: i64, stream_id: u32) -> Self {
+        let mut ctx = context::context_new(fd);
+        context::copy_settings(ctx.state(), self.state());
+        let state = ctx.state();
         state.http2 = 1;
         state.stream_id = stream_id;
         state.keepalive = 1;
         if let Some(request) = state.request.zobject.props() {
             request.long(c"streamId", i64::from(stream_id));
         }
-        Self(ctx)
+        ctx
     }
 
     /// `ctx->request.path`: the `:path` up to its query.
-    pub fn set_path(self, path: &[u8]) {
-        let state = send::state(self.0);
+    pub fn set_path(mut self, path: &[u8]) {
+        let state = self.state();
         // SAFETY: the path's bytes, copied into request memory the context frees.
         state.request.path = unsafe { swr_zend_http_estrndup(path.as_ptr().cast(), path.len()) };
         state.request.path_len = u32::try_from(path.len()).unwrap_or(u32::MAX);
@@ -353,8 +338,8 @@ impl Ctx {
     /// A `multipart/form-data` content type's boundary starts the request's
     /// multipart parser; false when it has none.
     #[must_use]
-    pub fn multipart_start(self, content_type: &[u8]) -> bool {
-        parse::multipart_start(send::state(self.0), content_type)
+    pub fn multipart_start(mut self, content_type: &[u8]) -> bool {
+        parse::multipart_start(self.state(), content_type)
     }
 
     /// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into

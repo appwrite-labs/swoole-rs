@@ -789,6 +789,8 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     // SAFETY: the empty zval `data` owns, which takes the payload.
     php_swoole_get_recv_data(server, unsafe { &mut *data.as_ptr() }, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
+    // The relay's longjmp would skip `data`'s release.
+    drop(data);
     relay(result.is_err());
     result.unwrap_or(SW_ERR)
 }

@@ -1,11 +1,11 @@
 //! `Swoole\Http\Response`.
 use crate::cookie::{header_line, object_header_line};
 use crate::{
-    context::{self, Holder},
+    context::{self, Ctx, Holder},
     host::{
-        self, CO_SOCKET, COOKIE, Context, DETACHED, END, HEADER, HEADER_KEY_SIZE,
-        HTTP_CONTEXT_UNAVAILABLE, HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED,
-        TRAILER, UPGRADE, WEBSOCKET,
+        self, CO_SOCKET, COOKIE, DETACHED, END, HEADER, HEADER_KEY_SIZE, HTTP_CONTEXT_UNAVAILABLE,
+        HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED, TRAILER, UPGRADE,
+        WEBSOCKET,
     },
     send, websocket,
 };
@@ -47,7 +47,7 @@ impl Custom for Data {
     }
 
     fn new() -> Self {
-        Self(Holder::new(ptr::null_mut()))
+        Self(Holder::new(None))
     }
 }
 
@@ -55,26 +55,24 @@ impl Custom for Data {
 /// freed.
 impl Drop for Data {
     fn drop(&mut self) {
-        let ctx = self.0.get();
-        if !ctx.is_null() && release(ctx) {
-            swoole_rs_zend::bailout::Bailout.defer();
+        if self.0.get().is_some_and(release) {
+            Bailout.defer();
         }
     }
 }
 
 /// The method's `$this` context.
-fn this(call: &Call) -> *mut Context {
-    call.custom::<Data>()
-        .map_or(ptr::null_mut(), |data| data.0.get())
+fn this(call: &Call) -> Option<Ctx> {
+    call.custom::<Data>().and_then(|data| data.0.get())
 }
 
 /// The response object is going: finish what the handler left unanswered
 /// (500 when no status was set) and release the context. True if user code
 /// bailed out on the way.
-fn release(ctx: *mut Context) -> bool {
+fn release(mut ctx: Ctx) -> bool {
     context::after_response(ctx);
     let mut bailed = false;
-    let state = send::state(ctx);
+    let state = ctx.state();
     if state.end == 0
         && (state.send_chunked != 0 || state.send_header == 0)
         && state.detached == 0
@@ -88,7 +86,7 @@ fn release(ctx: *mut Context) -> bool {
             bailed = send::end(ctx, ptr::null_mut()).is_err();
         }
     }
-    send::state(ctx).response.zobject.ptr = ptr::null_mut();
+    ctx.state().response.zobject.ptr = ptr::null_mut();
     // SAFETY: a live context, which the response no longer holds.
     unsafe { context::free(ctx) };
     bailed
@@ -141,35 +139,30 @@ pub fn response_minit(args: &MinitArgs) {
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.
-fn checked(call: &Call) -> Option<*mut Context> {
-    let ctx = this(call);
-    if ctx.is_null() || host::flags(ctx) & (END | DETACHED) != 0 {
+fn checked(call: &Call) -> Option<Ctx> {
+    let ctx = this(call).filter(|ctx| ctx.flags() & (END | DETACHED) == 0);
+    if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
-        return None;
     }
-    Some(ctx)
+    ctx
 }
 
 /// `php_swoole_http_response_get_context`, setting `SW_ERROR_SESSION_CLOSED`
 /// when there is none.
-fn open(call: &Call) -> Option<*mut Context> {
+fn open(call: &Call) -> Option<Ctx> {
     let ctx = this(call);
-    if ctx.is_null() {
+    if ctx.is_none() {
         host::set_last_error(SESSION_CLOSED);
-        return None;
     }
-    Some(ctx)
+    ctx
 }
 
 /// The coroutine WebSocket checks `push`, `recv` and `disconnect` share.
-fn websocket(call: &Call) -> Option<*mut Context> {
+fn websocket(call: &Call) -> Option<Ctx> {
     let ctx = open(call)?;
-    let flags = host::flags(ctx);
+    let flags = ctx.flags();
     if flags & CO_SOCKET == 0 || flags & UPGRADE == 0 {
-        host::fatal(&format!(
-            "fd[{}] is not a websocket conncetion",
-            host::fd(ctx)
-        ));
+        host::fatal(&format!("fd[{}] is not a websocket conncetion", ctx.fd()));
         return None;
     }
     Some(ctx)
@@ -186,8 +179,8 @@ fn nullable(string: Option<*mut zend_string>) -> *mut zend_string {
     string.unwrap_or(ptr::null_mut())
 }
 
-fn property(ctx: *mut Context, which: i32) -> *mut swoole_rs_zend::sys::zval {
-    crate::header::response_property(send::state(ctx), which)
+fn property(mut ctx: Ctx, which: i32) -> *mut swoole_rs_zend::sys::zval {
+    crate::header::response_property(ctx.state(), which)
 }
 
 fn init_header(call: &Call) {
@@ -203,8 +196,7 @@ fn init_header(call: &Call) {
 }
 
 fn is_writable(call: &Call) {
-    let ctx = this(call);
-    call.set_bool(!ctx.is_null() && host::flags(ctx) & (END | DETACHED) == 0);
+    call.set_bool(this(call).is_some_and(|ctx| ctx.flags() & (END | DETACHED) == 0));
 }
 
 /// A send's result as the method's return value; a bailout is raised last.
@@ -218,9 +210,9 @@ fn sent(call: &Call, result: &Result<bool, Bailout>) {
 fn write(call: &Call) {
     let run = || -> Option<Result<bool, Bailout>> {
         let data = call.arity(1, 1).and_then(|()| call.str(1)).ok()??;
-        let ctx = checked(call)?;
+        let mut ctx = checked(call)?;
         // Compressing a chunked body would compress the chunks, not the stream.
-        send::state(ctx).accept_compression = 0;
+        ctx.state().accept_compression = 0;
         Some(send::write(ctx, data))
     };
     match run() {
@@ -233,7 +225,7 @@ fn write(call: &Call) {
 const HOOK_AFTER_RESPONSE: c_int = 27;
 
 /// `http_response_after`: the server's and the hooks' after-response step.
-fn after(ctx: *mut Context) -> Result<(), Bailout> {
+fn after(ctx: Ctx) -> Result<(), Bailout> {
     unsafe extern "C" fn hooks(ctx: *mut c_void) {
         // SAFETY: the hooks take the context, as upstream passed it. The
         // frame owns nothing a bailout out of a hook would skip.
@@ -244,7 +236,7 @@ fn after(ctx: *mut Context) -> Result<(), Bailout> {
         return Ok(());
     }
     // SAFETY: a live context; the trap's setjmp sits in C, below `hooks`.
-    unsafe { swoole_rs_zend::bailout::trap(hooks, ctx) }
+    unsafe { swoole_rs_zend::bailout::trap(hooks, ctx.raw()) }
 }
 
 fn end(call: &Call) {
@@ -285,7 +277,7 @@ fn stat(file: &ZStr) -> Result<libc::stat, ()> {
 fn send_file(call: &Call) {
     let run = || -> Option<Result<bool, Bailout>> {
         let ctx = checked(call)?;
-        if host::flags(ctx) & SEND_CHUNKED != 0 {
+        if ctx.flags() & SEND_CHUNKED != 0 {
             host::fatal("can't use sendfile when HTTP chunk is enabled");
             return None;
         }
@@ -412,9 +404,9 @@ fn status(call: &Call) {
             .arity(1, 2)
             .and_then(|()| Ok((call.long(1, 0)?, call.string_opt(2)?)));
         let (code, reason) = parsed.ok()?;
-        let ctx = checked(call)?;
+        let mut ctx = checked(call)?;
         let reason = reason.unwrap_or_default();
-        let response = &mut send::state(ctx).response;
+        let response = &mut ctx.state().response;
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream assigns it to an int"
@@ -469,7 +461,7 @@ fn trailer(call: &Call) {
         let (Some(key), value) = parsed.ok()? else {
             return None;
         };
-        let ctx = checked(call)?;
+        let mut ctx = checked(call)?;
         if key.len() > HEADER_KEY_SIZE - 1 {
             host::notice("trailer key is too long");
             return None;
@@ -477,7 +469,7 @@ fn trailer(call: &Call) {
         let key = key.to_ascii_lowercase();
         // SAFETY: the trailer property is a live array.
         unsafe { set_key(property(ctx, TRAILER), &key, value) };
-        send::state(ctx).send_trailer = 1;
+        ctx.state().send_trailer = 1;
         call.set_bool(true);
         Some(())
     };
@@ -486,12 +478,9 @@ fn trailer(call: &Call) {
 
 fn ping(call: &Call) {
     let run = || -> Option<()> {
-        let ctx = this(call);
-        if ctx.is_null() {
-            return None;
-        }
+        let ctx = this(call)?;
         let data = call.arity(0, 1).and_then(|()| call.zstr(1)).ok()?;
-        let flags = host::flags(ctx);
+        let flags = ctx.flags();
         if flags & (HTTP2 | WEBSOCKET) == 0 {
             host::fatal("only supports websocket or http2 client");
             return None;
@@ -518,8 +507,8 @@ fn ping(call: &Call) {
 fn goaway(call: &Call) {
     let run = || -> Option<()> {
         let ctx = checked(call)?;
-        if host::flags(ctx) & HTTP2 == 0 {
-            host::fatal(&format!("fd[{}] is not a HTTP2 conncetion", host::fd(ctx)));
+        if ctx.flags() & HTTP2 == 0 {
+            host::fatal(&format!("fd[{}] is not a HTTP2 conncetion", ctx.fd()));
             return None;
         }
         let parsed = call
@@ -534,7 +523,6 @@ fn goaway(call: &Call) {
             unsafe { bytes(debug) }
         };
         let server = crate::http2::server();
-        let ctx = crate::http2::Ctx::of(ctx);
         call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
         Some(())
     };
@@ -545,7 +533,7 @@ fn upgrade(call: &Call) {
     let mut bailed = false;
     let mut run = || -> Option<()> {
         let ctx = checked(call)?;
-        if host::flags(ctx) & CO_SOCKET == 0 {
+        if ctx.flags() & CO_SOCKET == 0 {
             host::fatal("async server dose not support protocol upgrade");
             return None;
         }
@@ -590,9 +578,9 @@ fn close(call: &Call) {
 
 fn recv(call: &Call) {
     let run = || -> Option<()> {
-        let ctx = websocket(call)?;
+        let mut ctx = websocket(call)?;
         let timeout = call.arity(0, 1).and_then(|()| call.double(1, 0.0)).ok()?;
-        let state = send::state(ctx);
+        let state = ctx.state();
         let (settings, socket) = (u32::from(state.websocket_settings), state.private_data);
         let frame = websocket::recv(settings, &mut state.ws_buffer, socket, timeout);
         match frame.kind() {
@@ -611,8 +599,8 @@ fn recv(call: &Call) {
 
 fn detach(call: &Call) {
     let run = || -> Option<()> {
-        let ctx = checked(call)?;
-        send::state(ctx).detached = 1;
+        let mut ctx = checked(call)?;
+        ctx.state().detached = 1;
         call.set_bool(true);
         Some(())
     };
@@ -635,7 +623,7 @@ fn create_response(call: &Call) {
 
 /// `Context::set_header`: `$response->header[key] = value`, the key in
 /// canonical case when `format` (lower case over HTTP/2).
-pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: &Value, format: bool) -> bool {
+pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> bool {
     if key.len() > HEADER_KEY_SIZE - 1 {
         host::notice("header key is too long");
         return false;
@@ -649,7 +637,7 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: &Value, format: b
     let name = match buffer.get_mut(..key.len()) {
         Some(name) if format => {
             name.copy_from_slice(key);
-            if host::flags(ctx) & HTTP2 != 0 {
+            if ctx.flags() & HTTP2 != 0 {
                 name.make_ascii_lowercase();
             } else {
                 canonical_case(name);
@@ -667,7 +655,7 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: &Value, format: b
 
 /// `Context::set_header(key, value, false)` of a string value. A warning's
 /// bailout waits for the caller's last step.
-pub(crate) fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) {
+pub(crate) fn set_header_bytes(ctx: Ctx, key: &[u8], value: &[u8]) {
     // This frame's reference; the header array takes its own.
     let value = Owned::string(ZString::new(value));
     set_header(ctx, key, &value, false);
@@ -692,7 +680,7 @@ fn instance_of(object: &Value, ce: *mut zend_class_entry) -> bool {
 /// request's context when one is given.
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let mut paired = false;
-    let mut ctx: *mut Context = ptr::null_mut();
+    let mut ctx = None;
     let mut server = None;
     let mut socket = None;
     if let Some(pair) = object.array() {
@@ -753,15 +741,15 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         call.set_bool(false);
         return;
     }
-    let ctx = if ctx.is_null() {
-        let ctx = context::alloc();
-        send::state(ctx).keepalive = 1;
+    let mut ctx = ctx.unwrap_or_else(|| {
+        let mut ctx = context::alloc();
+        ctx.state().keepalive = 1;
         if let Some(server) = server {
-            context::init(send::state(ctx), server);
+            context::init(ctx.state(), server);
         } else {
             crate::parse::init_request_parser(ctx);
             // `Context::init(zval *)`.
-            let state = send::state(ctx);
+            let state = ctx.state();
             state.parse_cookie = 1;
             state.parse_body = 1;
             state.parse_files = 1;
@@ -771,19 +759,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             }
         }
         ctx
-    } else {
-        ctx
-    };
+    });
     if let Some(server) = server {
-        context::bind_server(send::state(ctx), server);
+        context::bind_server(ctx.state(), server);
     } else if let Some(socket) = socket {
         // SAFETY: a `Swoole\Coroutine\Socket`.
-        unsafe { context::bind(send::state(ctx), socket) };
+        unsafe { context::bind(ctx.state(), socket) };
     }
-    let state = send::state(ctx);
+    let held = ctx;
+    let state = ctx.state();
     state.fd = fd;
     let slot = &mut state.response.zobject;
-    let _made = context::new_object(slot, context::Kind::Response, ctx);
+    let _made = context::new_object(slot, context::Kind::Response, held);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it.
     unsafe { call.set_value(slot.value) };
@@ -795,7 +782,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     if let Some(socket) = socket {
         props.value(c"socket", socket);
     }
-    if paired && let Some(request) = send::state(ctx).request.zobject.props() {
+    if paired && let Some(request) = ctx.state().request.zobject.props() {
         request.long(c"fd", fd);
     }
 }
@@ -809,10 +796,10 @@ fn redirect(call: &Call) {
         let (Some(url), code) = parsed.ok()? else {
             return None;
         };
-        let ctx = checked(call)?;
+        let mut ctx = checked(call)?;
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int status")]
         let status = code.map_or(302, |code| code.long() as c_int);
-        send::state(ctx).response.status = status;
+        ctx.state().response.status = status;
         set_header(ctx, b"Location", url, false);
         if swoole_rs_zend::bailout::pending() {
             bailed = true;

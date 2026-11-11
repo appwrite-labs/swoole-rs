@@ -13,7 +13,6 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     LOG_ALLOC_CONNECTIONS, LOG_KILL_MANAGER, LOG_WAIT_MANAGER, LOG_WAIT_TASK_WORKER,
     OP_ALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CLEAR_CLOSE_ERRNO, OP_CONN_CLOSE_ACTIVELY,
@@ -456,8 +455,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_START_EVENT_WORKER => {
-            // SAFETY: the context's live server and worker.
-            let _code = unsafe { entry::start_event_worker(serv, worker.cast()) };
+            let _code = crate::event_worker_ops::start_event_worker(ctx.serv, ctx.worker());
         }
         OP_ON_USER_WORKER_START => {
             if let Some(slot) = ctx.slot(CB_USER_WORKER_START) {
@@ -469,8 +467,8 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             worker_report_error(ctx.worker(), ctx.status());
         }
         OP_CALL_WORKER_ERROR => {
-            // SAFETY: the context's live server, worker and exit status.
-            unsafe { entry::call_worker_error_callback(serv, worker.cast(), ctx.status.cast()) };
+            let (worker, status) = (ctx.worker(), ctx.status());
+            crate::event_worker_ops::call_worker_error_callback(ctx.serv, worker, status);
         }
         OP_COUNT_DISPATCH => {
             let count = &raw mut ctx.worker_at(worker_id(arg)).dispatch_count;
@@ -485,7 +483,6 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 /// The server's setup and teardown: connections, the manager and the task workers.
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv.raw();
     let (tables, config) = (ctx.tables(), ctx.config());
     let gs = ctx.server().counters();
     let task_worker_pid = || {
@@ -526,8 +523,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             unsafe { crate::worker_methods::init_ipc_max_size(ctx.server()) };
             0
         }
-        // SAFETY: as above.
-        OP_START_MANAGER => signed(unsafe { entry::start_manager_process(serv) }),
+        OP_START_MANAGER => signed(crate::manager_ops::start_manager_process(ctx.server())),
         OP_KILL_MANAGER => signed(swoole_rs_process::os::kill(gs.manager_pid, libc::SIGTERM)),
         LOG_KILL_MANAGER => {
             let pid = gs.manager_pid;

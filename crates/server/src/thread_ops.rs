@@ -11,14 +11,14 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry::{
-    call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
-};
 use swoole_rs_reactor::{Socket, SocketRecord, reactor_upstream};
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE};
+use crate::event_worker_ops::{
+    call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
+};
 use crate::ops::{
     EVENT_SHUTDOWN, OP_CLOSE, OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CONN_HEALTHY,
     OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_INCOMING, OP_ON_FINISH,
@@ -296,20 +296,16 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_WORKER_START | OP_WORKER_STOP => {
-            let worker: *mut WorkerRecord = worker(server, this(ctx).id);
+            let worker = worker(server, this(ctx).id).into();
             if op == OP_WORKER_START {
-                // SAFETY: the live server and this thread's worker.
-                unsafe { call_worker_start_callback(serv, worker.cast()) };
+                call_worker_start_callback(server, worker);
             } else {
-                // SAFETY: as above.
-                unsafe { call_worker_stop_callback(serv, worker.cast()) };
+                call_worker_stop_callback(server, worker);
             }
             0
         }
         OP_STOP_THREAD_WORKER => {
-            let worker: *mut WorkerRecord = worker(server, reactor_id());
-            // SAFETY: the live server and this reactor's worker.
-            unsafe { stop_async_worker(serv, worker.cast()) };
+            stop_async_worker(server, worker(server, reactor_id()).into());
             0
         }
         OP_THREAD_INIT | OP_THREAD0_INIT => {

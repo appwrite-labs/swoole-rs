@@ -313,8 +313,7 @@ mod native {
     }
 
     pub(super) fn sleep() {
-        // SAFETY: socket waits run in a coroutine.
-        _ = unsafe { crate::sleep::system_sleep(0.01) };
+        _ = crate::sleep::system_sleep(0.01);
     }
 
     pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {

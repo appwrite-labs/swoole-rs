@@ -29,8 +29,7 @@ use swoole_rs_zend::{
     host::callable::Callable,
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_http_build_query,
-        swr_zend_property_merge, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
-        zend_object_handlers, zval,
+        swr_zend_sensitive_parameter, zend_class_entry, zend_object, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -263,9 +262,9 @@ fn socket_error_properties(props: Props, socket: Co) -> c_int {
 
 /// Fill `rv` as `RETURN_ZVAL(property, 1, 0)` does.
 fn return_property(call: &Call, name: &CStr) {
-    // SAFETY: `$this` is a live client object, which declares `name`.
-    let property = unsafe { swoole_rs_zend::property(call.this(), name) };
-    call.set_owned(property.dereferenced().copy());
+    if let Some(property) = call.this_value().and_then(|this| this.property(name)) {
+        call.set_owned(property.dereferenced().copy());
+    }
 }
 
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
@@ -1667,10 +1666,7 @@ fn set(call: &Call) {
     let Some(settings) = call.value(1).filter(|_| array.count() > 0) else {
         return call.set_bool(false);
     };
-    // SAFETY: `$this` declares `setting`; the settings are a live array.
-    unsafe {
-        swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings.as_ptr());
-    }
+    crate::net::merge_setting(call, &CLIENT, settings);
     client.apply_setting(settings, true);
     call.set_bool(true);
 }
@@ -1820,13 +1816,8 @@ fn add_file(call: &Call) {
     if length == 0 {
         length = size - offset;
     }
-    let mime;
     if kind.is_empty() {
-        // SAFETY: a NUL-terminated path; the type text is static.
-        let text = unsafe { native::swoole_http_client_coro_mime(c_path.as_ptr()) };
-        // SAFETY: as above.
-        mime = unsafe { CStr::from_ptr(text) };
-        kind = mime.to_bytes();
+        kind = swoole_rs_phpswoole::mime_type(c_path.to_bytes()).to_bytes();
     }
     let filename = if let Some(filename) = filename.filter(|filename| !filename.is_empty()) {
         filename

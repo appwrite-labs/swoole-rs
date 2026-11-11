@@ -2,7 +2,6 @@
 //! (`SW_FD_CO_SOCKET`), hooked polls (`SW_FD_CO_POLL`) and event waiters
 //! (`SW_FD_CO_EVENT`), registered through `set`; a ready waiter's coroutine resumes
 //! through [`wake`], deferred on the thread's reactor.
-use crate::poll::swr_v1_hook_poll_ready;
 use crate::socket_members;
 use crate::wait_event::{ERROR, READ, WRITE, event_ready};
 use core::ffi::{c_int, c_void};
@@ -24,15 +23,16 @@ fn fired(event: &Event) -> (*mut c_void, c_int) {
 
 extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
     let (task, fd) = fired(event);
-    // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its poll task.
-    unsafe { swr_v1_hook_poll_ready(task, fd, KIND) };
+    // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its parked poll task.
+    crate::poll::ready(unsafe { &*task.cast::<crate::poll::Task<'_>>() }, fd, KIND);
     0
 }
 
 extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
     let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
-    let co = unsafe { event_ready(waiter, KIND) };
+    let waiter = unsafe { &*waiter.cast::<crate::wait_event::Waiter>() };
+    let co = event_ready(waiter, KIND);
     if !co.is_null() {
         // SAFETY: `co` stays parked until the deferred resume runs.
         unsafe { wake(co) };
@@ -164,14 +164,21 @@ mod tests {
     extern "C" fn current() -> *mut c_void {
         CO
     }
-    unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, _: *mut i32) -> *mut c_void {
+    /// The fake reactor's socket record, freed on drop.
+    struct Socket(*mut SocketRecord);
+
+    impl Drop for Socket {
+        fn drop(&mut self) {
+            unsafe { SocketRecord::free(self.0) };
+        }
+    }
+
+    #[expect(clippy::unnecessary_wraps, reason = "EventWaitOps::add's signature")]
+    fn add(fd: i32, _: i32, waiter: *mut c_void) -> Result<Socket, i32> {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
         unsafe { (*socket).fields.object = waiter };
         SOCKET.set(socket);
-        socket.cast()
-    }
-    unsafe extern "C" fn remove(socket: *mut c_void) {
-        unsafe { SocketRecord::free(socket.cast()) };
+        Ok(Socket(socket))
     }
     /// The reactor fires write, then read, on the waiter's socket.
     fn park(_: f64) -> i32 {
@@ -200,13 +207,8 @@ mod tests {
                 handler(fd_type, events);
             }
         }
-        let ops = EventWaitOps {
-            current,
-            add,
-            park,
-            remove,
-        };
-        let waited = unsafe { swr_v1_hook_wait_event(7, READ | WRITE, 1.0, &ops) };
+        let ops = EventWaitOps { current, add, park };
+        let waited = swr_v1_hook_wait_event(7, READ | WRITE, 1.0, &ops);
         assert_eq!((waited.result, WOKEN.get()), (READ | WRITE, 1));
     }
 }
