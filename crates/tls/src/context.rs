@@ -9,16 +9,15 @@ use openssl_sys::{
     SSL_CTRL_SET_GROUPS_LIST, SSL_CTX, SSL_CTX_check_private_key, SSL_CTX_clear_options,
     SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_new,
     SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_cipher_list,
-    SSL_CTX_set_client_CA_list, SSL_CTX_set_cookie_generate_cb, SSL_CTX_set_cookie_verify_cb,
-    SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode, SSL_CTX_set_options,
-    SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode, SSL_CTX_set_session_id_context,
-    SSL_CTX_set_verify, SSL_CTX_set_verify_depth, SSL_CTX_use_PrivateKey_file,
-    SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file, SSL_FILETYPE_PEM,
-    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
-    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
-    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
-    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
-    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
+    SSL_CTX_set_client_CA_list, SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode,
+    SSL_CTX_set_options, SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode,
+    SSL_CTX_set_session_id_context, SSL_CTX_set_verify, SSL_CTX_set_verify_depth,
+    SSL_CTX_use_PrivateKey_file, SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file,
+    SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
+    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
+    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
+    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
     SSL_select_next_proto, TLS_method, X509_STORE_CTX,
 };
 use std::cell::RefCell;
@@ -412,9 +411,9 @@ impl Method<'_> {
         }
         if protocols & DTLS != 0 {
             // SAFETY: a live context; plain functions.
-            unsafe { SSL_CTX_set_cookie_generate_cb(ctx, Some(generate_cookie)) };
+            unsafe { set_cookie_generate_cb(ctx, Some(generate_cookie)) };
             // SAFETY: as above.
-            unsafe { SSL_CTX_set_cookie_verify_cb(ctx, Some(verify_cookie)) };
+            unsafe { set_cookie_verify_cb(ctx, Some(verify_cookie)) };
         }
         let capath = self.with(c"SSLContext::set_capath").set_capath();
         if config.verify_peer {
@@ -536,41 +535,62 @@ pub(crate) unsafe fn copy_password(
     length
 }
 
+type GenerateCookie = unsafe extern "C" fn(*mut SSL, *mut c_uchar, *mut c_uint) -> c_int;
+type VerifyCookie = unsafe extern "C" fn(*mut SSL, *const c_uchar, c_uint) -> c_int;
+
+// SAFETY: libssl's declarations, retyped so the callbacks can be `unsafe fn`s;
+// openssl-sys types them safe.
+unsafe extern "C" {
+    #[link_name = "SSL_CTX_set_cookie_generate_cb"]
+    fn set_cookie_generate_cb(ctx: *mut SSL_CTX, callback: Option<GenerateCookie>);
+    #[link_name = "SSL_CTX_set_cookie_verify_cb"]
+    fn set_cookie_verify_cb(ctx: *mut SSL_CTX, callback: Option<VerifyCookie>);
+}
+
+/// Copies `N` bytes of `bytes` at `at`.
+fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
+    bytes
+        .get(at..at + N)
+        .and_then(|field| field.try_into().ok())
+        .unwrap_or([0; N])
+}
+
 /// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address.
-extern "C" fn generate_cookie(
+/// # Safety
+/// OpenSSL's cookie callback: `ssl` is live, `cookie` holds `DTLS1_COOKIE_LENGTH`
+/// (255) bytes and `cookie_length` is writable.
+unsafe extern "C" fn generate_cookie(
     ssl: *mut SSL,
     cookie: *mut c_uchar,
     cookie_length: *mut c_uint,
 ) -> c_int {
     let secret = [(ssl as c_long).to_ne_bytes(); 32 / size_of::<c_long>()].concat();
-    // SAFETY: zero is a valid sockaddr_storage.
-    let mut peer: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer = [0u8; size_of::<libc::sockaddr_storage>()];
     // SAFETY: OpenSSL's live SSL, in its cookie callback.
     let wbio = unsafe { SSL_get_wbio(ssl) };
     // SAFETY: `BIO_dgram_get_peer`, which copies at most a sockaddr_storage.
-    unsafe { BIO_ctrl(wbio, BIO_CTRL_DGRAM_GET_PEER, 0, (&raw mut peer).cast()) };
-    let mut data = Vec::with_capacity(18);
-    match c_int::from(peer.ss_family) {
-        libc::AF_INET => {
-            // SAFETY: an AF_INET peer is a sockaddr_in.
-            let v4 = unsafe { &*(&raw const peer).cast::<libc::sockaddr_in>() };
-            data.extend_from_slice(&v4.sin_port.to_ne_bytes());
-            data.extend_from_slice(&v4.sin_addr.s_addr.to_ne_bytes());
-        }
-        libc::AF_INET6 => {
-            // SAFETY: an AF_INET6 peer is a sockaddr_in6.
-            let v6 = unsafe { &*(&raw const peer).cast::<libc::sockaddr_in6>() };
-            data.extend_from_slice(&v6.sin6_port.to_ne_bytes());
-            data.extend_from_slice(&v6.sin6_addr.s6_addr);
-        }
+    unsafe { BIO_ctrl(wbio, BIO_CTRL_DGRAM_GET_PEER, 0, peer.as_mut_ptr().cast()) };
+    let family = libc::sa_family_t::from_ne_bytes(field(
+        &peer,
+        std::mem::offset_of!(libc::sockaddr_storage, ss_family),
+    ));
+    let (port, address) = match c_int::from(family) {
+        libc::AF_INET => (
+            field::<2>(&peer, std::mem::offset_of!(libc::sockaddr_in, sin_port)),
+            &field::<4>(&peer, std::mem::offset_of!(libc::sockaddr_in, sin_addr))[..],
+        ),
+        libc::AF_INET6 => (
+            field::<2>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_port)),
+            &field::<16>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_addr))[..],
+        ),
         // Upstream's OPENSSL_assert(0).
         _ => std::process::abort(),
-    }
-    let mut result = [0u8; 64];
-    let mut length: c_uint = 0;
+    };
+    let data = [&port[..], address].concat();
     // SAFETY: a static digest.
     let sha1 = unsafe { EVP_sha1() };
-    // SAFETY: `HMAC` over local buffers; `result` holds EVP_MAX_MD_SIZE bytes.
+    // SAFETY: `HMAC` over local buffers into OpenSSL's cookie buffer, which holds
+    // more than EVP_MAX_MD_SIZE bytes, and its length slot.
     let digest = unsafe {
         HMAC(
             sha1,
@@ -578,24 +598,24 @@ extern "C" fn generate_cookie(
             32,
             data.as_ptr(),
             data.len(),
-            result.as_mut_ptr(),
-            &raw mut length,
+            cookie,
+            cookie_length,
         )
     };
-    if digest.is_null() {
-        return 0;
-    }
-    // SAFETY: OpenSSL's cookie buffer holds DTLS1_COOKIE_LENGTH (255) bytes.
-    unsafe { ptr::copy_nonoverlapping(result.as_ptr(), cookie, length as usize) };
-    // SAFETY: OpenSSL's length slot.
-    unsafe { cookie_length.write(length) };
-    1
+    c_int::from(!digest.is_null())
 }
 
-extern "C" fn verify_cookie(ssl: *mut SSL, cookie: *const c_uchar, cookie_length: c_uint) -> c_int {
-    let mut expected = [0u8; 64];
+/// # Safety
+/// OpenSSL's cookie callback: `ssl` is live and `cookie` holds `cookie_length` bytes.
+unsafe extern "C" fn verify_cookie(
+    ssl: *mut SSL,
+    cookie: *const c_uchar,
+    cookie_length: c_uint,
+) -> c_int {
+    let mut expected = [0u8; 255];
     let mut length: c_uint = 0;
-    generate_cookie(ssl, expected.as_mut_ptr(), &raw mut length);
+    // SAFETY: the caller's live SSL; a local 255-byte buffer and length.
+    unsafe { generate_cookie(ssl, expected.as_mut_ptr(), &raw mut length) };
     if cookie_length != length {
         return 0;
     }
