@@ -39,10 +39,20 @@ runs:
     # The runner's first mirror, azure.archive.ubuntu.com, throttles some runners to ~40 kB/s
     # for many minutes while archive.ubuntu.com serves the same runner at 25 MB/s (#1522).
     # apt moves down its mirror list on errors, not on slow downloads, so drop Azure.
+    # The regional GCE mirror left can stop answering for hours with nothing behind it (#3181):
+    # then point every Ubuntu source at archive.ubuntu.com and try once more. Here, not in
+    # install.sh, so the cache keys (which hash install.sh and the original sources) stay put.
     - shell: bash
       run: |
         [ ! -f /etc/apt/apt-mirrors.txt ] || sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
-        APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}
+        apt_install() { APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}; }
+        apt_install || {
+          echo "::warning::apt failed on the runner's mirror; retrying against archive.ubuntu.com"
+          [ ! -f /etc/apt/apt-mirrors.txt ] || echo http://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo sed -Ei 's#https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || :
+          apt_install
+        }
     - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:

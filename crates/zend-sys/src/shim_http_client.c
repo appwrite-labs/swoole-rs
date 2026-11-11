@@ -9,6 +9,9 @@
 
 zval *swr_zend_property_slot(zend_object *object, const char *name, size_t length) {
     zend_property_info *info = zend_hash_str_find_ptr(&object->ce->properties_info, name, length);
+    if (UNEXPECTED(info == NULL || (info->flags & ZEND_ACC_STATIC))) {
+        return NULL;
+    }
     zval *property = OBJ_PROP(object, info->offset);
     if (UNEXPECTED(property == &EG(uninitialized_zval))) {
         ZVAL_NULL(property);

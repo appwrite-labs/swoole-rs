@@ -843,7 +843,7 @@ mod tests {
             unsafe { Event::new(-1, 0, 6, self.0.record.socket.cast()) }
         }
         fn bind(&mut self, event: u32, co: *mut c_long) {
-            unsafe { (*self.0.record.state).bind(event, co.cast()) };
+            self.co().with_state(|state| state.bind(event, co.cast()));
         }
     }
 
