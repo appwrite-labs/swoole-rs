@@ -162,8 +162,12 @@ pub extern "C" fn set_blocking(this: &mut SocketPair, blocking: bool) {
 ///
 /// # Safety
 /// `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole10SocketPair4readEPvm")
+)]
 #[must_use]
-pub unsafe fn read(this: &SocketPair, buffer: *mut c_void, length: usize) -> isize {
+pub unsafe extern "C" fn read(this: &SocketPair, buffer: *mut c_void, length: usize) -> isize {
     let [_, Some(socket)] = ends(this) else {
         return -1;
     };
@@ -180,8 +184,12 @@ pub unsafe fn read(this: &SocketPair, buffer: *mut c_void, length: usize) -> isi
 ///
 /// # Safety
 /// `buffer` denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole10SocketPair5writeEPKvm")
+)]
 #[must_use]
-pub unsafe fn write(this: &SocketPair, buffer: *const c_void, length: usize) -> isize {
+pub unsafe extern "C" fn write(this: &SocketPair, buffer: *const c_void, length: usize) -> isize {
     let [Some(socket), _] = ends(this) else {
         return -1;
     };

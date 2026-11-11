@@ -137,9 +137,30 @@ fn with_tls<R>(socket: Socket<'_>, step: impl FnOnce(&mut SocketTls, Ssl) -> R) 
     Some(result)
 }
 
+/// `static const char *Socket::ssl_get_error_reason(int *reason)`.
+///
+/// # Safety
+/// `reason` is null or writable.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi")
+)]
+pub unsafe extern "C" fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char {
+    let (code, text) = swr_v1_socket_ssl_error_reason();
+    // SAFETY: as the caller promises.
+    if let Some(reason) = unsafe { reason.as_mut() } {
+        *reason = code;
+    }
+    text.map_or(std::ptr::null(), CStr::as_ptr)
+}
+
 /// `STACK_OF(X509) *Socket::ssl_get_peer_cert_chain() const`.
 #[must_use]
-pub fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut stack_st_X509 {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv")
+)]
+pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut stack_st_X509 {
     let Some(ssl) = Ssl::of(socket) else {
         return std::ptr::null_mut();
     };
@@ -149,7 +170,11 @@ pub fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut stack_st_X5
 
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
 #[must_use]
-pub fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bool) -> bool {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")
+)]
+pub extern "C" fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bool) -> bool {
     let Some(ssl) = Ssl::of(socket) else {
         return false;
     };
@@ -239,10 +264,15 @@ unsafe fn socket_ssl_send(socket: Socket<'_>, buffer: *const c_void, length: usi
     ssl_io(socket, result)
 }
 
-/// The reactor's TLS read over the record it was given.
+/// The reactor's TLS read over the record it was given, and
+/// `ssize_t Socket::ssl_recv(void *buf, size_t n)`.
 ///
 /// # Safety
 /// `socket` is a live record and `buffer` denotes `length` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket8ssl_recvEPvm")
+)]
 unsafe extern "C" fn tls_recv(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize {
     // SAFETY: as the caller promises.
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
@@ -252,10 +282,15 @@ unsafe extern "C" fn tls_recv(socket: *mut c_void, buffer: *mut c_void, length: 
     unsafe { socket_ssl_recv(socket, buffer, length) }
 }
 
-/// The reactor's TLS write over the record it was given.
+/// The reactor's TLS write over the record it was given, and
+/// `ssize_t Socket::ssl_send(const void *buf, size_t n)`.
 ///
 /// # Safety
 /// `socket` is a live record and `buffer` denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket8ssl_sendEPKvm")
+)]
 unsafe extern "C" fn tls_send(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize {
     // SAFETY: as the caller promises.
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
@@ -284,20 +319,28 @@ unsafe fn vector_io(socket: *mut SocketRecord, vector: *const c_void, write: boo
     unsafe { swr_v1_socket_iov_owned(fd, write, owner, io, socket.cast()) }
 }
 
-/// `ssize_t Socket::readv(IOVector *)`.
+/// `ssize_t Socket::readv(IOVector *)`, and `ssl_readv`.
 ///
 /// # Safety
 /// `socket` is a live record and `vector` a live `IOVector`.
-pub unsafe fn socket_readv(socket: *mut SocketRecord, vector: *const c_void) -> isize {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket9ssl_readvEPNS0_8IOVectorE")
+)]
+pub unsafe extern "C" fn socket_readv(socket: *mut SocketRecord, vector: *const c_void) -> isize {
     // SAFETY: as the caller promises.
     unsafe { vector_io(socket, vector, false) }
 }
 
-/// `ssize_t Socket::writev(IOVector *)`.
+/// `ssize_t Socket::writev(IOVector *)`, and `ssl_writev`.
 ///
 /// # Safety
 /// `socket` is a live record and `vector` a live `IOVector`.
-pub unsafe fn socket_writev(socket: *mut SocketRecord, vector: *const c_void) -> isize {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket10ssl_writevEPNS0_8IOVectorE")
+)]
+pub unsafe extern "C" fn socket_writev(socket: *mut SocketRecord, vector: *const c_void) -> isize {
     // SAFETY: as the caller promises.
     unsafe { vector_io(socket, vector, true) }
 }
@@ -461,6 +504,20 @@ pub unsafe extern "C" fn socket_peek(
 
 /// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither
 /// ends the stream nor fails with an error that closes it.
+///
+/// # Safety
+/// `socket` is null or a live socket on this thread.
+#[must_use]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket14check_livenessEv")
+)]
+pub unsafe extern "C" fn socket_check_liveness(socket: *mut SocketRecord) -> bool {
+    // SAFETY: as the caller promises.
+    unsafe { Socket::from_ptr(socket) }.is_some_and(check_liveness)
+}
+
+/// [`socket_check_liveness`] over a socket's handle.
 pub fn check_liveness(socket: Socket<'_>) -> bool {
     let mut byte = 0u8;
     set_errno(0);
@@ -493,6 +550,7 @@ enum Io {
     Recv,
     Read,
     Write,
+    SendTo(*const SocketAddress),
     RecvFrom(*mut libc::sockaddr, *mut libc::socklen_t),
     Writev(*const libc::iovec, usize),
     Sendfile(*mut SocketFileRequest),
@@ -543,6 +601,12 @@ impl SyncEffects for Call<'_> {
             Io::Read => unsafe { libc::read(fd, buffer, length) },
             // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
             Io::Write => unsafe { libc::write(fd, buffer, length) },
+            Io::SendTo(address) => {
+                // SAFETY: the caller's live `network::Address`.
+                let size = unsafe { (*address).len };
+                // SAFETY: the loop's buffer, and the address's storage is its first member.
+                unsafe { libc::sendto(fd, buffer, length, flags, address.cast(), size) }
+            }
             Io::RecvFrom(address, size) => {
                 // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
                 unsafe { fd_recvfrom(fd, buffer, length, flags, address, size) }
@@ -684,6 +748,27 @@ pub unsafe extern "C" fn socket_write_sync(
 ) -> isize {
     // SAFETY: as the caller promises.
     unsafe { sync(socket, Io::Write, SYNC_ONCE, buffer, length, 0, true) }
+}
+
+/// `ssize_t Socket::sendto_sync(const Address &, const void *, size_t, int)`.
+///
+/// # Safety
+/// `socket` is a live record, `address` a live `network::Address` and `buffer`
+/// denotes `length` readable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket11sendto_syncERKNS0_7AddressEPKvmi")
+)]
+pub unsafe extern "C" fn socket_sendto_sync(
+    socket: *mut SocketRecord,
+    address: *const SocketAddress,
+    buffer: *const c_void,
+    length: usize,
+    flags: c_int,
+) -> isize {
+    let io = Io::SendTo(address);
+    // SAFETY: as the caller promises.
+    unsafe { sync(socket, io, SYNC_ONCE, buffer, length, flags, true) }
 }
 
 /// `ssize_t Socket::recvfrom_sync(char *, size_t, int, Address *)`, into the
