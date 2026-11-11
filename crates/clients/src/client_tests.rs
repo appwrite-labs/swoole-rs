@@ -584,7 +584,7 @@ fn writable_after_a_failed_connect_reports_the_error() {
 #[test]
 fn tls_connect_waits_for_the_stream_then_connects() {
     let client = client(1, true, true);
-    assert_eq!(enable_ssl(Handle(client)), OK);
+    assert!(enable_ssl(Handle(client)).is_some());
     taken();
     writable(client);
     assert_eq!(sock().tls.state, SSL_STATE_WAIT_STREAM);
@@ -633,7 +633,7 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     // The record's descriptor is -1, so sendto(2) fails.
     assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), -1);
     assert_eq!(errno(), libc::EBADF);
-    assert_eq!(enable_ssl(Handle(client)), OK);
+    assert!(enable_ssl(Handle(client)).is_some());
     assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
     taken();
     assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), 4);
@@ -735,8 +735,8 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
 #[test]
 fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let client = client(1, false, false);
-    assert_eq!(enable_ssl(Handle(client)), OK);
-    assert_eq!(enable_ssl(Handle(client)), ERR);
+    assert!(enable_ssl(Handle(client)).is_some());
+    assert!(enable_ssl(Handle(client)).is_none());
     let tls = Handle(client).tls();
     let name = c"example.test";
     // SAFETY: the double's live slot and fields.

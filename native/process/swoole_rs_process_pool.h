@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Workers and process pools: the C++ declarations over the Rust records (crates/process,
- * swoole_rs_process_views.h) whose methods Rust exports under their upstream symbols.
+ * swoole_rs_process_views.h), whose methods are Rust functions.
  * Was include/swoole_process_pool.h, then the process half of swoole_server.h. */
 #pragma once
 
@@ -48,7 +48,6 @@ enum swIPCMode {
 };
 
 SW_API int swoole_get_worker_type();
-SW_API void swoole_set_worker_id(swoole::WorkerId worker_id);
 SW_API void swoole_set_worker_type(int type);
 
 namespace swoole {
@@ -98,15 +97,6 @@ struct Worker;
 
 struct Worker {
     SWR_WORKER_RECORD_FIELDS
-    void set_max_request(uint32_t max_request, uint32_t max_request_grace);
-    /**
-     * Init global state for worker process.
-     * Must be called after the process is spawned and before the main loop is executed.
-     */
-    void init();
-    void shutdown();
-    bool is_shutdown();
-    static bool is_running();
 };
 
 struct ProcessPool {
@@ -123,35 +113,6 @@ struct ProcessPool {
         // SysV message queues have a fixed receive limit and ignore max_package_size.
         max_packet_size_ = use_msgqueue ? SW_MSGMAX : _max_packet_size;
     }
-
-    void set_protocol(ProtocolType _protocol_type);
-    void set_type(int _type);
-    void set_max_request(uint32_t _max_request, uint32_t _max_request_grace);
-    bool detach();
-    int wait();
-    int start();
-    bool shutdown();
-    bool reload();
-    void reopen_logger();
-    // Swoole\Process\Pool's signal handler, in `worker` (null in the master).
-    void signal(int signo, Worker *worker);
-
-    pid_t spawn(Worker *worker);
-    void stop(Worker *worker);
-    swResultCode dispatch(EventData *data, int *worker_id);
-    int response(const char *data, uint32_t length) const;
-    swResultCode dispatch_sync(EventData *data, int *dst_worker_id);
-    void add_worker(Worker *worker) const;
-    bool del_worker(const Worker *worker) const;
-    Worker *get_worker_by_pid(pid_t pid) const;
-    void destroy();
-    int create(uint32_t worker_num, key_t msgqueue_key = 0, swIPCMode ipc_mode = SW_IPC_NONE);
-    int create_message_bus();
-    int push_message(uint8_t _type, const void *data, size_t length) const;
-    int push_message(const EventData *msg) const;
-    bool send_message(WorkerId worker_id, const char *message, size_t l_message) const;
-    int listen(const char *socket_file, int backlog) const;
-    int listen(const char *host, int port, int backlog) const;
 };
 };  // namespace swoole
 

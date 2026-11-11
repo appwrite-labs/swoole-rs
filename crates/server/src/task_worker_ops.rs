@@ -225,7 +225,6 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
 /// The task pool and worker: setup, state and callbacks.
 #[inline(always)]
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let worker = ctx.worker.map_or(core::ptr::null_mut(), Worker::raw);
     let config = ctx.config();
     match op {
         OP_TASK_IPC_MODE => return Some(u64::from(config.task_ipc_mode)),
@@ -277,7 +276,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let (max, grace) = ctx
                 .pool()
                 .edit(|pool| (pool.max_request, pool.max_request_grace));
-            worker_set_max_request(worker, max, grace);
+            worker_set_max_request(max, grace);
         }
         _ => return None,
     }
