@@ -26,6 +26,9 @@ jobs:
       - uses: actions/checkout@v7
       - id: install
         uses: ./.github/actions/install
+        with:
+          # The Count instructions step's valgrind, from the apt cache like every other package.
+          packages: ${{ inputs.callgrind && (inputs.variant == 'iouring' || inputs.variant == 'zts') && 'valgrind' || '' }}
       # Each variant's build flags, the --ri swoole line that shows them, and its families.
       - name: Set variant options
         run: |
@@ -154,7 +157,6 @@ jobs:
       - name: Count instructions
         if: inputs.callgrind && (inputs.variant == 'iouring' || inputs.variant == 'zts')
         run: |
-          sudo apt-get install -yq valgrind
           if [ "$VARIANT" = zts ]; then set -- --workload thread --requests 30 --warmup 5; else set -- --workload uring-file --requests 1000; fi
           python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits "$@" $RUN \
             --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
