@@ -28,14 +28,22 @@ struct Borrow<'a> {
 impl<'a> Borrow<'a> {
     #[track_caller]
     fn read(borrows: &'a AtomicU32) -> Self {
-        let taken = borrows.try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
-            (n & EDIT == 0).then_some(n + 1)
-        });
-        assert!(
-            taken.is_ok(),
-            "a socket's read runs inside an edit of the same record"
-        );
-        Self { borrows, taken: 1 }
+        let mut readers = borrows.load(Ordering::Relaxed);
+        loop {
+            assert!(
+                readers & EDIT == 0,
+                "a socket's read runs inside an edit of the same record"
+            );
+            match borrows.compare_exchange_weak(
+                readers,
+                readers + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Self { borrows, taken: 1 },
+                Err(now) => readers = now,
+            }
+        }
     }
 
     #[track_caller]
@@ -167,17 +175,34 @@ mod tests {
         let mut record = SocketRecord::new();
         record.fd = 5;
         let record = (&raw mut record).expose_provenance();
-        std::thread::scope(|scope| {
-            for _ in 0..2 {
-                scope.spawn(move || {
-                    let record = std::ptr::with_exposed_provenance_mut(record);
-                    let socket = unsafe { Socket::from_ptr(record) }.unwrap();
-                    for _ in 0..50 {
-                        assert_eq!(socket.read(|fields| fields.fd), 5);
-                    }
-                });
-            }
+        // Each thread waits inside its read for the other's, so the two reads overlap.
+        let both_reading = std::sync::Barrier::new(2);
+        let after = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    let both_reading = &both_reading;
+                    scope.spawn(move || {
+                        let record = std::ptr::with_exposed_provenance_mut(record);
+                        let socket = unsafe { Socket::from_ptr(record) }.unwrap();
+                        socket.read(|fields| {
+                            both_reading.wait();
+                            let readers = socket.borrows().load(Ordering::Relaxed);
+                            // Neither leaves its read until both have counted.
+                            both_reading.wait();
+                            assert_eq!(readers, 2, "the two reads hold the record at once");
+                            fields.fd
+                        })
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
         });
+        assert_eq!(after, [5, 5], "both reads saw the record");
+        let socket = unsafe { Socket::from_ptr(std::ptr::with_exposed_provenance_mut(record)) };
+        socket.unwrap().edit(|fields| fields.fd = 6);
     }
 
     #[test]

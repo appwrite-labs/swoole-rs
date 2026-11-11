@@ -626,15 +626,22 @@ impl SyncEffects for Call<'_> {
         }
     }
 
+    /// Edits only on `ENOBUFS`, the one error that sets the flag, so threads waiting
+    /// on one full pipe only read it.
     fn catch_error(&self, error: c_int) -> c_int {
+        if error != libc::ENOBUFS {
+            return swoole_rs_reactor::catch_error(error, &mut false);
+        }
         self.socket
             .edit(|record| swoole_rs_reactor::catch_error(error, &mut record.kernel_nobufs))
     }
 
     fn take_nobufs(&self) -> bool {
-        // `has_kernel_nobufs` reads and clears the flag.
-        self.socket
-            .edit(|record| std::mem::replace(&mut record.kernel_nobufs, false))
+        // `has_kernel_nobufs` reads and clears the flag; only a set flag needs the edit.
+        self.socket.read(|record| record.kernel_nobufs)
+            && self
+                .socket
+                .edit(|record| std::mem::replace(&mut record.kernel_nobufs, false))
     }
 
     fn set_last_error(&self, error: c_int) {
