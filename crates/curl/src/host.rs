@@ -166,8 +166,7 @@ pub(crate) fn current() -> *mut c_void {
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing with a destructor.
 pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_coroutine::yield_ex(co, timeout) };
+    swoole_rs_coroutine::yield_ex(co, timeout);
     // SAFETY: a facade starts with its Rust state, and `co` runs again.
     unsafe { (*co.cast::<Coroutine>()).resume_code == RC_CANCELED }
 }

@@ -9,7 +9,7 @@
 //! here with the hooks removed while Rust may allocate.
 use crate::{context, host::now_us, runtime};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
     ffi::{CStr, c_char, c_int, c_long, c_void},
     hash::BuildHasherDefault,
@@ -551,8 +551,8 @@ struct Span {
 #[derive(Clone, Copy)]
 struct Func<'a> {
     common: &'a z::_zend_function__bindgen_ty_1,
-    /// `internal_function.reserved[SPAN_SLOT]` of an internal function, else null.
-    span: *mut *mut c_void,
+    /// `internal_function.reserved[SPAN_SLOT]` of an internal function.
+    span: Option<&'a Cell<*mut c_void>>,
 }
 
 impl Func<'_> {
@@ -571,13 +571,15 @@ impl Func<'_> {
         let common = unsafe { &*common };
         let span = if common.type_ == INTERNAL_FUNCTION {
             let internal = func.cast::<z::zend_internal_function>();
-            // An internal function's reserved slot; only the address is taken.
-            internal
+            let slot = internal
                 .wrapping_byte_add(mem::offset_of!(z::zend_internal_function, reserved))
-                .cast::<*mut c_void>()
-                .wrapping_add(SPAN_SLOT)
+                .cast::<Cell<*mut c_void>>()
+                .wrapping_add(SPAN_SLOT);
+            // SAFETY: an internal function's reserved slot, which Zend leaves to
+            // extensions and only this one's tracer uses.
+            Some(unsafe { &*slot })
         } else {
-            ptr::null_mut()
+            None
         };
         (!common.function_name.is_null()).then_some(Self { common, span })
     }
@@ -609,28 +611,26 @@ impl Func<'_> {
 
 /// `blocking_detection_begin`, of an internal function.
 fn blocking_begin(func: Func<'_>) {
-    if context::current_task().is_none() || func.span.is_null() {
+    let Some(slot) = func.span.filter(|_| context::current_task().is_some()) else {
         return;
-    }
+    };
     let began_at = now_us();
     let switch_count = context::watch_switches(true);
     let span = Box::into_raw(Box::new(Span {
         began_at,
         switch_count,
     }));
-    // SAFETY: the internal function's reserved slot.
-    unsafe { *func.span = span.cast() };
+    slot.set(span.cast());
 }
 
 /// `blocking_detection_end`: report the internal function's call when it ran
 /// longer than the threshold without switching coroutines.
 fn blocking_end(func: Func<'_>) {
     let switches = context::watch_switches(false);
-    if func.span.is_null() {
+    let Some(slot) = func.span else {
         return;
-    }
-    // SAFETY: the internal function's reserved slot.
-    let span = unsafe { mem::replace(&mut *func.span, ptr::null_mut()) };
+    };
+    let span = slot.replace(ptr::null_mut());
     if span.is_null() {
         return;
     }

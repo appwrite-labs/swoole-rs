@@ -344,8 +344,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         unsafe { sdk::ares_gethostbyname(channel, domain, family, Some(host), state) };
         let done = query.error.get() != 0 || query.completed.get();
         if !done {
-            // SAFETY: this is the query's existing current coroutine; no Rust reference spans suspension.
-            unsafe { co::yield_ex(coroutine, timeout) };
+            co::yield_ex(coroutine, timeout);
             if co::canceled(coroutine) {
                 // SAFETY: cancel synchronously invokes only callbacks on this live query.
                 unsafe { sdk::ares_cancel(channel) };

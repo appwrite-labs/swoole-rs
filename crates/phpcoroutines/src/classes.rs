@@ -415,10 +415,14 @@ unsafe extern "C" fn autoload(
     };
     if let Some(loading) = loading {
         for waiter in loading.waiters {
-            // SAFETY: a waiter suspended on its own stack until resumed.
-            unsafe { (*waiter).ce = ce };
-            // SAFETY: as above.
-            host::resume(unsafe { (*waiter).co });
+            let co = {
+                // SAFETY: a waiter suspended on its own stack until resumed; the
+                // borrow ends before the resume.
+                let waiter = unsafe { &mut *waiter };
+                waiter.ce = ce;
+                waiter.co
+            };
+            host::resume(co);
         }
     }
     ce
