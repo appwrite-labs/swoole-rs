@@ -28,14 +28,14 @@ excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call the hooks
 crate's Rust functions instead (`file_io::read_file`, `wait_signal::system_wait_signal`,
-`poll::socket_poll`), or `swr_v1_system_getaddrinfo`.
+`poll::socket_poll`), or `resolve::system_getaddrinfo`.
 
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
 TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and
 expected values), calling the C ABI `swoole_coroutine_*` exports; the same
 `hooks-system-rust` phase runs them. Upstream's test helpers are written out over
 libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
-`Address::assign`), `System::gethostbyname` is `swr_v1_system_gethostbyname`,
+`Address::assign`), `System::gethostbyname` is `resolve::system_gethostbyname`,
 and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
 Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
@@ -46,7 +46,7 @@ TEST, `coroutine_hook.accept`, is `hook.rs`'s `accept`, in the same suite and ph
 
 `core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
 (`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
-`System::gethostbyname` is `swr_v1_system_gethostbyname` and the DNS cache calls
+`System::gethostbyname` is `resolve::system_gethostbyname` and the DNS cache calls
 (`set_dns_cache_capacity`, `_expire`, `clear_dns_cache`, `get_dns_cache_hit_ratio`) are
 crates/hooks' `dns_cache.rs` under their upstream symbols. `resolve_cache`,
 `resolve_cache_inet4_and_inet6` and `dns_expire` look up public names (www.baidu.com,

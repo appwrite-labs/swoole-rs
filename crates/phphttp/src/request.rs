@@ -16,7 +16,7 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-static REQUEST: Class = Class::new();
+pub(crate) static REQUEST: Class = Class::new();
 
 /// The registered class entry.
 pub(crate) fn entry() -> *mut zend_class_entry {

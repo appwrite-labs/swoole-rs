@@ -237,8 +237,7 @@ pub fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
 
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
 /// nothing without one.
-#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
-pub(crate) fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
+pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
     field_mut(|fields| {
         let queue = &raw mut fields.destroy_callbacks;
         // SAFETY: the live reactor's destroy queue; `call` is safe with any data.

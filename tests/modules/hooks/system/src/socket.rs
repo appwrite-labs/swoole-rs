@@ -2159,7 +2159,6 @@ unsafe extern "C-unwind" {
     fn swr_case_numeric_host_owner_and_independent_copies();
     fn swr_case_hints_vectors_and_failure_publication();
     fn swr_case_native_output_append_exception_is_contained();
-    fn swr_case_actual_async_numeric_results();
 }
 
 fn numeric_host_owner_and_independent_copies() {
@@ -2178,8 +2177,22 @@ fn native_output_append_exception_is_contained() {
 }
 
 fn actual_async_numeric_results() {
-    // SAFETY: in a coroutine.
-    run(|| unsafe { swr_case_actual_async_numeric_results() });
+    run(|| {
+        let host = swoole_rs_hooks::resolve::system_gethostbyname(b"127.0.0.1", AF_INET, 2.0);
+        assert_eq!(host, b"127.0.0.1");
+        let addresses = swoole_rs_hooks::resolve::system_getaddrinfo(
+            b"127.0.0.1",
+            AF_INET,
+            SOCK_STREAM,
+            0,
+            b"",
+            2.0,
+        );
+        assert!(!addresses.is_empty());
+        for address in addresses {
+            assert_eq!(address, b"127.0.0.1");
+        }
+    });
 }
 
 /// `rust_socket_scopes.<name>`: the timeout scope, whose C++ API left the hybrid

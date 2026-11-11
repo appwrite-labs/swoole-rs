@@ -8,7 +8,7 @@
 use crate::co_socket::Co;
 use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
 use crate::wait_event::native::{coroutine_yield_ex, current};
-use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_void};
 use std::ffi::CString;
 use swoole_rs_clients::dns::DnsSocket;
 use swoole_rs_clients::resolver::{self, Request};
@@ -116,7 +116,8 @@ fn gethostbyname_with_async(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8>
 
 /// `System::gethostbyname`: the DNS cache, then c-ares or the async pool; empty on
 /// failure.
-pub(crate) fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
+#[must_use]
+pub fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
     if let Some(cached) = crate::dns_cache::get(domain, name) {
         return cached;
     }
@@ -209,68 +210,23 @@ pub(crate) unsafe fn socket_lookup(
     ctx.with_port
 }
 
-/// `System::gethostbyname(host, family, timeout)` for crates/phpcoroutines and the
-/// coroutine socket: the address through `put`; false when there is none.
-///
-/// # Safety
-/// `host` holds `length` bytes; `put` accepts `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_system_gethostbyname(
-    host: *const c_char,
-    length: usize,
-    family: c_long,
+/// `System::getaddrinfo` for crates/phpcoroutines: the addresses, or none with
+/// the last error set.
+#[must_use]
+pub fn system_getaddrinfo(
+    host: &[u8],
+    family: c_int,
+    socktype: c_int,
+    protocol: c_int,
+    service: &[u8],
     timeout: f64,
-    put: Put,
-    out: *mut c_void,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let host = unsafe { core::slice::from_raw_parts(host.cast::<u8>(), length) };
-    let address =
-        system_gethostbyname(host, c_int::try_from(family).unwrap_or(c_int::MAX), timeout);
-    if !address.is_empty() {
-        // SAFETY: `put` copies the address.
-        unsafe { put(out, address.as_ptr().cast(), address.len()) };
-    }
-    !address.is_empty()
-}
-
-/// `System::getaddrinfo`: each address through `put`; false when there is none.
-///
-/// # Safety
-/// `host` and `service` are NUL-terminated; `put` accepts `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_system_getaddrinfo(
-    host: *const c_char,
-    family: c_long,
-    socktype: c_long,
-    protocol: c_long,
-    service: *const c_char,
-    timeout: f64,
-    put: Put,
-    out: *mut c_void,
-) -> bool {
-    let int = |value: c_long| c_int::try_from(value).unwrap_or(c_int::MAX);
-    // SAFETY: as the caller promises.
-    let host = unsafe { CStr::from_ptr(host) };
-    // SAFETY: as the caller promises.
-    let service = unsafe { CStr::from_ptr(service) };
-    let request = Request::new(
-        int(family),
-        int(socktype),
-        int(protocol),
-        host.to_bytes(),
-        service.to_bytes(),
-    );
+) -> Vec<Vec<u8>> {
+    let request = Request::new(family, socktype, protocol, host, service);
     if let Some(error) = run(&request, handler_getaddrinfo, 0, timeout, true) {
         log::set_last_error(error);
-        return false;
+        return Vec::new();
     }
-    let addresses = request.addresses();
-    for address in &addresses {
-        // SAFETY: `put` copies the address.
-        unsafe { put(out, address.as_ptr().cast(), address.len()) };
-    }
-    !addresses.is_empty()
+    request.addresses()
 }
 
 /// `new Socket(SW_SOCK_UDP)`, deleted on drop.

@@ -76,14 +76,6 @@ fn ntop(v6: bool, bytes: &[u8]) -> CString {
     unsafe { CStr::from_ptr(out.as_ptr()) }.to_owned()
 }
 
-/// # Safety
-/// `addr` points at an `in_addr`, or an `in6_addr` when `v6`, live for `'a`.
-unsafe fn address_bytes<'a>(v6: bool, addr: *const u8) -> &'a [u8] {
-    let len = if v6 { 16 } else { 4 };
-    // SAFETY: the caller passes an address of the family.
-    unsafe { core::slice::from_raw_parts(addr, len) }
-}
-
 /// Reads the interfaces that are up. `None` when `getifaddrs` fails, with `errno` set.
 fn read() -> Option<Box<LocalAddrs>> {
     let mut list: *mut libc::ifaddrs = core::ptr::null_mut();
@@ -151,22 +143,10 @@ fn table(state: &ServerState) -> Option<&LocalAddrs> {
     unsafe { state.local_addrs.load(Ordering::Acquire).as_ref() }
 }
 
-/// The number of the local address `addr` (`in_addr`, or `in6_addr` when `v6`), 0 when unknown.
-///
-/// # Safety
-/// `addr` points at an address of the family.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_local_addr_index(
-    state: Option<&ServerState>,
-    v6: bool,
-    addr: *const u8,
-) -> u16 {
-    let Some(addrs) = state.and_then(table) else {
-        return 0;
-    };
-    // SAFETY: the caller passes an address of the family.
-    let bytes = unsafe { address_bytes(v6, addr) };
-    addrs.index(v6, bytes)
+/// The number of the local address `addr` (an `in_addr`'s bytes, or an `in6_addr`'s
+/// when `v6`), 0 when unknown.
+pub(crate) fn index(state: &ServerState, v6: bool, addr: &[u8]) -> u16 {
+    table(state).map_or(0, |addrs| addrs.index(v6, addr))
 }
 
 /// The text of local address `index`; the loopback address when unknown. Valid
@@ -229,9 +209,7 @@ mod tests {
         let state = ServerState::new();
         assert!(init(&state), "getifaddrs works here");
         let loopback = [127u8, 0, 0, 1];
-        // SAFETY: live state and a 4-byte address.
-        let index =
-            unsafe { swr_v1_server_local_addr_index(Some(&state), false, loopback.as_ptr()) };
+        let index = super::index(&state, false, &loopback);
         assert_ne!(index, 0, "lo is up");
         // SAFETY: live state; the text lives with it.
         let found = unsafe { CStr::from_ptr(text(&state, false, index)) };
@@ -240,8 +218,7 @@ mod tests {
         let missing = unsafe { CStr::from_ptr(text(&state, true, 0)) };
         assert_eq!(missing, c"::1", "unknown v6 index");
         assert!(init(&state), "a second read replaces the first");
-        // SAFETY: a null state has no table.
-        let none = unsafe { swr_v1_server_local_addr_index(None, false, loopback.as_ptr()) };
-        assert_eq!(none, 0, "no table");
+        let empty = ServerState::new();
+        assert_eq!(super::index(&empty, false, &loopback), 0, "no table");
     }
 }

@@ -10,8 +10,9 @@ use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_p
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, offloaded, swr_v1_hook_close_fd};
+use core::mem::MaybeUninit;
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::SocketRecord;
 
 /// `SW_ERROR_INVALID_PARAMS`.
@@ -168,7 +169,7 @@ pub unsafe extern "C" fn swoole_coroutine_recv(
         return unsafe { libc::recv(fd, buf, len, flags) };
     };
     // SAFETY: the caller's buffer.
-    let buf = unsafe { bytes_mut(buf, len) };
+    let buf = unsafe { slots_mut(buf, len) };
     if flags & libc::MSG_PEEK != 0 {
         socket.peek(buf)
     } else {
@@ -354,8 +355,10 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     let Some((_, socket)) = hooked(fd) else {
         let mut poll = swr_v1_hook_fd_poll(fd, event);
         #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) cast")]
-        // SAFETY: one pollfd.
-        let ready = unsafe { libc::poll(&raw mut poll, 1, (timeout * 1000.0) as c_int) };
+        let ready = sys::poll(
+            core::slice::from_mut(&mut poll),
+            (timeout * 1000.0) as c_int,
+        );
         return if ready == 1 { 0 } else { -1 };
     };
     let saved = fd_wait(socket, event.cast_unsigned(), timeout);
@@ -370,8 +373,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
-        // SAFETY: closing an fd touches no memory.
-        return unsafe { libc::close(fd) };
+        return sys::close(fd);
     }
     let result = socket_map::close(
         fd,
@@ -407,7 +409,7 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     }
     if let Some(socket) = socket_map::get(fd) {
         // SAFETY: the caller's buffer.
-        return socket.read(unsafe { bytes_mut(buf, count) });
+        return socket.read(unsafe { slots_mut(buf, count) });
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
@@ -467,11 +469,12 @@ pub(crate) unsafe fn bytes<'a>(buf: *const c_void, len: usize) -> &'a [u8] {
     unsafe { core::slice::from_raw_parts(buf.cast(), len) }
 }
 
-/// The caller's `len` writable bytes at `buf`.
+/// The caller's `len` writable slots at `buf`, which may be uninitialized: a read
+/// only writes them.
 ///
 /// # Safety
 /// `buf` holds `len` writable bytes, or `len` is 0.
-pub(crate) unsafe fn bytes_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [u8] {
+pub(crate) unsafe fn slots_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [MaybeUninit<u8>] {
     if len == 0 {
         return &mut [];
     }

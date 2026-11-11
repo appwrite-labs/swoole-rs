@@ -9,7 +9,7 @@
 //! take these paths for it.
 use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::Co;
-use crate::hooked::{bytes, bytes_mut};
+use crate::hooked::{bytes, slots_mut};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::IoVector;
@@ -195,7 +195,7 @@ impl UringSocketOps {
             // SAFETY: as above.
             WRITE => unsafe { uring::write(host, fd, buf, n, wt) },
             // SAFETY: as above.
-            RECV if self.ssl() => tls.recv(unsafe { bytes_mut(buf, n) }),
+            RECV if self.ssl() => tls.recv(unsafe { slots_mut(buf, n) }),
             // SAFETY: as above.
             RECV => unsafe { uring::recv(host, fd, buf, n, 0, rt) },
             // SAFETY: as above.
@@ -230,7 +230,7 @@ impl UringSocketOps {
             } else {
                 // SAFETY: the iovec's buffer.
                 self.tls
-                    .recv(unsafe { bytes_mut(iov.iov_base, iov.iov_len) })
+                    .recv(unsafe { slots_mut(iov.iov_base, iov.iov_len) })
             };
             total += result.max(0);
             vector.update(result);
@@ -277,12 +277,12 @@ pub(crate) fn read(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
     into(ops, READ, buf)
 }
 
-/// `recv` into `buf`, which TLS reads as bytes.
-pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [u8]) -> isize {
+/// `recv` into `buf`, which may be uninitialized: the ring or `SSL_read` writes it.
+pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
     into(ops, RECV, buf)
 }
 
-/// `op` ([`READ`], or [`RECV`] over initialized bytes) into `buf`.
+/// `op` ([`READ`] or [`RECV`]) into `buf`.
 fn into(ops: &UringSocketOps, op: c_int, buf: &mut [impl ReadSlot]) -> isize {
     let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
     // SAFETY: `buf` is `n` writable bytes.

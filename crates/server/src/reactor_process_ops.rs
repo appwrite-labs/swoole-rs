@@ -145,7 +145,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             .ok()
             .and_then(|i| ctx.ports().get(i).copied())
     };
-    let stream = |port: *mut c_void| is_stream(native::port_config(port).r#type);
+    let stream = |port: crate::view::Port<'_>| is_stream(port.config().r#type);
     Some(match op {
         OP_SET_SINGLE_THREAD => {
             config.single_thread = true;
@@ -159,7 +159,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_CLOSE_SOCKET => {
             let port = port()?;
             if reuse_port(config) {
-                (methods().close_socket)(port);
+                (methods().close_socket)(port.raw());
             }
             0
         }
@@ -168,9 +168,9 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             if !reuse_port(config) {
                 return Some(0);
             }
-            sign((methods().create_socket)(port))
+            sign((methods().create_socket)(port.raw()))
         }
-        OP_PORT_LISTEN => sign((methods().listen)(port()?)),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?.raw())),
         OP_INIT_IPC_MAX_SIZE => {
             config.ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
             0
