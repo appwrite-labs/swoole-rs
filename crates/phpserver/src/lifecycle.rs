@@ -574,7 +574,7 @@ impl Props<'static> {
     }
 
     /// A Server object, under its own class.
-    fn own(object: ServerObject) -> Self {
+    pub(crate) fn own(object: ServerObject) -> Self {
         Self(object.class(), object.raw(), PhantomData)
     }
 }
@@ -1277,7 +1277,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     }
     if crate::server::THREAD.load(Ordering::Relaxed)
         && fact(serv, fact::THREAD_MODE)
-        && let Err(bailout) = crate::thread::copy_setting(serv, setting)
+        && let Err(bailout) = crate::thread::copy_setting(serv, settings)
     {
         bailout.defer();
         return Err(Stop);
