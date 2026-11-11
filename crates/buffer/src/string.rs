@@ -475,7 +475,8 @@ impl CppString {
 }
 
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
-// elsewhere the caller ignores it. Each has a complete (C1/D1) and base (C2/D2) symbol.
+// elsewhere the caller ignores it. Only the complete-object (C1/D1) symbols: nothing
+// derives from String, so no caller names a base-object (C2/D2) one.
 // A constructor's `this` is uninitialized storage; every other `this` is a live String.
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
@@ -484,10 +485,6 @@ upstream! {
         let string = this.write(CppString::EMPTY);
         string.alloc(size, with.map_or(ptr::null(), ptr::from_ref));
         string
-    }
-    "_ZN6swoole6StringC2EmPKNS_9AllocatorE", "_ZN6swoole6StringC2EmPKNS_9AllocatorE" =>
-    pub extern "C" fn swr_string_new_base(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&Allocator>) -> *mut CppString {
-        swr_string_new(this, size, with)
     }
     "_ZN6swoole6StringC1EPKcm", "_ZN6swoole6StringC1EPKcm" =>
     /// `String(const char *, size_t)`: a NUL-terminated copy.
@@ -503,23 +500,12 @@ upstream! {
         string.length = length;
         string
     }
-    "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
-    /// # Safety
-    /// As `swr_string_from`.
-    pub unsafe extern "C" fn swr_string_from_base(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { swr_string_from(this, data, length) }
-    }
     "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
     /// `String(const String &)`.
     pub extern "C" fn swr_string_copy(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
         let string = this.write(CppString::EMPTY);
         string.copy_from(source);
         string
-    }
-    "_ZN6swoole6StringC2ERKS0_", "_ZN6swoole6StringC2ERKS0_" =>
-    pub extern "C" fn swr_string_copy_base(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
-        swr_string_copy(this, source)
     }
     "_ZN6swoole6StringC1EOS0_", "_ZN6swoole6StringC1EOS0_" =>
     /// `String(String &&)`.
@@ -528,19 +514,11 @@ upstream! {
         string.move_from(source);
         string
     }
-    "_ZN6swoole6StringC2EOS0_", "_ZN6swoole6StringC2EOS0_" =>
-    pub extern "C" fn swr_string_move_base(this: &mut MaybeUninit<CppString>, source: &mut CppString) -> *mut CppString {
-        swr_string_move(this, source)
-    }
     "_ZN6swoole6StringD1Ev", "_ZN6swoole6StringD1Ev" =>
     /// `~String()`.
     pub extern "C" fn swr_string_drop(this: &mut CppString) -> *mut CppString {
         this.dispose();
         this
-    }
-    "_ZN6swoole6StringD2Ev", "_ZN6swoole6StringD2Ev" =>
-    pub extern "C" fn swr_string_drop_base(this: &mut CppString) -> *mut CppString {
-        swr_string_drop(this)
     }
     "_ZN6swoole6StringaSERKS0_", "_ZN6swoole6StringaSERKS0_" =>
     /// `String &operator=(const String &)`, where `source` may be `this`.
@@ -740,9 +718,9 @@ pub unsafe extern "C" fn swr_v1_string_split(
 // SAFETY: the C++ runtime's allocation functions.
 unsafe extern "C" {
     #[link_name = "_Znwm"]
-    fn operator_new(size: usize) -> *mut c_void;
+    pub(crate) fn operator_new(size: usize) -> *mut c_void;
     #[link_name = "_ZdlPv"]
-    fn operator_delete(storage: *mut c_void);
+    pub(crate) fn operator_delete(storage: *mut c_void);
 }
 
 /// Fresh `operator new` storage for one String: C++ `delete` frees it.
