@@ -32,7 +32,7 @@ impl Drop for RequestBytes {
 /// Register `alias` in `target` using the named internal function's real handler
 /// and argument metadata. Names are binary spans; lookup lowercases ASCII bytes.
 /// # Errors
-/// Returns a contained PHP allocation or registration bailout.
+/// Returns a contained PHP registration bailout.
 /// # Safety
 /// All source spans and tables are live for this call. `info` is persistent
 /// argument metadata. `assert_internal`, when present, is a non-PHP native
@@ -51,10 +51,8 @@ pub unsafe fn function_alias(
     info: *const zend_internal_arg_info,
     assert_internal: Option<unsafe extern "C" fn(u8)>,
 ) -> Result<c_int, Bailout> {
-    let mut lower = ptr::null_mut();
-    // SAFETY: the caller lends the source name; allocation is trapped below this owner.
-    leaf(unsafe { z::swr_zend_try_facade_string(origin, origin_length, &raw mut lower) })?;
-    let lower = RequestString(lower);
+    // SAFETY: the caller lends the source name.
+    let lower = RequestString(unsafe { z::swr_zend_string_init(origin, origin_length) });
     // SAFETY: this fresh request string is exclusively owned and has this exact span.
     unsafe { std::slice::from_raw_parts_mut(string::val(lower.0), origin_length) }
         .make_ascii_lowercase();
@@ -88,10 +86,8 @@ pub unsafe fn function_alias(
         let internal = unsafe { &entry.internal_function };
         (internal.handler, internal.num_args)
     };
-    let mut name = ptr::null_mut();
     // SAFETY: allocate the original independent request buffer, including its NUL.
-    leaf(unsafe { z::swr_zend_try_facade_alloc(alias_length.wrapping_add(1), &raw mut name) })?;
-    let name = RequestBytes(name.cast());
+    let name = RequestBytes(unsafe { z::swr_zend_emalloc(alias_length.wrapping_add(1)) }.cast());
     // SAFETY: the caller's readable alias span and this new independent allocation do not overlap.
     unsafe { ptr::copy_nonoverlapping(alias, name.0, alias_length) };
     // SAFETY: the allocation has space for the original trailing NUL.
@@ -122,7 +118,7 @@ pub unsafe fn function_alias(
 /// `sdk_prefix` retains the native SDK's handling of a leading backslash,
 /// including its original string length; ordinary Rust aliases pass false.
 /// # Errors
-/// Returns a contained PHP allocation, interning or registration bailout.
+/// Returns a contained PHP interning or registration bailout.
 /// # Safety
 /// `name` is readable for `length` bytes, and `entry` is a live persistent CE.
 pub unsafe fn class_alias(
@@ -131,9 +127,8 @@ pub unsafe fn class_alias(
     entry: *mut zend_class_entry,
     sdk_prefix: bool,
 ) -> Result<c_int, Bailout> {
-    let mut alias = ptr::null_mut();
-    // SAFETY: the source is live; PHP allocates the persistent owned name below the trap.
-    leaf(unsafe { z::swr_zend_try_facade_pstring(name, length, &raw mut alias) })?;
+    // SAFETY: the source is live; PHP allocates the persistent owned name.
+    let alias = unsafe { z::swr_zend_string_persistent(name, length) };
     // SAFETY: this persistent string is newly allocated and unshared.
     let bytes = unsafe { std::slice::from_raw_parts_mut(string::val(alias), length) };
     if sdk_prefix && bytes.first() == Some(&b'\\') {

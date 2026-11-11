@@ -22,6 +22,7 @@ use swoole_rs_corebase::constants::{
     TimeoutType,
 };
 use swoole_rs_corebase::net_types::{AddressStorage, PacketLength, Protocol, SocketAddress};
+use swoole_rs_corebase::sys::ReadSlot;
 #[cfg(not(test))]
 use swoole_rs_corebase::thread_buffer;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log, swr_v1_core_proxy_free};
@@ -38,9 +39,8 @@ use swoole_rs_reactor::{
 use swoole_rs_tls::ssl_context_create;
 #[cfg(not(test))]
 use swoole_rs_tls::upstream::{
-    socket_free, socket_recv, socket_recv_sync, socket_recvfrom_sync_address, socket_send_sync,
-    socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host, socket_ssl_close,
-    socket_ssl_connect, socket_ssl_create, socket_ssl_verify,
+    self as net, socket_free, socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host,
+    socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_verify,
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
@@ -48,10 +48,9 @@ use swoole_rs_tls::{
 };
 #[cfg(test)]
 use tests::{
-    async_dispatch, ops, socket_free, socket_recv, socket_recv_sync, socket_recvfrom_sync_address,
-    socket_send_sync, socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host,
-    socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_verify, ssl_context_create,
-    swoole_event_write, thread_buffer, writable_callback,
+    async_dispatch, net, ops, socket_free, socket_sendfile_async, socket_sendfile_sync,
+    socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_create,
+    socket_ssl_verify, ssl_context_create, swoole_event_write, thread_buffer, writable_callback,
 };
 
 /// The flags `swr_v1_clients_flag` reads.
@@ -445,33 +444,22 @@ impl Handle {
     }
 
     /// `Socket::recv`: one read, through the TLS session when there is one.
-    fn recv_once(self, data: *mut c_char, length: usize) -> isize {
-        // SAFETY: the live client's socket; `length` writable bytes at `data`.
-        unsafe { socket_recv(self.socket_ptr(), data.cast(), length, 0) }
-    }
-
-    fn recv_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
-        // SAFETY: as for `recv_once`.
-        unsafe { socket_recv_sync(self.socket_ptr(), data.cast(), length, flags) }
-    }
-
-    fn send_sync(self, data: *const c_char, length: usize, flags: c_int) -> isize {
-        // SAFETY: the live client's socket; `length` readable bytes at `data`.
-        unsafe { socket_send_sync(self.socket_ptr(), data.cast(), length, flags) }
+    fn recv_once(self, buffer: &mut [impl ReadSlot]) -> isize {
+        net::recv(self.socket(), buffer, 0)
     }
 
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
-    fn sendto(self, data: *const c_char, length: usize) -> isize {
+    fn sendto(self, data: &[u8]) -> isize {
         // The descriptor first: `socket()` borrows the record again.
         let fd = self.socket().fd();
         let address = &self.fields().server_addr;
-        // SAFETY: the socket's descriptor, `length` readable bytes at `data` and
-        // the address's storage and length.
+        // SAFETY: the socket's descriptor, the data's bytes and the address's
+        // storage and length.
         unsafe {
             libc::sendto(
                 fd,
-                data.cast(),
-                length,
+                data.as_ptr().cast(),
+                data.len(),
                 0,
                 (&raw const address.addr).cast(),
                 address.len,
@@ -481,18 +469,18 @@ impl Handle {
 
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
     /// retried on EINTR.
-    fn recvfrom(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
+    fn recvfrom(self, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
         let fd = self.socket().fd();
         let address = &mut self.fields().remote_addr;
         let mut n = -1;
         for _ in 0..SOCKET_RETRY_COUNT {
             address.len = ADDRESS_SIZE;
-            // SAFETY: `length` writable bytes at `data`, the address's storage and length.
+            // SAFETY: the buffer's writable bytes, the address's storage and length.
             n = unsafe {
                 libc::recvfrom(
                     fd,
-                    data.cast(),
-                    length,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
                     flags,
                     (&raw mut address.addr).cast(),
                     &raw mut address.len,
@@ -506,12 +494,10 @@ impl Handle {
     }
 
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
-    fn recvfrom_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
-        // The socket first: `socket_ptr()` borrows the record again.
-        let socket = self.socket_ptr();
-        let address = &raw mut self.fields().remote_addr;
-        // SAFETY: the live socket, `length` writable bytes at `data` and the address.
-        unsafe { socket_recvfrom_sync_address(socket, data.cast(), length, flags, address) }
+    fn recvfrom_sync(self, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
+        // The socket first: `socket()` borrows the record again.
+        let socket = self.socket();
+        net::recvfrom_sync(socket, buffer, flags, &mut self.fields().remote_addr)
     }
 
     /// The TLS context's view; TLS is on.
@@ -615,18 +601,22 @@ impl Handle {
         self.input_mut().clear();
     }
 
-    /// The SOCKS5 negotiation request: its bytes and length.
-    fn socks5_negotiate(self) -> (*const c_char, usize) {
+    /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
+    fn socks5_negotiate(self) -> usize {
         let owner = self.get().socks5.as_ptr().cast();
         // SAFETY: the live SOCKS5 proxy, whose buffer the request is packed into.
         let length = unsafe { socks5_pack_negotiate(owner) };
-        (self.socks5_buffer(), length.cast_unsigned())
+        length.cast_unsigned()
     }
 
-    fn socks5_buffer(self) -> *const c_char {
-        self.proxy(Proxy::Socks5)
+    /// Send the first `length` bytes of the SOCKS5 proxy's packet buffer, copied
+    /// first: the send may raise a callback that reaches the proxy again.
+    fn socks5_send(self, length: usize) -> isize {
+        let packet = self
+            .proxy(Proxy::Socks5)
             .and_then(ProxyState::packet)
-            .map_or(core::ptr::null(), |packet| packet.as_ptr().cast())
+            .map_or([0; 512], |packet| *packet);
+        send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
     /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
@@ -635,14 +625,14 @@ impl Handle {
         let owner = self.get().socks5.as_ptr().cast();
         // SAFETY: the live SOCKS5 proxy; `length` bytes at `data`.
         let n = unsafe { socks5_handshake_step(owner, data, length) };
-        n == 0 || n > 0 && send(self, self.socks5_buffer(), n.cast_unsigned(), 0) == n
+        n == 0 || n > 0 && self.socks5_send(n.cast_unsigned()) == n
     }
 
-    /// The HTTP proxy's CONNECT request in the shared buffer: its bytes and length.
+    /// The HTTP proxy's CONNECT request in the shared buffer.
     /// The host is the TLS host name when set, else the proxy's target.
-    fn http_pack(self) -> (*const c_char, usize) {
+    fn http_pack(self) -> &'static [u8] {
         let Some(proxy) = self.proxy(Proxy::Http) else {
-            return (core::ptr::null(), 0);
+            return &[];
         };
         let tls = self.get().tls.get().is_some();
         let target = proxy.string(3);
@@ -652,22 +642,21 @@ impl Handle {
             &target
         };
         let shared = shared_buffer();
+        let (at, size) = (shared.as_mut_ptr(), shared.size());
         // SAFETY: the shared buffer's `size` bytes, which nothing else borrows.
-        let output = unsafe { core::slice::from_raw_parts_mut(shared.str.cast(), shared.size) };
+        let output = unsafe { core::slice::from_raw_parts_mut(at, size) };
         let length = swoole_rs_http_ffi::proxy_connect(proxy, host, output);
-        (shared.str, length)
+        output.get(..length).unwrap_or_default()
     }
 
     /// `HttpProxy::handshake` of the shared buffer (`shared`, its length set to
     /// `length`) or of the input buffer (its length grown by `length`).
     fn http_handshake(self, shared: bool, length: usize) -> bool {
         let buffer = if shared {
-            thread_buffer().cast::<CppString>()
+            shared_buffer()
         } else {
-            self.input()
+            self.input_mut()
         };
-        // SAFETY: the thread's or the client's live String, unborrowed elsewhere.
-        let buffer = unsafe { &mut *buffer };
         let length = if shared {
             length
         } else {
@@ -796,15 +785,19 @@ pub extern "C" fn swr_v1_clients_listen(
 
 use swoole_rs_corebase::sys::errno;
 
-/// `sw_tg_buffer()`, whole: a sync proxy handshake reads into it.
-fn shared_buffer() -> Tail {
+/// `sw_tg_buffer()`: a sync proxy handshake reads into its whole allocation.
+fn shared_buffer() -> &'static mut CppString {
     // SAFETY: the thread's shared String, set up by `swoole_init` before any
-    // proxied connect, and unborrowed elsewhere.
-    let buffer = unsafe { &mut *thread_buffer().cast::<CppString>() };
-    Tail {
-        str: buffer.as_mut_ptr().cast(),
-        size: buffer.size(),
-    }
+    // proxied connect, and borrowed only between effects.
+    unsafe { &mut *thread_buffer().cast::<CppString>() }
+}
+
+/// The shared buffer, emptied, as a sync proxy handshake's read target: the read
+/// lands at its start.
+fn shared_spare() -> &'static mut [core::mem::MaybeUninit<u8>] {
+    let shared = shared_buffer();
+    shared.clear();
+    shared.spare()
 }
 
 use swoole_rs_corebase::set_errno;
@@ -935,16 +928,14 @@ impl Handle {
                 timeout,
                 flags,
             } => connect(self, host, port, timeout, flags).into(),
-            Op::Send { data, flags } => send(self, data.as_ptr().cast(), data.len(), flags) as i64,
+            Op::Send { data, flags } => send(self, data, flags) as i64,
             Op::Sendto { host, port, data } => sendto(self, host, port, data).into(),
             Op::Sendfile {
                 file,
                 offset,
                 length,
             } => sendfile(self, file, offset, length).into(),
-            Op::Recv { buffer, flags } => {
-                recv(self, buffer.as_mut_ptr().cast(), buffer.len(), flags) as i64
-            }
+            Op::Recv { buffer, flags } => recv(self, buffer, flags) as i64,
             Op::PackageLength(data) => package_length(self, data) as i64,
             Op::Shutdown(how) => shutdown(self, how).into(),
             Op::Close => close(self).into(),
@@ -1447,15 +1438,14 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
     // Only a proxy handshake reads the thread's shared buffer, which a thread
     // that never set up SwooleTG doesn't have.
     if this.proxy_state(Proxy::Socks5) >= 0 {
-        let shared = shared_buffer();
-        let (data, length) = this.socks5_negotiate();
-        if send(this, data, length, 0) < 0 {
+        if this.socks5_send(this.socks5_negotiate()) < 0 {
             return ERR;
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         loop {
-            let n = recv(this, shared.str, shared.size, 0);
-            if n > 0 && this.socks5_handshake(shared.str, n.cast_unsigned()) {
+            let shared = shared_spare();
+            let n = recv(this, shared, 0);
+            if n > 0 && this.socks5_handshake(shared.as_ptr().cast(), n.cast_unsigned()) {
                 if this.proxy_state(Proxy::Socks5) == SOCKS5_READY {
                     break;
                 }
@@ -1464,13 +1454,11 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             return ERR;
         }
     } else if this.proxy_state(Proxy::Http) >= 0 {
-        let (data, length) = this.http_pack();
-        if send(this, data, length, 0) < 0 {
+        if send(this, this.http_pack(), 0) < 0 {
             return ERR;
         }
         // After the pack, which may have grown it.
-        let shared = shared_buffer();
-        let n = recv(this, shared.str, shared.size, 0);
+        let n = recv(this, shared_spare(), 0);
         if n <= 0 || !this.http_handshake(true, n.cast_unsigned()) {
             return ERR;
         }
@@ -1779,14 +1767,14 @@ fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> c_int {
 }
 
 /// `Client::send(data, length, flags)`.
-fn send(this: Handle, data: *const c_char, length: usize, flags: c_int) -> isize {
+fn send(this: Handle, data: &[u8], flags: c_int) -> isize {
     if this.flag(DTLS) || this.flag(STREAM) && !this.flag(ASYNC) {
-        this.send_sync(data, length, flags)
+        net::send_sync(this.socket(), data, flags)
     } else if this.flag(STREAM) {
-        send_async(this, data, length)
+        send_async(this, data)
     } else {
-        let n = this.sendto(data, length);
-        if n < 0 || n.cast_unsigned() < length {
+        let n = this.sendto(data);
+        if n < 0 || n.cast_unsigned() < data.len() {
             ERR as isize
         } else {
             n
@@ -1795,10 +1783,11 @@ fn send(this: Handle, data: *const c_char, length: usize, flags: c_int) -> isize
 }
 
 /// `Client_tcp_send_async`: queue on the reactor, raising `onBufferFull` at the high watermark.
-fn send_async(this: Handle, data: *const c_char, length: usize) -> isize {
+fn send_async(this: Handle, data: &[u8]) -> isize {
+    let (at, length) = (data.as_ptr().cast(), data.len());
     let mut n = length.cast_signed();
-    // SAFETY: the live client's socket; `length` bytes at `data`, copied by the reactor.
-    if unsafe { swoole_event_write(this.socket_ptr(), data.cast(), length) } < 0 {
+    // SAFETY: the live client's socket; the data's bytes, copied by the reactor.
+    if unsafe { swoole_event_write(this.socket_ptr(), at, length) } < 0 {
         if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return ERR as isize;
         }
@@ -1841,18 +1830,18 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
 }
 
 /// `Client::recv(data, length, flags)`.
-fn recv(this: Handle, data: *mut c_char, length: usize, flags: c_int) -> isize {
+fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
     if this.flag(STREAM) || this.flag(DTLS) {
-        let n = this.recv_sync(data, length, flags);
+        let n = net::recv_sync(this.socket(), buffer, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n == -1 && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
         }
         n
     } else if this.flag(ASYNC) {
-        this.recvfrom_sync(data, length, flags)
+        this.recvfrom_sync(buffer, flags)
     } else {
-        this.recvfrom(data, length, flags)
+        this.recvfrom(buffer, flags)
     }
 }
 
@@ -1873,7 +1862,7 @@ fn on_read(this: Handle) -> c_int {
     let do_ssl_handshake = this.flag(OPEN_SSL);
     let http = this.proxy_state(Proxy::Http);
     if http >= 0 && http != HTTP_PROXY_READY {
-        let n = this.recv_once(buf, size);
+        let n = this.recv_once(this.input_mut().spare());
         if n <= 0 || !this.http_handshake(false, n.cast_unsigned()) {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
             return connect_failed(this);
@@ -1887,7 +1876,7 @@ fn on_read(this: Handle) -> c_int {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5 >= 0 && socks5 != SOCKS5_READY {
-        let n = this.recv_once(buf, size);
+        let n = this.recv_once(this.input_mut().spare());
         if n <= 0 {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
@@ -1936,7 +1925,7 @@ fn on_read(this: Handle) -> c_int {
         }
         return OK;
     }
-    let n = this.recv_once(buf, size);
+    let n = this.recv_once(this.input_mut().spare());
     if n < 0 {
         let socket = this.socket();
         return match socket.catch_error(errno()) {
@@ -1967,11 +1956,10 @@ fn on_datagram(this: Handle) -> c_int {
     )]
     let mut buffer = [0_u8; BUFFER_SIZE_UDP];
     // Upstream's datagram receive, even once DTLS made `recv` a stream one.
-    let (data, length) = (buffer.as_mut_ptr().cast(), buffer.len());
     let n = if this.flag(ASYNC) {
-        this.recvfrom_sync(data, length, 0)
+        this.recvfrom_sync(&mut buffer, 0)
     } else {
-        this.recvfrom(data, length, 0)
+        this.recvfrom(&mut buffer, 0)
     };
     if n < 0 {
         return ERR;
@@ -2025,21 +2013,23 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     this.event(EVENT_SET, EVENT_READ);
     this.set(ACTIVE, true);
     if this.proxy_state(Proxy::Socks5) == SOCKS5_WAIT {
-        let (data, length) = this.socks5_negotiate();
+        let length = this.socks5_negotiate();
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream returns the send result as an int"
         )]
-        return send(this, data, length, 0) as c_int;
+        return this.socks5_send(length) as c_int;
     }
     if this.proxy_state(Proxy::Http) == HTTP_PROXY_WAIT {
-        let (data, length) = this.http_pack();
+        // A copy: the async send may raise `onBufferFull`, whose callback may
+        // reuse the shared buffer the request was packed into.
+        let request = this.http_pack().to_vec();
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream returns the send result as an int"
         )]
-        return send(this, data, length, 0) as c_int;
+        return send(this, &request, 0) as c_int;
     }
     if this.flag(OPEN_SSL) {
         if ssl_handshake(this) < 0 {

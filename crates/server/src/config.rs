@@ -394,8 +394,8 @@ mod tests {
                     (*config).r#type = kind;
                     (*config).socket = (&raw mut socket).cast();
                 }
-                // A `ListenPort` begins with its settings pointer.
-                Box::into_raw(Box::new(config))
+                // A `ListenPort` is its settings.
+                config
             })
             .collect();
         unsafe {
@@ -410,7 +410,7 @@ mod tests {
             }
             (*(*state).config()).heartbeat_check_interval = 5;
             assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(2));
-            assert_eq!((**ports[1]).object_id, 2);
+            assert_eq!((*ports[1]).object_id, 2);
             assert_eq!(native_fact(&*state, OP_PORT_STREAM, 0), Some(1));
             assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 0), Some(0));
             assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 1), Some(1));
@@ -421,7 +421,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_PORT_IDLE, 1), Some(10));
             swr_v1_server_state_free(state);
             for port in ports {
-                crate::port_config::swr_v1_port_config_free(*Box::from_raw(port));
+                crate::port_config::swr_v1_port_config_free(port);
             }
         }
     }

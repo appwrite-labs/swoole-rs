@@ -2,7 +2,6 @@
 //! across both families. A connection stores the number of its local address
 //! (`Connection::local_addr_index`) and `Server::get_local_addr` reads its text.
 use core::ffi::{c_char, c_int};
-use core::sync::atomic::Ordering;
 use std::ffi::{CStr, CString};
 
 use swoole_rs_corebase::log;
@@ -78,7 +77,7 @@ fn ntop(v6: bool, bytes: &[u8]) -> CString {
 }
 
 /// Reads the interfaces that are up. `None` when `getifaddrs` fails, with `errno` set.
-fn read() -> Option<Box<LocalAddrs>> {
+fn read() -> Option<LocalAddrs> {
     let mut list: *mut libc::ifaddrs = core::ptr::null_mut();
     // SAFETY: `list` is a valid out pointer.
     if unsafe { libc::getifaddrs(&raw mut list) } != 0 {
@@ -109,39 +108,27 @@ fn read() -> Option<Box<LocalAddrs>> {
     }
     // SAFETY: `list` came from `getifaddrs` and is freed once.
     unsafe { libc::freeifaddrs(list) };
-    Some(Box::new(addrs))
+    Some(addrs)
 }
 
 /// `Server::init_network_interface_addr_map()`, from `Server::create` before any
-/// reactor thread reads the table: replaces it with the interfaces now up.
+/// reactor thread reads the table. A `create` retried after a failure keeps the
+/// table its first attempt read, which its readers may already hold.
 pub(crate) fn init(state: &ServerState) -> bool {
-    let addrs = read();
-    let ok = addrs.is_some();
-    let new = addrs.map_or(core::ptr::null_mut(), Box::into_raw);
-    let old = state.local_addrs.swap(new, Ordering::AcqRel);
-    // SAFETY: the table this function boxed earlier; no reader holds it during create.
-    unsafe { free(old) };
-    if !ok {
+    let Some(addrs) = read() else {
         log::sys_warning(
             c"Server::init_network_interface_addr_map",
             format_args!("getifaddrs() failed"),
         );
-    }
-    ok
-}
-
-/// # Safety
-/// `addrs` is null or came from [`init`] and is not used again.
-pub(crate) unsafe fn free(addrs: *mut LocalAddrs) {
-    if !addrs.is_null() {
-        // SAFETY: the caller transfers the box back.
-        drop(unsafe { Box::from_raw(addrs) });
-    }
+        return false;
+    };
+    // A table already there stays; this one drops.
+    state.local_addrs.set(addrs).ok();
+    true
 }
 
 fn table(state: &ServerState) -> Option<&LocalAddrs> {
-    // SAFETY: replaced only by `init`, before readers start; freed with the state.
-    unsafe { state.local_addrs.load(Ordering::Acquire).as_ref() }
+    state.local_addrs.get()
 }
 
 /// The number of the local address `addr` (an `in_addr`'s bytes, or an `in6_addr`'s

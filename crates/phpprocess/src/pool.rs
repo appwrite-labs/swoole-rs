@@ -757,8 +757,8 @@ fn write(call: &Call) {
         clippy::cast_possible_truncation,
         reason = "upstream's uint32_t length"
     )]
-    // SAFETY: a created pool and the argument's bytes.
-    let written = unsafe { methods::response(pool, data.as_ptr(), data.len() as u32) };
+    let length = data.len() as u32 as usize;
+    let written = methods::response(view, data.get(..length).unwrap_or(data));
     call.set_bool(written >= 0);
 }
 
@@ -785,9 +785,7 @@ fn send_message(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream's WorkerId"
     )]
-    // SAFETY: a started pool and the argument's bytes.
-    let sent =
-        unsafe { methods::send_message(pool, worker as u32, data.as_ptr().cast(), data.len()) };
+    let sent = methods::send_message(view, worker as u32, data);
     call.set_bool(sent);
 }
 
@@ -969,8 +967,7 @@ fn get_process(call: &Call) {
                     clippy::cast_possible_truncation,
                     reason = "a checked worker id"
                 )]
-                // SAFETY: the running pool's worker `id`.
-                let pid = unsafe { Worker::new(view.workers().wrapping_add(id as usize)).pid() };
+                let pid = view.worker(id as usize).map_or(0, Worker::pid);
                 if worker_pid(worker) != pid {
                     crate::worker::record(worker).set_pid(pid);
                     if let Some(props) = found.props(Some(class)) {

@@ -27,13 +27,8 @@ unsafe fn destroy(value: *mut zval) {
 /// A live source zval. This intentionally copies only the slot, without retaining its payload.
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -> *mut zval {
-    let mut dest = ptr::null_mut::<c_void>();
-    // SAFETY: the C leaf allocates aligned, uninitialized request storage, not
-    // a reference-count operation, and traps allocation failure (leaving null
-    // and a deferred bailout).
-    bailed(unsafe { sys::swr_zend_try_facade_alloc(size_of::<zval>(), &raw mut dest) });
-    let dest = dest.cast::<zval>();
-    bailout::finish();
+    // SAFETY: aligned, uninitialized request storage, not a reference-count operation.
+    let dest = unsafe { sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: the source is initialized and independent of the allocation.
     let value = unsafe { value.read() };
     // SAFETY: the destination has space for one initialized slot.
@@ -65,9 +60,7 @@ unsafe fn array_property(
 ) -> *mut zval {
     let mut value = crate::UNDEF;
     // SAFETY: construct a request array in an initialized writable slot.
-    if bailed(unsafe { sys::swr_zend_try_facade_array_init(&raw mut value) }) {
-        return ptr::null_mut();
-    }
+    unsafe { sys::swr_zend_array_init(&raw mut value) };
     // SAFETY: update_property can execute PHP, which the C shim traps.
     bailed(unsafe { sys::swr_zend_try_facade_update(scope, object, name, length, &raw mut value) });
     if bailout::pending() {
@@ -109,7 +102,7 @@ pub unsafe fn array_property_of(
             unsafe { destroy(property) };
             if !bailout::pending() {
                 // SAFETY: the old payload has been released and the slot remains writable.
-                bailed(unsafe { sys::swr_zend_try_facade_array_init(property) });
+                unsafe { sys::swr_zend_array_init(property) };
             }
         }
     }
@@ -352,12 +345,12 @@ pub unsafe fn named_call_into(
     argv: *mut zval,
     retval: *mut zval,
 ) {
-    let mut function = crate::UNDEF;
-    // SAFETY: Zend copies the complete binary function name into its request string.
-    bailed(unsafe { sys::swr_zend_try_facade_value_string(&raw mut function, name, length) });
     if bailout::pending() {
         return;
     }
+    let mut function = crate::UNDEF;
+    // SAFETY: Zend copies the complete binary function name into its request string.
+    unsafe { sys::swr_zval_stringl(&raw mut function, name, length) };
     let mut result = -1;
     // SAFETY: Zend's macro invocation is one leaf effect inside the C trap.
     bailed(unsafe {

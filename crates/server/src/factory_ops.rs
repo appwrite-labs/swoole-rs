@@ -496,8 +496,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: the server's live task pool.
         let pool = unsafe { &*ctx.task_pool() };
         let index = usize::try_from(arg).unwrap_or(usize::MAX);
-        // SAFETY: a task worker of it; arg is below task_worker_num.
-        unsafe { Worker::new(pool.workers().wrapping_add(index)).pid() }
+        pool.worker(index).map_or(0, Worker::pid)
     };
     let waitpid = |pid| signed(swoole_waitpid(pid, None, 0));
     Some(match op {

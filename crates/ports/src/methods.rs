@@ -581,7 +581,7 @@ mod tests {
         config.r#type = 2;
         assert!(ssl_context_init(at), "a datagram port's context");
         assert!(config.is_dtls(), "DTLS");
-        crate::lifecycle::tls_free(unsafe { &mut **fresh.0 });
+        crate::lifecycle::tls_free(unsafe { &mut *fresh.0 });
         assert!(
             config.ssl_context.is_none(),
             "the destructor releases what close left"
@@ -666,8 +666,8 @@ mod tests {
 
     #[test]
     fn listen_listens_sets_keepalive_and_the_default_watermark() {
-        let mut port = socket_port(libc::SOCK_STREAM, true);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = socket_port(libc::SOCK_STREAM, true);
+        let at = port.cast::<c_void>();
         let config = unsafe { port_config::of(at) };
         config.open_tcp_keepalive = true;
         config.tcp_user_timeout = 5;
@@ -737,8 +737,8 @@ mod tests {
     #[test]
     fn a_failed_listen_warns_and_stays_unpublished() {
         // listen(2) on a datagram socket fails (EOPNOTSUPP).
-        let mut port = socket_port(libc::SOCK_DGRAM, false);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = socket_port(libc::SOCK_DGRAM, false);
+        let at = port.cast::<c_void>();
         assert_eq!(listen(at), -1, "failed");
         let config = unsafe { port_config::of(at) };
         assert!(!config.listening, "not published");
@@ -777,8 +777,8 @@ mod tests {
 
     #[test]
     fn create_socket_binds_the_host_and_takes_the_bound_port() {
-        let mut port = unbound_port(1, "127.0.0.1", 0, false);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = unbound_port(1, "127.0.0.1", 0, false);
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "created");
         let config = unsafe { port_config::of(at) };
         let socket = record(config);
@@ -809,8 +809,8 @@ mod tests {
 
     #[test]
     fn create_socket_makes_a_datagram_server_socket_for_udp() {
-        let mut port = unbound_port(2, "127.0.0.1", 0, false);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = unbound_port(2, "127.0.0.1", 0, false);
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "created");
         let config = unsafe { port_config::of(at) };
         let socket = record(config);
@@ -827,8 +827,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn create_socket_replaces_the_socket_when_the_server_reuses_ports() {
-        let mut port = unbound_port(1, "127.0.0.1", 0, true);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = unbound_port(1, "127.0.0.1", 0, true);
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "created");
         let config = unsafe { port_config::of(at) };
         let first = record(config).fd;
@@ -857,13 +857,13 @@ mod tests {
         // A Unix path longer than sun_path: the address is invalid.
         let long = "p".repeat(200);
         let port = unbound_port(5, &long, 0, false);
-        let at = (&raw const port).cast_mut().cast::<c_void>();
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), -1, "invalid address");
         assert!(unsafe { (*port).socket }.is_null(), "freed, not kept");
         unsafe { port_config::swr_v1_port_config_free(port) };
         // An address no local interface has: bind(2) fails.
         let port = unbound_port(1, "203.0.113.1", 0, false);
-        let at = (&raw const port).cast_mut().cast::<c_void>();
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), -1, "bind failed");
         assert_eq!(
             log::last_error(),
@@ -874,15 +874,15 @@ mod tests {
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
 
-    /// A fresh port: its settings, and the head pointer `ListenPort` methods take.
-    struct Fresh(Box<*mut PortConfig>);
+    /// A fresh port: its settings, which `ListenPort` methods take.
+    struct Fresh(*mut PortConfig);
 
     impl Fresh {
         fn new() -> Self {
-            Self(Box::new(port_config::swr_v1_port_config_new(1000)))
+            Self(port_config::swr_v1_port_config_new(1000))
         }
         fn at(&mut self) -> *mut c_void {
-            (&raw mut *self.0).cast()
+            self.0.cast()
         }
         fn config<'a>(&mut self) -> &'a mut PortConfig {
             unsafe { port_config::of(self.at()) }
@@ -891,7 +891,7 @@ mod tests {
 
     impl Drop for Fresh {
         fn drop(&mut self) {
-            unsafe { port_config::swr_v1_port_config_free(*self.0) };
+            unsafe { port_config::swr_v1_port_config_free(self.0) };
         }
     }
 
@@ -1172,8 +1172,8 @@ mod tests {
     #[test]
     fn server_port_create() {
         log::swr_v1_core_set_log_host(crate::read::tests::record);
-        let mut port = unbound_port(1, "127.0.0.1", 0, true);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = unbound_port(1, "127.0.0.1", 0, true);
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "add_port");
         assert_eq!(0, create_socket(at));
 
@@ -1207,8 +1207,8 @@ mod tests {
     /// Upstream's `server_port.dgram`.
     #[test]
     fn server_port_dgram() {
-        let mut port = unbound_port(2, "127.0.0.1", 0, true);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = unbound_port(2, "127.0.0.1", 0, true);
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "add_port");
         assert_eq!(c"dgram", get_protocols(unsafe { port_config::of(at) }));
         close_socket(at);
@@ -1219,8 +1219,8 @@ mod tests {
     /// holds the port, so the port stands alone: `add_port` is `create_socket`.
     #[test]
     fn server_protocols() {
-        let mut port = unbound_port(1, "127.0.0.1", 0, false);
-        let at = (&raw mut port).cast::<c_void>();
+        let port = unbound_port(1, "127.0.0.1", 0, false);
+        let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "add_port");
         let config = unsafe { port_config::of(at) };
 

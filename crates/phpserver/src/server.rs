@@ -104,11 +104,12 @@ pub(crate) static DATA: [Class; 5] = [
 static ITERATOR: CustomClass<Iterator> = CustomClass::new();
 
 /// `ServerObject` before its `zend_object`: `Server *serv; void *property;
-/// zval init_arguments;`, where `property` is lifecycle.rs's `Property`.
+/// zval init_arguments;`, where `property` is lifecycle.rs's `Property`: none in the
+/// zeroed object until `create` boxes it, and none again once `free` takes it.
 #[repr(C)]
 pub(crate) struct ServerData {
     pub(crate) serv: *mut c_void,
-    pub(crate) property: *mut c_void,
+    pub(crate) property: Option<Box<crate::lifecycle::Property>>,
     pub(crate) init_arguments: zval,
 }
 

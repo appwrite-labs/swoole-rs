@@ -2026,7 +2026,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FORCED_EXIT => {
             FORCED_EXIT_SERVER.store(serv, Relaxed);
-            FORCED_EXIT_TIME.store(crate::shared::unix_now(), Relaxed);
+            FORCED_EXIT_TIME.store(swoole_rs_corebase::time_now(), Relaxed);
             swoole_rs_reactor::swr_v1_event_set_exit_condition(
                 EXIT_CONDITION_FORCED_TERMINATION,
                 forced_exit,
@@ -2108,7 +2108,7 @@ extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
     // SAFETY: the server that is shutting down, live until its loop exits.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();
     let max_wait_time = state.config_ref().max_wait_time;
-    let now = crate::shared::unix_now();
+    let now = swoole_rs_corebase::time_now();
     if now - FORCED_EXIT_TIME.load(Relaxed) > libc::time_t::from(max_wait_time) {
         error(
             SW_LOG_WARNING,
@@ -2968,16 +2968,15 @@ mod tests {
         let mut sock: SocketRecord = unsafe { core::mem::zeroed() };
         // SAFETY: as above.
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        // A `ListenPort` is its settings.
         let config = crate::port_config::swr_v1_port_config_new(0);
-        // A `ListenPort` starts with its settings pointer.
-        let mut port = config;
         sock.output.buffer_size = 4;
         // SAFETY: the settings allocated above.
         unsafe { (*config).buffer_high_watermark = 2 };
         let data = *b"abc";
         ctx.sock = (&raw mut sock).cast();
         ctx.conn = (&raw mut conn).cast();
-        ctx.port = (&raw mut port).cast();
+        ctx.port = config.cast();
         ctx.data = data.as_ptr().cast();
         ctx.length = 3;
         let socket = (&raw const sock).expose_provenance() as u64;

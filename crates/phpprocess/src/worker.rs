@@ -14,7 +14,7 @@ use swoole_rs_reactor::{
 };
 use swoole_rs_tls::{
     socket_pair::{self, SocketPair},
-    upstream::{socket_read_sync, socket_send_sync},
+    upstream::{send_sync, socket_read_sync},
 };
 use swoole_rs_zend::string::ZBuf;
 
@@ -166,8 +166,7 @@ pub(crate) fn pipe_write(worker: *mut c_void, data: &[u8], blocking: bool) -> is
         // SAFETY: a live socket and `length` readable bytes.
         return unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) };
     }
-    // SAFETY: as above.
-    unsafe { socket_send_sync(socket.as_ptr(), bytes, length, 0) }
+    send_sync(socket, data, 0)
 }
 
 /// Shut one direction of the pipe, or close the pair's `which` end (0: both,

@@ -48,35 +48,6 @@ impl<T> Object<T> {
         std
     }
 
-    /// Create an object while containing every allocation bailout below this frame.
-    /// The class's create handler raises an error only after handling this result.
-    /// # Errors
-    /// A Zend allocation or initialization bailed out.
-    /// # Safety
-    /// The same class/layout/all-zero-data contract as [`Self::create`].
-    pub unsafe fn try_create(
-        class: &Class,
-        ce: *mut zend_class_entry,
-    ) -> Result<*mut zend_object, crate::bailout::Bailout> {
-        let mut allocation = std::ptr::null_mut();
-        // SAFETY: Zend allocates enough space for this layout and the class's properties.
-        crate::bailout::trapped(unsafe {
-            crate::sys::swr_zend_try_facade_object_alloc(size_of::<Self>(), ce, &raw mut allocation)
-        })?;
-        let object = Self::std(allocation.cast::<Self>());
-        // SAFETY: the fresh aligned allocation contains the standard object's storage.
-        crate::bailout::trapped(unsafe {
-            crate::sys::swr_zend_try_facade_object_init(object, ce)
-        })?;
-        // SAFETY: the standard object has been initialized with this class.
-        crate::bailout::trapped(unsafe {
-            crate::sys::swr_zend_try_facade_properties_init(object, ce)
-        })?;
-        // SAFETY: this initialized object is not shared until it is returned.
-        unsafe { (*object).handlers = class.handlers() };
-        Ok(object)
-    }
-
     /// The standard destructor, with PHP property-destructor bailouts contained.
     /// # Errors
     /// A property destructor bailed out.
@@ -91,7 +62,7 @@ impl<T> Object<T> {
     /// with `create` and frees them with `free`.
     /// # Safety
     /// `create` returns the `std` of a new `Object<T>` (one [`Self::create`]
-    /// or [`Self::try_create`] made), and `free` destroys the standard object
+    /// made), and `free` destroys the standard object
     /// it is given ([`Self::dtor`] or [`Self::try_dtor`]) without freeing it:
     /// Zend then frees the allocation at `std - OFFSET`.
     pub unsafe fn install(
@@ -212,46 +183,25 @@ pub unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
 }
 
 /// A new object of `T`'s class around `data`, as its `create_object` handler
-/// makes one, but with no constructor run. When Zend's allocation bails out,
-/// `data` drops, the bailout is deferred ([`bailout::defer`]) and the value is
-/// undef.
+/// makes one, but with no constructor run.
 /// # Panics
 /// `T`'s class is not registered by [`Minit::register_object`](crate::Minit::register_object).
 #[must_use]
 pub fn new_object<T: Custom>(data: T) -> Owned {
+    const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
     let class = T::class();
     assert!(!class.entry().is_null(), "a registered class");
-    // SAFETY: the registered class's own entry, laid out for `T`.
-    match unsafe { make(class, class.entry(), data) } {
-        // SAFETY: the new object, whose one reference this takes.
-        Ok(std) => unsafe { Owned::object(std) },
-        Err(bailed) => {
-            bailed.defer();
-            Owned::default()
-        }
-    }
-}
-
-/// Allocate an object of `ce` (`class` or a subclass of it) around `data`,
-/// containing Zend's bailouts so that `data` drops before one continues.
-/// # Safety
-/// `ce` is `class`'s entry or a subclass's, and `class`'s handlers are `T`'s.
-unsafe fn make<T: Custom>(
-    class: &Class,
-    ce: *mut zend_class_entry,
-    data: T,
-) -> Result<*mut zend_object, bailout::Bailout> {
-    const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
-    // SAFETY: per the caller; `data` is written before the object is shared.
-    let std = unsafe { Object::<T>::try_create(class, ce) }?;
+    // SAFETY: the registered class's own entry, laid out for `T`; `data` is
+    // written before the object is shared.
+    let std = unsafe { Object::<T>::create(class, class.entry()) };
     // SAFETY: the object's data, allocated and unused.
     unsafe { Object::<T>::data_ptr(std).write(data) };
-    Ok(std)
+    // SAFETY: the new object, whose one reference this takes.
+    unsafe { Owned::object(std) }
 }
 
-/// `T`'s `create_object` handler. The object is allocated before `T`'s data
-/// exists, so a bailout from Zend's allocator crosses only this frame, which
-/// owns nothing yet, as upstream's handlers do: no `zend_try` per object.
+/// `T`'s `create_object` handler. Creating an object never bails out (Zend's
+/// allocator queues a `memory_limit` error), so it needs no `zend_try`.
 /// # Safety
 /// Zend calls it with `T`'s class or a subclass of it, which inherits it.
 unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_object {
@@ -302,7 +252,7 @@ pub(crate) fn install_custom<T: Custom>(
 ) {
     handlers.clone_obj = None;
     handlers.unset_property = Some(crate::unset_property_deny);
-    // SAFETY: `create::<T>` makes `Object<T>`s with `try_create`, and
+    // SAFETY: `create::<T>` makes `Object<T>`s with `Object::create`, and
     // `free::<T>` ends with `zend_object_std_dtor`.
     unsafe { Object::<T>::install(entry, handlers, create::<T>, free::<T>) };
     if T::DESTRUCTS {

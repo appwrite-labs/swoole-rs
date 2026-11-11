@@ -2,7 +2,7 @@
 //! the crates that bind it (phpserver), without a native call.
 //!
 //! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
-//! callbacks }`, and a `ListenPort *` is its box of the port's settings pointer
+//! callbacks }`, and a `ListenPort *` is the box of the port's settings
 //! (`native/include/swoole_rs_server_view.h`). `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
@@ -536,7 +536,7 @@ impl<'a> Server<'a> {
     }
 }
 
-/// A live `ListenPort`, borrowed for `'a`: a box of the pointer to its settings
+/// A live `ListenPort`, borrowed for `'a`: its settings' box
 /// (`server_object::port_new`). [`Port::from_raw`] is the one unsafe step; the
 /// reads it then allows are safe, as [`Server`]'s are.
 #[derive(Clone, Copy)]
@@ -570,10 +570,8 @@ impl<'a> Port<'a> {
     /// The port's settings.
     #[must_use]
     pub fn config(self) -> &'a PortConfig {
-        // SAFETY: the head of a live port, per the module comment and `from_raw`'s caller.
-        let config = unsafe { *self.raw.as_ptr().cast::<*const PortConfig>() };
-        // SAFETY: its settings live as long as it, with writers kept apart (`from_raw`).
-        unsafe { &*config }
+        // SAFETY: a live port is its settings, with writers kept apart (`from_raw`).
+        unsafe { &*self.raw.as_ptr().cast::<PortConfig>() }
     }
 
     /// The port's settings, to write.

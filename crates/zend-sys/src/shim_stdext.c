@@ -68,17 +68,6 @@ void swr_zend_hash_foreach_key(const HashTable *table,
     ZEND_HASH_FOREACH_END();
 }
 
-int swr_zend_try_stdext_separate(zval *value) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { SEPARATE_ARRAY(value); } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_stdext_append(HashTable *table, zval *value, zval **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_hash_next_index_insert(table, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 int swr_zend_try_stdext_nogc_dtor(zval *value) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { zval_ptr_dtor_nogc(value); } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();

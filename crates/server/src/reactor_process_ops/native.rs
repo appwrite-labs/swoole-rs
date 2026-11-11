@@ -196,9 +196,8 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_PIPE_NONBLOCK => {
             let pool = ctx.server().task_pool();
             // SAFETY: its live task pool, whose worker `arg` is.
-            let worker = unsafe { (*pool).workers() }.wrapping_add(usize::try_from(arg).ok()?);
-            // SAFETY: as above.
-            set_nonblock(socket(unsafe { (*worker).pipe_master })?);
+            let worker = unsafe { &*pool }.worker(usize::try_from(arg).ok()?)?;
+            set_nonblock(socket(worker.pipe_master())?);
             0
         }
         OP_ADD_HEARTBEAT_TIMER => {
