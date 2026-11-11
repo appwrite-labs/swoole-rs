@@ -10,7 +10,7 @@
 //! coroutine and the bailout callback. No `&mut` into the scheduler or a
 //! coroutine is held across one of those calls, since they change both.
 use core::ffi::{c_long, c_void};
-use core::ptr;
+use core::ptr::{self, NonNull};
 
 pub const STATE_INIT: i32 = 0;
 pub const STATE_WAITING: i32 = 1;
@@ -193,75 +193,122 @@ impl Scheduler {
     }
 }
 
-/// # Safety
-/// `co` and every coroutine linked from it are live and not otherwise borrowed.
-unsafe fn set_origin(co: *mut Coroutine, origin: *mut Coroutine) {
-    // SAFETY: the caller guarantees `co` and its links are live and exclusive.
-    let this = unsafe { &mut *co };
-    let parent = this.origin;
+/// A live coroutine: registered (or being registered) and not yet destroyed.
+/// Coroutines linked from a live one (its origin, children and siblings) are
+/// live too, since a close unlinks them first. Each access borrows it for one
+/// closure, so no reference to one spans a hook, which may change it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Co(NonNull<Coroutine>);
+
+impl Co {
+    /// # Safety
+    /// `co` is null or a live coroutine, which stays live while the handle is used.
+    unsafe fn of(co: *mut Coroutine) -> Option<Self> {
+        NonNull::new(co).map(Self)
+    }
+
+    /// A link field's coroutine, live by the handle's invariant.
+    fn link(co: *mut Coroutine) -> Option<Self> {
+        NonNull::new(co).map(Self)
+    }
+
+    fn ptr(self) -> *mut Coroutine {
+        self.0.as_ptr()
+    }
+
+    /// The coroutine, borrowed for `f`, which neither switches nor reaches
+    /// this coroutine through another handle.
+    fn with<R>(self, f: impl FnOnce(&mut Coroutine) -> R) -> R {
+        // SAFETY: a live coroutine; the borrow ends with `f`.
+        f(unsafe { &mut *self.ptr() })
+    }
+
+    fn origin(self) -> Option<Self> {
+        Self::link(self.with(|co| co.origin))
+    }
+}
+
+fn raw(co: Option<Co>) -> *mut Coroutine {
+    co.map_or(ptr::null_mut(), Co::ptr)
+}
+
+/// A live scheduler, borrowed one closure at a time like [`Co`].
+#[derive(Clone, Copy)]
+struct Sched(NonNull<Scheduler>);
+
+impl Sched {
+    /// # Safety
+    /// `s` is null or a live scheduler, which stays live while the handle is used.
+    unsafe fn of(s: *mut Scheduler) -> Option<Self> {
+        NonNull::new(s).map(Self)
+    }
+
+    /// The scheduler, borrowed for `f`, which runs no hook or callback.
+    fn with<R>(self, f: impl FnOnce(&mut Scheduler) -> R) -> R {
+        // SAFETY: a live scheduler; the borrow ends with `f`.
+        f(unsafe { &mut *self.0.as_ptr() })
+    }
+}
+
+/// Moves `co` from its origin's children to `origin`'s.
+fn link(co: Co, origin: Option<Co>) {
+    let (parent, prev, next) = co.with(|this| {
+        (
+            Co::link(this.origin),
+            Co::link(this.prev_sibling),
+            Co::link(this.next_sibling),
+        )
+    });
     if parent == origin {
         return;
     }
-    if !parent.is_null() {
-        if this.prev_sibling.is_null() {
-            // SAFETY: a non-null origin is live (close clears its children's links).
-            unsafe { (*parent).first_child = this.next_sibling };
-        } else {
-            // SAFETY: linked siblings are live.
-            unsafe { (*this.prev_sibling).next_sibling = this.next_sibling };
+    if let Some(parent) = parent {
+        match prev {
+            None => parent.with(|parent| parent.first_child = raw(next)),
+            Some(prev) => prev.with(|prev| prev.next_sibling = raw(next)),
         }
-        if !this.next_sibling.is_null() {
-            // SAFETY: linked siblings are live.
-            unsafe { (*this.next_sibling).prev_sibling = this.prev_sibling };
+        if let Some(next) = next {
+            next.with(|next| next.prev_sibling = raw(prev));
         }
+    }
+    let first = origin.and_then(|origin| Co::link(origin.with(|origin| origin.first_child)));
+    co.with(|this| {
+        this.origin = raw(origin);
         this.prev_sibling = ptr::null_mut();
-        this.next_sibling = ptr::null_mut();
+        this.next_sibling = raw(first);
+    });
+    if let Some(first) = first {
+        first.with(|first| first.prev_sibling = co.ptr());
     }
-    this.origin = origin;
-    if !origin.is_null() {
-        // SAFETY: the new origin is live.
-        let origin = unsafe { &mut *origin };
-        this.next_sibling = origin.first_child;
-        if !this.next_sibling.is_null() {
-            // SAFETY: linked siblings are live.
-            unsafe { (*this.next_sibling).prev_sibling = co };
-        }
-        origin.first_child = co;
+    if let Some(origin) = origin {
+        origin.with(|origin| origin.first_child = co.ptr());
     }
 }
 
-/// # Safety
-/// `scheduler` and `co` (with every coroutine linked from it) are live and
-/// exclusively lent for this call.
-unsafe fn enter(scheduler: &mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: forwarded from the caller.
-    unsafe { set_origin(co, scheduler.current) };
-    scheduler.current = co;
-    // SAFETY: `co` is live.
-    unsafe { (*co).state = STATE_RUNNING };
+/// `co` becomes current, run from the coroutine that was.
+fn enter(s: Sched, co: Co) {
+    link(co, Co::link(s.with(|s| s.current)));
+    s.with(|s| s.current = co.ptr());
+    co.with(|co| co.state = STATE_RUNNING);
 }
 
-/// # Safety
-/// As for [`enter`]; `co` is the current coroutine.
-unsafe fn release(scheduler: &mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: `co` is live.
-    let this = unsafe { &mut *co };
-    scheduler.current = this.origin;
+/// `co`, the current coroutine, closes: its origin is current again.
+fn release(s: Sched, co: Co) {
+    let origin = co.with(|co| co.origin);
+    s.with(|s| s.current = origin);
     // The coroutines this one resumed may still be suspended: they must never
     // reach its memory again.
-    while !this.first_child.is_null() {
-        // SAFETY: children are live while linked.
-        let child = unsafe { &mut *this.first_child };
-        this.first_child = child.next_sibling;
-        child.origin = ptr::null_mut();
-        child.prev_sibling = ptr::null_mut();
-        child.next_sibling = ptr::null_mut();
+    while let Some(child) = Co::link(co.with(|co| co.first_child)) {
+        let next = child.with(|child| {
+            child.origin = ptr::null_mut();
+            child.prev_sibling = ptr::null_mut();
+            core::mem::replace(&mut child.next_sibling, ptr::null_mut())
+        });
+        co.with(|co| co.first_child = next);
     }
-    let cid = this.cid;
-    // SAFETY: forwarded from the caller; `this` isn't used again, since this
-    // borrows `co` anew.
-    unsafe { set_origin(co, ptr::null_mut()) };
-    scheduler.remove(cid);
+    link(co, None);
+    let cid = co.with(|co| co.cid);
+    s.with(|s| s.remove(cid));
 }
 
 fn switch_time(yielding: Option<&mut Coroutine>, resuming: Option<&mut Coroutine>, now: c_long) {
@@ -276,30 +323,24 @@ fn switch_time(yielding: Option<&mut Coroutine>, resuming: Option<&mut Coroutine
 }
 
 /// `SW_CORO_TIME`: charges `yielding` up to now and starts `resuming`'s slice.
-/// Either may be null; they are never the same coroutine.
-///
-/// # Safety
-/// The coroutines are null or live, and neither is borrowed.
-unsafe fn charge(hooks: &Hooks, yielding: *mut Coroutine, resuming: *mut Coroutine) {
+/// They are never the same coroutine.
+fn charge(hooks: &Hooks, yielding: Option<Co>, resuming: Option<Co>) {
     let Some(clock) = hooks.clock else {
         return;
     };
     // SAFETY: C++'s clock reads the time.
     let now = unsafe { clock() };
-    // SAFETY: null or live, distinct from `resuming`, not borrowed.
-    let yielding = unsafe { yielding.as_mut() };
-    // SAFETY: null or live, not borrowed.
-    let resuming = unsafe { resuming.as_mut() };
-    switch_time(yielding, resuming, now);
+    if let Some(yielding) = yielding {
+        yielding.with(|co| switch_time(Some(co), None, now));
+    }
+    if let Some(resuming) = resuming {
+        resuming.with(|co| switch_time(None, Some(co), now));
+    }
 }
 
-/// Calls a swap callback with `co`'s task, if both are set.
-///
-/// # Safety
-/// `co` is live and not borrowed; the callback may change any state.
-unsafe fn notify(callback: SwapCallback, co: *const Coroutine) {
-    // SAFETY: `co` is live.
-    let task = unsafe { (*co).task };
+/// Calls a swap callback with `co`'s task, if both are set; it may change any state.
+fn notify(callback: SwapCallback, co: Co) {
+    let task = co.with(|co| co.task);
     if let Some(callback) = callback
         && !task.is_null()
     {
@@ -310,108 +351,83 @@ unsafe fn notify(callback: SwapCallback, co: *const Coroutine) {
 
 /// The scheduler's hooks and swap callbacks, copied out so no borrow of it
 /// spans a call back into C++.
-///
-/// # Safety
-/// `s` is live.
-unsafe fn effects(s: *const Scheduler) -> (Hooks, [SwapCallback; 3]) {
-    // SAFETY: the caller guarantees `s` is live; this reads and releases it.
-    let s = unsafe { &*s };
-    (s.hooks, [s.on_yield, s.on_resume, s.on_close])
+fn effects(s: Sched) -> (Hooks, [SwapCallback; 3]) {
+    s.with(|s| (s.hooks, [s.on_yield, s.on_resume, s.on_close]))
 }
 
 /// Switches into `co`, which is now current, then closes it if it ended or
 /// runs the bailout callback (upstream's `check_end`).
-///
-/// # Safety
-/// `s` and `co` are live and nothing borrows them.
-unsafe fn switch_in(s: *mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: forwarded.
-    let (hooks, [_, _, on_close]) = unsafe { effects(s) };
-    // SAFETY: `co` is live.
-    let native = unsafe { (*co).native };
-    // SAFETY: the switch runs the coroutine until it yields or ends.
+fn switch_in(s: Sched, co: Co) {
+    let (hooks, [_, _, on_close]) = effects(s);
+    let native = co.with(|co| co.native);
+    // SAFETY: a live record; the switch runs the coroutine until it yields or ends.
     let ended = unsafe { (hooks.swap_in)(native) };
     if ended {
-        // SAFETY: `co` ended and is current again: it closes.
-        unsafe { (*co).state = STATE_END };
-        // SAFETY: `co` is live.
-        unsafe { notify(on_close, co) };
-        // SAFETY: `s` is live and nothing else borrows it between effects.
-        let s = unsafe { &mut *s };
-        debug_assert!(s.current == co, "only the current coroutine closes");
-        // SAFETY: `co` and its links are live.
-        unsafe { release(s, co) };
-        // SAFETY: the facade is deleted here, and `co` with it.
+        // `co` ended and is current again: it closes.
+        co.with(|co| co.state = STATE_END);
+        notify(on_close, co);
+        debug_assert!(
+            s.with(|s| s.current) == co.ptr(),
+            "only the current coroutine closes"
+        );
+        release(s, co);
+        // SAFETY: the record ended and is released; the facade is deleted
+        // here, and `co` with it.
         unsafe { (hooks.destroy)(native) };
         return;
     }
     // The hook as it is now: the coroutine that bailed out set it while it ran.
-    let bailout = {
-        // SAFETY: `s` is live; the borrow ends before the callback runs.
-        let s = unsafe { &*s };
+    let bailout = s.with(|s| {
         s.hooks
             .bailout
             .filter(|_| s.bailout)
             .map(|f| (f, s.hooks.bailout_data))
-    };
+    });
     if let Some((bailout, data)) = bailout {
         // SAFETY: the callback longjmps over this frame, which owns nothing.
         unsafe { bailout(data) };
     }
 }
 
-/// # Safety
-/// As for [`switch_in`]; `co` is current (or a bailout is under way).
-unsafe fn yield_(s: *mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: forwarded.
-    let (hooks, [on_yield, _, _]) = unsafe { effects(s) };
-    {
-        // SAFETY: `co` is live and exclusively ours here.
-        let co = unsafe { &mut *co };
+/// `co` (current, or the outermost while bailing out) yields to its origin.
+fn yield_(s: Sched, co: Co) {
+    let (hooks, [on_yield, _, _]) = effects(s);
+    co.with(|co| {
         co.state = STATE_WAITING;
         co.resume_code = RC_OK;
-    }
-    // SAFETY: `co` is live.
-    unsafe { notify(on_yield, co) };
-    let (origin, native) = {
-        // SAFETY: `co` is live and exclusively ours here.
-        let co = unsafe { &*co };
-        (co.origin, co.native)
-    };
-    {
-        // SAFETY: `s` is live and exclusively ours here.
-        let s = unsafe { &mut *s };
+    });
+    notify(on_yield, co);
+    let (origin, native) = co.with(|this| (Co::link(this.origin), this.native));
+    s.with(|s| {
         debug_assert!(
-            s.current == co || s.bailout,
+            s.current == co.ptr() || s.bailout,
             "only the current coroutine yields"
         );
-        s.current = origin;
-    }
-    // SAFETY: both live or null, and distinct.
-    unsafe { charge(&hooks, co, origin) };
-    // SAFETY: `co` is live; the switch returns when it is resumed.
+        s.current = raw(origin);
+    });
+    charge(&hooks, Some(co), origin);
+    // SAFETY: the running record; the switch returns when it is resumed.
     unsafe { (hooks.swap_out)(native) };
 }
 
 /// Run and resume: the current coroutine becomes `co`'s origin, its slice is
 /// charged (and `co`'s started on resume), and `co` runs.
+fn start(s: Sched, co: Co, resuming: bool) {
+    enter(s, co);
+    let hooks = s.with(|s| s.hooks);
+    charge(&hooks, co.origin(), resuming.then_some(co));
+    switch_in(s, co);
+}
+
+/// The operations' handles, none for a null pointer.
 ///
 /// # Safety
-/// As for [`switch_in`].
-unsafe fn start(s: *mut Scheduler, co: *mut Coroutine, resuming: bool) {
-    let (hooks, origin) = {
-        // SAFETY: `s` is live and exclusively ours here.
-        let s = unsafe { &mut *s };
-        // SAFETY: `co` and its links are live.
-        unsafe { enter(s, co) };
-        // SAFETY: `co` is live.
-        (s.hooks, unsafe { (*co).origin })
-    };
-    let resumed = if resuming { co } else { ptr::null_mut() };
-    // SAFETY: both live or null, and distinct.
-    unsafe { charge(&hooks, origin, resumed) };
+/// As for the operations.
+unsafe fn handles(s: *mut Scheduler, co: *mut Coroutine) -> Option<(Sched, Co)> {
     // SAFETY: forwarded.
-    unsafe { switch_in(s, co) };
+    let s = unsafe { Sched::of(s) }?;
+    // SAFETY: forwarded.
+    Some((s, unsafe { Co::of(co) }?))
 }
 
 macro_rules! operation {
@@ -428,10 +444,12 @@ operation! {
     /// `Coroutine::run`: the current coroutine becomes `co`'s origin and `co`
     /// runs until it first yields or ends. Returns its id.
     fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
-        // SAFETY: the caller lends `co`.
-        let cid = unsafe { (*co).cid };
         // SAFETY: forwarded.
-        unsafe { start(s, co, false) };
+        let Some((s, co)) = (unsafe { handles(s, co) }) else {
+            return -1;
+        };
+        let cid = co.with(|co| co.cid);
+        start(s, co, false);
         cid
     }
 }
@@ -441,21 +459,20 @@ operation! {
     /// callback sees the old current, then `co` runs until it yields or ends.
     #[unsafe(no_mangle)]
     fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
-        let on_resume = {
-            // SAFETY: the caller lends the scheduler.
-            let s = unsafe { &*s };
-            debug_assert!(s.current != co, "the current coroutine cannot resume");
-            if s.bailout {
-                return;
-            }
-            s.on_resume
+        // SAFETY: forwarded.
+        let Some((s, co)) = (unsafe { handles(s, co) }) else {
+            return;
         };
-        // SAFETY: the caller lends `co`.
-        unsafe { (*co).state = STATE_RUNNING };
-        // SAFETY: forwarded.
-        unsafe { notify(on_resume, co) };
-        // SAFETY: forwarded.
-        unsafe { start(s, co, true) };
+        let on_resume = s.with(|s| {
+            debug_assert!(s.current != co.ptr(), "the current coroutine cannot resume");
+            (!s.bailout).then_some(s.on_resume)
+        });
+        let Some(on_resume) = on_resume else {
+            return;
+        };
+        co.with(|co| co.state = STATE_RUNNING);
+        notify(on_resume, co);
+        start(s, co, true);
     }
 }
 
@@ -465,7 +482,9 @@ operation! {
     #[unsafe(no_mangle)]
     fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
         // SAFETY: forwarded.
-        unsafe { yield_(s, co) };
+        if let Some((s, co)) = unsafe { handles(s, co) } {
+            yield_(s, co);
+        }
     }
 }
 
@@ -473,12 +492,14 @@ operation! {
     /// `Coroutine::yield(CancelFunc *)`: as [`swr_v1_coroutine_yield`] with a
     /// cancel function (a [`Canceler`]) set until it is resumed.
     fn swr_v1_coroutine_yield_cancelable(s: *mut Scheduler, co: *mut Coroutine, cancel_fn: *mut c_void) {
-        // SAFETY: the caller lends `co`.
-        unsafe { (*co).cancel_fn = cancel_fn };
         // SAFETY: forwarded.
-        unsafe { yield_(s, co) };
-        // SAFETY: `co` is live again once resumed.
-        unsafe { (*co).cancel_fn = ptr::null_mut() };
+        let Some((s, co)) = (unsafe { handles(s, co) }) else {
+            return;
+        };
+        co.with(|co| co.cancel_fn = cancel_fn);
+        yield_(s, co);
+        // Live again once resumed.
+        co.with(|co| co.cancel_fn = ptr::null_mut());
     }
 }
 
@@ -487,25 +508,21 @@ operation! {
     /// inside a coroutine yields the one closest to the main context, which
     /// switches there directly and never returns.
     fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
-        let mut co = {
-            // SAFETY: the caller lends the scheduler.
-            let s = unsafe { &mut *s };
+        // SAFETY: forwarded.
+        let Some(s) = (unsafe { Sched::of(s) }) else {
+            return;
+        };
+        let current = s.with(|s| {
             s.bailout = true;
             s.current
-        };
-        if co.is_null() {
+        });
+        let Some(mut co) = Co::link(current) else {
             return;
-        }
-        loop {
-            // SAFETY: origins are live while linked.
-            let origin = unsafe { (*co).origin };
-            if origin.is_null() {
-                break;
-            }
+        };
+        while let Some(origin) = co.origin() {
             co = origin;
         }
-        // SAFETY: forwarded; `co` is live.
-        unsafe { yield_(s, co) };
+        yield_(s, co);
     }
 }
 
@@ -647,34 +664,42 @@ pub(crate) mod tests {
         let mut s = scheduler();
         let (mut a, mut b, mut c) = (blank(), blank(), blank());
         let (a, b, c) = (&raw mut a, &raw mut b, &raw mut c);
+        let sp = unsafe { Sched::of(&raw mut s) }.unwrap();
+        let co = |co| unsafe { Co::of(co) }.unwrap();
         // SAFETY: the three coroutines live on this frame for the whole test.
         unsafe {
             for co in [a, b, c] {
-                s.register(co, ptr::null_mut(), 0, 0);
+                sp.with(|s| s.register(co, ptr::null_mut(), 0, 0));
             }
-            enter(&mut s, a);
-            enter(&mut s, b);
-            assert_eq!((s.current, (*b).origin, (*a).first_child), (b, a, b));
-            s.current = (*b).origin;
-            enter(&mut s, c);
+            enter(sp, co(a));
+            enter(sp, co(b));
+            assert_eq!(
+                (sp.with(|s| s.current), (*b).origin, (*a).first_child),
+                (b, a, b)
+            );
+            sp.with(|s| s.current = (*b).origin);
+            enter(sp, co(c));
             // a resumed b then c: c heads a's children.
             assert_eq!(
                 ((*a).first_child, (*c).next_sibling, (*b).prev_sibling),
                 (c, b, c)
             );
-            s.current = (*c).origin;
+            sp.with(|s| s.current = (*c).origin);
             // a closes while b and c are suspended: both lose their origin.
-            release(&mut s, a);
-            assert!(s.current.is_null());
+            release(sp, co(a));
+            assert!(sp.with(|s| s.current).is_null());
             assert!((*b).origin.is_null() && (*c).origin.is_null() && (*a).first_child.is_null());
             assert!((*b).prev_sibling.is_null() && (*c).next_sibling.is_null());
             // b resumes from main, then unlinks itself on close.
-            enter(&mut s, b);
+            enter(sp, co(b));
             assert!((*b).origin.is_null());
-            enter(&mut s, c);
-            release(&mut s, c);
-            assert_eq!((s.current, (*b).first_child), (b, ptr::null_mut()));
-            release(&mut s, b);
+            enter(sp, co(c));
+            release(sp, co(c));
+            assert_eq!(
+                (sp.with(|s| s.current), (*b).first_child),
+                (b, ptr::null_mut())
+            );
+            release(sp, co(b));
             assert_eq!(s.count(), 0);
         }
         s.set_active(false);
@@ -684,17 +709,18 @@ pub(crate) mod tests {
     fn removing_a_middle_child_relinks_siblings() {
         let (mut p, mut x, mut y, mut z) = (blank(), blank(), blank(), blank());
         let (p, x, y, z) = (&raw mut p, &raw mut x, &raw mut y, &raw mut z);
+        let co = |co| unsafe { Co::of(co) }.unwrap();
         // SAFETY: all live on this frame.
         unsafe {
             for child in [x, y, z] {
-                set_origin(child, p);
+                link(co(child), Some(co(p)));
             }
-            set_origin(y, ptr::null_mut());
+            link(co(y), None);
             assert_eq!(
                 ((*p).first_child, (*z).next_sibling, (*x).prev_sibling),
                 (z, x, z)
             );
-            set_origin(z, ptr::null_mut());
+            link(co(z), None);
             assert_eq!(((*p).first_child, (*x).prev_sibling), (x, ptr::null_mut()));
         }
     }
