@@ -13,7 +13,7 @@ use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
     bailout::Bailout,
-    sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval},
+    sys::{swr_zend_http_estrndup, swr_zend_treat_string, zval},
 };
 
 /// The HTTP/2 server's contexts: a connection's settings context
@@ -100,10 +100,9 @@ pub(crate) fn server() -> Option<&'static Server> {
     SERVER.get().copied()
 }
 
-/// The response's `Date` value, cached per second.
-#[must_use]
-pub fn date() -> *mut zend_string {
-    header::date()
+/// `f` of the response's `Date` value, cached per second.
+pub fn date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
+    header::date(f)
 }
 
 /// `SW_HTTP2_DATA_BUFFER_SIZE`.
