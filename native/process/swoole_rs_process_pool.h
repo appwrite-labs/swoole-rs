@@ -15,9 +15,9 @@
 #include "swoole_rs_ossupport.h"
 #include "swoole_message_bus.h"
 #include "swoole_rs_corebase_worker_registry.h"
-// Worker's scalar process fields are owned by the Rust record (crates/process); its
-// methods read/write them through swr_v1_worker_* accessors over the byte-exact
-// swr_v1_worker_record mirror. #629.
+// Worker and ProcessPool's fields are the Rust records' (crates/process), which
+// tools/process_records.py writes into swoole_rs_process_views.h; tools/headers.sh
+// --check fails when that header is stale. #629.
 #include "swoole_rs_process.h"
 
 #include <sys/wait.h>

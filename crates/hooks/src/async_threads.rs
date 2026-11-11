@@ -230,9 +230,9 @@ fn create() -> *mut AsyncThreads {
     }
     let (read, write) = (pipe.worker_socket, pipe.master_socket);
     // SAFETY: both ends are live sockets.
-    unsafe { (*read).fd_type = FD_AIO };
+    unsafe { (*read).fields.fd_type = FD_AIO };
     // SAFETY: as above.
-    unsafe { (*write).fd_type = FD_AIO };
+    unsafe { (*write).fields.fd_type = FD_AIO };
     // SAFETY: a live socket on the thread's reactor.
     unsafe { swoole_event_add(read, EVENT_READ) };
     // SAFETY: the thread's live reactor.

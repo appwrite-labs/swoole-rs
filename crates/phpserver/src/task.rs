@@ -35,8 +35,7 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
-        swr_zval_is_true, swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval,
-        zval_ptr_dtor,
+        swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval, zval_ptr_dtor,
     },
     value::{array_init, count, table},
 };
@@ -160,25 +159,21 @@ fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host> {
 
 /// `taskWaitMulti`'s `Server::MultiTask`: the array of tasks, and the array of
 /// results by their index.
-struct Multi {
-    tasks: *mut zval,
+struct Multi<'a> {
+    tasks: Option<&'a Array>,
     out: *mut zval,
     count: u16,
 }
 
-impl MultiTask for Multi {
+impl MultiTask for Multi<'_> {
     fn count(&self) -> u16 {
         self.count
     }
 
     fn pack(&mut self, index: u16, event: *mut u8) -> Result<i64, Bailed> {
-        // SAFETY: an array argument.
-        let tasks = unsafe { table(self.tasks) };
-        // SAFETY: a live array.
-        let data = unsafe { zend_hash_index_find(tasks, u64::from(index)) };
-        if data.is_null() {
+        let Some(data) = self.tasks.and_then(|tasks| tasks.index(u64::from(index))) else {
             return Ok(-1);
-        }
+        };
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "task_sync's event is a zeroed Vec<u64> of SW_IPC_MAX_SIZE bytes"
@@ -292,14 +287,13 @@ fn dtor(value: &mut zval) {
 /// The bytes a task carries: a string as it is, anything else serialized
 /// (`None`: serialize wrote nothing). `each` sees the bytes and whether they
 /// were serialized.
-fn encoded<R>(data: *mut zval, each: impl FnOnce(&[u8], bool) -> R) -> Result<Option<R>, Bailout> {
-    // SAFETY: a live value.
-    if let Some(text) = unsafe { swoole_rs_zend::string_of(data) } {
+fn encoded<R>(data: &Value, each: impl FnOnce(&[u8], bool) -> R) -> Result<Option<R>, Bailout> {
+    if let Some(text) = data.bytes() {
         return Ok(Some(each(text, false)));
     }
     let mut bailed = false;
     // SAFETY: a live value and a writable flag; the string is ours.
-    let serialized = unsafe { swr_zend_serialize(data, &raw mut bailed) };
+    let serialized = unsafe { swr_zend_serialize(data.as_ptr(), &raw mut bailed) };
     if bailed {
         return Err(Bailout);
     }
@@ -314,7 +308,7 @@ fn encoded<R>(data: *mut zval, each: impl FnOnce(&[u8], bool) -> R) -> Result<Op
 }
 
 /// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
-fn encode(data: *mut zval, buf: &mut EventData) -> Result<i64, Bailout> {
+fn encode(data: &Value, buf: &mut EventData) -> Result<i64, Bailout> {
     let packed = encoded(data, |payload, serialized| {
         let task = buf.ptr().cast();
         // SAFETY: a writable `EventData` and the payload's bytes.
@@ -367,7 +361,7 @@ pub(crate) fn decode(task: Packed<'_>, out: *mut zval) -> Result<bool, Bailout> 
 /// this worker's current task).
 pub(crate) fn finish_task(
     server: *mut c_void,
-    data: *mut zval,
+    data: &Value,
     req: *mut c_void,
 ) -> Result<bool, Bailout> {
     let finished = encoded(data, |payload, serialized| {
@@ -384,7 +378,7 @@ pub(crate) fn finish_task(
 
 /// `php_swoole_server_task_pack`: the task id, or -1; a trapped bailout waits
 /// for the handler's end.
-pub(crate) fn pack(data: *mut zval, buf: &mut EventData) -> i64 {
+pub(crate) fn pack(data: &Value, buf: &mut EventData) -> i64 {
     encode(data, buf).unwrap_or_else(|bailout| {
         bailout.defer();
         -1
@@ -453,24 +447,22 @@ fn task(call: &Call) {
     let (Ok(()), Ok(dst)) = (call.arity(1, 3), call.long(2, -1)) else {
         return call.set_bool(false);
     };
-    let callback = (call.num_args() >= 3).then(|| call.zval(3));
     let facts = facts(serv);
-    if !check(&facts, dst) {
+    let Some(data) = call.value(1).filter(|_| check(&facts, dst)) else {
         return call.set_bool(false);
-    }
+    };
     let mut buf = EventData::new();
-    let id = pack(call.zval(1), &mut buf);
+    let id = pack(data, &mut buf);
     if id < 0 {
         return call.set_bool(false);
     }
-    // SAFETY: a live argument.
-    let callback = callback.filter(|&zfn| unsafe { swr_zval_is_true(zfn) });
+    let callback = call.value(3).filter(|zfn| zfn.truthy());
     if !facts.worker {
         flag(&mut buf, NOREPLY);
     } else if let Some(callback) = callback {
         flag(&mut buf, CALLBACK);
         // SAFETY: a live argument; C++ warns when it is not callable.
-        let cb = unsafe { swoole_rs_phpruntime::callable_create(callback) };
+        let cb = unsafe { swoole_rs_phpruntime::callable_create(callback.as_ptr()) };
         if cb.is_null() {
             return call.set_bool(false);
         }
@@ -503,11 +495,11 @@ fn taskwait(call: &Call) {
     ) else {
         return call.set_bool(false);
     };
-    if !check(&facts, dst) {
+    let Some(data) = call.value(1).filter(|_| check(&facts, dst)) else {
         return call.set_bool(false);
-    }
+    };
     let mut buf = EventData::new();
-    let id = pack(call.zval(1), &mut buf);
+    let id = pack(data, &mut buf);
     if id < 0 {
         return call.set_bool(false);
     }
@@ -573,10 +565,10 @@ fn task_wait_multi(call: &Call) {
     if !check(&facts, -1) {
         return call.set_bool(false);
     }
-    let tasks = call.zval(1);
+    let tasks = call.value(1).and_then(Value::array);
     // SAFETY: the return slot.
     unsafe { array_init(call.return_value()) };
-    let n_task = length(call.value(1));
+    let n_task = tasks.map_or(0, Array::count);
     if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
@@ -597,11 +589,6 @@ fn task_wait_multi(call: &Call) {
         unsafe { zval_ptr_dtor(call.return_value()) };
         call.set_bool(false);
     }
-}
-
-/// `php_swoole_array_length`, as 0 for what is not an array.
-fn length(array: Option<&Value>) -> u32 {
-    array.and_then(Value::array).map_or(0, Array::count)
 }
 
 fn task_co_method(call: &Call) {
@@ -643,7 +630,7 @@ fn task_co(call: &Call, fill_false: bool) {
     for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
         let index = list.len() as u64;
         let mut buf = EventData::new();
-        let mut id = pack(ztask.as_ptr(), &mut buf);
+        let mut id = pack(ztask, &mut buf);
         let mut dispatched = false;
         if id < 0 {
             fatal(E_WARNING, c"failed to pack task");
@@ -697,8 +684,11 @@ fn pack_method(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
+    let Some(data) = call.value(1) else {
+        return call.set_bool(false);
+    };
     let mut buf = EventData::new();
-    if pack(call.zval(1), &mut buf) < 0 {
+    if pack(data, &mut buf) < 0 {
         return call.set_bool(false);
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
@@ -794,7 +784,11 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
     }
     let outcome = outcome.and_then(|()| {
         if kind(&retval) != IS_NULL {
-            let finished = finish_task(server.raw(), &raw mut retval, task.as_ptr().cast_mut());
+            let finished = finish_task(
+                server.raw(),
+                Value::of(&mut retval),
+                task.as_ptr().cast_mut(),
+            );
             dtor(&mut retval);
             finished?;
         }

@@ -14,7 +14,7 @@ use swoole_rs_zend::{
         swr_zend_callable, zend_array, zend_array_destroy, zend_array_dup, zend_class_entry,
         zend_hash_merge, zend_object, zend_object_handlers, zval, zval_add_ref,
     },
-    unset_property_deny, value,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -290,9 +290,12 @@ pub fn set_hook_flags(flags: u32) {
     let array = array.into_owned();
     let current = OPTIONS.with(Cell::get);
     if current.is_null() {
-        let array = array.into_zval();
-        // SAFETY: an array zval, whose table the options now own.
-        OPTIONS.with(|o| o.set(unsafe { value::table(&raw const array) }));
+        let table = array
+            .array()
+            .map_or(ptr::null_mut(), swoole_rs_zend::Array::as_ptr);
+        // The options now own the table.
+        let _kept = array.into_zval();
+        OPTIONS.with(|o| o.set(table));
     } else if let Some(table) = array.array() {
         // SAFETY: two live arrays; ours is released after the merge.
         unsafe { zend_hash_merge(current, table.as_ptr(), None, true) };

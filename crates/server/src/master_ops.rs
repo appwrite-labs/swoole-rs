@@ -13,7 +13,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Socket, SocketGuard, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Socket, SocketFields, SocketRecord, reactor_upstream};
 
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackSlot;
@@ -201,29 +201,20 @@ impl Objects<'_> {
         // SAFETY: the ops reading it run with a live connection in the context.
         unsafe { &mut *self.ctx.conn.cast::<ConnectionRecord>() }
     }
-    /// The context's socket guard, looked up on its first handle.
-    fn sockets(&self) -> SocketGuard {
-        let sockets = &self.ctx.sockets;
-        sockets.get().unwrap_or_else(|| {
-            let guard = SocketGuard::current();
-            sockets.set(Some(guard));
-            guard
-        })
-    }
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
-        unsafe { self.sockets().socket(self.ctx.sock.cast()) }
+        unsafe { Socket::from_ptr(self.ctx.sock.cast()) }
     }
     fn conn_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: a live connection's socket, which the ops reading it have.
-        unsafe { self.sockets().socket(self.conn().socket.cast()) }
+        unsafe { Socket::from_ptr(self.conn().socket.cast()) }
     }
     /// `edit` over the context's socket, or the default without one.
-    fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketRecord) -> R) -> R {
+    fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
         self.sock().map(|sock| sock.edit(edit)).unwrap_or_default()
     }
     /// `read` over the context connection's socket, or the default without one.
-    fn read_conn_socket<R: Default>(&self, read: impl FnOnce(&SocketRecord) -> R) -> R {
+    fn read_conn_socket<R: Default>(&self, read: impl FnOnce(&SocketFields) -> R) -> R {
         self.conn_socket()
             .map(|sock| sock.read(read))
             .unwrap_or_default()
@@ -241,7 +232,7 @@ impl Objects<'_> {
         // SAFETY: the accepting event.
         let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
         // SAFETY: its live listening socket.
-        let listener = unsafe { self.sockets().socket(listener.cast()) };
+        let listener = unsafe { Socket::from_ptr(listener.cast()) };
         // The listener's object is its port.
         let (port, socket) = listener.map_or((core::ptr::null_mut(), core::ptr::null_mut()), |l| {
             l.edit(|l| (l.object, l.accept()))
@@ -261,7 +252,7 @@ impl Objects<'_> {
     /// The context port's listening socket.
     fn port_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live port, which owns its socket.
-        unsafe { self.sockets().socket(self.port().socket.cast()) }
+        unsafe { Socket::from_ptr(self.port().socket.cast()) }
     }
     fn port(&self) -> &mut PortConfig {
         // SAFETY: the ops reading it run with a live port in the context.
@@ -505,7 +496,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_OUT_EMPTY => {
             // SAFETY: native code passes a live socket.
-            let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
+            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
             let buffer = socket.read(|s| s.output.out_buffer);
             // SAFETY: null or the socket's live buffer (`Buffer::empty`).
             u64::from(buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast() }))
@@ -528,7 +519,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_QUEUE_CLOSE => {
             // SAFETY: a live session socket of this thread's reactor.
-            let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
+            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
             let out = socket.read(|s| s.output.out_buffer);
             // SAFETY: its live output buffer.
             swr_cpp_buffer_typed_close(unsafe { &*out.cast() });
@@ -1253,11 +1244,11 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
             let id = u16::try_from(id).unwrap_or(u16::MAX);
             let pipe = o.server().worker_pipe(id, false);
-            u64::from(pipe.is_some_and(|pipe| pipe.edit(SocketRecord::has_kernel_nobufs)))
+            u64::from(pipe.is_some_and(|pipe| pipe.take_kernel_nobufs()))
         }
         OP_SOCKET_NOBUFS => {
             let socket = o.conn_socket();
-            u64::from(socket.is_some_and(|socket| socket.edit(SocketRecord::has_kernel_nobufs)))
+            u64::from(socket.is_some_and(|socket| socket.take_kernel_nobufs()))
         }
         OP_SC_TOUCH_SEND => {
             o.conn().last_send_time = swoole_rs_corebase::microtime();
@@ -1721,7 +1712,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 pair.worker_socket
             };
             // SAFETY: a ready pair's live end.
-            sign(unsafe { o.sockets().socket(end) }?.fd())
+            sign(unsafe { Socket::from_ptr(end) }?.fd())
         }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {

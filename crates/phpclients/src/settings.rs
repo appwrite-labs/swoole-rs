@@ -12,7 +12,7 @@ use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
     Array, E_ERROR, Value as Zval, ZString, bailout, long_zval, string,
-    sys::{self, IS_STRING, zend_ini_parse_quantity, zval, zval_ptr_dtor},
+    sys::{self, zend_ini_parse_quantity, zval, zval_ptr_dtor},
     value,
 };
 
@@ -62,8 +62,7 @@ fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
             -1
         }
         Ok(true) => {
-            // SAFETY: the callable's result.
-            let length = unsafe { value::get_long(&raw const retval) };
+            let length = Zval::of(&mut retval).long();
             // SAFETY: our reference to the result, released inside a trap.
             bailout::defer(unsafe {
                 bailout::trap(sys::swr_zend_zval_release, (&raw mut retval).cast())
@@ -112,19 +111,16 @@ impl Options<'_> {
 
 /// `php_swoole_parse_to_size(value)`.
 fn parse_to_size(value: &Zval) -> i64 {
-    if value.kind() != IS_STRING {
+    let Some(string) = value.str() else {
         return value.long();
-    }
-    // SAFETY: a string zval holds a live string.
-    let string = unsafe { value::str_of(value.as_ptr()) };
+    };
     let mut error = ptr::null_mut();
     // SAFETY: a live string; Zend writes an error string or leaves null.
-    let size = unsafe { zend_ini_parse_quantity(string, &raw mut error) };
+    let size = unsafe { zend_ini_parse_quantity(string.as_ptr(), &raw mut error) };
     if !error.is_null() {
         // SAFETY: Zend's new error string, released on drop.
         let error = unsafe { ZString::from_raw(error) };
-        // SAFETY: the live string above.
-        let text = c_text(unsafe { swoole_rs_zend::string::bytes(string) });
+        let text = c_text(string.bytes());
         let reason = c_text(error.bytes());
         report(
             ErrorKind::Fatal,

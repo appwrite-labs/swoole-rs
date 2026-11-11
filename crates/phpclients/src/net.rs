@@ -22,7 +22,7 @@ use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
-use swoole_rs_reactor::{Socket as Net, SocketRecord};
+use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
@@ -877,8 +877,8 @@ fn receive(conn: &Conn, buffer: *mut u8, length: usize, flags: i64) -> Result<i6
 
 /// [`receive`] of at most `length` bytes into `buffer`'s room.
 fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
-    let (at, room) = native::room(buffer);
-    let read = receive(conn, at.cast(), room.min(length), flags)?;
+    let room = native::room(buffer);
+    let read = receive(conn, room.as_mut_ptr(), room.len().min(length), flags)?;
     Ok(native::filled(buffer, read))
 }
 
@@ -1119,7 +1119,7 @@ fn getsockname(call: &Call) {
     let Some(socket) = conn.cli.net() else {
         return call.set_bool(false);
     };
-    if socket.edit(SocketRecord::get_name) < 0 {
+    if socket.edit(SocketFields::get_name) < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
         set_err_code(Obj::this(call), error);
@@ -1142,8 +1142,7 @@ fn getpeername(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    // SAFETY: plain old data, which the call below writes.
-    let mut address: SocketAddress = unsafe { std::mem::zeroed() };
+    let mut address = SocketAddress::default();
     // SAFETY: a live client; a writable local.
     if unsafe { state::swr_v1_clients_get_peer_name(conn.cli.0, &raw mut address) } < 0 {
         let error = errno();

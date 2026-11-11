@@ -604,9 +604,7 @@ pub(crate) fn server(call: &Call) -> view::Server<'_> {
 /// A new `Connection\Iterator` over `serv` and `port` (null: every port) in `target`.
 pub(crate) fn new_iterator(target: &mut zval, serv: *mut c_void, port: *mut c_void) {
     // SAFETY: a writable zval and the registered iterator class.
-    unsafe { swoole_rs_zend::init_object(target, ITERATOR.entry()) };
-    // SAFETY: an object zval.
-    let object = unsafe { swoole_rs_zend::object_of(target) };
+    let object = unsafe { swoole_rs_zend::init_object(target, ITERATOR.entry()) };
     // SAFETY: an iterator object just created.
     let iterator = unsafe { IteratorObject::data(object) };
     iterator.serv = serv;

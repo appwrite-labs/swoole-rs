@@ -4,7 +4,7 @@ use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t};
 use std::{ffi::CStr, ptr::NonNull};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::SocketFields;
 use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR,
@@ -256,7 +256,7 @@ impl Socket {
 
     /// The network record can change during reinitialization; read its pointer on each use.
     /// The closure performs only immediate operations and never suspends or invokes PHP.
-    fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketRecord) -> T) -> T {
+    fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketFields) -> T) -> T {
         self.co().net(f).unwrap_or(absent)
     }
 
@@ -688,12 +688,9 @@ pub mod co {
     pub struct Timeout(TimeoutScope);
 
     impl Timeout {
-        /// # Safety
-        /// `socket` is live, and stays so while the guard does.
         #[must_use]
-        pub unsafe fn set(socket: Socket, timeout: f64, kind: c_int) -> Self {
-            // SAFETY: per the caller.
-            Self(TimeoutScope::new(unsafe { handle(socket) }, timeout, kind))
+        pub fn set(socket: Co, timeout: f64, kind: c_int) -> Self {
+            Self(TimeoutScope::new(socket, timeout, kind))
         }
 
         /// `TimeoutController::has_timedout(kind)`: the first call starts the
@@ -705,36 +702,6 @@ pub mod co {
                 .map_or(0.0, |now| now.as_secs_f64());
             self.0.timed_out(kind, now)
         }
-    }
-
-    /// One table transfer of `length` bytes at `buf`.
-    /// # Safety
-    /// `socket` is live and `buf` holds `length` bytes, writable to receive.
-    pub unsafe fn io(socket: Socket, op: Io, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let socket = unsafe { handle(socket) };
-        // SAFETY: per the caller.
-        unsafe { super::io(socket, op, buf, length) }
-    }
-
-    /// `recv_line(buf, length)`.
-    /// # Safety
-    /// As [`io`].
-    pub unsafe fn recv_line(socket: Socket, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let socket = unsafe { handle(socket) };
-        // SAFETY: per the caller.
-        unsafe { socket.recv_line(buf.cast(), length) }
-    }
-
-    /// `recv_with_buffer(buf, length)`.
-    /// # Safety
-    /// As [`io`].
-    pub unsafe fn recv_with_buffer(socket: Socket, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let socket = unsafe { handle(socket) };
-        // SAFETY: per the caller.
-        unsafe { socket.recv_with_buffer(buf.cast(), length) }
     }
 
     /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
@@ -773,35 +740,6 @@ pub mod co {
         (result, state.index, state.offset_bytes)
     }
 
-    /// `recvfrom(buf, length)`, into the peer address.
-    /// # Safety
-    /// As [`io`].
-    pub unsafe fn recvfrom(socket: Socket, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let socket = unsafe { handle(socket) };
-        // SAFETY: per the caller.
-        socket.recvfrom_peer(unsafe { super::bytes_mut(buf, length) })
-    }
-
-    /// `sendto(std::string(host, length), port, data, size)`.
-    /// # Safety
-    /// `socket` is live, in a coroutine; `host` and `data` hold their bytes.
-    pub unsafe fn sendto(
-        socket: Socket,
-        host: *const c_char,
-        length: usize,
-        port: c_int,
-        data: *const c_char,
-        size: usize,
-    ) -> isize {
-        // SAFETY: per the caller.
-        let host = unsafe { super::bytes(host, length) };
-        // SAFETY: per the caller.
-        let data = unsafe { super::bytes(data, size) };
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.sendto(host, port, data)
-    }
-
     /// `sendfile(file, offset, length)`.
     /// # Safety
     /// `socket` is live and `file` NUL-terminated.
@@ -832,53 +770,12 @@ pub mod co {
         unsafe { handle(socket) }.listen(backlog)
     }
 
-    /// `accept(timeout)`: the new connection, or null.
-    /// # Safety
-    /// `socket` is live, in a coroutine.
-    pub unsafe fn accept(socket: Socket, timeout: f64) -> Socket {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }
-            .accept(timeout)
-            .map_or(std::ptr::null_mut(), Co::this)
-    }
-
     /// `ssl_handshake()`.
     /// # Safety
     /// `socket` is live.
     pub unsafe fn ssl_handshake(socket: Socket) -> bool {
         // SAFETY: per the caller.
         unsafe { handle(socket) }.ssl_handshake()
-    }
-
-    /// The `SSLContext`'s owner, or null while TLS is off.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn ssl_context(socket: Socket) -> *const c_void {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.tls_owner().cast()
-    }
-
-    /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn proxy(
-        socket: Socket,
-        http: bool,
-        host: &[u8],
-        port: c_int,
-        user: &[u8],
-        password: &[u8],
-    ) {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.set_proxy(http, host, port, user, password);
-    }
-
-    /// `set_option(level, name, value)`, which logs a failure.
-    /// # Safety
-    /// `socket` is live and open.
-    pub unsafe fn set_option(socket: Socket, level: c_int, name: c_int, value: c_int) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.set_int_option(level, name, value)
     }
 
     /// `getsockname()`, into the network socket's address.
@@ -889,66 +786,12 @@ pub mod co {
         unsafe { handle(socket) }.getsockname()
     }
 
-    /// `getpeername(address)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn getpeername(
-        socket: Socket,
-        address: &mut swoole_rs_reactor::SocketAddress,
-    ) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.getpeername(address)
-    }
-
-    /// `shutdown(how)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn shutdown(socket: Socket, how: c_int) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.shutdown(how)
-    }
-
     /// `cancel(event)`.
     /// # Safety
     /// `socket` is live.
     pub unsafe fn cancel(socket: Socket, event: u32) -> bool {
         // SAFETY: per the caller.
         unsafe { handle(socket) }.cancel(event)
-    }
-
-    /// `check_liveness()`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn check_liveness(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.check_liveness()
-    }
-
-    /// `get_bound_cid(event)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn bound_cid(socket: Socket, event: u32) -> i64 {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.bound_cid(event)
-    }
-
-    /// `set_err(code)`: the code's message.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn set_err(socket: Socket, code: c_int) {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.set_err(code);
-    }
-
-    /// `set_err(code, message)`, copying the message.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn set_error(socket: Socket, code: c_int, message: &[u8]) {
-        // SAFETY: per the caller.
-        if unsafe { handle(socket) }.set_error(code, message) != 0 {
-            // std::bad_alloc, which upstream leaves uncaught.
-            std::process::abort();
-        }
     }
 
     /// `SW_EVENT_READ`.
@@ -1004,16 +847,20 @@ pub mod co {
     /// # Safety
     /// `socket` is live and `data` holds `length` readable bytes.
     pub unsafe fn send_all(socket: Socket, data: *const c_char, length: usize) -> isize {
-        // SAFETY: per the caller; a send only reads the buffer.
-        unsafe { io(socket, Io::SendAll, data.cast_mut(), length) }
+        // SAFETY: per the caller.
+        let data = unsafe { super::bytes(data, length) };
+        // SAFETY: per the caller.
+        unsafe { handle(socket) }.send_all(data)
     }
 
     /// `send(data, length)`.
     /// # Safety
     /// `socket` is live and `data` holds `length` readable bytes.
     pub unsafe fn send(socket: Socket, data: *const c_char, length: usize) -> isize {
-        // SAFETY: per the caller; a send only reads the buffer.
-        unsafe { io(socket, Io::Send, data.cast_mut(), length) }
+        // SAFETY: per the caller.
+        let data = unsafe { super::bytes(data, length) };
+        // SAFETY: per the caller.
+        unsafe { handle(socket) }.send(data)
     }
 
     /// `recv(data, length)`.
@@ -1021,7 +868,9 @@ pub mod co {
     /// `socket` is live and `data` holds `length` writable bytes.
     pub unsafe fn recv(socket: Socket, data: *mut c_char, length: usize) -> isize {
         // SAFETY: per the caller.
-        unsafe { io(socket, Io::Recv, data, length) }
+        let data = unsafe { super::bytes_mut(data, length) };
+        // SAFETY: per the caller.
+        unsafe { handle(socket) }.recv(data)
     }
 
     /// `connect(std::string(host, length), port, flags)`.
@@ -1049,39 +898,6 @@ pub mod co {
         unsafe { handle(socket) }.enable_ssl()
     }
 
-    /// `ssl_verify(allow_self_signed)`.
-    /// # Safety
-    /// `socket` is live and has TLS.
-    pub unsafe fn ssl_verify(socket: Socket, allow_self_signed: bool) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.ssl_verify(allow_self_signed)
-    }
-
-    /// `set_timeout(timeout, kind)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn set_timeout(socket: Socket, timeout: f64, kind: c_int) {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.set_timeout(timeout, kind);
-    }
-
-    /// `get_timeout(kind)`.
-    /// # Safety
-    /// `socket` is live.
-    #[must_use]
-    pub unsafe fn get_timeout(socket: Socket, kind: c_int) -> f64 {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.timeout(kind)
-    }
-
-    /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn check_bound(socket: Socket, event: u32) {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.check_bound(event);
-    }
-
     /// `ssl_is_enable()`.
     /// # Safety
     /// `socket` is live.
@@ -1089,24 +905,6 @@ pub mod co {
     pub unsafe fn ssl_enabled(socket: Socket) -> bool {
         // SAFETY: per the caller.
         !unsafe { handle(socket) }.tls_owner().is_null()
-    }
-
-    /// The HTTP proxy's `ProxyState`, or null.
-    /// # Safety
-    /// `socket` is live.
-    #[must_use]
-    pub unsafe fn http_proxy(socket: Socket) -> *mut c_void {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.http_proxy().cast()
-    }
-
-    /// `ssl_get_peer_cert()`: empty (with the socket's error set) without one.
-    /// # Safety
-    /// `socket` is live and has TLS.
-    #[must_use]
-    pub unsafe fn peer_cert(socket: Socket) -> Vec<u8> {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.peer_cert()
     }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.

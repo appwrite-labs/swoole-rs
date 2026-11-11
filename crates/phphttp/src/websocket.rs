@@ -30,15 +30,15 @@ use swoole_rs_websocket::{
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Owned, Props, Value, ZStr, ZString, bailout, handlers, init_object,
     method_table,
-    string::{self, bytes},
+    string::{self},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset, swr_zend_instanceof,
-        swr_zend_ws_property_not_null, swr_zval_copy, swr_zval_is_true, swr_zval_str,
-        zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long, zend_object,
-        zend_string, zend_value, zval, zval_ptr_dtor,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
+        swr_zend_ws_property_not_null, swr_zval_str, zend_ce_stringable, zend_class_entry,
+        zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
+        zval_ptr_dtor,
     },
-    value::{self, empty_string, get_long, obj_of},
+    value::{empty_string, obj_of},
 };
 
 static SERVER: Class = Class::new();
@@ -366,11 +366,11 @@ fn constants(minit: &Minit) {
 }
 
 /// `swoole::websocket::FrameObject`: an outgoing frame.
-pub struct FrameObject {
+pub struct FrameObject<'a> {
     opcode: u8,
     flags: u8,
     code: u16,
-    data: *mut zval,
+    data: Option<&'a Value>,
 }
 
 /// Truncate to a byte, as upstream's `uint8_t` fields do.
@@ -378,17 +378,12 @@ fn byte(value: i64) -> u8 {
     value.to_le_bytes()[0]
 }
 
-impl FrameObject {
+impl<'a> FrameObject<'a> {
     /// `FrameObject(zdata, opcode, flags, code)`: a `Frame` object's
     /// properties, or the arguments around any other value.
-    fn new(data: *mut zval, opcode: i64, flags: i64, code: i64) -> Self {
-        // SAFETY: the caller's live zval.
-        let value = unsafe { Value::from_ptr(data) };
-        let frame = value.and_then(|value| Some((value.object()?, value.class()?)));
-        // SAFETY: two registered classes.
-        let frame =
-            frame.filter(|&(_, class)| unsafe { swr_zend_instanceof(class, FRAME.entry()) });
-        let Some((object, _)) = frame else {
+    fn new(data: Option<&'a Value>, opcode: i64, flags: i64, code: i64) -> Self {
+        let frame = data.filter(|value| value.instance_of(&FRAME));
+        let Some(object) = frame.and_then(Value::object) else {
             #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
             #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
             let code = code as u16;
@@ -404,18 +399,19 @@ impl FrameObject {
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == OPCODE_CLOSE {
-            code = not_null(object, c"code").map_or(CLOSE_NORMAL, |code| {
-                // SAFETY: the live property.
-                unsafe { get_long(code) }
-            });
+            let found = not_null(object, c"code");
+            // SAFETY: the live property.
+            let found = found.and_then(|found| unsafe { Value::from_ptr(found) });
+            code = found.map_or(CLOSE_NORMAL, Value::long);
             not_null(object, c"reason")
         } else {
             not_null(object, c"data")
         };
         let mut flags = byte(long(c"flags") & FLAGS_ALL);
-        if let Some(finish) = not_null(object, c"finish") {
-            // SAFETY: the live property.
-            if unsafe { swr_zval_is_true(finish) } {
+        let finish = not_null(object, c"finish");
+        // SAFETY: the live property.
+        if let Some(finish) = finish.and_then(|finish| unsafe { Value::from_ptr(finish) }) {
+            if finish.truthy() {
                 flags |= FLAG_FIN;
             } else {
                 flags &= !FLAG_FIN;
@@ -428,7 +424,9 @@ impl FrameObject {
             opcode,
             flags,
             code,
-            data: data.unwrap_or(ptr::null_mut()),
+            // SAFETY: the live property, or the read's `rv`, which the frame
+            // keeps until the next read.
+            data: data.and_then(|data| unsafe { Value::from_ptr(data) }),
         }
     }
 }
@@ -485,8 +483,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         host::fatal("the maximum value of opcode is 10");
         return None;
     }
-    // SAFETY: null or a live zval.
-    let data = unsafe { Value::from_ptr(frame.data) }.filter(|data| !data.is_null());
+    let data = frame.data.filter(|data| !data.is_null());
     let data = data.map(Value::string);
     let data = data.as_deref().map_or(&[][..], ZStr::bytes);
     if bailout::pending() {
@@ -670,23 +667,23 @@ fn uncompress(payload: *mut zval, data: &[u8]) -> bool {
 }
 
 /// `websocket::construct_frame`: a `Frame`, or a `CloseFrame` with the close
-/// payload's code and reason.
-fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags: u8) {
+/// payload's code and reason; the new object.
+fn construct(
+    frame: *mut zval,
+    opcode: zend_long,
+    payload: &Value,
+    mut flags: u8,
+) -> *mut zend_object {
     let class = if opcode == zend_long::from(OPCODE_CLOSE) {
         CLOSE_FRAME.entry()
     } else {
         FRAME.entry()
     };
     // SAFETY: the caller's writable slot and a registered class.
-    unsafe { init_object(frame, class) };
-    // SAFETY: the object just created.
-    let object = unsafe { obj_of(frame) };
+    let object = unsafe { init_object(frame, class) };
     if class == CLOSE_FRAME.entry() {
-        // SAFETY: a close payload is a string.
-        let data = unsafe { value::str_of(payload) };
-        // SAFETY: a live string.
-        let data = unsafe { bytes(data) };
-        if let [high, low, reason @ ..] = data {
+        // A close payload is a string.
+        if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default() {
             // `(payload[0] << 8) ^ (payload[1] & 0xFF)` over a signed char.
             let code = (i64::from(high.cast_signed()) << 8) ^ i64::from(*low);
             // SAFETY: the CloseFrame just created, under its class.
@@ -697,10 +694,8 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
             }
         }
     } else {
-        let mut data = new_zval();
-        // SAFETY: the live payload; the Frame takes its own reference.
-        unsafe { swr_zval_copy(&raw mut data, payload) };
-        set(object, DATA, data);
+        // The Frame takes its own reference.
+        set(object, DATA, payload.copy().into_zval());
     }
     if flags & FLAG_RSV1 != 0 {
         flags |= FLAG_COMPRESS;
@@ -713,6 +708,7 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
         IS_FALSE
     };
     set(object, FINISH, scalar(finish, 0));
+    object
 }
 
 /// A zval holding `string`'s reference.
@@ -724,7 +720,7 @@ pub(crate) fn zval_of(string: *mut zend_string) -> zval {
 }
 
 /// `swoole_websocket_server_pack`'s body: the packed frame, or `""`.
-fn pack_value(call: &Call, data: *mut zval, opcode: i64, flags: i64) {
+fn pack_value(call: &Call, data: Option<&Value>, opcode: i64, flags: i64) {
     match pack(&FrameObject::new(data, opcode, flags, 0)) {
         // SAFETY: the return slot takes the new string.
         Some(packed) => unsafe { call.set_string(packed.into_string()) },
@@ -735,7 +731,7 @@ fn pack_value(call: &Call, data: *mut zval, opcode: i64, flags: i64) {
 fn pack_method(call: &Call) {
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
-            call.zval(1),
+            call.value(1),
             call.long(2, i64::from(OPCODE_TEXT))?,
             call.long(3, i64::from(FLAG_FIN))?,
         ))
@@ -747,7 +743,8 @@ fn pack_method(call: &Call) {
 }
 
 fn to_string(call: &Call) {
-    pack_value(call, call.this_zval(), 0, 0);
+    // SAFETY: `$this`, which the frame holds for the call.
+    pack_value(call, unsafe { Value::from_ptr(call.this_zval()) }, 0, 0);
 }
 
 /// `websocket::decode` of a whole frame, warning as it does; the input is
@@ -817,7 +814,7 @@ fn unpack(call: &Call) {
     construct(
         call.return_value(),
         i64::from(frame.opcode),
-        zpayload.as_ptr(),
+        &zpayload,
         frame.flags,
     );
 }
@@ -872,12 +869,11 @@ fn push(call: &Call) {
         let server = server(call)?;
         call.arity(2, 4).ok()?;
         let fd = call.long(1, 0).ok()?;
-        let data = call.zval(2);
+        let data = call.value(2);
         let opcode = call.long(3, i64::from(OPCODE_TEXT)).ok()?;
-        let flags = call.zval_or_null(4).map_or(i64::from(FLAG_FIN), |flags| {
-            // SAFETY: a passed argument.
-            unsafe { get_long(flags) }
-        });
+        let flags = call
+            .zval_or_null(4)
+            .map_or(i64::from(FLAG_FIN), Value::long);
         let Some(conn) = connection(server, fd, true) else {
             host::set_last_error(SESSION_NOT_EXIST);
             host::fatal(&format!("session#{fd} does not exists"));
@@ -925,7 +921,7 @@ fn ping(call: &Call) {
         let payload = call.str(2).ok()?;
         let mut data = zval_of(payload.unwrap_or_else(empty_string));
         let frame = FrameObject::new(
-            &raw mut data,
+            Some(Value::of(&mut data)),
             i64::from(OPCODE_PING),
             i64::from(FLAG_FIN),
             0,
@@ -1027,14 +1023,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         data = plain;
     }
     let mut args = [server_zval(), new_zval()];
-    construct(
-        &raw mut args[1],
-        zend_long::from(opcode),
-        data.as_ptr(),
-        flags,
-    );
-    // SAFETY: the Frame just built.
-    let frame = unsafe { obj_of(&raw const args[1]) };
+    let frame = construct(&raw mut args[1], zend_long::from(opcode), &data, flags);
     set(frame, FD, scalar(IS_LONG, fd));
     if let Err(bailout) = dispatch(server, server_fd, ON_MESSAGE, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
@@ -1167,15 +1156,12 @@ pub(crate) fn request(context: *mut c_void) {
 /// The coroutine `Response::push`: a frame over the context's socket.
 pub(crate) fn response_push(
     context: *mut Context,
-    data: *mut zval,
+    data: &Value,
     opcode: i64,
-    flags: Option<*mut zval>,
+    flags: Option<&Value>,
 ) -> bool {
-    let flags = flags.map_or(i64::from(FLAG_FIN), |flags| {
-        // SAFETY: a passed argument.
-        unsafe { get_long(flags) }
-    });
-    let mut frame = FrameObject::new(data, opcode, flags, 0);
+    let flags = flags.map_or(i64::from(FLAG_FIN), Value::long);
+    let mut frame = FrameObject::new(Some(data), opcode, flags, 0);
     frame.flags &= !FLAG_MASK;
     if send::state(context).websocket_compression != 0 {
         frame.flags |= FLAG_COMPRESS;
@@ -1205,7 +1191,7 @@ pub(crate) fn response_disconnect(
         reason
     });
     let frame = FrameObject::new(
-        &raw mut data,
+        Some(Value::of(&mut data)),
         i64::from(OPCODE_CLOSE),
         i64::from(FLAG_FIN),
         code,
@@ -1341,12 +1327,8 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         code: i64,
         compress: bool,
     ) -> c_int {
-        let mut frame = FrameObject::new(
-            data.as_ptr(),
-            opcode,
-            i64::from(byte(i64::from(flags))),
-            code,
-        );
+        let mut frame =
+            FrameObject::new(Some(data), opcode, i64::from(byte(i64::from(flags))), code);
         if self.mask {
             frame.flags |= FLAG_MASK;
         }
@@ -1435,12 +1417,15 @@ fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
 
 /// A frame object for `payload` in `return_value`, with the socket's fd.
 fn deliver(return_value: *mut zval, sock: *mut c_void, opcode: u8, payload: &mut zval, flags: u8) {
-    construct(return_value, zend_long::from(opcode), payload, flags);
+    let object = construct(
+        return_value,
+        zend_long::from(opcode),
+        Value::of(payload),
+        flags,
+    );
     // SAFETY: the frame took its own reference.
     unsafe { zval_ptr_dtor(payload) };
     let fd = sock_fd(sock);
-    // SAFETY: the frame just created.
-    let object = unsafe { obj_of(return_value) };
     set(object, FD, scalar(IS_LONG, zend_long::from(fd)));
 }
 
