@@ -42,6 +42,31 @@ fn a_freed_shm_field_is_null_and_freeing_it_again_unmaps_nothing() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no fork")]
+fn a_forked_child_writes_its_own_copy_of_a_private_mapping_and_the_shared_one() {
+    let mut private = Shm::calloc_private(1, 4);
+    let mut shared = Shm::calloc(1, 4);
+    let (mine, ours) = (
+        private.as_ptr().cast::<u32>(),
+        shared.as_ptr().cast::<u32>(),
+    );
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0);
+    if child == 0 {
+        unsafe {
+            mine.write(7);
+            ours.write(7);
+            libc::_exit(0);
+        }
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+    assert_eq!(unsafe { (mine.read(), ours.read()) }, (0, 7));
+    private.free();
+    shared.free();
+}
+
+#[test]
 fn a_fixed_pool_hands_out_each_slice_once() {
     assert_eq!(FixedPool::new(1, 16, false).err(), Some(INVALID));
     let mut pool = FixedPool::new(4, 16, false).unwrap();
