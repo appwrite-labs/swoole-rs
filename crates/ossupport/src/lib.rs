@@ -34,9 +34,9 @@ pub use system::swoole_daemon;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 pub use system::swoole_get_cpu_affinity;
 pub use system::{
-    swoole_random_bytes, swoole_thread_get_name, swoole_thread_set_name, swr_v1_os_is_root_user,
-    swr_v1_os_set_isolation, swr_v1_os_set_process_death_signal, swr_v1_os_thread_get_name,
-    swr_v1_os_thread_native_id, swr_v1_os_thread_set_name,
+    swoole_random_bytes, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
+    swr_v1_os_set_process_death_signal, swr_v1_os_thread_native_id, thread_get_name,
+    thread_set_name,
 };
 mod msg_queue;
 pub use msg_queue::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};

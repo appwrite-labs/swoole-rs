@@ -116,23 +116,23 @@ impl QueueRecord {
         false
     }
 
-    /// Send a `QueueNode` with `length` payload bytes, retrying `EINTR`. A failure
-    /// leaves errno as the last error, and warns unless it is `EAGAIN`.
-    /// # Safety
-    /// `node` points to a `long` type followed by `length` payload bytes.
+    /// Send a `QueueNode`, a `long` type and then its payload, retrying `EINTR`. A
+    /// failure leaves errno as the last error, and warns unless it is `EAGAIN`.
     #[must_use]
-    pub unsafe fn push(&self, node: *const c_void, length: usize) -> bool {
+    pub fn push(&self, node: &[u8]) -> bool {
+        let Some((kind, length)) = node_parts(node) else {
+            log::set_last_error(libc::EINVAL);
+            return false;
+        };
         loop {
-            // SAFETY: as the caller promises.
-            if unsafe { msgsnd(self.id, node, length, self.flags) } == 0 {
+            // SAFETY: `node` is a `long` type and `length` payload bytes, read for the call.
+            if unsafe { msgsnd(self.id, node.as_ptr().cast(), length, self.flags) } == 0 {
                 return true;
             }
             match errno() {
                 libc::EINTR => {}
                 libc::EAGAIN => break,
                 _ => {
-                    // SAFETY: the node begins with its `long` type.
-                    let kind = unsafe { node.cast::<c_long>().read_unaligned() };
                     sys_warning(
                         c"MsgQueue::push",
                         format_args!("msgsnd({}, {length}, {kind}) failed", self.id),
@@ -145,16 +145,16 @@ impl QueueRecord {
         false
     }
 
-    /// Receive into a `QueueNode` a message of the type it holds, up to `size`
-    /// payload bytes. A failure leaves errno as the last error, and warns unless
-    /// it is `ENOMSG` or `EINTR`.
-    /// # Safety
-    /// `node` points to a writable `long` type followed by `size` payload bytes.
-    pub unsafe fn pop(&self, node: *mut c_void, size: usize) -> isize {
-        // SAFETY: the node begins with its `long` type.
-        let kind = unsafe { node.cast::<c_long>().read_unaligned() };
-        // SAFETY: as the caller promises.
-        let result = unsafe { msgrcv(self.id, node, size, kind, self.flags) };
+    /// Receive into a `QueueNode` (a `long` type, then room for its payload) a
+    /// message of the type it holds. A failure leaves errno as the last error, and
+    /// warns unless it is `ENOMSG` or `EINTR`.
+    pub fn pop(&self, node: &mut [u8]) -> isize {
+        let Some((kind, size)) = node_parts(node) else {
+            log::set_last_error(libc::EINVAL);
+            return -1;
+        };
+        // SAFETY: `node` is a writable `long` type and `size` payload bytes.
+        let result = unsafe { msgrcv(self.id, node.as_mut_ptr().cast(), size, kind, self.flags) };
         if result < 0 {
             let error = errno();
             log::set_last_error(error);
@@ -212,9 +212,15 @@ impl QueueRecord {
     }
 }
 
+/// A `QueueNode`'s type and payload length, or `None` when it is shorter than a `long`.
+fn node_parts(node: &[u8]) -> Option<(c_long, usize)> {
+    let (kind, payload) = node.split_first_chunk::<{ size_of::<c_long>() }>()?;
+    Some((c_long::from_ne_bytes(*kind), payload.len()))
+}
+
 /// `queue->push(node, length)`, which the hooks system tests link by name.
 /// # Safety
-/// `queue` is live; `node` as [`QueueRecord::push`] requires.
+/// `queue` is live; `node` is a `long` type followed by `length` payload bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_msg_queue_push(
     queue: *const QueueRecord,
@@ -224,12 +230,14 @@ pub unsafe extern "C" fn swr_v1_os_msg_queue_push(
     // SAFETY: as the caller promises.
     let queue = unsafe { &*queue };
     // SAFETY: as the caller promises.
-    unsafe { queue.push(node, length) }
+    let node =
+        unsafe { std::slice::from_raw_parts(node.cast::<u8>(), size_of::<c_long>() + length) };
+    queue.push(node)
 }
 
 /// `queue->pop(node, size)`.
 /// # Safety
-/// `queue` is live; `node` as [`QueueRecord::pop`] requires.
+/// `queue` is live; `node` is a writable `long` type followed by `size` payload bytes.
 pub unsafe fn swr_v1_os_msg_queue_pop(
     queue: *const QueueRecord,
     node: *mut c_void,
@@ -238,7 +246,9 @@ pub unsafe fn swr_v1_os_msg_queue_pop(
     // SAFETY: as the caller promises.
     let queue = unsafe { &*queue };
     // SAFETY: as the caller promises.
-    unsafe { queue.pop(node, size) }
+    let node =
+        unsafe { std::slice::from_raw_parts_mut(node.cast::<u8>(), size_of::<c_long>() + size) };
+    queue.pop(node)
 }
 
 /// `struct msqid_ds`, which libc omits on Darwin.
@@ -305,8 +315,21 @@ mod tests {
     }
 
     impl QueueNode {
-        fn ptr(&mut self) -> *mut c_void {
-            (&raw mut *self).cast()
+        /// The node's bytes up to `length` payload bytes, as `msgsnd` reads them.
+        fn bytes(&self, length: usize) -> Vec<u8> {
+            let mut bytes = self.mtype.to_ne_bytes().to_vec();
+            bytes.extend_from_slice(&self.mdata[..length]);
+            bytes
+        }
+
+        /// Receives into the node as `pop(node, size)` did.
+        fn pop(&mut self, queue: &QueueRecord, size: usize) -> isize {
+            let mut bytes = self.bytes(size);
+            let received = queue.pop(&mut bytes);
+            let (kind, payload) = bytes.split_at(size_of::<c_long>());
+            self.mtype = c_long::from_ne_bytes(kind.try_into().unwrap());
+            self.mdata[..size].copy_from_slice(payload);
+            received
         }
     }
 
@@ -335,7 +358,7 @@ mod tests {
         assert!(q.set_capacity(8192));
 
         // input data
-        assert!(unsafe { q.push(input.ptr(), len) });
+        assert!(q.push(&input.bytes(len)));
 
         let (queue_num, queue_bytes) = q.stat().expect("stat");
         assert_eq!(queue_num, 1);
@@ -346,7 +369,7 @@ mod tests {
             mtype: 0,
             mdata: [0; 8192],
         };
-        assert!(unsafe { q.pop(out.ptr(), out.mdata.len()) } > 1);
+        assert!(out.pop(&q, out.mdata.len()) > 1);
 
         let (queue_num, queue_bytes) = q.stat().expect("stat");
         assert_eq!(queue_num, 0);
@@ -361,10 +384,10 @@ mod tests {
 
         q.set_blocking(false);
 
-        assert_eq!(unsafe { q.pop(out.ptr(), out.mdata.len()) }, -1);
+        assert_eq!(out.pop(&q, out.mdata.len()), -1);
         assert_eq!(log::last_error(), libc::EINVAL);
 
-        assert!(!unsafe { q.push(input.ptr(), len) });
+        assert!(!q.push(&input.bytes(len)));
         assert_eq!(log::last_error(), libc::EINVAL);
 
         assert!(q.stat().is_none());
@@ -387,16 +410,16 @@ mod tests {
             mdata: [0; 8192],
         };
         sent.mdata[..7].copy_from_slice(b"payload");
-        assert!(unsafe { queue.push(sent.ptr(), 8) }, "sent");
+        assert!(queue.push(&sent.bytes(8)), "sent");
         let mut got = QueueNode {
             mtype: 3,
             mdata: [0; 8192],
         };
-        assert_eq!(unsafe { queue.pop(got.ptr(), 8) }, 8, "received");
+        assert_eq!(got.pop(&queue, 8), 8, "received");
         assert_eq!(mdata(&got), b"payload");
-        assert_eq!(unsafe { queue.pop(got.ptr(), 8) }, -1, "ENOMSG");
+        assert_eq!(got.pop(&queue, 8), -1, "ENOMSG");
         assert_eq!(log::last_error(), libc::ENOMSG);
-        assert!(unsafe { queue.push(sent.ptr(), 8) }, "sent again");
+        assert!(queue.push(&sent.bytes(8)), "sent again");
         assert_eq!(queue.stat(), Some((1, 8)), "one 8-byte message queued");
         // Lowering the limit needs no privilege.
         assert!(queue.set_capacity(1024), "capacity");
