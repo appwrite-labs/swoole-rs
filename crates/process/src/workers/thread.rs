@@ -521,7 +521,12 @@ mod tests {
                     ]);
                     run_op(&mut h, RUN_THREAD_BODY, thread_arg(6, TASK_WORKER));
                     let globals = with_globals(|g| {
-                        (g.id.get(), g.kind.get(), g.pid.get(), g.worker.get() as u64)
+                        (
+                            g.id.load(Ordering::Relaxed),
+                            g.kind.load(Ordering::Relaxed),
+                            g.pid.load(Ordering::Relaxed),
+                            g.worker.load(Ordering::Relaxed) as u64,
+                        )
                     });
                     (h, globals)
                 })

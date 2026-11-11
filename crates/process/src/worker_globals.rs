@@ -1,36 +1,44 @@
 //! The current worker's per-thread/process record and lifecycle, owned by Rust.
 use crate::worker_record::WorkerRecord;
-use core::cell::Cell;
 use core::ffi::c_int;
+use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32};
 
 /// The compatibility view of the current worker; pointer fields are native loans,
 /// except `worker_copy`, whose local record allocation is owned here. Each field is
-/// a `Cell`, read and written one at a time, as native code and signal handlers
-/// write single fields of the same record.
+/// an atomic of its C type's layout, read and written one at a time (`Relaxed`,
+/// plain loads and stores), as native code, signal handlers and, without ZTS, the
+/// process's other threads read and write single fields of the same record.
 #[repr(C)]
 pub struct WorkerGlobalRecord {
-    pub id: Cell<u32>,
-    pub kind: Cell<u8>,
-    pub pid: Cell<c_int>,
-    pub shutdown: Cell<bool>,
-    pub running: Cell<bool>,
-    pub max_request: Cell<u32>,
-    pub worker: Cell<*mut WorkerRecord>,
-    worker_copy: Cell<*mut WorkerRecord>,
-    pub exit_time: Cell<libc::time_t>,
+    pub id: AtomicU32,
+    pub kind: AtomicU8,
+    pub pid: AtomicI32,
+    pub shutdown: AtomicBool,
+    pub running: AtomicBool,
+    pub max_request: AtomicU32,
+    pub worker: AtomicPtr<WorkerRecord>,
+    worker_copy: AtomicPtr<WorkerRecord>,
+    pub exit_time: AtomicI64,
 }
+
+const _: () = assert!(
+    size_of::<libc::time_t>() == size_of::<i64>(),
+    "exit_time is a time_t"
+);
+const _: () = assert!(size_of::<c_int>() == size_of::<i32>(), "pid is an int");
 
 const fn init() -> WorkerGlobalRecord {
     WorkerGlobalRecord {
-        id: Cell::new(0),
-        kind: Cell::new(0),
-        pid: Cell::new(0),
-        shutdown: Cell::new(false),
-        running: Cell::new(false),
-        max_request: Cell::new(0),
-        worker: Cell::new(core::ptr::null_mut()),
-        worker_copy: Cell::new(core::ptr::null_mut()),
-        exit_time: Cell::new(0),
+        id: AtomicU32::new(0),
+        kind: AtomicU8::new(0),
+        pid: AtomicI32::new(0),
+        shutdown: AtomicBool::new(false),
+        running: AtomicBool::new(false),
+        max_request: AtomicU32::new(0),
+        worker: AtomicPtr::new(core::ptr::null_mut()),
+        worker_copy: AtomicPtr::new(core::ptr::null_mut()),
+        exit_time: AtomicI64::new(0),
     }
 }
 
@@ -43,15 +51,7 @@ std::thread_local! {
 }
 
 #[cfg(not(any(zts, panic = "unwind")))]
-struct Process(WorkerGlobalRecord);
-
-// SAFETY: as upstream's non-thread-safe `SwooleWG`, one record the process's
-// threads share; callers access single fields, never a whole-record borrow.
-#[cfg(not(any(zts, panic = "unwind")))]
-unsafe impl Sync for Process {}
-
-#[cfg(not(any(zts, panic = "unwind")))]
-static GLOBAL: Process = Process(init());
+static GLOBAL: WorkerGlobalRecord = init();
 
 /// `f` over this thread's record (`SwooleWG`). It has no TLS destructor and stays
 /// available during native thread teardown, as the original POD did.
@@ -59,7 +59,7 @@ pub fn with_globals<R>(f: impl FnOnce(&WorkerGlobalRecord) -> R) -> R {
     #[cfg(any(zts, panic = "unwind"))]
     return GLOBAL.with(f);
     #[cfg(not(any(zts, panic = "unwind")))]
-    f(&GLOBAL.0)
+    f(&GLOBAL)
 }
 
 /// The original native field view for this thread.
@@ -76,24 +76,24 @@ pub extern "C" fn thread_globals() -> *mut WorkerGlobalRecord {
 /// `SwooleWG.worker`: this thread's current worker, or null.
 #[must_use]
 pub fn current_worker() -> *mut WorkerRecord {
-    with_globals(|globals| globals.worker.get())
+    with_globals(|globals| globals.worker.load(Relaxed))
 }
 
 /// `SwooleWG.worker = worker`.
 pub fn set_current_worker(worker: *mut WorkerRecord) {
-    with_globals(|globals| globals.worker.set(worker));
+    with_globals(|globals| globals.worker.store(worker, Relaxed));
 }
 
 /// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.
 #[must_use]
 pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
     with_globals(|globals| match field {
-        0 => i64::from(globals.id.get()),
-        1 => i64::from(globals.pid.get()),
-        2 => i64::from(globals.kind.get()),
-        3 => i64::from(globals.running.get()),
-        4 => i64::from(globals.shutdown.get()),
-        5 => i64::from(globals.max_request.get()),
+        0 => i64::from(globals.id.load(Relaxed)),
+        1 => i64::from(globals.pid.load(Relaxed)),
+        2 => i64::from(globals.kind.load(Relaxed)),
+        3 => i64::from(globals.running.load(Relaxed)),
+        4 => i64::from(globals.shutdown.load(Relaxed)),
+        5 => i64::from(globals.max_request.load(Relaxed)),
         _ => 0,
     })
 }
@@ -102,14 +102,17 @@ pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
 pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
     let low = u32::try_from(value.cast_unsigned() & u64::from(u32::MAX)).unwrap_or_default();
     with_globals(|globals| match field {
-        0 => globals.id.set(low),
-        1 => globals.pid.set(c_int::from_ne_bytes(low.to_ne_bytes())),
-        2 => globals
-            .kind
-            .set(u8::try_from(low & u32::from(u8::MAX)).unwrap_or_default()),
-        3 => globals.running.set(value != 0),
-        4 => globals.shutdown.set(value != 0),
-        5 => globals.max_request.set(low),
+        0 => globals.id.store(low, Relaxed),
+        1 => globals
+            .pid
+            .store(c_int::from_ne_bytes(low.to_ne_bytes()), Relaxed),
+        2 => globals.kind.store(
+            u8::try_from(low & u32::from(u8::MAX)).unwrap_or_default(),
+            Relaxed,
+        ),
+        3 => globals.running.store(value != 0, Relaxed),
+        4 => globals.shutdown.store(value != 0, Relaxed),
+        5 => globals.max_request.store(low, Relaxed),
         _ => {}
     });
 }
@@ -139,19 +142,19 @@ pub unsafe fn worker_global_detach(worker: *mut WorkerRecord) {
     // SAFETY: the native transition lends the initialized worker for this value copy.
     let copy = unsafe { worker.read() };
     let copy = Box::into_raw(Box::new(copy));
-    with_globals(|globals| globals.worker_copy.set(copy));
+    with_globals(|globals| globals.worker_copy.store(copy, Relaxed));
     set_current_worker(worker);
 }
 
 /// Stops the current worker and releases its local detached copy.
 pub fn worker_global_stopped() {
     let copy = with_globals(|globals| {
-        globals.running.set(false);
+        globals.running.store(false, Relaxed);
         // The owning slot is cleared before its allocation is released.
-        let copy = globals.worker_copy.replace(core::ptr::null_mut());
+        let copy = globals.worker_copy.swap(core::ptr::null_mut(), Relaxed);
         if !copy.is_null() {
             // The shared worker is a loan, no longer current once this copy is released.
-            globals.worker.set(core::ptr::null_mut());
+            globals.worker.store(core::ptr::null_mut(), Relaxed);
         }
         copy
     });
@@ -166,7 +169,7 @@ pub fn worker_global_stopped() {
 mod tests {
     use super::*;
     use crate::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    use std::sync::atomic::AtomicUsize;
 
     static RANDOM_CALLS: AtomicUsize = AtomicUsize::new(0);
     extern "C" fn maximum(_: c_int, max: c_int) -> c_int {
@@ -180,7 +183,7 @@ mod tests {
         swr_v1_worker_global_set(2, -1);
         assert_eq!(swr_v1_worker_global_get(2), 255);
         let native_view = thread_globals();
-        unsafe { (*native_view).pid.set(123) };
+        unsafe { (*native_view).pid.store(123, Relaxed) };
         assert_eq!(swr_v1_worker_global_get(1), 123);
         std::thread::spawn(|| {
             assert_eq!(swr_v1_worker_global_get(0), 0);
@@ -212,7 +215,7 @@ mod tests {
             Worker::new(&raw mut worker).add_request_count();
             assert!(Worker::new(&raw const worker).exceeded_max_request());
             worker_global_detach(&raw mut worker);
-            let copy = (*thread_globals()).worker_copy.get();
+            let copy = (*thread_globals()).worker_copy.load(Relaxed);
             assert_ne!(copy, &raw mut worker);
             assert_eq!(Worker::new(copy).id(), 11);
             assert_eq!(Worker::new(copy).pid(), 1234);
@@ -221,8 +224,8 @@ mod tests {
             assert_eq!(swr_v1_worker_global_get(4), 1);
             worker_global_stopped();
             assert_eq!(swr_v1_worker_global_get(3), 0);
-            assert!((*thread_globals()).worker_copy.get().is_null());
-            assert!((*thread_globals()).worker.get().is_null());
+            assert!((*thread_globals()).worker_copy.load(Relaxed).is_null());
+            assert!((*thread_globals()).worker.load(Relaxed).is_null());
         }
     }
 

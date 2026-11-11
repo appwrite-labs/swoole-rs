@@ -172,7 +172,12 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     if task.info.kind != RECV_DATA && !dgram {
         return Ok(false);
     }
-    let (worker, max_request) = with_globals(|g| (g.worker.get(), g.max_request.get()));
+    let (worker, max_request) = with_globals(|g| {
+        (
+            g.worker.load(Ordering::Relaxed),
+            g.max_request.load(Ordering::Relaxed),
+        )
+    });
     if worker.is_null() || max_request != 0 {
         return Ok(false);
     }
@@ -571,14 +576,14 @@ mod tests {
         assert_eq!(packet.info.fd, 9, "unconverted");
 
         // A request limit, or a factory dispatch, takes the bus.
-        with_globals(|g| g.max_request.set(1));
+        with_globals(|g| g.max_request.store(1, Ordering::Relaxed));
         let mut task = send(2, RECV_DATA, 5);
         let mut s = t.script(&[]);
         assert!(dispatch(&mut s, &raw mut task, true).unwrap());
         let mut again = send(2, RECV_DATA, 5);
         assert!(dispatch(&mut s, &raw mut again, false).unwrap());
         assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (0, 2));
-        with_globals(|g| g.max_request.set(0));
+        with_globals(|g| g.max_request.store(0, Ordering::Relaxed));
         set_current_worker(core::ptr::null_mut());
     }
 

@@ -319,7 +319,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             ctx.reactor().fields().wait_exit = true;
             swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
             let now = crate::shared::unix_now();
-            with_globals(|globals| globals.exit_time.set(now));
+            with_globals(|globals| globals.exit_time.store(now, Ordering::Relaxed));
             0
         }
         OP_DRAIN_WORKER_PIPES => {

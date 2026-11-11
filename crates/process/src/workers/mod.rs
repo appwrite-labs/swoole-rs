@@ -164,9 +164,12 @@ fn effect(op: u32) -> Option<u64> {
             0
         }
         ops::OP_HAS_CURRENT_WORKER => u64::from(!crate::worker_globals::current_worker().is_null()),
-        ops::OP_EXIT_TIME => {
-            crate::worker_globals::with_globals(|globals| globals.exit_time.get()).cast_unsigned()
-        }
+        ops::OP_EXIT_TIME => crate::worker_globals::with_globals(|globals| {
+            globals
+                .exit_time
+                .load(core::sync::atomic::Ordering::Relaxed)
+        })
+        .cast_unsigned(),
         ops::OP_WORKER_STOPPED => {
             crate::worker_globals::worker_global_stopped();
             0
