@@ -576,6 +576,7 @@ version = "0.0.0"
 dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
  "swoole-rs-memory",

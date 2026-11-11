@@ -38,6 +38,15 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
+#[cfg(not(test))]
+impl crate::ServerState {
+    /// The server's own `MessageBus`.
+    pub(crate) fn message_bus(&self) -> Bus {
+        // SAFETY: `swr_v1_server_new`'s bus, which lives as long as the server.
+        unsafe { Bus::of(self.tables_ref().message_bus) }
+    }
+}
+
 /// A `MessageBus`: its Rust bus and the allocator of its packets.
 #[derive(Clone, Copy)]
 pub(crate) struct Bus {
@@ -90,6 +99,16 @@ impl Bus {
     /// The whole packet the bus holds.
     pub(crate) fn packet(self) -> BusPacket {
         self.rust().packet()
+    }
+    /// `f` over the bytes of the packet the bus holds, which stay put while it runs.
+    pub(crate) fn with_packet<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let packet = self.packet();
+        if packet.data.is_null() {
+            return f(&[]);
+        }
+        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads again,
+        // which this thread alone would do and not during `f`.
+        f(unsafe { core::slice::from_raw_parts(packet.data.cast_const().cast(), packet.length) })
     }
     pub(crate) fn pop(self) {
         self.rust().pop();

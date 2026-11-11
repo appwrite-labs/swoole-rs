@@ -61,6 +61,12 @@ struct DgramPacket {
     length: u32,
 }
 
+/// The front entry of the context event socket's output buffer, if it has one.
+fn out_front(ctx: &ReactorContext) -> Option<swoole_rs_buffer::TypedFront> {
+    let front = swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front;
+    event_socket(ctx)?.read(|s| crate::reactor_ops::out_buffer(s).map(|b| front(b)))
+}
+
 /// The context's thread.
 fn this<'a>(ctx: &ReactorContext) -> &'a mut ThreadRecord {
     // SAFETY: the ops reading it run with a live reactor thread in the context.
@@ -72,10 +78,21 @@ fn bus_of(thread: &mut ThreadRecord) -> *mut c_void {
     (&raw mut thread.bus).cast()
 }
 
+/// The context's event.
+fn event<'a>(ctx: &ReactorContext) -> &'a swoole_rs_reactor::Event {
+    // SAFETY: the ops reading it run on a live event.
+    unsafe { &*ctx.event }
+}
+
+/// The context's port settings.
+fn port_config<'a>(ctx: &ReactorContext) -> &'a crate::port_config::PortConfig {
+    // SAFETY: the ops reading it run with a live port, whose settings live as long as it.
+    unsafe { crate::port_config::of(ctx.port) }
+}
+
 /// The context event's socket.
 fn event_socket<'a>(ctx: &ReactorContext) -> Option<Socket<'a>> {
-    // SAFETY: the ops reading it run on a live event.
-    socket(unsafe { (*ctx.event).socket_ptr() })
+    socket(event(ctx).socket_ptr())
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
@@ -148,8 +165,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_PACKET_INIT => {
-            // SAFETY: the context's live event.
-            let fd = unsafe { (*ctx.event).fd() };
+            let fd = event(ctx).fd();
             // The event's fd is a listening socket's, whose slot is live.
             let conn = state.connection(fd.into(), 0)?;
             let kind = conn.socket_type;
@@ -234,8 +250,7 @@ pub(crate) unsafe fn answer(
         OP_PC_NOTIFY => {
             let mut head = DataHead {
                 reactor_id: i16::try_from(reactor_id()).unwrap_or_default(),
-                // SAFETY: the context's live event.
-                fd: c_long::from(unsafe { (*ctx.event).fd() }),
+                fd: c_long::from(event(ctx).fd()),
                 kind: EVENT_CLOSE,
                 ..DataHead::default()
             };
@@ -247,8 +262,7 @@ pub(crate) unsafe fn answer(
         OP_CC_COUNT => {
             use core::sync::atomic::Ordering::SeqCst;
             let gs = crate::shared::server_counters(state)?;
-            // SAFETY: the context's live port, whose counters live as long as it.
-            let port = unsafe { crate::port_config::of(ctx.port) }.counters()?;
+            let port = port_config(ctx).counters()?;
             gs.close_count.fetch_add(1, SeqCst);
             port.close_count.fetch_add(1, SeqCst);
             // arg: base mode, which counts connections per reactor
@@ -426,25 +440,19 @@ pub(crate) unsafe fn answer(
         }
         OP_COMMAND_REQUEST => {
             let thread = this(ctx);
-            let (id, pipe) = (
-                u16::try_from(thread.id).unwrap_or_default(),
-                thread.pipe_command,
-            );
-            // SAFETY: the live server, this thread's bus holding the request and its pipe.
-            unsafe {
-                crate::commands::call_command_handler(server, bus_of(thread), id, pipe.cast());
-            };
+            let id = u16::try_from(thread.id).unwrap_or_default();
+            let pipe = socket(thread.pipe_command.cast());
+            crate::commands::call_command_handler(server, thread.message_bus(), id, pipe);
             0
         }
         OP_COMMAND_RESPONSE | OP_PIPE_SEND => {
-            let packet = this(ctx).message_bus().packet();
+            let bus = this(ctx).message_bus();
+            let packet = bus.packet();
             // SAFETY: the bus's buffer, which PIPE_READ stored.
             let mut info = unsafe { *resp };
             if op == OP_COMMAND_RESPONSE {
-                use crate::commands::swr_v1_server_command_result as result;
-                let (data, length) = (packet.data, packet.length);
-                // SAFETY: the live server and the reply's bytes.
-                unsafe { result(state, serv, info.fd, data, length) };
+                let fd = info.fd;
+                bus.with_packet(|reply| crate::commands::command_result(state, fd, reply));
                 return Some(0);
             }
             info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
@@ -469,10 +477,7 @@ pub(crate) unsafe fn answer(
         }
 
         OP_RT_FRONT => {
-            let buffer = event_socket(ctx)?.read(|s| s.output.out_buffer);
-            // SAFETY: the socket's live, non-empty output buffer.
-            let front =
-                swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front(unsafe { &*buffer.cast() });
+            let front = out_front(ctx)?;
             ctx.front = front.data.cast();
             ctx.front_length = front.length as usize;
             0
@@ -537,8 +542,7 @@ pub(crate) unsafe fn answer(
             // The event's socket, which the read may close.
             let sock = event_socket(ctx)?;
             let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
-            // SAFETY: the context's live port.
-            let port_config = unsafe { crate::port_config::of(port) };
+            let port_config = port_config(ctx);
             let on_read = port_config.on_read;
             // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
             let on_read: unsafe extern "C-unwind" fn(
@@ -609,15 +613,6 @@ unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
     unsafe { run(RUN_CLOSE_REACTOR_CONNECTIONS, 0, &mut ctx) };
 }
 
-/// The server's state.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-unsafe fn state_of<'a>(serv: *mut c_void) -> &'a ServerState {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    unsafe { view::Server::from_raw(serv) }.state()
-}
-
 /// What a reactor thread Rust starts runs.
 unsafe extern "C" fn reactor_thread_entry(serv: *mut c_void, id: u64) {
     swoole_rs_corebase::swoole_thread_init(false);
@@ -633,7 +628,7 @@ unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
     // than on the master's signalfd, and its default action kills the master.
     swoole_rs_corebase::signal_block_all();
     // SAFETY: the live server.
-    let state = unsafe { state_of(serv) };
+    let state = unsafe { view::Server::from_raw(serv) }.state();
     let reactors = state.config_ref().reactor_num;
     // upstream sets THREAD_HEARTBEAT, then overwrites the type with this.
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;
@@ -650,7 +645,10 @@ unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
     let fields = handle.fields();
     let mut ctx = ReactorContext::new(fields.ptr, reactor);
     // SAFETY: the reactor's live server.
-    ctx.thread = thread(unsafe { state_of(fields.ptr) }, usize::from(fields.id));
+    ctx.thread = thread(
+        unsafe { view::Server::from_raw(fields.ptr) }.state(),
+        usize::from(fields.id),
+    );
     // SAFETY: as above.
     unsafe { run(RUN_HEARTBEAT_CHECK, 0, &mut ctx) };
 }

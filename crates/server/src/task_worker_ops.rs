@@ -31,7 +31,7 @@ use swoole_rs_process::workers::ops::{
 use swoole_rs_reactor::{Socket, SocketRecord};
 
 use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
-use crate::commands::CommandFn;
+use crate::commands::CommandHandler;
 use crate::event_worker_ops::swr_workers_signal_set;
 use crate::view;
 
@@ -84,7 +84,7 @@ struct Context<'a> {
     buf: *mut DataHead,
     file: c_int,
     /// The command a task runs, and its unpacked message (`PacketPtr`).
-    handler: CommandFn,
+    handler: Option<CommandHandler>,
     packet: (usize, *const c_char),
 }
 
@@ -115,10 +115,7 @@ impl<'a> Context<'a> {
             packed: core::ptr::null_mut(),
             buf: core::ptr::null_mut(),
             file: -1,
-            handler: CommandFn {
-                invoke: core::ptr::null(),
-                ctx: core::ptr::null_mut(),
-            },
+            handler: None,
             packet: (0, core::ptr::null()),
         }
     }

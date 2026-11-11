@@ -8,8 +8,8 @@ use crate::context::{
     Context, Native, swr_v1_context_free, swr_v1_context_swap_in, swr_v1_context_swap_out,
 };
 use crate::{
-    Canceler, Coroutine, Hooks, Scheduler, swr_v1_coroutine_bailout, swr_v1_coroutine_cancel,
-    swr_v1_coroutine_resume, swr_v1_coroutine_yield_cancelable,
+    Canceler, Coroutine, Hooks, Scheduler, swr_v1_coroutine_bailout, swr_v1_coroutine_resume,
+    swr_v1_coroutine_yield_cancelable,
 };
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
@@ -83,6 +83,34 @@ extern "C" fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler {
     scheduler()
 }
 
+/// `Coroutine::count()` on this thread.
+#[must_use]
+pub fn coroutine_count() -> usize {
+    with_scheduler(|s| s.count())
+}
+
+/// `Coroutine::get_by_cid` on this thread: the facade, or null.
+#[must_use]
+pub fn coroutine_get(cid: c_long) -> *mut c_void {
+    with_scheduler(|s| s.get(cid))
+}
+
+/// [`Scheduler::older_native`] on this thread.
+#[must_use]
+pub fn coroutine_older(before: c_long) -> Option<(c_long, *mut c_void)> {
+    with_scheduler(|s| s.older_native(before))
+}
+
+/// [`Scheduler::set_stack_size`] on this thread.
+pub fn set_stack_size(size: usize) {
+    with_scheduler(|s| s.set_stack_size(size));
+}
+
+/// [`Scheduler::set_callback`] on this thread.
+pub fn set_callback(slot: u32, function: crate::SwapCallback) {
+    with_scheduler(|s| s.set_callback(slot, function));
+}
+
 /// `f` over this thread's scheduler.
 pub(crate) fn with_scheduler<R>(f: impl FnOnce(&mut Scheduler) -> R) -> R {
     // SAFETY: this thread's scheduler, live for the thread; the callers' `f`s
@@ -149,7 +177,7 @@ pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
 /// Marks `co` canceled, then calls the caller's canceler, `inner`.
 unsafe extern "C-unwind" fn mark_canceled(co: *mut c_void, inner: *mut c_void) -> bool {
     // SAFETY: the yield that set the canceler is still waiting.
-    unsafe { swr_v1_coroutine_cancel(co.cast()) };
+    unsafe { (*co.cast::<Coroutine>()).mark_canceled() };
     // SAFETY: as above, so its frame (and `inner`) is live.
     let Canceler { call, data } = unsafe { inner.cast::<Canceler>().read() };
     // SAFETY: the caller's cancel function for this yield.

@@ -1,5 +1,19 @@
 //! The C ABI's contracts: errors leave outputs alone, nulls and overflows are refused.
 use super::*;
+use std::mem::MaybeUninit;
+/// `swoole_rs_http::url_encode` into `output`, which holds only bytes.
+fn encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
+    let slots: Vec<_> = output.iter().map(|&byte| MaybeUninit::new(byte)).collect();
+    let mut slots = slots;
+    let result = swoole_rs_http::url_encode(input, &mut slots);
+    // SAFETY: every slot started initialized, and the encoder writes only bytes.
+    let bytes = slots.iter().map(|slot| unsafe { slot.assume_init() });
+    output
+        .iter_mut()
+        .zip(bytes)
+        .for_each(|(to, from)| *to = from);
+    result
+}
 #[test]
 fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
     for length in [0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256, 1024] {
@@ -13,28 +27,10 @@ fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
                 expected.extend_from_slice(b"%2F%2B%25%00%FF");
             }
             expected.push(0);
-            let mut capacity = 0;
-            assert_eq!(
-                unsafe {
-                    swr_v1_http_url_capacity(input.as_ptr(), input.len(), Some(&mut capacity))
-                },
-                0
-            );
+            let capacity = swoole_rs_http::url_capacity(&input).unwrap();
             assert_eq!(capacity, expected.len());
             let mut output = vec![0xa5; capacity + 3];
-            let mut written = 999;
-            assert_eq!(
-                unsafe {
-                    swr_v1_http_url_encode(
-                        input.as_ptr(),
-                        input.len(),
-                        output.as_mut_ptr(),
-                        capacity,
-                        Some(&mut written),
-                    )
-                },
-                0
-            );
+            let written = encode_into(&input, &mut output[..capacity]).unwrap();
             assert_eq!(written + 1, capacity);
             assert_eq!(&output[..capacity], expected);
             assert_eq!(&output[capacity..], &[0xa5; 3]);
@@ -45,83 +41,24 @@ fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
 fn url_roundtrips_all_bytes_and_handles_malformed_escapes() {
     let input: Vec<u8> = (0..=255).collect();
     let mut encoded = vec![0; swoole_rs_http::url_capacity(&input).unwrap()];
-    let mut length = 0;
-    unsafe {
-        assert_eq!(
-            swr_v1_http_url_encode(
-                input.as_ptr(),
-                input.len(),
-                encoded.as_mut_ptr(),
-                encoded.len(),
-                Some(&mut length)
-            ),
-            0
-        );
-        assert_eq!(
-            swr_v1_http_url_decode(encoded.as_mut_ptr(), length, Some(&mut length)),
-            0
-        );
-    }
+    let length = encode_into(&input, &mut encoded).unwrap();
+    let length = swoole_rs_http::url_decode(&mut encoded[..length]);
     assert_eq!(&encoded[..length], input);
-    assert_eq!(encoded[length], 0);
-    let mut malformed = b"%+%0%GG%a0+%00!\0".to_vec();
-    unsafe {
-        assert_eq!(
-            swr_v1_http_url_decode(
-                malformed.as_mut_ptr(),
-                malformed.len() - 1,
-                Some(&mut length)
-            ),
-            0
-        );
-    }
+    let mut malformed = b"%+%0%GG%a0+%00!".to_vec();
+    let length = swoole_rs_http::url_decode(&mut malformed);
     assert_eq!(&malformed[..length], b"% %0%GG\xa0 \0!");
 }
 #[test]
 fn errors_are_atomic_and_empty_encoding_has_terminator_storage() {
     let mut output = [99; 4];
-    let mut length = 7;
-    unsafe {
-        assert_eq!(
-            swr_v1_http_url_encode(b"!!".as_ptr(), 2, output.as_mut_ptr(), 4, Some(&mut length)),
-            INVALID
-        );
-        assert_eq!(output, [99; 4]);
-        assert_eq!(length, 0);
-        assert_eq!(
-            swr_v1_http_url_capacity(std::ptr::null(), 0, Some(&mut length)),
-            0
-        );
-        assert_eq!(length, 1);
-        assert_eq!(
-            swr_v1_http_url_encode(
-                std::ptr::null(),
-                0,
-                output.as_mut_ptr(),
-                1,
-                Some(&mut length)
-            ),
-            0
-        );
-        assert_eq!(output[0], 0);
-    }
+    assert_eq!(encode_into(b"!!", &mut output), Err(INVALID));
+    assert_eq!(output, [99; 4]);
+    assert_eq!(swoole_rs_http::url_capacity(&[]), Ok(1));
+    assert_eq!(encode_into(&[], &mut output[..1]), Ok(0));
+    assert_eq!(output[0], 0);
 }
 #[test]
-fn ffi_rejects_overflow_before_access_and_extreme_method_ids_do_not_panic() {
-    let mut written = 9;
-    unsafe {
-        assert_eq!(
-            swr_v1_http_url_capacity(std::ptr::null(), usize::MAX, Some(&mut written)),
-            OVERFLOW
-        );
-        assert_eq!(written, 0);
-        assert_eq!(
-            swr_v1_http_url_decode(std::ptr::null_mut(), usize::MAX, Some(&mut written)),
-            OVERFLOW
-        );
-        assert_eq!(written, 0);
-        assert_eq!(swr_v1_http_url_capacity(std::ptr::null(), 0, None), INVALID);
-    }
+fn extreme_method_ids_do_not_panic() {
     assert!(swr_v1_http_method_string(i32::MIN).is_null());
     assert!(swr_v1_http_method_string(i32::MAX).is_null());
 }
