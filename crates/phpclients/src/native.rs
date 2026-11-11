@@ -451,8 +451,7 @@ impl Co {
 
     /// `getpeername(&sa)`: the peer's address text and port.
     pub(crate) fn getpeername(self) -> Option<(CString, c_int)> {
-        // SAFETY: an all-zero address is valid.
-        let mut sa: SocketAddress = unsafe { std::mem::zeroed() };
+        let mut sa: SocketAddress = SocketAddress::zeroed();
         // SAFETY: a live socket.
         if !unsafe { co::getpeername(self.0, &mut sa) } {
             return None;

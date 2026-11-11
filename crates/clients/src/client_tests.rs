@@ -55,11 +55,11 @@ pub(super) mod ops {
         socket
     }
 
-    pub(in super::super) fn kernel_timeout(_: &ClientRecord, timeout: f64) {
+    pub(in super::super) fn kernel_timeout(_: Handle, timeout: f64) {
         log(format!("kernel {timeout}"));
     }
     pub(in super::super) fn assign(
-        _: &mut ClientRecord,
+        _: Handle,
         host: *const c_char,
         port: c_int,
         resolve: bool,
@@ -75,7 +75,7 @@ pub(super) mod ops {
         }
         true
     }
-    pub(in super::super) fn connect(_: &ClientRecord, mode: c_int) -> c_int {
+    pub(in super::super) fn connect(_: Handle, mode: c_int) -> c_int {
         log(format!("connect {mode}"));
         let ret = mock(|m| m.connect.pop()).unwrap_or(0);
         if ret < 0 {
@@ -83,11 +83,11 @@ pub(super) mod ops {
         }
         ret
     }
-    pub(in super::super) fn event(_: &ClientRecord, op: c_int, events: c_int) -> c_int {
+    pub(in super::super) fn event(_: Handle, op: c_int, events: c_int) -> c_int {
         log(format!("event {op} {events}"));
         OK
     }
-    pub(in super::super) fn socket_error(_: &ClientRecord, error: &mut c_int) -> c_int {
+    pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> c_int {
         *error = mock(|m| m.socket_error);
         OK
     }

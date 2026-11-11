@@ -20,6 +20,16 @@ pub struct SocketAddress {
     pub kind: c_int,
 }
 
+impl SocketAddress {
+    /// An empty address: zeroed storage, length and type.
+    #[must_use]
+    pub const fn zeroed() -> Self {
+        // SAFETY: every member of the storage is a C sockaddr of integers and byte
+        // arrays, and the length and type are integers: all valid zeroed.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
 /// `swoole::Protocol`, whole (`split_by_eof` is a C++ `bool`).
 #[repr(C)]
 #[derive(Clone, Copy)]

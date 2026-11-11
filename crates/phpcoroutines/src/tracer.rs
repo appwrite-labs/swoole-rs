@@ -290,7 +290,7 @@ impl Leaks {
     }
 }
 
-unsafe extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
+extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
         LEAKS.with(|leaks| {
             let mut leaks = leaks.borrow_mut();
@@ -300,7 +300,7 @@ unsafe extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
     }
 }
 
-unsafe extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: usize) {
+extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
         LEAKS.with(|leaks| {
             let mut leaks = leaks.borrow_mut();
@@ -310,7 +310,7 @@ unsafe extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: us
     }
 }
 
-unsafe extern "C" fn on_free(ptr: *mut c_void) {
+extern "C" fn on_free(ptr: *mut c_void) {
     LEAKS.with(|leaks| {
         // Busy only while this module's own bookkeeping frees: not a user block.
         if let Ok(mut leaks) = leaks.try_borrow_mut() {
@@ -578,8 +578,11 @@ impl Func<'_> {
         let common = unsafe { &*common };
         let span = if common.type_ == INTERNAL_FUNCTION {
             let internal = func.cast::<z::zend_internal_function>();
-            // SAFETY: an internal function; only the address is taken.
-            unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+            // An internal function's reserved slot; only the address is taken.
+            internal
+                .wrapping_byte_add(mem::offset_of!(z::zend_internal_function, reserved))
+                .cast::<*mut c_void>()
+                .wrapping_add(SPAN_SLOT)
         } else {
             ptr::null_mut()
         };

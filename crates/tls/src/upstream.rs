@@ -1474,8 +1474,7 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
 /// `socket` is a live record and `host` NUL-terminated.
 unsafe fn bind_host(socket: Socket<'_>, host: *const c_char, port: c_int) -> c_int {
     let kind = socket.read(|record| record.socket_type);
-    // SAFETY: an all-zero address is a valid, empty one.
-    let mut address: SocketAddress = unsafe { std::mem::zeroed() };
+    let mut address: SocketAddress = SocketAddress::zeroed();
     // SAFETY: as the caller promises.
     let text = unsafe { CStr::from_ptr(host) }.to_bytes();
     let (storage, length) = (&mut address.addr, &mut address.len);

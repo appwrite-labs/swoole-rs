@@ -1142,8 +1142,7 @@ fn getpeername(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    // SAFETY: plain old data, which the call below writes.
-    let mut address: SocketAddress = unsafe { std::mem::zeroed() };
+    let mut address: SocketAddress = SocketAddress::zeroed();
     // SAFETY: a live client; a writable local.
     if unsafe { state::swr_v1_clients_get_peer_name(conn.cli.0, &raw mut address) } < 0 {
         let error = errno();
