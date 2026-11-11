@@ -2016,11 +2016,14 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
         return this.socks5_send(length) as c_int;
     }
     if this.proxy_state(Proxy::Http) == HTTP_PROXY_WAIT {
+        // A copy: the async send may raise `onBufferFull`, whose callback may
+        // reuse the shared buffer the request was packed into.
+        let request = this.http_pack().to_vec();
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream returns the send result as an int"
         )]
-        return send(this, this.http_pack(), 0) as c_int;
+        return send(this, &request, 0) as c_int;
     }
     if this.flag(OPEN_SSL) {
         if ssl_handshake(this) < 0 {
