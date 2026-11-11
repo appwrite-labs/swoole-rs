@@ -16,6 +16,10 @@ use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_memory::members::pool as mem_pool;
+use swoole_rs_process::methods as pm;
+use swoole_rs_process::worker_record::{
+    Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
+};
 
 use super::timer::{TimerNode, after, swoole_timer_del, swoole_timer_free, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
@@ -241,78 +245,10 @@ unsafe extern "C" {
     #[link_name = "_Z18swoole_timer_clearl"]
     fn swoole_timer_clear(timer_id: c_long) -> bool;
 
-    #[link_name = "_ZN6swoole11ProcessPool6createEji9swIPCMode"]
-    fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int;
-    #[link_name = "_ZNK6swoole11ProcessPool6listenEPKcii"]
-    fn pool_listen_host(
-        pool: *const Pool,
-        host: *const c_char,
-        port: c_int,
-        backlog: c_int,
-    ) -> c_int;
-    #[link_name = "_ZNK6swoole11ProcessPool6listenEPKci"]
-    fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_int) -> c_int;
-    #[link_name = "_ZN6swoole11ProcessPool12set_protocolENS_12ProtocolTypeE"]
-    fn pool_set_protocol(pool: *mut Pool, protocol: c_int);
-    #[link_name = "_ZN6swoole11ProcessPool13dispatch_syncEPNS_9EventDataEPi"]
-    fn pool_dispatch_sync(pool: *mut Pool, data: *mut EventData, worker_id: *mut c_int) -> c_int;
-    #[link_name = "_ZN6swoole11ProcessPool5startEv"]
-    fn pool_start(pool: *mut Pool) -> c_int;
-    #[link_name = "_ZN6swoole11ProcessPool4waitEv"]
-    fn pool_wait(pool: *mut Pool) -> c_int;
-    #[link_name = "_ZN6swoole11ProcessPool7destroyEv"]
-    fn pool_destroy(pool: *mut Pool);
-    #[link_name = "_ZN6swoole11ProcessPool8shutdownEv"]
-    fn pool_shutdown(pool: *mut Pool) -> bool;
-    #[link_name = "_ZN6swoole11ProcessPool6reloadEv"]
-    fn pool_reload(pool: *mut Pool) -> bool;
-    #[link_name = "_ZN6swoole11ProcessPool6detachEv"]
-    fn pool_detach(pool: *mut Pool) -> bool;
-    #[link_name = "_ZN6swoole11ProcessPool13reopen_loggerEv"]
-    fn pool_reopen_logger(pool: *mut Pool);
-    #[link_name = "_ZN6swoole11ProcessPool4stopEPNS_6WorkerE"]
-    fn pool_stop(pool: *mut Pool, worker: *mut Worker);
-    #[link_name = "_ZN6swoole11ProcessPool18create_message_busEv"]
-    fn pool_create_message_bus(pool: *mut Pool) -> c_int;
-    #[link_name = "_ZNK6swoole11ProcessPool12push_messageEhPKvm"]
-    fn pool_push_message(pool: *const Pool, kind: u8, data: *const c_void, length: usize) -> c_int;
-    #[link_name = "_ZNK6swoole11ProcessPool12send_messageEjPKcm"]
-    fn pool_send_message(
-        pool: *const Pool,
-        worker_id: u32,
-        message: *const c_char,
-        len: usize,
-    ) -> bool;
-    #[link_name = "_ZNK6swoole11ProcessPool8responseEPKcj"]
-    fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> c_int;
-    #[link_name = "_ZNK6swoole11ProcessPool10add_workerEPNS_6WorkerE"]
-    fn pool_add_worker(pool: *const Pool, worker: *mut Worker);
-    #[link_name = "_ZNK6swoole11ProcessPool10del_workerEPKNS_6WorkerE"]
-    fn pool_del_worker(pool: *const Pool, worker: *const Worker) -> bool;
-    #[link_name = "_ZNK6swoole11ProcessPool17get_worker_by_pidEi"]
-    fn pool_get_worker_by_pid(pool: *const Pool, pid: c_int) -> *mut Worker;
     // The raw-bytes dispatch_sync overload and the stream listener (crates/process).
     fn swr_v1_process_pool_ipc_send_sync(ipc: *const c_void, data: *const u8, len: u32) -> bool;
     fn swr_v1_process_pool_ipc_listener(ipc: *const c_void) -> *mut c_void;
-
-    #[link_name = "_ZN6swoole6Worker4initEv"]
-    fn worker_init(worker: *mut Worker);
-    #[link_name = "_ZNK6swoole6Worker17send_pipe_messageEPKvmi"]
-    fn worker_send_pipe_message(
-        worker: *const Worker,
-        data: *const u8,
-        n: usize,
-        flags: c_int,
-    ) -> isize;
     fn swr_v1_os_msg_queue_push(queue: *const c_void, node: *const c_void, length: usize) -> bool;
-    #[link_name = "_ZN6swoole6Worker10is_runningEv"]
-    fn worker_is_running() -> bool;
-    #[link_name = "_ZN6swoole6Worker15set_max_requestEjj"]
-    fn worker_set_max_request(worker: *mut Worker, max_request: u32, grace: u32);
-    #[link_name = "_ZN6swoole6Worker8shutdownEv"]
-    fn worker_shutdown(worker: *mut Worker);
-    #[link_name = "_ZN6swoole6Worker11is_shutdownEv"]
-    fn worker_is_shutdown(worker: *mut Worker) -> bool;
     #[link_name = "_Z22swoole_set_worker_typei"]
     fn swoole_set_worker_type(kind: c_int);
     #[link_name = "_Z24swoole_get_worker_symbolv"]
@@ -353,6 +289,151 @@ unsafe extern "C" {
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_random_stringPcm"]
     fn swoole_random_string(buf: *mut c_char, size: usize);
+}
+
+// The `ProcessPool` and `Worker` methods: crates/process's Rust functions over the mirrors,
+// whose layout the fixture checks against the records'.
+unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::create(pool.cast(), worker_num, key, ipc_mode) }
+}
+
+unsafe fn pool_listen_host(
+    pool: *const Pool,
+    host: *const c_char,
+    port: c_int,
+    backlog: c_int,
+) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::listen_tcp(pool.cast(), host, port, backlog) }
+}
+
+unsafe fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_int) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::listen_unix(pool.cast(), file, backlog) }
+}
+
+unsafe fn pool_set_protocol(pool: *mut Pool, protocol: c_int) {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::set_protocol(pool.cast(), protocol) }
+}
+
+unsafe fn pool_dispatch_sync(
+    pool: *mut Pool,
+    data: *mut EventData,
+    worker_id: *mut c_int,
+) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::dispatch(pool.cast(), data.cast(), worker_id, true) }
+}
+
+unsafe fn pool_start(pool: *mut Pool) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::start(pool.cast()) }
+}
+
+unsafe fn pool_wait(pool: *mut Pool) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::wait(pool.cast()) }
+}
+
+unsafe fn pool_destroy(pool: *mut Pool) {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::destroy(pool.cast()) }
+}
+
+unsafe fn pool_shutdown(pool: *mut Pool) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::shutdown(pool.cast()) }
+}
+
+unsafe fn pool_reload(pool: *mut Pool) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::reload(pool.cast()) }
+}
+
+unsafe fn pool_detach(pool: *mut Pool) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::detach(pool.cast()) }
+}
+
+unsafe fn pool_reopen_logger(pool: *mut Pool) {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::reopen_logger(pool.cast()) }
+}
+
+unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::stop(pool.cast(), worker.cast()) }
+}
+
+unsafe fn pool_create_message_bus(pool: *mut Pool) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::create_message_bus(pool.cast()) }
+}
+
+unsafe fn pool_push_message(
+    pool: *const Pool,
+    kind: u8,
+    data: *const c_void,
+    length: usize,
+) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::push_message(pool.cast_mut().cast(), kind, data.cast(), length) }
+}
+
+unsafe fn pool_send_message(
+    pool: *const Pool,
+    worker_id: u32,
+    message: *const c_char,
+    len: usize,
+) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::send_message(pool.cast(), worker_id, message, len) }
+}
+
+unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::response(pool.cast(), data.cast(), length) }
+}
+
+unsafe fn pool_add_worker(pool: *const Pool, worker: *mut Worker) {
+    // SAFETY: as the caller guarantees: a live pool and worker.
+    pm::add_worker(unsafe { &*pool.cast() }, unsafe {
+        WorkerHandle::new(worker.cast())
+    });
+}
+
+unsafe fn pool_del_worker(pool: *const Pool, worker: *const Worker) -> bool {
+    // SAFETY: as the caller guarantees: a live pool and worker.
+    pm::del_worker(unsafe { &*pool.cast() }, unsafe {
+        WorkerHandle::new(worker.cast())
+    })
+}
+
+unsafe fn pool_get_worker_by_pid(pool: *const Pool, pid: c_int) -> *mut Worker {
+    // SAFETY: as the caller guarantees: a live pool.
+    pm::get_worker_by_pid(unsafe { &*pool.cast() }, pid).cast()
+}
+
+unsafe fn worker_init(worker: *mut Worker) {
+    // SAFETY: as the caller guarantees: a live worker.
+    swr_v1_worker_init(unsafe { WorkerHandle::new(worker.cast()) });
+}
+
+unsafe fn worker_send_pipe_message(
+    worker: *const Worker,
+    data: *const u8,
+    n: usize,
+    flags: c_int,
+) -> isize {
+    // SAFETY: as the caller guarantees.
+    unsafe { pm::send_pipe_message(worker.cast(), data, n, flags) }
+}
+
+unsafe fn worker_shutdown(worker: *mut Worker) {
+    // SAFETY: as the caller guarantees: a live worker.
+    swr_v1_worker_shutdown(unsafe { WorkerHandle::new(worker.cast()) });
 }
 
 static CURRENT_POOL: AtomicPtr<Pool> = AtomicPtr::new(null_mut());
@@ -1686,11 +1767,9 @@ fn worker() {
     // SAFETY: a zeroed record.
     unsafe { worker_init(&raw mut *worker) };
 
-    // SAFETY: the worker globals.
-    assert!(unsafe { worker_is_running() });
+    assert!(pm::worker_is_running());
     assert!(worker.start_time > 0);
-    // SAFETY: the record.
-    unsafe { worker_set_max_request(&raw mut *worker, 1000, 200) };
+    pm::worker_set_max_request(1000, 200);
 
     // SAFETY: SwooleWG.
     let max_request = unsafe { swr_case_worker_max_request() };
@@ -1699,8 +1778,7 @@ fn worker() {
 
     // SAFETY: the record.
     unsafe { worker_shutdown(&raw mut *worker) };
-    // SAFETY: the record.
-    assert!(unsafe { worker_is_shutdown(&raw mut *worker) });
+    assert!(pm::worker_is_shutdown());
 
     assert_eq!(set_worker_type(SW_USER_WORKER), b'@');
     assert_eq!(set_worker_type(SW_TASK_WORKER), b'^');
@@ -1750,8 +1828,7 @@ extern "C" fn child_exit_on_worker_start(_: *mut Pool, worker: *mut Worker) {
     unsafe { swoole_signal_set(SIGTERM, shutdown_current_worker, false) };
     // SAFETY: the worker's record.
     counter_incr(unsafe { (*worker).id } as usize);
-    // SAFETY: as above.
-    while !unsafe { worker_is_shutdown(worker) } {
+    while !pm::worker_is_shutdown() {
         ms_sleep(1000);
     }
 }
