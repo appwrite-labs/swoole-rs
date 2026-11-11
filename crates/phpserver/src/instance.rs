@@ -137,8 +137,7 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &mut zval, req: &
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
         .then(|| serv.by_session(req.info.fd))
         .flatten()
-        // SAFETY: the connection's live socket.
-        .map(|conn| unsafe { view::recv_buffer(conn) })
+        .map(|conn| view::recv_buffer(conn))
         .filter(|buffer| !buffer.is_null())
     {
         let size = serv.config().recv_buffer_size;

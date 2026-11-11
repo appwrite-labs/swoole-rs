@@ -197,8 +197,7 @@ impl Objects<'_> {
         unsafe { Socket::from_ptr(self.ctx.sock.cast()) }
     }
     fn conn_socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: a live connection's socket, which the ops reading it have.
-        unsafe { Socket::from_ptr(self.conn().socket.cast()) }
+        self.conn().socket()
     }
     /// `edit` over the context's socket, or the default without one.
     fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {

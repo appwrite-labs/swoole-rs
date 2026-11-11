@@ -211,8 +211,8 @@ impl<'c> Objects<'_, 'c> {
         self.ctx.connection()
     }
     fn conn_socket(&self) -> Option<Socket<'c>> {
-        // SAFETY: a live connection's socket, null or live while it is.
-        unsafe { Socket::from_ptr(self.conn()?.socket.cast()) }
+        let conn: &'c ConnectionRecord = self.conn()?;
+        conn.socket()
     }
     fn sock(&self) -> Option<Socket<'c>> {
         self.ctx.sock
@@ -444,9 +444,8 @@ pub(crate) fn valid(conn: Option<&ConnectionRecord>) -> bool {
     let Some(conn) = conn.filter(|conn| conn.active != 0) else {
         return false;
     };
-    // SAFETY: an active connection's socket is null or live.
-    let socket = unsafe { Socket::from_ptr(conn.socket.cast()) };
-    socket.is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
+    conn.socket()
+        .is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
 }
 
 fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Arguments<'_>) {
