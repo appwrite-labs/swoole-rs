@@ -436,7 +436,8 @@ def main():
     if args.print is not None:
         print(source(generate(args.seed, args.print)), end='')
         return 0
-    if 'ASAN_OPTIONS' in os.environ:
+    sanitized = 'ASAN_OPTIONS' in os.environ
+    if sanitized:
         # A sanitizer stop (an error, or a report it can't write) ends an engine with
         # SIGABRT, a crash, rather than its exit status 1, which reads as output.
         os.environ['ASAN_OPTIONS'] += ':abort_on_error=1'
@@ -465,8 +466,9 @@ def main():
     for row in report['findings']:
         print(f"{row['verdict']}: {row.get('case') or f'seed {args.seed} program {row['program']}'}", file=sys.stderr)
     print(json.dumps(counts))
-    return 1 if counts['divergent'] or any('case' in row and row['verdict'] not in ('same', 'control-crash')
-                                           for row in rows) else 0
+    # Under a sanitizer a case's control may stop where the uninstrumented run checks it.
+    passing = ('same', 'control-crash') if sanitized else ('same',)
+    return 1 if counts['divergent'] or any('case' in row and row['verdict'] not in passing for row in rows) else 0
 
 
 if __name__ == '__main__':
