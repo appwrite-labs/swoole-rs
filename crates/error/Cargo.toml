@@ -10,7 +10,3 @@ crate-type = ["rlib"]
 
 [lints]
 workspace = true
-
-[features]
-# swoole_strerror and swoole_is_ignored_error under their upstream C++ symbols (crates/ffi enables it).
-upstream-symbols = []

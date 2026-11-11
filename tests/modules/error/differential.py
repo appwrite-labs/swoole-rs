@@ -107,14 +107,18 @@ extern char sw_error[1024];
             report['published_archive'] = str(archive)
             assert archive.is_file(), f'Missing published archive: {archive}'
             if args.allocator_faults:
-                rust = ROOT / 'crates/error/src/lib.rs'
+                rust = ROOT / 'crates/error-ffi/src/lib.rs'
                 wrapper = (ROOT / 'tests/modules/error/allocator.rs').read_text()
                 wrapper = wrapper.replace('/* ERROR_MODULE */', f'#[path = {json.dumps(str(rust))}] mod error;')
                 (work / 'allocator.rs').write_text(wrapper)
+                optimized = ['--edition=2024', '-C', 'opt-level=3', '-C', 'panic=abort']
+                safe = work / 'libswoole_rs_error.rlib'
+                run(['rustc', *optimized, '--crate-name', 'swoole_rs_error', '--crate-type', 'rlib',
+                     ROOT / 'crates/error/src/lib.rs', '-o', safe])
                 archive = work / 'liberror.a'
-                run(['rustc', '--edition=2024', '--crate-name', 'swoole_rs_error', '--crate-type', 'staticlib',
-                     '--cfg', 'feature="upstream-symbols"',
-                     '-C', 'opt-level=3', '-C', 'panic=abort', work / 'allocator.rs', '-o', archive])
+                run(['rustc', *optimized, '--crate-name', 'swoole_rs_error_ffi', '--crate-type', 'staticlib',
+                     '--cfg', 'feature="upstream-symbols"', '--extern', f'swoole_rs_error={safe}',
+                     work / 'allocator.rs', '-o', archive])
             rename = ['swoole_strerror', 'swoole_throw_error', 'swoole_ignore_error',
                       'swoole_is_ignored_error', 'swoole_clear_last_error_msg', 'swoole_get_last_error_msg']
             common = ['-std=c++17', '-O2']

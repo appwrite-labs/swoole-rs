@@ -16,6 +16,7 @@ on:
       - crates/coroutine/**
       - crates/crc32/**
       - crates/error/**
+      - crates/error-ffi/**
       - crates/framing/**
       - crates/http2/**
       - crates/httpbindings/**
@@ -50,7 +51,7 @@ jobs:
       - name: Miri leaf crates
         run: >
           cargo +$TOOLCHAIN miri test --locked --lib
-          -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-framing
+          -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-error-ffi -p swoole-rs-framing
           -p swoole-rs-http2 -p swoole-rs-httpbindings
       # The runtime crates' tests open files and read the clock (isolation off), and
       # assert on whole reads and writes that Miri would otherwise shorten at random.

@@ -5,7 +5,10 @@ usize_is_size_t = true
 no_includes = true
 sys_includes = ["stdint.h"]
 documentation = false
-autogen_warning = "/* Generated from crates/error by cbindgen (tools/headers.sh); do not edit. */"
+autogen_warning = "/* Generated from crates/error-ffi by cbindgen (tools/headers.sh); do not edit. */"
+[parse]
+parse_deps = true
+include = ["swoole-rs-error"]
 [export]
 include = ["ErrorCode"]
 [export.rename]

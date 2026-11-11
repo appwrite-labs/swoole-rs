@@ -367,6 +367,7 @@
       ],
       "owned_paths": [
         "crates/error/",
+        "crates/error-ffi/",
         "native/error/",
         "tests/modules/error/"
       ],

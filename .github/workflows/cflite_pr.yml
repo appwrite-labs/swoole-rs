@@ -11,6 +11,7 @@ on:
       - 'crates/coroutine/**'
       - 'crates/crc32/**'
       - 'crates/error/**'
+      - 'crates/error-ffi/**'
       - 'crates/framing/**'
       - 'crates/http-ffi/**'
       - 'crates/http/**'
