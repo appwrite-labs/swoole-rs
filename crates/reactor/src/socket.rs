@@ -12,7 +12,10 @@ use std::{ffi::c_int, marker::PhantomData, ptr::NonNull};
 /// their closure. Reads share a record, from any thread; an edit has it alone. A read
 /// or edit that would overlap another thread's waits for it to end; one that overlaps
 /// a borrow still held after a second, as a nested one on its own thread is, panics.
+/// Transparent over the record's address, so an export can take one for a C++
+/// `Socket *` (`this` included) that is live for the call.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Socket<'a> {
     record: NonNull<SocketRecord>,
     _live: PhantomData<(&'a mut SocketRecord, *mut ())>,

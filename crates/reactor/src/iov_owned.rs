@@ -69,15 +69,11 @@ impl ReactorIov {
     }
 }
 
-/// Release an opaque cursor and both spans; payload bytes stay borrowed.
-/// # Safety
-/// `owner` is the unique live cursor returned by prepare, or null.
+/// Release an opaque cursor (prepare's, or null) and both spans; payload bytes stay
+/// borrowed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_destroy(owner: *mut ReactorIov) {
-    if !owner.is_null() {
-        // SAFETY: `owned_new`'s box, exclusively owned and released once.
-        drop(unsafe { Box::from_raw(owner) });
-    }
+pub extern "C" fn swr_v1_reactor_iov_destroy(owner: Option<Box<ReactorIov>>) {
+    drop(owner);
 }
 
 /// An opaque cursor in one allocation with its descriptors, and its field slots.
@@ -134,13 +130,12 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: &ReactorIov) -> usize 
     owned_length(unsafe { span(fields.original, fields.count) })
 }
 
-/// Advance owned descriptors and counters together.
-/// # Safety
-/// `owner` is live/exclusive and `n` is in the original defined progress domain.
+/// Advance owned descriptors and counters together; nothing for a null cursor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_advance(owner: *mut ReactorIov, n: isize) {
-    // SAFETY: live exclusive cursor per the contract.
-    unsafe { &mut *owner }.advance(n);
+pub extern "C" fn swr_v1_reactor_iov_advance(owner: Option<&mut ReactorIov>, n: isize) {
+    if let Some(owner) = owner {
+        owner.advance(n);
+    }
 }
 
 /// Read/write through an owned `IOVector` without copying state through C++.
@@ -237,7 +232,7 @@ mod tests {
                 assert_eq!(initial.offset_bytes, 0);
                 assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
                 if count > 0 {
-                    swr_v1_reactor_iov_advance(owner, 1);
+                    swr_v1_reactor_iov_advance(owner.as_mut(), 1);
                     let next = swr_v1_reactor_iov_view(&*owner);
                     assert_eq!(next.remain_count, count as i32 - 1);
                     assert_eq!(next.index, 1);
@@ -246,7 +241,7 @@ mod tests {
                     assert_eq!(source[0].iov_len, 1);
                     assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
                 }
-                swr_v1_reactor_iov_destroy(owner);
+                swr_v1_reactor_iov_destroy(Some(Box::from_raw(owner)));
             }
         }
     }
@@ -278,7 +273,7 @@ mod tests {
                 assert_eq!(reply.index, 1);
                 assert_eq!(reply.action, if count == 1 { 2 } else { 1 });
                 assert_eq!(owned_length(span(original, count as i32)), count);
-                swr_v1_reactor_iov_destroy(owner);
+                swr_v1_reactor_iov_destroy(Some(Box::from_raw(owner)));
             }
         }
         // Normal positive partial consumption mutates only the iterator span;
@@ -312,7 +307,7 @@ mod tests {
             );
             assert_eq!((*iterator).iov_len, 5);
             assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
-            swr_v1_reactor_iov_destroy(owner);
+            swr_v1_reactor_iov_destroy(Some(Box::from_raw(owner)));
         }
     }
 
@@ -380,7 +375,7 @@ mod tests {
     }
     impl Drop for IoVector {
         fn drop(&mut self) {
-            unsafe { swr_v1_reactor_iov_destroy(self.owner) };
+            swr_v1_reactor_iov_destroy(Some(unsafe { Box::from_raw(self.owner) }));
         }
     }
     fn same(a: libc::iovec, b: libc::iovec) -> bool {

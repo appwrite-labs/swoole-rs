@@ -324,17 +324,36 @@ fn snapshot() {
     });
     let mut count = 0;
     // SAFETY: the live queue, no slots and a count.
-    let sized =
-        unsafe { swr_v1_timer_ids(Some(&q.q.borrow()), ptr::null_mut(), 0, &raw mut count) };
+    let sized = unsafe {
+        swr_v1_timer_ids(
+            Some(&q.q.borrow()),
+            ptr::null_mut(),
+            0,
+            Some(out(&mut count)),
+        )
+    };
     assert!(sized == CAPACITY && count == 2);
     let mut guard = [-77_i64, -88];
     // SAFETY: as above, and one writable slot.
-    let short =
-        unsafe { swr_v1_timer_ids(Some(&q.q.borrow()), guard.as_mut_ptr(), 1, &raw mut count) };
+    let short = unsafe {
+        swr_v1_timer_ids(
+            Some(&q.q.borrow()),
+            guard.as_mut_ptr(),
+            1,
+            Some(out(&mut count)),
+        )
+    };
     assert!(short == CAPACITY && guard == [-77, -88]);
     // SAFETY: as above, and two writable slots.
     assert_eq!(
-        unsafe { swr_v1_timer_ids(Some(&q.q.borrow()), guard.as_mut_ptr(), 2, &raw mut count) },
+        unsafe {
+            swr_v1_timer_ids(
+                Some(&q.q.borrow()),
+                guard.as_mut_ptr(),
+                2,
+                Some(out(&mut count)),
+            )
+        },
         OK
     );
     guard.sort_unstable();

@@ -8,15 +8,6 @@ use crate::socket_upstream::swr_v1_reactor_log;
 use crate::{ReactorPrepared, SocketRecord};
 use std::ffi::{c_int, c_void};
 
-/// The prepared state a `Reactor` begins with.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
-#[must_use]
-pub unsafe fn prepared(reactor: *const c_void) -> ReactorPrepared {
-    ReactorPrepared::of(reactor)
-}
-
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
 /// when none is set.
 ///
@@ -105,20 +96,17 @@ pub unsafe extern "C" fn reactor_set_handler(
 }
 
 /// `bool Reactor::isset_handler(int fd_type, int event) const`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor13isset_handlerEii")
 )]
 #[must_use]
-pub unsafe extern "C" fn reactor_isset_handler(
-    reactor: *const c_void,
+pub extern "C" fn reactor_isset_handler(
+    reactor: crate::Running<'_>,
     fd_type: c_int,
     event: c_int,
 ) -> bool {
-    let handlers = ReactorPrepared::of(reactor).handlers;
-    // SAFETY: the reactor's live handler tables.
+    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
+    // SAFETY: the handle's live handler tables, which no reference holds.
     unsafe { &*handlers }.isset(fd_type, event)
 }

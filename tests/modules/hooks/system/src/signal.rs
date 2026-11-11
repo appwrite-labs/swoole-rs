@@ -65,8 +65,7 @@ fn clear() {
 }
 
 fn callback(signo: c_int) {
-    // SAFETY: on the main thread, where the handlers may run.
-    unsafe { swoole_signal_callback(signo) };
+    swoole_signal_callback(signo);
 }
 
 /// `swoole::test::spawn_exec_and_wait`: the child's wait status, or -1.

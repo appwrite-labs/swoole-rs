@@ -7,7 +7,8 @@
 use crate::upstream::{socket_free, socket_handle_send, socket_handle_sendfile, socket_send};
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest, trigger_close_event};
+use swoole_rs_reactor::ReactorPrepared;
+use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
     Event, FlushEffects, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects, WritePayload,
@@ -194,8 +195,8 @@ impl FlushEffects for Flush<'_> {
     }
 
     fn close(&self) -> c_int {
-        // SAFETY: the flush's live reactor.
-        let fields = unsafe { prepared(self.reactor) }.fields;
+        // The flush's live reactor.
+        let fields = ReactorPrepared::of(self.reactor).fields;
         // SAFETY: `reactor->close`, set at construction.
         let Some(close) = (unsafe { (*fields).close }) else {
             return -1;

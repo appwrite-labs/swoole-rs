@@ -21,6 +21,14 @@ fn current() -> *mut c_void {
     swoole_rs_corebase::thread_reactor()
 }
 
+/// The thread's `Reactor` as a handle for the caller's call, or `None` without one.
+fn running<'a>() -> Option<crate::Running<'a>> {
+    let reactor = current();
+    // SAFETY: the thread's reactor stays live until `swoole_event_free`, which no
+    // caller's use of the handle spans.
+    (!reactor.is_null()).then(|| unsafe { crate::Running::new(reactor) })
+}
+
 /// A field of the thread's `Reactor`, or `None` without one.
 pub(crate) fn field<T>(read: impl FnOnce(&ReactorFields) -> T) -> Option<T> {
     field_mut(|fields| read(fields))
@@ -195,10 +203,9 @@ pub unsafe extern "C" fn swoole_event_set_handler(
 )]
 #[must_use]
 pub extern "C" fn swoole_event_isset_handler(fd_type: c_int, event: c_int) -> bool {
-    let reactor = current();
-    // SAFETY: the thread's live reactor.
-    !reactor.is_null()
-        && unsafe { crate::reactor_upstream::reactor_isset_handler(reactor, fd_type, event) }
+    running().is_some_and(|reactor| {
+        crate::reactor_upstream::reactor_isset_handler(reactor, fd_type, event)
+    })
 }
 
 /// `Socket *swoole_event_get_socket(int fd)`: null without a reactor.
@@ -259,8 +266,7 @@ thread_local! {
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
 /// nothing without one, and the process ends if it can't allocate.
 pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
-    // SAFETY: `call` is safe with any data.
-    unsafe { on_destroy_with(call, std::ptr::null_mut()) };
+    field_mut(|fields| crate::deferred::defer_destroy_any(fields, call));
 }
 
 /// Runs `call(data)` when the thread's `Reactor` is destroyed; nothing without one,
@@ -301,20 +307,13 @@ pub fn swoole_event_bailed_out() -> bool {
 /// `sw_reactor()->if_exit()`: true without a reactor. Exit conditions may run PHP.
 #[must_use]
 pub fn swoole_event_if_exit() -> bool {
-    let reactor = current();
-    // SAFETY: the thread's live reactor.
-    reactor.is_null() || unsafe { crate::callbacks::reactor_if_exit(reactor) }
+    running().is_none_or(crate::callbacks::if_exit)
 }
 
 /// `sw_reactor()->wait()`: -1 without a reactor. Handlers may run PHP.
 #[must_use]
 pub fn swoole_event_run() -> c_int {
-    let reactor = current();
-    if reactor.is_null() {
-        return -1;
-    }
-    // SAFETY: the thread's live reactor, whose backend `swoole_event_init` opened.
-    unsafe { crate::callbacks::reactor_wait(reactor) }
+    running().map_or(-1, crate::callbacks::wait)
 }
 
 /// A reactor handler over the fd of the event it is called with.
@@ -501,6 +500,7 @@ pub extern "C-unwind" fn swoole_event_wait() -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reactor_state::tests::running;
 
     #[test]
     fn add_or_update_names_the_read_or_write_interest() {
@@ -534,7 +534,7 @@ mod tests {
         fn run(&self) {
             swoole_event_cycle(false, None);
             let owner = swoole_rs_corebase::thread_reactor().cast::<crate::ReactorState>();
-            unsafe { crate::deferred::run_defer(owner) };
+            crate::deferred::run_defer(running(owner));
             push(&self.0);
         }
 
@@ -552,7 +552,7 @@ mod tests {
         unsafe { task.callback.unwrap()(task.data) };
         assert_eq!(take(), ["ran"]);
         assert!(unsafe { (*state.fields).idle_task }.callback.is_none());
-        unsafe { crate::deferred::run_defer(state.owner) };
+        crate::deferred::run_defer(running(state.owner));
         assert_eq!(take(), ["retired"]);
         swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor_state::tests::free(state.owner) };

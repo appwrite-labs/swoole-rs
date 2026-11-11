@@ -29,7 +29,7 @@ const EXIT_CONDITION_SIGNALFD: c_int = 6;
 #[cfg(target_os = "linux")]
 const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
 
-type SignalHandler = unsafe extern "C" fn(c_int);
+use swoole_rs_process::signal::Callback as SignalHandler;
 
 // SAFETY: crates/reactor's.
 unsafe extern "C" {
@@ -312,12 +312,10 @@ pub unsafe extern "C" fn swoole_signal_set(signo: c_int, handler: usize, safety:
     set(signo, unsafe { Handler::from_raw(handler) }, safety).0
 }
 
-/// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`.
-///
-/// # Safety
-/// Called where the handler may run.
+/// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`,
+/// which [`Handler::from_raw`] made sound to call with any signal number.
 #[unsafe(export_name = "_Z22swoole_signal_callbacki")]
-pub unsafe extern "C" fn swoole_signal_callback(signo: c_int) {
+pub extern "C" fn swoole_signal_callback(signo: c_int) {
     signal_loop::callback(signo, &OPS);
 }
 
