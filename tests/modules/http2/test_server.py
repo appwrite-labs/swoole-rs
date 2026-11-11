@@ -30,3 +30,28 @@ def test_body_over_the_limit_resets_its_stream(engine):
                 if after[3] == 6:
                     break
     assert (after[4], echo) == (1, b'stillok!'), (after + echo).hex()
+
+
+def test_a_body_the_multipart_parser_rejects_is_never_handled(engine):
+    """A multipart body that fails to parse never reaches onRequest; its stream's
+    objects are released all the same (the ASan lane checks for leaks)."""
+    # content-type, static index 31, as a literal without indexing (RFC 7541 6.2.2).
+    content_type = b'multipart/form-data; boundary=x'
+    block = REQUEST + b'\x0f\x10' + bytes([len(content_type)]) + content_type
+    body = b'--x\r\nno colon here\r\n\r\nv\r\n--x--\r\n'
+    with server(engine, Path(__file__).with_name('body_limit_server.php')) as (port, _):
+        with socket.create_connection(('127.0.0.1', port), timeout=10) as conn:
+            conn.sendall(PREFACE + frame(4, 0, 0) + frame(1, 4, 1, block) + frame(0, 1, 1, body))
+            # Then a PING, so the server's reply to it bounds the wait.
+            conn.sendall(frame(6, 0, 0, b'afterbad'))
+            kinds = []
+            try:
+                while True:
+                    head = read(conn, 9)
+                    read(conn, int.from_bytes(head[:3], 'big'))
+                    kinds.append((head[3], int.from_bytes(head[5:], 'big') & 0x7fffffff))
+                    if head[3] == 6:
+                        break
+            except (EOFError, ConnectionResetError, socket.timeout):
+                pass
+    assert (1, 1) not in kinds, kinds

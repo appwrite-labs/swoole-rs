@@ -80,8 +80,10 @@ pub(crate) struct StreamState {
     pub(crate) local_window_size: Cell<u32>,
     /// The request's header block is complete; later blocks are trailers.
     pub(crate) headers_received: Cell<bool>,
-    /// The request went to its handler.
+    /// The request is complete: no later frame adds to it.
     pub(crate) request_received: Cell<bool>,
+    /// The request went to its handler, which releases its objects.
+    dispatched: Cell<bool>,
     /// A Content-Length of the request's header block was malformed or too large.
     pub(crate) bad_length: Cell<bool>,
     /// The block named a Content-Type or Accept-Encoding, which are read
@@ -161,6 +163,7 @@ impl SessionState {
             local_window_size: Cell::new(self.local[INIT_WINDOW_SIZE]),
             headers_received: Cell::new(false),
             request_received: Cell::new(false),
+            dispatched: Cell::new(false),
             bad_length: Cell::new(false),
             negotiates: Cell::new(false),
             waiting: Cell::new(None),
@@ -185,6 +188,7 @@ impl SessionState {
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
     pub(crate) fn handle(&self, stream: &StreamState) {
+        stream.dispatched.set(true);
         bailout::defer((self.handle)(stream.ctx, self.default_ctx));
     }
 }
@@ -216,7 +220,7 @@ impl StreamState {
 impl Drop for StreamState {
     fn drop(&mut self) {
         // SAFETY: the stream's own context, released once.
-        bailout::defer(unsafe { self.ctx.release_stream(self.request_received.get()) });
+        bailout::defer(unsafe { self.ctx.release_stream(self.dispatched.get()) });
     }
 }
 
