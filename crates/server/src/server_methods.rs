@@ -9,15 +9,15 @@ use core::ptr;
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
 use crate::ops::{
-    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_START, RUN_START_CHECK,
-    RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
-};
-use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
     RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
     RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
     RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND,
     RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+};
+use crate::ops::{
+    RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_START, RUN_START_CHECK,
+    RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -317,7 +317,7 @@ pub(crate) extern "C" fn accept_connection(
     ctx.port = listener.map_or(core::ptr::null_mut(), |s| s.read(|s| s.object));
     ctx.event = ptr::from_mut(event).cast();
     // SAFETY: the server reactor's live server, and its event.
-    c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
+    c_int::narrow(unsafe { crate::run_accept(&mut ctx) })
 }
 
 /// `Server::get_startup_error_message()`.

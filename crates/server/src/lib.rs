@@ -329,6 +329,26 @@ pub(crate) unsafe fn run_reactor_with<'s>(
     .unwrap_or(SW_ERR)
 }
 
+/// `Server::accept_connection` over a method context outside [`run`]'s match: with
+/// the state known and no reactor context, each op it makes folds to its answer
+/// (#2964).
+///
+/// # Safety
+/// `ctx` is a live context whose `serv` is a live `Server`.
+pub(crate) unsafe fn run_accept(ctx: &mut server_methods::NativeContext) -> i64 {
+    // SAFETY: a live server, per the caller.
+    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
+    let master = core::ptr::from_mut(ctx);
+    connection::accept(&mut Native {
+        context: master.cast(),
+        call: unanswered as ServerCall,
+        state: Some(state),
+        master,
+        reactor: core::ptr::null_mut(),
+    })
+    .unwrap_or(SW_ERR)
+}
+
 /// Runs one operation for a `Server` method (`server_methods`) over its context,
 /// whose records `master_ops` answers. No effect here calls back into C++.
 ///
@@ -364,8 +384,8 @@ pub(crate) unsafe fn run_method(
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
-        RUN_ACCEPT, RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY,
-        RUN_DISABLE_ACCEPT, RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
+        RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY, RUN_DISABLE_ACCEPT,
+        RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
         RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_SIGNAL, RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK,
         RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
     };
@@ -378,7 +398,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             h,
             core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
         )?),
-        RUN_ACCEPT => connection::accept(h)?,
         RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
         RUN_INCOMING => connection::incoming(h)?,
         RUN_IDLE_TIMEOUT => {
