@@ -7,22 +7,17 @@ use crate::{
 };
 use std::{
     ffi::{c_char, c_int, c_void},
-    mem::MaybeUninit,
     ptr,
 };
 use swoole_rs_phpstubs::server_port;
-use swoole_rs_ports::{
-    swr_v1_ports_callback_hook, swr_v1_ports_callback_property, swr_v1_ports_class_property,
-    swr_v1_ports_event,
-};
+use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
-        zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
-        zend_update_property, zval,
+        zend_declare_property_null, zend_object, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -287,24 +282,19 @@ fn on(call: &Call) {
     let Ok(name) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    let cb = call.zval(2);
-    // SAFETY: the argument's bytes for this call.
-    let event = unsafe { swr_v1_ports_event(name.as_ptr(), name.len(), 1) };
-    let Ok(index) = usize::try_from(event.index) else {
+    let Some((index, property)) = swoole_rs_ports::event(name, true) else {
         let name =
             String::from_utf8_lossy(name.split(|&byte| byte == 0).next().unwrap_or_default());
         crate::lifecycle::runtime_warning(message!("unknown event types[{name}]").as_cstr());
         return call.set_bool(false);
     };
-    // SAFETY: `$this`, the catalog's property name and the callback argument.
-    unsafe {
-        zend_update_property(
-            PORT.entry(),
-            call.this(),
-            event.property.data.cast(),
-            event.property.len,
-            cb,
-        );
+    let Some(cb) = call.value(2) else {
+        return call.set_bool(false);
+    };
+    // The Port class's own private property, which runs no PHP code.
+    bailout::defer(call.update_property(Some(&PORT), property, cb));
+    if bailout::pending() {
+        return;
     }
     // The property write, the release and the create can each run PHP that
     // calls on() again, so no borrow of the slot lives across them.
@@ -320,7 +310,7 @@ fn on(call: &Call) {
     if swoole_rs_zend::bailout::pending() {
         return;
     }
-    let Some(callable) = call.value(2).and_then(Callable::create) else {
+    let Some(callable) = Callable::create(cb) else {
         return call.set_bool(false);
     };
     let kept = match data(call).property.callbacks.get_mut(index) {
@@ -330,7 +320,8 @@ fn on(call: &Call) {
         _ => Some(callable),
     };
     drop(kept);
-    crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
+    let event = i32::try_from(index).unwrap_or(-1);
+    crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event));
     call.set_bool(true);
 }
 
@@ -340,28 +331,11 @@ fn get_callback(call: &Call) {
     }
     let name = call.value(1).map(Value::string);
     let name = name.as_ref().map_or(&[][..], ZString::bytes);
-    // SAFETY: the name's bytes.
-    let property = unsafe { swr_v1_ports_callback_property(name.as_ptr(), name.len()) };
-    if !property.data.is_null() {
-        let mut rv = MaybeUninit::<zval>::uninit();
-        // SAFETY: `$this`, the catalog's property name and a writable scratch zval.
-        let value = unsafe {
-            zend_read_property(
-                PORT.entry(),
-                call.this(),
-                property.data.cast(),
-                property.len,
-                true,
-                rv.as_mut_ptr(),
-            )
-        };
-        // SAFETY: Zend returned a live zval, which the object or `rv` holds.
-        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
-            // `RETURN_ZVAL(property, 1, 0)`.
-            return call.set_owned(value.copy());
-        }
+    match swoole_rs_ports::callback_property(name) {
+        // `RETURN_ZVAL(property, 1, 0)`, null when unset.
+        Some(property) => call.set_property(Some(&PORT), property),
+        None => call.set_null(),
     }
-    call.set_null();
 }
 
 fn get_socket(call: &Call) {
