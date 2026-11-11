@@ -588,10 +588,6 @@ impl<'a> Props<'a> {
         Self(ce, unsafe { init_object(target, ce) }, PhantomData)
     }
 
-    pub(crate) fn object(self) -> *mut zend_object {
-        self.1
-    }
-
     /// The same handle as crates/zend's, whose writes defer a bailout.
     fn zend(self) -> swoole_rs_zend::Props<'a> {
         // SAFETY: the handle's live object and class.

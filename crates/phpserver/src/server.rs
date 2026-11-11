@@ -1,7 +1,7 @@
 //! `Swoole\Server`'s classes, its connection and worker methods, and
 //! `Swoole\Connection\Iterator`; lifecycle.rs owns the Server objects.
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicU64, Ordering},
@@ -13,12 +13,11 @@ use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Object, report,
+    Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long, zend_ce_arrayaccess,
-        zend_ce_countable, zend_ce_iterator, zend_class_entry, zend_class_implements, zend_object,
-        zend_object_handlers, zval,
+        add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long, zend_class_entry,
+        zend_object, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -93,7 +92,7 @@ pub(crate) fn redis_receive() -> Option<RedisReceive> {
 pub fn server_class_entry() -> *mut zend_class_entry {
     SERVER.entry()
 }
-pub(crate) static TASK: Class = Class::new();
+pub(crate) static TASK: CustomClass<TaskData> = CustomClass::new();
 /// `Event`, `Packet`, `PipeMessage`, `StatusInfo` and `TaskResult`.
 pub(crate) static DATA: [Class; 5] = [
     Class::new(),
@@ -102,7 +101,7 @@ pub(crate) static DATA: [Class; 5] = [
     Class::new(),
     Class::new(),
 ];
-static ITERATOR: Class = Class::new();
+static ITERATOR: CustomClass<Iterator> = CustomClass::new();
 
 /// `ServerObject` before its `zend_object`: `Server *serv; void *property;
 /// zval init_arguments;`, where `property` is lifecycle.rs's `Property`.
@@ -152,84 +151,95 @@ pub(crate) fn port_property(
     })
 }
 
-/// `ConnectionIterator`.
-#[repr(C)]
-struct Iterator {
-    current_fd: c_int,
-    session_id: i64,
-    serv: *mut c_void,
-    port: *mut c_void,
-    index: c_int,
+/// `ConnectionIterator`: a `Connection\Iterator`'s position over its server's
+/// connections, of one port or (null) all of them.
+pub(crate) struct Iterator {
+    current_fd: Cell<c_int>,
+    session_id: Cell<i64>,
+    serv: Cell<*mut c_void>,
+    port: Cell<*mut c_void>,
+    index: Cell<c_int>,
 }
 
 impl Iterator {
     /// The server the iterator walks.
     fn server(&self) -> view::Server<'_> {
         // SAFETY: `new_iterator` stored `$this`'s live server, which outlives the iterator.
-        unsafe { view::Server::from_raw(self.serv) }
+        unsafe { view::Server::from_raw(self.serv.get()) }
     }
 }
 
-type IteratorObject = Object<Iterator>;
+impl Custom for Iterator {
+    fn class() -> &'static CustomClass<Self> {
+        &ITERATOR
+    }
 
-/// Upstream's `ServerTaskObject` before its `zend_object`: the server and the
-/// task's head.
-#[repr(C)]
-struct TaskData {
-    serv: *mut c_void,
-    info: DataHead,
+    /// An unbound iterator.
+    fn new() -> Self {
+        Self {
+            current_fd: Cell::new(0),
+            session_id: Cell::new(0),
+            serv: Cell::new(ptr::null_mut()),
+            port: Cell::new(ptr::null_mut()),
+            index: Cell::new(0),
+        }
+    }
 }
 
-type TaskObject = Object<TaskData>;
+/// Upstream's `ServerTaskObject`: the server and the task's head.
+pub(crate) struct TaskData {
+    serv: Cell<*mut c_void>,
+    info: Cell<DataHead>,
+}
+
+impl Custom for TaskData {
+    fn class() -> &'static CustomClass<Self> {
+        &TASK
+    }
+
+    /// A task bound to no server.
+    fn new() -> Self {
+        Self {
+            serv: Cell::new(ptr::null_mut()),
+            info: Cell::new(DataHead::default()),
+        }
+    }
+}
+
+/// `$this`, a `Server\Task`; an `E_ERROR`, which does not return, otherwise.
+fn task(call: &Call) -> &TaskData {
+    call.custom::<TaskData>().unwrap_or_else(|| {
+        invalid(call.this());
+        // The `E_ERROR` bailed out of this frame.
+        std::process::abort()
+    })
+}
 
 /// A `Server\Task`'s `info`, as the `EventData *` `finish` reads its head from.
-pub(crate) fn task_info(object: *mut zend_object) -> *mut c_void {
-    // SAFETY: a `Server\Task` object, which this class creates.
-    let data = unsafe { TaskObject::data(object) };
-    (&raw mut data.info).cast()
+pub(crate) fn task_info(call: &Call) -> *mut c_void {
+    task(call).info.as_ptr().cast()
 }
 
 /// Bind a new `Server\Task` to the server and the head of the task it carries.
-pub(crate) fn task_bind(object: *mut zend_object, serv: *mut c_void, info: &DataHead) {
-    // SAFETY: a `Server\Task` object, which this class creates.
-    let data = unsafe { TaskObject::data(object) };
-    data.serv = serv;
-    data.info = *info;
+pub(crate) fn task_bind(task: &Value, serv: *mut c_void, info: &DataHead) {
+    if let Some(task) = task.custom::<TaskData>() {
+        task.serv.set(serv);
+        task.info.set(*info);
+    }
 }
 
 /// A `Server\Task`'s server; an `E_ERROR`, which does not return, when it has none.
-pub(crate) fn task_server(object: *mut zend_object) -> *mut c_void {
-    // SAFETY: a `Server\Task` object, which this class creates.
-    let serv = unsafe { TaskObject::data(object) }.serv;
+pub(crate) fn task_server(call: &Call) -> *mut c_void {
+    let serv = task(call).serv.get();
     if serv.is_null() {
-        invalid(object);
+        invalid(call.this());
     }
     serv
-}
-
-unsafe extern "C" fn task_create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates a task of this class; zeroes are an unbound one.
-    unsafe { TaskObject::create(&TASK, ce) }
-}
-
-unsafe extern "C" fn task_free(object: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    unsafe { TaskObject::dtor(object) };
 }
 
 fn deny(handlers: &mut zend_object_handlers) {
     handlers.clone_obj = None;
     handlers.unset_property = Some(unset_property_deny);
-}
-
-unsafe extern "C" fn iterator_create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates an iterator of this class; zeroes are an unbound one.
-    unsafe { IteratorObject::create(&ITERATOR, ce) }
-}
-
-unsafe extern "C" fn iterator_free(object: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    unsafe { IteratorObject::dtor(object) };
 }
 
 /// A declared property: public unless `Private`.
@@ -453,44 +463,17 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
             crate::lifecycle::free,
         );
     });
-    minit.register(
-        &TASK,
-        c"Swoole\\Server\\Task",
-        &TASK_METHODS.0,
-        |entry, handlers| {
-            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-            deny(handlers);
-            TaskObject::install(entry, handlers, task_create, task_free);
-        },
-    );
+    minit.register_object::<TaskData>(c"Swoole\\Server\\Task", &TASK_METHODS.0, ZEND_ACC_FINAL);
     declare(&minit, &TASK, TASK_PROPERTIES);
     for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
         // `SW_INIT_CLASS_ENTRY_DATA_OBJECT` has no methods.
         minit.register(class, name, &[], |_, _| {});
         declare(&minit, class, properties);
     }
-    minit.register(
-        &ITERATOR,
-        c"Swoole\\Connection\\Iterator",
-        &ITERATOR_METHODS.0,
-        |entry, handlers| {
-            entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-            deny(handlers);
-            IteratorObject::install(entry, handlers, iterator_create, iterator_free);
-        },
-    );
-    let iterator = ITERATOR.entry();
-    // SAFETY: MINIT; Zend's own interfaces are registered before extensions
-    // and not written after.
-    let iterator_ce = unsafe { zend_ce_iterator };
-    // SAFETY: as above.
-    let array_access = unsafe { zend_ce_arrayaccess };
-    // SAFETY: as above.
-    let countable = unsafe { zend_ce_countable };
-    // SAFETY: MINIT, with the class registered above.
-    unsafe { zend_class_implements(iterator, 2, iterator_ce, array_access) };
-    // SAFETY: as above.
-    unsafe { zend_class_implements(iterator, 1, countable) };
+    minit.register_object::<Iterator>(c"Swoole\\Connection\\Iterator", &ITERATOR_METHODS.0, 0);
+    minit.implements(&ITERATOR, minit.iterator());
+    minit.implements(&ITERATOR, minit.array_access());
+    minit.implements(&ITERATOR, minit.countable());
     declare(&minit, &SERVER, SERVER_PROPERTIES);
     if thread {
         declare(&minit, &SERVER, &[Str(c"bootstrap")]);
@@ -603,15 +586,10 @@ pub(crate) fn server(call: &Call) -> view::Server<'_> {
 
 /// A new `Connection\Iterator` over `serv` and `port` (null: every port).
 pub(crate) fn new_iterator(serv: *mut c_void, port: *mut c_void) -> swoole_rs_zend::Owned {
-    // SAFETY: the registered iterator class.
-    let target = unsafe { swoole_rs_zend::Owned::new_object(ITERATOR.entry()) };
-    if let Some(object) = target.object() {
-        // SAFETY: an iterator object just created.
-        let iterator = unsafe { IteratorObject::data(object) };
-        iterator.serv = serv;
-        iterator.port = port;
-    }
-    target
+    let iterator = Iterator::new();
+    iterator.serv.set(serv);
+    iterator.port.set(port);
+    swoole_rs_zend::new_object(iterator)
 }
 
 /// `server(call)`, or `None` with a warning and `false` returned when the
@@ -1116,14 +1094,15 @@ fn stop(call: &Call) {
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
-fn iterator<'a>(call: &Call) -> &'a mut Iterator {
-    // SAFETY: the class's methods are non-static, so `$this` is an iterator.
-    let iterator = unsafe { IteratorObject::data(call.this()) };
-    if iterator.serv.is_null() {
+fn iterator(call: &Call) -> &Iterator {
+    match call.custom::<Iterator>() {
+        Some(iterator) if !iterator.serv.get().is_null() => iterator,
         // An `E_ERROR`, which does not return; the frames own nothing.
-        invalid(call.this());
+        _ => {
+            invalid(call.this());
+            std::process::abort()
+        }
     }
-    iterator
 }
 
 fn iterator_construct(call: &Call) {
@@ -1132,14 +1111,15 @@ fn iterator_construct(call: &Call) {
 
 fn rewind(call: &Call) {
     let iterator = iterator(call);
-    iterator.index = 0;
-    iterator.current_fd = iterator.server().counters().min_fd;
+    iterator.index.set(0);
+    iterator.current_fd.set(iterator.server().counters().min_fd);
 }
 
 fn valid(call: &Call) {
     let iterator = iterator(call);
     let max_fd = iterator.server().counters().max_fd;
-    for fd in iterator.current_fd..=max_fd {
+    let port = iterator.port.get();
+    for fd in iterator.current_fd.get()..=max_fd {
         let Some(conn) = iterator.server().iterated(fd) else {
             continue;
         };
@@ -1147,41 +1127,42 @@ fn valid(call: &Call) {
         if session_id <= 0 {
             continue;
         }
-        if !iterator.port.is_null() {
+        if !port.is_null() {
             // SAFETY: the iterator's live port.
-            let port_fd = unsafe { view::port_fd(iterator.port) };
+            let port_fd = unsafe { view::port_fd(port) };
             if port_fd < 0 || server_fd != port_fd {
                 continue;
             }
         }
-        iterator.session_id = session_id;
-        iterator.current_fd = fd;
-        iterator.index += 1;
+        iterator.session_id.set(session_id);
+        iterator.current_fd.set(fd);
+        iterator.index.set(iterator.index.get() + 1);
         return call.set_bool(true);
     }
     call.set_bool(false);
 }
 
 fn current(call: &Call) {
-    call.set_long(iterator(call).session_id);
+    call.set_long(iterator(call).session_id.get());
 }
 
 fn next(call: &Call) {
-    iterator(call).current_fd += 1;
+    let fd = &iterator(call).current_fd;
+    fd.set(fd.get() + 1);
 }
 
 fn key(call: &Call) {
-    call.set_long(i64::from(iterator(call).index));
+    call.set_long(i64::from(iterator(call).index.get()));
 }
 
 fn count(call: &Call) {
     let iterator = iterator(call);
-    let num = if iterator.port.is_null() {
-        // SAFETY: a live server.
+    let port = iterator.port.get();
+    let num = if port.is_null() {
         iterator.server().connection_num()
     } else {
         // SAFETY: a live server and one of its ports.
-        unsafe { iterator.server().port_connection_num(iterator.port) }
+        unsafe { iterator.server().port_connection_num(port) }
     };
     call.set_long(i64::try_from(num).unwrap_or(i64::MAX));
 }
@@ -1274,10 +1255,5 @@ mod tests {
     fn layouts_mirror_cxx() {
         // ServerObject { Server *; Property *; zval init_arguments; zend_object std; }
         assert_eq!(Object::<ServerData>::OFFSET, 32);
-        // ConnectionIterator { int; SessionId; Server *; ListenPort *; int; }
-        assert_eq!(size_of::<Iterator>(), 40);
-        assert_eq!(IteratorObject::OFFSET, 40);
-        // ServerTaskObject { Server *; DataHead info; zend_object std; }
-        assert_eq!(TaskObject::OFFSET, 48);
     }
 }
