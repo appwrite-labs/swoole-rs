@@ -34,6 +34,7 @@ RUN \\
   apk add --no-cache python3 pcre2-dev pkgconf clang-dev && \\
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && \\
   export PATH="/root/.cargo/bin:$PATH" && \\
+  export RUSTFLAGS="-C target-feature=-crt-static" && \\
   cd /swoole-rs && \\
   {{ git rev-parse --git-dir >/dev/null 2>&1 || {{ rm -f .git && git init -q && git add -A && git -c user.name=build -c user.email=build@localhost commit -qm source; }}; }} && \\
   python3 tools/{build} --php-sockets {configure} && \\
