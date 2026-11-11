@@ -539,6 +539,25 @@ fn waitpid() {
     });
 }
 
+/// Not an upstream TEST: `waitpid` with no status word (C's null `stat_loc`), on the
+/// `WNOHANG` path and on the ring's blocking path, which must not write through it.
+#[test]
+fn waitpid_without_status() {
+    let _serial = serial();
+    let pid = spawn_exec(2000);
+
+    with_engine(|| unsafe {
+        assert_eq!(
+            uring::waitpid(&HOST, pid, None, libc::WNOHANG, -1.0),
+            0,
+            "WNOHANG"
+        );
+
+        libc::kill(pid, libc::SIGKILL);
+        assert_eq!(uring::waitpid(&HOST, pid, None, 0, 1.0), pid, "reaped");
+    });
+}
+
 #[test]
 fn poll() {
     let _serial = serial();
