@@ -13,7 +13,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{CStr, CString, c_int},
     ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
@@ -343,7 +343,7 @@ fn http2_begin(socket: Co) {
         record.protocol.package_length_offset = 0;
         record.protocol.package_body_offset = 0;
         record.protocol.get_package_length =
-            swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+            Some(swoole_rs_ports::http_routes::exports::http2_length);
     });
 }
 
@@ -1292,6 +1292,10 @@ mod tests {
 
     #[test]
     fn std_follows_the_server_pointer() {
-        assert_eq!(Holder::OFFSET, size_of::<*mut c_void>(), "HttpServerObject");
+        assert_eq!(
+            Holder::OFFSET,
+            size_of::<*mut core::ffi::c_void>(),
+            "HttpServerObject"
+        );
     }
 }

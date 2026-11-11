@@ -122,13 +122,13 @@ pub(crate) static NATIVE: Ops = test_host::OPS;
 #[cfg(not(test))]
 mod native {
     use super::Host;
-    use crate::co_socket::{Co, Protocol};
+    use crate::co_socket::Co;
     use crate::packet::ReadBuffer;
     use crate::shutdown::{READ, WRITE};
     use core::ffi::{CStr, c_int, c_long, c_void};
     use swoole_rs_buffer::string::CppString;
+    use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_coroutine::print_socket_bound_error;
-    use swoole_rs_reactor::SocketRecord;
 
     pub(super) static HOST: Host = Host {
         timer_add,
@@ -236,18 +236,6 @@ mod native {
         }
     }
 
-    /// `swoole::PacketLength`.
-    #[repr(C)]
-    struct PacketLength {
-        buf: *const u8,
-        buf_size: u32,
-        header_len: u32,
-    }
-
-    /// `Protocol::get_package_length`.
-    type LengthFunc =
-        unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut PacketLength) -> isize;
-
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
         // SAFETY: the live record's read String, which the packet receive fills.
         let buf = unsafe { (*socket.read_buffer().cast::<CppString>()).as_mut_ptr() };
@@ -262,10 +250,11 @@ mod native {
                 record.protocol.get_package_length,
             )
         });
-        // SAFETY: a length-checking protocol's callback is set.
-        let call = unsafe { core::mem::transmute::<*mut c_void, LengthFunc>(callback) };
+        let Some(call) = callback else {
+            return -1;
+        };
         // SAFETY: the record's protocol and network socket, and `size` bytes at `buf`.
-        let length = unsafe { call(protocol, socket.socket(), &raw mut packet) };
+        let length = unsafe { call(protocol, socket.socket().cast(), &mut packet) };
         *header = packet.header_len;
         length
     }

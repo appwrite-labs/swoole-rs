@@ -10,8 +10,9 @@ use std::{
     ptr,
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
+use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
+use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
-use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
@@ -1169,13 +1170,6 @@ extern "C" fn on_dispatch(
     c_int::try_from(worker_id).unwrap_or(-1)
 }
 
-/// `PacketLength`'s head: the bytes read so far.
-#[repr(C)]
-struct PacketLength {
-    buf: *const c_char,
-    buf_size: u32,
-}
-
 /// `php_swoole_server_length_func`: a port's `package_length_func($data)`.
 /// # Safety
 /// `protocol` is a port's live protocol whose `private_data_1` is the
@@ -1183,19 +1177,14 @@ struct PacketLength {
 pub(crate) unsafe extern "C" fn length_func(
     protocol: *const Protocol,
     _socket: *mut c_void,
-    packet: *const c_void,
+    packet: &mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.
     let owner = unsafe { (*protocol).private_data_1 };
     // SAFETY: a live handle.
     let cache = unsafe { callable::cache(owner.cast()) };
     // SAFETY: per the caller.
-    let PacketLength {
-        buf,
-        buf_size: size,
-    } = unsafe { packet.cast::<PacketLength>().read() };
-    // SAFETY: as above.
-    let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), size as usize) };
+    let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
     let mut data = Owned::string(ZString::new(bytes)).into_zval();
     let retval = Owned::default();
     let mut result = -1;

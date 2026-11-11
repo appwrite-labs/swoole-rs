@@ -481,8 +481,7 @@ impl Co {
         if kind == 0 {
             mqtt_set_protocol(protocol);
         } else {
-            protocol.get_package_length =
-                swoole_rs_ports::framing_recv::default_length_func as *mut c_void;
+            protocol.get_package_length = Some(swoole_rs_ports::framing_recv::default_length_func);
         }
     }
 
@@ -561,7 +560,7 @@ pub(crate) fn length_callable(socket: Co, value: *mut zval) {
         return;
     }
     let protocol = &mut socket.record().protocol;
-    protocol.get_package_length = php_swoole_length_func as *mut c_void;
+    protocol.get_package_length = Some(php_swoole_length_func);
     let old = std::mem::replace(&mut protocol.private_data_1, callable);
     if !old.is_null() && callable_free(old).is_err() {
         return;

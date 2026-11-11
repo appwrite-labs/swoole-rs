@@ -3,11 +3,10 @@
 //! into `network::Client`'s record and state here.
 use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
-use crate::socket_options::PacketLength;
 use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_clients::client::{ClientRecord, OPEN_SSL};
-use swoole_rs_corebase::net_types::Protocol;
+use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
@@ -33,12 +32,10 @@ const IPC_BUFFER_SIZE: u16 = 8192;
 pub(crate) unsafe extern "C" fn php_swoole_length_func(
     protocol: *const Protocol,
     _socket: *mut c_void,
-    packet: *const PacketLength,
+    packet: &mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.
     let callable = unsafe { (*protocol).private_data_1 };
-    // SAFETY: as above.
-    let packet = unsafe { &*packet };
     // SAFETY: as above.
     let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
     let length = package_length(callable, bytes);
@@ -176,7 +173,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
     let record = record(cli);
     record.open_length_check = on;
     if !mqtt {
-        record.protocol.get_package_length = default_length_func as *mut c_void;
+        record.protocol.get_package_length = Some(default_length_func);
     } else if on {
         swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
     }
@@ -371,7 +368,7 @@ fn proxies(cli: Cli, options: &Options) -> bool {
 /// Install `callable` as the client's length function, returning the previous one.
 fn option_pointer(cli: Cli, callable: *mut c_void) -> *mut c_void {
     let protocol = &mut record(cli).protocol;
-    protocol.get_package_length = php_swoole_length_func as *mut c_void;
+    protocol.get_package_length = Some(php_swoole_length_func);
     protocol.package_length_size = 0;
     protocol.package_length_type = 0;
     protocol.package_length_offset = IPC_BUFFER_SIZE;

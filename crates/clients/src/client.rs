@@ -20,7 +20,7 @@ use swoole_rs_corebase::constants::{
     SW_SEND_BUFFER_SIZE, SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
     TimeoutType,
 };
-use swoole_rs_corebase::net_types::{AddressStorage, Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::{AddressStorage, PacketLength, Protocol, SocketAddress};
 #[cfg(not(test))]
 use swoole_rs_corebase::thread_buffer;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log, swr_v1_core_proxy_free};
@@ -689,15 +689,17 @@ struct RecvData {
 /// once the callback left the socket waiting to close.
 /// # Safety
 /// `conn` is a client's socket record (or null), whose free is deferred past the call.
-unsafe extern "C" fn on_package(
+unsafe extern "C-unwind" fn on_package(
     _: *const Protocol,
-    conn: *mut SocketRecord,
-    package: &RecvData,
+    conn: *mut c_void,
+    package: *const c_void,
 ) -> c_int {
     // SAFETY: per the caller.
-    let Some(socket) = (unsafe { Socket::from_ptr(conn) }) else {
+    let Some(socket) = (unsafe { Socket::from_ptr(conn.cast()) }) else {
         return ERR;
     };
+    // SAFETY: per the caller, the package.
+    let package = unsafe { &*package.cast::<RecvData>() };
     Handle(socket.read(|socket| socket.object).cast()).call(
         ON_RECEIVE,
         package.data,
@@ -830,7 +832,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
     fields.protocol.package_max_length = 2 * 1024 * 1024;
-    fields.protocol.on_package = on_package as *mut c_void;
+    fields.protocol.on_package = Some(on_package);
     let socket_type = record.edit(|record| {
         record.chunk_size = SEND_BUFFER_SIZE;
         record.socket_type
@@ -907,18 +909,6 @@ impl Call {
     }
 }
 
-/// `swoole::PacketLength`.
-#[repr(C)]
-struct PacketLength {
-    buf: *const c_char,
-    buf_size: u32,
-    header_len: u32,
-}
-
-/// `Protocol::get_package_length`.
-type LengthFunc =
-    unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *const PacketLength) -> isize;
-
 /// Run a [`Call`], whose operation may raise the client's callbacks: a
 /// `bailout::trap` body that owns nothing.
 ///
@@ -962,17 +952,22 @@ pub unsafe extern "C" fn swr_v1_clients_run(call: *mut c_void) {
 #[expect(clippy::cast_possible_truncation, reason = "`(uint32_t) length`")]
 fn package_length(this: Handle, data: *const c_char, length: usize) -> isize {
     let record = this.fields();
-    // SAFETY: the protocol's length function, which has this signature.
-    let get = unsafe {
-        core::mem::transmute::<*mut c_void, LengthFunc>(record.protocol.get_package_length)
+    let Some(get) = record.protocol.get_package_length else {
+        return -1;
     };
-    let packet = PacketLength {
-        buf: data,
+    let mut packet = PacketLength {
+        buf: data.cast(),
         buf_size: length as u32,
         header_len: 0,
     };
     // SAFETY: the live client's protocol and socket, and `length` bytes at `data`.
-    unsafe { get(&raw const record.protocol, record.socket, &raw const packet) }
+    unsafe {
+        get(
+            &raw const record.protocol,
+            record.socket.cast(),
+            &mut packet,
+        )
+    }
 }
 
 /// `delete client`: the client is not used afterwards.

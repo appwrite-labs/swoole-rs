@@ -1,7 +1,7 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
 use crate::session::IdMap;
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -435,8 +435,7 @@ impl Client {
             protocol.package_length_size = 9;
             protocol.package_length_offset = 0;
             protocol.package_body_offset = 0;
-            protocol.get_package_length =
-                swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+            protocol.get_package_length = Some(swoole_rs_ports::http_routes::exports::http2_length);
         });
         // SAFETY: `$this` declares `setting`.
         apply(socket, unsafe {

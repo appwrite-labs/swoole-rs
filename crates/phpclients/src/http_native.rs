@@ -215,7 +215,7 @@ impl Co {
         record.protocol.package_length_size = WEBSOCKET_HEADER_LEN;
         record.protocol.package_length_offset = 0;
         record.protocol.package_body_offset = 0;
-        record.protocol.get_package_length = get_package_length as *mut c_void;
+        record.protocol.get_package_length = Some(get_package_length);
     }
 
     /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.
