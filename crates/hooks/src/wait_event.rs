@@ -263,8 +263,7 @@ pub unsafe fn swr_v1_hook_wait_event(
             events: to_poll(events),
             revents: 0,
         };
-        // SAFETY: `pfd` is one valid pollfd.
-        let ready = unsafe { libc::poll(&raw mut pfd, 1, 0) };
+        let ready = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut pfd), 0);
         if ready == 1 {
             if pfd.revents & libc::POLLNVAL != 0 {
                 return failed(libc::EBADF, 0);

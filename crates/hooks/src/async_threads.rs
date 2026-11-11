@@ -162,10 +162,7 @@ extern "C" fn thread_clean() {
 extern "C" fn spawn_failed() {
     let error = std::io::Error::last_os_error();
     let code = error.raw_os_error().unwrap_or(0);
-    // SAFETY: no preconditions.
-    let text = unsafe { libc::strerror(code) };
-    // SAFETY: strerror returns a NUL-terminated message.
-    let text = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    let text = swoole_rs_corebase::sys::strerror(code);
     log::set_last_error(code);
     log::notice(format_args!(
         "ThreadPool::create_thread(): create aio thread failed, please check your system configuration or adjust aio_worker_num, Error: {text}[{code}]"

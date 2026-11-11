@@ -91,6 +91,68 @@ pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
     unsafe { libc::fcntl(fd, cmd, arg) }
 }
 
+/// `flock(2)`.
+pub fn flock(fd: c_int, operation: c_int) -> c_int {
+    // SAFETY: flock(2) has no memory preconditions.
+    unsafe { libc::flock(fd, operation) }
+}
+
+/// `poll(2)` of `fds`.
+pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> c_int {
+    let count = libc::nfds_t::try_from(fds.len()).unwrap_or(libc::nfds_t::MAX);
+    // SAFETY: `fds` holds `count` writable pollfds.
+    unsafe { libc::poll(fds.as_mut_ptr(), count, timeout) }
+}
+
+/// `pipe(2)`: the read and write ends, or `None` with errno set.
+#[must_use]
+pub fn pipe() -> Option<[c_int; 2]> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for two descriptors.
+    (unsafe { libc::pipe(fds.as_mut_ptr()) } == 0).then_some(fds)
+}
+
+/// `fstat(2)`: the descriptor's status, or `None` with errno set.
+#[must_use]
+pub fn fstat(fd: c_int) -> Option<libc::stat> {
+    let mut stat = MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `stat` is writable storage for one stat.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: fstat succeeded, so it filled `stat`.
+    Some(unsafe { stat.assume_init() })
+}
+
+/// `strerror(3)`'s message for `code`.
+#[must_use]
+pub fn strerror(code: c_int) -> String {
+    // SAFETY: strerror returns a NUL-terminated message for any code.
+    let message = unsafe { libc::strerror(code) };
+    // SAFETY: as above, read before another strerror call on this thread.
+    unsafe { CStr::from_ptr(message) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `sleep(3)`: the seconds left when a signal cut it short.
+pub fn sleep(seconds: libc::c_uint) -> libc::c_uint {
+    // SAFETY: sleep(3) has no memory preconditions.
+    unsafe { libc::sleep(seconds) }
+}
+
+/// `usleep(3)`.
+pub fn usleep(microseconds: libc::useconds_t) -> c_int {
+    // SAFETY: usleep(3) has no memory preconditions.
+    unsafe { libc::usleep(microseconds) }
+}
+
+/// `nanosleep(2)` for `request`, the time left going to `remaining`.
+pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_int {
+    // SAFETY: both are live timespecs; nanosleep reads one and writes the other.
+    unsafe { libc::nanosleep(request, remaining) }
+}
+
 /// `open(2)` of `path`; `mode` applies when `flags` has `O_CREAT`.
 pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
     // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
