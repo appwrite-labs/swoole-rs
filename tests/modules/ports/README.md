@@ -67,7 +67,7 @@ python3 tests/modules/ports/php.py --engine ... --output REPORT
   `_protocol_name`, `_event`, `_callback_property` and `_callback_hook`.
 - `php.py`: event registration/lookup, unknown-event warnings, Stringable
   reentry and callback replacement lifetime across engines.
-- Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
+- Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures
 

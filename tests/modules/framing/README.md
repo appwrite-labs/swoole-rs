@@ -10,7 +10,7 @@ Packet framing and the MIME table (`crates/framing`); the ABI is in
   so it has no ABI gate; the value checks the old one made are Rust tests.
 - The `framing_unpack`, `framing_length` and `framing_stream` fuzz targets
   (`fuzz/`) compare against the pinned base.cc.
-- Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
+- Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Ported GoogleTests
 
