@@ -558,9 +558,13 @@ pub mod pool {
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
         POOL.users.fetch_add(1, SeqCst);
         let block = alloc(size).cast::<W>();
-        // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
-        // for each `Word`), which the pool gives no one else.
-        (!block.is_null()).then(|| unsafe { slice::from_raw_parts(block, count) })
+        if block.is_null() {
+            POOL.users.fetch_sub(1, SeqCst);
+            return None;
+        }
+        // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each
+        // `Word`), which the pool gives no one else.
+        Some(unsafe { slice::from_raw_parts(block, count) })
     }
 }
 
