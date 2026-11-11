@@ -29,8 +29,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_memory::channel::Record as ChannelRecord;
 use swoole_rs_memory::members::{Shm, pool as mem_pool, sw_shm_free};
 use swoole_rs_memory::{
-    swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_in,
-    swr_v1_memory_channel_init, swr_v1_memory_channel_lock,
+    swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_init,
 };
 use swoole_rs_process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, pop_message, push_message, reload_warn,
@@ -378,18 +377,15 @@ fn new_message_box(size: usize) -> *mut c_void {
 
 /// `message_box->push(msg, msg->size())`, under the box's lock.
 fn box_push(pool: Pool, message: *const u8) -> i64 {
-    let channel = record(pool).message_box.cast::<ChannelRecord>();
     // SAFETY: an `EventData`, whose `info.len` counts the bytes after its head.
     let length =
         unsafe { message.cast::<DataHead>().read_unaligned() }.len as usize + size_of::<DataHead>();
-    // SAFETY: the box was made with SW_CHAN_LOCK.
-    unsafe { swr_v1_memory_channel_lock(channel, true) };
-    // SAFETY: the box's queue and the message's bytes.
-    let pushed =
-        unsafe { swr_v1_memory_channel_in(channel.cast(), message.cast(), length as c_int) };
-    // SAFETY: this thread holds the lock.
-    unsafe { swr_v1_memory_channel_lock(channel, false) };
-    i64::from(pushed)
+    // SAFETY: as above, the message's bytes.
+    let message = unsafe { std::slice::from_raw_parts(message, length) };
+    // SAFETY: the box `new_message_box` made, live while the pool is; its SW_CHAN_LOCK
+    // mutex serializes the processes that push to and pop from it.
+    let channel = unsafe { &*record(pool).message_box.cast::<ChannelRecord>() };
+    i64::from(channel.push(message))
 }
 
 pub(crate) fn free_message_box(pool: Pool) {
