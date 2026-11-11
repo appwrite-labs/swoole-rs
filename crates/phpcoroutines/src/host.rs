@@ -380,7 +380,7 @@ pub fn yield_(co: Co) {
 /// [`yield_`], cancelable through `cancel(co)`.
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub unsafe fn yield_cancelable(co: Co, cancel: &mut swoole_rs_coroutine::Canceler<'_>) {
+pub unsafe fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
     // SAFETY: as the caller promises.
     unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel) };
 }

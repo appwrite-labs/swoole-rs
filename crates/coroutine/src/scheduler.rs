@@ -174,19 +174,32 @@ pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
     unsafe { swr_v1_coroutine_resume(scheduler(), co.cast()) };
 }
 
+/// Marks `co` canceled, then runs a copy of the yield's closure at `data`.
+///
+/// # Safety
+/// `data` is the `F` of the yield `co` still waits in.
+unsafe fn mark_canceled<F: FnOnce(*mut c_void) -> bool + Copy>(
+    co: *mut c_void,
+    data: *const c_void,
+) -> bool {
+    // SAFETY: as the caller promises; copied, as `cancel` may end its frame.
+    let cancel = unsafe { data.cast::<F>().read() };
+    // SAFETY: as above, `co` waits.
+    unsafe { (*co.cast::<Coroutine>()).mark_canceled() };
+    cancel(co)
+}
+
 /// `co->yield(&cancel_fn)`, where `cancel_fn` calls `cancel(co)` once `co`
 /// is marked canceled.
 ///
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing with a destructor.
-pub unsafe fn yield_with_cancel(co: *mut c_void, cancel: &mut Canceler<'_>) {
-    let mut marked = |co: *mut c_void| {
-        // SAFETY: the yield that set this canceler is still waiting.
-        unsafe { (*co.cast::<Coroutine>()).mark_canceled() };
-        cancel(co)
+pub unsafe fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+    let canceler = Canceler {
+        call: mark_canceled::<F>,
+        data: (&raw const cancel).cast(),
     };
-    let mut canceler: &mut Canceler<'_> = &mut marked;
-    let canceler = (&raw mut canceler).cast();
+    let canceler = (&raw const canceler).cast_mut().cast();
     // SAFETY: as the caller promises; the canceler outlives the yield.
     unsafe { swr_v1_coroutine_yield_cancelable(scheduler(), co.cast(), canceler) };
 }

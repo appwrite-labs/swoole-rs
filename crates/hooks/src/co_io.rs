@@ -179,7 +179,7 @@ mod native {
         let event = if event == READ { READ } else { WRITE };
         // SAFETY: the current coroutine, waiting on the live record, whose frames own
         // nothing with a destructor.
-        unsafe { swoole_rs_coroutine::yield_with_cancel(co, &mut |_| socket.cancel(event)) };
+        unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event)) };
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
