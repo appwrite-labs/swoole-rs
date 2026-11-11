@@ -152,48 +152,50 @@ mod descriptor {
         EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK, c_int,
         c_void, current, socket_free, swoole_event_add, swoole_event_del,
     };
-    use crate::Socket;
     use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
     use crate::socket_upstream::make_socket_fd;
+    use crate::{Socket, SocketRecord};
+    use core::ptr;
+    use core::sync::atomic::{AtomicPtr, Ordering::Relaxed};
     use swoole_rs_process::signal_loop::DescriptorOps;
 
-    pub(super) fn make(fd: i32) -> *mut c_void {
-        make_socket_fd(fd, FD_SIGNAL).cast()
+    /// The signalfd's socket wrapper: null, or the live one `make` created and
+    /// `free` has not yet released.
+    static SOCKET: AtomicPtr<SocketRecord> = AtomicPtr::new(ptr::null_mut());
+
+    pub(super) fn make(fd: i32) {
+        SOCKET.store(make_socket_fd(fd, FD_SIGNAL), Relaxed);
     }
 
     /// Frees the wrapper but not the descriptor, which the signalfd backend closes.
-    /// # Safety
-    /// `socket` is the loop's live signalfd wrapper.
-    pub(super) unsafe fn free(socket: *mut c_void) {
-        // SAFETY: the loop's live signalfd wrapper.
-        let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+    pub(super) fn free() {
+        // SAFETY: SOCKET's wrapper, which nothing uses once taken out of it.
+        let Some(socket) = (unsafe { Socket::from_ptr(SOCKET.swap(ptr::null_mut(), Relaxed)) })
+        else {
             return;
         };
         socket.edit(|record| record.fd = -1);
-        // SAFETY: as above; nothing uses it afterwards.
+        // SAFETY: as above.
         unsafe { socket_free(socket.as_ptr()) };
     }
 
-    /// # Safety
-    /// `socket` is the loop's live signalfd wrapper.
-    pub(super) unsafe fn events(socket: *mut c_void) -> i32 {
-        // SAFETY: the loop's live signalfd wrapper.
-        unsafe { Socket::from_ptr(socket.cast()) }
+    pub(super) fn events() -> i32 {
+        // SAFETY: SOCKET's wrapper.
+        unsafe { Socket::from_ptr(SOCKET.load(Relaxed)) }
             .map_or(0, |socket| socket.read(|record| record.events))
     }
 
-    /// # Safety
-    /// `socket` is the loop's live signalfd wrapper.
-    pub(super) unsafe fn add(socket: *mut c_void, events: i32) -> i32 {
-        // SAFETY: a live wrapper on the thread's available loop.
-        unsafe { swoole_event_add(socket.cast(), events) }
+    pub(super) fn add(events: i32) -> i32 {
+        // SAFETY: SOCKET's wrapper, on the thread's available loop.
+        unsafe { swoole_event_add(SOCKET.load(Relaxed), events) }
     }
 
-    /// # Safety
-    /// `socket` is the loop's live signalfd wrapper.
-    pub(super) unsafe fn del(socket: *mut c_void) {
-        // SAFETY: a live wrapper the thread's loop holds.
-        unsafe { swoole_event_del(socket.cast()) };
+    pub(super) fn del() {
+        let socket = SOCKET.load(Relaxed);
+        if !socket.is_null() {
+            // SAFETY: SOCKET's wrapper, which the thread's loop holds.
+            unsafe { swoole_event_del(socket) };
+        }
     }
 
     pub(super) fn installed() -> bool {

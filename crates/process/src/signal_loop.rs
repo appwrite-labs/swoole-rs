@@ -3,9 +3,6 @@
 //! Signal backend routing and signalfd reactor-wrapper custody. The existing
 //! backends own handlers/masks/descriptors; SDK leaves lend reactor/socket effects.
 use crate::signal;
-use std::ffi::c_void;
-#[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use swoole_rs_corebase as corebase;
 
 /// The event loop's side of the signal backends (crates/reactor).
@@ -24,20 +21,23 @@ pub struct Ops {
     pub report: fn(u8, i32, i32),
 }
 
-/// The signalfd socket's reactor effects. Each `socket` is the wrapper `make`
-/// returned and `free` has not yet released.
+/// The signalfd socket's reactor effects. The reactor side keeps the socket
+/// wrapper `make` creates until `free` releases it.
 pub struct DescriptorOps {
-    pub make: fn(i32) -> *mut c_void,
-    pub free: unsafe fn(*mut c_void),
-    pub events: unsafe fn(*mut c_void) -> i32,
-    pub add: unsafe fn(*mut c_void, i32) -> i32,
-    pub del: unsafe fn(*mut c_void),
+    /// Wrap the signalfd's descriptor in a socket.
+    pub make: fn(i32),
+    /// Release the wrapper but not the descriptor, which the backend closes.
+    pub free: fn(),
+    /// The wrapper's events.
+    pub events: fn() -> i32,
+    /// Add the wrapper to the thread's loop for `events`.
+    pub add: fn(i32) -> i32,
+    /// Remove the wrapper, if any, from the loop.
+    pub del: fn(),
     pub installed: fn() -> bool,
     pub install: fn(),
     pub erase_end: fn(),
 }
-#[cfg(target_os = "linux")]
-static SOCKET: AtomicUsize = AtomicUsize::new(0);
 fn report(ops: &Ops, kind: u8, signo: i32, error: i32) {
     (ops.report)(kind, signo, error);
 }
@@ -120,8 +120,7 @@ fn setup(ops: &Ops) -> bool {
         let created = crate::signalfd::signalfd_create();
         match created.status {
             0 => {
-                let socket = (descriptor.make)(created.fd);
-                SOCKET.store(socket as usize, Relaxed);
+                (descriptor.make)(created.fd);
                 corebase::swr_v1_core_set_signal_fd(created.fd);
             }
             1 => return false,
@@ -134,12 +133,8 @@ fn setup(ops: &Ops) -> bool {
     if !(descriptor.installed)() {
         (descriptor.install)();
     }
-    let socket = SOCKET.load(Relaxed) as *mut c_void;
-    // SAFETY: an available descriptor has the live wrapper created above.
-    let events = unsafe { (descriptor.events)(socket) };
     let read = corebase::constants::EventType::SW_EVENT_READ as i32;
-    // SAFETY: the reactor borrows this live wrapper, with the requested canonical read mask.
-    if events & read == 0 && unsafe { (descriptor.add)(socket, read) } < 0 {
+    if (descriptor.events)() & read == 0 && (descriptor.add)(read) < 0 {
         return false;
     }
     (descriptor.erase_end)();
@@ -153,10 +148,7 @@ fn close(ops: &Ops) {
     if crate::signalfd::signalfd_fd() == -1 {
         return;
     }
-    let socket = SOCKET.load(Relaxed) as *mut c_void;
-    // SAFETY: detach fd then release only the wrapper, preserving the backend’s descriptor custody.
-    unsafe { (descriptor.free)(socket) };
-    SOCKET.store(0, Relaxed);
+    (descriptor.free)();
     crate::signalfd::signalfd_close();
 }
 /// `swoole_signal_clear`, on the thread that owns the handlers.
@@ -207,13 +199,10 @@ pub fn read(fd: i32, ops: &Ops) -> i32 {
 /// The reactor is destroyed: this process removes its signalfd wrapper from it.
 #[cfg(target_os = "linux")]
 pub fn destroyed(ops: &Ops) {
-    let socket = SOCKET.load(Relaxed) as *mut c_void;
-    if !socket.is_null()
-        && crate::signalfd::signalfd_owned()
+    if crate::signalfd::signalfd_owned()
         && let Some(descriptor) = ops.descriptor
     {
-        // SAFETY: the live wrapper `setup` made, which the reactor holds.
-        unsafe { (descriptor.del)(socket) };
+        (descriptor.del)();
     }
 }
 /// The signal loop's exit condition: one event fewer, with upstream's unsigned wrap.
