@@ -27,12 +27,10 @@ pub struct ServerWorkers {
 /// `view` loans initialized pool/array records exclusively during startup.
 /// `pending` loans `user_count` live worker pointers. `server` is an opaque loan.
 pub unsafe fn swr_v1_process_server_workers_start(
-    view: *const ServerWorkers,
+    view: &ServerWorkers,
     server: *mut c_void,
     pending: *const *mut WorkerRecord,
 ) {
-    // SAFETY: the native startup call loans the view for this leaf operation.
-    let view = unsafe { &*view };
     let pool = view.event_pool;
     // SAFETY: startup exclusively owns these pool fields before factory start.
     unsafe { (*pool).ptr = server };
@@ -66,12 +64,7 @@ pub unsafe fn swr_v1_process_server_workers_start(
 /// `view` loans live pools and arrays with the stated counts. The returned
 /// pointer remains a loan of the selected array, without extending its lifetime.
 #[must_use]
-pub unsafe fn swr_v1_process_server_worker(
-    view: *const ServerWorkers,
-    id: u16,
-) -> *mut WorkerRecord {
-    // SAFETY: this leaf call loans the view and its canonical arrays.
-    let view = unsafe { &*view };
+pub unsafe fn swr_v1_process_server_worker(view: &ServerWorkers, id: u16) -> *mut WorkerRecord {
     let id = u32::from(id);
     if id < view.event_count {
         // SAFETY: the event pool is live.
@@ -108,12 +101,10 @@ pub unsafe fn swr_v1_process_server_worker(
 /// Server's live registry. Lookup is serialized with registry mutation.
 #[must_use]
 pub unsafe fn swr_v1_process_server_worker_by_pid(
-    view: *const ServerWorkers,
+    view: &ServerWorkers,
     registry: *const crate::worker_registry::WorkerRegistry,
     pid: core::ffi::c_int,
 ) -> *mut WorkerRecord {
-    // SAFETY: the caller loans this immutable array view for the operation.
-    let view = unsafe { &*view };
     // SAFETY: these are the canonical ordered event records and their live count.
     let worker = unsafe {
         crate::worker_record::swr_v1_worker_array_lookup(view.event_workers, view.event_count, pid)
@@ -177,29 +168,29 @@ mod tests {
             (*tasks).register(-7, (&raw mut task).cast(), 1);
             (*registry).register(-7, (&raw mut user).cast(), CATEGORY_USER);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, registry, -7),
                 workers
             );
             Worker::new(workers).set_pid(5);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, registry, -7),
                 workers.add(1)
             );
             Worker::new(workers.add(1)).set_pid(0);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&raw const view, registry, 0),
+                swr_v1_process_server_worker_by_pid(&view, registry, 0),
                 workers.add(1)
             );
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, registry, -7),
                 &raw mut task
             );
             (*tasks).unregister(-7);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, registry, -7),
                 &raw mut user
             );
-            assert!(swr_v1_process_server_worker_by_pid(&raw const view, registry, 99).is_null());
+            assert!(swr_v1_process_server_worker_by_pid(&view, registry, 99).is_null());
             drop(Box::from_raw(tasks));
             drop(Box::from_raw(registry));
         }
@@ -235,7 +226,7 @@ mod tests {
         let mut server = 0_u8;
         unsafe {
             swr_v1_process_server_workers_start(
-                &raw const view,
+                &view,
                 (&raw mut server).cast(),
                 pending_ptrs.as_ptr(),
             );
@@ -265,9 +256,7 @@ mod tests {
             users_ptr.wrapping_add(2),
         ];
         for (id, expected) in expected.into_iter().enumerate() {
-            let found = unsafe {
-                swr_v1_process_server_worker(&raw const view, u16::try_from(id).unwrap())
-            };
+            let found = unsafe { swr_v1_process_server_worker(&view, u16::try_from(id).unwrap()) };
             assert_eq!(found, expected);
             unsafe {
                 Worker::new(found).set_pid(123);
@@ -278,7 +267,7 @@ mod tests {
                 "lookup lends canonical mutable records"
             );
         }
-        assert!(unsafe { swr_v1_process_server_worker(&raw const view, 6) }.is_null());
+        assert!(unsafe { swr_v1_process_server_worker(&view, 6) }.is_null());
         for (id, event) in events.iter().enumerate() {
             assert_eq!(
                 unsafe { Worker::new(event).id() },

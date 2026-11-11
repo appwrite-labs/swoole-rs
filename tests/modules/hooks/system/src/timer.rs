@@ -307,7 +307,7 @@ fn reinit() {
     // SAFETY: as above.
     unsafe { swr_case_timer_exchange(timer) };
     // SAFETY: this thread's live timer.
-    unsafe { swoole_rs_timer::owner_reinit(timer.cast(), false) };
+    swoole_rs_timer::owner_reinit(unsafe { &*timer.cast() }, false);
 
     let ms1 = now_ms();
 

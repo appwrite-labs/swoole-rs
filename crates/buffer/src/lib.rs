@@ -264,16 +264,14 @@ impl Buffer {
 }
 
 // Admission/output initialization stays ahead of the first allocator effect.
-unsafe fn create_buffer(chunk_size: u32, output: *mut *mut Buffer) -> i32 {
-    if output.is_null() {
+fn create_buffer(chunk_size: u32, output: Option<&mut *mut Buffer>) -> i32 {
+    let Some(output) = output else {
         return INVALID;
-    }
-    // SAFETY: non-null (checked above), aligned, writable pointer storage.
-    unsafe { output.write(ptr::null_mut()) };
+    };
+    *output = ptr::null_mut();
     match Buffer::try_new(chunk_size) {
         Ok(owner) => {
-            // SAFETY: as above.
-            unsafe { output.write(Box::into_raw(owner)) };
+            *output = Box::into_raw(owner);
             OK
         }
         Err(status) => status,
@@ -307,15 +305,13 @@ pub unsafe extern "C" fn swr_v1_buffer_release(buffer: *mut Buffer) -> i32 {
 /// Handle and borrowed input satisfy the frozen ABI's validity/disjointness rules.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_buffer_append(
-    buffer: *mut Buffer,
+    buffer: Option<&mut Buffer>,
     data: *const u8,
     length: usize,
 ) -> i32 {
-    if buffer.is_null() {
+    let Some(queue) = buffer else {
         return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
+    };
     // SAFETY: the borrowed input follows the frozen ABI's validity rules.
     unsafe { queue.appendv(&[BufferIovec { data, length }], 0) }
 }
@@ -346,13 +342,17 @@ pub extern "C" fn swr_v1_buffer_iovec_layout() -> PosixIovecLayout {
 /// validity/disjointness/stability rules. This is not the frozen POD type. No
 /// descriptor reference survives the call; callbacks and native effects remain outside.
 #[cfg(unix)]
+#[must_use]
 pub unsafe fn swr_v1_buffer_append_iovec(
-    buffer: *mut Buffer,
+    buffer: Option<&mut Buffer>,
     iov: *const libc::iovec,
     count: usize,
     offset: i64,
 ) -> i32 {
-    if buffer.is_null() || offset < 0 || (count != 0 && iov.is_null()) {
+    let Some(queue) = buffer else {
+        return INVALID;
+    };
+    if offset < 0 || (count != 0 && iov.is_null()) {
         return INVALID;
     }
     if !slice_fits::<libc::iovec>(count) {
@@ -364,30 +364,22 @@ pub unsafe fn swr_v1_buffer_append_iovec(
         // SAFETY: non-null, `count` fits isize (checked above), readable descriptors.
         unsafe { slice::from_raw_parts(iov, count) }
     };
-    // SAFETY: `buffer` is non-null (checked above), live and exclusive.
-    let queue = unsafe { &mut *buffer };
     // SAFETY: the borrowed input follows the frozen ABI's validity rules.
     unsafe { queue.appendv(parts, offset.unsigned_abs()) }
 }
 
 /// Read byte accounting and queue entry count.
-/// # Safety
-/// Handle is live; both outputs are valid, aligned and mutually disjoint.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_stats(
-    buffer: *const Buffer,
-    length: *mut u32,
-    count: *mut usize,
+pub extern "C" fn swr_v1_buffer_stats(
+    buffer: Option<&Buffer>,
+    length: Option<&mut u32>,
+    count: Option<&mut usize>,
 ) -> i32 {
-    if buffer.is_null() || length.is_null() || count.is_null() {
+    let (Some(queue), Some(length), Some(count)) = (buffer, length, count) else {
         return INVALID;
-    }
-    // SAFETY: `buffer` is non-null (checked above) and live.
-    let queue = unsafe { &*buffer };
-    // SAFETY: non-null (checked above), aligned, writable and disjoint outputs.
-    unsafe { length.write(queue.length) };
-    // SAFETY: as above.
-    unsafe { count.write(queue.entries.len()) };
+    };
+    *length = queue.length;
+    *count = queue.entries.len();
     OK
 }
 
@@ -438,47 +430,46 @@ mod tests {
     static ALLOCATOR: FailAllocator = FailAllocator;
 
     pub(super) struct Owned(pub(super) *mut Buffer);
+    /// A test's live queue handle, or null.
+    pub(super) fn q<'a>(buffer: *mut Buffer) -> Option<&'a mut Buffer> {
+        unsafe { buffer.as_mut() }
+    }
+    /// As [`q`], shared.
+    pub(super) fn r<'a>(buffer: *const Buffer) -> Option<&'a Buffer> {
+        unsafe { buffer.as_ref() }
+    }
     unsafe extern "C" fn keep(_: *mut c_void) {}
     impl Owned {
         pub(super) fn new(size: u32) -> Self {
             let mut buffer = ptr::null_mut();
-            assert_eq!(
-                unsafe { swr_v1_buffer_typed_create(size, &raw mut buffer) },
-                OK
-            );
+            assert_eq!(swr_v1_buffer_typed_create(size, Some(&mut buffer)), OK);
             Self(buffer)
         }
         pub(super) fn push(&self, token: *mut c_void) -> i32 {
-            unsafe { swr_v1_buffer_typed_push(self.0, 1, token, Some(keep)) }
+            unsafe { swr_v1_buffer_typed_push(q(self.0), 1, token, Some(keep)) }
         }
         pub(super) fn appendv(&self, iov: &[BufferIovec], offset: u64) -> i32 {
             unsafe { (*self.0).appendv(iov, offset) }
         }
         pub(super) fn append(&self, bytes: &[u8]) -> i32 {
-            unsafe { swr_v1_buffer_append(self.0, bytes.as_ptr(), bytes.len()) }
+            unsafe { swr_v1_buffer_append(q(self.0), bytes.as_ptr(), bytes.len()) }
         }
         pub(super) fn stats(&self) -> (u32, usize) {
             let (mut length, mut count) = (0, 0);
             assert_eq!(
-                unsafe { swr_v1_buffer_stats(self.0, &raw mut length, &raw mut count) },
+                swr_v1_buffer_stats(r(self.0), Some(&mut length), Some(&mut count)),
                 OK
             );
             (length, count)
         }
         pub(super) fn view(&self) -> TypedFront {
             let mut view = TypedFront::default();
-            assert_eq!(
-                unsafe { swr_v1_buffer_typed_front(self.0, &raw mut view) },
-                OK
-            );
+            assert_eq!(swr_v1_buffer_typed_front(r(self.0), Some(&mut view)), OK);
             view
         }
         pub(super) fn pop(&self) -> *mut c_void {
             let mut detached = TypedDetached::default();
-            assert_eq!(
-                unsafe { swr_v1_buffer_typed_pop(self.0, &raw mut detached) },
-                OK
-            );
+            assert_eq!(swr_v1_buffer_typed_pop(q(self.0), Some(&mut detached)), OK);
             detached.token
         }
     }
@@ -513,7 +504,7 @@ mod tests {
                 let owned = Owned::new(chunk);
                 let status = unsafe {
                     swr_v1_buffer_append_iovec(
-                        owned.0,
+                        q(owned.0),
                         vectors.as_ptr(),
                         vectors.len(),
                         i64::try_from(offset).unwrap(),
@@ -543,8 +534,9 @@ mod tests {
             let before = owned.stats();
             let front = owned.view();
             FAIL_AFTER.with(|counter| counter.set(Some(budget)));
-            let status =
-                unsafe { swr_v1_buffer_append_iovec(owned.0, vectors.as_ptr(), vectors.len(), 0) };
+            let status = unsafe {
+                swr_v1_buffer_append_iovec(q(owned.0), vectors.as_ptr(), vectors.len(), 0)
+            };
             FAIL_AFTER.with(|counter| counter.set(None));
             if status == OK {
                 succeeded = true;
@@ -561,19 +553,19 @@ mod tests {
         assert!(succeeded);
         let owned = Owned::new(4);
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.0, vectors.as_ptr(), vectors.len(), -1) },
+            unsafe { swr_v1_buffer_append_iovec(q(owned.0), vectors.as_ptr(), vectors.len(), -1) },
             INVALID
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.0, ptr::null(), 1, 0) },
+            unsafe { swr_v1_buffer_append_iovec(q(owned.0), ptr::null(), 1, 0) },
             INVALID
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.0, ptr::null(), 0, 0) },
+            unsafe { swr_v1_buffer_append_iovec(q(owned.0), ptr::null(), 0, 0) },
             OK
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.0, vectors.as_ptr(), usize::MAX, 0) },
+            unsafe { swr_v1_buffer_append_iovec(q(owned.0), vectors.as_ptr(), usize::MAX, 0) },
             OVERFLOW
         );
         assert_eq!(owned.stats(), (0, 0));
@@ -683,35 +675,29 @@ mod tests {
         assert_eq!(buffer.appendv(&[], 1), INVALID);
         assert_eq!(buffer.appendv(&[], 0), OK);
         assert_eq!(
-            unsafe { swr_v1_buffer_append(buffer.0, ptr::null(), 0) },
+            unsafe { swr_v1_buffer_append(q(buffer.0), ptr::null(), 0) },
             OK
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append(buffer.0, ptr::dangling(), usize::MAX) },
+            unsafe { swr_v1_buffer_append(q(buffer.0), ptr::dangling(), usize::MAX) },
             OVERFLOW
         );
         assert_eq!(buffer.push(ptr::null_mut()), INVALID);
-        assert_eq!(
-            unsafe { swr_v1_buffer_typed_pop(buffer.0, ptr::null_mut()) },
-            INVALID
-        );
+        assert_eq!(swr_v1_buffer_typed_pop(q(buffer.0), None), INVALID);
         assert_eq!(buffer.stats(), (3, 1));
         let mut view = buffer.view();
-        assert_eq!(
-            unsafe { swr_v1_buffer_typed_front(ptr::null(), &raw mut view) },
-            INVALID
-        );
+        assert_eq!(swr_v1_buffer_typed_front(None, Some(&mut view)), INVALID);
         assert_eq!(view.length, 0);
         assert!(view.data.is_null());
         let (mut length, mut count) = (123, 456);
         assert_eq!(
-            unsafe { swr_v1_buffer_stats(ptr::null(), &raw mut length, &raw mut count) },
+            swr_v1_buffer_stats(None, Some(&mut length), Some(&mut count)),
             INVALID
         );
         assert_eq!((length, count), (123, 456));
         buffer.pop();
         assert_eq!(
-            unsafe { swr_v1_buffer_typed_front(buffer.0, &raw mut view) },
+            swr_v1_buffer_typed_front(r(buffer.0), Some(&mut view)),
             EMPTY
         );
         let mut detached = TypedDetached {
@@ -719,7 +705,7 @@ mod tests {
             dispose: None,
         };
         assert_eq!(
-            unsafe { swr_v1_buffer_typed_pop(buffer.0, &raw mut detached) },
+            swr_v1_buffer_typed_pop(q(buffer.0), Some(&mut detached)),
             EMPTY
         );
         assert!(detached.token.is_null());
@@ -734,7 +720,7 @@ mod tests {
             (*buffer.0).length = u32::MAX;
         }
         assert_eq!(
-            unsafe { swr_v1_buffer_append(buffer.0, ptr::dangling(), 1) },
+            unsafe { swr_v1_buffer_append(q(buffer.0), ptr::dangling(), 1) },
             OVERFLOW
         );
         assert_eq!(buffer.stats(), (u32::MAX, 0));
@@ -797,7 +783,7 @@ mod tests {
     fn every_allocation_failure_is_atomic() {
         let mut handle = ptr::dangling_mut();
         FAIL_AFTER.set(Some(0));
-        let status = unsafe { swr_v1_buffer_typed_create(4, &raw mut handle) };
+        let status = swr_v1_buffer_typed_create(4, Some(&mut handle));
         FAIL_AFTER.set(None);
         assert_eq!(status, NOMEM);
         assert!(handle.is_null());

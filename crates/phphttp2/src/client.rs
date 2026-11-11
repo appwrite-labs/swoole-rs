@@ -331,7 +331,7 @@ impl Client {
     fn io_error(&self, socket: Socket) {
         let mut message: *const c_char = ptr::null();
         // SAFETY: a live socket and a writable local.
-        let code = unsafe { native::swoole_http2_client_coro_error(socket, &raw mut message) };
+        let code = unsafe { native::swoole_http2_client_coro_error(socket, &mut message) };
         let message = if message.is_null() {
             &b""[..]
         } else {
@@ -368,9 +368,9 @@ impl Client {
             native::swoole_http2_client_coro_create_socket(
                 self.host.as_ptr().cast(),
                 self.host.len(),
-                &raw mut converted,
-                &raw mut socket,
-                &raw mut error,
+                &mut converted,
+                &mut socket,
+                &mut error,
             )
         };
         if !converted.is_null() {

@@ -513,51 +513,32 @@ unsafe extern "C-unwind" fn destroyed(reactor: *mut c_void) {
     crate::wrapper::swoole_timer_free();
 }
 
-/// The record behind `timer`.
-///
-/// # Safety
-/// `timer` is a live timer from [`Owner::create`].
-unsafe fn owner<'a>(timer: *const Owner) -> &'a Owner {
-    // SAFETY: as the caller promises.
-    unsafe { &*timer }
-}
-
 /// `delete timer`.
 ///
 /// # Safety
 /// `timer` is a live timer from [`Owner::create`], freed once.
 pub(crate) unsafe fn free(timer: *mut Owner) {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.destroy();
+    unsafe { &*timer }.destroy();
     // SAFETY: Owner::create's allocation, no longer referenced.
     drop(unsafe { Box::from_raw(timer) });
 }
 
 /// The timer's queue, for `Server::get_timer_stats`.
-///
-/// # Safety
-/// `timer` is live.
-pub unsafe fn owner_queue(timer: *const Owner) -> *mut Queue {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.queue.as_ptr()
+#[must_use]
+pub fn owner_queue(timer: &Owner) -> *mut Queue {
+    timer.queue.as_ptr()
 }
 
 /// `Timer::get_reactor()`.
-///
-/// # Safety
-/// `timer` is live.
-pub unsafe fn owner_reactor(timer: *const Owner) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.reactor.get()
+#[must_use]
+pub fn owner_reactor(timer: &Owner) -> *mut c_void {
+    timer.reactor.get()
 }
 
 /// `Timer::reinit(manually_trigger)`.
-///
-/// # Safety
-/// `timer` is live.
-pub unsafe fn owner_reinit(timer: *mut Owner, manually_trigger: bool) {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.reinit(manually_trigger);
+pub fn owner_reinit(timer: &Owner, manually_trigger: bool) {
+    timer.reinit(manually_trigger);
 }
 
 /// `tests/modules/timer/probe.cc`'s scenarios, with `test_adapter.py`'s expected values:

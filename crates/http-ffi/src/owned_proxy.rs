@@ -23,18 +23,19 @@ unsafe fn slot(owner: &ProxyState, index: usize) -> &[u8] {
 /// `HttpProxy::get_auth_str()`'s Base64 credentials into 512 bytes at `output`,
 /// NUL-terminated: 1 when they were cut to fit (errno EOVERFLOW), else 0.
 /// # Safety
-/// owner is live/stable; output lends 512 bytes and written is writable/disjoint.
+/// owner's string slots are stable; output lends 512 bytes disjoint from the rest.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_http_proxy_owned_authorization(
-    owner: *const ProxyState,
+    owner: &ProxyState,
     output: *mut u8,
-    written: *mut usize,
+    written: Option<&mut usize>,
 ) -> i32 {
-    if output.is_null() || written.is_null() {
+    let Some(written) = written else {
+        return crate::INVALID;
+    };
+    if output.is_null() {
         return crate::INVALID;
     }
-    // SAFETY: caller lends the live owner's unchanged string slots.
-    let owner = unsafe { &*owner };
     // SAFETY: the username is stable through the bounded codec.
     let user = unsafe { slot(owner, 1) };
     // SAFETY: the password is stable through the bounded codec.
@@ -43,8 +44,7 @@ pub unsafe extern "C" fn swr_v1_http_proxy_owned_authorization(
     let (status, length) = proxy_authorization(user, password, &mut encoded);
     // SAFETY: `length + 1 <= 512` bytes into the caller's 512, disjoint from `encoded`.
     unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), output, length + 1) };
-    // SAFETY: `written` is non-null (checked above) and writable.
-    unsafe { written.write(length) };
+    *written = length;
     status
 }
 
@@ -88,7 +88,7 @@ fn authorization(owner: &ProxyState) -> Vec<u8> {
     let (mut output, mut written) = ([0u8; 512], 0);
     // SAFETY: the live owner, 512 writable bytes and the length slot.
     let status = unsafe {
-        swr_v1_http_proxy_owned_authorization(owner, output.as_mut_ptr(), &raw mut written)
+        swr_v1_http_proxy_owned_authorization(owner, output.as_mut_ptr(), Some(&mut written))
     };
     if status < 0 {
         return Vec::new();
@@ -108,16 +108,15 @@ fn authorization(owner: &ProxyState) -> Vec<u8> {
 /// the authorization when the proxy has a password. Returns the bytes written (the
 /// whole length for a zero capacity).
 /// # Safety
-/// owner is live; host lends its bytes; output is `capacity` writable bytes disjoint from both.
+/// owner's slots are stable; host lends its bytes; output is `capacity` writable bytes
+/// disjoint from both.
 pub unsafe fn swr_v1_http_proxy_connect(
-    owner: *const ProxyState,
+    state: &ProxyState,
     host: *const u8,
     host_length: usize,
     output: *mut u8,
     capacity: usize,
 ) -> usize {
-    // SAFETY: the caller's live owner.
-    let state = unsafe { &*owner };
     // SAFETY: the live owner's password slot.
     let authenticated = !unsafe { slot(state, 2) }.is_empty();
     let auth = if authenticated {
@@ -256,7 +255,7 @@ mod tests {
             set_errno(libc::EINTR);
             let written = unsafe {
                 swr_v1_http_proxy_connect(
-                    self.0.owner,
+                    &*self.0.owner,
                     host.as_ptr(),
                     host.len(),
                     output.as_mut_ptr(),

@@ -488,7 +488,7 @@ impl Handle {
     /// The TLS context's view; TLS is on.
     fn tls(self) -> OwnedTlsPrepared {
         // SAFETY: the client's live context.
-        unsafe { swr_v1_tls_owner_view(self.get().tls.get()) }
+        swr_v1_tls_owner_view(unsafe { &*self.get().tls.get() })
     }
 
     fn tls_fields(self) -> &'static mut OwnedTlsFields {
@@ -533,7 +533,7 @@ impl Handle {
             return 0;
         }
         // SAFETY: the socket's live output Buffer.
-        unsafe { swoole_rs_buffer::cpp::swr_cpp_buffer_length(buffer.cast()) }
+        swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
     }
 
     /// The input buffer (`cli->buffer`), null until an async connect makes it.
@@ -764,17 +764,14 @@ pub unsafe extern "C" fn swr_v1_clients_init_reactor(reactor: *mut c_void) {
 
 /// `Client::onConnect` and the rest: `listener(object, event, ...)` for each
 /// event in `events` (`1 << ON_*`), `object` the record's.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_listen(
-    client: *mut Client,
+pub extern "C" fn swr_v1_clients_listen(
+    client: &Client,
     object: *mut c_void,
     events: u32,
     listener: Listener,
 ) {
-    let this = Handle(client);
+    let this = Handle(core::ptr::from_ref(client).cast_mut());
     this.fields().object = object;
     this.get().listener.set(Some(listener));
     this.get().events.set(events);
@@ -863,8 +860,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     });
     client.set(STREAM, is_stream(socket_type));
     let mut kind_out = 0;
-    // SAFETY: two writable ints.
-    unsafe { swr_v1_socket_domain_and_type(kind, &raw mut client.domain, &raw mut kind_out) };
+    swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
     let client = Box::into_raw(client);
     record.edit(|record| record.object = client.cast());
     client
@@ -1058,22 +1054,15 @@ pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
 }
 
 /// One of the flags above; false for any other.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_flag(client: *const Client, name: u32) -> bool {
-    Handle(client.cast_mut()).flag(name)
+pub extern "C" fn swr_v1_clients_flag(client: &Client, name: u32) -> bool {
+    client.flag(name)
 }
 
 /// `buffer_high_watermark` (`high`) or `buffer_low_watermark`: the address of the
 /// value, which C++'s `Client` keeps as a reference for its lifetime.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_watermark(client: *mut Client, high: bool) -> *mut u32 {
-    let client = Handle(client).get();
+pub extern "C" fn swr_v1_clients_watermark(client: &Client, high: bool) -> *mut u32 {
     if high {
         client.high_watermark.as_ptr()
     } else {
@@ -1256,29 +1245,21 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
 }
 
 /// The proxy's fields (`http` or SOCKS5), null without one.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_proxy_fields(
-    client: *const Client,
+pub extern "C" fn swr_v1_clients_proxy_fields(
+    client: &Client,
     http: bool,
 ) -> *mut swoole_rs_corebase::ProxyFields {
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
-    Handle(client.cast_mut())
+    Handle(core::ptr::from_ref(client).cast_mut())
         .proxy(which)
         .map_or(core::ptr::null_mut(), |proxy| proxy.fields.get())
 }
 
 /// The client's `SSLContext`, which crates/tls configures; null while TLS is off.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ssl_context(
-    client: *const Client,
-) -> *const OwnedTlsContext {
-    Handle(client.cast_mut()).get().tls.get()
+pub extern "C" fn swr_v1_clients_ssl_context(client: &Client) -> *const OwnedTlsContext {
+    client.tls.get()
 }
 
 /// `Client::enable_dtls()`: the context's protocols become DTLS.
@@ -1339,13 +1320,18 @@ fn ssl_handshake(this: Handle) -> c_int {
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
 fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
-    // SAFETY: the live socket's session.
-    if !unsafe { socket_ssl_verify(this.socket_ptr(), allow_self_signed) } {
+    if !this
+        .socket()
+        .read(|socket| socket_ssl_verify(socket, allow_self_signed))
+    {
         return ERR;
     }
     let name = this.tls_host_name();
-    // SAFETY: as above, and a NUL-terminated name.
-    if !name.is_empty() && !unsafe { socket_ssl_check_host(this.socket_ptr(), name.as_ptr()) } {
+    if !name.is_empty()
+        && !this
+            .socket()
+            .read(|socket| socket_ssl_check_host(socket, name))
+    {
         return ERR;
     }
     OK

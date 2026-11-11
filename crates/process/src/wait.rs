@@ -73,16 +73,14 @@ fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t 
 /// yields until the reaper hands it a child or `timeout` passes.
 ///
 /// # Safety
-/// `status` is writable; `ops` holds the native coroutine operations.
+/// `ops` holds the native coroutine operations.
 pub unsafe fn wait_pid(
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: &mut c_int,
     options: c_int,
     timeout: f64,
     ops: &Coroutines,
 ) -> Waited {
-    // SAFETY: the caller passes a writable status.
-    let status = unsafe { &mut *status };
     let exited = waits(|waits| {
         if pid < 0 {
             waits.exited.pop_first()
@@ -251,7 +249,7 @@ mod tests {
         };
         let child = spawn(3);
         let mut status = 0;
-        let waited = unsafe { wait_pid(child, &raw mut status, 0, -1.0, &plain) };
+        let waited = unsafe { wait_pid(child, &mut status, 0, -1.0, &plain) };
         assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 3));
 
         let coroutine = Coroutines {
@@ -259,7 +257,7 @@ mod tests {
             ..plain
         };
         let child = spawn(5);
-        let waited = unsafe { wait_pid(-1, &raw mut status, 0, -1.0, &coroutine) };
+        let waited = unsafe { wait_pid(-1, &mut status, 0, -1.0, &coroutine) };
         assert_eq!((waited.pid, waited.timed_out), (child, false));
         assert_eq!(libc::WEXITSTATUS(status), 5);
         assert_eq!(wait_count(), 0);
@@ -267,7 +265,7 @@ mod tests {
         let child = spawn(7);
         unsafe { libc::usleep(50_000) };
         unsafe { wait_reap(libc::SIGCHLD, resume) };
-        let waited = unsafe { wait_pid(child, &raw mut status, 0, -1.0, &coroutine) };
+        let waited = unsafe { wait_pid(child, &mut status, 0, -1.0, &coroutine) };
         assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 7));
     }
 }

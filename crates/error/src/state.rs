@@ -48,12 +48,10 @@ pub unsafe extern "C" fn swr_v1_error_ignore(state: *mut *mut IgnoredErrors, cod
     0
 }
 
-/// # Safety
-/// A nonnull handle must be live. Concurrent mutation is forbidden.
+/// Whether a null or live handle holds `code`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_error_is_ignored(state: *const IgnoredErrors, code: i32) -> i32 {
-    // SAFETY: the caller passes null or a live handle with no concurrent mutation.
-    i32::from(unsafe { state.as_ref() }.is_some_and(|values| values.0.contains(&code)))
+pub extern "C" fn swr_v1_error_is_ignored(state: Option<&IgnoredErrors>, code: i32) -> i32 {
+    i32::from(state.is_some_and(|values| values.0.contains(&code)))
 }
 
 /// # Safety
@@ -105,7 +103,8 @@ pub extern "C" fn swoole_ignore_error(code: i32) {
 )]
 pub extern "C" fn swoole_is_ignored_error(code: i32) -> bool {
     // SAFETY: the slot holds null or this API's live handle, which is never released.
-    unsafe { swr_v1_error_is_ignored(IGNORED.load(Ordering::Relaxed), code) != 0 }
+    let state = unsafe { IGNORED.load(Ordering::Relaxed).as_ref() };
+    swr_v1_error_is_ignored(state, code) != 0
 }
 
 #[cfg(test)]
@@ -158,10 +157,10 @@ mod tests {
 
     #[test]
     fn allocation_failure_preserves_membership_and_publication() {
-        let mut state = std::ptr::null_mut();
+        let mut state: *mut IgnoredErrors = std::ptr::null_mut();
         unsafe {
             assert_eq!(swr_v1_error_ignore(std::ptr::null_mut(), 1), -1);
-            assert_eq!(swr_v1_error_is_ignored(state, 1), 0);
+            assert_eq!(swr_v1_error_is_ignored(state.as_ref(), 1), 0);
             FAIL.with(|flag| flag.set(1));
             assert_eq!(swr_v1_error_ignore(&raw mut state, 1), -2);
             assert!(state.is_null());
@@ -176,8 +175,8 @@ mod tests {
             }
             FAIL.with(|flag| flag.set(1));
             assert_eq!(swr_v1_error_ignore(&raw mut state, i32::MIN), -2);
-            assert_eq!(swr_v1_error_is_ignored(state, i32::MIN), 0);
-            assert_eq!(swr_v1_error_is_ignored(state, 1), 1);
+            assert_eq!(swr_v1_error_is_ignored(state.as_ref(), i32::MIN), 0);
+            assert_eq!(swr_v1_error_is_ignored(state.as_ref(), 1), 1);
             assert_eq!(swr_v1_error_ignore(&raw mut state, 1), 0);
             swr_v1_error_ignored_release(state);
             swr_v1_error_ignored_release(std::ptr::null_mut());

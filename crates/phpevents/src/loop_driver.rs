@@ -27,9 +27,9 @@ pub(super) fn init() -> Result<i32, Bailout> {
     Ok(0)
 }
 
-pub(super) fn check() -> Result<(), Bailout> {
+pub(super) fn check(php: swoole_rs_zend::Php<'_>) -> Result<(), Bailout> {
     ensure()?;
-    super::install_handlers();
+    super::install_handlers(php);
     Ok(())
 }
 
