@@ -1730,10 +1730,8 @@ fn set_array_property(call: &Call, name: &CStr) {
         return call.set_bool(false);
     };
     // SAFETY: an array argument the frame owns.
-    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array) };
-    if let Some(array) = call.value(1) {
-        props::this(call).value(name, array);
-    }
+    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array.as_ptr()) };
+    props::this(call).value(name, array);
     call.set_bool(true);
 }
 

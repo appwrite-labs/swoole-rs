@@ -129,7 +129,7 @@ impl Call {
     /// # Errors
     /// The argument is not an array; Zend has thrown.
     #[inline]
-    pub fn array_opt(&self, n: u32) -> Result<Option<*mut zval>, Invalid> {
+    pub fn array_opt(&self, n: u32) -> Result<Option<&crate::Value>, Invalid> {
         if !self.passed_arg(n) {
             return Ok(None);
         }

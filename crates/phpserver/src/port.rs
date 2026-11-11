@@ -395,19 +395,19 @@ pub(crate) fn merge_setting(
 /// enabled, then the merge into `$this->setting`, which the property keeps.
 fn finish(
     call: &Call,
-    settings: *mut zval,
+    settings: &Value,
     property: &mut PortProperty,
 ) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
         // `zval params[1] = {*zset}`: a copy without a reference.
         // SAFETY: the live settings argument.
-        let mut params = [unsafe { settings.read() }];
+        let mut params = [unsafe { settings.as_ptr().read() }];
         // SAFETY: as above.
         unsafe {
             swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
         }?;
     }
-    property.zsetting = merge_setting(PORT.entry(), call.this(), settings)?;
+    property.zsetting = merge_setting(PORT.entry(), call.this(), settings.as_ptr())?;
     Ok(())
 }
 
@@ -428,9 +428,12 @@ fn set(call: &Call) {
 }
 
 /// The `ListenPort` and TLS options of `set()`.
-fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: *mut zval) -> Result<(), Stop> {
+fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Result<(), Stop> {
     let source = port_settings::Zend {
-        settings: Settings { serv, vht },
+        settings: Settings {
+            serv,
+            vht: vht.array(),
+        },
         port,
     };
     // SAFETY: a bound port; set() is its only user while it runs.

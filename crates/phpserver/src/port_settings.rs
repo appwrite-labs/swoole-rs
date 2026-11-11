@@ -429,7 +429,7 @@ impl Source for Zend<'_> {
             let item = Self {
                 settings: Settings {
                     serv: self.settings.serv,
-                    vht: value.as_ptr(),
+                    vht: value.array(),
                 },
                 port: self.port,
             };

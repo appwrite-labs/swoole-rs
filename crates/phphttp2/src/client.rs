@@ -1313,11 +1313,13 @@ fn set(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: `$this` declares `setting`; the settings are a live array.
-    unsafe { swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings) };
+    unsafe {
+        swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings.as_ptr());
+    }
     let socket = client.socket();
     if !socket.is_null() {
         // SAFETY: a live socket and array.
-        unsafe { native::swoole_http2_client_coro_apply(socket, settings) };
+        unsafe { native::swoole_http2_client_coro_apply(socket, settings.as_ptr()) };
     }
     call.set_bool(true);
 }
