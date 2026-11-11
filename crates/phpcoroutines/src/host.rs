@@ -105,25 +105,6 @@ fn last_error_fatal() -> bool {
     }
 }
 
-/// Queue `f(data)` on the running loop: on its deferred tasks, or (`destroy`)
-/// on the callbacks its free runs.
-fn reactor_push(destroy: bool, f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    let pushed = swoole_rs_reactor::event_api::field_mut(|fields| {
-        let queue = if destroy {
-            &raw mut fields.destroy_callbacks
-        } else {
-            &raw mut fields.defer_tasks
-        };
-        // SAFETY: the loop's live queue; `data` stays with the task.
-        unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) }
-    });
-    // Upstream dereferences `sw_reactor()` here unchecked, and throws std::bad_alloc,
-    // which no frame here could catch.
-    if pushed != Some(0) {
-        std::process::abort();
-    }
-}
-
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 
 /// `php_swoole_fatal_error(level, "%s", message)`. With `E_ERROR` Zend
@@ -272,9 +253,7 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    if let Some(count) = swoole_rs_reactor::event_api::with_registry(|registry| {
-        swoole_rs_reactor::swr_v1_reactor_registry_count(registry)
-    }) {
+    if let Some(count) = swoole_rs_reactor::event_api::swoole_event_num() {
         stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
     }
     #[cfg(feature = "iouring")]
@@ -505,10 +484,7 @@ unsafe extern "C" fn main(args: *mut c_void) {
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
 /// main context: the loop stops, then PHP bails out.
 extern "C" fn bail_out(_: *mut c_void) {
-    swoole_rs_reactor::event_api::field_mut(|fields| {
-        fields.running = false;
-        fields.bailout = true;
-    });
+    swoole_rs_reactor::event_api::swoole_event_bail_out();
     bailout::raise(Err(bailout::Bailout));
 }
 
@@ -561,7 +537,11 @@ pub(crate) fn attach(
     on_resume: unsafe extern "C" fn(*mut c_void),
     on_close: unsafe extern "C" fn(*mut c_void),
 ) {
-    reactor_push(true, deactivate_on_free, std::ptr::null_mut());
+    // Upstream dereferences `sw_reactor()` here unchecked.
+    if swoole_rs_reactor::event_api::current_prepared().is_none() {
+        std::process::abort();
+    }
+    swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
     swoole_rs_coroutine::activate();
     set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
@@ -637,7 +617,12 @@ pub(crate) fn absolute_msec() -> c_long {
 
 /// `swoole_event_defer(f, data)`.
 pub(crate) fn defer(f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    reactor_push(false, f, data);
+    // Upstream dereferences `sw_reactor()` here unchecked.
+    let Some(reactor) = swoole_rs_reactor::event_api::current_prepared() else {
+        std::process::abort()
+    };
+    // SAFETY: the loop's live fields; `data` stays with the task.
+    unsafe { swoole_rs_reactor::defer(reactor.fields, f, data, None) };
 }
 
 /// A one-shot timer calling `f(data)` after `timeout` seconds.
