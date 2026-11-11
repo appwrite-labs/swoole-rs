@@ -64,8 +64,8 @@ struct swr_v1_socket {
     size_t total_send_bytes;
     /* Written by getsockname/accept: the exact actual address. */
     swoole::network::Address info;
-    /* Rust's: set while a read or edit closure holds the fields above. */
-    alignas(8) bool borrowed;
+    /* Rust's atomic count of the read and edit closures holding the fields above. */
+    alignas(8) uint32_t borrows;
 
     swr_v1_socket_output *output() {
         return reinterpret_cast<swr_v1_socket_output *>(&out_buffer);
@@ -107,7 +107,7 @@ static_assert(offsetof(swr_v1_socket, events) == 12 && offsetof(swr_v1_socket, e
                   offsetof(swr_v1_socket, ssl_state) == 80 && offsetof(swr_v1_socket, dns_timeout) == 88 &&
                   offsetof(swr_v1_socket, last_received_time) == 120 && offsetof(swr_v1_socket, in_buffer) == 136 &&
                   offsetof(swr_v1_socket, recv_timer) == 152 && offsetof(swr_v1_socket, total_send_bytes) == 168 &&
-                  offsetof(swr_v1_socket, info) == 176 && offsetof(swr_v1_socket, borrowed) == 296 &&
+                  offsetof(swr_v1_socket, info) == 176 && offsetof(swr_v1_socket, borrows) == 296 &&
                   sizeof(swr_v1_socket) == 304,
               "network::Socket's layout is Rust's SocketRecord");
 static_assert(offsetof(swr_v1_socket, send_timer) - offsetof(swr_v1_socket, out_buffer) ==

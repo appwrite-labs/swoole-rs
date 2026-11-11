@@ -565,16 +565,19 @@ impl SyncEffects for Call<'_> {
         self.dispatch
     }
 
+    /// Edits only what it changes: threads share some records (a pool's pipe socket),
+    /// and a write to a nonblocking plain socket only reads it.
     fn prepare(&self) {
-        let (ssl, tls) = self.socket.edit(|record| {
-            if record.output.nonblock == 0 {
-                socket_set_fd_option(record, 1, -1);
-            }
-            (record.ssl, tls(record))
-        });
+        let (blocking, ssl) = self
+            .socket
+            .read(|record| (record.output.nonblock == 0, record.ssl));
+        if blocking {
+            self.socket
+                .edit(|record| socket_set_fd_option(record, 1, -1));
+        }
         if !ssl.is_null() {
             // SAFETY: the record's TLS group.
-            unsafe { swr_v1_socket_ssl_clear(tls) };
+            unsafe { swr_v1_socket_ssl_clear(self.socket.edit(tls)) };
         }
     }
 

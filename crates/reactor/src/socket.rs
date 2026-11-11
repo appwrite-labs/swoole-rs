@@ -2,43 +2,68 @@
 //! from (a reactor event, a connection, an owner's field), then read and edited
 //! without `unsafe`.
 use crate::{SocketFields, SocketRecord};
-use std::{cell::Cell, ffi::c_int, marker::PhantomData, ptr::NonNull};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::{ffi::c_int, marker::PhantomData, ptr::NonNull};
 
-/// A live `network::Socket` for `'a`, on this thread. It is `Copy` and holds no
-/// Rust reference between calls, so native code and other handles may touch the
-/// same record in between; [`read`](Self::read) and [`edit`](Self::edit) borrow its
-/// fields only for their closure, and refuse to nest on the same record.
+/// A live `network::Socket` for `'a`. It is `Copy` and holds no Rust reference
+/// between calls, so native code and other handles may touch the same record in
+/// between; [`read`](Self::read) and [`edit`](Self::edit) borrow its fields only for
+/// their closure. Reads share a record, from any thread; an edit has it alone, and a
+/// read or edit that would overlap one panics.
 #[derive(Clone, Copy)]
 pub struct Socket<'a> {
     record: NonNull<SocketRecord>,
     _live: PhantomData<(&'a mut SocketRecord, *mut ())>,
 }
 
-/// Holds a record's borrow flag, and clears it when the closure returns or unwinds.
-struct Borrow<'a>(&'a Cell<bool>);
+/// The borrow count's edit bit; below it, the reads holding the record.
+const EDIT: u32 = 1 << 31;
+
+/// A record's borrow, released when the closure returns or unwinds.
+struct Borrow<'a> {
+    borrows: &'a AtomicU32,
+    taken: u32,
+}
 
 impl<'a> Borrow<'a> {
-    fn take(flag: &'a Cell<bool>) -> Self {
+    #[track_caller]
+    fn read(borrows: &'a AtomicU32) -> Self {
+        let taken = borrows.try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
+            (n & EDIT == 0).then_some(n + 1)
+        });
         assert!(
-            !flag.replace(true),
-            "a socket's read or edit runs inside another's on the same record"
+            taken.is_ok(),
+            "a socket's read runs inside an edit of the same record"
         );
-        Self(flag)
+        Self { borrows, taken: 1 }
+    }
+
+    #[track_caller]
+    fn edit(borrows: &'a AtomicU32) -> Self {
+        let taken = borrows.compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed);
+        assert!(
+            taken.is_ok(),
+            "a socket's edit runs inside a read or edit of the same record"
+        );
+        Self {
+            borrows,
+            taken: EDIT,
+        }
     }
 }
 
 impl Drop for Borrow<'_> {
     fn drop(&mut self) {
-        self.0.set(false);
+        self.borrows.fetch_sub(self.taken, Ordering::Release);
     }
 }
 
 impl<'a> Socket<'a> {
     /// The socket `record` points to, or None for null.
     /// # Safety
-    /// A non-null `record` is a live `network::Socket` for the handle's lifetime, used on this
-    /// thread, which nothing frees or reaches through a Rust reference to its fields meanwhile
-    /// (native code and raw pointers may, between this handle's calls).
+    /// A non-null `record` is a live `network::Socket` for the handle's lifetime, which
+    /// nothing frees or reaches through a Rust reference to its fields meanwhile (native
+    /// code and raw pointers may, between this handle's calls).
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
         Some(Self {
@@ -47,11 +72,11 @@ impl<'a> Socket<'a> {
         })
     }
 
-    /// The record's borrow flag, which no closure's reference covers.
-    fn flag(self) -> &'a Cell<bool> {
-        // SAFETY: live for 'a (from_ptr); the reference covers only the flag, which
-        // `read` and `edit` never hand out, and a `Cell` may be shared.
-        unsafe { &(*self.record.as_ptr()).borrowed }
+    /// The record's borrow count, which no closure's reference covers.
+    fn borrows(self) -> &'a AtomicU32 {
+        // SAFETY: live for 'a (from_ptr); the reference covers only the count, which
+        // `read` and `edit` never hand out, and an atomic may be shared.
+        unsafe { &(*self.record.as_ptr()).borrows }
     }
 
     /// The record's address, for native calls.
@@ -62,25 +87,28 @@ impl<'a> Socket<'a> {
 
     /// `read`'s result over the record.
     /// # Panics
-    /// Inside a `read` or `edit` closure over the same record.
+    /// Inside an `edit` closure over the same record.
+    #[track_caller]
     pub fn read<R>(self, read: impl FnOnce(&SocketFields) -> R) -> R {
-        let _borrow = Borrow::take(self.flag());
-        // SAFETY: live for the handle's lifetime (from_ptr), and no other Rust reference to its
-        // fields exists: handles form one only here and in `edit`, under the record's flag.
+        let _borrow = Borrow::read(self.borrows());
+        // SAFETY: live for the handle's lifetime (from_ptr), and no mutable Rust reference to
+        // its fields exists: handles form one only in `edit`, which the count excludes.
         read(unsafe { &(*self.record.as_ptr()).fields })
     }
 
     /// `edit`'s result over the record, which it may change.
     /// # Panics
     /// Inside a `read` or `edit` closure over the same record.
+    #[track_caller]
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
-        let _borrow = Borrow::take(self.flag());
-        // SAFETY: as in `read`; this is the only reference to the fields while `edit` runs.
+        let _borrow = Borrow::edit(self.borrows());
+        // SAFETY: as in `read`; the count makes this the only reference to the fields.
         edit(unsafe { &mut (*self.record.as_ptr()).fields })
     }
 
     /// `fd`.
     #[must_use]
+    #[track_caller]
     pub fn fd(self) -> c_int {
         self.read(|record| record.fd)
     }
@@ -114,19 +142,54 @@ mod tests {
             // The edit's reference stays valid after the nested call unwound.
             fields.fd = 8;
         });
-        assert_eq!(other.fd(), 8, "the flag cleared when the edit returned");
+        assert_eq!(other.fd(), 8, "the count cleared when the edit returned");
     }
 
     #[test]
-    fn the_flag_clears_on_unwind_and_other_records_nest() {
+    fn an_edit_inside_a_read_panics_and_reads_share() {
+        let mut record = SocketRecord::new();
+        let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+        let fd = socket.read(|outer| {
+            let nested = catch_unwind(AssertUnwindSafe(|| socket.edit(|fields| fields.fd = 1)));
+            assert!(
+                nested.is_err(),
+                "an edit inside a read of the same record panics"
+            );
+            socket.read(|inner| inner.fd) + outer.fd
+        });
+        assert_eq!(fd, 0, "reads of one record nest");
+        socket.edit(|fields| fields.fd = 2);
+        assert_eq!(socket.fd(), 2, "the count cleared after the reads");
+    }
+
+    #[test]
+    fn threads_read_one_record_together() {
+        let mut record = SocketRecord::new();
+        record.fd = 5;
+        let record = (&raw mut record).expose_provenance();
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(move || {
+                    let record = std::ptr::with_exposed_provenance_mut(record);
+                    let socket = unsafe { Socket::from_ptr(record) }.unwrap();
+                    for _ in 0..50 {
+                        assert_eq!(socket.read(|fields| fields.fd), 5);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn the_count_clears_on_unwind_and_other_records_nest() {
         let (mut a, mut b) = (SocketRecord::new(), SocketRecord::new());
         b.fd = 9;
         let a = unsafe { Socket::from_ptr(&raw mut a) }.unwrap();
         let b = unsafe { Socket::from_ptr(&raw mut b) }.unwrap();
-        assert_eq!(a.read(|_| b.fd()), 9, "another record's read nests");
+        assert_eq!(a.edit(|_| b.fd()), 9, "another record's read nests");
         let unwound = catch_unwind(AssertUnwindSafe(|| a.edit(|_| panic!("in the closure"))));
         assert!(unwound.is_err());
         a.edit(|fields| fields.fd = 3);
-        assert_eq!(a.fd(), 3, "the flag cleared when the closure unwound");
+        assert_eq!(a.fd(), 3, "the count cleared when the closure unwound");
     }
 }

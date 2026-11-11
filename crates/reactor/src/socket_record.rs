@@ -6,11 +6,11 @@
 use crate::SocketOutput;
 use crate::socket_timeouts::SocketTimeouts;
 use crate::socket_types::{CLASS_INET4, CLASS_INET6, CLASS_LOCAL, CLASS_TCP, type_is};
-use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
+use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
@@ -27,13 +27,14 @@ pub struct SocketTlsState {
 
 pub use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 
-/// `network::Socket`: its fields, then the flag [`crate::Socket`]'s `read` and `edit`
-/// hold while a closure has the fields. The flag sits outside them, so checking it
-/// never touches bytes a closure's reference covers.
+/// `network::Socket`: its fields, then the borrow count [`crate::Socket`]'s `read`
+/// and `edit` hold while a closure has the fields. The count sits outside them, so
+/// taking it never touches bytes a closure's reference covers. It is atomic because
+/// threads share some records (a pool's pipe socket).
 #[repr(C)]
 pub struct SocketRecord {
     pub fields: SocketFields,
-    pub(crate) borrowed: Cell<bool>,
+    pub(crate) borrows: AtomicU32,
 }
 
 impl Deref for SocketRecord {
@@ -166,8 +167,8 @@ const _: () = {
         "network::Socket's size moved"
     );
     assert!(
-        offset_of!(SocketRecord, borrowed) == 296 && size_of::<SocketRecord>() == 304,
-        "network::Socket's borrow flag moved"
+        offset_of!(SocketRecord, borrows) == 296 && size_of::<SocketRecord>() == 304,
+        "network::Socket's borrow count moved"
     );
 };
 
@@ -177,7 +178,7 @@ impl SocketRecord {
     #[must_use]
     pub fn new() -> Self {
         // SAFETY: every field is an integer, a float, a raw pointer, a union of C
-        // address structs or the borrow flag's bool, all of which are valid zeroed.
+        // address structs or the borrow count, all of which are valid zeroed.
         let mut socket: Self = unsafe { std::mem::zeroed() };
         // SAFETY: a plain read of the defaults, which only the owning thread assigns.
         socket.timeouts = unsafe { (*ptr::addr_of!(swr_v1_socket_defaults)).timeouts };
@@ -314,7 +315,7 @@ impl SocketFields {
     pub fn dup(&self) -> *mut SocketRecord {
         let mut copy = SocketRecord {
             fields: *self,
-            borrowed: Cell::new(false),
+            borrows: AtomicU32::new(0),
         };
         // SAFETY: dup(2) has no memory preconditions.
         copy.fd = unsafe { libc::dup(copy.fd) };
