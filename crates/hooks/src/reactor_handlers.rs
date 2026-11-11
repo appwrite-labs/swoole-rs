@@ -21,8 +21,8 @@ static WAKE: OnceLock<Wake> = OnceLock::new();
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
     // SAFETY: the reactor's event names a live socket.
-    let object = unsafe { (*event.socket.cast::<SocketRecord>()).object };
-    (object, event.fd)
+    let object = unsafe { (*event.socket_ptr().cast::<SocketRecord>()).object };
+    (object, event.fd())
 }
 
 extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
@@ -204,12 +204,9 @@ mod tests {
     }
     /// The reactor fires write, then read, on the waiter's socket.
     unsafe extern "C" fn park(_: *mut c_void, _: f64) -> i32 {
-        let mut event = Event {
-            fd: 7,
-            reactor_id: 0,
-            fd_type: FdType::SW_FD_CO_EVENT as c_int,
-            socket: SOCKET.get().cast(),
-        };
+        // SAFETY: the test's live socket record.
+        let mut event =
+            unsafe { Event::new(7, 0, FdType::SW_FD_CO_EVENT as c_int, SOCKET.get().cast()) };
         for events in [WRITE, READ] {
             let ready = handler(FdType::SW_FD_CO_EVENT, events);
             assert_eq!(

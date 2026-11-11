@@ -82,7 +82,7 @@ fn bus_of(thread: &mut ThreadRecord) -> *mut c_void {
 /// The context event's socket.
 fn event_socket<'a>(ctx: &ReactorContext) -> Option<Socket<'a>> {
     // SAFETY: the ops reading it run on a live event.
-    socket(unsafe { (*ctx.event).socket })
+    socket(unsafe { (*ctx.event).socket_ptr() })
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
@@ -147,19 +147,16 @@ pub(crate) unsafe fn answer(
         }
         OP_FORCE_CLOSE => {
             conn_ref().close_force = 1;
-            let mut event = swoole_rs_reactor::Event {
-                fd: conn_ref().fd,
-                reactor_id: 0,
-                fd_type: 0,
-                socket: conn_ref().socket,
-            };
+            // SAFETY: the connection's live socket record.
+            let mut event =
+                unsafe { swoole_rs_reactor::Event::new(conn_ref().fd, 0, 0, conn_ref().socket) };
             // SAFETY: this thread's reactor and an event over a live connection.
             unsafe { reactor_upstream::trigger_close_event(reactor, (&raw mut event).cast()) };
             0
         }
         OP_PACKET_INIT => {
             // SAFETY: the context's live event.
-            let fd = unsafe { (*ctx.event).fd };
+            let fd = unsafe { (*ctx.event).fd() };
             // The event's fd is a listening socket's, whose slot is live.
             let conn = state.connection(fd.into(), 0)?;
             let kind = conn.socket_type;
@@ -245,7 +242,7 @@ pub(crate) unsafe fn answer(
             let mut head = DataHead {
                 reactor_id: i16::try_from(reactor_id()).unwrap_or_default(),
                 // SAFETY: the context's live event.
-                fd: c_long::from(unsafe { (*ctx.event).fd }),
+                fd: c_long::from(unsafe { (*ctx.event).fd() }),
                 kind: EVENT_CLOSE,
                 ..DataHead::default()
             };

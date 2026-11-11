@@ -13,7 +13,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_http_ffi::HttpRequest;
 use swoole_rs_reactor::reactor_upstream::{prepared, trigger_close_event};
-use swoole_rs_reactor::{Event, Socket, SocketRecord};
+use swoole_rs_reactor::{Event, Socket};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
@@ -67,9 +67,7 @@ pub(crate) unsafe fn on_read(
 ) -> c_int {
     let event = event.cast::<Event>();
     // SAFETY: as the caller guarantees.
-    let socket = unsafe { (*event).socket }.cast::<SocketRecord>();
-    // SAFETY: the event's live connection socket, which only this reactor thread touches.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+    let Some(socket) = unsafe { &*event }.socket() else {
         return -1;
     };
     // A connection socket's object is its connection.
@@ -266,7 +264,7 @@ fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
                 c"ListenPort::readable_callback_raw"
             };
             // SAFETY: the live event.
-            let fd = unsafe { (*c.event).fd };
+            let fd = unsafe { (*c.event).fd() };
             log::sys_warning(origin, format_args!("recv from connection#{fd} failed"));
             0
         }

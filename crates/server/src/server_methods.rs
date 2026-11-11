@@ -308,9 +308,8 @@ pub(crate) extern "C" fn accept_connection(
         .ptr;
     let mut ctx = NativeContext::new(serv);
     ctx.reactor = reactor.as_ptr();
-    ctx.server_fd = event.fd;
-    // SAFETY: the event's live listening socket, whose object is its port.
-    let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(event.socket.cast()) };
+    ctx.server_fd = event.fd();
+    let listener = event.socket();
     ctx.port = listener.map_or(core::ptr::null_mut(), |s| s.read(|s| s.object));
     ctx.event = ptr::from_mut(event).cast();
     // SAFETY: the server reactor's live server, and its event.
