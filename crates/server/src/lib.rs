@@ -107,7 +107,7 @@ pub use state::{
 pub use admin::swr_v1_server_admin_register;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use server_object::{swr_v1_server_delete, swr_v1_server_new};
-pub use tcp_info::swr_v1_server_tcp_info;
+pub use tcp_info::tcp_fields;
 
 pub use local_addr::swr_v1_server_local_addr_index;
 
