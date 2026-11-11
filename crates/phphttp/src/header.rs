@@ -21,7 +21,7 @@ use swoole_rs_zend::sys::{
     swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, swr_zend_http_property_offset,
     swr_zend_string_release, zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{Array, Key, Owned, Value, ZStr, ZString, bailout, string};
+use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, string};
 
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
@@ -83,18 +83,17 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
 /// is an array.
-/// A header, cookie or trailer array of the response object, with a reference
-/// of its own (`ZVAL_COPY`). A value's `__toString` may reach the same context,
-/// or replace the property, while the array is walked: the copy keeps it live
-/// and borrows nothing from the context's state.
-fn property(response: &Slot, which: usize) -> Option<Owned> {
+/// A header, cookie or trailer property of the response object. Not tied to a
+/// borrow of the context's state: a value's `__toString` may reach the same
+/// context while the property is walked. Nothing holds a reference to the
+/// array for the walk; that is #3263.
+fn property<'a>(response: &Slot, which: usize) -> Option<&'a Array> {
     let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
     let slot = object.wrapping_byte_add(offset).cast::<zval>();
     // SAFETY: a declared property slot of the context's live response.
-    let value = unsafe { Value::from_ptr(slot) }?;
-    value.array().is_some().then(|| value.copy())
+    unsafe { Value::from_ptr(slot) }.and_then(Value::array)
 }
 
 /// `swr_zend_http_string`: `zval_get_string`'s argument and result.
@@ -325,9 +324,7 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    if let Some(header) = property(&state.response.zobject, 0)
-        && let Some(header) = header.array()
-    {
+    if let Some(header) = property(&state.response.zobject, 0) {
         // Asked once, like upstream's `compression_types` test.
         let typed = compression && crate::context::compression_type(state, None);
         let mut content_type: Option<ZString> = None;
@@ -380,9 +377,7 @@ fn build(
     let state = ctx.state();
 
     // http cookies
-    if let Some(cookie) = property(&state.response.zobject, 1)
-        && let Some(cookie) = cookie.array()
-    {
+    if let Some(cookie) = property(&state.response.zobject, 1) {
         each::<()>(cookie, |_, value_| {
             if let Some(line) = value_.bytes()
                 && !has_crlf(line)
@@ -474,9 +469,7 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        if let Some(trailer) = property(&ctx.state().response.zobject, 2)
-            && let Some(trailer) = trailer.array()
-        {
+        if let Some(trailer) = property(&ctx.state().response.zobject, 2) {
             each(trailer, |key, value_| {
                 let Ok(name) = key else { return Ok(()) };
                 if value_.is_null() {
