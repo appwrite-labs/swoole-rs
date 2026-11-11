@@ -131,21 +131,14 @@ impl FixedPool {
     /// `void FixedPool::debug(int max_lines) const`: the slices on stdout, through C stdio.
     pub fn debug(&self, max_lines: c_int) {
         let mut cursor = DebugCursor::default();
-        // SAFETY: the format takes one string.
-        unsafe {
-            libc::printf(
-                c"===============================%s=================================\n".as_ptr(),
-                c"debug".as_ptr(),
-            )
-        };
+        swoole_rs_corebase::sys::print(
+            b"===============================debug=================================\n",
+        );
         while let Some(record) = fixed::debug_step(self.header(), &mut cursor, max_lines) {
             if record.self_link {
-                // SAFETY: a literal format with no arguments.
-                unsafe {
-                    libc::printf(
-                        c"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n".as_ptr(),
-                    )
-                };
+                swoole_rs_corebase::sys::print(
+                    b"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n",
+                );
             }
             // SAFETY: the arguments match the format.
             unsafe {

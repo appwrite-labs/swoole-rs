@@ -92,10 +92,7 @@ pub unsafe fn function_alias(
     unsafe { ptr::copy_nonoverlapping(alias, name.0, alias_length) };
     // SAFETY: the allocation has space for the original trailing NUL.
     unsafe { name.0.wrapping_add(alias_length).write(0) };
-    // SAFETY: a PHP_FE_END entry is all-zero, and every supported Zend function
-    // entry consists of integer/pointer/nullable-function fields. Set only the
-    // same fields as the native initializer; PHP-version tail fields stay zero.
-    let mut entries = unsafe { std::mem::zeroed::<[z::zend_function_entry; 2]>() };
+    let mut entries = crate::zeroed::<[z::zend_function_entry; 2]>();
     entries[0].fname = name.0;
     entries[0].handler = handler;
     entries[0].arg_info = info;

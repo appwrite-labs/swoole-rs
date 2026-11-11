@@ -25,8 +25,7 @@ pub unsafe fn signal_kqueue_set(
         return 0;
     };
     let mut origin = 0;
-    // SAFETY: an all-zero kevent is a valid value.
-    let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+    let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
     event.ident = signo.cast_unsigned() as _;
     event.filter = libc::EVFILT_SIGNAL;
     if handler == 0 {
@@ -53,17 +52,7 @@ pub unsafe fn signal_kqueue_set(
         // The table slot (`swoole::Signal *`), which the reactor dispatches.
         event.udata = std::ptr::from_ref(slot) as _;
     }
-    // SAFETY: one change on the caller's kqueue, no events out.
-    let n = unsafe {
-        libc::kevent(
-            kq,
-            &raw const event,
-            1,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null(),
-        )
-    };
+    let n = swoole_rs_corebase::sys::kevent_change(kq, &event);
     *failed = n < 0 && handler != 0;
     origin
 }

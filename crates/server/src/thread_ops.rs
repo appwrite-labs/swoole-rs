@@ -198,8 +198,7 @@ pub(crate) fn answer(
         OP_PACKET_TASK => {
             let pkt = packet(ctx)?;
             ctx.task.info.fd = if pkt.socket_type == SOCK_UDP {
-                // SAFETY: a UDP datagram's peer is an inet4 address.
-                let ip = unsafe { pkt.socket_addr.addr.inet_v4.sin_addr.s_addr };
+                let ip = pkt.socket_addr.addr.v4().sin_addr.s_addr;
                 c_long::from(ip.cast_signed())
             } else {
                 let host =

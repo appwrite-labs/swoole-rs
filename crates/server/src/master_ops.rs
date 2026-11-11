@@ -125,8 +125,7 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
 fn host_maxsize() -> usize {
-    // SAFETY: a plain C struct, for which zero is valid.
-    let addr: libc::sockaddr_un = unsafe { core::mem::zeroed() };
+    let addr: libc::sockaddr_un = swoole_rs_corebase::sys::zeroed();
     size_of_val(&addr.sun_path)
 }
 
@@ -1156,11 +1155,12 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 (libc::SO_SNDBUF, port.kernel_socket_send_buffer_size)
             };
             let fd = o.port_fd();
-            let length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
-            // SAFETY: `size` is a readable int of `length` bytes.
-            sign(unsafe {
-                libc::setsockopt(fd, libc::SOL_SOCKET, name, (&raw const size).cast(), length)
-            })
+            sign(swoole_rs_corebase::sys::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                name,
+                &size,
+            ))
         }
         OP_DGRAM_PORT => {
             let fd = o.port_fd();
@@ -1692,8 +1692,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 unsafe { &(*packet).socket_addr }
             };
             if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
-                // SAFETY: an inet4 address.
-                u64::from(u32::from_be(unsafe { addr.addr.inet_v4.sin_addr.s_addr }))
+                u64::from(u32::from_be(addr.addr.v4().sin_addr.s_addr))
             } else {
                 let v6 = (&raw const addr.addr).cast::<c_char>();
                 // SAFETY: the address's storage holds a whole `sockaddr_in6`.

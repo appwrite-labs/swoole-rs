@@ -11,7 +11,7 @@ use crate::sys::{
 };
 use std::{
     ffi::{CStr, c_char, c_void},
-    mem, ptr,
+    ptr,
 };
 
 /// A stub's `zend_internal_arg_info[N]`: the return slot, then each parameter.
@@ -72,8 +72,7 @@ pub const fn definition<const N: usize>(
     arginfo: &'static ArgInfo<N>,
     flags: u32,
 ) -> zend_function_entry {
-    // SAFETY: all-null, as PHP_ME leaves PHP 8.4's frameless and doc-comment fields.
-    let mut entry: zend_function_entry = unsafe { mem::zeroed() };
+    let mut entry: zend_function_entry = crate::zeroed();
     entry.fname = name.as_ptr();
     entry.arg_info = arginfo.0.as_ptr();
     #[expect(
@@ -88,8 +87,7 @@ pub const fn definition<const N: usize>(
 }
 
 /// `PHP_FE_END`.
-// SAFETY: an all-null entry.
-pub const END: zend_function_entry = unsafe { mem::zeroed() };
+pub const END: zend_function_entry = crate::zeroed();
 
 /// `_ZEND_ARG_INFO_FLAGS(send, variadic, 0)`.
 const fn flags(send: u32, variadic: bool) -> u32 {

@@ -18,8 +18,7 @@ thread_local! {
 const NSIG: libc::c_int = if cfg!(target_os = "linux") { 65 } else { 32 };
 
 fn empty() -> libc::sigset_t {
-    // SAFETY: plain data; all zeroes is the empty set.
-    unsafe { std::mem::zeroed() }
+    crate::sys::zeroed()
 }
 
 fn full() -> libc::sigset_t {

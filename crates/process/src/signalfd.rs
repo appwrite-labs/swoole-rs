@@ -22,8 +22,7 @@ fn bit(signo: c_int) -> Option<(&'static AtomicU64, u64)> {
 
 /// `MASK` as a `sigset_t`.
 fn sigset() -> libc::sigset_t {
-    // SAFETY: sigset_t is plain data.
-    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut set: libc::sigset_t = swoole_rs_corebase::sys::zeroed();
     // SAFETY: `set` is a valid sigset_t.
     unsafe { libc::sigemptyset(&raw mut set) };
     for signo in 0..128 {
@@ -194,8 +193,7 @@ pub struct Received {
 
 /// `swoole_signalfd_event_callback`: reads one `signalfd_siginfo` from `fd`.
 pub fn signalfd_receive(fd: c_int) -> Received {
-    // SAFETY: signalfd_siginfo is plain data.
-    let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
+    let mut info: libc::signalfd_siginfo = swoole_rs_corebase::sys::zeroed();
     let size = size_of::<libc::signalfd_siginfo>();
     // SAFETY: `info` is writable for `size` bytes.
     if unsafe { libc::read(fd, (&raw mut info).cast(), size) } < 0 {

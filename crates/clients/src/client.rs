@@ -21,7 +21,7 @@ use swoole_rs_corebase::constants::{
     SW_SEND_BUFFER_SIZE, SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
     TimeoutType,
 };
-use swoole_rs_corebase::net_types::{AddressStorage, PacketLength, Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
 #[cfg(not(test))]
 use swoole_rs_corebase::thread_buffer;
@@ -113,8 +113,6 @@ const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
 const SOCKET_RETRY_COUNT: usize = SW_SOCKET_RETRY_COUNT as usize;
-#[expect(clippy::cast_possible_truncation, reason = "a sockaddr union's size")]
-const ADDRESS_SIZE: libc::socklen_t = size_of::<AddressStorage>() as libc::socklen_t;
 const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
 const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 const EVENT_ERROR: c_int = EventType::SW_EVENT_ERROR as c_int;
@@ -453,18 +451,7 @@ impl Handle {
         // The descriptor first: `socket()` borrows the record again.
         let fd = self.socket().fd();
         let address = &self.fields().server_addr;
-        // SAFETY: the socket's descriptor, the data's bytes and the address's
-        // storage and length.
-        unsafe {
-            libc::sendto(
-                fd,
-                data.as_ptr().cast(),
-                data.len(),
-                0,
-                (&raw const address.addr).cast(),
-                address.len,
-            )
-        }
+        address.sendto(fd, data, 0)
     }
 
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
@@ -474,18 +461,7 @@ impl Handle {
         let address = &mut self.fields().remote_addr;
         let mut n = -1;
         for _ in 0..SOCKET_RETRY_COUNT {
-            address.len = ADDRESS_SIZE;
-            // SAFETY: the buffer's writable bytes, the address's storage and length.
-            n = unsafe {
-                libc::recvfrom(
-                    fd,
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len(),
-                    flags,
-                    (&raw mut address.addr).cast(),
-                    &raw mut address.len,
-                )
-            };
+            n = address.recvfrom(fd, &mut *buffer, flags);
             if n >= 0 || errno() != libc::EINTR {
                 break;
             }
@@ -1009,18 +985,8 @@ impl Handle {
     pub fn bind(self, host: &CStr, port: c_int) -> c_int {
         let fd = self.socket().fd();
         let enable: c_int = 1;
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-        let size = size_of::<c_int>() as libc::socklen_t;
-        // SAFETY: setsockopt(2) reads the int it is lent.
-        if unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEADDR,
-                (&raw const enable).cast(),
-                size,
-            )
-        } < 0
+        if swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable)
+            < 0
         {
             log::sys_warning(
                 c"bind",
@@ -1092,10 +1058,11 @@ fn close(this: Handle) -> c_int {
         socket_ssl_close(saved);
     }
     if this.socket_type() == SOCK_UNIX_DGRAM {
-        // SAFETY: a Unix datagram socket's address is the union's Unix member.
-        let path = saved.read(|socket| unsafe { socket.info.addr.un.sun_path.as_ptr() });
-        // SAFETY: the NUL-terminated path it bound.
-        unsafe { libc::unlink(path) };
+        let path = saved.read(|socket| socket.info.addr.unix().sun_path);
+        let path = path.map(|byte| byte.to_ne_bytes()[0]);
+        if let Ok(path) = CStr::from_bytes_until_nul(&path) {
+            swoole_rs_corebase::sys::unlink(path);
+        }
     }
     if this.flag(ASYNC) {
         if saved.read(|socket| socket.removed) == 0 {
@@ -1592,17 +1559,16 @@ fn bind_unix(this: Handle) -> c_int {
     let socket = this.socket();
     let pid = std::process::id();
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
+    let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
     let ret = socket.edit(|socket| {
-        // SAFETY: the address union's Unix member, which this socket's family uses.
-        let address = unsafe { &mut socket.info.addr.un };
+        let address = socket.info.addr.unix_mut();
         for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
             *slot = c_char::from_ne_bytes([byte]);
         }
         #[expect(clippy::cast_possible_truncation, reason = "AF_UNIX fits sa_family_t")]
         let family = libc::AF_UNIX as libc::sa_family_t;
         address.sun_family = family;
-        // SAFETY: the NUL-terminated path just written.
-        unsafe { libc::unlink(address.sun_path.as_ptr()) };
+        swoole_rs_corebase::sys::unlink(&bound);
         #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_un)")]
         let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
         // SAFETY: binds the client's descriptor to its own address storage.
@@ -1658,12 +1624,7 @@ mod ops {
                 socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
             }
             CONNECT_SYNC => socket_upstream::connect_sync(socket, address),
-            _ => {
-                let fd = socket.fd();
-                let storage = (&raw const address.addr).cast();
-                // SAFETY: the address's storage holds `len` bytes of sockaddr.
-                unsafe { libc::connect(fd, storage, address.len) }
-            }
+            _ => address.connect(socket.fd()),
         }
     }
 
@@ -1726,18 +1687,7 @@ fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> c_int {
         return ERR;
     };
     let fd = this.socket().fd();
-    // SAFETY: the caller's bytes to the local address of its length.
-    if unsafe {
-        libc::sendto(
-            fd,
-            data.as_ptr().cast(),
-            data.len(),
-            0,
-            &raw const address.addr.ss,
-            address.len,
-        )
-    } < 0
-    {
+    if address.sendto(fd, data, 0) < 0 {
         log::set_last_error(errno());
         return ERR;
     }

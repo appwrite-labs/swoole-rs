@@ -891,12 +891,8 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
                 l_linger: 0,
             };
             let fd = o.conn_socket()?.fd();
-            #[expect(clippy::cast_possible_truncation, reason = "sizeof(struct linger)")]
-            let size = size_of::<libc::linger>() as libc::socklen_t;
-            let value = (&raw const linger).cast();
-            // SAFETY: a valid SO_LINGER value.
             let ret =
-                unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, value, size) };
+                swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, &linger);
             u64::from(ret != 0)
         }
         OP_NOTIFY_CONNECT | OP_WR_NOTIFY_CLOSE | OP_WR_BUFFER_EMPTY => {
