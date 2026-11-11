@@ -358,7 +358,7 @@ impl CppString {
 
     /// The whole allocation, its first `length` bytes the content. Only the content is
     /// known initialized, so safe code may only write the rest.
-    pub fn allocation(&mut self) -> &mut [MaybeUninit<u8>] {
+    fn allocation(&mut self) -> &mut [MaybeUninit<u8>] {
         if self.str.is_null() {
             return &mut [];
         }

@@ -792,6 +792,14 @@ fn shared_buffer() -> &'static mut CppString {
     unsafe { &mut *thread_buffer().cast::<CppString>() }
 }
 
+/// The shared buffer, emptied, as a sync proxy handshake's read target: the read
+/// lands at its start.
+fn shared_spare() -> &'static mut [core::mem::MaybeUninit<u8>] {
+    let shared = shared_buffer();
+    shared.clear();
+    shared.spare()
+}
+
 use swoole_rs_corebase::set_errno;
 
 fn is_stream(kind: c_int) -> bool {
@@ -1429,7 +1437,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         loop {
-            let shared = shared_buffer().allocation();
+            let shared = shared_spare();
             let n = recv(this, shared, 0);
             if n > 0 && this.socks5_handshake(shared.as_ptr().cast(), n.cast_unsigned()) {
                 if this.proxy_state(Proxy::Socks5) == SOCKS5_READY {
@@ -1444,7 +1452,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             return ERR;
         }
         // After the pack, which may have grown it.
-        let n = recv(this, shared_buffer().allocation(), 0);
+        let n = recv(this, shared_spare(), 0);
         if n <= 0 || !this.http_handshake(true, n.cast_unsigned()) {
             return ERR;
         }
