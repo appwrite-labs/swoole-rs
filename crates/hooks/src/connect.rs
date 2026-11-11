@@ -16,7 +16,7 @@ use swoole_rs_corebase::{
     CoreStringView, NameResolverContext, ProxyFields, ProxyState, StringSlot, log,
     swr_v1_core_string_set, swr_v1_core_string_view,
 };
-use swoole_rs_http_ffi::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
+use swoole_rs_http_ffi::{proxy_accept, swr_v1_http_proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, handshake_step, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::owner_tls_host_name;
@@ -546,11 +546,9 @@ impl Connecting for Live<'_> {
         });
         let n = recv_packet(self.socket, 0.0);
         let accepted = n > 0
-            && self.socket.with_buffer(false, |read| {
-                let view = read.view();
-                // SAFETY: its received bytes.
-                unsafe { swr_v1_http_proxy_accept(view.as_ptr(), view.len()) }
-            });
+            && self
+                .socket
+                .with_buffer(false, |read| proxy_accept(read.view()));
         drop(scope);
         (n, accepted)
     }

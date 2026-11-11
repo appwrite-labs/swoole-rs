@@ -13,8 +13,8 @@ use crate::{
 };
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
-use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
+use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
 };
@@ -67,17 +67,6 @@ const EVENT_WRITE: c_int = 1 << 10;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: the slot is this thread's live errno.
-    unsafe { *slot = value };
 }
 
 /// A C string for `%s`, which glibc prints as `(null)` when null.

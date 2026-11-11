@@ -508,10 +508,7 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
     if !n.request().multipart_header_parsed && !n.is(OP_BUF_HEADER_END) {
         return Some(Step::Done);
     }
-    let (request, buffer) = (n.shared().request, n.shared().buffer);
-    // SAFETY: the connection's live request, with a form, and the current buffer; the
-    // parser's callbacks are the only other users of either during the call.
-    if !unsafe { swoole_rs_http_ffi::parse_multipart_data(request, buffer) } {
+    if !n.request().parse_multipart_data(n.buffer()) {
         return Some(Step::Reply(SEND_BAD_REQUEST));
     }
     let request = n.request();
@@ -524,8 +521,7 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
     if !request.tried_to_dispatch {
         return Some(Step::Done);
     }
-    // SAFETY: the connection's live request, which nothing else uses during the call.
-    unsafe { swoole_rs_http_ffi::destroy_multipart_parser(n.shared().request) };
+    n.request().destroy_multipart_parser();
     n.use_request_buffer();
     None
 }
@@ -836,13 +832,7 @@ pub(crate) mod tests {
                 OP_REQ_MULTIPART_INIT => {
                     let upload_max = usize::try_from(self.uploads).unwrap();
                     // The fake's live request, with a form.
-                    let ok = unsafe {
-                        swoole_rs_http_ffi::init_multipart_parser(
-                            &raw mut self.req,
-                            b"/tmp",
-                            upload_max,
-                        )
-                    };
+                    let ok = self.req.init_multipart_parser(b"/tmp", upload_max);
                     self.shared.buffer = self.req.buffer;
                     flag(ok)
                 }

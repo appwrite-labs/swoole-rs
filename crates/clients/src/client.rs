@@ -663,9 +663,7 @@ impl Handle {
         // SAFETY: the callers' recv just filled them: the shared buffer from its
         // start, the input buffer after its content (its free tail bounds both).
         unsafe { buffer.set_len(length) };
-        let view = buffer.view();
-        // SAFETY: the buffer's `length` bytes.
-        unsafe { swoole_rs_http_ffi::swr_v1_http_proxy_accept(view.as_ptr().cast(), view.len()) }
+        swoole_rs_http_ffi::proxy_accept(buffer.view())
     }
 
     fn set_timeout(self, timeout: f64) {
