@@ -5,70 +5,49 @@ use crate::co_io::{available, host};
 use crate::co_socket::Co;
 use crate::packet::ReadBuffer;
 use crate::shutdown::READ;
-use core::ffi::c_void;
-
-/// The fields of the socket's read buffer (`swoole::String`).
-#[repr(C)]
-pub struct BufferFields {
-    pub str: *mut u8,
-    pub size: usize,
-    pub length: *mut usize,
-    pub offset: *mut libc::off_t,
-}
 
 fn to_off(offset: usize) -> libc::off_t {
     libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX)
 }
 
-/// A read of `length` bytes into `buffer`: bytes read, 0 at EOF, -1 on error.
-pub type Read = unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize;
+/// Copies what fits of `from` to the start of `to`; the bytes copied.
+fn copy(to: &mut [u8], from: &[u8]) -> usize {
+    to.iter_mut()
+        .zip(from)
+        .map(|(to, from)| *to = *from)
+        .count()
+}
 
-/// `recv_with_buffer` after the availability check: up to `length` bytes into
-/// `out` from the buffer, refilling it with one `recv` when it holds too few.
-///
-/// # Safety
-/// `buffer` describes a live buffer that only this call touches, except through
-/// `recv`, which reads into its free space; `out` holds `length` bytes.
-pub unsafe extern "C" fn swr_v1_hook_recv_buffered(
-    buffer: &BufferFields,
-    recv: Read,
-    context: *mut c_void,
-    out: *mut u8,
-    length: usize,
+/// `recv_with_buffer` after the availability check, over the buffer `data`, which
+/// holds `*length` bytes read up to `*offset`: up to `out.len()` bytes into `out`,
+/// refilling it with one `recv` when it holds too few. `recv` gets the buffer's
+/// length and offset, to publish before it may yield, and the free space to read
+/// into; it returns the bytes read, 0 at EOF or -1 on error.
+fn read_buffered(
+    data: &mut [u8],
+    length: &mut usize,
+    offset: &mut usize,
+    out: &mut [u8],
+    recv: impl FnOnce(usize, usize, &mut [u8]) -> isize,
 ) -> isize {
-    // SAFETY: the buffer's live field.
-    let mut filled = unsafe { *buffer.length };
-    // SAFETY: the buffer's live field.
-    let mut offset = usize::try_from(unsafe { *buffer.offset }).unwrap_or(0);
-    let held = filled - offset;
-    let take = length.min(held);
-    // SAFETY: `take` bytes of the buffer's data into `out`, which holds `length`.
-    unsafe { core::ptr::copy_nonoverlapping(buffer.str.wrapping_add(offset), out, take) };
-    offset += take;
-    if length <= held {
-        // SAFETY: the buffer's live field.
-        unsafe { *buffer.offset = to_off(offset) };
+    let mut filled = (*length).min(data.len());
+    let mut at = (*offset).min(filled);
+    let held = filled - at;
+    let take = copy(out, data.get(at..filled).unwrap_or_default());
+    at += take;
+    if out.len() <= held {
+        *offset = at;
         return take.cast_signed();
     }
     // `String::reduce`: drop the consumed half.
-    if offset >= buffer.size / 2 && offset > 0 {
-        filled -= offset;
-        // SAFETY: moves the unread bytes to the start of the same live allocation.
-        unsafe { core::ptr::copy(buffer.str.wrapping_add(offset), buffer.str, filled) };
-        offset = 0;
+    if at >= data.len() / 2 && at > 0 {
+        filled -= at;
+        data.copy_within(at..at + filled, 0);
+        at = 0;
     }
-    // SAFETY: the buffer's live fields, written before `recv` may yield.
-    unsafe { *buffer.length = filled };
-    // SAFETY: the buffer's live field.
-    unsafe { *buffer.offset = to_off(offset) };
-    // SAFETY: `recv` reads into the buffer's free space.
-    let received = unsafe {
-        recv(
-            context,
-            buffer.str.wrapping_add(filled),
-            buffer.size - filled,
-        )
-    };
+    *length = filled;
+    *offset = at;
+    let received = recv(filled, at, data.get_mut(filled..).unwrap_or_default());
     if received <= 0 {
         return if held > 0 {
             held.cast_signed()
@@ -76,41 +55,32 @@ pub unsafe extern "C" fn swr_v1_hook_recv_buffered(
             received
         };
     }
-    filled += received.unsigned_abs();
-    let copied = (length - held).min(filled - offset);
-    let (from, to) = (buffer.str.wrapping_add(offset), out.wrapping_add(held));
-    // SAFETY: `copied` fresh bytes into the rest of `out`.
-    unsafe { core::ptr::copy_nonoverlapping(from, to, copied) };
-    // SAFETY: the buffer's live field.
-    unsafe { *buffer.length = filled };
-    // SAFETY: the buffer's live field.
-    unsafe { *buffer.offset = to_off(offset + copied) };
+    filled = (filled + received.unsigned_abs()).min(data.len());
+    let copied = copy(
+        out.get_mut(held..).unwrap_or_default(),
+        data.get(at..filled).unwrap_or_default(),
+    );
+    *length = filled;
+    *offset = at + copied;
     (held + copied).cast_signed()
 }
 
-/// `recv_line`: bytes up to and including the first `\n` or `\r`, at most `limit`,
-/// one `read` (`recv_with_buffer`) at a time. -1 on error; at EOF, what was read.
-///
-/// # Safety
-/// `out` holds `limit` bytes and one more.
-pub unsafe extern "C" fn swr_v1_hook_recv_line(
-    read: Read,
-    context: *mut c_void,
-    out: *mut u8,
-    limit: usize,
-) -> isize {
+/// `recv_line`: bytes up to and including the first `\n` or `\r`, at most
+/// `out.len() - 1`, one `read` (`recv_with_buffer`) of a byte at a time. -1 on
+/// error; at EOF, what was read.
+pub(crate) fn recv_line(out: &mut [u8], mut read: impl FnMut(&mut [u8]) -> isize) -> isize {
+    let limit = out.len().saturating_sub(1);
     let mut count = 0;
     let mut last = 0;
-    // SAFETY: `out` holds at least one byte.
-    unsafe { *out = 0 };
-    // SAFETY: `count` < `limit` here, so the byte is inside `out`.
-    while count < limit && !matches!(unsafe { *out.wrapping_add(count) }, b'\n' | b'\r') {
+    if let Some(first) = out.first_mut() {
+        *first = 0;
+    }
+    while count < limit && !matches!(out.get(count), Some(b'\n' | b'\r')) {
         if last > 0 {
             count += 1;
         }
         if count < limit {
-            // SAFETY: one byte at `count` < `limit`, inside `out`.
-            last = unsafe { read(context, out.wrapping_add(count), 1) };
+            last = read(out.get_mut(count..=count).unwrap_or_default());
             if last < 0 {
                 return -1;
             }
@@ -136,20 +106,6 @@ impl Context {
     }
 }
 
-unsafe fn context<'a>(at: *mut c_void) -> &'a mut Context {
-    // SAFETY: the buffered read lends its live Context to every callback.
-    unsafe { &mut *at.cast::<Context>() }
-}
-
-unsafe extern "C" fn record_recv(at: *mut c_void, buffer: *mut u8, size: usize) -> isize {
-    // SAFETY: the buffered read's live context.
-    let ctx = unsafe { context(at) };
-    ctx.sync(1, 0);
-    // SAFETY: the buffered read lends `size` free bytes of the buffer at `buffer`.
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buffer, size) };
-    (host().recv)(ctx.socket, buffer, false)
-}
-
 fn buffer(socket: Co) -> Context {
     let mut ctx = Context {
         socket,
@@ -165,23 +121,35 @@ fn buffer(socket: Co) -> Context {
 }
 
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
-///
-/// # Safety
-/// `out` holds `size` writable bytes and cannot overlap the socket's buffer.
-pub unsafe fn recv_buffered(socket: Co, out: *mut u8, size: usize) -> isize {
+/// `out` cannot overlap the socket's buffer.
+pub fn recv_buffered(socket: Co, out: &mut [u8]) -> isize {
     if !available(socket, READ) {
         return -1;
     }
     let mut ctx = buffer(socket);
-    let view = BufferFields {
-        str: ctx.view.str,
-        size: ctx.view.size,
-        length: &raw mut ctx.view.length,
-        offset: &raw mut ctx.view.offset,
+    let data = if ctx.view.str.is_null() {
+        &mut [][..]
+    } else {
+        // SAFETY: the socket's read String lends its `size` bytes to this read, the
+        // socket's only reader; `out` is outside them.
+        unsafe { core::slice::from_raw_parts_mut(ctx.view.str, ctx.view.size) }
     };
-    // SAFETY: the exclusive buffer fields and output remain live for the receive.
-    let result =
-        unsafe { swr_v1_hook_recv_buffered(&view, record_recv, (&raw mut ctx).cast(), out, size) };
+    let mut length = ctx.view.length;
+    let mut offset = usize::try_from(ctx.view.offset).unwrap_or(0);
+    let result = read_buffered(
+        data,
+        &mut length,
+        &mut offset,
+        out,
+        |length, offset, free| {
+            ctx.view.length = length;
+            ctx.view.offset = to_off(offset);
+            ctx.sync(1, 0);
+            (host().recv)(socket, free, false)
+        },
+    );
+    ctx.view.length = length;
+    ctx.view.offset = to_off(offset);
     ctx.sync(1, 0);
     result
 }
@@ -195,19 +163,20 @@ mod tests {
         calls: usize,
     }
 
-    unsafe extern "C" fn recv(c: *mut c_void, at: *mut u8, room: usize) -> isize {
-        let source = unsafe { &mut *c.cast::<Source>() };
-        source.calls += 1;
-        let n = room.min(source.data.len());
-        unsafe { core::ptr::copy_nonoverlapping(source.data.as_ptr(), at, n) };
-        source.data.drain(..n);
-        n.cast_signed()
+    impl Source {
+        fn recv(&mut self, at: &mut [u8]) -> isize {
+            self.calls += 1;
+            let n = at.len().min(self.data.len());
+            at[..n].copy_from_slice(&self.data[..n]);
+            self.data.drain(..n);
+            n.cast_signed()
+        }
     }
 
     struct Buffered {
         storage: Vec<u8>,
         length: usize,
-        offset: libc::off_t,
+        offset: usize,
         source: Source,
     }
 
@@ -225,32 +194,18 @@ mod tests {
         }
 
         fn read(&mut self, n: usize) -> (isize, Vec<u8>) {
-            let view = BufferFields {
-                str: self.storage.as_mut_ptr(),
-                size: self.storage.len(),
-                length: &raw mut self.length,
-                offset: &raw mut self.offset,
-            };
             let mut out = vec![0; n];
-            let got = unsafe {
-                swr_v1_hook_recv_buffered(
-                    &view,
-                    recv,
-                    (&raw mut self.source).cast(),
-                    out.as_mut_ptr(),
-                    n,
-                )
-            };
+            let source = &mut self.source;
+            let got = read_buffered(
+                &mut self.storage,
+                &mut self.length,
+                &mut self.offset,
+                &mut out,
+                |_, _, free| source.recv(free),
+            );
             out.truncate(got.max(0).unsigned_abs());
             (got, out)
         }
-    }
-
-    unsafe extern "C" fn buffered(c: *mut c_void, at: *mut u8, n: usize) -> isize {
-        let this = unsafe { &mut *c.cast::<Buffered>() };
-        let (got, bytes) = this.read(n);
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), at, bytes.len()) };
-        got
     }
 
     #[test]
@@ -270,9 +225,11 @@ mod tests {
         let mut b = Buffered::new(16, b"ab\ncd");
         let line = |b: &mut Buffered, limit: usize| {
             let mut out = vec![0; limit + 1];
-            let n = unsafe {
-                swr_v1_hook_recv_line(buffered, (&raw mut *b).cast(), out.as_mut_ptr(), limit)
-            };
+            let n = recv_line(&mut out, |at| {
+                let (got, bytes) = b.read(at.len());
+                at[..bytes.len()].copy_from_slice(&bytes);
+                got
+            });
             out.truncate(n.max(0).unsigned_abs());
             (n, out)
         };

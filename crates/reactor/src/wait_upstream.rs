@@ -23,7 +23,6 @@ fn errno() -> c_int {
 mod registry {
     use super::{c_int, c_void, wait_count};
     use crate::signal_upstream::{swoole_signal_clear, swoole_signal_set};
-    use crate::{ReactorPrepared, swr_v1_reactor_deferred_push};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use swoole_rs_process::wait::{Coroutines, wait_reap};
@@ -48,7 +47,7 @@ mod registry {
         wait_count() == 0
     }
 
-    unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
+    extern "C-unwind" fn destroyed(_data: *mut c_void) {
         SIGNAL_READY.store(false, Ordering::Relaxed);
         // SAFETY: the loop's thread, which owns the handlers.
         unsafe { swoole_signal_clear() };
@@ -72,10 +71,9 @@ mod registry {
         if SIGNAL_READY.load(Ordering::Relaxed) {
             return;
         }
-        let reactor = crate::event_api::swr_v1_event_current().cast::<ReactorPrepared>();
-        // SAFETY: a coroutine runs, so the thread has a live loop, which begins with its
-        // prepared state.
-        let fields = unsafe { (*reactor).fields };
+        // A coroutine runs, so the thread has a live loop.
+        let fields = crate::event_api::current_prepared()
+            .map_or(ptr::null_mut(), |prepared| prepared.fields);
         if swoole_rs_coroutine::thread_context_active() {
             // Coroutine threads block every signal: register SIGCHLD on the loop's
             // thread, then reap the children that exited before it ran.
@@ -85,18 +83,12 @@ mod registry {
             register();
         }
         crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_WAIT_PID, no_waiters);
-        // SAFETY: the loop's live fields.
-        let queue = unsafe { &raw mut (*fields).destroy_callbacks };
-        // SAFETY: the loop's live destroy queue; the call keeps no data.
-        if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) } != 0 {
-            std::process::abort();
-        }
+        crate::event_api::on_destroy(destroyed);
         SIGNAL_READY.store(true, Ordering::Relaxed);
     }
 
     /// The current coroutine while the thread has a loop.
-    unsafe extern "C" fn current() -> *mut c_void {
-        // SAFETY: no preconditions.
+    extern "C" fn current() -> *mut c_void {
         if crate::event_api::swr_v1_event_current().is_null() {
             return ptr::null_mut();
         }

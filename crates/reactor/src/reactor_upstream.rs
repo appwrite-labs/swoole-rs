@@ -14,8 +14,7 @@ use std::ffi::{c_int, c_void};
 /// `reactor` is a live `Reactor`.
 #[must_use]
 pub unsafe fn prepared(reactor: *const c_void) -> ReactorPrepared {
-    // SAFETY: as the caller promises.
-    unsafe { *reactor.cast::<ReactorPrepared>() }
+    ReactorPrepared::of(reactor)
 }
 
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
@@ -24,8 +23,7 @@ pub unsafe fn prepared(reactor: *const c_void) -> ReactorPrepared {
 /// # Safety
 /// `reactor` is a live `Reactor` and `event` an event its handler accepts.
 pub unsafe fn trigger_close_event(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { prepared(reactor) }.handlers;
+    let handlers = ReactorPrepared::of(reactor).handlers;
     // SAFETY: the live reactor's handler tables.
     let slot = crate::swr_v1_reactor_handlers_default(unsafe { &*handlers }, 2);
     // SAFETY: as above.
@@ -61,8 +59,7 @@ pub unsafe extern "C" fn reactor_change(
     op: u32,
     events: c_int,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { prepared(reactor) }.owner;
+    let owner = reactor.cast::<crate::ReactorState>().cast_mut();
     // SAFETY: as the caller promises.
     changed(unsafe { crate::swr_v1_reactor_change(owner, socket, op, events, swr_v1_reactor_log) })
 }
@@ -81,8 +78,7 @@ pub unsafe extern "C" fn reactor_interest(
     kind: u32,
     event: c_int,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { prepared(reactor) }.owner;
+    let owner = reactor.cast::<crate::ReactorState>().cast_mut();
     // SAFETY: as the caller promises.
     changed(unsafe {
         crate::swr_v1_reactor_interest(owner, socket, kind, event, swr_v1_reactor_log)
@@ -104,8 +100,7 @@ pub unsafe extern "C" fn reactor_set_handler(
     event: c_int,
     handler: Option<Handler>,
 ) {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { prepared(reactor) }.handlers;
+    let handlers = ReactorPrepared::of(reactor).handlers;
     // SAFETY: the reactor's live handler tables.
     let set = unsafe { &mut *handlers }.set(fd_type, event, handler);
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
@@ -125,8 +120,7 @@ pub unsafe extern "C" fn reactor_isset_handler(
     fd_type: c_int,
     event: c_int,
 ) -> bool {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { prepared(reactor) }.handlers;
+    let handlers = ReactorPrepared::of(reactor).handlers;
     // SAFETY: the reactor's live handler tables.
     unsafe { &*handlers }.isset(fd_type, event)
 }

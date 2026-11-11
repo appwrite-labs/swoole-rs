@@ -14,10 +14,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_server::{
-    CommandFn, CommandReply as Reply, server_methods, swr_v1_server_add_command,
-    swr_v1_server_command, view,
-};
+use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, init_object, message, object_of, report,
@@ -880,17 +877,19 @@ fn add_command(call: &Call) {
     if callable.is_null() {
         return call.set_bool(false);
     }
-    let handler = CommandFn {
-        invoke: command_run as *const c_void,
-        ctx: callable,
-    };
+    // The property keeps the callable for the server's life.
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the server's command table, like upstream's, holds PHP callables"
+    )]
+    let handler = std::sync::Arc::new(
+        move |_: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
+            command_run(callable, message, reply);
+        },
+    );
     // Upstream's `(int) types`.
     let types = c_int::from_le_bytes(types.to_le_bytes()[..4].try_into().unwrap_or_default());
-    // SAFETY: a live server, the name's bytes and the new callable, which the
-    // property keeps for the server's life.
-    if !unsafe {
-        swr_v1_server_add_command(serv.raw(), name.as_ptr().cast(), name.len(), types, handler)
-    } {
+    if !swr_v1_server_add_command(serv, name, types, handler) {
         // SAFETY: the callable created above.
         unsafe { swoole_rs_phpruntime::callable_free(callable) };
         return call.set_bool(false);
@@ -900,26 +899,14 @@ fn add_command(call: &Call) {
 }
 
 /// A command handler (`Server::Command::Handler`): `callable($server, $message)`'s
-/// string, or upstream's JSON errors. A bailout is raised last, from this frame.
-/// # Safety
-/// `callable` is a command callable and `server` the running server; `reply`
-/// writes into `out`.
-unsafe extern "C" fn command_run(
-    callable: *mut c_void,
-    _server: *mut c_void,
-    message: *const c_char,
-    length: usize,
-    reply: Reply,
-    out: *mut c_void,
-) {
-    let send = |text: &[u8]| {
-        // SAFETY: per the caller.
-        unsafe { reply(out, text.as_ptr().cast(), text.len()) };
-    };
+/// string, or upstream's JSON errors, into `reply`. A bailout is raised last, from
+/// this frame. `callable` is a live command callable.
+fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
+    let mut send = |text: &[u8]| reply.extend_from_slice(text);
     let mut args = [crate::dispatch::undef(), crate::dispatch::undef()];
     args[0] = crate::dispatch::zserv();
     // SAFETY: a writable zval and the message's bytes.
-    unsafe { swr_zval_stringl(&raw mut args[1], message, length) };
+    unsafe { swr_zval_stringl(&raw mut args[1], message.as_ptr().cast(), message.len()) };
     let retval = Owned::default();
     let called = crate::dispatch::invoke(callable, &mut args, retval.as_ptr(), false);
     // SAFETY: the message string made above.
@@ -959,27 +946,25 @@ struct Wait {
 
 /// The command's reply (`Server::Command::Callback`): into `return_value`, then
 /// the waiting coroutine resumes, if it has yielded yet.
-unsafe extern "C" fn command_done(
-    context: *mut c_void,
-    _server: *mut c_void,
-    message: *const c_char,
-    length: usize,
-) {
-    // SAFETY: `command` passes its live `Wait`.
-    let wait = unsafe { &mut *context.cast::<Wait>() };
-    if wait.json_decode {
-        // SAFETY: the reply's bytes and the call's return slot.
-        unsafe { swr_zend_json_decode(message, length, wait.return_value) };
-    } else {
-        // SAFETY: as above.
-        unsafe { swr_zval_stringl(wait.return_value, message, length) };
-    }
-    // SAFETY: the waiting coroutine.
-    if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
-        // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
-        unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
-    } else {
-        wait.replied = true;
+fn command_done(wait: *mut Wait) -> impl Fn(&[u8]) {
+    move |message| {
+        let (message, length) = (message.as_ptr().cast::<c_char>(), message.len());
+        // SAFETY: `command`'s `Wait`, live until this has run: it yields until then.
+        let wait = unsafe { &mut *wait };
+        if wait.json_decode {
+            // SAFETY: the reply's bytes and the call's return slot.
+            unsafe { swr_zend_json_decode(message, length, wait.return_value) };
+        } else {
+            // SAFETY: as above.
+            unsafe { swr_zval_stringl(wait.return_value, message, length) };
+        }
+        // SAFETY: the waiting coroutine.
+        if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
+            // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
+            unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
+        } else {
+            wait.replied = true;
+        }
     }
 }
 
@@ -1017,10 +1002,11 @@ fn command(call: &Call) {
         replied: false,
     };
     let data = encoded.bytes();
-    let callback = CommandFn {
-        invoke: command_done as *const c_void,
-        ctx: (&raw mut wait).cast(),
-    };
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the server's callback table, like upstream's, holds this coroutine's wait"
+    )]
+    let callback = std::sync::Arc::new(command_done(&raw mut wait));
     // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
     let [low, high, ..] = process_id.to_le_bytes();
     let process_id = u32::from(u16::from_le_bytes([low, high]));
@@ -1029,20 +1015,8 @@ fn command(call: &Call) {
             .try_into()
             .unwrap_or_default(),
     );
-    // SAFETY: a live server, the name's and data's bytes, and `wait`, which
-    // outlives the command (its callback runs before the yield below returns).
-    let sent = unsafe {
-        swr_v1_server_command(
-            serv.raw(),
-            process_id,
-            process_type,
-            name.as_ptr().cast(),
-            name.len(),
-            data.as_ptr().cast(),
-            data.len(),
-            callback,
-        )
-    };
+    // `wait` outlives the command: its callback runs before the yield below returns.
+    let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback);
     drop(encoded);
     if !sent {
         return call.set_bool(false);

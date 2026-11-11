@@ -152,18 +152,22 @@ pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *con
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const c_char {
     if inet4(address.kind) {
-        // SAFETY: inet4 selects the initialized IPv4 union member.
-        let ip = unsafe { &raw const address.addr.inet_v4.sin_addr };
+        // inet4 selects the initialized IPv4 union member.
+        let ip = (&raw const address.addr.inet_v4)
+            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in, sin_addr));
         // SAFETY: the field holds the selected family's address.
         unsafe { swr_v1_clients_address_string(libc::AF_INET, ip.cast()) }
     } else if inet6(address.kind) {
-        // SAFETY: inet6 selects the initialized IPv6 union member.
-        let ip = unsafe { &raw const address.addr.inet_v6.sin6_addr };
+        // inet6 selects the initialized IPv6 union member.
+        let ip = (&raw const address.addr.inet_v6)
+            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in6, sin6_addr));
         // SAFETY: the field holds the selected family's address.
         unsafe { swr_v1_clients_address_string(libc::AF_INET6, ip.cast()) }
     } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
-        // SAFETY: a local socket selects the initialized Unix union member.
-        unsafe { (&raw const address.addr.un.sun_path).cast() }
+        // A local socket selects the initialized Unix union member.
+        (&raw const address.addr.un)
+            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_un, sun_path))
+            .cast()
     } else {
         c"unknown".as_ptr()
     }

@@ -521,8 +521,11 @@ impl Co {
         hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
         arg: *mut c_void,
     ) {
-        // SAFETY: a live socket; per the caller.
-        unsafe { swoole_rs_hooks::socket_extra::set_close_hook(self.0, hook, arg) };
+        let hook = move |socket| {
+            // SAFETY: per the caller, `hook` takes `arg` until the socket goes.
+            unsafe { hook(arg, socket) }
+        };
+        swoole_rs_hooks::socket_extra::set_close_hook(self.0, Box::new(hook));
     }
 }
 

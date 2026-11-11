@@ -217,7 +217,7 @@ unsafe extern "C" fn handler_getaddrinfo(event: *mut AsyncEvent) {
         (*event).error = k.worker_error;
     }
 }
-unsafe extern "C" fn lambda(_: *mut c_void) {
+fn lambda() {
     record("lambda:execute".into());
     set_errno(knobs().worker_error);
 }
@@ -353,8 +353,8 @@ fn run(scenario: i32) -> Vec<String> {
         k.dispatch_ok = n & 1 != 0;
         k.worker_error = [0, libc::EIO, libc::EINVAL][index((n / 2) % 3)];
         KNOBS.set(k);
-        // SAFETY: `lambda` runs anywhere; inside the fake coroutine.
-        let result = unsafe { swr_v1_hook_async_job(lambda, core::ptr::null_mut(), &OPS) };
+        // SAFETY: a valid ops table, inside the fake coroutine.
+        let result = unsafe { swr_v1_hook_async_job(&mut lambda, &OPS) };
         record(format!("result:{}", flag(result)));
         record(format!("errno:{}", errno()));
     } else if scenario < 138 {

@@ -45,10 +45,11 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_HAS_COMMAND => {
             let id = i32::from(ctx.task().server_fd);
             let handler = crate::commands::handler(ctx.state(), id);
-            if let Some(handler) = handler {
+            let found = handler.is_some();
+            if found {
                 ctx.handler = handler;
             }
-            u64::from(handler.is_some())
+            u64::from(found)
         }
         OP_UNPACK_COMMAND => {
             let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
@@ -69,17 +70,17 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // `serv->get_task_id(task)`: the task's fd.
             let (fd, id) = (ctx.task().fd, ctx.worker().id());
             let id = u16::try_from(id).unwrap_or(u16::MAX);
-            // SAFETY: the handler OP_HAS_COMMAND found and the message unpacked for it.
-            u64::from(unsafe {
-                crate::commands::answer(
-                    ctx.handler,
-                    ctx.serv(),
-                    (message, length),
-                    (bus, sock),
-                    fd,
-                    id,
-                )
-            })
+            let handler = ctx.handler.as_ref()?;
+            let message = if message.is_null() {
+                &[][..]
+            } else {
+                // SAFETY: the message OP_UNPACK_COMMAND unpacked, `length` bytes.
+                unsafe { core::slice::from_raw_parts(message.cast(), length) }
+            };
+            let reply = (bus, sock);
+            u64::from(crate::commands::answer(
+                handler, ctx.server, message, reply, fd, id,
+            ))
         }
         OP_LISTEN_TASK_PIPE => {
             let pipe = in_worker_bus(ctx.state(), ctx.config(), ctx.worker().pipe_worker());
