@@ -70,11 +70,15 @@ impl StringSlot {
     /// The bytes, embedded NULs included; a NUL follows them.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
+        self.with_nul().split_last().map_or(&[], |(_, bytes)| bytes)
+    }
+    /// The bytes and their terminating NUL, which C views read as a C string.
+    fn with_nul(&self) -> &[u8] {
         // SAFETY: a write through a shared slot is `swr_v1_core_string_set`, whose
         // caller holds the slot exclusively, so none overlaps this borrow.
         match unsafe { &*self.bytes.get() } {
-            Bytes::Inline { data, length } => data.get(..*length).unwrap_or_default(),
-            Bytes::Heap(data) => data.split_last().map_or(&[], |(_, bytes)| bytes),
+            Bytes::Inline { data, length } => data.get(..=*length).unwrap_or_default(),
+            Bytes::Heap(data) => data,
         }
     }
 }
@@ -83,10 +87,11 @@ impl StringSlot {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_string_view(slot: *const StringSlot) -> CoreStringView {
     // SAFETY: the caller lends a live synchronized slot.
-    let bytes = unsafe { &*slot }.bytes();
+    let bytes = unsafe { &*slot }.with_nul();
+    // The pointer covers the NUL too: native readers stop at it.
     CoreStringView {
         data: bytes.as_ptr().cast(),
-        length: bytes.len(),
+        length: bytes.len().saturating_sub(1),
     }
 }
 /// Fallible byte assignment; 0 success, -2 allocation refusal.
