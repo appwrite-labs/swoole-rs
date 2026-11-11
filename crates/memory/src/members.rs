@@ -80,8 +80,8 @@ impl FixedPool {
     /// # Panics
     /// Upstream's assertion: an allocation fails only when no slice is spare.
     pub fn alloc(&mut self) -> *mut c_void {
-        // SAFETY: a constructed pool; `&mut self` serializes allocation.
-        let result = unsafe { fixed::alloc(self.0.as_ptr()) };
+        // `&mut self` serializes allocation.
+        let result = fixed::alloc(self.header());
         if result.is_null() {
             set_last_error(MALLOC_FAIL);
             // assert(get_number_of_spare_slice() == 0);
@@ -103,10 +103,10 @@ impl FixedPool {
         );
         // The same address, from the arena: nothing is read through the caller's pointer.
         let slice = memory.wrapping_add(data.addr() - memory.addr());
-        // SAFETY: a constructed pool; `free` checks the stride before it reads a
-        // slice header, then upstream's `slice->lock == 1`, so a pointer into a
-        // slice's (maybe uninitialized) data is refused unread.
-        let freed = unsafe { fixed::free(self.0.as_ptr(), slice.cast()) };
+        // `free` checks the stride before it reads a slice header, then upstream's
+        // `slice->lock == 1`, so a pointer into a slice's (maybe uninitialized) data is
+        // refused unread.
+        let freed = fixed::free(self.header(), slice.cast());
         assert!(freed, "a live slice of this pool");
     }
 
@@ -138,9 +138,7 @@ impl FixedPool {
                 c"debug".as_ptr(),
             )
         };
-        // SAFETY: a constructed pool.
-        while let Some(record) = unsafe { fixed::debug_step(self.header(), &mut cursor, max_lines) }
-        {
+        while let Some(record) = fixed::debug_step(self.header(), &mut cursor, max_lines) {
             if record.self_link {
                 // SAFETY: a literal format with no arguments.
                 unsafe {
@@ -670,13 +668,8 @@ pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
 }
 
 /// `Table::create()`: lays the table out in a fresh shared arena.
-///
-/// # Safety
-/// `this` is a made table.
 #[must_use]
-pub unsafe fn swr_table_create(this: *mut Table) -> bool {
-    // SAFETY: as the caller promises.
-    let table = unsafe { &mut *this };
+pub fn swr_table_create(table: &mut Table) -> bool {
     let size = table.arena_size();
     if size == 0 {
         return false;
@@ -734,7 +727,7 @@ impl SharedTable {
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
         // SAFETY: a made table, which `&mut self` borrows alone.
-        unsafe { swr_table_create(self.table.as_ptr()) }
+        swr_table_create(unsafe { self.table.as_mut() })
     }
 
     /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.
