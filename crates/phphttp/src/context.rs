@@ -178,10 +178,8 @@ pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and the bytes; true once every
-        // byte is sent.
-        unsafe { co::send_all(target, data.as_ptr().cast(), data.len()) }.cast_unsigned()
-            == data.len()
+        // SAFETY: the context's live socket; true once every byte is sent.
+        unsafe { co::Co::of(target) }.send_all(data).cast_unsigned() == data.len()
     } else {
         server_send(server(state), fd, data)
     }
@@ -213,15 +211,11 @@ pub(crate) fn sendfile(
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and a live, NUL-terminated file name.
-        unsafe {
-            co::sendfile(
-                target,
-                string::val(file).cast(),
-                offset,
-                i64::try_from(length).unwrap_or(i64::MAX),
-            )
-        }
+        // SAFETY: the context's live socket.
+        let socket = unsafe { co::Co::of(target) };
+        // SAFETY: a live, NUL-terminated file name.
+        let file = unsafe { std::ffi::CStr::from_ptr(string::val(file).cast()) };
+        socket.sendfile(file, offset, length)
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
@@ -235,7 +229,7 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket.
-        unsafe { co::close(target) }
+        unsafe { co::Co::of(target) }.close()
     } else {
         server_methods::close(server(state), fd, false)
     }

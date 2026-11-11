@@ -159,7 +159,8 @@ impl Co {
     }
 
     /// crates/hooks' handle to the same record.
-    pub(crate) fn handle(self) -> Handle {
+    #[must_use]
+    pub fn handle(self) -> Handle {
         self.0
     }
 
@@ -202,8 +203,7 @@ impl Co {
     /// # Errors
     /// A close hook bailed out.
     pub(crate) fn close_trapped(self) -> Result<bool, Bailout> {
-        // SAFETY: a live socket.
-        unsafe { co::close_trapped(self.as_ptr()) }
+        co::close_trapped(self.0)
     }
 
     /// `close()`; the socket may be gone after it returns true.
@@ -387,7 +387,7 @@ impl Co {
         let _timeout = self.timeout(timeout, kind);
         let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
         // SAFETY: per the caller.
-        unsafe { co::vector(self.as_ptr(), op, vectors.as_ptr(), count) }
+        unsafe { co::vector(self.0, op, vectors.as_ptr(), count) }
     }
 
     /// `sendfile(file, offset, length)` of the file named up to the first NUL,

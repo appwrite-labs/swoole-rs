@@ -1033,10 +1033,10 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         if matches!(step, Step::Recv) {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
-            let (length, size) = (buffer.len(), buffer.size());
-            let free = buffer.as_mut_ptr().wrapping_add(length).cast();
-            // SAFETY: a live socket and its buffer's free space.
-            let received = unsafe { co::recv(conn.socket.this(), free, size - length) };
+            let length = buffer.len();
+            let free = std::ptr::from_mut(buffer.spare()) as *mut [u8];
+            // SAFETY: the buffer's free space, which the receive only writes.
+            let received = conn.socket.recv(unsafe { &mut *free });
             if received <= 0 {
                 break;
             }
