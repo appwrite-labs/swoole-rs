@@ -126,21 +126,17 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_prepare(
 }
 
 /// Observe the cursor. No reference to the owner escapes the call.
-/// # Safety
-/// `owner` is a live immutable cursor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_view(owner: *const ReactorIov) -> IovState {
-    // SAFETY: live immutable owner per the contract.
-    unsafe { (*owner).fields.state }
+pub extern "C" fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
+    owner.fields.state
 }
 
 /// Sum the unchanged original descriptors.
 /// # Safety
-/// `owner` is a live immutable cursor with readable original descriptors.
+/// `owner`'s original descriptors are readable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: *const ReactorIov) -> usize {
-    // SAFETY: live immutable owner per the contract.
-    let fields = unsafe { &(*owner).fields };
+pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: &ReactorIov) -> usize {
+    let fields = &owner.fields;
     // SAFETY: creation copied `count` (never negative) descriptors to `original`, live until destroy.
     owned_length(unsafe { span(fields.original, fields.count) })
 }
@@ -244,18 +240,18 @@ mod tests {
                 let owner = owned_new(source.as_ptr(), count as i32);
                 assert!(owner.is_ok_and(|owner| !owner.is_null()));
                 let owner = owner.unwrap();
-                let initial = swr_v1_reactor_iov_view(owner);
+                let initial = swr_v1_reactor_iov_view(&*owner);
                 assert_eq!(initial.remain_count, count as i32);
                 assert_eq!(initial.index, 0);
                 assert_eq!(initial.offset_bytes, 0);
-                assert_eq!(swr_v1_reactor_iov_length(owner), count);
+                assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
                 if count > 0 {
                     swr_v1_reactor_iov_advance(owner, 1);
-                    let next = swr_v1_reactor_iov_view(owner);
+                    let next = swr_v1_reactor_iov_view(&*owner);
                     assert_eq!(next.remain_count, count as i32 - 1);
                     assert_eq!(next.index, 1);
                     assert_eq!(next.offset_bytes, 0);
-                    assert_eq!(swr_v1_reactor_iov_length(owner), count);
+                    assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
                     assert_eq!(source[0].iov_len, 1);
                     assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
                 }

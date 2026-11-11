@@ -213,8 +213,6 @@ type CpuSet = libc::cpuset_t;
 type CpuSet = libc::cpu_set_t;
 
 /// `int swoole_get_cpu_affinity(cpu_set_t *set)`: the whole process.
-/// # Safety
-/// `set` points to a writable `cpu_set_t`.
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 #[cfg_attr(
     all(feature = "upstream-symbols", target_os = "freebsd"),
@@ -224,9 +222,9 @@ type CpuSet = libc::cpu_set_t;
     all(feature = "upstream-symbols", not(target_os = "freebsd")),
     unsafe(export_name = "_Z23swoole_get_cpu_affinityP9cpu_set_t")
 )]
-pub unsafe extern "C" fn swoole_get_cpu_affinity(set: *mut CpuSet) -> c_int {
+pub extern "C" fn swoole_get_cpu_affinity(set: &mut CpuSet) -> c_int {
     #[cfg(target_os = "freebsd")]
-    // SAFETY: `set` is a writable `cpu_set_t` per the contract.
+    // SAFETY: `set` is a writable `cpu_set_t`.
     unsafe {
         libc::cpuset_getaffinity(
             libc::CPU_LEVEL_WHICH,
@@ -240,7 +238,7 @@ pub unsafe extern "C" fn swoole_get_cpu_affinity(set: *mut CpuSet) -> c_int {
     {
         // Upstream pins the process's main thread (tid == pid), not the calling thread.
         let pid = swoole_rs_corebase::sys::getpid();
-        // SAFETY: `set` is a writable `cpu_set_t` per the contract.
+        // SAFETY: `set` is a writable `cpu_set_t`.
         unsafe { libc::sched_getaffinity(pid, size_of::<CpuSet>(), set) }
     }
 }
@@ -457,14 +455,14 @@ mod tests {
             libc::sched_setaffinity(libc::getpid(), size_of::<libc::cpu_set_t>(), set)
         };
         let mut affinity: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-        assert_eq!(unsafe { swoole_get_cpu_affinity(&raw mut affinity) }, 0);
+        assert_eq!(swoole_get_cpu_affinity(&mut affinity), 0);
         let ori_affinity = affinity;
 
         unsafe { libc::CPU_ZERO(&mut affinity) };
         unsafe { libc::CPU_SET(1, &mut affinity) };
 
         assert_eq!(set(&affinity), 0);
-        assert_eq!(unsafe { swoole_get_cpu_affinity(&raw mut affinity) }, 0);
+        assert_eq!(swoole_get_cpu_affinity(&mut affinity), 0);
 
         // SW_CPU_NUM, as swoole_init sets it.
         let cpu_n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1);

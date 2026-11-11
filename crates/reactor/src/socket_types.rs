@@ -65,14 +65,11 @@ pub extern "C" fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int {
 }
 
 /// `Socket::get_domain_and_type`: false for a type with no socket(2) arguments.
-///
-/// # Safety
-/// `domain` and `kind` point to writable ints.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_domain_and_type(
+pub extern "C" fn swr_v1_socket_domain_and_type(
     socket_type: c_int,
-    domain: *mut c_int,
-    kind: *mut c_int,
+    domain: &mut c_int,
+    kind: &mut c_int,
 ) -> bool {
     let (d, k) = match socket_type {
         TCP6 => (libc::AF_INET6, libc::SOCK_STREAM),
@@ -85,10 +82,8 @@ pub unsafe extern "C" fn swr_v1_socket_domain_and_type(
         RAW6 => (libc::AF_INET6, libc::SOCK_RAW),
         _ => return false,
     };
-    // SAFETY: the caller lends two writable ints.
-    unsafe { domain.write(d) };
-    // SAFETY: as above.
-    unsafe { kind.write(k) };
+    *domain = d;
+    *kind = k;
     true
 }
 
@@ -213,15 +208,15 @@ mod tests {
     fn domain_and_type_round_trip() {
         for socket_type in TCP..=RAW6 {
             let (mut domain, mut kind) = (0, 0);
-            // SAFETY: two local ints.
-            assert!(unsafe {
-                swr_v1_socket_domain_and_type(socket_type, &raw mut domain, &raw mut kind)
-            });
+            assert!(swr_v1_socket_domain_and_type(
+                socket_type,
+                &mut domain,
+                &mut kind
+            ));
             assert_eq!(swr_v1_socket_type(domain, kind), socket_type);
         }
         let (mut domain, mut kind) = (0, 0);
-        // SAFETY: as above.
-        assert!(!unsafe { swr_v1_socket_domain_and_type(0, &raw mut domain, &raw mut kind) });
+        assert!(!swr_v1_socket_domain_and_type(0, &mut domain, &mut kind));
         assert_eq!(swr_v1_socket_type(libc::AF_UNIX, libc::SOCK_RAW), RAW);
     }
 

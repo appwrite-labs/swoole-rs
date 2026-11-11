@@ -230,8 +230,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             };
             ctx.worker().set_status(status);
         }
-        // SAFETY: the context's live worker.
-        OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
         // SAFETY: the context's live server and worker.
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
         OP_ADD_REQUEST_COUNT => ctx.worker().add_request_count(),
@@ -256,8 +255,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
         OP_WORKER_INIT => {
-            // SAFETY: the context's live worker.
-            unsafe { swr_v1_worker_init(worker) };
+            swr_v1_worker_init(ctx.worker().into());
             let pool = ctx.pool();
             worker_set_max_request(worker, pool.max_request, pool.max_request_grace);
         }
@@ -376,7 +374,7 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // Only a stream pool has IPC state: an event worker's pool has none.
             ctx.socket = if pool.use_socket != 0 {
                 // SAFETY: the stream pool's live IPC state.
-                unsafe { swoole_rs_process::pool::pool_ipc_connection(pool.ipc) }.cast()
+                swoole_rs_process::pool::pool_ipc_connection(unsafe { &*pool.ipc }).cast()
             } else {
                 core::ptr::null_mut()
             };

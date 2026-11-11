@@ -63,11 +63,6 @@ impl<'a> Server<'a> {
         self.raw
     }
 
-    /// The server's Rust-owned state, as a pointer.
-    pub(crate) fn state_ptr(self) -> *const ServerState {
-        self.fields().state
-    }
-
     /// The server's Rust-owned state.
     pub(crate) fn state(self) -> &'a ServerState {
         // SAFETY: the state lives as long as the server.
@@ -156,13 +151,7 @@ impl<'a> Server<'a> {
     pub fn insert_static_string(self, kind: u32, value: &[u8]) {
         // SAFETY: the live state and a byte span (non-null even when empty).
         unsafe {
-            crate::swr_v1_server_static_config(
-                self.state_ptr(),
-                kind,
-                4,
-                value.as_ptr(),
-                value.len(),
-            )
+            crate::swr_v1_server_static_config(self.state(), kind, 4, value.as_ptr(), value.len())
         };
     }
 
@@ -199,7 +188,7 @@ impl<'a> Server<'a> {
     /// `http_compression_types` lists `kind`; `None` asks whether it lists any.
     #[must_use]
     pub fn compression_type(self, kind: Option<&[u8]>) -> bool {
-        let state = self.state_ptr();
+        let state = self.state();
         let op = |operation, data: &[u8]| {
             // SAFETY: the live state and a byte span (non-null even when empty).
             unsafe {
@@ -391,7 +380,7 @@ impl<'a> Server<'a> {
     pub fn worker(self, id: u16) -> *mut WorkerRecord {
         let view = self.workers();
         // SAFETY: the server's live pools and worker arrays, with their counts.
-        unsafe { swr_v1_process_server_worker(&raw const view, id) }
+        unsafe { swr_v1_process_server_worker(&view, id) }
     }
 
     /// [`Server::worker`]'s record, or `None` past the last.

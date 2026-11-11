@@ -58,14 +58,12 @@ fn set_errno(value: c_int) {
 /// live `swr_resp_request` from `sw_malloc`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_resp_recv(
-    io: *const RespIo,
+    io: &RespIo,
     buffer: *mut RespBuffer,
     request: *mut *mut RespRequest,
     maximum: u32,
     page: usize,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let io = unsafe { &*io };
     // SAFETY: as the caller promises.
     let slot = unsafe { &mut *request };
     if slot.is_null() {
@@ -218,9 +216,7 @@ mod tests {
                 dispatch: script_dispatch,
             };
             let buffer = &raw mut script.buffer;
-            results.push(unsafe {
-                swr_v1_resp_recv(&raw const io, buffer, &raw mut request, maximum, 4096)
-            });
+            results.push(unsafe { swr_v1_resp_recv(&io, buffer, &raw mut request, maximum, 4096) });
         }
         unsafe { libc::free(request.cast()) };
         unsafe { libc::free(script.buffer.str.cast()) };

@@ -211,12 +211,11 @@ pub struct UrlParts {
 }
 
 /// # Safety
-/// Input contains initialized bytes and output is a disjoint writable object.
-pub unsafe fn swr_v1_httpbindings_request_url(input: Text, output: *mut UrlParts) -> i32 {
+/// Input contains initialized bytes.
+#[must_use]
+pub unsafe fn swr_v1_httpbindings_request_url(input: Text, output: Option<&mut UrlParts>) -> i32 {
     // SAFETY: `input` spans `length` initialized bytes (null only when empty) for this call.
     let input = unsafe { bytes(input) };
-    // SAFETY: `output` is null or aligned, writable and exclusively lent for this call.
-    let output = unsafe { output.as_mut() };
     let (Some(input), Some(output)) = (input, output) else {
         return -1;
     };
@@ -242,18 +241,17 @@ pub struct Trimmed {
 }
 
 /// # Safety
-/// Data is initialized/writable for length bytes and output is disjoint. The
-/// original shrinking left-loop bound is intentional; this is not `trim_matches`.
+/// Data is initialized/writable for length bytes. The original shrinking
+/// left-loop bound is intentional; this is not `trim_matches`.
 pub unsafe fn swr_v1_httpbindings_trim_quotes(
     data: *mut u8,
     length: usize,
-    output: *mut Trimmed,
+    output: Option<&mut Trimmed>,
 ) -> i32 {
     if length > isize::MAX as usize || (data.is_null() && length != 0) {
         return -1;
     }
-    // SAFETY: `output` is null or aligned, writable and exclusively lent for this call.
-    let Some(output) = (unsafe { output.as_mut() }) else {
+    let Some(output) = output else {
         return -1;
     };
     let input = if length == 0 {

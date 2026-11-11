@@ -358,7 +358,7 @@ impl Server {
         // SAFETY: the live state and the bytes.
         unsafe {
             crate::static_config::swr_v1_server_static_config(
-                self.0.state,
+                &*self.0.state,
                 kind,
                 operation,
                 bytes.as_ptr(),

@@ -317,6 +317,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
 ]
 
 [[package]]

@@ -162,6 +162,12 @@ jobs:
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
       - run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
+      # Every swr_v* this build's config.h declares (SW_USE_CURL's, SW_HAVE_SSH2LIB's) is exported.
+      - name: ABI export gate
+        timeout-minutes: 5
+        run: >
+          python3 tests/modules/integration/test_bridge.py --startup-only --php-extension curl --php-extension sockets
+          --extension target/ext/swoole.so --reference target/upstream/src/modules/swoole.so
       # Compare SDK alias defaults independently of remote SSH service availability.
       - run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2

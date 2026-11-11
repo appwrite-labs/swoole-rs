@@ -40,12 +40,7 @@ fn errno() -> c_int {
 
 /// `Socket::accept(timeout)` after its availability and TLS context checks: accept,
 /// and when that would block, wait for the socket and accept once more.
-///
-/// # Safety
-/// `ops` is live for the call.
-pub(crate) unsafe fn swr_v1_hook_accept(ops: *const SetupOps) -> bool {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
+pub(crate) fn swr_v1_hook_accept(ops: &SetupOps) -> bool {
     let mut accepted = ops.call(0) == 0;
     if !accepted && errno() == libc::EAGAIN {
         if !ops.wait(EVENT_READ) {
@@ -137,15 +132,15 @@ mod tests {
         let ops = ops();
         reset(true, &[-libc::EAGAIN, 0]);
         // SAFETY: local table.
-        assert!(unsafe { swr_v1_hook_accept(&raw const ops) });
+        assert!(swr_v1_hook_accept(&ops));
         assert_eq!(logged(), ["call 0", "wait 512", "call 0"]);
         reset(false, &[-libc::EAGAIN]);
         // SAFETY: as above.
-        assert!(!unsafe { swr_v1_hook_accept(&raw const ops) });
+        assert!(!swr_v1_hook_accept(&ops));
         assert_eq!(logged(), ["call 0", "wait 512"]);
         reset(true, &[-libc::EMFILE]);
         // SAFETY: as above.
-        assert!(!unsafe { swr_v1_hook_accept(&raw const ops) });
+        assert!(!swr_v1_hook_accept(&ops));
         assert_eq!(
             logged(),
             ["call 0".to_string(), format!("fail {}", libc::EMFILE)]
