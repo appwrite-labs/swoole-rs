@@ -42,6 +42,12 @@ the other calls `stats()`, `isStreamExist()`, `send()` and `ping()`, then receiv
 the second response. `test_server.py` sends a request body over the server's
 `package_max_length`: the reset must be a 4-byte RST_STREAM on the request's
 stream, with the connection's framing intact after it (RFC 9113 6.4).
+`test_header_reentry.py` serves `tests/modules/http/header_reentry.php` over h2c
+to `Swoole\Coroutine\Http2\Client`: a header or trailer value's `__toString`
+replaces the array being sent, and the response must carry the headers as they
+were when sending began. In its last request, a header value and a cookie value
+replace the client's own request `headers` and `cookies` the same way, and the
+fixture's `/echo` must receive them as they were when sending began.
 
 ## Conformance
 

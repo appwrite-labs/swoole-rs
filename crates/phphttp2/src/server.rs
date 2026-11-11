@@ -23,7 +23,7 @@ use swoole_rs_http2::{
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
-    Array, Owned, Props, Value as Zval, ZString, bailout, string,
+    Array, HeldArray, Owned, Props, Value as Zval, ZString, bailout, string,
     sys::{add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_url_decode, zend_object, zval},
     value,
 };
@@ -344,11 +344,15 @@ impl Drop for Headers {
     }
 }
 
-/// A response property (`sw_zend_read_property_ex`).
-fn property<'a>(ctx: Ctx, name: &CStr) -> &'a Zval {
+/// A response array property (`sw_zend_read_property_ex`), with a reference of
+/// its own. This is the server's only way to read the `header`, `cookie` and
+/// `trailer` properties, and [`length_safe`] and [`entries`] take only a
+/// [`HeldArray`]: a value's `__toString` may replace or unset the property while
+/// the array is walked, and the hold keeps the walked table live.
+fn property(ctx: Ctx, name: &CStr) -> Option<HeldArray> {
     let response = object(zval_of(ctx, Value::Response));
     // SAFETY: the live Response object, which declares `name`, for the context.
-    unsafe { swoole_rs_zend::property(response, name) }
+    unsafe { swoole_rs_zend::property(response, name) }.hold()
 }
 
 fn object(value: *mut zval) -> *mut zend_object {
@@ -357,8 +361,20 @@ fn object(value: *mut zval) -> *mut zend_object {
 }
 
 /// `php_swoole_array_length_safe`.
-fn length_safe(value: &Zval) -> usize {
-    value.array().map_or(0, |array| array.count() as usize)
+fn length_safe(array: Option<&HeldArray>) -> usize {
+    array
+        .and_then(|array| array.array())
+        .map_or(0, |array| array.count() as usize)
+}
+
+/// Each element of a held array, with its string key (None for an integer key).
+/// The server's and the client's header walks go through here, so the table
+/// they walk is one a [`HeldArray`] keeps live.
+pub(crate) fn entries(array: Option<&HeldArray>) -> impl Iterator<Item = (Option<&[u8]>, &Zval)> {
+    array
+        .and_then(|array| array.array())
+        .into_iter()
+        .flat_map(Array::entries)
 }
 
 /// `zval_get_string`, `None` once a bailout is pending.
@@ -399,13 +415,13 @@ fn has_crlf(value: &[u8]) -> bool {
 /// without a trailer): `None` on an error.
 fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
     let trailer = property(ctx, c"trailer");
-    let size = length_safe(trailer);
+    let size = length_safe(trailer.as_ref());
     let mut headers = Headers::new(size);
     if size == 0 {
         headers.buffers.frame.resize(FRAME_HEADER, 0);
         return Some(headers);
     }
-    for (key, value) in trailer.array().into_iter().flat_map(Array::entries) {
+    for (key, value) in entries(trailer.as_ref()) {
         let Some(key) = key.filter(|_| !value.is_null()) else {
             continue;
         };
@@ -427,7 +443,8 @@ struct Body {
 fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Headers> {
     let zheader = property(ctx, c"header");
     let zcookie = property(ctx, c"cookie");
-    let mut headers = Headers::new(32 + length_safe(zheader) + length_safe(zcookie));
+    let mut headers =
+        Headers::new(32 + length_safe(zheader.as_ref()) + length_safe(zcookie.as_ref()));
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
@@ -439,7 +456,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
     headers.add(b":status", decimal(&mut [0; 20], i64::from(status as i32)));
 
     let mut header_flags = 0;
-    if let Some(zheader) = zheader.array() {
+    if zheader.is_some() {
         let can_capture =
             get(ctx, Field::AcceptCompression) != 0 && get(ctx, Field::CompressionTypes) != 0;
         let mut content_type = None;
@@ -463,7 +480,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
             headers.add_folded(key, text);
             Some(())
         };
-        for (key, value) in zheader.entries() {
+        for (key, value) in entries(zheader.as_ref()) {
             let Some(key) = key.filter(|_| !value.is_null()) else {
                 continue;
             };
@@ -495,7 +512,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
     if missing & MISSING_CONTENT_TYPE != 0 {
         headers.add(b"content-type", b"text/html");
     }
-    for (_, value) in zcookie.array().into_iter().flat_map(Array::entries) {
+    for (_, value) in entries(zcookie.as_ref()) {
         if let Some(cookie) = value.bytes() {
             headers.add(b"set-cookie", cookie);
         }
@@ -657,7 +674,7 @@ fn send_trailer(ctx: Ctx, session: &Session, stream_id: u32) -> bool {
 
 /// Whether the response has a trailer.
 fn has_trailer(ctx: Ctx) -> bool {
-    length_safe(property(ctx, c"trailer")) > 0
+    length_safe(property(ctx, c"trailer").as_ref()) > 0
 }
 
 /// `http2_server_respond`: the header, the body and the trailer, then the

@@ -1,7 +1,9 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
+use crate::server::entries;
 use crate::session::IdMap;
 use libc::{c_char, c_int};
+use request::{Field, Held, Request};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
@@ -25,7 +27,10 @@ use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
-    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_wrong_parameter_class_error},
+    sys::{
+        ZEND_ACC_PUBLIC, swr_zend_instanceof, zend_class_entry, zend_object,
+        zend_wrong_parameter_class_error,
+    },
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -224,8 +229,9 @@ fn ce() -> *mut zend_class_entry {
 
 /// `php_swoole_socket_set` when `settings` is an array.
 fn apply(socket: Co, settings: &Value) {
-    if let Some(settings) = settings.array() {
-        swoole_rs_phpclients::socket_set(socket, settings);
+    if settings.array().is_some() {
+        // SAFETY: a live socket and array; 0 applies every setting.
+        unsafe { swoole_rs_phpclients::socket_settings(socket.this(), settings.as_ptr(), 0) };
     }
 }
 
@@ -340,7 +346,8 @@ impl Client {
 
     /// Writes under the client class.
     fn props(&self) -> Props<'_> {
-        self.conn.props()
+        // SAFETY: the client object outlives its client.
+        unsafe { Props::new(ce(), self.object) }
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
@@ -362,8 +369,14 @@ impl Client {
 
     /// `io_error`: the socket's errCode and errMsg.
     fn io_error(&self, socket: Co) {
-        let (code, message) = swoole_rs_phpclients::Co::from(socket).error();
-        self.update_error(code, message.to_bytes());
+        let (code, message) = (socket.err_code(), socket.err_msg());
+        let message = if message.is_null() {
+            &b""[..]
+        } else {
+            // SAFETY: the socket's NUL-terminated errMsg.
+            unsafe { CStr::from_ptr(message) }.to_bytes()
+        };
+        self.update_error(code, message);
     }
 
     fn is_available(&self) -> bool {
@@ -573,10 +586,15 @@ impl Client {
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block.
     fn build_header(&self, request: Request<'_>) -> Vec<u8> {
-        let property = |name| request.property(name);
-        let text = |name| property(name).bytes().filter(|text| !text.is_empty());
-        let (method, path) = (text(c"method"), text(c"path"));
-        let (headers, cookies) = (property(c"headers"), property(c"cookies"));
+        let text = |field| {
+            request
+                .property(field)
+                .bytes()
+                .filter(|text| !text.is_empty())
+        };
+        let (method, path) = (text(Field::Method), text(Field::Path));
+        let headers = request.array(Held::Headers);
+        let cookies = request.array(Held::Cookies);
         // Converting a header value can run PHP code, which may build another request.
         let mut set = self.headers.take();
         set.clear();
@@ -585,19 +603,16 @@ impl Client {
         set.add(b":scheme", &[if self.ssl { b"https" } else { b"http" }]);
         set.slots.push(None);
         let mut host = false;
-        if let Some(headers) = headers.array() {
-            for (key, value) in headers.entries() {
-                let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null())
-                else {
-                    continue;
-                };
-                let value = value.string();
-                if header_kind(CLIENT_HEADERS, key) == HEADER_HOST {
-                    set.set(AUTHORITY, b":authority", value.bytes());
-                    host = true;
-                } else {
-                    set.add(key, &[value.bytes()]);
-                }
+        for (key, value) in entries(headers.as_ref()) {
+            let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null()) else {
+                continue;
+            };
+            let value = value.string();
+            if header_kind(CLIENT_HEADERS, key) == HEADER_HOST {
+                set.set(AUTHORITY, b":authority", value.bytes());
+                host = true;
+            } else {
+                set.add(key, &[value.bytes()]);
             }
         }
         if !host {
@@ -610,15 +625,13 @@ impl Client {
             };
             set.set(AUTHORITY, b":authority", &authority);
         }
-        if let Some(cookies) = cookies.array() {
-            for (key, value) in cookies.entries() {
-                let Some(key) = key.filter(|_| !value.is_null()) else {
-                    continue;
-                };
-                let value = value.string();
-                let encoded = ZString::url_encode(value.bytes());
-                set.add(b"cookie", &[key, b"=", encoded.bytes()]);
-            }
+        for (key, value) in entries(cookies.as_ref()) {
+            let Some(key) = key.filter(|_| !value.is_null()) else {
+                continue;
+            };
+            let value = value.string();
+            let encoded = ZString::url_encode(value.bytes());
+            set.add(b"cookie", &[key, b"=", encoded.bytes()]);
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
         if let Some((_, encoder)) = self.hpack.borrow_mut().as_mut() {
@@ -630,14 +643,14 @@ impl Client {
 
     /// `send_request`: the new stream's id, or 0.
     fn send_request(&self, request: Request<'_>) -> u32 {
-        let props = request.1.props(Some(&REQUEST));
+        // SAFETY: a live request object of the registered class.
+        let props = unsafe { Props::new(REQUEST.entry(), request.0) };
         // SAFETY: nothing else borrows `headers`, and no PHP code runs, until
         // the type is added.
-        let headers = props.and_then(|props| unsafe { props.array(c"headers") });
-        let property = |name| request.property(name);
-        let data = property(c"data");
-        let pipeline = property(c"pipeline").truthy();
-        let use_pipeline_read = property(c"usePipelineRead").truthy();
+        let headers = unsafe { props.array(c"headers") };
+        let data = request.property(Field::Data);
+        let pipeline = request.property(Field::Pipeline).truthy();
+        let use_pipeline_read = request.property(Field::UsePipelineRead).truthy();
         let empty = match data.bytes() {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
@@ -1287,14 +1300,63 @@ fn close(call: &Call) {
     call.set_bool(result);
 }
 
-/// A `Swoole\Http2\Request` argument, live for the call.
-#[derive(Clone, Copy)]
-struct Request<'a>(*mut zend_object, &'a Value);
+/// `Swoole\Http2\Request` arguments. Outside this module a request's
+/// `headers` and `cookies` are readable only held ([`Request::array`]).
+mod request {
+    use std::{ffi::CStr, marker::PhantomData};
+    use swoole_rs_zend::{Call, HeldArray, Value, sys::zend_object};
 
-impl<'a> Request<'a> {
-    fn property(self, name: &CStr) -> &'a Value {
-        // SAFETY: a live request object, which declares every name read.
-        unsafe { swoole_rs_zend::property(self.0, name) }
+    /// A `Swoole\Http2\Request` argument, live for the call.
+    #[derive(Clone, Copy)]
+    pub(super) struct Request<'a>(pub(super) *mut zend_object, PhantomData<&'a Call>);
+
+    /// The request properties read in place: none is a header array.
+    #[derive(Clone, Copy)]
+    pub(super) enum Field {
+        Method,
+        Path,
+        Data,
+        Pipeline,
+        UsePipelineRead,
+    }
+
+    /// The request's header arrays, which [`Request::array`] reads only held.
+    #[derive(Clone, Copy)]
+    pub(super) enum Held {
+        Headers,
+        Cookies,
+    }
+
+    impl<'a> Request<'a> {
+        pub(super) fn new(object: *mut zend_object) -> Self {
+            Self(object, PhantomData)
+        }
+
+        fn slot(self, name: &CStr) -> &'a Value {
+            // SAFETY: a live request object, which declares every name read.
+            unsafe { swoole_rs_zend::property(self.0, name) }
+        }
+
+        pub(super) fn property(self, field: Field) -> &'a Value {
+            self.slot(match field {
+                Field::Method => c"method",
+                Field::Path => c"path",
+                Field::Data => c"data",
+                Field::Pipeline => c"pipeline",
+                Field::UsePipelineRead => c"usePipelineRead",
+            })
+        }
+
+        /// `headers` or `cookies` with a reference of its own: converting a
+        /// value may replace or unset the property while
+        /// [`crate::server::entries`] walks it.
+        pub(super) fn array(self, which: Held) -> Option<HeldArray> {
+            self.slot(match which {
+                Held::Headers => c"headers",
+                Held::Cookies => c"cookies",
+            })
+            .hold()
+        }
     }
 }
 
@@ -1302,8 +1364,11 @@ impl<'a> Request<'a> {
 fn request_arg(call: &Call) -> Option<Request<'_>> {
     let arg = call.value(1)?;
     let ce = REQUEST.entry();
-    if let Some(object) = arg.object().filter(|_| arg.instance_of(&REQUEST)) {
-        return Some(Request(object, arg));
+    if let (Some(object), Some(class)) = (arg.object(), arg.class())
+        // SAFETY: two registered classes.
+        && (class == ce || unsafe { swr_zend_instanceof(class, ce) })
+    {
+        return Some(Request::new(object));
     }
     // SAFETY: from a handler, as Zend's macro reports it; the name is the
     // class's NUL-terminated name.
