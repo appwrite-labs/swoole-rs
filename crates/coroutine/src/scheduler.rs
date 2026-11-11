@@ -8,8 +8,8 @@ use crate::context::{
     Context, Native, swr_v1_context_free, swr_v1_context_swap_in, swr_v1_context_swap_out,
 };
 use crate::{
-    Canceler, Coroutine, Hooks, Scheduler, swr_v1_coroutine_bailout, swr_v1_coroutine_cancel,
-    swr_v1_coroutine_resume, swr_v1_coroutine_yield_cancelable,
+    Canceler, Coroutine, Hooks, Scheduler, swr_v1_coroutine_bailout, swr_v1_coroutine_resume,
+    swr_v1_coroutine_yield_cancelable,
 };
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
@@ -177,7 +177,7 @@ pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
 /// Marks `co` canceled, then calls the caller's canceler, `inner`.
 unsafe extern "C-unwind" fn mark_canceled(co: *mut c_void, inner: *mut c_void) -> bool {
     // SAFETY: the yield that set the canceler is still waiting.
-    unsafe { swr_v1_coroutine_cancel(co.cast()) };
+    unsafe { (*co.cast::<Coroutine>()).mark_canceled() };
     // SAFETY: as above, so its frame (and `inner`) is live.
     let Canceler { call, data } = unsafe { inner.cast::<Canceler>().read() };
     // SAFETY: the caller's cancel function for this yield.

@@ -346,7 +346,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
 
 pub(crate) fn set_task(co: Co, task: *mut c_void) {
     // SAFETY: a live coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_task(state(co), task) };
+    unsafe { (*state(co)).task = task };
 }
 
 /// The task of `co`'s origin, null for the main context.

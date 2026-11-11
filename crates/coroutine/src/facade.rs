@@ -14,7 +14,7 @@ use crate::scheduler::{
 use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{
     Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, STACK_MARK, STACK_PROTECT, Scheduler,
-    swr_v1_coroutine_run, swr_v1_coroutine_timeout,
+    swr_v1_coroutine_run,
 };
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
@@ -196,7 +196,7 @@ pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
 /// `yield_ex`'s timer: the wait timed out.
 unsafe extern "C" fn timed_out(co: *mut c_void) {
     // SAFETY: the coroutine waits in `yield_ex` until this resumes it.
-    unsafe { swr_v1_coroutine_timeout(co.cast()) };
+    unsafe { (*co.cast::<Coroutine>()).mark_timed_out() };
     // SAFETY: as above.
     unsafe { resume(co) };
 }

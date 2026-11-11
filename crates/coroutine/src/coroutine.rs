@@ -55,10 +55,21 @@ impl Coroutine {
         now.wrapping_sub(self.switch_usec)
             .wrapping_add(self.execute_usec)
     }
+
+    /// Canceled, from the canceler once it can no longer fail.
+    pub fn mark_canceled(&mut self) {
+        self.cancel_fn = ptr::null_mut();
+        self.resume_code = RC_CANCELED;
+    }
+
+    /// A timed wait expired, before its resume.
+    pub fn mark_timed_out(&mut self) {
+        self.resume_code = RC_TIMEDOUT;
+    }
 }
 
 /// A cancelable yield's cancel function: `call(native, data)` marks the
-/// coroutine canceled ([`swr_v1_coroutine_cancel`]) once nothing can fail, then
+/// coroutine canceled ([`Coroutine::mark_canceled`]) once nothing can fail, then
 /// wakes it and returns whether it did.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -430,16 +441,15 @@ operation! {
     /// callback sees the old current, then `co` runs until it yields or ends.
     #[unsafe(no_mangle)]
     fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
-        {
+        let on_resume = {
             // SAFETY: the caller lends the scheduler.
             let s = unsafe { &*s };
             debug_assert!(s.current != co, "the current coroutine cannot resume");
             if s.bailout {
                 return;
             }
-        }
-        // SAFETY: forwarded.
-        let (_, [_, on_resume, _]) = unsafe { effects(s) };
+            s.on_resume
+        };
         // SAFETY: the caller lends `co`.
         unsafe { (*co).state = STATE_RUNNING };
         // SAFETY: forwarded.
@@ -477,10 +487,12 @@ operation! {
     /// inside a coroutine yields the one closest to the main context, which
     /// switches there directly and never returns.
     fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
-        // SAFETY: the caller lends the scheduler.
-        unsafe { (*s).bailout = true };
-        // SAFETY: as above.
-        let mut co = unsafe { (*s).current };
+        let mut co = {
+            // SAFETY: the caller lends the scheduler.
+            let s = unsafe { &mut *s };
+            s.bailout = true;
+            s.current
+        };
         if co.is_null() {
             return;
         }
@@ -494,32 +506,6 @@ operation! {
         }
         // SAFETY: forwarded; `co` is live.
         unsafe { yield_(s, co) };
-    }
-}
-
-operation! {
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_set_task(co: *mut Coroutine, task: *mut c_void) {
-        // SAFETY: the caller lends `co` exclusively.
-        unsafe { (*co).task = task };
-    }
-}
-
-operation! {
-    /// Cancel, from the canceler once it can no longer fail.
-    fn swr_v1_coroutine_cancel(co: *mut Coroutine) {
-        // SAFETY: the caller lends `co` exclusively.
-        let co = unsafe { &mut *co };
-        co.cancel_fn = ptr::null_mut();
-        co.resume_code = RC_CANCELED;
-    }
-}
-
-operation! {
-    /// A timed wait expired, before its resume.
-    fn swr_v1_coroutine_timeout(co: *mut Coroutine) {
-        // SAFETY: the caller lends `co` exclusively.
-        unsafe { (*co).resume_code = RC_TIMEDOUT };
     }
 }
 
@@ -810,12 +796,12 @@ pub(crate) mod tests {
         // SAFETY: live on this frame.
         unsafe {
             (*co).cancel_fn = co.cast();
-            swr_v1_coroutine_cancel(co);
+            (*co).mark_canceled();
             assert_eq!(
                 ((*co).resume_code, (*co).cancel_fn),
                 (RC_CANCELED, ptr::null_mut())
             );
-            swr_v1_coroutine_timeout(co);
+            (*co).mark_timed_out();
             assert_eq!((*co).resume_code, RC_TIMEDOUT);
         }
     }
