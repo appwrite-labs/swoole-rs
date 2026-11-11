@@ -475,8 +475,9 @@ impl CppString {
 }
 
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
-// elsewhere the caller ignores it. Only the complete-object (C1/D1) symbols: nothing
-// derives from String, so no caller names a base-object (C2/D2) one.
+// elsewhere the caller ignores it. Nothing derives from String, so only the
+// complete-object (C1/D1) symbols, and the one base-object constructor a delegating
+// constructor in the header calls.
 // A constructor's `this` is uninitialized storage; every other `this` is a live String.
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
@@ -499,6 +500,16 @@ upstream! {
         unsafe { string.str.wrapping_add(length).write(0) };
         string.length = length;
         string
+    }
+    "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
+    /// The base-object `String(const char *, size_t)`: the header's
+    /// `String(const std::string &)` delegates to it when clang emits no
+    /// constructor aliases (as under `ASan`, `tools/asan.py`'s `string-originals`).
+    /// # Safety
+    /// As `swr_string_from`.
+    pub unsafe extern "C" fn swr_string_from_base(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_from(this, data, length) }
     }
     "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
     /// `String(const String &)`.
