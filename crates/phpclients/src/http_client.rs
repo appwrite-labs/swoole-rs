@@ -855,10 +855,8 @@ impl Client {
     }
 
     fn sendfile(&self, path: &[u8], offset: i64, size: i64) -> bool {
-        let path = c_bytes(path);
-        // SAFETY: a NUL-terminated path.
         self.co()
-            .is_some_and(|socket| unsafe { socket.sendfile(path.as_ptr(), offset, size) })
+            .is_some_and(|socket| socket.sendfile(path, offset, size))
     }
 
     fn send_failed(&mut self) -> bool {
