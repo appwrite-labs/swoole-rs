@@ -175,15 +175,15 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
             }
         }
     }
-    let state = h.get(OP_WR_STATE)?;
+    let mut state = h.get(OP_WR_STATE)?;
     if state & OVERFLOW_DRAINED != 0 {
         h.get(OP_WR_CLEAR_OVERFLOW)?;
     }
     if state & LOW_WATERMARK != 0 {
         h.get(OP_WR_BUFFER_EMPTY)?;
+        // onBufferEmpty may have written more.
+        state = h.get(OP_WR_STATE)?;
     }
-    // onBufferEmpty may have written more.
-    let state = h.get(OP_WR_STATE)?;
     if state & SEND_TIMER != 0 {
         h.get(if state & OUT_EMPTY != 0 {
             OP_WR_TIMER_DEL
@@ -467,7 +467,7 @@ mod tests {
             (OP_WR_WAIT, SEND_WAIT),
         ]);
         assert_eq!(write(&mut h, FOUND).unwrap(), SW_OK);
-        assert_eq!((h.called(OP_WR_QUEUED), h.called(OP_WR_STATE)), (0, 2));
+        assert_eq!((h.called(OP_WR_QUEUED), h.called(OP_WR_STATE)), (0, 1));
         let mut h = Script::default();
         assert_eq!(write(&mut h, 0).unwrap(), SW_ERR);
     }

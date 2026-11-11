@@ -102,6 +102,7 @@ const LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
 
+use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
 
 pub(crate) use swoole_rs_phphttp::http2::{Ctx, Value};
@@ -545,30 +546,6 @@ fn fold(text: &[u8]) -> ([u8; 33], usize) {
         *out = byte.to_ascii_lowercase();
     }
     (folded, length)
-}
-
-/// `value` in decimal, written into the end of `buffer` (`swoole_itoa`);
-/// twenty bytes hold any i64. Not `write!`: `core::fmt` costs four times as much
-/// on every response header.
-fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
-    let mut rest = value.unsigned_abs();
-    let mut start = buffer.len();
-    for slot in buffer.iter_mut().rev() {
-        *slot = b'0' + (rest % 10) as u8;
-        start -= 1;
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
-    }
-    if value < 0
-        && let Some(sign) = start.checked_sub(1)
-        && let Some(slot) = buffer.get_mut(sign)
-    {
-        *slot = b'-';
-        start = sign;
-    }
-    buffer.get(start..).unwrap_or_default()
 }
 
 /// `Stream::send_header`.
@@ -1422,13 +1399,6 @@ mod tests {
         assert_eq!(strtol(b"abc"), (0, false));
         assert_eq!(strtol(b""), (0, true));
         assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, true));
-    }
-
-    #[test]
-    fn decimal_matches_display() {
-        for value in [0, 7, 200, 404, 1_048_576, -1, -503, i64::MAX, i64::MIN] {
-            assert_eq!(decimal(&mut [0; 20], value), value.to_string().as_bytes());
-        }
     }
 
     #[test]

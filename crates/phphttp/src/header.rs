@@ -7,7 +7,6 @@ use crate::{host, send};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::io::Write;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
@@ -274,6 +273,31 @@ fn header_key(key: Result<&[u8], i64>) -> (Cow<'_, [u8]>, i32) {
     (key, flag)
 }
 
+/// `value` in decimal, written into the end of `buffer` (`swoole_itoa`);
+/// twenty bytes hold any i64. Not `write!`: `core::fmt` costs four times as much
+/// on every response header.
+#[must_use]
+pub fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
+    let mut rest = value.unsigned_abs();
+    let mut start = buffer.len();
+    for slot in buffer.iter_mut().rev() {
+        *slot = b'0' + (rest % 10) as u8;
+        start -= 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if value < 0
+        && let Some(sign) = start.checked_sub(1)
+        && let Some(slot) = buffer.get_mut(sign)
+    {
+        *slot = b'-';
+        start = sign;
+    }
+    buffer.get(start..).unwrap_or_default()
+}
+
 fn build(
     state: &mut State,
     body: *const c_char,
@@ -286,7 +310,7 @@ fn build(
     if state.response.reason.is_null() {
         out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
     } else {
-        write!(out, "{}", state.response.status).unwrap_or_default();
+        out.extend_from_slice(decimal(&mut [0; 20], state.response.status.into()));
         out.push(b' ');
         // SAFETY: `status()` stored a NUL-terminated reason.
         out.extend_from_slice(unsafe { CStr::from_ptr(state.response.reason) }.to_bytes());
@@ -403,7 +427,10 @@ fn build(
             out.extend_from_slice(b"\r\n");
         }
         if flags & CONTENT_LENGTH == 0 {
-            write!(out, "Content-Length: {length}\r\n").unwrap_or_default();
+            out.extend_from_slice(b"Content-Length: ");
+            let length = i64::try_from(length).unwrap_or(i64::MAX);
+            out.extend_from_slice(decimal(&mut [0; 20], length));
+            out.extend_from_slice(b"\r\n");
         }
     }
     out.extend_from_slice(b"\r\n");
@@ -575,6 +602,13 @@ pub(crate) fn compress_body<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimal_matches_display() {
+        for value in [0, 7, 200, 404, 1_048_576, -1, -503, i64::MAX, i64::MIN] {
+            assert_eq!(decimal(&mut [0; 20], value), value.to_string().as_bytes());
+        }
+    }
 
     #[test]
     fn output_survives_reentry_and_returns_on_error() {
