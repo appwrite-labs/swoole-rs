@@ -1,9 +1,8 @@
 //! `Swoole\Http\Request`.
 use crate::{
-    context::{self, Holder},
-    host::{self, COMPLETED, Context, HTTP_CONTEXT_UNAVAILABLE, HTTP2},
+    context::{self, Ctx, Holder},
+    host::{self, COMPLETED, HTTP_CONTEXT_UNAVAILABLE, HTTP2},
     parse::{self, CAPABILITIES, Property, body, method_name},
-    send,
     state::State,
 };
 use std::sync::atomic::Ordering::Relaxed;
@@ -31,9 +30,8 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
-    let ctx = unsafe { *Holder::data(std) };
-    if !ctx.is_null() {
-        let state = send::state(ctx);
+    if let Some(mut ctx) = unsafe { context::context_of(std) } {
+        let state = ctx.state();
         if !state.request.ztmpfiles.ptr.is_null() {
             // SAFETY: the request object, its properties still live, and the
             // declared `tmpfiles` slot's offset.
@@ -87,31 +85,30 @@ pub fn request_minit(args: &MinitArgs) {
 }
 
 /// `http_request_get_and_check_context`.
-fn checked(call: &Call) -> Option<*mut Context> {
+fn checked(call: &Call) -> Option<Ctx> {
     let ctx = context::this(call);
-    if ctx.is_null() {
+    if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
         call.set_bool(false);
-        return None;
     }
-    Some(ctx)
+    ctx
 }
 
 fn get_content(call: &Call) {
-    let Some(ctx) = checked(call) else { return };
-    match body(send::state(ctx)) {
+    let Some(mut ctx) = checked(call) else { return };
+    match body(ctx.state()) {
         Some(bytes) => call.set_bytes(bytes),
         None => call.set_empty_string(),
     }
 }
 
 fn get_data(call: &Call) {
-    let Some(ctx) = checked(call) else { return };
-    if host::flags(ctx) & HTTP2 != 0 {
+    let Some(mut ctx) = checked(call) else { return };
+    if ctx.flags() & HTTP2 != 0 {
         host::fatal("unable to get data from HTTP2 request");
         return call.set_bool(false);
     }
-    let data = &send::state(ctx).request.zdata;
+    let data = &ctx.state().request.zdata;
     if data.str().is_some() {
         return call.set_owned(data.copy());
     }
@@ -131,11 +128,12 @@ fn create_request(call: &Call) {
     let Ok(options) = options else {
         return call.set_bool(false);
     };
-    let ctx = context::alloc();
+    let mut ctx = context::alloc();
     parse::init_request_parser(ctx);
-    let state = send::state(ctx);
+    let held = ctx;
+    let state = ctx.state();
     let slot = &mut state.request.zobject;
-    let _made = context::new_object(slot, context::Kind::Request, ctx);
+    let _made = context::new_object(slot, context::Kind::Request, held);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it, as upstream's does.
     unsafe { call.set_value(slot.value) };
@@ -150,12 +148,12 @@ fn create_request(call: &Call) {
     if let Some(options) = options {
         options.for_each(|key, value| {
             if let Key::Name(name) = key {
-                option(send::state(ctx), name, value);
+                option(ctx.state(), name, value);
             }
         });
     }
-    parse::property(send::state(ctx), Property::Server);
-    parse::property(send::state(ctx), Property::Header);
+    parse::property(ctx.state(), Property::Server);
+    parse::property(ctx.state(), Property::Header);
 }
 
 /// One of `Request::create`'s options (a bailout in a conversion is deferred).
@@ -184,25 +182,22 @@ fn option(state: &mut State, name: &[u8], value: &Value) {
 }
 
 fn parse(call: &Call) {
-    let ctx = context::this(call);
-    if ctx.is_null() {
-        host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
-        return call.set_bool(false);
-    }
-    if host::flags(ctx) & COMPLETED != 0 {
+    let Some(mut ctx) = checked(call) else { return };
+    if ctx.flags() & COMPLETED != 0 {
         return call.set_bool(false);
     }
     let Ok(Some(data)) = call.arity(1, 1).and_then(|()| call.string_opt(1)) else {
         return call.set_bool(false);
     };
-    let parsed = parse::parse_piece(crate::send::state(ctx), data);
+    let parsed = parse::parse_piece(ctx.state(), data);
     call.set_long(i64::try_from(parsed).unwrap_or(i64::MAX));
 }
 
 fn get_method(call: &Call) {
-    let Some(ctx) = checked(call) else { return };
-    if host::flags(ctx) & HTTP2 != 0 {
-        let method = send::state(ctx)
+    let Some(mut ctx) = checked(call) else { return };
+    if ctx.flags() & HTTP2 != 0 {
+        let method = ctx
+            .state()
             .request
             .zserver
             .get()
@@ -213,12 +208,12 @@ fn get_method(call: &Call) {
             None => call.set_null(),
         };
     }
-    call.set_bytes(method_name(send::state(ctx)).as_bytes());
+    call.set_bytes(method_name(ctx.state()).as_bytes());
 }
 
 fn is_completed(call: &Call) {
     let Some(ctx) = checked(call) else { return };
-    call.set_bool(host::flags(ctx) & COMPLETED != 0);
+    call.set_bool(ctx.flags() & COMPLETED != 0);
 }
 
 handlers! {

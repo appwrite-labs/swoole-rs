@@ -6,7 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `System::sleep(seconds)`: 0, or negative when the coroutine was cancelled.
-pub type CoroutineSleep = unsafe extern "C-unwind" fn(f64) -> i32;
+pub type CoroutineSleep = extern "C-unwind" fn(f64) -> i32;
 
 /// What a sleep call returns to PHP.
 #[repr(C)]
@@ -34,8 +34,7 @@ const fn argument(number: i64) -> SleepOutcome {
 
 /// Sleeps `seconds` in the current coroutine; whether it was cancelled.
 fn yielded(coroutine_sleep: CoroutineSleep, seconds: f64) -> bool {
-    // SAFETY: the native caller passes System::sleep, valid inside the current coroutine.
-    unsafe { coroutine_sleep(seconds) < 0 }
+    coroutine_sleep(seconds) < 0
 }
 
 /// `sleep(seconds)`: in a coroutine, 0 or `seconds` if cancelled; otherwise what
@@ -177,29 +176,23 @@ pub fn swr_v1_hooks_sleep_until(
 
 /// `int System::sleep(double sec)`: parks the current coroutine for `sec`, at least
 /// the timer's millisecond (in the ring's timer with `io_uring`); -1 when it was
-/// canceled.
-///
-/// # Safety
-/// In a coroutine (outside one it raises upstream's fatal error, which does not
-/// return), with the thread's reactor running.
+/// canceled. Outside a coroutine it raises upstream's fatal error, which does not
+/// return.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole9coroutine6System5sleepEd")
 )]
 #[must_use]
-pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
+pub extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
     #[cfg(feature = "iouring")]
     {
         crate::uring::sleep(&crate::iouring::HOST, sec)
     }
     #[cfg(not(feature = "iouring"))]
     {
-        use crate::wait_event::native::{coroutine_yield_ex, current};
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
         const CANCELED: i32 = 10017;
-        let co = current();
-        // SAFETY: `co` is the running coroutine.
-        let resumed = unsafe { coroutine_yield_ex(co.cast(), crate::sleep_timeout(sec, 0.001)) };
+        let resumed = crate::resolve::park_for(crate::sleep_timeout(sec, 0.001));
         if !resumed && swoole_rs_corebase::log::last_error() == CANCELED {
             -1
         } else {
@@ -212,10 +205,10 @@ pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
 mod tests {
     use super::*;
 
-    unsafe extern "C-unwind" fn cancelled(_: f64) -> i32 {
+    extern "C-unwind" fn cancelled(_: f64) -> i32 {
         -1
     }
-    unsafe extern "C-unwind" fn slept(seconds: f64) -> i32 {
+    extern "C-unwind" fn slept(seconds: f64) -> i32 {
         assert!(seconds >= 0.0, "a non-negative duration");
         0
     }

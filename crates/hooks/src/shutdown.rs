@@ -35,23 +35,18 @@ pub struct SocketState {
 impl SocketState {
     /// A new socket's state: not connected, nothing shut, no coroutine bound.
     #[must_use]
-    pub fn alloc() -> *mut Self {
-        Box::into_raw(Box::new(Self {
-            flags: SocketFlags::default(),
+    pub(crate) const fn new() -> Self {
+        Self {
+            flags: SocketFlags {
+                connected: false,
+                read: false,
+                write: false,
+            },
             read_co: core::ptr::null_mut(),
             write_co: core::ptr::null_mut(),
             want: 0,
             barriers: [None; 2],
             timers: [core::ptr::null_mut(); 2],
-        }))
-    }
-
-    /// # Safety
-    /// `state` is null or came from [`SocketState::alloc`], and is not used afterwards.
-    pub unsafe fn free(state: *mut Self) {
-        if !state.is_null() {
-            // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(state) });
         }
     }
 
@@ -105,11 +100,17 @@ impl SocketState {
     }
 }
 
+/// `shutdown(2)`, which reports failure through errno.
+pub(crate) fn sys_shutdown(fd: i32, how: i32) -> i32 {
+    // SAFETY: shutdown(2) takes no pointers.
+    unsafe { libc::shutdown(fd, how) }
+}
+
 /// `Socket::shutdown(how)` after `set_err(0)`: 0 on success, otherwise the error
 /// to set. `closed` is `is_closed()`; `ssl_shutdown`, when the socket has TLS,
-/// closes the session first. `syscall` is `shutdown(2)`, which sets errno.
+/// closes the session first. `syscall` is [`sys_shutdown`], which sets errno.
 pub(crate) fn shutdown(
-    syscall: unsafe extern "C" fn(i32, i32) -> i32,
+    syscall: fn(i32, i32) -> i32,
     fd: i32,
     how: i32,
     closed: bool,
@@ -126,8 +127,7 @@ pub(crate) fn shutdown(
     if let Some(ssl_shutdown) = ssl_shutdown {
         ssl_shutdown();
     }
-    // SAFETY: shutdown(2) on the socket's descriptor; failure is reported through errno.
-    let error = if unsafe { syscall(fd, how) } < 0 {
+    let error = if syscall(fd, how) < 0 {
         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
     } else {
         0
@@ -176,7 +176,7 @@ mod tests {
     }
 
     fn down(fd: i32, how: i32, closed: bool, flags: &mut SocketFlags) -> i32 {
-        shutdown(libc::shutdown, fd, how, closed, flags, None)
+        shutdown(sys_shutdown, fd, how, closed, flags, None)
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
         let mut flags = connected();
         let mark = || closed.set(true);
         let error = shutdown(
-            libc::shutdown,
+            sys_shutdown,
             fds[0],
             libc::SHUT_RDWR,
             false,
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn binding_follows_get_bound_co_and_event_names() {
-        let state = unsafe { &mut *SocketState::alloc() };
+        let state = &mut SocketState::new();
         let (mut reader, mut writer) = (1u8, 2u8);
         let (r, w) = (
             (&raw mut reader).cast::<c_void>(),
@@ -266,6 +266,5 @@ mod tests {
         assert_eq!(state.event_name(READ), 0);
         state.bind(READ | WRITE, core::ptr::null_mut());
         assert!(state.co(READ).is_null() && state.co(WRITE).is_null());
-        unsafe { SocketState::free(state) };
     }
 }

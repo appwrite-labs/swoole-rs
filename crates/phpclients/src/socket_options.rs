@@ -150,7 +150,7 @@ fn size(value: &Value) -> Result<i64, Stop> {
 
 /// The socket's `Protocol`, edited by `f`.
 fn edit(socket: Co, f: impl FnOnce(&mut Protocol)) {
-    f(&mut socket.record().protocol);
+    socket.handle().edit_protocol(f);
 }
 
 /// The settings `which` names applied to `socket` (`ALL`, `PROTOCOL`, `SSL`):

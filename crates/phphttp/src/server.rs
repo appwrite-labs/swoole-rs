@@ -5,10 +5,9 @@
 //! handlers and port callbacks run through `swoole_rs_zend::host::function_call`,
 //! which traps a bailout before it reaches a Rust frame.
 use crate::{
-    context,
-    host::{self, Context},
+    context::{self, Ctx},
+    host,
     parse::{Key, add_protocol, add_server, key, parse_request, request_times},
-    send::state,
     state::State,
     websocket,
 };
@@ -122,7 +121,7 @@ type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
 php_local! {
     static ADDRESSES: RefCell<Addresses> = RefCell::new(ManuallyDrop::new(Table::new()));
     /// Requests waiting for the worker's concurrency to drop.
-    static QUEUED: RefCell<VecDeque<*mut Context>> = RefCell::new(VecDeque::new());
+    static QUEUED: RefCell<VecDeque<Ctx>> = RefCell::new(VecDeque::new());
 }
 
 /// An `IS_UNDEF` zval.
@@ -265,9 +264,9 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         .then(|| usize::try_from(conn.fd).ok())
         .flatten();
     facts.coroutine = enable_coroutine(server);
-    let ctx = context::context_new(session);
-    context::init(state(ctx), server);
-    let state = state(ctx);
+    let mut ctx = context::context_new(session);
+    context::init(ctx.state(), server);
+    let state = ctx.state();
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
     let zdata = state.request.zdata.as_ptr();
@@ -277,8 +276,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let conn = ptr::from_mut(conn);
     let result = handle(server, conn, ctx, session, server_fd, &facts).and_then(|route| {
         if route == REQUEST {
-            // SAFETY: a live context; false leaves it queued.
-            if !unsafe { context::before_request(ctx) } {
+            // False leaves it queued, with its objects.
+            if !context::before_request(ctx) {
                 return Ok(());
             }
             call(ctx, facts.coroutine)?;
@@ -360,8 +359,8 @@ pub(crate) fn call_port(
 }
 
 /// `http_server_process_request`: the handler with the request's objects.
-fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
-    let state = state(ctx);
+fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
+    let state = ctx.state();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
     match call_handler(state.callback.cast(), &mut args, coroutine) {
         Err(bailout) => return Err(bailout),
@@ -380,8 +379,12 @@ fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
 /// # Safety
 /// `ctx` is a queued server request's live context.
 unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
-    let ctx = ctx.cast::<Context>();
-    let result = call(ctx, enable_coroutine(context::server(state(ctx))));
+    let Some(ctx) = std::ptr::NonNull::new(ctx) else {
+        return;
+    };
+    // SAFETY: per the caller.
+    let mut ctx = unsafe { Ctx::of(ctx.cast()) };
+    let result = call(ctx, enable_coroutine(context::server(ctx.state())));
     if result.is_ok() {
         context::release_objects(ctx);
     }
@@ -409,19 +412,21 @@ fn notice(message: &str) {
 fn handle(
     server: view::Server<'_>,
     conn: *mut ConnectionRecord,
-    ctx: *mut Context,
+    mut ctx: Ctx,
     session: i64,
     server_fd: c_int,
     facts: &Receive,
 ) -> Result<c_int, bailout::Bailout> {
-    // The request data `receive` moved into the context, a string.
-    let data = state(ctx).request.zdata.bytes().unwrap_or_default();
+    // The request data `receive` moved into the context, a string; this
+    // frame's reference keeps it while the parser fills the context.
+    let zdata = ctx.state().request.zdata.copy();
+    let data = zdata.bytes().unwrap_or_default();
     // The parser `receive` initialised.
-    let parsed = parse_request(state(ctx), data);
-    if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
+    let parsed = parse_request(ctx.state(), data);
+    if ctx.state().parser.error != HPE_OK || ctx.state().completed == 0 {
         context::send(ctx, BAD_REQUEST);
         context::close(ctx);
-        let parser = &state(ctx).parser;
+        let parser = &ctx.state().parser;
         if parser.error == HPE_OK {
             notice("Incomplete HTTP request: parsed successfully but missing required components");
         } else {
@@ -433,7 +438,7 @@ fn handle(
         }
         return Ok(DONE);
     }
-    let state = state(ctx);
+    let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive != 0);
     addresses(
         server,
@@ -452,9 +457,10 @@ fn handle(
     )]
     let master_time = Owned::long(facts.last_recv_time as zend_long);
     add_server(state, Key::MasterTime, master_time);
+    // The hooks may reach the context: no borrow of it is held across them.
     if swoole_rs_corebase::swoole_isset_hook(HOOK_BEFORE_REQUEST) {
         // SAFETY: the hook's context argument.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_BEFORE_REQUEST, ctx) };
+        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_BEFORE_REQUEST, ctx.raw()) };
     }
     // Parsing an upgrade request sets the connection's status.
     // SAFETY: the request's live connection.
@@ -469,6 +475,7 @@ fn handle(
         }
         return Ok(DONE);
     }
+    let state = ctx.state();
     state.callback = callback;
     if handshake {
         websocket::upgrading(server, session);
@@ -531,23 +538,22 @@ const HTTP2_INTERNAL_ERROR: u32 = 2;
 /// port's `onRequest`.
 /// # Errors
 /// The handler bailed out.
-pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
-    let ctx = ctx.raw();
-    let (server, fd) = (context::server(state(ctx)), state(ctx).fd);
+pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
+    let (server, fd) = (context::server(ctx.state()), ctx.state().fd);
     let Some((conn, facts)) = http2_connection(server, fd) else {
         context::release_objects(ctx);
         return Ok(());
     };
-    state(ctx).request.version = HTTP_VERSION_2;
+    ctx.state().request.version = HTTP_VERSION_2;
     let Some(http2) = crate::http2::server() else {
         context::release_objects(ctx);
         return Ok(());
     };
-    if facts.static_handler && (http2.static_file)(server.raw(), crate::http2::Ctx::of(ctx))? {
+    if facts.static_handler && (http2.static_file)(server.raw(), ctx)? {
         context::release_objects(ctx);
         return Ok(());
     }
-    let state = state(ctx);
+    let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive != 0);
     addresses(
         server,
@@ -571,22 +577,21 @@ pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
     if state.before_request != 0 {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
-            (http2.respond)(crate::http2::Ctx::of(ctx), &[]);
+            (http2.respond)(ctx, &[]);
             context::release_objects(ctx);
             return Ok(());
         }
-        // SAFETY: a live context.
-        if !unsafe { context::before_request(ctx) } {
+        if !context::before_request(ctx) {
             return Ok(());
         }
     }
-    let state = self::state(ctx);
+    let state = ctx.state();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
     match call_handler(state.callback.cast(), &mut args, facts.coroutine) {
         Err(bailout) => return Err(bailout),
         Ok(false) => {
-            let stream_id = self::state(ctx).stream_id;
-            (http2.reset)(crate::http2::Ctx::of(ctx), stream_id, HTTP2_INTERNAL_ERROR);
+            let stream_id = ctx.state().stream_id;
+            (http2.reset)(ctx, stream_id, HTTP2_INTERNAL_ERROR);
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
         Ok(true) => {}
@@ -643,17 +648,15 @@ fn worker() -> Option<Worker> {
 }
 
 /// Mark a queued request answered and release its objects.
-fn abandon(ctx: *mut Context) {
-    state(ctx).end = 1;
-    state(ctx).after_response = 0;
+fn abandon(mut ctx: Ctx) {
+    ctx.state().end = 1;
+    ctx.state().after_response = 0;
     context::release_objects(ctx);
 }
 
 /// `swoole_http_server_onBeforeRequest` after it swaps the hooks: count the
 /// request, or queue it past `worker_max_concurrency` (false: not now).
-/// # Safety
-/// `ctx` is a live server request's context.
-pub(crate) unsafe fn admit(ctx: *mut Context) -> bool {
+pub(crate) fn admit(ctx: Ctx) -> bool {
     let Some(worker) = worker().filter(|worker| !worker.shutdown) else {
         return false;
     };
@@ -692,7 +695,7 @@ pub(crate) fn release_request() {
         // SAFETY: the thread's live reactor, which begins with its prepared state.
         let fields = unsafe { (*reactor.cast::<swoole_rs_reactor::ReactorPrepared>()).fields };
         // SAFETY: a queued context, alive until its deferred request ends.
-        unsafe { swoole_rs_reactor::defer(fields, deferred, ctx.cast(), None) };
+        unsafe { swoole_rs_reactor::defer(fields, deferred, ctx.raw().cast(), None) };
     }
 }
 

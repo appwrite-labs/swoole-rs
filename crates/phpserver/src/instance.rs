@@ -170,8 +170,7 @@ fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
     if swoole_rs_phpcoroutines::in_coroutine()
         && server_methods::has_kernel_nobufs_error(serv, session_id)
     {
-        // SAFETY: in a coroutine.
-        _ = unsafe { swoole_rs_hooks::sleep::system_sleep(0.01) };
+        _ = swoole_rs_hooks::sleep::system_sleep(0.01);
     }
 }
 

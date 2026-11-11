@@ -6,6 +6,7 @@
 //! [`SocketExtra`](crate::socket_extra::SocketExtra).
 use crate::shutdown::SocketState;
 use crate::socket_extra::SocketExtra;
+use core::cell::{Cell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::ptr;
@@ -48,8 +49,9 @@ pub struct CoSocket {
     pub ssl_handshaked: bool,
     pub zero_copy: bool,
     pub(crate) resolve_context: *mut c_void,
-    /// The coroutines, barriers and timers bound to each direction.
-    pub(crate) state: *mut SocketState,
+    /// The coroutines, barriers and timers bound to each direction, and the parts
+    /// lent out.
+    pub(crate) state: *mut Bound,
     /// The record's metadata, which `init` makes and `fini` releases.
     pub(crate) extra: *mut crate::socket_extra::SocketExtra,
 }
@@ -102,6 +104,52 @@ pub const FD_WARNINGS_SHIFT: u32 = 8;
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Co(*mut CoSocket);
+
+/// What a record's `state` points to: the bound state, first, so the pointer is the
+/// state's too, and which parts of the record a [`Co`] `with_*` call has lent out.
+#[repr(C)]
+pub struct Bound {
+    state: UnsafeCell<SocketState>,
+    lent: Cell<u8>,
+}
+
+impl Bound {
+    /// A new record's: nothing bound, nothing lent. `fini` frees it.
+    fn alloc() -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            state: UnsafeCell::new(SocketState::new()),
+            lent: Cell::new(0),
+        }))
+    }
+}
+
+/// The parts `with_*` lend as `&mut`, one bit each in [`Bound`]'s `lent`.
+const STATE: u8 = 1;
+const EXTRA: u8 = 2;
+const READ_BUFFER: u8 = 4;
+const WRITE_BUFFER: u8 = 8;
+
+/// One part on loan, returned when dropped. The records are per thread, so a plain
+/// cell does what `Socket::edit`'s count does: a second loan of the part panics.
+struct Loan<'a>(&'a Cell<u8>, u8);
+
+impl<'a> Loan<'a> {
+    #[track_caller]
+    fn take(lent: &'a Cell<u8>, part: u8) -> Self {
+        assert!(
+            lent.get() & part == 0,
+            "a coroutine socket's borrow overlaps another of the same part"
+        );
+        lent.set(lent.get() | part);
+        Self(lent, part)
+    }
+}
+
+impl Drop for Loan<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() & !self.1);
+    }
+}
 
 macro_rules! fields {
     (get $(#[$doc:meta])* $field:ident: $ty:ty) => {
@@ -184,6 +232,7 @@ impl Co {
         sock_fd, set_sock_fd: c_int;
         connect_port, set_connect_port: c_int;
         backlog, set_backlog: c_int;
+        buffer_init_size, set_buffer_init_size: usize;
         ssl_is_server, set_ssl_is_server: bool;
         ssl_handshaked, set_ssl_handshaked: bool;
         zero_copy, set_zero_copy: bool;
@@ -204,10 +253,17 @@ impl Co {
         write_buffer, set_write_buffer: *mut c_void;
         /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
-        /// The live bound state, which `fini` frees.
-        state, set_state: *mut SocketState;
         /// Null once released, else the live metadata, which `fini` frees.
         extra, set_extra: *mut crate::socket_extra::SocketExtra;
+    }
+
+    /// `f` over a copy of the protocol, written back after it: nothing borrows the
+    /// record meanwhile, so `f` may reach the socket again.
+    pub fn edit_protocol<T>(self, f: impl FnOnce(&mut Protocol) -> T) -> T {
+        let mut protocol = self.protocol();
+        let result = f(&mut protocol);
+        self.set_protocol(protocol);
+        result
     }
 
     /// The protocol's address, for the native length callbacks.
@@ -248,10 +304,33 @@ impl Co {
         made
     }
 
-    /// `f` over [`Co::buffer`]'s String. `f` is immediate.
+    /// The bound state's address; [`Co::with_state`] borrows it.
+    #[must_use]
+    pub fn state(self) -> *mut SocketState {
+        // SAFETY: `new`'s contract: a live record; only the field is read.
+        unsafe { (*self.0).state }.cast()
+    }
+
+    /// `f` with `part` lent out: the loan, of the [`Bound`] `new`'s contract keeps
+    /// live, ends with the call.
+    #[track_caller]
+    fn lend<T>(self, part: u8, f: impl FnOnce(&Bound) -> T) -> T {
+        let bound = self.state().cast::<Bound>();
+        // SAFETY: `new`'s contract: the live state. What it lends sits in an
+        // `UnsafeCell`, which the shared reference doesn't cover.
+        let bound = unsafe { &*bound };
+        let _loan = Loan::take(&bound.lent, part);
+        f(bound)
+    }
+
+    /// `f` over [`Co::buffer`]'s String.
+    /// # Panics
+    /// Inside another `with_buffer` over the same buffer.
+    #[track_caller]
     pub fn with_buffer<T>(self, write: bool, f: impl FnOnce(&mut CppString) -> T) -> T {
-        // SAFETY: the record's live String, borrowed only for the call.
-        f(unsafe { &mut *self.buffer(write) })
+        let part = if write { WRITE_BUFFER } else { READ_BUFFER };
+        // SAFETY: the record's live String; the loan makes this its only reference.
+        self.lend(part, |_| f(unsafe { &mut *self.buffer(write) }))
     }
 
     /// `f` over the `network::Socket`, or `None` before the socket opens: an
@@ -268,16 +347,23 @@ impl Co {
         unsafe { Socket::from_ptr(self.socket()) }.map(f)
     }
 
-    /// The record's metadata, `None` once released. `f` is immediate.
+    /// The record's metadata, `None` once released.
+    /// # Panics
+    /// Inside another `with_extra` over the same record.
+    #[track_caller]
     pub fn with_extra<T>(self, f: impl FnOnce(&mut SocketExtra) -> T) -> Option<T> {
-        // SAFETY: `new`'s contract: null or the live metadata, borrowed only for the call.
-        unsafe { self.extra().as_mut() }.map(f)
+        // SAFETY: `new`'s contract: null or the live metadata; the loan makes this its
+        // only reference.
+        self.lend(EXTRA, |_| unsafe { self.extra().as_mut() }.map(f))
     }
 
-    /// The bound coroutines, barriers and timers. `f` is immediate.
+    /// The bound coroutines, barriers and timers.
+    /// # Panics
+    /// Inside another `with_state` over the same record.
+    #[track_caller]
     pub fn with_state<T>(self, f: impl FnOnce(&mut SocketState) -> T) -> T {
-        // SAFETY: `new`'s contract: the live state, borrowed only for the call.
-        f(unsafe { &mut *self.state() })
+        // SAFETY: the live state; the loan makes this its only reference.
+        self.lend(STATE, |bound| f(unsafe { &mut *bound.state.get() }))
     }
 
     /// `errno` classified by the open socket: `SW_WAIT` to wait, as
@@ -324,7 +410,7 @@ impl CoSocket {
         unsafe { &mut (*self.socket).fields }
     }
 
-    fn new(state: *mut SocketState) -> Self {
+    fn new(state: *mut Bound) -> Self {
         Self {
             err_code: 0,
             err_msg: c"".as_ptr(),
@@ -459,7 +545,7 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
 /// `socket` is writable storage for one record.
 pub(crate) unsafe fn init(socket: *mut CoSocket) -> &'static mut CoSocket {
     // SAFETY: as the caller promises.
-    unsafe { socket.write(CoSocket::new(SocketState::alloc())) };
+    unsafe { socket.write(CoSocket::new(Bound::alloc())) };
     // SAFETY: just initialised; the native object owns it for its lifetime.
     unsafe { &mut *socket }
 }
@@ -471,8 +557,10 @@ pub(crate) unsafe fn init(socket: *mut CoSocket) -> &'static mut CoSocket {
 pub unsafe fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
     // SAFETY: as the caller promises.
     let socket = unsafe { &mut *socket };
-    // SAFETY: the record's own state, released once.
-    unsafe { SocketState::free(socket.state) };
+    if !socket.state.is_null() {
+        // SAFETY: the record's own state, from `Bound::alloc`, released once.
+        drop(unsafe { Box::from_raw(socket.state) });
+    }
     socket.state = ptr::null_mut();
     // SAFETY: the record's own metadata, released once.
     unsafe { SocketExtra::free(socket.extra) };
@@ -539,7 +627,7 @@ pub fn make_quiet(
         (false, true) => NEW_BY_TYPE,
         (false, false) => NEW_FD_BY_TYPE,
     };
-    let mut socket = Box::new(CoSocket::new(SocketState::alloc()));
+    let mut socket = Box::new(CoSocket::new(Bound::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast();
     let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
     // SAFETY: the record just made, with its state and metadata, which the caller owns.
@@ -677,7 +765,7 @@ impl CoSocket {
 /// # Safety
 /// `conn` is a live accepted `network::Socket` the new socket takes.
 pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
-    let mut socket = Box::new(CoSocket::new(SocketState::alloc()));
+    let mut socket = Box::new(CoSocket::new(Bound::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     let timeouts = server.net(|record| record.timeouts);
     let kind = server.kind();
@@ -792,7 +880,7 @@ impl TestSocket {
     }
 
     pub(crate) fn state(&self) -> *mut SocketState {
-        self.0.state
+        self.0.state.cast()
     }
 }
 
@@ -800,6 +888,11 @@ impl TestSocket {
 impl Drop for TestSocket {
     fn drop(&mut self) {
         unsafe {
+            for buffer in [self.0.read_buffer, self.0.write_buffer] {
+                if !buffer.is_null() {
+                    delete_string(buffer.cast());
+                }
+            }
             SocketRecord::free(self.0.socket);
             swr_v1_hook_co_socket_fini(self.ptr());
         }
@@ -1002,7 +1095,7 @@ mod tests {
         let record = unsafe { &*conn };
         assert_eq!((record.fd_type, record.socket_type), (6, 1));
         assert!((record.timeouts.read - 1.5).abs() < f64::EPSILON);
-        assert!(unsafe { (*socket.state).flags.connected });
+        assert!(unsafe { (*socket.state.cast::<SocketState>()).flags.connected });
         release(socket);
         release(server);
     }
@@ -1033,5 +1126,48 @@ mod tests {
             OPENED | NODELAY_FAILED | 3 << FD_WARNINGS_SHIFT,
         );
         assert_eq!(swoole_rs_corebase::log::last_error(), 0);
+    }
+
+    /// `Co` is `Copy`, so safe code can nest two borrows of one part of a record; the
+    /// inner one panics instead of aliasing the outer `&mut` (#3178).
+    #[test]
+    #[should_panic(expected = "overlaps")]
+    fn nested_state_borrow_panics() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_state(|outer| co.with_state(|inner| inner.want = outer.want + 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps")]
+    fn nested_extra_borrow_panics() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_extra(|outer| co.with_extra(|inner| inner.proxies = outer.proxies));
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps")]
+    fn nested_buffer_borrow_panics() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_buffer(false, |outer| {
+            co.with_buffer(false, |inner| inner.size() + outer.size())
+        });
+    }
+
+    /// Borrows of different parts don't overlap, and a borrow ends with its call.
+    #[test]
+    fn distinct_and_sequential_borrows() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_state(|state| {
+            co.with_buffer(false, |read| {
+                co.with_buffer(true, |write| read.size() + write.size())
+            });
+            co.with_extra(|extra| extra.proxies);
+            state.want = 1;
+        });
+        assert_eq!(co.with_state(|state| state.want), 1);
     }
 }

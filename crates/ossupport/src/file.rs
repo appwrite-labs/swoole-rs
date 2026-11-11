@@ -1,7 +1,7 @@
 //! `swoole::File` IO loops, `file_get_size` and the sendfile variants (upstream `src/os/{file,sendfile,base}.cc`). Rust runs the
 //! syscalls; native code keeps the descriptors and logs warnings, so every
 //! function returns right after the failing call with its errno intact.
-use libc::{c_char, c_int, off_t};
+use libc::{c_int, off_t};
 use std::ffi::CStr;
 use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
@@ -65,17 +65,22 @@ pub fn file_close(fd: c_int) -> bool {
     fd != -1 && sys::close(fd) == 0
 }
 
-/// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere.
-/// # Safety
-/// `filename` is a writable NUL-terminated `XXXXXX` template.
-pub(crate) unsafe fn tmpfile(filename: *mut c_char) -> c_int {
+/// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere, over
+/// the `XXXXXX` template up to the first NUL in `template`; -1 with `EINVAL` when
+/// there is none.
+pub(crate) fn tmpfile(template: &mut [u8]) -> c_int {
+    if !template.contains(&0) {
+        sys::set_errno(libc::EINVAL);
+        return -1;
+    }
+    let filename = template.as_mut_ptr().cast();
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: a writable template per the contract.
+    // SAFETY: a writable template, NUL-terminated within the slice.
     unsafe {
         libc::mkostemp(filename, libc::O_WRONLY | libc::O_CREAT)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    // SAFETY: a writable template per the contract.
+    // SAFETY: a writable template, NUL-terminated within the slice.
     unsafe {
         libc::mkstemp(filename)
     }
@@ -470,7 +475,7 @@ mod tests {
     fn open_close_and_tmpfile_follow_upstream() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut template = *b"/tmp/swr-ossupport-XXXXXX\0";
-        let fd = unsafe { tmpfile(template.as_mut_ptr().cast()) };
+        let fd = tmpfile(&mut template);
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
         let reopened = file_open(fd, path, libc::O_RDONLY, 0);

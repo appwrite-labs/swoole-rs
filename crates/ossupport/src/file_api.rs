@@ -65,10 +65,19 @@ fn size_of_fd(fd: c_int) -> isize {
 )]
 pub unsafe extern "C" fn swoole_tmpfile(filename: *mut c_char) -> c_int {
     // SAFETY: as the caller promises.
-    let fd = unsafe { tmpfile(filename) };
+    let length = unsafe { CStr::from_ptr(filename) }.count_bytes() + 1;
+    // SAFETY: as the caller promises: `length` bytes through the NUL, writable.
+    create_tmpfile(unsafe { std::slice::from_raw_parts_mut(filename.cast(), length) })
+}
+
+/// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`
+/// (NUL-terminated within it), writing the name in place; the descriptor, or -1
+/// after the warning.
+pub fn create_tmpfile(template: &mut [u8]) -> c_int {
+    let fd = tmpfile(template);
     if fd < 0 {
-        // SAFETY: still the caller's NUL-terminated template.
-        let name = unsafe { CStr::from_ptr(filename) }.to_string_lossy();
+        let name = CStr::from_bytes_until_nul(template).unwrap_or_default();
+        let name = name.to_string_lossy();
         log::sys_warning(c"swoole_tmpfile", format_args!("mkstemp('{name}') failed"));
         return -1;
     }

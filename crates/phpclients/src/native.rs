@@ -166,14 +166,6 @@ impl Co {
         self.0
     }
 
-    /// The socket's record, read fresh on every use: it changes when the socket
-    /// is reinitialised.
-    pub(crate) fn record<'a>(self) -> &'a mut co::CoSocket {
-        // SAFETY: a live socket, as the handle promises; callers drop the
-        // borrow before any effect that may touch the record.
-        unsafe { co::record(self.as_ptr()) }
-    }
-
     /// The `network::Socket` (`get_socket()`), while the socket is open.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
         // SAFETY: null or an open socket's live record, read fresh on every use.
@@ -279,12 +271,13 @@ impl Co {
     /// The callable's destructor bailed out; the bailout stays pending.
     pub fn free_length_callable(self) -> Result<(), Bailout> {
         // Copy the owned callback pointer without borrowing the protocol across PHP.
-        let callable = self.record().protocol.private_data_1;
+        let callable = self.0.protocol().private_data_1;
         if callable.is_null() {
             return Ok(());
         }
         let freed = callable_free(callable);
-        self.record().protocol.private_data_1 = ptr::null_mut();
+        self.0
+            .edit_protocol(|protocol| protocol.private_data_1 = ptr::null_mut());
         freed
     }
 
@@ -293,11 +286,13 @@ impl Co {
     #[must_use]
     pub fn accept(self, timeout: f64) -> Option<NewSocket> {
         let conn = NewSocket(Self(self.0.accept(timeout)?));
-        let callable = self.record().protocol.private_data_1;
+        let callable = self.0.protocol().private_data_1;
         if !callable.is_null() {
             // SAFETY: the listener's live callable, copied for the new connection.
-            conn.co().record().protocol.private_data_1 =
-                unsafe { swoole_rs_phpruntime::callable_dup(callable) };
+            let copy = unsafe { swoole_rs_phpruntime::callable_dup(callable) };
+            conn.co()
+                .0
+                .edit_protocol(|protocol| protocol.private_data_1 = copy);
         }
         Some(conn)
     }
@@ -376,7 +371,7 @@ impl Co {
     /// `pop_packet()`: the `length`-byte packet [`Co::recv_packet`] returned,
     /// or None after `set_err(ENOMEM)`.
     pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
-        let init_size = self.record().buffer_init_size;
+        let init_size = self.0.buffer_init_size();
         let packet = match self.read_buffer() {
             Some(buffer) if buffer.offset() != 0 => buffer.pop(init_size),
             _ => ptr::null_mut(),
@@ -492,13 +487,14 @@ impl Co {
 
     /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
     pub(crate) fn protocol_preset(self, kind: c_int) {
-        let protocol = &mut self.record().protocol;
-        if kind == 0 {
-            mqtt_set_protocol(protocol);
-        } else {
-            protocol.get_package_length =
-                swoole_rs_ports::framing_recv::default_length_func as *mut c_void;
-        }
+        self.0.edit_protocol(|protocol| {
+            if kind == 0 {
+                mqtt_set_protocol(protocol);
+            } else {
+                protocol.get_package_length =
+                    swoole_rs_ports::framing_recv::default_length_func as *mut c_void;
+            }
+        });
     }
 
     /// `set_option(level, name, value)`, warning (a log line) on failure.
@@ -575,17 +571,19 @@ pub(crate) fn length_callable(socket: Co, value: *mut zval) {
     if callable.is_null() {
         return;
     }
-    let protocol = &mut socket.record().protocol;
-    protocol.get_package_length = php_swoole_length_func as *mut c_void;
-    let old = std::mem::replace(&mut protocol.private_data_1, callable);
+    let old = socket.0.edit_protocol(|protocol| {
+        protocol.get_package_length = php_swoole_length_func as *mut c_void;
+        std::mem::replace(&mut protocol.private_data_1, callable)
+    });
+    // The destructor may reach the socket, so it runs between the edits.
     if !old.is_null() && callable_free(old).is_err() {
         return;
     }
-    // The destructor may have reached the socket: borrow its record again.
-    let protocol = &mut socket.record().protocol;
-    protocol.package_length_size = 0;
-    protocol.package_length_type = 0;
-    protocol.package_length_offset = IPC_BUFFER_SIZE;
+    socket.0.edit_protocol(|protocol| {
+        protocol.package_length_size = 0;
+        protocol.package_length_type = 0;
+        protocol.package_length_offset = IPC_BUFFER_SIZE;
+    });
 }
 
 /// A live `network::Client` (crates/clients' state), from [`create`] until

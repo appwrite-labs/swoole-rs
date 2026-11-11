@@ -186,29 +186,22 @@ fn report_socket(call: &Call, socket: Co) {
 
 /// The client's `setting` property, if it is an array.
 fn setting(call: &Call) -> Option<&Array> {
-    // SAFETY: `$this` is a live client; the class declares `setting`.
-    let slot = unsafe { z::swr_zend_property_slot(call.this(), c"setting".as_ptr(), 7) };
-    // SAFETY: null or the live property, which the call does not replace.
-    unsafe { Value::from_ptr(slot) }.and_then(Value::array)
+    call.this_value()?.property(c"setting")?.array()
 }
 
 /// `zval_get_long` of the client's `type` property.
 fn type_property(call: &Call) -> i64 {
-    // SAFETY: `$this` is a live client; the class declares `type`.
-    unsafe { swoole_rs_zend::property(call.this(), c"type") }.long()
+    call.this_value()
+        .and_then(|this| this.property(c"type"))
+        .map_or(0, Value::long)
 }
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
 fn socket_closed(data: &mut Data) {
-    if let Some(socket) = data.co() {
-        let protocol = &mut socket.record().protocol;
-        if !protocol.private_data_1.is_null() {
-            // The length callable this socket owns.
-            if let Err(bailout) = native::callable_free(protocol.private_data_1) {
-                bailout.defer();
-            }
-            protocol.private_data_1 = ptr::null_mut();
-        }
+    if let Some(socket) = data.co()
+        && let Err(bailout) = socket.free_length_callable()
+    {
+        bailout.defer();
     }
     data.socket = ptr::null_mut();
     let props = data.props().own();
@@ -248,12 +241,11 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
         // reference to it is live while the hook runs.
         Box::new(move |_| socket_closed(unsafe { &mut *client })),
     );
-    let record = socket.record();
     let props = data.props().own();
-    props.long(c"fd", i64::from(record.sock_fd));
+    props.long(c"fd", i64::from(socket.handle().sock_fd()));
     props.value(c"socket", &data.zsocket);
     socket.use_zend_strings();
-    record.zero_copy = true;
+    socket.handle().set_zero_copy(true);
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
         report_object(
             Some(data.props()),

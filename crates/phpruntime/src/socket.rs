@@ -502,12 +502,10 @@ pub fn coroutine_check() -> Result<(), Bailout> {
 /// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.
 /// # Errors
 /// The warning's error handler bailed out.
-/// # Safety
-/// `value` is a live zval.
-pub unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
+pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
     let mut fd = -1;
-    // SAFETY: the caller's live zval.
-    let convert = || fd = unsafe { php_swoole_convert_to_fd(value) };
+    // SAFETY: a live zval, borrowed for the call.
+    let convert = || fd = unsafe { php_swoole_convert_to_fd(value.as_ptr()) };
     // SAFETY: the body holds a copy and the result slot.
     unsafe { bailout::trap_with(convert) }?;
     Ok(fd)
