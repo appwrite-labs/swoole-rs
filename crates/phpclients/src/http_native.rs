@@ -195,8 +195,7 @@ impl Co {
     pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
         let buffer = self.write_buffer();
         buffer.clear();
-        // SAFETY: the caller's bytes.
-        unsafe { buffer.append(data.as_ptr(), data.len()) };
+        buffer.append(data);
         self.send_all(buffer.view())
     }
 

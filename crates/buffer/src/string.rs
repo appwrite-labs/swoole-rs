@@ -95,31 +95,15 @@ unsafe fn bytes<'a>(data: *const u8, length: usize) -> &'a [u8] {
 }
 
 /// `swoole_strnstr`: the first `needle` in `haystack`, both lengths cut to its `uint32_t`.
-///
-/// # Safety
-/// Both are readable for their cut lengths.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "swoole_strnstr's uint32_t lengths"
-)]
-unsafe fn strnstr(
-    haystack: *const u8,
-    haystack_length: usize,
-    needle: *const u8,
-    needle_length: usize,
-) -> Option<usize> {
-    let (haystack_length, needle_length) = (
-        haystack_length as u32 as usize,
-        needle_length as u32 as usize,
-    );
-    debug_assert!(needle_length > 0, "swoole_strnstr's needle is not empty");
-    if needle_length > haystack_length {
-        return None;
-    }
-    // SAFETY: the caller's readable range.
-    let haystack = unsafe { bytes(haystack, haystack_length) };
-    // SAFETY: as above.
-    let needle = unsafe { bytes(needle, needle_length) };
+fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "swoole_strnstr's uint32_t lengths"
+    )]
+    let cut = |bytes: &[u8]| bytes.len() as u32 as usize;
+    let haystack = haystack.get(..cut(haystack)).unwrap_or_default();
+    let needle = needle.get(..cut(needle)).unwrap_or_default();
+    debug_assert!(!needle.is_empty(), "swoole_strnstr's needle is not empty");
     memchr::memmem::find(haystack, needle)
 }
 
@@ -277,44 +261,41 @@ impl CppString {
     }
 
     /// `String::append(const char *, size_t)`.
-    ///
-    /// # Safety
-    /// `data` is readable for `length` bytes after any reallocation.
-    pub unsafe fn append(&mut self, data: *const u8, length: usize) {
-        let new_size = self.length.wrapping_add(length);
+    pub fn append(&mut self, data: &[u8]) {
+        let new_size = self.length.wrapping_add(data.len());
         if new_size > self.size {
             self.reserve(new_size);
         }
-        // SAFETY: the buffer holds `new_size` bytes; `data` is readable.
-        unsafe { ptr::copy(data, self.str.wrapping_add(self.length), length) };
-        self.length = new_size;
+        // The buffer now holds `new_size` bytes.
+        if let Some(to) = self.spare().get_mut(..data.len()) {
+            to.write_copy_of_slice(data);
+            self.length = new_size;
+        }
     }
 
     /// `String::write(off_t, const char *, size_t)`. Where upstream's offset
     /// leaves the buffer, a negative one writes at 0 and one past the content
     /// zeroes the gap.
-    ///
-    /// # Safety
-    /// `data` is readable for `length` bytes.
-    pub unsafe fn write(&mut self, offset: i64, data: *const u8, length: usize) {
+    pub fn write(&mut self, offset: i64, data: &[u8]) {
         let offset = unsigned(offset.max(0));
-        let Some(new_length) = offset.checked_add(length) else {
+        let Some(new_length) = offset.checked_add(data.len()) else {
             std::process::abort();
         };
         if new_length > self.size {
             self.reserve(page_aligned(new_length.saturating_mul(2)).max(new_length));
         }
-        if offset > self.length {
-            // SAFETY: the gap lies inside the buffer, which holds `new_length` bytes.
-            unsafe {
-                ptr::write_bytes(self.str.wrapping_add(self.length), 0, offset - self.length);
-            }
+        let length = self.length;
+        // The buffer now holds `new_length` bytes.
+        let Some(buffer) = self.allocation().get_mut(..new_length) else {
+            return;
+        };
+        if let Some(gap) = buffer.get_mut(length..offset) {
+            gap.fill(MaybeUninit::new(0));
         }
-        // SAFETY: the buffer holds `new_length` bytes; `data` is readable.
-        unsafe { ptr::copy(data, self.str.wrapping_add(offset), length) };
-        if new_length > self.length {
-            self.length = new_length;
+        if let Some(to) = buffer.get_mut(offset..) {
+            to.write_copy_of_slice(data);
         }
+        self.length = self.length.max(new_length);
     }
 
     pub fn set_null_terminated(&mut self) {
@@ -327,42 +308,24 @@ impl CppString {
     }
 
     /// The first `delimiter` at or after `start`.
-    ///
-    /// # Safety
-    /// `delimiter` holds `delimiter_length` bytes.
-    unsafe fn find(
-        &self,
-        start: usize,
-        delimiter: *const u8,
-        delimiter_length: usize,
-    ) -> Option<usize> {
-        // SAFETY: `str` holds `length` bytes, so `length - start` from `start`; the delimiter is readable.
-        unsafe {
-            strnstr(
-                self.str.wrapping_add(start),
-                self.length.wrapping_sub(start),
-                delimiter,
-                delimiter_length,
-            )
-        }
+    fn find(&self, start: usize, delimiter: &[u8]) -> Option<usize> {
+        strnstr(self.view().get(start..)?, delimiter)
     }
 
     /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`.
     ///
     /// # Safety
-    /// `delimiter` holds `delimiter_length > 0` bytes; `call` is safe with `handler`;
-    /// `0 <= offset() <= len()`.
+    /// `delimiter` is not empty; `call` is safe with `handler`; `0 <= offset() <= len()`.
     pub unsafe fn split(
         &mut self,
-        delimiter: *const u8,
-        delimiter_length: usize,
+        delimiter: &[u8],
         call: SplitCall,
         handler: *const c_void,
     ) -> isize {
+        let delimiter_length = delimiter.len();
         let mut start = unsigned(self.offset);
         let mut first = self.offset;
-        // SAFETY: as the caller promises.
-        let mut found = unsafe { self.find(start, delimiter, delimiter_length) };
+        let mut found = self.find(start, delimiter);
         while let Some(position) = found {
             let length = position + delimiter_length;
             let chunk = self.str.wrapping_add(start.wrapping_sub(unsigned(first)));
@@ -372,8 +335,8 @@ impl CppString {
             }
             self.offset = self.offset.wrapping_add(signed(length));
             start = unsigned(self.offset);
-            // SAFETY: as the caller promises, over the buffer as the handler left it.
-            found = unsafe { self.find(start, delimiter, delimiter_length) };
+            // Over the buffer as the handler left it.
+            found = self.find(start, delimiter);
             first = 0;
         }
         if first == self.offset {
@@ -393,19 +356,21 @@ impl CppString {
         }
     }
 
-    /// The allocated bytes after the content, for a read to fill before `grow`. They are
-    /// uninitialized, so safe code can only write them.
-    pub fn spare(&mut self) -> &mut [MaybeUninit<u8>] {
+    /// The whole allocation, its first `length` bytes the content. Only the content is
+    /// known initialized, so safe code may only write the rest.
+    fn allocation(&mut self) -> &mut [MaybeUninit<u8>] {
         if self.str.is_null() {
             return &mut [];
         }
-        // SAFETY: `str` holds `size >= length` bytes, borrowed with `self`.
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                self.str.wrapping_add(self.length).cast(),
-                self.size - self.length,
-            )
-        }
+        // SAFETY: `str` holds `size` bytes, borrowed with `self`.
+        unsafe { std::slice::from_raw_parts_mut(self.str.cast(), self.size) }
+    }
+
+    /// The allocated bytes after the content, for a read to fill before `grow`. They are
+    /// uninitialized, so safe code can only write them.
+    pub fn spare(&mut self) -> &mut [MaybeUninit<u8>] {
+        let length = self.length;
+        self.allocation().get_mut(length..).unwrap_or_default()
     }
 
     pub fn release(&mut self) -> *mut u8 {
@@ -417,26 +382,19 @@ impl CppString {
         data
     }
 
-    /// # Safety
-    /// `data` holds `length` bytes.
-    pub unsafe fn repeat(&mut self, data: *const u8, length: usize, count: usize) {
+    pub fn repeat(&mut self, data: &[u8], count: usize) {
         debug_assert!(count > 0, "String::repeat repeats");
-        if length == 1 {
+        if let &[byte] = data {
             if self.size < self.length.wrapping_add(count) {
                 self.reserve(self.length.wrapping_add(count));
             }
-            // SAFETY: `data` holds one byte.
-            let byte = unsafe { *data };
             if let Some(to) = self.spare().get_mut(..count) {
-                for slot in to {
-                    slot.write(byte);
-                }
+                to.fill(MaybeUninit::new(byte));
                 self.length += count;
             }
         } else {
             for _ in 0..count {
-                // SAFETY: as the caller promises.
-                unsafe { self.append(data, length) };
+                self.append(data);
             }
         }
     }
@@ -519,14 +477,10 @@ impl CppString {
             return;
         }
         let offset = unsigned(offset).min(self.length);
+        let end = self.length;
         self.length -= offset;
         self.offset = 0;
-        if self.length == 0 {
-            return;
-        }
-        let from = self.str.wrapping_add(offset);
-        // SAFETY: both ranges lie inside `str`.
-        unsafe { ptr::copy(from, self.str, self.length) };
+        self.allocation().copy_within(offset..end, 0);
     }
 
     pub fn print(&self, value: bool) {
@@ -656,8 +610,8 @@ upstream! {
     /// `needle` holds `length > 0` bytes.
     #[must_use]
     pub unsafe extern "C" fn swr_string_contains(this: &CppString, needle: *const u8, length: usize) -> bool {
-        // SAFETY: `str` holds `length` bytes; the caller's needle is readable.
-        unsafe { strnstr(this.str, this.length, needle, length) }.is_some()
+        // SAFETY: as the caller promises.
+        strnstr(this.view(), unsafe { bytes(needle, length) }).is_some()
     }
     "_ZNK6swoole6String11starts_withEPKcm", "_ZNK6swoole6String11starts_withEPKcm" =>
     /// # Safety
@@ -697,10 +651,9 @@ upstream! {
     pub extern "C" fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
         let mut result = CppString::EMPTY;
         // Checked: upstream's `offset + len > length` wraps, and this fn is safe.
-        if offset.checked_add(length).is_some_and(|end| end <= this.length) {
+        if let Some(end) = offset.checked_add(length).filter(|&end| end <= this.length) {
             result.alloc(length, None);
-            // SAFETY: the range lies inside `str`.
-            unsafe { result.append(this.str.wrapping_add(offset), length) };
+            result.append(this.view().get(offset..end).unwrap_or_default());
         }
         result
     }
@@ -725,22 +678,20 @@ upstream! {
     /// `data` holds `length` bytes.
     pub unsafe extern "C" fn swr_string_repeat(this: &mut CppString, data: *const u8, length: usize, count: usize) {
         // SAFETY: as the caller promises.
-        unsafe { this.repeat(data, length, count) };
+        this.repeat(unsafe { bytes(data, length) }, count);
     }
     "_ZN6swoole6String6appendEPKcm", "_ZN6swoole6String6appendEPKcm" =>
     /// # Safety
     /// `data` holds `length` bytes.
     pub unsafe extern "C" fn swr_string_append(this: &mut CppString, data: *const u8, length: usize) {
         // SAFETY: as the caller promises.
-        unsafe { this.append(data, length) };
+        this.append(unsafe { bytes(data, length) });
     }
     "_ZN6swoole6String6appendEi", "_ZN6swoole6String6appendEi" =>
     /// `append(int)`: its decimal text.
     pub extern "C" fn swr_string_append_int(this: &mut CppString, value: c_int) {
         let mut buffer = itoa::Buffer::new();
-        let text = buffer.format(value);
-        // SAFETY: `text` is local.
-        unsafe { this.append(text.as_ptr(), text.len()) };
+        this.append(buffer.format(value).as_bytes());
     }
     "_ZN6swoole6String6appendERKS0_", "_ZN6swoole6String6appendERKS0_" =>
     /// `append(const String &)`, which may be `this`.
@@ -773,15 +724,14 @@ upstream! {
     }
     "_ZN6swoole6String5writeElRKS0_", "_ZN6swoole6String5writeExRKS0_" =>
     pub extern "C" fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
-        // SAFETY: `source` holds `length` bytes.
-        unsafe { this.write(offset, source.str, source.length) };
+        this.write(offset, source.view());
     }
     "_ZN6swoole6String5writeElPKcm", "_ZN6swoole6String5writeExPKcm" =>
     /// # Safety
     /// `data` holds `length` bytes.
     pub unsafe extern "C" fn swr_string_write(this: &mut CppString, offset: i64, data: *const u8, length: usize) {
         // SAFETY: as the caller promises.
-        unsafe { this.write(offset, data, length) };
+        this.write(offset, unsafe { bytes(data, length) });
     }
     "_ZN6swoole6String19set_null_terminatedEv", "_ZN6swoole6String19set_null_terminatedEv" =>
     pub extern "C" fn swr_string_set_null_terminated(this: &mut CppString) {
@@ -819,7 +769,9 @@ pub unsafe extern "C" fn swr_v1_string_split(
     // SAFETY: as the caller promises.
     let string = unsafe { &mut *this };
     // SAFETY: as above.
-    unsafe { string.split(delimiter, delimiter_length, call, handler) }
+    let delimiter = unsafe { bytes(delimiter, delimiter_length) };
+    // SAFETY: as above.
+    unsafe { string.split(delimiter, call, handler) }
 }
 
 /// Fresh boxed storage for one String, which [`delete_string`] frees.
@@ -892,12 +844,12 @@ mod tests {
     fn split_hands_each_chunk_and_keeps_the_tail() {
         let mut s = new(b"a\r\nbc\r\nd\r");
         let mut chunks: Vec<Vec<u8>> = Vec::new();
-        let ret = unsafe { s.split(b"\r\n".as_ptr(), 2, collect, (&raw mut chunks).cast()) };
+        let ret = unsafe { s.split(b"\r\n", collect, (&raw mut chunks).cast()) };
         assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
         assert_eq!((ret, s.offset), (7, 7));
         // No delimiter after the offset: it moves to the last place one could start.
         assert_eq!(
-            unsafe { s.split(b"\r\n".as_ptr(), 2, collect, (&raw mut chunks).cast()) },
+            unsafe { s.split(b"\r\n", collect, (&raw mut chunks).cast()) },
             0
         );
         assert_eq!((chunks.len(), s.offset), (2, 7));
@@ -908,9 +860,9 @@ mod tests {
     #[test]
     fn write_offsets_stay_inside_the_buffer() {
         let mut s = new(b"abc");
-        unsafe { s.write(5, b"z".as_ptr(), 1) };
+        s.write(5, b"z");
         assert_eq!(s.view(), b"abc\0\0z");
-        unsafe { s.write(-1, b"A".as_ptr(), 1) };
+        s.write(-1, b"A");
         assert_eq!(s.view(), b"Abc\0\0z");
         s.dispose();
         assert!(s.as_ptr().is_null() && s.size() == 0 && s.is_empty());
