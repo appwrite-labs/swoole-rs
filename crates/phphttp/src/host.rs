@@ -34,7 +34,7 @@ pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int = 9013;
 pub(crate) const HEADER_KEY_SIZE: usize = 128;
 
 /// Re-raise a bailout a host call trapped. Host calls that can run user code
-/// (a header value's `__toString`, `exit()` in it) trap a bailout in C++ and
+/// (a header value's `__toString`, `exit()` in it) trap a bailout in C and
 /// report it; the handler finishes, then raises it as its last step
 /// (docs/zend.md).
 pub(crate) fn raise(bailed: bool) {
