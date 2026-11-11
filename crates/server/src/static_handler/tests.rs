@@ -382,10 +382,9 @@ impl Server {
     }
     fn handler(&self, url: &[u8]) -> StaticHandler<Scripted> {
         // SAFETY: the server outlives the handler.
-        unsafe {
-            StaticHandler::with_effects(ptr::from_ref(&*self.0).cast_mut().cast(), url, Scripted)
-        }
-        .unwrap()
+        let server =
+            unsafe { crate::view::Server::from_raw(ptr::from_ref(&*self.0).cast_mut().cast()) };
+        StaticHandler::with_effects(server, url, Scripted).unwrap()
     }
 }
 

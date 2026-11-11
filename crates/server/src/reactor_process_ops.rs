@@ -193,13 +193,13 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode == TASK_IPC_UNIXSOCK),
-        OP_TASK_POOL_WORKER_NUM => {
-            // SAFETY: the server's live task pool.
-            u64::from(unsafe { (*ctx.workers().task_pool).worker_num() })
-        }
+        OP_TASK_POOL_WORKER_NUM => u64::from(
+            crate::shared::ServerShared::of(ctx.server())
+                .task_pool()
+                .worker_num(),
+        ),
         OP_INIT_REACTOR => {
-            // SAFETY: the context's live server and the running reactor.
-            unsafe { crate::reactor_entry::init_reactor(serv, reactor(ctx)) };
+            crate::reactor_entry::init_reactor(ctx.server(), ctx.reactor_handle());
             0
         }
         OP_SET_MASTER_PID => {

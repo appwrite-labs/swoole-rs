@@ -1430,15 +1430,16 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     );
 
     clear_last_error();
-    let mut sd = SendData {
-        // SAFETY: zeroed is `SendData sd{}`.
-        info: unsafe { std::mem::zeroed() },
+    let sd = swoole_rs_server::SendData {
+        info: swoole_rs_corebase::DataHead {
+            fd: client_fd,
+            kind: SW_SERVER_EVENT_CLOSE,
+            ..Default::default()
+        },
         data: ptr::null(),
     };
-    sd.info.fd = client_fd;
-    sd.info.type_ = SW_SERVER_EVENT_CLOSE;
-    // SAFETY: the running server and a live `SendData`.
-    let sent = unsafe { server_methods::send_to_connection(serv.0, (&raw const sd).cast()) };
+    // SAFETY: a `SendData` with no data.
+    let sent = unsafe { server_methods::send_to_connection(serv.view(), &sd) };
     expect(sent == SW_ERR, "send_to_connection(&sd) == SW_ERR");
     expect(
         last_error() == SW_ERROR_SESSION_NOT_EXIST,

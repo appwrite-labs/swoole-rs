@@ -11,7 +11,6 @@ use swoole_rs_process::methods::{
     ExitStatus, kill_all_workers, swoole_get_worker_id, swoole_get_worker_type,
     swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type, worker_report_error,
 };
-use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::ops::{
     LOG_ALLOC_CONNECTIONS, LOG_KILL_MANAGER, LOG_WAIT_MANAGER, LOG_WAIT_TASK_WORKER,
@@ -90,9 +89,6 @@ impl Context<'_> {
     }
     fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
         self.server().workers()
-    }
-    fn task_pool(&self) -> *mut PoolRecord {
-        self.server().task_pool()
     }
     /// Worker `id` of the server, or `None` past the last.
     fn worker_at(&self, id: u16) -> Option<&mut WorkerRecord> {
@@ -251,7 +247,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 return Some(0);
             };
             let pipe = worker.pipe_worker;
-            let bus = crate::master_ops::server_message_bus(state);
+            let bus = state.message_bus();
             // SAFETY: the live pipe, and the data sent.
             u64::from(unsafe { bus.rust().send(pipe.cast(), &mut info, data.cast()) })
         }
@@ -262,10 +258,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `new ReactorThread[count]()`, each bus over the allocator of the server's.
 pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> *mut c_void {
-    ThreadRecord::new_array(
-        count.into(),
-        crate::master_ops::server_message_bus(state).allocator(),
-    )
+    ThreadRecord::new_array(count.into(), state.message_bus().allocator())
 }
 
 /// The facts read from the server config, the data sent and the worker globals.
@@ -488,8 +481,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (tables, config) = (ctx.tables(), ctx.config());
     let gs = ctx.server().counters();
     let task_worker_pid = || {
-        // SAFETY: the server's live task pool.
-        let pool = unsafe { &*ctx.task_pool() };
+        let pool = crate::shared::ServerShared::of(ctx.server()).task_pool();
         let index = usize::try_from(arg).unwrap_or(usize::MAX);
         pool.worker(index).map_or(0, Worker::pid)
     };
@@ -516,12 +508,12 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_HAS_MESSAGE_BOX => {
-            // SAFETY: the server's live event pool.
-            u64::from(!unsafe { (*ctx.workers().event_pool).message_box() }.is_null())
+            let pool = crate::shared::ServerShared::of(ctx.server()).event_pool();
+            u64::from(!pool.message_box().is_null())
         }
         OP_INIT_IPC_MAX_SIZE => {
-            // SAFETY: the live server.
-            unsafe { crate::worker_methods::init_ipc_max_size(ctx.server()) };
+            // `Server::init_ipc_max_size()`.
+            ctx.config().ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
             0
         }
         OP_START_MANAGER => signed(crate::manager_ops::start_manager_process(ctx.server())),

@@ -345,8 +345,7 @@ pub(crate) fn answer(
         }
 
         OP_RT_INIT_REACTOR => {
-            // SAFETY: the live server and this thread's reactor.
-            unsafe { entry::init_reactor(serv, reactor) };
+            entry::init_reactor(server, handle?);
             0
         }
         OP_RT_INIT_PIPE_SOCKETS => {
@@ -451,8 +450,8 @@ pub(crate) fn answer(
                 info,
                 data: packet.data,
             };
-            // SAFETY: the live server and a send over the packet.
-            unsafe { methods::send_to_connection(serv, (&raw const send).cast()) };
+            // SAFETY: a send over the bus's packet.
+            unsafe { methods::send_to_connection(server, &send) };
             0
         }
         OP_ON_FINISH | OP_ON_PIPE_MESSAGE => {
@@ -486,7 +485,7 @@ pub(crate) fn answer(
         }
 
         // SAFETY: the live server, this thread's reactor and a live connection.
-        OP_INCOMING => sign(unsafe { methods::connection_incoming(serv, reactor, conn) }),
+        OP_INCOMING => sign(unsafe { methods::connection_incoming(server, reactor, conn_ref()?) }),
         // SAFETY: this thread's reactor and the connection's live socket.
         OP_CLOSE => sign(unsafe { entry::close_connection(reactor, conn_ref()?.socket.cast()) }),
         OP_CONN_HEALTHY => u64::from(server.healthy(f64::from_bits(arg), conn_ref()?)),
@@ -607,7 +606,7 @@ unsafe extern "C" fn reactor_thread_entry(serv: *mut c_void, id: u64) {
     swoole_rs_corebase::swoole_thread_init(false);
     let id = c_int::try_from(id).unwrap_or_default();
     // SAFETY: the live server, on its new reactor thread.
-    unsafe { entry::reactor_thread_main_loop(serv, id) };
+    entry::reactor_thread_main_loop(unsafe { view::Server::from_raw(serv) }, id);
     swoole_rs_corebase::swoole_thread_clean(false);
 }
 

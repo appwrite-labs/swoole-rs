@@ -139,9 +139,7 @@ pub(crate) unsafe fn port_delete(port: *mut c_void) {
 /// The reactor threads' barrier, or the manager's, which is shared.
 pub(crate) fn barrier(serv: view::Server<'_>, manager: bool) -> &Barrier {
     if manager {
-        let gs = serv.config().gs.as_ptr().cast::<ServerShared>();
-        // SAFETY: `swr_v1_server_new` maps the record for the server's life.
-        unsafe { &(*gs).manager_barrier }
+        &ServerShared::of(serv).manager_barrier
     } else {
         // SAFETY: a live server is `swr_v1_server_new`'s object.
         unsafe { &(*serv.raw().cast::<ServerObject>()).reactor_thread_barrier }

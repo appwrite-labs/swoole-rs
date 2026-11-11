@@ -240,8 +240,8 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_CREATE_TASK_WORKER => {
             let id = usize::try_from(arg).ok()?;
             let worker = ctx.pool().edit(|pool| pool.workers().wrapping_add(id));
-            // SAFETY: the live server and its task worker `arg`, one of `task_worker_num`.
-            unsafe { crate::worker_methods::create_worker(ctx.server, worker) };
+            // SAFETY: the server's task worker `arg`, one of `task_worker_num`.
+            crate::worker_methods::create_worker(ctx.server, unsafe { &mut *worker });
         }
         OP_WORKER_STATUS => {
             let status = if arg != 0 {

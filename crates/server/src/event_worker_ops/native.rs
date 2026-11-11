@@ -209,7 +209,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the server's live command pipe, a `UnixSocket`.
             let pipe = unsafe { (*pair).worker_socket }.cast();
             let id = u16::try_from(ctx.worker().id()).unwrap_or(0);
-            let bus = crate::master_ops::server_message_bus(ctx.state());
+            let bus = ctx.state().message_bus();
             let pipe = crate::objects::socket(pipe);
             crate::commands::call_command_handler(ctx.server(), bus, id, pipe);
             0

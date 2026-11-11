@@ -89,8 +89,9 @@ fn serve(server: *mut c_void, ctx: Ctx) -> bool {
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
-    // SAFETY: the live server.
-    let Some(handler) = (unsafe { StaticHandler::new(server, uri) }) else {
+    // SAFETY: the live server, which outlives the request.
+    let server = unsafe { swoole_rs_server::view::Server::from_raw(server) };
+    let Some(handler) = StaticHandler::new(server, uri) else {
         return false;
     };
     if !handler.try_serve() {
