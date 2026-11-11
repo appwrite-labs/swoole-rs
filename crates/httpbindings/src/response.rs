@@ -1,17 +1,26 @@
-//! Response header policy. Native code performs all allocation/date/codec effects.
+//! Response header policy; crates/phphttp builds the header and runs the codecs.
 use crate::request::case_equal;
 
-/// The native known-header flag of a response header name; 0 for a custom one.
+/// `swHttpHeaderFlag`: the known response headers' flags.
+pub const SERVER: i32 = 2;
+pub const CONNECTION: i32 = 4;
+pub const CONTENT_LENGTH: i32 = 8;
+pub const DATE: i32 = 16;
+pub const CONTENT_TYPE: i32 = 32;
+pub const TRANSFER_ENCODING: i32 = 64;
+pub const CONTENT_ENCODING: i32 = 256;
+
+/// The known-header flag of a response header name; 0 for a custom one.
 #[must_use]
 pub fn response_header(name: &[u8]) -> i32 {
     const HEADERS: [(&[u8], i32); 7] = [
-        (b"Server", 2),
-        (b"Connection", 4),
-        (b"Date", 16),
-        (b"Content-Length", 8),
-        (b"Content-Type", 32),
-        (b"Transfer-Encoding", 64),
-        (b"Content-Encoding", 256),
+        (b"Server", SERVER),
+        (b"Connection", CONNECTION),
+        (b"Date", DATE),
+        (b"Content-Length", CONTENT_LENGTH),
+        (b"Content-Type", CONTENT_TYPE),
+        (b"Transfer-Encoding", TRANSFER_ENCODING),
+        (b"Content-Encoding", CONTENT_ENCODING),
     ];
     HEADERS
         .iter()

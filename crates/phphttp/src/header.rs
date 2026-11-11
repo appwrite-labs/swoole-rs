@@ -12,6 +12,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
+    CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER, TRANSFER_ENCODING,
     encoding, response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
@@ -23,14 +24,6 @@ use swoole_rs_zend::sys::{
 };
 use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, string};
 
-/// `swHttpHeaderFlag`.
-const SERVER: i32 = 2;
-const CONNECTION: i32 = 4;
-const CONTENT_LENGTH: i32 = 8;
-const DATE: i32 = 16;
-const CONTENT_TYPE: i32 = 32;
-const TRANSFER_ENCODING: i32 = 64;
-const CONTENT_ENCODING: i32 = 256;
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.

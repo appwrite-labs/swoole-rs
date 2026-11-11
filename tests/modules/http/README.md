@@ -34,7 +34,7 @@ as equal. Unavailable locales are reported as unsupported.
 
 `gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
 URL and boundary helpers are Rust behind thin facades, so crates/http-ffi's
-`pin_helpers` tests compare them with v6.2.4's bodies instead.
+`pin_helpers` tests compare them with the pin's bodies (unchanged since v6.2.4) instead.
 
 ### Ported GoogleTests
 
