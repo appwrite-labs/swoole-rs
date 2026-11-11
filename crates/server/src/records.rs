@@ -189,13 +189,13 @@ impl crate::ServerState {
                     .to_ne_bytes(),
             )
         };
-        if fd.cast_unsigned() > tables.max_connection || tables.connection_list.is_null() {
+        if fd.cast_unsigned() >= tables.max_connection || tables.connection_list.is_null() {
             return None;
         }
         let slot = tables
             .connections()
             .wrapping_add(fd.cast_unsigned() as usize);
-        // SAFETY: the live table of `max_connection + 1` slots; `fd` is inside it.
+        // SAFETY: the live table of `max_connection` slots; `fd` is below it.
         let value = unsafe { &*slot };
         let found = match kind {
             BY_FD | BY_SESSION => true,
@@ -316,7 +316,7 @@ pub(crate) mod tests {
             let tables = &mut *(*state).tables();
             tables.session_list = naming_at(session_at);
             tables.connection_list = naming_at(connection_at);
-            tables.max_connection = 2;
+            tables.max_connection = 3;
             assert_eq!(swr_v1_server_session(&*state, 1), session_at.add(1));
             let expected = connection_at.add(2);
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
@@ -324,6 +324,7 @@ pub(crate) mod tests {
             assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 1).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
+            // fd == max_connection is one past the table.
             assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
             (*expected).ssl = 1;
             assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
