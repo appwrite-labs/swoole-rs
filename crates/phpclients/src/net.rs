@@ -3,8 +3,8 @@
 //! the PHP layer keeps beside it (the persistent-connection key and count and
 //! the `recv` framing buffer). A `SWOOLE_KEEP` connection outlives its object
 //! in the pool. Each method parses as upstream's ZPP block does; operations
-//! that can run PHP code go through `swr_v1_clients_run` inside `zend_try`.
-use crate::native::{self, Cli, ErrorKind, Run};
+//! that can run PHP code go through `Cli::run` inside `zend_try`.
+use crate::native::{self, Cli, ErrorKind};
 use libc::{c_char, c_int};
 use std::{
     cell::Cell,
@@ -15,7 +15,7 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_clients::{
-    client::{self as state, Call as ClientCall, Op},
+    client::{self as state, Op},
     pool::Pool,
     swr_v1_clients_port,
 };
@@ -93,20 +93,6 @@ impl Conn {
         self.cli.get().set(name, value);
     }
 
-    pub(crate) fn call(&self, op: Op) -> ClientCall {
-        self.cli.call(op)
-    }
-
-    /// Run an IO call: a sync client raises no callbacks, so only an async
-    /// one needs the `zend_try` frame.
-    fn run(&self, call: &mut ClientCall) -> Result<i64, Bailout> {
-        if self.flag(state::ASYNC) {
-            call.run()
-        } else {
-            Ok(call.run_plain())
-        }
-    }
-
     pub(crate) fn has_socket(&self) -> bool {
         self.cli.net().is_some()
     }
@@ -135,7 +121,7 @@ impl Conn {
     pub(crate) fn has_ssl(&self) -> bool {
         self.cli
             .net()
-            .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
+            .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
     }
 }
 
@@ -557,7 +543,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
                     .props()
                     .long(c"reuseCount", i64::from(pooled.reuse_count));
             } else {
-                bailed(pooled.call(Op::Close).run())?;
+                bailed(pooled.cli.run(Op::Close))?;
                 bailed(release(object, conn))?;
                 conn = ptr::null_mut();
             }
@@ -584,7 +570,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
         connection.keep = true;
     }
     if kind & SOCK_SSL != 0 {
-        bailed(connection.call(Op::EnableSsl).run())?;
+        bailed(connection.cli.run(Op::EnableSsl))?;
     }
     Some(conn)
 }
@@ -713,12 +699,13 @@ fn connect(call: &Call) {
             return call.set_bool(false);
         }
     }
-    let mut connect = conn.call(Op::Connect);
-    connect.data = host.as_ptr().cast();
-    connect.a = port;
-    connect.timeout = timeout;
-    connect.b = flags;
-    let Some(result) = bailed(connect.run()) else {
+    let connect = Op::Connect {
+        host: &native::c_text(host),
+        port: int(port),
+        timeout,
+        flags: int(flags),
+    };
+    let Some(result) = bailed(conn.cli.run(connect)) else {
         return call.set_bool(false);
     };
     if result < 0 {
@@ -761,11 +748,11 @@ fn send(call: &Call) {
         return call.set_bool(false);
     };
     set_last_error(0);
-    let mut send = conn.call(Op::Send);
-    send.data = data.as_ptr().cast();
-    send.length = data.len();
-    send.a = flags;
-    let Some(sent) = bailed(conn.run(&mut send)) else {
+    let send = Op::Send {
+        data,
+        flags: int(flags),
+    };
+    let Some(sent) = bailed(io(conn.cli, send)) else {
         return call.set_bool(false);
     };
     if sent < 0 {
@@ -802,17 +789,12 @@ fn sendto(call: &Call) {
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
     };
-    // NUL-terminated for the resolver.
-    let host = [host, &[0]].concat();
-    let mut send = conn.call(Op::Sendto);
-    send.data = host.as_ptr().cast();
-    send.length = host.len() - 1;
-    send.a = port;
-    send.buffer = data.as_ptr().cast_mut().cast();
-    #[expect(clippy::cast_possible_wrap, reason = "a string's length")]
-    let length = data.len() as i64;
-    send.b = length;
-    let Some(result) = bailed(conn.run(&mut send)) else {
+    let send = Op::Sendto {
+        host: &native::c_text(host),
+        port: int(port),
+        data,
+    };
+    let Some(result) = bailed(io(conn.cli, send)) else {
         return call.set_bool(false);
     };
     if result < 0 {
@@ -841,11 +823,17 @@ fn sendfile(call: &Call) {
         return call.set_bool(false);
     }
     set_last_error(0);
-    let mut send = conn.call(Op::Sendfile);
-    send.data = file.as_ptr().cast();
-    send.a = offset;
-    send.b = length;
-    let Some(result) = bailed(conn.run(&mut send)) else {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "C++'s (size_t) length"
+    )]
+    let send = Op::Sendfile {
+        file: &native::c_text(file),
+        offset,
+        length: length as usize,
+    };
+    let Some(result) = bailed(io(conn.cli, send)) else {
         return call.set_bool(false);
     };
     if result < 0 {
@@ -859,19 +847,38 @@ fn sendfile(call: &Call) {
     call.set_bool(true);
 }
 
+/// Run an IO `op`: a sync client raises no callbacks, so only an async one
+/// needs the `zend_try` frame.
+fn io(cli: Cli, op: Op<'_>) -> Result<i64, Bailout> {
+    if cli.get().flag(state::ASYNC) {
+        cli.run(op)
+    } else {
+        Ok(cli.run_plain(op))
+    }
+}
+
 /// `cli->recv(buffer, length, flags)`.
-fn receive(conn: &Conn, buffer: *mut u8, length: usize, flags: i64) -> Result<i64, Bailout> {
-    let mut recv = conn.call(Op::Recv);
-    recv.buffer = buffer.cast();
-    recv.length = length;
-    recv.a = flags;
-    conn.run(&mut recv)
+fn receive(cli: Cli, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
+    io(
+        cli,
+        Op::Recv {
+            buffer,
+            flags: int(flags),
+        },
+    )
+}
+
+/// C++'s implicit conversion of a PHP int to an `int` argument.
+#[expect(clippy::cast_possible_truncation, reason = "C++'s (int) conversion")]
+pub(crate) fn int(value: i64) -> c_int {
+    value as c_int
 }
 
 /// [`receive`] of at most `length` bytes into `buffer`'s room.
 fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
     let room = native::room(buffer);
-    let read = receive(conn, room.as_mut_ptr(), room.len().min(length), flags)?;
+    let length = room.len().min(length);
+    let read = receive(conn.cli, room.get_mut(..length).unwrap_or_default(), flags)?;
     Ok(native::filled(buffer, read))
 }
 
@@ -900,8 +907,8 @@ fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
             let length = conn.buffer.len();
             let room = (conn.buffer_size - length.min(conn.buffer_size)).min(BUFFER_SIZE_BIG);
             conn.buffer.resize(length + room, 0);
-            let target = conn.buffer.as_mut_ptr().wrapping_add(length);
-            let read = receive(conn, target, room, 0);
+            let target = conn.buffer.get_mut(length..).unwrap_or_default();
+            let read = receive(conn.cli, target, 0);
             let Some(read) = bailed(read) else {
                 conn.buffer.truncate(length);
                 return call.set_bool(false);
@@ -971,8 +978,8 @@ fn recv_length(
         let have = conn.buffer.len();
         let want = header.saturating_sub(have);
         conn.buffer.resize(have + want, 0);
-        let target = conn.buffer.as_mut_ptr().wrapping_add(have);
-        let read = receive(conn, target, want, 0);
+        let target = conn.buffer.get_mut(have..).unwrap_or_default();
+        let read = receive(conn.cli, target, 0);
         let Some(read) = bailed(read) else {
             call.set_bool(false);
             return None;
@@ -983,10 +990,7 @@ fn recv_length(
         }
         conn.buffer
             .truncate(have + usize::try_from(read).unwrap_or(0));
-        let mut measure = conn.call(Op::PackageLength);
-        measure.buffer = conn.buffer.as_mut_ptr().cast();
-        measure.length = conn.buffer.len();
-        let Some(measured) = bailed(measure.run()) else {
+        let Some(measured) = bailed(conn.cli.run(Op::PackageLength(&conn.buffer))) else {
             call.set_bool(false);
             return None;
         };
@@ -1136,8 +1140,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     };
     let mut address = SocketAddress::default();
-    // SAFETY: a live client; a writable local.
-    if unsafe { state::swr_v1_clients_get_peer_name(conn.cli.0, &raw mut address) } < 0 {
+    if conn.cli.handle().peer_name(&mut address) < 0 {
         let error = errno();
         warn_sys("getpeername() failed", error);
         set_err_code(Obj::this(call), error);
@@ -1194,7 +1197,7 @@ fn close(call: &Call) {
         || conn.flag(state::SHUTDOWN_WRITE)
         || !conn.alive()
     {
-        let Some(result) = bailed(conn.call(Op::Close).run()) else {
+        let Some(result) = bailed(conn.cli.run(Op::Close)) else {
             return call.set_bool(false);
         };
         bailed(release(object, conn_ptr));
@@ -1228,7 +1231,7 @@ pub(crate) fn enable_ssl(call: &Call, conn: &mut Conn) -> bool {
     if let Some(zset) = settings(Obj::this(call)) {
         crate::settings::apply_ssl(conn.cli, zset);
     }
-    bailed(conn.call(Op::EnableSsl).run()).is_some_and(|result| result == 0)
+    bailed(conn.cli.run(Op::EnableSsl)).is_some_and(|result| result == 0)
 }
 
 /// `enableSSL(?callable $onSslReady = null): bool`.
@@ -1250,7 +1253,7 @@ fn enable_ssl_method(call: &Call) {
     if !enable_ssl(call, conn) {
         return call.set_bool(false);
     }
-    call.set_bool(bailed(conn.call(Op::SslHandshake).run()) == Some(0));
+    call.set_bool(bailed(conn.cli.run(Op::SslHandshake)) == Some(0));
 }
 
 /// `getPeerCert(): string|false`.
@@ -1280,9 +1283,8 @@ fn verify_peer_cert(call: &Call) {
     let Ok(allow) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    let mut verify = conn.call(Op::SslVerify);
-    verify.a = i64::from(allow);
-    call.set_bool(bailed(verify.run()).is_some_and(|result| result >= 0));
+    let verify = conn.cli.run(Op::SslVerify(allow));
+    call.set_bool(bailed(verify).is_some_and(|result| result >= 0));
 }
 
 /// `shutdown(int $how): bool`.
@@ -1293,9 +1295,8 @@ fn shutdown(call: &Call) {
     let Ok(how) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    let mut shutdown = conn.call(Op::Shutdown);
-    shutdown.a = how;
-    call.set_bool(bailed(shutdown.run()).is_some_and(|result| result >= 0));
+    let shutdown = conn.cli.run(Op::Shutdown(int(how)));
+    call.set_bool(bailed(shutdown).is_some_and(|result| result >= 0));
 }
 
 swoole_rs_zend::handlers! {

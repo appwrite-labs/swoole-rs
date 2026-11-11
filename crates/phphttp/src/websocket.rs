@@ -15,7 +15,6 @@ use std::{
     ptr, slice,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::{
     RecvData, php_swoole_get_recv_data, php_swoole_server_get_ptr, php_swoole_server_zval_ptr,
@@ -1343,21 +1342,20 @@ const DEFAULT_BUFFER: usize = 4096;
 /// read buffer's bytes.
 fn sock_recv(sock: *mut c_void, timeout: f64) -> (isize, *mut u8, usize) {
     // SAFETY: a live `SocketImpl *`, in a coroutine.
-    let received = co::recv_packet(unsafe { co::Co::of(sock) }, timeout);
+    let socket = unsafe { co::Co::of(sock) };
+    let received = co::recv_packet(socket, timeout);
     if received <= 0 {
         return (received, ptr::null_mut(), 0);
     }
-    // SAFETY: as above.
-    let buffer = unsafe { co::record(sock) }.read_buffer.cast::<CppString>();
-    // SAFETY: a packet read leaves it in the socket's read buffer.
-    let buffer = unsafe { &mut *buffer };
-    (received, buffer.as_mut_ptr(), buffer.len())
+    // A packet read leaves it in the socket's read buffer.
+    let (data, len) = socket.with_buffer(false, |buffer| (buffer.as_mut_ptr(), buffer.len()));
+    (received, data, len)
 }
 
 /// `sock->get_fd()`.
 pub(crate) fn sock_fd(sock: *mut c_void) -> c_int {
     // SAFETY: a live `SocketImpl *`.
-    unsafe { co::record(sock) }.sock_fd
+    unsafe { co::Co::of(sock) }.sock_fd()
 }
 
 /// A message being assembled from fragments: its payload so far, and the

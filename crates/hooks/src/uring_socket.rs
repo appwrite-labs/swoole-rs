@@ -12,13 +12,12 @@ use crate::co_socket::Co;
 use crate::hooked::{bytes, slots_mut};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
+use crate::vector::IoVector;
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use openssl_sys as ssl;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_reactor::{
-    ReactorIov, SocketRecord, swr_v1_reactor_iov_advance, swr_v1_reactor_iov_view,
-};
+use swoole_rs_reactor::SocketRecord;
 
 unsafe extern "C" {
     fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
@@ -41,23 +40,6 @@ pub struct UringSocketOps {
     pub check: fn(Co, isize),
     /// `set_err(code)`.
     pub set_err: fn(Co, c_int),
-}
-
-/// A `network::IOVector`'s owner: its current iovec and how many remain, and
-/// advancing it past a result.
-pub struct IoVector(pub *mut ReactorIov);
-
-impl IoVector {
-    fn current(&self) -> (*const libc::iovec, c_int) {
-        // SAFETY: the caller's live vector.
-        let view = swr_v1_reactor_iov_view(unsafe { &*self.0 });
-        (view.iterator, view.remain_count)
-    }
-
-    fn update(&self, result: isize) {
-        // SAFETY: the caller's live vector.
-        unsafe { swr_v1_reactor_iov_advance(self.0, result) };
-    }
 }
 
 impl TlsSocket for Co {
@@ -107,7 +89,7 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
         tls: Tls {
             uring,
             socket,
-            ssl: network.ssl.cast(),
+            ssl: network.ssl().cast(),
             rbio: rbio.cast(),
             wbio: wbio.cast(),
             fd: network.fd,
@@ -353,10 +335,7 @@ fn transfer_result(result: isize, total: usize) -> isize {
 
 /// `readv`/`writev`, or with `all` their `_all` forms: again while each moves data
 /// and some remains.
-///
-/// # Safety
-/// `vector` is live.
-pub(crate) unsafe fn swr_v1_hook_uring_vector(
+pub(crate) fn swr_v1_hook_uring_vector(
     ops: &UringSocketOps,
     vector: &IoVector,
     write: bool,
@@ -562,7 +541,7 @@ pub(crate) unsafe fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> b
         return false;
     }
     let session = socket
-        .net(|network| network.ssl)
+        .net(|network| network.ssl())
         .unwrap_or(core::ptr::null_mut())
         .cast::<ssl::SSL>();
     // SAFETY: OpenSSL's static memory BIO method.

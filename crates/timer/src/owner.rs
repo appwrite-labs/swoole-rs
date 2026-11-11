@@ -11,7 +11,7 @@ use crate::{
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
-use swoole_rs_reactor::reactor_upstream::prepared;
+use swoole_rs_reactor::ReactorPrepared;
 use swoole_rs_reactor::{
     swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition, swr_v1_reactor_deferred_push,
 };
@@ -248,8 +248,8 @@ impl Owner {
         match self.backend.get() {
             MANUAL => {}
             REACTOR => {
-                // SAFETY: the live reactor the backend attached to.
-                let fields = unsafe { prepared(self.reactor.get()) }.fields;
+                // The live reactor the backend attached to.
+                let fields = ReactorPrepared::of(self.reactor.get()).fields;
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "Reactor::timeout_msec is an int"
@@ -480,8 +480,8 @@ impl Owner {
 fn attach(reactor: *mut c_void) {
     swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select);
     swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle);
-    // SAFETY: the thread's live reactor.
-    let fields = unsafe { prepared(reactor) }.fields;
+    // The thread's live reactor.
+    let fields = ReactorPrepared::of(reactor).fields;
     // SAFETY: its live fields.
     let queue = unsafe { &raw mut (*fields).destroy_callbacks };
     // SAFETY: the live destroy queue; `destroyed` takes the reactor back.
@@ -501,8 +501,8 @@ unsafe extern "C-unwind" fn destroyed(reactor: *mut c_void) {
     let Some(timer) = crate::wrapper::current() else {
         return;
     };
-    // SAFETY: the reactor being destroyed, which `attach` registered.
-    let fields = unsafe { prepared(reactor) }.fields;
+    // The reactor being destroyed, which `attach` registered.
+    let fields = ReactorPrepared::of(reactor).fields;
     // SAFETY: its live fields.
     if unsafe { (*fields).bailout } {
         timer.abandon(None);

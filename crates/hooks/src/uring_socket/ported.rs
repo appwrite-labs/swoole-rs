@@ -14,7 +14,6 @@ use crate::uring::testing::{HOST, with_engine};
 use std::ffi::CString;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::{mem, ptr, thread};
-use swoole_rs_reactor::{swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare};
 
 const TEST_STR: &[u8] = b"hello world, hello swoole\n";
 const TEST_STR2: &[u8] = b"I am Rango\n";
@@ -152,12 +151,8 @@ impl Sock {
 
     fn vector(&self, iov: &mut [libc::iovec], write: bool, all: bool) -> isize {
         let count = c_int::try_from(iov.len()).unwrap();
-        let prepared = unsafe { swr_v1_reactor_iov_prepare(iov.as_ptr(), count) };
-        assert_eq!(prepared.status, 0, "IOVector");
-        let vector = IoVector(prepared.owner);
-        let result = unsafe { swr_v1_hook_uring_vector(&self.ops, &vector, write, all) };
-        unsafe { swr_v1_reactor_iov_destroy(prepared.owner) };
-        result
+        let vector = unsafe { IoVector::new(iov.as_ptr(), count) }.expect("IOVector");
+        swr_v1_hook_uring_vector(&self.ops, &vector, write, all)
     }
 
     fn set_buffer_size(&self, option: c_int, size: c_int) {

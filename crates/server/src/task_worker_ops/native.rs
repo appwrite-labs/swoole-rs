@@ -8,6 +8,7 @@ use core::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::swoole_get_worker_id;
+use swoole_rs_process::process_pool::PoolRef;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::entry::Bytes;
@@ -31,15 +32,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let serv = ctx.serv();
             ctx.pool().edit(|pool| {
                 pool.ptr = serv;
-                pool.on_task = on_task as *const c_void;
-                pool.on_worker_start = on_start as *const c_void;
-                pool.on_worker_stop = on_stop as *const c_void;
+                pool.on_task = Some(on_task);
+                pool.on_worker_start = Some(on_start);
+                pool.on_worker_stop = Some(on_stop);
             });
             0
         }
         OP_SET_ASYNC_LOOP => {
-            ctx.pool()
-                .edit(|pool| pool.main_loop = loop_async as *const c_void);
+            ctx.pool().edit(|pool| pool.main_loop = Some(loop_async));
             0
         }
         OP_HAS_COMMAND => {
@@ -108,8 +108,16 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// `TaskWorker_onTask`: the pool's task callback.
-extern "C-unwind" fn on_task(pool: TaskPool<'_>, worker: Worker<'_>, task: &mut DataHead) -> c_int {
-    run_task(pool, worker, task)
+extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: &mut DataHead) -> c_int {
+    run_task(task_pool(pool), worker, task)
+}
+
+/// The task pool its callbacks are passed.
+fn task_pool(pool: PoolRef<'_>) -> TaskPool<'_> {
+    TaskPool {
+        raw: pool.raw(),
+        live: PhantomData,
+    }
 }
 
 /// Runs `task`, null or live while the call runs, in `pool`'s `worker`.
@@ -120,18 +128,21 @@ pub(super) fn run_task(pool: TaskPool<'_>, worker: Worker<'_>, task: *const Data
 }
 
 /// `TaskWorker_onStart`.
-extern "C-unwind" fn on_start(pool: TaskPool<'_>, worker: Worker<'_>) {
-    run(&mut Context::of(pool, worker), RUN_TASK_ON_START);
+extern "C-unwind" fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
+    run(&mut Context::of(task_pool(pool), worker), RUN_TASK_ON_START);
 }
 
 /// `TaskWorker_onStop`.
-extern "C-unwind" fn on_stop(pool: TaskPool<'_>, worker: Worker<'_>) {
-    run(&mut Context::of(pool, worker), RUN_TASK_ON_STOP);
+extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
+    run(&mut Context::of(task_pool(pool), worker), RUN_TASK_ON_STOP);
 }
 
 /// `TaskWorker_loop_async`: the coroutine task worker's main loop.
-extern "C-unwind" fn loop_async(pool: TaskPool<'_>, worker: Worker<'_>) -> c_int {
-    run(&mut Context::of(pool, worker), RUN_TASK_LOOP_ASYNC)
+extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
+    run(
+        &mut Context::of(task_pool(pool), worker),
+        RUN_TASK_LOOP_ASYNC,
+    )
 }
 
 /// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head. Left

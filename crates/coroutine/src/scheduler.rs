@@ -174,33 +174,33 @@ pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
     unsafe { swr_v1_coroutine_resume(scheduler(), co.cast()) };
 }
 
-/// Marks `co` canceled, then calls the caller's canceler, `inner`.
-unsafe extern "C-unwind" fn mark_canceled(co: *mut c_void, inner: *mut c_void) -> bool {
-    // SAFETY: the yield that set the canceler is still waiting.
+/// Marks `co` canceled, then runs a copy of the yield's closure at `data`.
+///
+/// # Safety
+/// `data` is the `F` of the yield `co` still waits in.
+unsafe fn mark_canceled<F: FnOnce(*mut c_void) -> bool + Copy>(
+    co: *mut c_void,
+    data: *const c_void,
+) -> bool {
+    // SAFETY: as the caller promises; copied, as `cancel` may end its frame.
+    let cancel = unsafe { data.cast::<F>().read() };
+    // SAFETY: as above, `co` waits.
     unsafe { (*co.cast::<Coroutine>()).mark_canceled() };
-    // SAFETY: as above, so its frame (and `inner`) is live.
-    let Canceler { call, data } = unsafe { inner.cast::<Canceler>().read() };
-    // SAFETY: the caller's cancel function for this yield.
-    unsafe { call(co, data) }
+    cancel(co)
 }
 
-/// `co->yield(&cancel_fn)`, where `cancel_fn` calls `call(co, data)` once `co`
+/// `co->yield(&cancel_fn)`, where `cancel_fn` calls `cancel(co)` once `co`
 /// is marked canceled.
 ///
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing with a destructor.
-pub unsafe fn yield_with_cancel(
-    co: *mut c_void,
-    call: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-    data: *mut c_void,
-) {
-    let mut inner = Canceler { call, data };
-    let mut canceler = Canceler {
-        call: mark_canceled,
-        data: (&raw mut inner).cast(),
+pub unsafe fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+    let canceler = Canceler {
+        call: mark_canceled::<F>,
+        data: (&raw const cancel).cast(),
     };
-    let canceler = (&raw mut canceler).cast();
-    // SAFETY: as the caller promises; both cancelers outlive the yield.
+    let canceler = (&raw const canceler).cast_mut().cast();
+    // SAFETY: as the caller promises; the canceler outlives the yield.
     unsafe { swr_v1_coroutine_yield_cancelable(scheduler(), co.cast(), canceler) };
 }
 

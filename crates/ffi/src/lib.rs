@@ -124,8 +124,16 @@ pub use swoole_rs_ssh2 as ssh2;
 #[cfg(feature = "php")]
 #[must_use]
 pub fn phpswoole_module() -> *mut std::ffi::c_void {
+    swoole_rs_phpserver::register_http(&HTTP_HOOKS);
     swoole_rs_phpswoole::module_entry(&FAMILIES).cast()
 }
+
+#[cfg(feature = "php")]
+static HTTP_HOOKS: swoole_rs_phpserver::HttpHooks = swoole_rs_phpserver::HttpHooks {
+    on_receive: swoole_rs_phphttp::http_server_on_receive,
+    on_close: swoole_rs_phphttp::http_server_on_close,
+    can_cache_session_addr: swoole_rs_phphttp::can_cache_session_addr,
+};
 
 /// `php_swoole_reactor_init()`: 0, or -1 after an error (crates/phpevents).
 #[cfg(feature = "php")]
@@ -228,10 +236,7 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             server_rinit: http::server_rinit,
             server_rshutdown: http::server_rshutdown,
             response_rshutdown: http::response_rshutdown,
-            on_receive: http::http_server_on_receive,
-            on_close: http::http_server_on_close,
             http2_on_close: swoole_rs_phphttp2::server_on_close,
-            can_cache_session_addr: http::can_cache_session_addr,
             server_class: http::server_class,
             websocket_class: http::websocket_class,
         },

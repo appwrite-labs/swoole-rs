@@ -1,39 +1,42 @@
 //! A thread-mode Server (`SW_THREAD`): the settings its worker threads share,
 //! the PHP thread each worker runs in, and `start()` inside that thread, which
 //! runs the worker's body.
-use crate::lifecycle::{MODE_THREAD, ServerObject};
+use crate::lifecycle::{MODE_THREAD, Props, ServerObject};
 use std::{
     cell::Cell,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::{Arc, Mutex, PoisonError, atomic::Ordering},
 };
 use swoole_rs_corebase::Thread;
 use swoole_rs_phpthread::Arguments;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
-    Value,
+    Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
     kind,
     string::bytes,
     sys::{
-        IS_ARRAY_EX, IS_NULL, swr_zend_string_persistent, swr_zend_string_release,
-        swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_array_dup,
-        zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval, zval_ptr_dtor,
+        IS_NULL, swr_zend_string_release, swr_zend_thread_main_request,
+        swr_zend_tsrm_is_main_thread, zend_fcall_info, zend_string, zval_ptr_dtor,
     },
-    value::table,
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
 /// and the `init_arguments` result.
 struct Start {
-    bootstrap: *mut zend_string,
+    bootstrap: Vec<u8>,
     argv: Option<Arguments>,
 }
 
-/// The running thread-mode server's [`Start`], or null.
-static START: AtomicPtr<Start> = AtomicPtr::new(ptr::null_mut());
+/// The running thread-mode server's [`Start`], from `prepare` until `release`.
+static START: Mutex<Option<Arc<Start>>> = Mutex::new(None);
+
+/// Replace the running server's [`Start`].
+fn set_start(start: Option<Start>) {
+    *START.lock().unwrap_or_else(PoisonError::into_inner) = start.map(Arc::new);
+}
 
 thread_local! {
     /// Upstream's `worker_thread_fn`: this worker thread's body.
@@ -42,7 +45,6 @@ thread_local! {
 
 /// Thread mode, in a build with `SW_THREAD`.
 fn thread_mode(serv: view::Server<'_>) -> bool {
-    // SAFETY: a live server.
     crate::server::THREAD.load(Ordering::Relaxed) && i64::from(serv.config().mode_) == MODE_THREAD
 }
 
@@ -80,24 +82,19 @@ pub(crate) fn worker(object: ServerObject, serv: view::Server<'_>) -> Option<Res
 }
 
 fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
-    // SAFETY: the Server object and its class, which declares `setting`.
-    let setting = unsafe {
-        swoole_rs_zend::host::array_property_of(object.class(), object.raw(), c"setting")
-    }?;
-    // SAFETY: the property's array, replaced below.
-    unsafe { zval_ptr_dtor(setting) };
-    let undef = crate::dispatch::undef();
-    // SAFETY: the slot just released.
-    unsafe { setting.write(undef) };
     let serialized = serv.config().private_data_4.cast::<zend_string>();
     // SAFETY: the persistent string `copy_setting` made.
     let text = unsafe { bytes(serialized) };
-    // SAFETY: the empty slot.
-    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(text, setting) };
+    // `$this->setting`, which upstream releases and unserializes in place: it is
+    // released first, and nothing is written once the unserialize bailed out.
+    Props::own(object).set(c"setting", &Owned::null());
+    let setting = Owned::default();
+    // SAFETY: an undefined slot this owns, on this PHP thread.
+    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(text, setting.as_ptr()) };
     bailed?;
-    // SAFETY: the slot unserialize filled. The coroutine options are
-    // thread-local: each worker thread sets them once.
-    if let Some(options) = unsafe { Value::from_ptr(setting) }.and_then(Value::array) {
+    Props::own(object).set(c"setting", &setting);
+    // The coroutine options are thread-local: each worker thread sets them once.
+    if let Some(options) = setting.array() {
         swoole_rs_phpcoroutines::set_coroutine_option(options);
     }
     // A conversion's bailout ends the start here, as upstream's did.
@@ -127,22 +124,12 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
         if !path.is_null() {
             // SAFETY: the request's NUL-terminated script.
             let path = unsafe { CStr::from_ptr(path) };
-            crate::lifecycle::Props::own(object).bytes(c"bootstrap", path.to_bytes());
+            Props::own(object).string(c"bootstrap", path);
         }
     }
-    let script = string_of(slot);
-    // SAFETY: the script's bytes; a persistent copy the threads share.
-    let bootstrap = unsafe { swr_zend_string_persistent(script.as_ptr().cast(), script.len()) };
-    let argv = match init_arguments(object) {
-        Ok(argv) => argv,
-        Err(bailout) => {
-            // SAFETY: the copy made above.
-            unsafe { swr_zend_string_release(bootstrap) };
-            return Err(bailout);
-        }
-    };
-    let start = Box::into_raw(Box::new(Start { bootstrap, argv }));
-    release_start(START.swap(start, Ordering::AcqRel));
+    let bootstrap = string_of(slot).to_vec();
+    let argv = init_arguments(object)?;
+    set_start(Some(Start { bootstrap, argv }));
     set_worker_thread_start(Some(start_thread));
     let flags = swoole_rs_phpcoroutines::hook_flags();
     if flags > 0 {
@@ -182,17 +169,16 @@ fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
 /// the bootstrap script, whose `start()` runs `run(context)`.
 unsafe fn start_thread(thread: *mut c_void, run: WorkerMain, context: *mut c_void) {
     MAIN.set(Some((run, context)));
-    // SAFETY: `prepare` set it before the server started threads; `release`
-    // frees it once `start()` returned, after every thread ended.
-    let start = unsafe { &*START.load(Ordering::Acquire) };
-    // SAFETY: a live persistent string.
-    let script = unsafe { bytes(start.bootstrap) };
+    // `prepare` set it before the server started threads; `release` clears it
+    // once `start()` returned, after every thread ended.
+    let start = START.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let Some(start) = start else { return };
     // SAFETY: the factory's live `swoole::Thread` for this thread.
     let thread = unsafe { &*thread.cast::<Thread>() };
     // SAFETY: the factory's new OS thread, before anything of PHP's.
     unsafe {
         swoole_rs_phpthread::run(
-            script,
+            &start.bootstrap,
             start.argv.clone(),
             || thread.enter(),
             |status| thread.exit(status),
@@ -203,51 +189,29 @@ unsafe fn start_thread(thread: *mut c_void, run: WorkerMain, context: *mut c_voi
 /// After `start()`: the bootstrap script and arguments go.
 pub(crate) fn release() {
     set_worker_thread_start(None);
-    release_start(START.swap(ptr::null_mut(), Ordering::AcqRel));
-}
-
-fn release_start(start: *mut Start) {
-    if start.is_null() {
-        return;
-    }
-    // SAFETY: made by `prepare`'s `Box::into_raw`, now unshared.
-    let start = unsafe { Box::from_raw(start) };
-    // SAFETY: the persistent copy `prepare` made.
-    unsafe { swr_zend_string_release(start.bootstrap) };
-}
-
-/// `ZEND_HASH_APPLY_KEEP` and `ZEND_HASH_APPLY_REMOVE`.
-const APPLY_KEEP: c_int = 0;
-const APPLY_REMOVE: c_int = 1;
-
-unsafe extern "C" fn serializable(value: *mut zval) -> c_int {
-    // SAFETY: a live element of the copy.
-    if unsafe { swoole_rs_zend::Value::from_ptr(value) }
-        .is_none_or(swoole_rs_phpswoole::sw_zval_is_serializable)
-    {
-        APPLY_KEEP
-    } else {
-        APPLY_REMOVE
-    }
+    set_start(None);
 }
 
 /// `copy_setting`: the serializable settings, serialized for the worker
 /// threads to read back.
-pub(crate) fn copy_setting(serv: view::Server<'_>, setting: *mut zval) -> Result<(), Bailout> {
-    let mut copy = crate::dispatch::undef();
-    // SAFETY: the settings array.
-    let source = unsafe { table(setting) };
-    // SAFETY: as above, duplicated.
-    let array = unsafe { zend_array_dup(source) };
-    // SAFETY: the fresh copy, filtered in place.
-    unsafe { zend_hash_apply(array, Some(serializable)) };
-    copy.value = zend_value { arr: array };
-    copy.u1.type_info = IS_ARRAY_EX;
-    // SAFETY: a live array this function owns.
-    let value = unsafe { &*(&raw const copy).cast::<swoole_rs_zend::Value>() };
-    let (serialized, bailed) = swoole_rs_phpswoole::serialize(value);
-    // SAFETY: the copy this function owns.
-    unsafe { zval_ptr_dtor(&raw mut copy) };
+pub(crate) fn copy_setting(serv: view::Server<'_>, setting: &Value) -> Result<(), Bailout> {
+    // `zend_array_dup` of the settings, without the elements that don't serialize.
+    let mut copy = OwnedArray::default();
+    if let Some(setting) = setting.array() {
+        let mut entries = setting.entries();
+        while let Some((key, value)) = entries.next_keyed() {
+            if !swoole_rs_phpswoole::sw_zval_is_serializable(value) {
+                continue;
+            }
+            match key {
+                Key::Name(name) => copy.insert(name, value.copy()),
+                Key::Index(index) => copy.insert_index(index, value.copy()),
+            }
+        }
+    }
+    let copy = copy.into_owned();
+    let (serialized, bailed) = swoole_rs_phpswoole::serialize(&copy);
+    drop(copy);
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     unsafe { serv.config_mut() }.private_data_4 = serialized.cast();
     bailed

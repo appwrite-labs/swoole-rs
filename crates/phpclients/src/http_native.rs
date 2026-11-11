@@ -145,9 +145,9 @@ impl Co {
             timeout
         };
         self.set_timeout(timeout, TIMEOUT_CONNECT);
-        let record = self.record();
-        record.resolve_context = resolve;
-        record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+        // SAFETY: the caller's context, which outlives the socket.
+        unsafe { self.handle().set_resolve_context(resolve) };
+        self.use_zend_strings();
         set_close_hook(self.handle(), hook);
     }
 

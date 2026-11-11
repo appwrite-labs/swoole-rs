@@ -1062,6 +1062,11 @@ pub unsafe fn pool_dispatch(
     }
     *target += c_int::from(start_id);
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
+    if index >= count as usize {
+        let call = PoolCall::new(pool, ptr::null_mut());
+        native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
+        return false;
+    }
     let worker = workers.wrapping_add(index);
     // SAFETY: the chosen worker's record.
     let id = unsafe { Record::new(worker).id() };
@@ -1437,5 +1442,32 @@ mod tests {
         assert_eq!(script.ends, 2);
         assert_eq!(script.shutdowns, 1);
         assert_eq!(script.warnings, vec![(WARN_PIPE, 0, 0)]);
+    }
+
+    #[test]
+    fn a_dispatch_to_a_worker_the_pool_lacks_warns_and_fails() {
+        with(|s| *s = Script::default());
+        let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
+        let (mut round, mut warning, mut target) = (0, 0, 5);
+        let event = [0u8; 4];
+        let sent = unsafe {
+            pool_dispatch(
+                &Scripted,
+                ptr::null_mut(),
+                workers.as_mut_ptr(),
+                2,
+                0,
+                &raw mut round,
+                &raw mut warning,
+                false,
+                false,
+                &raw mut target,
+                event.as_ptr(),
+                4,
+                false,
+            )
+        };
+        assert!(!sent);
+        assert_eq!(with(|s| s.warnings.clone()), vec![(WARN_SEND, 4, 5)]);
     }
 }

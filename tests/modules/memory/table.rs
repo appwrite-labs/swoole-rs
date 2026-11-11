@@ -651,11 +651,11 @@ fn start_iterator(ptr: &Table) {
     loop {
         ptr.forward();
         let row = ptr.current();
-        let key_len = unsafe { (*row).key_len };
+        let key_len = unsafe { (*row).key_len.load(Ordering::Relaxed) };
         if key_len == 0 {
             break;
         }
-        let key = unsafe { &(&(*row).key)[..usize::from(key_len)] };
+        let key = unsafe { &(&*(*row).key.get())[..usize::from(key_len)] };
         assert!(ptr.exists(key));
         count += 1;
     }
