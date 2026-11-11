@@ -539,7 +539,10 @@ pub(crate) unsafe fn answer(
         }
         OP_SSL_VERIFY => {
             let allow_self_signed = o.ssl_fields().allow_self_signed != 0;
-            u64::from(o.read_sock(|sock| tls::socket_ssl_verify(sock, allow_self_signed)))
+            u64::from(
+                o.sock()
+                    .is_some_and(|sock| tls::socket_ssl_verify(sock, allow_self_signed)),
+            )
         }
         OP_CERT_TASK => {
             // SAFETY: OP_PEER_CERT filled this thread's live buffer.

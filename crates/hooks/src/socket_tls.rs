@@ -120,7 +120,7 @@ impl Co {
     #[must_use]
     pub fn ssl_verify(self, allow_self_signed: bool) -> bool {
         let verified = self
-            .net(|network| socket_ssl_verify(network, allow_self_signed))
+            .with_network(|network| socket_ssl_verify(network, allow_self_signed))
             .unwrap_or(false)
             && {
                 // SAFETY: the live owner of the socket's context.
@@ -128,7 +128,7 @@ impl Co {
                 name.length == 0 || {
                     // SAFETY: the view's NUL-terminated bytes, live for the call.
                     let name = unsafe { CStr::from_ptr(name.data) };
-                    self.net(|network| socket_ssl_check_host(network, name))
+                    self.with_network(|network| socket_ssl_check_host(network, name))
                         .unwrap_or(false)
                 }
             };

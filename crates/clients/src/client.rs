@@ -1324,18 +1324,11 @@ fn ssl_handshake(this: Handle) -> c_int {
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
 fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
-    if !this
-        .socket()
-        .read(|socket| socket_ssl_verify(socket, allow_self_signed))
-    {
+    if !socket_ssl_verify(this.socket(), allow_self_signed) {
         return ERR;
     }
     let name = this.tls_host_name();
-    if !name.is_empty()
-        && !this
-            .socket()
-            .read(|socket| socket_ssl_check_host(socket, name))
-    {
+    if !name.is_empty() && !socket_ssl_check_host(this.socket(), name) {
         return ERR;
     }
     OK

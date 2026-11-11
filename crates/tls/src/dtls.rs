@@ -445,7 +445,7 @@ pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
         return false;
     };
     crate::socket::clear_errors();
-    let Some(ssl) = socket.read(crate::Ssl::of) else {
+    let Some(ssl) = crate::Ssl::of(socket) else {
         return false;
     };
     // SAFETY: the record's live SSL.

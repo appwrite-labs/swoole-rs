@@ -131,7 +131,8 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
 /// `step` over a copy of the record's TLS group and its SSL (None without one), then
 /// the group stored back: OpenSSL's info callback reads the record meanwhile.
 fn with_tls<R>(socket: Socket<'_>, step: impl FnOnce(&mut SocketTls, Ssl) -> R) -> Option<R> {
-    let (mut tls, ssl) = socket.read(|record| (record.tls, Ssl::of(record)));
+    let (tls, ssl) = (socket.read(|record| record.tls), Ssl::of(socket));
+    let mut tls = tls;
     let result = step(&mut tls, ssl?);
     socket.edit(|record| record.tls = tls);
     Some(result)
@@ -156,11 +157,7 @@ pub unsafe extern "C" fn socket_ssl_get_error_reason(reason: *mut c_int) -> *con
 
 /// `STACK_OF(X509) *Socket::ssl_get_peer_cert_chain() const`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv")
-)]
-pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut stack_st_X509 {
+pub fn socket_ssl_get_peer_cert_chain(socket: Socket<'_>) -> *mut stack_st_X509 {
     let Some(ssl) = Ssl::of(socket) else {
         return std::ptr::null_mut();
     };
@@ -168,13 +165,22 @@ pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut 
     unsafe { SSL_get_peer_cert_chain(ssl.as_ptr()) }
 }
 
+/// [`socket_ssl_get_peer_cert_chain`] for upstream's core tests.
+///
+/// # Safety
+/// `socket` is a live record.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv")]
+unsafe extern "C" fn native_ssl_get_peer_cert_chain(
+    socket: *mut SocketRecord,
+) -> *mut stack_st_X509 {
+    // SAFETY: as the caller promises.
+    unsafe { Socket::from_ptr(socket) }.map_or(std::ptr::null_mut(), socket_ssl_get_peer_cert_chain)
+}
+
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")
-)]
-pub extern "C" fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bool) -> bool {
+pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
     let Some(ssl) = Ssl::of(socket) else {
         return false;
     };
@@ -182,7 +188,7 @@ pub extern "C" fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bo
     if error == c_long::from(X509_V_OK) {
         return true;
     }
-    let fd = socket.fd;
+    let fd = socket.fd();
     if error == c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
         log::error_log(
             LOG_NOTICE,
@@ -203,6 +209,18 @@ pub extern "C" fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bo
         );
     }
     false
+}
+
+/// [`socket_ssl_verify`] for upstream's core tests.
+///
+/// # Safety
+/// `socket` is a live record.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")]
+unsafe extern "C" fn native_ssl_verify(socket: *mut SocketRecord, allow_self_signed: bool) -> bool {
+    // SAFETY: as the caller promises.
+    unsafe { Socket::from_ptr(socket) }
+        .is_some_and(|socket| socket_ssl_verify(socket, allow_self_signed))
 }
 
 /// `void Socket::ssl_catch_error() const`.
@@ -423,7 +441,7 @@ unsafe extern "C" fn tls_peek(socket: *mut c_void, buffer: *mut c_void, length: 
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return -1;
     };
-    let Some(ssl) = socket.read(Ssl::of) else {
+    let Some(ssl) = Ssl::of(socket) else {
         return -1;
     };
     #[expect(
@@ -812,7 +830,7 @@ pub unsafe fn socket_writev_sync(
 
 /// `X509 *Socket::ssl_get_peer_certificate() const`.
 #[must_use]
-pub fn ssl_get_peer_certificate(socket: &SocketFields) -> Option<Cert> {
+pub fn ssl_get_peer_certificate(socket: Socket<'_>) -> Option<Cert> {
     let ssl = Ssl::of(socket)?;
     // SAFETY: the record's live SSL; the reference it returns is ours.
     NonNull::new(unsafe { peer_certificate(ssl.as_ptr()) }).map(Cert)
@@ -820,7 +838,7 @@ pub fn ssl_get_peer_certificate(socket: &SocketFields) -> Option<Cert> {
 
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
 #[must_use]
-pub fn socket_ssl_check_host(socket: &SocketFields, name: &CStr) -> bool {
+pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };
@@ -852,7 +870,7 @@ pub unsafe extern "C" fn socket_ssl_get_peer_certificate_pem(
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast_mut()) }) else {
         return -1;
     };
-    let Some(cert) = socket.read(ssl_get_peer_certificate) else {
+    let Some(cert) = ssl_get_peer_certificate(socket) else {
         return -1;
     };
     // SAFETY: the certificate and the caller's buffer.
@@ -1598,15 +1616,17 @@ mod tests {
 
     #[test]
     fn cert_chain_without_ssl_is_null() {
-        let socket = SocketRecord::new();
-        assert!(socket_ssl_get_peer_cert_chain(&socket).is_null());
+        let mut socket = SocketRecord::new();
+        let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
+        assert!(socket_ssl_get_peer_cert_chain(handle).is_null());
     }
 
     #[test]
     fn peer_certificate_getters_without_ssl() {
-        let socket = SocketRecord::new();
-        assert!(ssl_get_peer_certificate(&socket).is_none());
-        assert!(!socket_ssl_check_host(&socket, c"localhost"));
+        let mut socket = SocketRecord::new();
+        let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
+        assert!(ssl_get_peer_certificate(handle).is_none());
+        assert!(!socket_ssl_check_host(handle, c"localhost"));
         let socket = &raw const socket;
         let mut pem = [0 as c_char; 64];
         let n = unsafe { socket_ssl_get_peer_certificate_pem(socket, pem.as_mut_ptr(), 64) };
