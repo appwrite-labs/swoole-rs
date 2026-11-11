@@ -37,7 +37,7 @@ unsafe extern "C" {
     fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
     fn PEM_read_bio_Parameters(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
     fn ERR_print_errors_cb(
-        callback: extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
+        callback: unsafe extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
         user: *mut c_void,
     );
     fn HMAC(
@@ -708,8 +708,14 @@ thread_local! {
     static ERROR_TEXT: RefCell<Vec<u8>> = RefCell::new(vec![0]);
 }
 
-extern "C" fn keep_last_line(line: *const c_char, length: usize, _user: *mut c_void) -> c_int {
-    // SAFETY: OpenSSL lends `length` bytes of the line.
+/// # Safety
+/// `line` holds `length` bytes, as `ERR_print_errors_cb` lends them.
+unsafe extern "C" fn keep_last_line(
+    line: *const c_char,
+    length: usize,
+    _user: *mut c_void,
+) -> c_int {
+    // SAFETY: per the caller.
     let line = unsafe { std::slice::from_raw_parts(line.cast::<u8>(), length) };
     ERROR_TEXT.with_borrow_mut(|text| {
         text.clear();
@@ -733,16 +739,6 @@ pub extern "C" fn swr_v1_tls_error() -> *const c_char {
     // SAFETY: the callback only touches this thread's buffer.
     unsafe { ERR_print_errors_cb(keep_last_line, ptr::null_mut()) };
     ERROR_TEXT.with_borrow(|text| text.as_ptr().cast())
-}
-
-/// `SSLContext::create`: a configured context, or null after logging why. Writes
-/// the normalized protocol mask back to `config.protocols`.
-///
-/// # Safety
-/// `config`'s strings are NUL-terminated and outlive the call.
-pub unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> *mut SSL_CTX {
-    // SAFETY: forwards the caller's live configuration view.
-    unsafe { create_context(config, None) }
 }
 
 /// # Safety
@@ -781,51 +777,56 @@ pub(crate) unsafe fn create_context(
     ptr::null_mut()
 }
 
-macro_rules! method {
-    ($name:ident, $function:literal, $body:ident) => {
-        /// The `SSLContext` method of the same name, on an existing context.
-        ///
-        /// # Safety
-        /// `ctx` is a live context and `config`'s strings are NUL-terminated and
-        /// outlive the call.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(ctx: *mut SSL_CTX, config: &TlsConfig) -> bool {
-            Method {
-                config,
-                ctx,
-                function: $function,
-                password: None,
-            }
-            .$body()
-        }
-    };
-}
-
-method!(swr_v1_tls_set_capath, c"SSLContext::set_capath", set_capath);
-method!(
-    swr_v1_tls_set_ciphers,
-    c"SSLContext::set_ciphers",
-    set_ciphers
-);
-method!(
-    swr_v1_tls_set_client_certificate,
-    c"SSLContext::set_client_certificate",
-    set_client_certificate
-);
-method!(
-    swr_v1_tls_set_ecdh_curve,
-    c"SSLContext::set_ecdh_curve",
-    set_ecdh_curve
-);
-method!(
-    swr_v1_tls_set_dhparam,
-    c"SSLContext::set_dhparam",
-    set_dhparam
-);
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `SSLContext::create`: a configured context, or null after logging why. Writes
+    /// the normalized protocol mask back to `config.protocols`.
+    ///
+    /// # Safety
+    /// `config`'s strings are NUL-terminated and outlive the call.
+    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> *mut SSL_CTX {
+        // SAFETY: forwards the caller's live configuration view.
+        unsafe { create_context(config, None) }
+    }
+
+    macro_rules! method {
+        ($name:ident, $function:literal, $body:ident) => {
+            /// The `SSLContext` method of the same name, on an existing context.
+            ///
+            /// # Safety
+            /// `ctx` is a live context and `config`'s strings are NUL-terminated and
+            /// outlive the call.
+            unsafe fn $name(ctx: *mut SSL_CTX, config: &TlsConfig) -> bool {
+                Method {
+                    config,
+                    ctx,
+                    function: $function,
+                    password: None,
+                }
+                .$body()
+            }
+        };
+    }
+
+    method!(swr_v1_tls_set_capath, c"SSLContext::set_capath", set_capath);
+    method!(
+        swr_v1_tls_set_client_certificate,
+        c"SSLContext::set_client_certificate",
+        set_client_certificate
+    );
+    method!(
+        swr_v1_tls_set_ecdh_curve,
+        c"SSLContext::set_ecdh_curve",
+        set_ecdh_curve
+    );
+    method!(
+        swr_v1_tls_set_dhparam,
+        c"SSLContext::set_dhparam",
+        set_dhparam
+    );
+
     use openssl_sys::{SSL_CTX_get_options, SSL_CTX_get_verify_mode};
 
     unsafe extern "C" {
