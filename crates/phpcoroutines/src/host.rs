@@ -702,10 +702,9 @@ pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
     swoole_rs_coroutine::set_stack_size(size);
 }
 
-pub(crate) fn add_name_resolver(resolver: *mut zval) {
+pub(crate) fn add_name_resolver(resolver: &swoole_rs_zend::Value) {
     if let Some(families) = swoole_rs_phpswoole::families() {
-        // SAFETY: a live zval.
-        unsafe { (families.name_resolver_add)(resolver) };
+        (families.name_resolver_add)(resolver);
     }
 }
 

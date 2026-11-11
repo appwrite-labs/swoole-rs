@@ -9,9 +9,9 @@ use crate::{
 };
 use libc::{c_int, iovec};
 use std::{
+    cell::Cell,
     ffi::{CStr, CString},
     marker::PhantomData,
-    mem::offset_of,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -26,7 +26,7 @@ use swoole_rs_zend::{
         module_registry, zend_class_entry, zend_get_type_by_const, zend_hash_str_find, zend_object,
         zend_object_handlers, zval,
     },
-    type_of, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -45,10 +45,13 @@ const IOV_MAX: u32 = 1024;
 
 /// Rust owns the core pointer and imported stream. Native SDK
 /// facades access them only through the typed Rust entry points below.
+///
+/// Cells, valid all-zero (a null socket, an undefined stream): methods, and
+/// PHP code they run, share the data.
 #[repr(C)]
 pub(crate) struct Data {
-    socket: Socket,
-    stream: zval,
+    socket: Cell<Socket>,
+    stream: Cell<Owned>,
 }
 
 type SocketObject = Object<Data>;
@@ -84,14 +87,14 @@ impl<'a> Sock<'a> {
         Self(object, PhantomData)
     }
 
-    fn data(self) -> *mut Data {
-        SocketObject::data_ptr(self.0)
+    fn data(self) -> &'a Data {
+        // SAFETY: the live object's data, only ever shared (its fields are cells).
+        unsafe { &*SocketObject::data_ptr(self.0) }
     }
 
     /// The core socket, or null before the constructor ran.
     pub(crate) fn socket(self) -> Socket {
-        // SAFETY: the live object's data; a copy of the pointer.
-        unsafe { (*self.data()).socket }
+        self.data().socket.get()
     }
 
     /// The core socket, once constructed.
@@ -106,8 +109,7 @@ impl<'a> Sock<'a> {
     /// protocol properties. A socket it held before leaks.
     fn adopt(self, socket: NewSocket) {
         let socket = socket.into_co();
-        // SAFETY: the live object's data; nothing borrows it.
-        unsafe { (*self.data()).socket = socket.as_ptr() };
+        self.data().socket.set(socket.as_ptr());
         let props = self.props();
         for (name, field) in [c"fd", c"domain", c"type", c"protocol"]
             .into_iter()
@@ -125,27 +127,25 @@ impl<'a> Sock<'a> {
 
     /// The imported stream's slot.
     fn stream(self) -> *mut zval {
-        self.data()
-            .wrapping_byte_add(offset_of!(Data, stream))
-            .cast()
+        self.data().stream.as_ptr().cast()
     }
 
     /// Whether the object holds an imported stream.
     fn has_stream(self) -> bool {
-        // SAFETY: the live object's initialized stream slot.
-        (unsafe { type_of(self.stream()) }) != IS_UNDEF
+        let stream = self.data().stream.take();
+        let held = stream.kind() != IS_UNDEF;
+        self.data().stream.set(stream);
+        held
     }
 
     /// The slot takes `stream`, which it held none of.
     fn hold_stream(self, stream: Owned) {
-        // SAFETY: the live object's undefined stream slot.
-        unsafe { self.stream().write(stream.into_zval()) };
+        self.data().stream.set(stream);
     }
 
     /// The slot forgets its stream, which closed without releasing it.
     fn forget_stream(self) {
-        // SAFETY: the live object's stream slot.
-        unsafe { self.stream().write(Owned::default().into_zval()) };
+        std::mem::forget(self.data().stream.take());
     }
 }
 

@@ -214,13 +214,13 @@ fn fstat_and_stat() {
         let written = uring::write(&HOST, fd, TEST_STR.as_ptr().cast(), TEST_STR.len(), -1.0);
         assert_eq!(written, TEST_STR.len().cast_signed(), "write");
 
-        assert_eq!(uring::fstat(&HOST, fd, &raw mut statbuf), 0, "fstat");
+        assert_eq!(uring::fstat(&HOST, fd, &mut statbuf), 0, "fstat");
         assert!(statbuf.st_size > 0, "fstat size");
 
         assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
 
         statbuf = mem::zeroed();
-        let result = uring::stat(&HOST, TEST_TMP_FILE.as_ptr(), &raw mut statbuf);
+        let result = uring::stat(&HOST, TEST_TMP_FILE, &mut statbuf);
         assert_eq!(result, 0, "stat");
         assert!(statbuf.st_size > 0, "stat size");
     });

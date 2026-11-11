@@ -258,39 +258,41 @@ fn join(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let mut join = Join {
-        pending: Vec::new(),
-        co,
-        canceled: Rc::new(Cell::new(false)),
-    };
     let own = host::cid(co);
-    let mut failed = false;
+    let mut pending = Vec::new();
     for (_, value) in cids.entries() {
         let cid = value.long();
         if cid == own {
             host::error_ex(E_WARNING, SW_ERROR_WRONG_OPERATION, c"can not join self");
-            failed = true;
-            break;
+            call.set_bool(false);
+            return;
         }
         let Some(ctx) = context::by_cid(cid) else {
             continue;
         };
-        if !ctx.join().is_null() {
+        // Another join's, or this one's for a repeated id.
+        if !ctx.join().is_null() || pending.contains(&ctx) {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
-            failed = true;
-            break;
+            call.set_bool(false);
+            return;
         }
-        ctx.set_join(&raw mut join);
-        join.pending.push(ctx);
+        pending.push(ctx);
     }
-    if failed || join.pending.is_empty() {
-        // Unregister the contexts this call registered.
-        join.forget();
-        if !failed {
-            host::set_last_error(SW_ERROR_INVALID_PARAMS);
-        }
+    if pending.is_empty() {
+        host::set_last_error(SW_ERROR_INVALID_PARAMS);
         call.set_bool(false);
         return;
+    }
+    let mut join = Join {
+        pending,
+        co,
+        canceled: Rc::new(Cell::new(false)),
+    };
+    // Registered only once `pending` is complete: `Join::closed` writes
+    // through this pointer, which a later write to `join` would invalidate.
+    let this = &raw mut join;
+    for ctx in &join.pending {
+        ctx.set_join(this);
     }
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.
