@@ -16,7 +16,6 @@ unsafe extern "C-unwind" {
     // crates/reactor's, on swoole_clean's thread, which owns the signal handlers.
     #[link_name = "_Z19swoole_signal_clearv"]
     safe fn swoole_signal_clear();
-    safe fn swoole_coroutine_is_in() -> u8;
 }
 
 // src/fatal.c.
@@ -51,7 +50,7 @@ extern "C-unwind" fn swoole_init() {
         timer_free: || swoole_rs_timer::swoole_timer_free(),
         event_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
-        coroutine_is_in: || swoole_coroutine_is_in() != 0,
+        coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
     swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
     swoole_rs_ports::register_methods();

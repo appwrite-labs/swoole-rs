@@ -141,7 +141,7 @@ extern "C" fn keep_alive(_: *mut c_void) {}
 
 /// `static void Coroutine::activate()`.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8activateEv")]
-extern "C-unwind" fn activate() {
+pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
         // Coroutine threads share this thread's timer and async threads.
         if !swoole_timer_is_available() {
@@ -164,7 +164,7 @@ extern "C-unwind" fn activate() {
 
 /// `static void Coroutine::deactivate()`.
 #[unsafe(export_name = "_ZN6swoole9Coroutine10deactivateEv")]
-extern "C-unwind" fn deactivate() {
+pub extern "C-unwind" fn deactivate() {
     if build() & THREAD != 0 {
         swr_v1_thread_context_clean();
     }
@@ -181,7 +181,7 @@ extern "C-unwind" fn deactivate() {
 /// # Safety
 /// `co` is a live coroutine.
 #[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
-unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
+pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
     // SAFETY: as the caller promises.
     let canceler = unsafe { (*co).cancel_fn }.cast::<Canceler>();
     if canceler.is_null() {
@@ -215,9 +215,9 @@ unsafe extern "C-unwind" fn resume_canceled(co: *mut c_void, _: *mut c_void) -> 
 /// # Safety
 /// `co` is the running coroutine.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
-unsafe extern "C-unwind" fn yield_ex(co: *mut Coroutine, timeout: f64) -> bool {
+pub unsafe extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
     // SAFETY: as the caller promises.
-    yield_resumed(unsafe { yield_timed(co.cast(), timeout) })
+    yield_resumed(unsafe { yield_timed(co, timeout) })
 }
 
 /// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
@@ -269,7 +269,7 @@ extern "C-unwind" fn print_list() {
 /// # Safety
 /// `event` is a NUL-terminated string.
 #[unsafe(export_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl")]
-unsafe extern "C-unwind" fn print_socket_bound_error(
+pub unsafe extern "C-unwind" fn print_socket_bound_error(
     fd: c_int,
     event: *const c_char,
     bound_cid: c_long,
@@ -331,7 +331,8 @@ extern "C" fn swoole_coroutine_get(cid: c_long) -> *mut c_void {
 
 /// `size_t swoole_coroutine_count()`, for gdb.
 #[unsafe(export_name = "_Z22swoole_coroutine_countv")]
-extern "C" fn swoole_coroutine_count() -> usize {
+#[must_use]
+pub extern "C" fn swoole_coroutine_count() -> usize {
     with_scheduler(|s| s.count())
 }
 

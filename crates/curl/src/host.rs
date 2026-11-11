@@ -22,12 +22,6 @@ const EVENT_ERROR: c_int = 1 << 11;
 const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
-// SAFETY: crates/coroutine's upstream function.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-    fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
-}
-
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
 /// socket whose object is a [`crate::Socket`].
 extern "C" fn on_event<const BITMASK: c_int>(
@@ -174,7 +168,7 @@ pub(crate) fn current() -> *mut c_void {
 /// `co` is the running coroutine; the caller's frames own nothing with a destructor.
 pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
     // SAFETY: per the caller.
-    unsafe { coroutine_yield_ex(co, timeout) };
+    unsafe { swoole_rs_coroutine::yield_ex(co, timeout) };
     // SAFETY: a facade starts with its Rust state, and `co` runs again.
     unsafe { (*co.cast::<Coroutine>()).resume_code == RC_CANCELED }
 }
