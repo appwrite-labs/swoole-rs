@@ -115,16 +115,19 @@ well each part works is what the tests above show.
 - **Timers and the event loop.** `Swoole\Timer` and `Swoole\Event`.
 - **Threads.** `Swoole\Thread` on a thread-safe PHP.
 
-Optional parts are build switches, named as upstream's `configure` names them:
+Optional parts are build switches. Each of upstream's `configure` switches goes in its own
+`--configure=`:
 
 | Switch | Adds |
 | --- | --- |
 | `--php-sockets` | PHP sockets integration |
 | `--configure=--enable-swoole-curl` | the native cURL hook |
-| `--configure=--enable-swoole-pgsql`, `--enable-swoole-sqlite`, `--with-swoole-odbc`, `--with-swoole-oracle`, `--with-swoole-firebird` | coroutine PDO drivers |
+| `--configure=--enable-swoole-pgsql`, `--configure=--enable-swoole-sqlite`, `--configure=--with-swoole-firebird` | coroutine PDO drivers for PostgreSQL, SQLite and Firebird |
+| `--configure=--with-swoole-odbc=unixODBC,/usr` | the coroutine PDO ODBC driver |
+| `--configure=--with-swoole-oracle=instantclient,/usr/local/instantclient` | the coroutine PDO Oracle driver |
 | `--configure=--with-swoole-ssh2` | the ssh2 hook |
 | `--configure=--enable-cares` | c-ares for DNS |
-| `--configure=--enable-iouring`, `--enable-uring-socket` | io_uring file and socket I/O |
+| `--configure=--enable-iouring`, `--configure=--enable-uring-socket` | io_uring file and socket I/O |
 | `--configure=--enable-swoole-thread` | `Swoole\Thread` (needs thread-safe PHP) |
 | `--stdext` | upstream's experimental stdext |
 | `--fix-halfclose` | see below |
