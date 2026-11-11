@@ -295,10 +295,7 @@ pub extern "C" fn swoole_signal_get_listener_num() -> u32 {
 }
 
 /// `void swoole_signal_clear()`.
-///
-/// # Safety
-/// On the thread that owns the signal handlers.
 #[unsafe(export_name = "_Z19swoole_signal_clearv")]
-pub unsafe extern "C" fn swoole_signal_clear() {
+pub extern "C" fn swoole_signal_clear() {
     signal_loop::clear(&OPS);
 }

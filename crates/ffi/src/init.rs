@@ -39,7 +39,7 @@ extern "C-unwind" fn swoole_init() {
         delete_buffer: || BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose()),
         delete_pool: pool::delete,
         logger: swoole_rs_process::methods::logger_op,
-        signal_clear: swoole_rs_reactor::signal_upstream::swoole_signal_clear,
+        signal_clear: || swoole_rs_reactor::signal_upstream::swoole_signal_clear(),
         timer_free: || swoole_rs_timer::swoole_timer_free(),
         event_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),

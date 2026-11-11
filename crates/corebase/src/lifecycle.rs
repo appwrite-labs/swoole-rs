@@ -213,8 +213,7 @@ pub extern "C" fn swoole_is_main_thread() -> bool {
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
     if let Some(host) = native::host() {
-        // SAFETY: shutdown runs on the thread that owns the signal handlers.
-        unsafe { (host.signal_clear)() };
+        (host.signal_clear)();
         swoole_thread_clean(true);
         (host.logger)(native::LOGGER_CLOSE);
         (host.logger)(native::LOGGER_DELETE);
@@ -282,8 +281,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     } else {
         (host.logger)(native::LOGGER_CLOSE);
     }
-    // SAFETY: the forked child's only thread, which owns the signal handlers.
-    unsafe { (host.signal_clear)() };
+    (host.signal_clear)();
     crate::signal_mask::restore_after_fork(&previous, true);
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
         // SAFETY: the after-fork hooks take no argument.
@@ -369,7 +367,7 @@ mod tests {
     }
 
     /// The reset unblocks SIGUSR1, as signalfd's does.
-    extern "C" fn signal_clear() {
+    fn signal_clear() {
         signal(libc::SIGTERM, libc::SIG_DFL);
         change(libc::SIG_UNBLOCK, libc::SIGUSR1);
     }
