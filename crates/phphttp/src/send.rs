@@ -1,11 +1,12 @@
 //! `Context::end`, `write`, `send_trailer` and `send_file`: the HTTP/1
-//! response over the server's or the coroutine socket's send, which C++ lends
-//! (`swr_http_host_send*`). Chunked writes reuse their context's buffer; whole
+//! response over the server's or the coroutine socket's send
+//! (`context::send`). Chunked writes reuse their context's buffer; whole
 //! responses lease the header buffer across IO. The HTTP/2 server's
 //! own `end`, `write` and `send_file` stay the http2 module's.
 //!
-//! Host calls never run while Rust holds a reference into the context: C++
-//! writes some of the same fields (`keepalive`), so each step re-borrows it.
+//! Host calls never run while Rust holds a reference into the context: a send
+//! may yield to coroutines that reach the same context through its objects, so
+//! each step re-borrows it.
 use crate::{
     context, header,
     host::{self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD},
