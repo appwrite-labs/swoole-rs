@@ -101,6 +101,10 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_http2_client_coro/connect_twice.phpt':
         "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
         'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986)',
+        'tests/swoole_server/dispatch_mode_9.phpt':
+        "it asserts the standard deviation of per-worker request counts is below 5, which the "
+        "scheduler's interleaving decides: in 258 merge-tier runs on 11-11 the first run missed "
+        'the bound on upstream 36 times (14%) and on cargo 6 times (2%) (#3003)',
         'tests/swoole_curl/close_before_resume.phpt':
         "the expected Swoole\\Error is fatal_error(), which exits 255 without PHP's shutdown "
         "functions, so ProcessManager never kills its SWOOLE_PROCESS server; the orphaned server "
