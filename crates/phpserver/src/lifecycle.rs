@@ -574,7 +574,7 @@ impl Props<'static> {
     }
 
     /// A Server object, under its own class.
-    fn own(object: ServerObject) -> Self {
+    pub(crate) fn own(object: ServerObject) -> Self {
         Self(object.class(), object.raw(), PhantomData)
     }
 }

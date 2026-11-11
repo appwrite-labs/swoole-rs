@@ -13,7 +13,7 @@ use swoole_rs_phpthread::Arguments;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
-    Props, Value,
+    Value,
     bailout::{self, Bailout},
     kind,
     string::bytes,
@@ -127,9 +127,7 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
         if !path.is_null() {
             // SAFETY: the request's NUL-terminated script.
             let path = unsafe { CStr::from_ptr(path) };
-            // SAFETY: the object and its class.
-            unsafe { Props::new(object.class(), object.raw()) }
-                .bytes(c"bootstrap", path.to_bytes());
+            crate::lifecycle::Props::own(object).bytes(c"bootstrap", path.to_bytes());
         }
     }
     let script = string_of(slot);

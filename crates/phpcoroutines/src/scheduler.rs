@@ -8,7 +8,7 @@ use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
     Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray, Parsed,
     bailout::{self, Bailout},
-    class_name, kind, message,
+    kind, message,
     sys::{
         IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         swr_zend_callable, zend_array, zend_array_destroy, zend_array_dup, zend_class_entry,
@@ -120,8 +120,7 @@ fn this(call: &Call) -> &'static mut Scheduler {
 
 /// The "scheduler is running/started, unable to execute %s->%s" warning.
 fn refuse(call: &Call, state: &str, method: &str) {
-    // SAFETY: `$this` is live.
-    let class = unsafe { class_name(call.this()) };
+    let class = call.class_name().unwrap_or_default();
     let text = message!(
         "scheduler is {state}, unable to execute {}->{method}",
         class.to_string_lossy()
