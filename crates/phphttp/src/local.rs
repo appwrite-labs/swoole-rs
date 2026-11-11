@@ -31,14 +31,14 @@ impl<T> Process<std::cell::RefCell<T>> {
 }
 
 #[cfg(not(any(zts, panic = "unwind")))]
-impl<T: Copy> Process<std::cell::Cell<T>> {
-    pub(crate) fn get(&self) -> T {
-        self.0.get()
+impl<T> Process<std::cell::Cell<T>> {
+    pub(crate) fn take(&self) -> T
+    where
+        T: Default,
+    {
+        self.0.take()
     }
     pub(crate) fn set(&self, value: T) {
         self.0.set(value);
-    }
-    pub(crate) fn replace(&self, value: T) -> T {
-        self.0.replace(value)
     }
 }

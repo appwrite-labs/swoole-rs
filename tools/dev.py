@@ -61,6 +61,9 @@ def require_frozen_source(expected):
 SHARED_PATHS = ('crates/ffi/', 'crates/ext/', 'native/include/', 'native/swoole-src/', 'native/halfclose/',
                 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/',
                 'tools/build_ext.py', 'tools/build_upstream.py', 'migration/modules.json')
+# Every PHP class reads and writes zvals through these, so a change here runs every PHPT family,
+# though only its consumers' gates (#3044).
+ZVAL_PATHS = ('crates/zend/', 'crates/zend-sys/', 'crates/phpswoole/', 'crates/phpstubs/')
 
 
 def dependents():
@@ -81,7 +84,8 @@ def dependents():
 def changed_modules(base, consumers=True):
     """Modules whose owned paths the diff from BASE touches, and (with CONSUMERS) the modules
     owning a package that depends on a changed crate: their gates call its exports, so they
-    catch one removed or renamed (#2236). Shared build inputs select every module."""
+    catch one removed or renamed (#2236). Shared build inputs select every module, and so,
+    without CONSUMERS (for the PHPT families), do ZVAL_PATHS."""
     names = {module_id: name for name, (module_id, _) in MODULES.items()}
     owners = [(path, names.get(module['id'])) for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
               for path in module['owned_paths']]
@@ -89,7 +93,7 @@ def changed_modules(base, consumers=True):
     users = dependents()
     selected = set()
     for path in subprocess.check_output(['git', 'diff', '--name-only', base + '...HEAD'], cwd=ROOT, text=True).split():
-        if not owner(path) and path.startswith(SHARED_PATHS):
+        if not owner(path) and path.startswith(SHARED_PATHS) or not consumers and path.startswith(ZVAL_PATHS):
             return sorted(MODULES)
         selected |= {owner(path)} | {owner(package) for crate, packages in users.items()
                                      if consumers and path.startswith(crate) for package in packages}
@@ -204,6 +208,7 @@ def plan(args, reports):
                    '--archive', archive, *report(name))
         pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
+        pytest('http-header-reentry', 'tests/modules/http/test_header_reentry.py', *php, '--engine', f'cargo={cargo}')
     if 'locks' in modules:
         script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, '--sanitize', *report('locks-native'))
@@ -438,9 +443,10 @@ def plan(args, reports):
     if args.case and not integrate:
         script('phpt', 'corpus/upstream/run.py', *php, *engines, '--jobs', args.jobs,
                *[arg for case in args.case for arg in ['--case', case]], '--require-all', *network, *report('phpt'))
-    elif not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES):
+    elif (not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES)
+          and getattr(args, 'phpt_module', None) != sorted(MODULES)):
         # The original PHPT families of the chosen modules, gated on upstream like the merge
-        # tier's phpt jobs, which run every family (and so cover a change to all modules).
+        # tier's phpt jobs, which run every family (and so cover a change to all modules or ZVAL_PATHS).
         # Only the modules a change touches: a consumer's families can't change outcome
         # without its own code changing, and every family together overruns the phase cap.
         # An empty list (only consumers changed) means no families, not a fallback.

@@ -59,26 +59,11 @@ int sw_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 #include <functional>
 #include <string>
 namespace swoole {
-/* The name resolvers' types. The list is crates/corebase/src/name_resolver.rs
- * (swr_v1_core_name_resolver_*), as is this Context's layout. */
+/* The name resolvers' types. The list and the Context, which native code only
+ * points to, are crates/corebase/src/name_resolver.rs (swr_v1_core_name_resolver_*). */
 struct NameResolver {
-    enum Type { TYPE_KERNEL, TYPE_PHP, TYPE_USER };
-    struct Context {
-        int type;
-        double timeout;
-        void *private_data;
-        bool with_port;
-        bool cluster_;
-        bool final_;
-        void (*dtor)(Context *ctx);
-        ~Context() {
-            if (private_data && dtor) dtor(this);
-        }
-    };
+    struct Context;
 };
-static_assert(sizeof(NameResolver::Context) == 40 && offsetof(NameResolver::Context, final_) == 26 &&
-                  offsetof(NameResolver::Context, dtor) == 32,
-              "crates/corebase/src/name_resolver.rs mirrors NameResolver::Context");
 }  // namespace swoole
 /* Upstream's error and log API under its C++ symbols: Rust's (crates/error,
  * crates/utilities, crates/corebase). */

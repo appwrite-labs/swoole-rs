@@ -490,10 +490,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
         headers.add(b"server", b"swoole-http-server");
     }
     if missing & MISSING_DATE != 0 {
-        let date = swoole_rs_phphttp::http2::date();
-        // SAFETY: the cached date string.
-        let date = unsafe { string::bytes(date) };
-        headers.add(b"date", date);
+        swoole_rs_phphttp::http2::date(|date| headers.add(b"date", date));
     }
     if missing & MISSING_CONTENT_TYPE != 0 {
         headers.add(b"content-type", b"text/html");
