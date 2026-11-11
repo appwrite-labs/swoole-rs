@@ -6,6 +6,16 @@
 [![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/issues/1902)
 [![crates/ line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fcoverage.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)
 
+[![Miri](https://github.com/appwrite-labs/swoole-rs/actions/workflows/miri.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/miri.yml?query=branch%3Amain+event%3Aschedule)
+[![AddressSanitizer](https://github.com/appwrite-labs/swoole-rs/actions/workflows/asan.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/asan.yml?query=branch%3Amain+event%3Aschedule)
+[![ThreadSanitizer](https://github.com/appwrite-labs/swoole-rs/actions/workflows/tsan.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/tsan.yml?query=branch%3Amain+event%3Aschedule)
+[![Fuzzing](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml?query=branch%3Amain+event%3Aschedule)
+[![API fuzz](https://github.com/appwrite-labs/swoole-rs/actions/workflows/api-fuzz.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/api-fuzz.yml?query=branch%3Amain+event%3Aschedule)
+[![WebSocket RFC conformance](https://github.com/appwrite-labs/swoole-rs/actions/workflows/conformance.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/conformance.yml?query=branch%3Amain+event%3Aschedule)
+[![Soak](https://github.com/appwrite-labs/swoole-rs/actions/workflows/soak.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/soak.yml?query=branch%3Amain+event%3Aschedule)
+[![PHP versions](https://github.com/appwrite-labs/swoole-rs/actions/workflows/php-versions.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/php-versions.yml?query=branch%3Amain+event%3Aschedule)
+[![Debug PHP](https://github.com/appwrite-labs/swoole-rs/actions/workflows/debug.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/debug.yml?query=branch%3Amain+event%3Aschedule)
+
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 5 are done and nothing is
 compiled from upstream; open are [dropping upstream from the build](https://github.com/appwrite-labs/swoole-rs/issues/1921),
 [faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
@@ -19,6 +29,10 @@ fails a PR that raises any crate's count above `main`'s (`crates/zend`'s unsafe 
 [Data layout](docs/migration.md#data-layout) the same way. The coverage badge counts lines of `crates/` the Cargo build ran under
 the PHPT corpus, the corpus apps and swoole/library's suite (`tools/coverage.py`, nightly), and links
 to the per-crate table and the entry points no run reached.
+The second row is each nightly verification workflow's latest scheduled run on `main`: Miri
+over the crates' tests, the AddressSanitizer and ThreadSanitizer builds, ClusterFuzzLite's
+fuzz batch, the API fuzzer, the WebSocket RFC conformance suite, the soak run, the supported
+PHP versions and a debug PHP build.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
 PHP extension. `swoole.so` builds with Cargo alone (`crates/ext`) from Rust and the owned
