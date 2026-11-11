@@ -959,8 +959,8 @@ fn sleep() {
 }
 
 fn sleep_2() {
-    // __LINE__ + TEST_PORT
-    let port = 384 + TEST_PORT;
+    // __LINE__ + TEST_PORT, upstream's line.
+    let port = 385 + TEST_PORT;
     let server_pid = tcp_server(TEST_HOST, port, |_| {
         // SAFETY: usleep(3).
         unsafe { usleep(10000) };
