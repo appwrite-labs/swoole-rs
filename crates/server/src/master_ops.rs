@@ -1703,8 +1703,8 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_MARK_SHUTDOWN => {
-            // The master, which owns the signal handlers.
-            swoole_signal_clear();
+            // SAFETY: the master, which owns the signal handlers.
+            unsafe { swoole_signal_clear() };
             o.gs().start.store(0, SeqCst);
             o.gs().shutdown.store(1, SeqCst);
             0
