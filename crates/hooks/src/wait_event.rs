@@ -35,16 +35,32 @@ pub(crate) struct Waiter {
     revents: Cell<u32>,
 }
 
+/// A waiter's coroutine, which stays parked until this resumes it: `park` takes
+/// a resume still queued when the wait ends otherwise.
+pub(crate) struct Parked(*mut c_void);
+
+impl Parked {
+    #[cfg(test)]
+    pub(crate) fn co(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+impl swoole_rs_reactor::event_api::Deferred for Parked {
+    fn run(self) {
+        // SAFETY: the waiter's coroutine, parked until this deferred resume runs.
+        unsafe { swoole_rs_coroutine::resume(self.0) };
+    }
+
+    fn dispose(self) {}
+}
+
 /// The reactor fired `event` on a waiter's socket: the coroutine to resume
-/// (deferred) on the first event, else null.
-pub(crate) fn event_ready(waiter: &Waiter, event: i32) -> *mut c_void {
+/// (deferred) on the first event.
+pub(crate) fn event_ready(waiter: &Waiter, event: i32) -> Option<Parked> {
     let plan = event_waiter(waiter.revents.get(), event.cast_unsigned());
     waiter.revents.set(plan.revents);
-    if plan.wake {
-        waiter.co
-    } else {
-        core::ptr::null_mut()
-    }
+    plan.wake.then_some(Parked(waiter.co))
 }
 
 /// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
@@ -339,8 +355,8 @@ mod tests {
     }
     /// The reactor fires an error then a read before the deferred resume runs.
     fn fires_error(_: f64) -> i32 {
-        assert_eq!(event_ready(waiter(), ERROR), CO);
-        assert!(event_ready(waiter(), READ).is_null());
+        assert_eq!(event_ready(waiter(), ERROR).map(|co| co.0), Some(CO));
+        assert!(event_ready(waiter(), READ).is_none());
         0
     }
     fn times_out(_: f64) -> i32 {
@@ -360,7 +376,7 @@ mod tests {
             assert_eq!(timeout, 0.0);
             return 0;
         }
-        assert_eq!(event_ready(waiter(), READ), CO);
+        assert_eq!(event_ready(waiter(), READ).map(|co| co.0), Some(CO));
         libc::ETIMEDOUT
     }
 
@@ -424,9 +440,8 @@ mod tests {
                 };
                 let mut wakes = 0;
                 for fired in [event, WRITE] {
-                    let co = event_ready(&waiter, fired);
-                    if !co.is_null() {
-                        assert_eq!(co, CO);
+                    if let Some(co) = event_ready(&waiter, fired) {
+                        assert_eq!(co.0, CO);
                         wakes += 1;
                     }
                 }

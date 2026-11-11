@@ -1101,8 +1101,7 @@ fn shutdown(this: Handle, how: c_int) -> c_int {
         return ERR;
     }
     let fd = this.socket().fd();
-    // SAFETY: shutdown(2) on the client's descriptor.
-    let call = |how| unsafe { libc::shutdown(fd, how) };
+    let call = |how| swoole_rs_corebase::sys::shutdown(fd, how);
     match how {
         libc::SHUT_RD if this.flag(SHUTDOWN_READ) || call(how) != 0 => ERR,
         libc::SHUT_WR if this.flag(SHUTDOWN_WRITE) || call(how) < 0 => ERR,
@@ -1675,19 +1674,8 @@ mod ops {
 
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`.
     pub(super) fn socket_error(this: Handle, error: &mut c_int) -> c_int {
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-        let mut length = size_of::<c_int>() as libc::socklen_t;
         let fd = this.socket().fd();
-        // SAFETY: `error` holds an int and `length` says so.
-        unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                core::ptr::from_mut(error).cast(),
-                &raw mut length,
-            )
-        }
+        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
     }
 }
 
