@@ -105,8 +105,9 @@ pub struct PortConfig {
     /// Rust owner), or null.
     pub ssl_context: *const OwnedTlsContext,
     /// The TLS state crates/ports owns (the SNI contexts and the DTLS sessions);
-    /// `ListenPort`'s destructor releases it with the context.
-    pub tls: *mut c_void,
+    /// `ListenPort`'s destructor releases it with the context. A thin box, as
+    /// native code's mirror holds a `void *` here.
+    pub tls: Option<Box<Box<dyn core::any::Any>>>,
 }
 
 impl PortConfig {
@@ -235,7 +236,7 @@ impl PortConfig {
             protocol: default_protocol(),
             on_read: core::ptr::null_mut(),
             ssl_context: core::ptr::null(),
-            tls: core::ptr::null_mut(),
+            tls: None,
         })
     }
 }

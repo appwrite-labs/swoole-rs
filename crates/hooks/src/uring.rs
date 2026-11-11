@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::{mem, ptr};
 use swoole_rs_corebase::set_errno;
+use swoole_rs_corebase::sys as os;
 
 use swoole_rs_uring_sys as sys;
 
@@ -287,8 +288,7 @@ impl Submitter for Uring {
     }
 
     fn sleep(&mut self) {
-        // SAFETY: usleep(3) has no preconditions.
-        unsafe { libc::usleep(10_000) };
+        os::usleep(10_000);
     }
 
     fn failed(&mut self) {
@@ -734,22 +734,15 @@ fn send_piped(
     size: usize,
     timeout: f64,
 ) -> isize {
-    let mut pipe_fds = [0; 2];
-    // SAFETY: `pipe_fds` has room for two descriptors.
-    if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } < 0 {
+    let Some([read_end, write_end]) = os::pipe() else {
         return -1;
-    }
-    let [read_end, write_end] = pipe_fds;
-    // SAFETY: fcntl(2) on the pipe just created.
-    unsafe { libc::fcntl(write_end, libc::F_SETPIPE_SZ, 1024 * 1024) };
-    // SAFETY: as above.
-    let pipe_size = unsafe { libc::fcntl(read_end, libc::F_GETPIPE_SZ) };
+    };
+    os::fcntl(write_end, libc::F_SETPIPE_SZ, 1024 * 1024);
+    let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0);
     let pipe_size = usize::try_from(pipe_size).unwrap_or(65536);
     let close_pipe = || {
-        // SAFETY: closes the pipe created above, once.
-        unsafe { libc::close(read_end) };
-        // SAFETY: as above.
-        unsafe { libc::close(write_end) };
+        os::close(read_end);
+        os::close(write_end);
     };
     let start = offset.as_deref().copied();
     let mut total_sent = 0_usize;
@@ -902,8 +895,7 @@ pub fn waitpid(
 /// poll(2) of one descriptor; `timeout` 0 polls without the ring.
 pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
     if timeout == 0 {
-        // SAFETY: one live pollfd.
-        return unsafe { libc::poll(pollfd, 1, timeout) };
+        return os::poll(core::slice::from_mut(pollfd), timeout);
     }
     let (descriptor, events) = (pollfd.fd, pollfd.events);
     // SAFETY: the request carries no pointers.

@@ -7,8 +7,8 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_int, c_long, c_void},
     hash::{BuildHasherDefault, DefaultHasher},
-    mem, ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    ptr,
+    sync::OnceLock,
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
@@ -26,17 +26,13 @@ use swoole_rs_zend::{method_table, sys as z};
 
 static COROUTINE: Class = Class::new();
 static ITERATOR: Class = Class::new();
-static CONTEXT: Class = Class::new();
+pub(crate) static CONTEXT: Class = Class::new();
 static EXIT: Class = Class::new();
 static CANCELED: Class = Class::new();
 static TIMEOUT: Class = Class::new();
 
 pub(crate) fn iterator() -> &'static Class {
     &ITERATOR
-}
-
-pub(crate) fn context_class() -> *mut zend_class_entry {
-    CONTEXT.entry()
 }
 
 pub(crate) fn canceled() -> *mut zend_class_entry {
@@ -177,10 +173,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     }
     // SAFETY: MINIT; restored never, as upstream.
     let original = unsafe { swr_zend_coroutine_set_autoload(Some(autoload)) };
-    ORIGINAL_AUTOLOAD.store(
-        original.map_or(ptr::null_mut(), |f| f as *mut c_void),
-        Ordering::Relaxed,
-    );
+    ORIGINAL_AUTOLOAD.get_or_init(|| original);
 
     Ok(())
 }
@@ -333,7 +326,7 @@ extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
 }
 
 /// The autoloader Zend had (`original_zend_autoload`).
-static ORIGINAL_AUTOLOAD: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+static ORIGINAL_AUTOLOAD: OnceLock<swr_zend_autoload_handler> = OnceLock::new();
 
 /// A coroutine waiting for another's autoload of the same class.
 struct Waiter {
@@ -355,9 +348,7 @@ per_thread! {
 
 /// Run Zend's autoloader, trapping its bailouts.
 fn load(name: *mut zend_string, lc_name: *mut zend_string) -> Result<*mut zend_class_entry, ()> {
-    let handler = ORIGINAL_AUTOLOAD.load(Ordering::Relaxed);
-    // SAFETY: stored from a `swr_zend_autoload_handler` at MINIT.
-    let handler = unsafe { mem::transmute::<*mut c_void, swr_zend_autoload_handler>(handler) };
+    let handler = ORIGINAL_AUTOLOAD.get().copied().flatten();
     let mut result = ptr::null_mut();
     // SAFETY: Zend's autoloader, trapped in C.
     if unsafe { swr_zend_autoload_try(handler, name, lc_name, &raw mut result) } != 0 {

@@ -10,7 +10,7 @@ use core::ffi::c_int;
 #[path = "admin_live.rs"]
 mod live;
 #[cfg(not(test))]
-pub use live::swr_v1_server_admin_register;
+pub use live::admin_register;
 
 #[derive(Default)]
 pub(crate) struct Socket {

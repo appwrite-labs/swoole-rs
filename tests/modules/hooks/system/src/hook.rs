@@ -10,7 +10,7 @@ use super::{
     swoole_coroutine_flock, swoole_coroutine_open, swoole_coroutine_read, swoole_coroutine_write,
 };
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_long, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::time::Instant;
 use swoole_rs_hooks::hooked::{
     swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
@@ -188,14 +188,6 @@ unsafe extern "C" {
         pai: *mut *mut AddrInfo,
     ) -> c_int;
     fn swoole_coroutine_gethostbyname(name: *const c_char) -> *mut c_void;
-    pub(super) fn swr_v1_system_gethostbyname(
-        host: *const c_char,
-        length: usize,
-        family: c_long,
-        timeout: f64,
-        put: super::Put,
-        out: *mut c_void,
-    ) -> bool;
 }
 
 unsafe extern "C" {
@@ -519,32 +511,22 @@ fn dir() {
     test_hook_dir();
 }
 
-pub(super) unsafe extern "C" fn put_ip(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: `out` is the caller's String; `data` holds `length` bytes.
-    unsafe {
-        let bytes = std::slice::from_raw_parts(data.cast(), length);
-        *out.cast::<String>() = String::from_utf8(bytes.to_vec()).unwrap();
-    }
+/// `System::gethostbyname(host, domain, timeout)`: "" when there is no address.
+pub(super) fn lookup(host: &CStr, domain: c_int, timeout: f64) -> String {
+    String::from_utf8(swoole_rs_hooks::resolve::system_gethostbyname(
+        host.to_bytes(),
+        domain,
+        timeout,
+    ))
+    .unwrap()
 }
 
 fn test_hook_socket() {
     // SAFETY: socket(2).
     let sock = unsafe { swoole_coroutine_socket(AF_INET, SOCK_STREAM, 0) };
     assert!(sock > 0);
-    let mut ip = String::new();
-    let host = c"www.baidu.com";
     // System::gethostbyname("www.baidu.com", AF_INET, 10)
-    // SAFETY: the host's bytes; `put_ip` writes `ip`, live for the call.
-    unsafe {
-        swr_v1_system_gethostbyname(
-            host.as_ptr(),
-            host.count_bytes(),
-            c_long::from(AF_INET),
-            10.0,
-            put_ip,
-            (&raw mut ip).cast(),
-        )
-    };
+    let ip = lookup(c"www.baidu.com", AF_INET, 10.0);
     // sa.assign(SW_SOCK_TCP, ip, 80)
     let sa = SockAddrIn {
         family: AF_INET as u16,

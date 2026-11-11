@@ -68,9 +68,6 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     });
     let serv = Box::into_raw(object).cast::<c_void>();
     swoole_rs_corebase::swr_v1_core_set_server(serv);
-    swoole_rs_process::workers::factory_methods::set_factory_call(
-        crate::factory_ops::swr_v1_factory_call,
-    );
     swoole_rs_process::workers::entry::set_enter(crate::server_methods::workers_enter);
     serv
 }
@@ -95,10 +92,9 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     {
         crate::server_methods::destroy(serv);
     }
-    let ports = (0..).map(|index| serv.port_at(index));
-    for port in ports.take_while(|port| !port.is_null()) {
+    for port in serv.ports() {
         // SAFETY: a live port, deleted once.
-        unsafe { port_delete(port) };
+        unsafe { port_delete(port.raw()) };
     }
     let object_ptr = serv.raw();
     // SAFETY: the object `swr_v1_server_new` boxed, freed once.

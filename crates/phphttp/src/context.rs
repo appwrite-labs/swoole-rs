@@ -16,7 +16,7 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Object, Owned, Value, init_object,
+    Object, Owned, Value,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset, zend_class_entry,
         zend_object, zend_object_handlers, zend_string, zval, zval_ptr_dtor,
@@ -82,12 +82,12 @@ pub(crate) fn new_object(
     kind: Kind,
     ctx: *mut Context,
 ) -> Option<*mut zend_object> {
-    let ce = match kind {
-        Kind::Request => crate::request::entry(),
-        Kind::Response => crate::response::entry(),
+    let class = match kind {
+        Kind::Request => &crate::request::REQUEST,
+        Kind::Response => &crate::response::RESPONSE,
     };
-    // SAFETY: the context's own zval and a registered class.
-    unsafe { init_object(&raw mut slot.value, ce) };
+    // The context keeps the object's reference.
+    slot.value = class.create_object().into_zval();
     slot.ptr = &raw mut slot.value;
     let std = slot.object()?;
     // SAFETY: one of our objects, laid out as a `Holder`.

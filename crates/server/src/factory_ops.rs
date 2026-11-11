@@ -1,6 +1,6 @@
 //! The process-mode factory's facts and effects (`crates/process/src/workers/factory.rs`'s
 //! `OP_*`) over the server, worker, connection and send records Rust lays out, which
-//! [`swr_v1_factory_call`] answers.
+//! [`run`]'s context answers.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI64, Ordering};
 use swoole_rs_memory::members::Shm;
@@ -39,10 +39,10 @@ use crate::reactor_ops::ThreadRecord;
 use crate::records::{VERIFIED, VERIFIED_TLS};
 use crate::{ConnectionRecord, view};
 
-/// The context crates/process's factory methods run over (its `FactoryContext`).
-#[repr(C)]
-struct Context {
-    serv: *mut c_void,
+/// What a factory operation runs over: the server, and the worker, send and exit
+/// status it reads.
+struct Context<'a> {
+    serv: view::Server<'a>,
     worker: *mut WorkerRecord,
     send: *mut SendData,
     status: *const ExitStatus,
@@ -50,18 +50,11 @@ struct Context {
     fd: c_int,
 }
 
-impl Context {
-    /// The context's live server.
+impl Context<'_> {
     fn server(&self) -> view::Server<'_> {
-        // SAFETY: the method that built the context lent its live server for the call.
-        unsafe { view::Server::from_raw(self.serv) }
+        self.serv
     }
 }
-
-const _: () = assert!(
-    size_of::<Context>() == 48 && core::mem::offset_of!(Context, fd) == 40,
-    "crates/process FactoryContext layout"
-);
 
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
@@ -78,14 +71,13 @@ const DISPATCH_CO_CONN_LB: u8 = 8;
 const EVENT_CLOSE: u8 = 4;
 const PIPE_MASTER: c_int = 1;
 
-/// A `Context` is only ever seen through [`swr_v1_factory_call`], whose caller keeps
-/// its server, and whichever of its worker, send and status the op reads, live for
-/// the call.
+/// Only [`run`] makes a `Context`, whose caller keeps whichever of its worker, send
+/// and status the operation reads live for the call.
 #[expect(
     clippy::mut_from_ref,
     reason = "native records shared with C++, written under the server's own synchronization as workers.cc did"
 )]
-impl Context {
+impl Context<'_> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
@@ -131,9 +123,8 @@ impl Context {
     }
     /// The server's worker registry.
     fn registry(&self) -> &mut swoole_rs_corebase::worker_registry::WorkerRegistry {
-        let registry = self.config().worker_registry.cast();
         // SAFETY: the server's live registry, which only the manager writes.
-        unsafe { &mut *registry }
+        unsafe { self.server().registry_mut() }
     }
     fn slot(&self, index: u32) -> Option<&CallbackSlot> {
         self.state().callbacks.slot(index)
@@ -149,31 +140,49 @@ fn worker_id(arg: u64) -> u16 {
     u16::try_from(arg & 0xffff).unwrap_or_default()
 }
 
-/// Answers factory op `op` with `arg` over the context at `context`.
+/// Runs factory operation `op` (a `RUN_*` of crates/process's `workers::ops`) with
+/// `arg` over `serv` and the worker, send and exit status it reads.
 ///
 /// # Safety
-/// `context` is crates/process's live `FactoryContext`, whose objects the op reads are live:
-/// the ops after `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN` run with its connection.
-/// Only this makes a [`Context`], so the stages below take its proof with it.
-pub(crate) unsafe extern "C-unwind" fn swr_v1_factory_call(
-    context: *mut c_void,
+/// `serv` is a live `Server`, and the worker, send and status `op` reads are live,
+/// for the call.
+pub(crate) unsafe fn run(
+    serv: *mut c_void,
     op: u32,
+    worker: *mut WorkerRecord,
+    send: *mut SendData,
+    status: *const ExitStatus,
     arg: u64,
-) -> u64 {
-    // SAFETY: per the caller; the stages below read the context under this proof.
-    let ctx = unsafe { &mut *context.cast::<Context>() };
-    let answer = fact(ctx, op);
-    let answer = answer.or_else(|| connection(ctx, op, arg));
-    let answer = answer.or_else(|| worker(ctx, op, arg));
-    let answer = answer.or_else(|| server(ctx, op, arg));
-    let answer = answer.or_else(|| native(ctx, op, arg));
-    answer.unwrap_or_else(|| std::process::abort())
+) -> i64 {
+    let mut ctx = Context {
+        // SAFETY: as the caller guarantees.
+        serv: unsafe { view::Server::from_raw(serv) },
+        worker,
+        send,
+        status,
+        conn: core::ptr::null_mut(),
+        fd: 0,
+    };
+    swoole_rs_process::workers::run_over(&mut ctx, op, arg)
+}
+
+/// Each factory op over the objects [`run`]'s caller lent: the ops after
+/// `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN` run with its connection.
+impl swoole_rs_process::workers::Answer for Context<'_> {
+    fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        let answer = fact(self, op);
+        let answer = answer.or_else(|| connection(self, op, arg));
+        let answer = answer.or_else(|| worker(self, op, arg));
+        let answer = answer.or_else(|| server(self, op, arg));
+        let answer = answer.or_else(|| native(self, op, arg));
+        answer.unwrap_or_else(|| std::process::abort())
+    }
 }
 
 /// The reactor threads, barriers, pipes and message box the factory makes and
 /// frees, and its writes to the workers and reactor threads.
 fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
+    let serv = ctx.serv.raw();
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
     let barriers = |init: bool| {
         for (manager, count) in [(false, c_int::from(config.reactor_num) + 1), (true, 2)] {
@@ -281,7 +290,7 @@ fn fact(ctx: &Context, op: u32) -> Option<u64> {
 /// The connection the data sent is for: selected by `OP_SEND_CONN_ACTIVE` or
 /// `OP_SESSION_CONN`, then read and updated by the ops after them.
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
+    let serv = ctx.serv.raw();
     match op {
         OP_SCHEDULE_WORKER => {
             // The task's info.fd is the real fd, not the session id; dispatch converts it.
@@ -400,7 +409,7 @@ fn low32(value: u64) -> u32 {
 
 /// Forking, registering and running event and user workers.
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
+    let (serv, worker) = (ctx.serv.raw(), ctx.worker);
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
     let int = c_int::from_ne_bytes(low32(arg).to_ne_bytes());
     let pid = int;
@@ -479,7 +488,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 /// The server's setup and teardown: connections, the manager and the task workers.
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
+    let serv = ctx.serv.raw();
     let (tables, config) = (ctx.tables(), ctx.config());
     let gs = ctx.server().counters();
     let task_worker_pid = || {

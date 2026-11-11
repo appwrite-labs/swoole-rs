@@ -2,32 +2,19 @@
 //! base-mode reactor processes (upstream's `src/server/reactor_process.cc`), task workers
 //! (upstream's `src/server/task_worker.cc`), the manager (upstream's `src/server/manager.cc`) and the
 //! process-mode factory (upstream's `src/server/process.cc`), and thread mode
-//! (upstream's `src/server/thread.cc`). Native code keeps
+//! (upstream's `src/server/thread.cc`). crates/server keeps
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
-//! runs each operation and asks native code for each fact or effect through one
-//! `call(context, op, arg)`, reading facts afresh.
-use core::ffi::c_void;
-
+//! runs each operation and asks crates/server for each fact or effect through its
+//! context's [`Answer`], reading facts afresh.
 pub mod entry;
 mod event_worker;
 mod factory;
-pub mod factory_methods;
 mod log;
 mod manager;
 pub mod ops;
 mod reactor_process;
 mod task_worker;
 pub mod thread;
-
-/// One native fact or effect in `context`.
-///
-/// Effects run native callbacks (`onUserWorkerStart`, `onBeforeReload`, ...). A
-/// PHP bailout longjmps over these frames to the PHP entry's `zend_try`, as it does
-/// over upstream's C++ frames. A C++ exception has no first-party handler above
-/// `Server::start` upstream, so it terminates the process; `C-unwind` makes that
-/// defined here: under `panic = "abort"` it aborts at this call instead of
-/// unwinding a `C` frame.
-pub type WorkersCall = unsafe extern "C-unwind" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
 
 pub(crate) const SW_OK: i64 = 0;
 pub(crate) const SW_ERR: i64 = -1;
@@ -95,23 +82,6 @@ pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) ->
     event_worker::run(&mut Over(context), operation, arg)
 }
 
-struct Native {
-    context: *mut c_void,
-    call: WorkersCall,
-}
-
-impl Host for Native {
-    fn op(&mut self, op: u32, arg: u64) -> u64 {
-        // Unit tests link no upstream objects, so native does these ops there.
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        if let Some(result) = effect(op) {
-            return result;
-        }
-        // SAFETY: a native fact or effect on the live objects in `context`.
-        unsafe { (self.call)(self.context, op, arg) }
-    }
-}
-
 /// The `OP_*` facts and effects over thread- and process-wide state (the event
 /// loop, the timer, the last error, the worker globals) rather than the objects
 /// in a context. They mean the same in every context, so Rust does them; `None`
@@ -119,7 +89,7 @@ impl Host for Native {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 fn effect(op: u32) -> Option<u64> {
-    use core::ffi::c_int;
+    use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::log::{last_error, set_last_error};
     // SAFETY: crates/reactor's and crates/timer's functions, under their upstream
     // symbols. Declarations, since crates/reactor (and through it crates/timer)
@@ -230,18 +200,6 @@ fn effect(op: u32) -> Option<u64> {
 
 /// Runs one worker-side operation (`ops::RUN_*`) with `arg`; the result is the
 /// operation's return value as upstream's C++ function returns it.
-///
-/// # Safety
-/// `call` acts on the objects in `context`, live for the call.
-pub unsafe fn workers_run(
-    operation: u32,
-    arg: u64,
-    context: *mut c_void,
-    call: WorkersCall,
-) -> i64 {
-    run(&mut Native { context, call }, operation, arg)
-}
-
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
     match operation {
         ops::RUN_REACTOR_PROCESS_START
