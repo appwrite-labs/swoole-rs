@@ -430,11 +430,9 @@ fn wait_for(call: &Call, pid: c_long, timeout: f64) {
     host::current_safe();
     let mut status = 0;
     let pid = c_long::from(if pid < 0 {
-        // SAFETY: waits in the running coroutine.
-        unsafe { system_wait(&raw mut status, timeout) }
+        system_wait(&mut status, timeout)
     } else {
-        // SAFETY: as above.
-        unsafe { system_waitpid(int(pid), &raw mut status, 0, timeout) }
+        system_waitpid(int(pid), &mut status, 0, timeout)
     });
     if pid <= 0 {
         call.set_bool(false);
