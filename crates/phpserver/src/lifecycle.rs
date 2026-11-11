@@ -809,7 +809,7 @@ fn add_process(call: &Call) {
     put(serv, install::USER_WORKER_START);
     // A copy holding its own reference, as upstream.
     let copy = Box::new(process.copy());
-    let (zcopy, object) = (copy.as_ptr(), copy.object());
+    let zcopy = copy.as_ptr();
     // The box keeps the copy where the worker's user data points.
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
     match add_worker(serv, zcopy) {
@@ -823,9 +823,9 @@ fn add_process(call: &Call) {
             call.set_bool(false);
         }
         id => {
-            if let Some(object) = object {
-                // SAFETY: `Swoole\Process` and its live object, which the copy holds.
-                unsafe { swoole_rs_zend::Props::new(process_class(), object) }.long(c"id", id);
+            // The process object, which the copy holds too.
+            if let Some(props) = process.props(Some(swoole_rs_phpprocess::process_class())) {
+                props.long(c"id", id);
             }
             call.set_long(id);
         }
