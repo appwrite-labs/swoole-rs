@@ -44,7 +44,7 @@ const fn fresh() -> Scheduler {
             bailout_data: ptr::null_mut(),
             clock: None,
         },
-        live: ptr::null_mut(),
+        live: None,
         cursor: c_long::MAX,
         activated: false,
         bailout: false,

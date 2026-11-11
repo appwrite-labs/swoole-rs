@@ -6,6 +6,7 @@
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{
+    cell::UnsafeCell,
     ffi::{c_int, c_void},
     mem::{self, ManuallyDrop},
     ptr,
@@ -116,28 +117,21 @@ pub(crate) use native::swoole_name_resolver_context_reset;
 /// `struct ContextObject { NameResolver::Context *context; zend_object std; }`. The
 /// context is boxed and reached through its pointer: a lookup keeps using it across
 /// PHP code, which may run `__construct` on the same object.
-struct Held(*mut NameResolverContext);
+struct Held(Box<UnsafeCell<NameResolverContext>>);
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
         &CONTEXT
     }
     fn new() -> Self {
-        Self(Box::into_raw(Box::default()))
-    }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        // SAFETY: the box `new` made, dropped once, with its object.
-        drop(unsafe { Box::from_raw(self.0) });
+        Self(Box::default())
     }
 }
 
 /// `swoole_name_resolver_context_get_object_safe`: the object's context, or
 /// Swoole's fatal error.
 fn context_of(held: Option<&Held>) -> Option<*mut NameResolverContext> {
-    let context = held.map(|held| held.0);
+    let context = held.map(|held| held.0.get());
     if context.is_none() {
         // SAFETY: C++'s fatal-error report.
         unsafe { crate::native::unconstructed() };

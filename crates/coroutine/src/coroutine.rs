@@ -115,7 +115,7 @@ pub struct Scheduler {
     pub on_close: SwapCallback,
     pub hooks: Hooks,
     /// The live coroutines, null until the first registers.
-    pub live: *mut crate::live::Live,
+    pub live: Option<Box<crate::live::Live>>,
     /// Where `swoole_coroutine_iterator_each` (gdb's walk) resumes.
     pub cursor: c_long,
     pub activated: bool,
@@ -594,7 +594,7 @@ pub(crate) mod tests {
                 bailout_data: ptr::null_mut(),
                 clock: None,
             },
-            live: ptr::null_mut(),
+            live: None,
             cursor: 0,
             activated: false,
             bailout: false,
@@ -643,7 +643,7 @@ pub(crate) mod tests {
         }
         s.remove(c_long::MIN);
         s.set_active(false);
-        assert!(s.live.is_null() && s.bailout);
+        assert!(s.live.is_none() && s.bailout);
     }
 
     #[test]
