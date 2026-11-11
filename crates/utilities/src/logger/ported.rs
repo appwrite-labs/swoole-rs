@@ -62,7 +62,7 @@ fn sw_logger() -> &'static Logger {
 }
 
 fn put(logger: &Logger, level: c_int, text: &str) {
-    logger.put(level, text.as_ptr(), text.len());
+    logger.put(level, text.as_bytes());
 }
 
 fn open(logger: &Logger, file: &CStr) -> bool {

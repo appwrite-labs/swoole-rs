@@ -76,15 +76,7 @@ static ERROR: Class = Class::new();
 /// `sw_logger()->put(level, message)`; nothing before MINIT creates the logger.
 fn log_put(level: c_int, message: &[u8]) {
     if let Some(logger) = swoole_rs_utilities::process_logger() {
-        // SAFETY: the live process logger, with the message's bytes.
-        unsafe {
-            swoole_rs_utilities::swr_v1_logger_put(
-                logger,
-                level,
-                message.as_ptr().cast(),
-                message.len(),
-            );
-        }
+        logger.put(level, message);
     }
 }
 
