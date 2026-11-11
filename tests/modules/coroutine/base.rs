@@ -16,7 +16,7 @@ use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
     swoole_coroutine_lseek, swoole_coroutine_usleep,
 };
-use super::os::{AsyncEvent, async_dispatch, count_handle};
+use super::os::{AsyncEvent, count_handle, dispatch, new_event};
 use super::{
     _exit, coroutine_cancel, fork, last_error, swoole_coroutine_close, swoole_coroutine_create,
     swoole_coroutine_get, swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read,
@@ -626,7 +626,7 @@ fn bailout_() {
     assert_eq!(wexitstatus(status), 0);
 }
 
-extern "C" fn ignore(_: *mut AsyncEvent) {}
+extern "C" fn ignore(_: &AsyncEvent) {}
 
 fn undefined_behavior() {
     let status = spawn_exec_and_wait(|| {
@@ -640,16 +640,15 @@ fn undefined_behavior() {
 
     let status = spawn_exec_and_wait(|| {
         let handle_count = AtomicI32::new(0);
-        let event = AsyncEvent::new(
+        let event = new_event(
             (&raw const handle_count).cast_mut().cast(),
             Some(count_handle),
             Some(ignore),
         );
 
-        // SAFETY: the event loop, then a pool task over the live counter.
+        // SAFETY: a fresh event loop on this thread.
         unsafe { swoole_event_init(0) };
-        // SAFETY: as above.
-        let ret = unsafe { async_dispatch(&event) };
+        let ret = dispatch(&event);
         assert!(!ret.is_null());
         // SAFETY: swoole_fork after async threads, the behaviour under test.
         let _ = unsafe { swoole_fork(0) };

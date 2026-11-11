@@ -18,7 +18,8 @@ Event tokens are `AsyncEvent` pointers the pool never dereferences. Its hooks
 (`PoolHooks`) are `crates/hooks/src/async_threads.rs`, which is also `AsyncThreads`
 and `async::dispatch` (under its upstream symbol; `Co::stats()` reads the counts
 through `swr_v1_async_threads_stats`): `execute` runs the handler
-(missing handler wins over canceled) and writes the event to its pipe; `retire`
+over a copy (missing handler wins over canceled; the dispatcher may set `canceled`,
+atomically, meanwhile), keeps its `error` and `retval`, and writes the event to its pipe; `retire`
 sends the idle worker's key to the default pipe, whose callback joins it with
 `Pool::join`. `pool::complete` reads up to 128 tokens from the
 reactor's end of the pipe and hands each to the completion callback. Each pool
