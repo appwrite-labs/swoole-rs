@@ -33,7 +33,7 @@ struct SignalOps {
     /// The reactor exit condition and `signal_async_listener_num++` (true), or `--`.
     waiting: fn(bool),
     /// `co->yield_ex(timeout)`: false on timeout or cancellation.
-    yield_for: fn(*mut c_void, f64) -> bool,
+    yield_for: fn(f64) -> bool,
     /// `co->resume()`.
     resume: fn(*mut c_void),
 }
@@ -136,7 +136,7 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
     }
     (ops.waiting)(true);
     // The handler writes `waiting` while this frame is parked here.
-    let woken = (ops.yield_for)(co, timeout);
+    let woken = (ops.yield_for)(timeout);
     for signo in signals {
         let Some((index, slot)) = slot(signo) else {
             continue;
@@ -163,7 +163,7 @@ static NATIVE: SignalOps = SignalOps {
     busy: native::busy,
     listen: native::listen,
     waiting: native::waiting,
-    yield_for: native::yield_for,
+    yield_for: crate::resolve::park_for,
     resume: crate::poll::native::resume,
 };
 
@@ -188,11 +188,6 @@ mod native {
     /// A non-coroutine signal listener exists.
     pub(super) fn busy() -> bool {
         swr_v1_core_signal_listener_num() > 0
-    }
-
-    pub(super) fn yield_for(co: *mut c_void, timeout: f64) -> bool {
-        // SAFETY: the current coroutine, parking for a wait.
-        unsafe { crate::wait_event::native::coroutine_yield_ex(co.cast(), timeout) }
     }
 
     /// A signal change: register `previous` (non-null), or put `handler` back.
@@ -300,12 +295,12 @@ mod tests {
         log(format!("waiting {on}"));
     }
     /// Stands in for a park during which SIGUSR2 arrives.
-    fn signalled(_: *mut c_void, _: f64) -> bool {
+    fn signalled(_: f64) -> bool {
         swr_v1_hook_signal_wake(libc::SIGUSR2);
         swr_v1_hook_signal_wake(libc::SIGUSR2);
         true
     }
-    fn timed_out(_: *mut c_void, _: f64) -> bool {
+    fn timed_out(_: f64) -> bool {
         false
     }
     fn resume(_: *mut c_void) {
@@ -314,7 +309,7 @@ mod tests {
 
     pub(super) const OPS: SignalOps = ops(idle, timed_out);
 
-    const fn ops(busy_check: fn() -> bool, park: fn(*mut c_void, f64) -> bool) -> SignalOps {
+    const fn ops(busy_check: fn() -> bool, park: fn(f64) -> bool) -> SignalOps {
         SignalOps {
             current,
             busy: busy_check,
