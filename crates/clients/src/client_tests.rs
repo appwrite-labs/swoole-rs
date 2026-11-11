@@ -216,11 +216,9 @@ pub(super) unsafe fn swoole_timer_del(_: *mut c_void) -> bool {
     true
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
-pub(super) unsafe extern "C" fn async_dispatch(event: *const c_void) -> *mut c_void {
+pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
     // SAFETY: a complete event over a live request.
-    let view = swoole_rs_corebase::swr_v1_core_resolver_view(unsafe {
-        &*(*event.cast::<AsyncEvent>()).data
-    });
+    let view = swoole_rs_corebase::swr_v1_core_resolver_view(unsafe { &*event.data });
     // SAFETY: the request's name, live with it.
     let name = unsafe { &*view.name }.bytes();
     // SAFETY: the request's fields, live with it.

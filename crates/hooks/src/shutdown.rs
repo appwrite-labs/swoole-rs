@@ -102,8 +102,7 @@ impl SocketState {
 
 /// `shutdown(2)`, which reports failure through errno.
 pub(crate) fn sys_shutdown(fd: i32, how: i32) -> i32 {
-    // SAFETY: shutdown(2) takes no pointers.
-    unsafe { libc::shutdown(fd, how) }
+    swoole_rs_corebase::sys::shutdown(fd, how)
 }
 
 /// `Socket::shutdown(how)` after `set_err(0)`: 0 on success, otherwise the error
