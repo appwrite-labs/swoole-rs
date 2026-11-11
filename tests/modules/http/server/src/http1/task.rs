@@ -40,6 +40,8 @@ const TASK_NOREPLY: u16 = 1 << 7;
 const PIPE_MASTER: c_int = 1;
 const PIPE_NONBLOCK: c_int = 2;
 const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
+/// glibc's value (the case binary is Linux's).
+const SIGIO: c_int = 29;
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 const TEST_COUNTER_NUM: usize = 32;
 const IPC_MAX_SIZE: usize = SW_IPC_MAX_SIZE as usize;
@@ -1137,6 +1139,237 @@ fn task_ipc_queue_5() {
     test_task_ipc(serv);
 }
 
+/// `ListenPort::get_connection_num()` of the primary port.
+fn primary_port_connection_num(serv: Server) -> usize {
+    // SAFETY: the running server's primary port.
+    unsafe { serv.view().port_connection_num(serv.get_primary_port().0) }
+}
+
+/// `serv.get_event_worker_pool()->read_message`: the event pool follows the task pool,
+/// as crates/server's `master_ops` lays them out. The master's SIGIO handler sets it,
+/// so it is read anew each time.
+fn event_pool_read_message(serv: Server) -> bool {
+    let pool = serv.task_pool().wrapping_add(1);
+    // SAFETY: the running server's event pool, in its shared counters.
+    unsafe { ptr::read_volatile(&raw const (*pool).read_message) }
+}
+
+/// `onStart` of `thread` and `task_thread`: unlocks the client thread's `lock`.
+unsafe extern "C" fn unlock_on_start(_: *mut c_void, _: *mut c_void) {
+    shared().unlocked.store(true, Ordering::SeqCst);
+}
+
+/// The client thread's `lock.lock()`, which `onStart` unlocks.
+fn lock_wait() {
+    while !shared().unlocked.load(Ordering::SeqCst) {
+        sleep_us(1000);
+    }
+}
+
+/// `string("Server: ") + string(packet)`.
+fn server_response() -> Vec<u8> {
+    [b"Server: ".as_slice(), PACKET].concat()
+}
+
+unsafe extern "C" fn thread_on_worker_start(
+    _: *mut c_void,
+    serv: *mut c_void,
+    worker: *mut c_void,
+) {
+    Server(serv).send_pipe_message(1 - worker_id(worker), TEST_STR);
+}
+
+unsafe extern "C" fn thread_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let (session, data) = request(req);
+    check(data == PACKET, "string(req->data, req->info.len) == packet");
+
+    serv.send(session, &server_response());
+
+    check(
+        serv.view().connection_num() == 1,
+        "serv->get_connection_num() == 1",
+    );
+    check(
+        primary_port_connection_num(serv) == 1,
+        "serv->get_primary_port()->get_connection_num() == 1",
+    );
+    SW_OK
+}
+
+unsafe extern "C" fn thread_on_pipe_message(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    counter_incr(4);
+}
+
+/// `TEST(server, thread)`: each worker thread sends the other a pipe message, a client
+/// gets its packet back, and SIGIO to the master sets the event pool's `read_message`.
+/// Its trace logging is left out.
+fn thread() {
+    let serv = Server::new(MODE_THREAD);
+    serv.config().worker_num = 2;
+
+    counter_init();
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert!(port.is_some());
+    let port = port.unwrap().port();
+
+    assert_eq!(serv.create(), SW_OK);
+
+    client_thread(
+        move || serv.get_master_pid(),
+        move || {
+            block_all_signals();
+
+            lock_wait();
+
+            sleep_us(1000);
+
+            let mut c = std::net::TcpStream::connect((TEST_HOST, port)).unwrap();
+            assert_eq!(std::io::Write::write(&mut c, PACKET).unwrap(), PACKET.len());
+            let mut buf = [0u8; 1024];
+            assert_eq!(
+                std::io::Read::read(&mut c, &mut buf).unwrap(),
+                PACKET.len() + 8
+            );
+            let resp = server_response();
+            assert_eq!(&buf[..resp.len()], resp.as_slice());
+            drop(c);
+
+            sleep_us(1000);
+
+            assert!(!event_pool_read_message(serv));
+            // SAFETY: signals the master, this process.
+            unsafe { kill(serv.get_master_pid(), SIGIO) };
+            sleep_us(1000);
+            assert!(event_pool_read_message(serv));
+
+            serv.shutdown();
+        },
+    );
+
+    serv.set_callback(CB_START, unlock_on_start as *const c_void);
+    serv.set_callback(CB_WORKER_START, thread_on_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, thread_on_receive as *const c_void);
+    serv.set_callback(CB_PIPE_MESSAGE, thread_on_pipe_message as *const c_void);
+
+    assert_eq!(serv.start(), SW_OK);
+    join_client();
+
+    wait_all_child_processes();
+    assert_eq!(counter_get(4), 2); // onPipeMessage called
+    assert_no_failure();
+    serv.delete();
+}
+
+/// `task_thread`'s `onWorkerStart`: its `std::atomic<int> count` is counter 1.
+unsafe extern "C" fn task_thread_on_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    counter_incr(1);
+}
+
+unsafe extern "C" fn task_thread_on_finish(
+    _: *mut c_void,
+    serv: *mut c_void,
+    task: *mut c_void,
+) -> c_int {
+    let payload = data(task).payload();
+    let client_fd = c_long::from_ne_bytes(payload[..size_of::<c_long>()].try_into().unwrap());
+    check(
+        Server(serv).send(client_fd, &server_response()),
+        "serv->send(client_fd, resp)",
+    );
+    0
+}
+
+unsafe extern "C" fn task_thread_on_task(
+    _: *mut c_void,
+    serv: *mut c_void,
+    task: *mut c_void,
+) -> c_int {
+    check(
+        Server(serv).finish(data(task).payload(), task),
+        "serv->finish(task->data, task->info.len, 0, task)",
+    );
+    0
+}
+
+unsafe extern "C" fn task_thread_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let (client_fd, data) = request(req);
+    check(data == PACKET, "string(req->data, req->info.len) == packet");
+
+    let mut msg = EventData::packed(&client_fd.to_ne_bytes());
+    msg.info.ext_flags |= TASK_NONBLOCK;
+
+    let mut dst_worker_id = -1;
+    check(
+        Server(serv).task(&mut msg, &mut dst_worker_id),
+        "serv->task(&msg, &dst_worker_id)",
+    );
+    SW_OK
+}
+
+/// `TEST(server, task_thread)`: a worker thread hands the client's session to a task
+/// thread, and the worker's `onFinish` answers the client.
+fn task_thread() {
+    let serv = Server::new(MODE_THREAD);
+    serv.config().worker_num = 2;
+    serv.config().task_worker_num = 2;
+
+    counter_init();
+    case::log_level(case::SW_LOG_INFO);
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert!(port.is_some());
+    let port = port.unwrap().port();
+
+    assert_eq!(serv.create(), SW_OK);
+
+    client_thread(
+        move || serv.get_master_pid(),
+        move || {
+            block_all_signals();
+
+            lock_wait();
+
+            let mut c = std::net::TcpStream::connect((TEST_HOST, port)).unwrap();
+            let _ = std::io::Write::write(&mut c, PACKET);
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut c, &mut buf);
+            drop(c);
+
+            sleep_us(100_000);
+            serv.shutdown();
+        },
+    );
+
+    serv.set_callback(CB_START, unlock_on_start as *const c_void);
+    serv.set_callback(
+        CB_WORKER_START,
+        task_thread_on_worker_start as *const c_void,
+    );
+    serv.set_callback(CB_FINISH, task_thread_on_finish as *const c_void);
+    serv.set_callback(CB_TASK, task_thread_on_task as *const c_void);
+    serv.set_callback(CB_RECEIVE, task_thread_on_receive as *const c_void);
+
+    assert_eq!(serv.start(), SW_OK);
+    join_client();
+
+    // `serv.get_core_worker_num()`: the workers and the task workers.
+    let core_worker_num = serv.config().worker_num + serv.config().task_worker_num;
+    assert_eq!(counter_get(1), i32::try_from(core_worker_num).unwrap());
+    wait_all_child_processes();
+    assert_no_failure();
+    serv.delete();
+}
+
 static NO_IDLE_CLIENT: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// `no_idle_task_worker`'s `onStart`: the client thread, once a worker has unlocked
@@ -1246,4 +1479,6 @@ pub const CASES: &[(&str, fn())] = &[
     ("task_ipc_queue_4", task_ipc_queue_4),
     ("task_ipc_queue_5", task_ipc_queue_5),
     ("no_idle_task_worker", no_idle_task_worker),
+    ("thread", thread),
+    ("task_thread", task_thread),
 ];

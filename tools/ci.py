@@ -338,41 +338,41 @@ def report(result, as_json):
 WORKFLOW_SCOPE = re.compile(r'needs (?:a token with )?workflow scope')
 
 
-def workflow_scope():
-    """False only when gh's token is a classic OAuth token without the workflow scope; others
-    (fine-grained, app) don't list scopes."""
-    for line in gh('api', '-i', 'user').splitlines():
-        name, _, value = line.partition(':')
-        if name.lower() == 'x-oauth-scopes':
-            return 'workflow' in {scope.strip() for scope in value.split(',')}
-        if not line.strip():
-            break
-    return True
+def graphql(query):
+    """A query over this repository and the token's scopes: (data, scopes, or None when the
+    token is fine-grained or an app's and lists none). GraphQL has its own budget, which the
+    REST one every agent shares can't spare (#2508); -i adds the response headers."""
+    text = gh('api', '-i', 'graphql', '-F', 'owner={owner}', '-F', 'repo={repo}', '-f', 'query=' + query)
+    head, body = re.split(r'\r?\n\r?\n', text, maxsplit=1)
+    scopes = next((value for name, _, value in (line.partition(':') for line in head.splitlines())
+                   if name.lower() == 'x-oauth-scopes'), None)
+    return json.loads(body)['data']['repository'], scopes
+
+
+READY_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {
+  issues(states: OPEN, labels: ["status:ready"], first: 100) { nodes {
+    number title createdAt labels(first: 20) { nodes { name } } issueDependenciesSummary { blockedBy } } } } }'''
 
 
 def claimable():
     """Open, ready, unblocked issues without needs:decision: p0, p1, p2, then unprioritised,
     oldest first within each (AGENTS.md's claim order)."""
-    # REST, not `gh issue list`: GraphQL is unavailable in some agent sessions. Open blockers
-    # count in issue_dependencies_summary.blocked_by; the endpoint also lists pull requests.
-    issues = [issue for issue in map(json.loads, gh(
-        'api', '--paginate', 'repos/{owner}/{repo}/issues?state=open&labels=status:ready&per_page=100',
-        '--jq', '.[]').splitlines())
-        if 'pull_request' not in issue and not issue.get('issue_dependencies_summary', {}).get('blocked_by')
-        and not any(label['name'] == 'needs:decision' for label in issue['labels'])]
+    data, scopes = graphql(READY_QUERY)
+    issues = [{**issue, 'labels': {label['name'] for label in issue['labels']['nodes']}}
+              for issue in data['issues']['nodes'] if not issue['issueDependenciesSummary']['blockedBy']]
+    issues = [issue for issue in issues if 'needs:decision' not in issue['labels']]
     # Editing .github/workflows/ needs a token with workflow scope; such issues say so in their title.
-    if not workflow_scope():
+    if scopes is not None and 'workflow' not in {scope.strip() for scope in scopes.split(',')}:
         workflows = [issue for issue in issues if WORKFLOW_SCOPE.search(issue['title'])]
         if workflows:
             say(f"hiding {len(workflows)} issues that need a workflow-scoped token: "
                 + ', '.join(f"#{issue['number']}" for issue in workflows))
         issues = [issue for issue in issues if issue not in workflows]
     def priority(issue):
-        names = {label['name'] for label in issue['labels']}
-        return next((rank for rank, name in enumerate(('p0', 'p1', 'p2')) if name in names), 3)
+        return next((rank for rank, name in enumerate(('p0', 'p1', 'p2')) if name in issue['labels']), 3)
     return [{'number': issue['number'], 'priority': ('p0', 'p1', 'p2', '-')[priority(issue)],
-             'title': issue['title'], 'created': issue['created_at']}
-            for issue in sorted(issues, key=lambda issue: (priority(issue), issue['created_at']))]
+             'title': issue['title'], 'created': issue['createdAt']}
+            for issue in sorted(issues, key=lambda issue: (priority(issue), issue['createdAt']))]
 
 
 # Upstream's PHPT results move only with what they depend on: the pin and its build, how the tests
@@ -444,66 +444,70 @@ def phpt_baseline(kind='phpt', php=None):
 
 
 # The PR tier's aggregate check, the one main's ruleset requires; it needs every blocking job.
-REQUIRED = ('required',)
+REQUIRED = 'required'
 
 
-# Open PRs with their merge-queue state: one call, where the REST list has none of it.
-QUEUE_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {
+# Open PRs with their merge-queue state, mergeability and head's `required` check: one query,
+# where REST took three calls a PR and has no queue state at all.
+PULLS_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {
   pullRequests(states: OPEN, first: 100) { nodes {
-    number title createdAt isDraft isInMergeQueue autoMergeRequest { enabledAt }
+    number title createdAt isDraft isInMergeQueue mergeable autoMergeRequest { enabledAt }
     timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) { nodes {
-      __typename ... on RemovedFromMergeQueueEvent { reason } } } } } } }'''
+      __typename ... on RemovedFromMergeQueueEvent { reason } } }
+    commits(last: 1) { nodes { commit { checkSuites(first: 50) { nodes {
+      status workflowRun { workflow { name } }
+      checkRuns(first: 1, filterBy: { checkName: "%s" }) { nodes { conclusion } } } } } } } } } } }''' % REQUIRED
+# The PR tier's workflow name (pr.yml).
+PR_WORKFLOW = 'PR'
 
 
-def dequeued():
-    """Open PRs the merge queue dropped: their group failed `required`, and GitHub turned their
-    auto-merge off with it, so nothing merges them until someone fixes and queues them again.
-    Each with the reason GitHub gives and its group's merge-tier run."""
-    pulls = json.loads(gh('api', 'graphql', '-F', 'owner={owner}', '-F', 'repo={repo}', '-f', 'query=' + QUEUE_QUERY,
-                          '--jq', '.data.repository.pullRequests.nodes'))
-    rows = [{'number': pull['number'], 'title': pull['title'], 'created': pull['createdAt'],
-             'blocking': ['left the merge queue: ' + (pull['timelineItems']['nodes'][0].get('reason') or 'no reason given')]}
-            for pull in pulls
-            if not (pull['isDraft'] or pull['isInMergeQueue'] or pull['autoMergeRequest'])
-            and [event['__typename'] for event in pull['timelineItems']['nodes']] == ['RemovedFromMergeQueueEvent']]
-    if rows:
-        # A group's branch is gh-readonly-queue/main/pr-<number>-<base sha>.
-        runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--event', 'merge_group', '--limit', '100',
-                             '--json', 'headBranch,url'))
-        for row in rows:
-            run = next((run['url'] for run in runs if f"/pr-{row['number']}-" in run.get('headBranch', '')), None)
-            row['blocking'] += [run] if run else []
-    return rows
+def blocked(pull):
+    """What keeps an auto-merge PR from merging by itself: conflicts with main, a failed required
+    check on its head, or a finished PR-tier run that never created one."""
+    suites = [suite for commit in pull['commits']['nodes'] for suite in commit['commit']['checkSuites']['nodes']]
+    required = [run['conclusion'] for suite in suites for run in suite['checkRuns']['nodes']]
+    blocking = (['conflicts'] if pull['mergeable'] == 'CONFLICTING' else []) + (
+        [REQUIRED] if any(conclusion in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for conclusion in required) else [])
+    # A PR-tier run GitHub abandoned finishes without creating its jobs, `required` among them,
+    # so nothing fails and the PR waits forever; re-running it is the fix.
+    pr_tier = [suite['status'] for suite in suites
+               if ((suite['workflowRun'] or {}).get('workflow') or {}).get('name') == PR_WORKFLOW]
+    if not blocking and not required and pr_tier and all(status == 'COMPLETED' for status in pr_tier):
+        blocking = ['no required check']
+    return blocking
+
+
+def dequeued(pull):
+    """Whether the merge queue dropped the PR: its group failed `required`, and GitHub turned its
+    auto-merge off with it, so nothing merges it until someone fixes and queues it again."""
+    return (not (pull['isDraft'] or pull['isInMergeQueue'] or pull['autoMergeRequest'])
+            and [event['__typename'] for event in pull['timelineItems']['nodes']] == ['RemovedFromMergeQueueEvent'])
 
 
 def stuck():
-    """Open auto-merge PRs that won't merge by themselves: conflicting with main, with a failed
-    required check on their head, or with a finished PR-tier run that never created one. And
-    PRs the merge queue dropped (dequeued). Oldest first, each with what blocks it."""
-    pulls = [pull for pull in map(json.loads, gh(
-        'api', '--paginate', 'repos/{owner}/{repo}/pulls?state=open&per_page=100', '--jq', '.[]').splitlines())
-        if pull.get('auto_merge')]
+    """Open PRs that won't merge by themselves: auto-merge ones that are blocked, and those the
+    merge queue dropped, with the reason GitHub gives and their group's merge-tier run. Oldest
+    first, each with what blocks it."""
     rows = []
-    for pull in sorted(pulls, key=lambda pull: pull['created_at']):
-        # mergeable_state is only on the single-PR endpoint; 'dirty' means conflicts.
-        detail = json.loads(gh('api', f"repos/{{owner}}/{{repo}}/pulls/{pull['number']}"))
-        sha = pull['head']['sha']
-        checks = [json.loads(line) for line in gh('api', f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100",
-                                                  '--jq', '.check_runs[]').splitlines()]
-        blocking = (['conflicts'] if detail.get('mergeable_state') == 'dirty' else []) + sorted(
-            {check['name'] for check in checks
-             if check['name'] in REQUIRED and check.get('conclusion') in ('failure', 'timed_out', 'cancelled')})
-        # A PR-tier run GitHub abandoned finishes without creating its jobs, `required` among them,
-        # so nothing fails and the PR waits forever; re-running it is the fix.
-        if not blocking and not any(check['name'] in REQUIRED for check in checks):
-            runs = json.loads(gh('run', 'list', '--workflow', 'pr.yml', '--commit', sha, '--limit', '1',
-                                 '--json', 'status,conclusion'))
-            if runs and runs[0]['status'] == 'completed':
-                blocking = ['no required check']
+    for pull in graphql(PULLS_QUERY)[0]['pullRequests']['nodes']:
+        if pull['autoMergeRequest']:
+            blocking = blocked(pull)
+        elif dequeued(pull):
+            blocking = ['left the merge queue: ' + (pull['timelineItems']['nodes'][0].get('reason') or 'no reason given')]
+        else:
+            continue
         if blocking:
-            rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['created_at'],
-                         'blocking': blocking})
-    return sorted(rows + dequeued(), key=lambda row: row['created'])
+            rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['createdAt'],
+                         'blocking': blocking, 'dequeued': not pull['autoMergeRequest']})
+    if any(row['dequeued'] for row in rows):
+        # A group's branch is gh-readonly-queue/main/pr-<number>-<base sha>; only GitHub's run list has it.
+        runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--event', 'merge_group', '--limit', '100',
+                             '--json', 'headBranch,url'))
+        for row in (row for row in rows if row['dequeued']):
+            run = next((run['url'] for run in runs if f"/pr-{row['number']}-" in run.get('headBranch', '')), None)
+            row['blocking'] += [run] if run else []
+    return sorted(({key: value for key, value in row.items() if key != 'dequeued'} for row in rows),
+                  key=lambda row: row['created'])
 
 
 def main(argv=None):
