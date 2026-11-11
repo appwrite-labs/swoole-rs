@@ -26,44 +26,32 @@ fn select(allowed: impl Fn(usize) -> bool, worker_id: u32, set_size: usize) -> O
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn worker_affinity(worker_id: u32, available: Option<&[i32]>, thread: bool) -> AffinityOutcome {
-    use std::mem::{size_of, zeroed};
+    use swoole_rs_ossupport::CpuSet;
     let failed = |status| AffinityOutcome {
         status,
         error: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
     };
-    // SAFETY: cpu_set_t is a plain bit array; all zeroes is the empty set.
-    let mut current: libc::cpu_set_t = unsafe { zeroed() };
+    let mut current = CpuSet::empty();
     let pid = crate::os::getpid();
-    // SAFETY: `current` is a valid cpu_set_t of the size passed.
-    if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &raw mut current) } < 0 {
+    if current.get_process(pid) < 0 {
         return failed(1);
     }
-    let set_size = usize::try_from(libc::CPU_SETSIZE).unwrap_or(0);
     let allowed = |cpu: usize| {
-        // SAFETY: `select` asks only for cpu < CPU_SETSIZE.
-        let present = unsafe { libc::CPU_ISSET(cpu, &current) };
-        present && available.is_none_or(|cpus| cpus.iter().any(|&c| usize::try_from(c) == Ok(cpu)))
+        current.contains(cpu)
+            && available.is_none_or(|cpus| cpus.iter().any(|&c| usize::try_from(c) == Ok(cpu)))
     };
-    let Some(cpu) = select(allowed, worker_id, set_size) else {
+    let Some(cpu) = select(allowed, worker_id, CpuSet::SIZE) else {
         return AffinityOutcome {
             status: 2,
             error: 0,
         };
     };
-    // SAFETY: as above.
-    let mut selected: libc::cpu_set_t = unsafe { zeroed() };
-    // SAFETY: `select` returned cpu < CPU_SETSIZE.
-    unsafe { libc::CPU_SET(cpu, &mut selected) };
-    let size = size_of::<libc::cpu_set_t>();
+    let mut selected = CpuSet::empty();
+    selected.insert(cpu);
     let error = if thread {
-        // SAFETY: pthread_self has no preconditions.
-        let me = unsafe { libc::pthread_self() };
-        // SAFETY: `selected` is a valid cpu_set_t of the size passed.
-        unsafe { libc::pthread_setaffinity_np(me, size, &raw const selected) }
+        selected.set_thread()
     } else {
-        // SAFETY: `selected` is a valid cpu_set_t of the size passed.
-        let result = unsafe { libc::sched_setaffinity(pid, size, &raw const selected) };
-        if result < 0 {
+        if selected.set_process(pid) < 0 {
             return failed(3);
         }
         0

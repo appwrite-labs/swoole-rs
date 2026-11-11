@@ -15,9 +15,10 @@ use swoole_rs_corebase::{
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
 use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
-use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del, swr_v1_event_current};
-use swoole_rs_reactor::reactor_upstream::prepared;
-use swoole_rs_reactor::{Event, Running, SocketRecord, swr_v1_reactor_deferred_push};
+use swoole_rs_reactor::event_api::{
+    on_destroy, swoole_event_add, swoole_event_del, swr_v1_event_current,
+};
+use swoole_rs_reactor::{Event, Running, SocketRecord};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use swoole_rs_tls::upstream::socket_write_sync;
 
@@ -177,7 +178,7 @@ static HOOKS: PoolHooks = PoolHooks {
 };
 
 /// The reactor's destroy callback: unregisters the pipe and frees the handle.
-unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
+extern "C-unwind" fn destroyed(_data: *mut c_void) {
     let threads = current();
     if threads.is_null() {
         return;
@@ -233,14 +234,7 @@ fn create() -> *mut AsyncThreads {
     unsafe { (*write).fields.fd_type = FD_AIO };
     // SAFETY: a live socket on the thread's reactor.
     unsafe { swoole_event_add(read, EVENT_READ) };
-    // SAFETY: the thread's live reactor.
-    let fields = unsafe { prepared(reactor) }.fields;
-    // SAFETY: its live fields.
-    let queue = unsafe { &raw mut (*fields).destroy_callbacks };
-    // SAFETY: the reactor's live destroy queue; the call keeps no data.
-    if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) } != 0 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
-    }
+    on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_AIO_TASK, pending);
     threads.pool = Some(Pool::acquire(
         HOOKS,

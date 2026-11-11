@@ -27,7 +27,7 @@ use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, ZString,
     bailout::{self, Bailout},
-    long_zval, message, object_of, report,
+    long_zval, message, report,
     sys::{
         ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
@@ -952,11 +952,13 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
         // The worker `addProcess` made holds its process object.
         worker.user_data().cast::<zval>()
     };
-    // SAFETY: the process object.
-    let object = unsafe { object_of(process) };
-    let ce = crate::lifecycle::process_class();
-    // SAFETY: a live `Swoole\Process` object.
-    unsafe { swoole_rs_zend::Props::new(ce, object) }.long(c"id", id);
+    // SAFETY: the process object's zval, which the server keeps.
+    let value = unsafe { swoole_rs_zend::Value::from_ptr(process) };
+    if let Some(props) =
+        value.and_then(|value| value.props(Some(swoole_rs_phpprocess::process_class())))
+    {
+        props.long(c"id", id);
+    }
     let gs = server.counters();
     let props = Props::server(server_object);
     props.long(c"master_pid", i64::from(gs.master_pid));

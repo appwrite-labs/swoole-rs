@@ -8,8 +8,8 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py next                 the claimable issues in claim order (exit 2 when there are none),
                              without those whose title says they need workflow scope when gh's
                              token lacks it
-  ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
-                             whose finished PR-tier run has none (GitHub abandoned its jobs:
+  ci.py stuck                auto-merge PRs that conflict with main, failed a required check, have
+                             a review requesting changes (answer it), or whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), and PRs the merge queue dropped (fix what their run
                              broke, then queue them again), oldest first (exit 2 when there are none)
   ci.py phpt-baseline [--variant NAME] [--php VERSION] [--saved DIR]
@@ -465,7 +465,7 @@ REQUIRED = 'required'
 # where REST took three calls a PR and has no queue state at all.
 PULLS_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {
   pullRequests(states: OPEN, first: 100) { nodes {
-    number title createdAt isDraft isInMergeQueue mergeable autoMergeRequest { enabledAt }
+    number title createdAt isDraft isInMergeQueue mergeable reviewDecision autoMergeRequest { enabledAt }
     timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) { nodes {
       __typename ... on RemovedFromMergeQueueEvent { reason } } }
     commits(last: 1) { nodes { commit { checkSuites(first: 50) { nodes {
@@ -477,11 +477,12 @@ PR_WORKFLOW = 'PR'
 
 def blocked(pull):
     """What keeps an auto-merge PR from merging by itself: conflicts with main, a failed required
-    check on its head, or a finished PR-tier run that never created one."""
+    check on its head, a review requesting changes, or a finished PR-tier run that never created one."""
     suites = [suite for commit in pull['commits']['nodes'] for suite in commit['commit']['checkSuites']['nodes']]
     required = [run['conclusion'] for suite in suites for run in suite['checkRuns']['nodes']]
     blocking = (['conflicts'] if pull['mergeable'] == 'CONFLICTING' else []) + (
-        [REQUIRED] if any(conclusion in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for conclusion in required) else [])
+        [REQUIRED] if any(conclusion in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for conclusion in required) else []) + (
+        ['changes requested'] if pull.get('reviewDecision') == 'CHANGES_REQUESTED' else [])
     # A PR-tier run GitHub abandoned finishes without creating its jobs, `required` among them,
     # so nothing fails and the PR waits forever; re-running it is the fix.
     pr_tier = [suite['status'] for suite in suites

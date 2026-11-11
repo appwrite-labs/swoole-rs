@@ -7,6 +7,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_ulong};
 use swoole_rs_corebase::set_errno;
+use swoole_rs_corebase::sys::ReadSlot;
 
 use openssl_sys as ssl;
 
@@ -182,7 +183,7 @@ impl<S: TlsSocket> Tls<S> {
     }
 
     /// `ssl_recv`: decrypted bytes into `buf`, or -1.
-    pub(crate) fn recv(&self, buf: &mut [u8]) -> isize {
+    pub(crate) fn recv(&self, buf: &mut [impl ReadSlot]) -> isize {
         let (at, n) = (buf.as_mut_ptr().cast(), len(buf.len()));
         // SAFETY: the live session, into `buf`'s first `n` bytes.
         self.transfer(c"ssl_recv", || unsafe { ssl::SSL_read(self.ssl, at, n) })

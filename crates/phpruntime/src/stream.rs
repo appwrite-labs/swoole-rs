@@ -18,21 +18,19 @@ use std::{
 };
 use swoole_rs_hooks::address::swr_v1_hooks_parse_address;
 use swoole_rs_zend::{
-    Array, Call, E_WARNING, Message, OwnedArray,
+    Array, ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, Value,
     bailout::Bailout,
     message, string,
     sys::{
-        IS_NULL, PHP_STREAM_FLAG_AVOID_BLOCKING, add_assoc_bool_ex, add_assoc_long_ex,
-        add_assoc_string_ex, add_assoc_zval_ex, add_next_index_resource, php_stream,
-        php_stream_context, php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param,
-        php_stream_xport_param, sockaddr, swr_zend_array_init, swr_zend_efree, swr_zend_is_true,
-        swr_zend_stream_buffered, swr_zend_stream_context, swr_zend_stream_context_options,
-        swr_zend_stream_default_timeout, swr_zend_stream_expose, swr_zend_stream_option,
-        swr_zend_stream_progress, swr_zend_stream_set_option, swr_zend_stream_share_context,
-        swr_zend_stream_timeval, swr_zend_stream_vm_active, timeval, zend_hash_next_index_insert,
-        zend_string, zval, zval_ptr_dtor,
+        PHP_STREAM_FLAG_AVOID_BLOCKING, add_next_index_resource, php_stream, php_stream_context,
+        php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param,
+        sockaddr, swr_zend_efree, swr_zend_stream_buffered, swr_zend_stream_context,
+        swr_zend_stream_context_options, swr_zend_stream_default_timeout, swr_zend_stream_expose,
+        swr_zend_stream_option, swr_zend_stream_progress, swr_zend_stream_set_option,
+        swr_zend_stream_share_context, swr_zend_stream_timeval, swr_zend_stream_vm_active, timeval,
+        zend_string, zval,
     },
-    value::{empty_string, table},
+    value::empty_string,
 };
 
 unsafe extern "C" {
@@ -227,17 +225,18 @@ pub(crate) fn seconds(time: *const timeval) -> f64 {
     swoole_rs_hooks::timeval(seconds, micros)
 }
 
-/// A context option of the stream, if set.
-fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<*mut zval> {
+/// A context option of the stream, if set, borrowed for one operation, which
+/// sets no option.
+fn context_option<'a>(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<&'a Value> {
     // SAFETY: a live stream; Zend copies nothing.
     let value = unsafe { swr_zend_stream_option(stream, wrapper.as_ptr(), name.as_ptr()) };
-    (!value.is_null()).then_some(value)
+    // SAFETY: null or the context's live option.
+    unsafe { Value::from_ptr(value) }
 }
 
 /// `zval_is_true` of a context option, false when unset.
 fn option_true(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> bool {
-    // SAFETY: a live option value.
-    context_option(stream, wrapper, name).is_some_and(|value| unsafe { swr_zend_is_true(value) })
+    context_option(stream, wrapper, name).is_some_and(Value::truthy)
 }
 
 /// Bytes up to the first NUL, as C reads a string.
@@ -251,24 +250,29 @@ fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(C
     // SAFETY: `name` lends its bytes for the call.
     let plan = unsafe { swr_v1_hooks_parse_address(name.as_ptr(), name.len()) };
     if plan.status != 0 {
-        if let Some(error) = error {
-            let what = if plan.status == 1 {
-                "IPv6 address"
-            } else {
-                "address"
-            };
-            let text = format!(
-                "Failed to parse {what} \"{}\"",
-                String::from_utf8_lossy(c_str(name))
-            );
-            // SAFETY: the caller's output slot.
-            unsafe { *error = string::copy(text.as_bytes()) };
-        }
+        let what = if plan.status == 1 {
+            "IPv6 address"
+        } else {
+            "address"
+        };
+        let name = String::from_utf8_lossy(c_str(name));
+        set_error(
+            error,
+            format!("Failed to parse {what} \"{name}\"").as_bytes(),
+        );
         return None;
     }
     let host = name.get(plan.host_offset..plan.host_offset + plan.host_length);
     let host = c_str(host.unwrap_or_default());
     Some((CString::new(host).unwrap_or_default(), plan.port))
+}
+
+/// A copy of `text` in Zend's error text slot, when the caller wants one.
+fn set_error(error: Option<*mut *mut zend_string>, text: &[u8]) {
+    if let Some(error) = error {
+        // SAFETY: the transport parameter's output slot, lent for the operation.
+        unsafe { *error = string::copy(text) };
+    }
 }
 
 /// `socket_write`.
@@ -499,17 +503,13 @@ fn set_option(
         // PHP socket streams share this timeout between reads and writes
         option::READ_TIMEOUT => socket.set_timeout(seconds(ptrparam.cast()), timeout::RDWR),
         option::CRYPTO_API => {
-            let param = ptrparam.cast::<php_stream_xport_crypto_param>();
-            // SAFETY: Zend lends the crypto parameter.
-            match unsafe { (*param).op } {
-                // SAFETY: as above.
-                0 => unsafe { (*param).outputs.returncode = 0 },
+            // SAFETY: Zend lends the crypto parameter for the call.
+            let param = unsafe { &mut *ptrparam.cast::<php_stream_xport_crypto_param>() };
+            match param.op {
+                0 => param.outputs.returncode = 0,
                 1 => {
-                    // SAFETY: as above.
-                    let activate = unsafe { (*param).inputs.activate } != 0;
-                    let code = enable_crypto(stream, &socket, activate)?;
-                    // SAFETY: as above.
-                    unsafe { (*param).outputs.returncode = code };
+                    let activate = param.inputs.activate != 0;
+                    param.outputs.returncode = enable_crypto(stream, &socket, activate)?;
                 }
                 _ => {}
             }
@@ -529,60 +529,49 @@ fn set_option(
 /// `PHP_STREAM_OPTION_META_DATA_API`: the TLS session, `timed_out`, `eof`
 /// and `blocked`.
 fn meta_data(stream: *mut php_stream, socket: &Socket, data: *mut zval) {
+    // SAFETY: Zend lends `stream_get_meta_data`'s result array for the call.
+    let data = unsafe { ArrayMut::from_ptr(data) };
     let ssl = socket.ssl();
     if !ssl.is_null() {
-        let mut crypto = swoole_rs_zend::UNDEF;
-        let array = &raw mut crypto;
-        // SAFETY: an undefined zval, initialised as an array.
-        unsafe { swr_zend_array_init(array) };
-        // SAFETY: a live connection.
-        let protocol: &CStr = match unsafe { openssl_sys::SSL_version(ssl) } {
-            0x304 => c"TLSv1.3",
-            0x303 => c"TLSv1.2",
-            0x302 => c"TLSv1.1",
-            0x301 => c"TLSv1",
-            0x300 => c"SSLv3",
-            _ => c"UNKNOWN",
-        };
-        // SAFETY: a live connection; OpenSSL takes a null cipher below.
-        let cipher = unsafe { openssl_sys::SSL_get_current_cipher(ssl) };
-        add_string(array, c"protocol", protocol.as_ptr());
-        // SAFETY: as above.
-        add_string(array, c"cipher_name", unsafe {
-            openssl_sys::SSL_CIPHER_get_name(cipher)
-        });
-        // SAFETY: as above.
-        let bits = unsafe { openssl_sys::SSL_CIPHER_get_bits(cipher, ptr::null_mut()) };
-        add_long(array, c"cipher_bits", bits.into());
-        // SAFETY: as above.
-        add_string(array, c"cipher_version", unsafe {
-            openssl_sys::SSL_CIPHER_get_version(cipher)
-        });
-        // SAFETY: Zend lends the metadata array, which takes `crypto`.
-        unsafe { add_assoc_zval_ex(data, c"crypto".as_ptr(), 6, array) };
+        data.insert(b"crypto", crypto(ssl).into_owned());
     }
-    add_bool(data, c"timed_out", socket.error() == libc::ETIMEDOUT);
+    data.insert_bool(b"timed_out", socket.error() == libc::ETIMEDOUT);
     // SAFETY: a live stream.
-    add_bool(data, c"eof", unsafe { (*stream).eof() } != 0);
-    add_bool(data, c"blocked", true);
+    data.insert_bool(b"eof", unsafe { (*stream).eof() } != 0);
+    data.insert_bool(b"blocked", true);
 }
 
-/// `add_assoc_string(array, key, value)` of a live array and a C string.
-fn add_string(array: *mut zval, key: &CStr, value: *const c_char) {
-    // SAFETY: the callers pass a live array and a NUL-terminated value.
-    unsafe { add_assoc_string_ex(array, key.as_ptr(), key.count_bytes(), value) };
+/// The `crypto` metadata of a live connection.
+fn crypto(ssl: *mut openssl_sys::SSL) -> OwnedArray {
+    // SAFETY: a live connection.
+    let protocol: &[u8] = match unsafe { openssl_sys::SSL_version(ssl) } {
+        0x304 => b"TLSv1.3",
+        0x303 => b"TLSv1.2",
+        0x302 => b"TLSv1.1",
+        0x301 => b"TLSv1",
+        0x300 => b"SSLv3",
+        _ => b"UNKNOWN",
+    };
+    // SAFETY: a live connection; OpenSSL takes a null cipher below.
+    let cipher = unsafe { openssl_sys::SSL_get_current_cipher(ssl) };
+    // SAFETY: as above.
+    let name = text(unsafe { openssl_sys::SSL_CIPHER_get_name(cipher) });
+    // SAFETY: as above.
+    let bits = unsafe { openssl_sys::SSL_CIPHER_get_bits(cipher, ptr::null_mut()) };
+    // SAFETY: as above.
+    let version = text(unsafe { openssl_sys::SSL_CIPHER_get_version(cipher) });
+    let mut crypto = OwnedArray::default();
+    crypto.insert_bytes(b"protocol", Some(protocol));
+    crypto.insert_bytes(b"cipher_name", Some(name));
+    crypto.insert_long(b"cipher_bits", bits.into());
+    crypto.insert_bytes(b"cipher_version", Some(version));
+    crypto
 }
 
-/// `add_assoc_long(array, key, value)` of a live array.
-fn add_long(array: *mut zval, key: &CStr, value: i64) {
-    // SAFETY: the callers pass a live array.
-    unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), value) };
-}
-
-/// `add_assoc_bool(array, key, value)` of a live array.
-fn add_bool(array: *mut zval, key: &CStr, value: bool) {
-    // SAFETY: the callers pass a live array.
-    unsafe { add_assoc_bool_ex(array, key.as_ptr(), key.count_bytes(), value) };
+/// The bytes of OpenSSL's static cipher text.
+fn text(text: *const c_char) -> &'static [u8] {
+    // SAFETY: OpenSSL's cipher names and versions are static and NUL-terminated.
+    unsafe { CStr::from_ptr(text) }.to_bytes()
 }
 
 /// `PHP_STREAM_OPTION_XPORT_API`.
@@ -750,12 +739,8 @@ fn connect(
         return FAILURE;
     };
     if let Some(bindto) = context_option(stream, c"socket", c"bindto") {
-        // SAFETY: a live option value.
-        let Some(name) = (unsafe { swoole_rs_zend::string_of(bindto) }) else {
-            if let Some(error) = error {
-                // SAFETY: the caller's output slot.
-                unsafe { *error = string::copy(b"local_addr context option is not a string.") };
-            }
+        let Some(name) = bindto.bytes() else {
+            set_error(error, b"local_addr context option is not a string.");
             return FAILURE;
         };
         let Some((local, local_port)) = parse_address(name, error) else {
@@ -957,46 +942,28 @@ fn capture_peer_certs(stream: *mut php_stream, socket: &Socket) -> Result<bool, 
     if cert.is_empty() {
         return Ok(false);
     }
-    // SAFETY: an undefined zval to fill.
-    let mut certificate: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    unsafe { x509_read(&cert, &raw mut certificate) }?;
-    set_context_option(stream, c"peer_certificate", &raw mut certificate);
+    let certificate = x509_read(&cert)?;
+    set_context_option(stream, c"peer_certificate", &certificate);
     if option_true(stream, c"ssl", c"capture_peer_cert_chain") {
         let chain = socket.peer_chain();
-        // SAFETY: a null zval until it becomes the array.
-        let mut array: zval = unsafe { std::mem::zeroed() };
-        array.u1.type_info = IS_NULL;
-        if !chain.is_empty() {
-            // SAFETY: as above.
-            unsafe { swr_zend_array_init(&raw mut array) };
+        let list = if chain.is_empty() {
+            Owned::null()
+        } else {
+            let mut list = OwnedArray::default();
             for cert in chain {
-                // SAFETY: an undefined zval to fill.
-                let mut certificate: zval = unsafe { std::mem::zeroed() };
-                // SAFETY: as above.
-                if let Err(bailout) = unsafe { x509_read(&cert, &raw mut certificate) } {
-                    // SAFETY: the array built so far.
-                    unsafe { zval_ptr_dtor(&raw mut array) };
-                    return Err(bailout);
-                }
-                // SAFETY: an array zval.
-                let list = unsafe { table(&raw const array) };
-                // SAFETY: the array takes the certificate's reference.
-                unsafe { zend_hash_next_index_insert(list, &raw mut certificate) };
+                list.push(x509_read(&cert)?);
             }
-        }
-        set_context_option(stream, c"peer_certificate_chain", &raw mut array);
+            list.into_owned()
+        };
+        set_context_option(stream, c"peer_certificate_chain", &list);
     }
     Ok(true)
 }
 
-/// Set the stream's `ssl` context option `name` to `value`, which is ours
-/// and released here.
-fn set_context_option(stream: *mut php_stream, name: &CStr, value: *mut zval) {
+/// Set the stream's `ssl` context option `name` to `value`.
+fn set_context_option(stream: *mut php_stream, name: &CStr, value: &Value) {
     // SAFETY: a live stream; the context takes its own reference.
-    unsafe { swr_zend_stream_set_option(stream, c"ssl".as_ptr(), name.as_ptr(), value) };
-    // SAFETY: ours.
-    unsafe { zval_ptr_dtor(value) };
+    unsafe { swr_zend_stream_set_option(stream, c"ssl".as_ptr(), name.as_ptr(), value.as_ptr()) };
 }
 
 /// The `ssl` context options and the names Swoole's socket takes them under.
@@ -1032,8 +999,7 @@ fn ssl_set_options(socket: &Socket, context: *mut php_stream_context) -> Result<
             aliases.insert(alias.as_bytes(), value.copy());
         }
     }
-    // SAFETY: a live array.
-    unsafe { socket.set_ssl(aliases.as_ptr()) }
+    socket.set_ssl(&aliases)
 }
 
 /// The complete factory: PHP's original transport outside a coroutine, otherwise

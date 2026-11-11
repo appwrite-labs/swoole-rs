@@ -560,7 +560,7 @@ impl Co {
     }
 
     /// `Socket::recv(buf, n)`.
-    pub fn recv(self, buf: &mut [u8]) -> isize {
+    pub fn recv(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::recv(&ops, buf);
@@ -855,7 +855,7 @@ impl Co {
 
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`.
     /// The socket is open.
-    pub fn peek(self, buf: &mut [u8]) -> isize {
+    pub fn peek(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
         // SAFETY: the open socket's network::Socket, into the caller's buffer.
         let result = unsafe { socket_peek(self.socket(), buf.as_mut_ptr().cast(), buf.len(), 0) };
         check(self, result);

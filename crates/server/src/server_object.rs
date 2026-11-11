@@ -68,9 +68,6 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     });
     let serv = Box::into_raw(object).cast::<c_void>();
     swoole_rs_corebase::swr_v1_core_set_server(serv);
-    swoole_rs_process::workers::factory_methods::set_factory_call(
-        crate::factory_ops::swr_v1_factory_call,
-    );
     swoole_rs_process::workers::entry::set_enter(crate::server_methods::workers_enter);
     serv
 }

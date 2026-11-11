@@ -10,8 +10,8 @@ use std::{
     ffi::{c_char, c_int, c_long, c_void},
     ptr,
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicPtr, Ordering},
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -21,9 +21,9 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_coroutine_set_interrupt, swr_zend_vm_interrupt, swr_zend_vm_interrupt_raise,
-        swr_zval_is_true, zend_atomic_bool, zend_execute_data, zend_fcall_info_cache,
-        zend_get_constant_str, zval,
+        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, swr_zend_vm_interrupt,
+        swr_zend_vm_interrupt_raise, swr_zval_is_true, zend_atomic_bool, zend_execute_data,
+        zend_fcall_info_cache, zend_get_constant_str, zval,
     },
 };
 
@@ -63,7 +63,14 @@ per_thread! {
 
 /// The interrupt function Zend ran before activation (process-global, as
 /// `zend_interrupt_function` is).
-static ORIGINAL_INTERRUPT: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+static ORIGINAL_INTERRUPT: Mutex<swr_zend_interrupt_handler> = Mutex::new(None);
+
+/// The interrupt function Zend ran before activation.
+fn original_interrupt() -> swr_zend_interrupt_handler {
+    *ORIGINAL_INTERRUPT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 pub(crate) fn activated() -> bool {
     ACTIVATED.with(Cell::get)
@@ -139,10 +146,9 @@ fn activate() -> Result<(), Bailout> {
     host::check_reactor();
     // SAFETY: replaces Zend's interrupt function, restored by `deactivate`.
     let original = unsafe { swr_zend_coroutine_set_interrupt(Some(interrupt_function)) };
-    ORIGINAL_INTERRUPT.store(
-        original.map_or(ptr::null_mut(), |f| f as *mut c_void),
-        Ordering::Relaxed,
-    );
+    *ORIGINAL_INTERRUPT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = original;
     if host::flag(host::PREEMPTIVE) || CONFIG.with(|c| c.preemptive.get()) {
         interrupt_start();
     }
@@ -166,17 +172,8 @@ pub(crate) fn deactivate() -> Result<(), Bailout> {
         host::unhook();
     }
     host::detach();
-    let original = ORIGINAL_INTERRUPT.load(Ordering::Relaxed);
-    let original = (!original.is_null()).then(|| {
-        // SAFETY: stored from a `swr_zend_interrupt_handler` by `activate`.
-        unsafe {
-            std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut zend_execute_data)>(
-                original,
-            )
-        }
-    });
     // SAFETY: restores Zend's interrupt function.
-    unsafe { swr_zend_coroutine_set_interrupt(original) };
+    unsafe { swr_zend_coroutine_set_interrupt(original_interrupt()) };
     if CONFIG.with(|c| c.deadlock_check.get()) {
         deadlock_check()?;
     }
@@ -232,14 +229,13 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
         host::defer(interrupt_resume, co);
         host::yield_(co);
     }
-    let original = ORIGINAL_INTERRUPT.load(Ordering::Relaxed);
-    if !original.is_null() {
-        // SAFETY: Zend's previous interrupt function, which takes one pointer.
-        let body = unsafe {
-            std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut c_void)>(original)
+    if let Some(original) = original_interrupt() {
+        let body = || {
+            // SAFETY: Zend's previous interrupt function, over the frame Zend passed.
+            unsafe { original(execute_data) };
         };
-        // SAFETY: a C function; a bailout in it is re-raised below.
-        if unsafe { bailout::trap(body, execute_data.cast()) }.is_err() {
+        // SAFETY: the closure owns nothing; a bailout in it is re-raised below.
+        if unsafe { bailout::trap_with(body) }.is_err() {
             raise();
         }
     }
@@ -349,7 +345,7 @@ pub unsafe extern "C" fn create_coroutine(
 /// # Errors
 /// PHP bailed out.
 pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result<bool, Bailout> {
-    let (cache, argc, argv) = callable.parts();
+    let (cache, argc, argv, _) = callable.parts();
     // SAFETY: a kept callable's cache and arguments, which its owner keeps
     // live through the call; the leaves are this crate's and C's.
     unsafe {

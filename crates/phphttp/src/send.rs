@@ -10,6 +10,7 @@
 use crate::{
     context, header,
     host::{self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD},
+    response::RESPONSE,
     state::State,
 };
 use std::{
@@ -18,7 +19,6 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
-    Props,
     bailout::{self, Bailout},
     string::bytes,
     sys::zend_string,
@@ -66,11 +66,10 @@ pub(crate) fn http2(
 
 /// The file's `Content-Type` header, unless the response has one.
 fn file_type(ctx: *mut Context, file: *mut zend_string) {
-    let Some(object) = state(ctx).response.zobject.object() else {
+    let response = state(ctx).response.zobject.get();
+    let Some(props) = response.and_then(|response| response.props(Some(&RESPONSE))) else {
         return;
     };
-    // SAFETY: the context's live response, under its registered class.
-    let props = unsafe { Props::new(crate::response::entry(), object) };
     // SAFETY: nothing else borrows `header`, and no PHP code runs, until the
     // type is added.
     let header = unsafe { props.array(c"header") };

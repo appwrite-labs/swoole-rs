@@ -28,11 +28,10 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Minit, Owned, Props, Value, ZStr, ZString, bailout, handlers, init_object,
-    method_table,
+    Array, Call, Class, Minit, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
     string::{self},
     sys::{
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
+        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
         ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
         swr_zend_ws_property_not_null, swr_zval_str, zend_ce_stringable, zend_class_entry,
         zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
@@ -623,22 +622,18 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
     (!header_only_mask(flags)).then_some(frame)
 }
 
-/// `FrameObject::uncompress`: the inflated payload into `payload`.
-fn uncompress(payload: *mut zval, data: &[u8]) -> bool {
+/// `FrameObject::uncompress`: the inflated payload, as a string.
+fn uncompress(data: &[u8]) -> Option<Owned> {
     use swoole_rs_inflate::{MessageFailure, error, message};
     if !ZLIB.load(Relaxed) {
         warning(
             c"FrameObject::uncompress",
             "The compressed websocket data frame is received, the `zlib` supports is required",
         );
-        return false;
+        return None;
     }
     match message(data) {
-        Ok(plain) => {
-            // SAFETY: the caller's empty slot takes the new string.
-            unsafe { swr_zval_str(payload, string::copy(&plain)) };
-            true
-        }
+        Ok(plain) => Some(Owned::string(ZString::new(&plain))),
         Err(MessageFailure::Init(status)) => {
             warning(
                 c"websocket::message_uncompress",
@@ -647,40 +642,34 @@ fn uncompress(payload: *mut zval, data: &[u8]) -> bool {
                     error(status).to_string_lossy()
                 ),
             );
-            false
+            None
         }
         Err(MessageFailure::Inflate(status)) => {
             host::fatal(&format!(
                 "inflate() failed, Error: {}[{status}]",
                 error(status).to_string_lossy()
             ));
-            false
+            None
         }
     }
 }
 
-/// `websocket::construct_frame`: a `Frame`, or a `CloseFrame` with the close
-/// payload's code and reason; the new object.
-fn construct(
-    frame: *mut zval,
-    opcode: zend_long,
-    payload: &Value,
-    mut flags: u8,
-) -> *mut zend_object {
-    let class = if opcode == zend_long::from(OPCODE_CLOSE) {
-        CLOSE_FRAME.entry()
-    } else {
-        FRAME.entry()
+/// `websocket::construct_frame`: a new `Frame`, or a `CloseFrame` with the
+/// close payload's code and reason.
+fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
+    let close = opcode == zend_long::from(OPCODE_CLOSE);
+    let class = if close { &CLOSE_FRAME } else { &FRAME };
+    let frame = class.create_object();
+    let Some(object) = frame.object() else {
+        return frame;
     };
-    // SAFETY: the caller's writable slot and a registered class.
-    let object = unsafe { init_object(frame, class) };
-    if class == CLOSE_FRAME.entry() {
+    if close {
         // A close payload is a string.
-        if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default() {
+        if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default()
+            && let Some(props) = frame.props(Some(class))
+        {
             // `(payload[0] << 8) ^ (payload[1] & 0xFF)` over a signed char.
             let code = (i64::from(high.cast_signed()) << 8) ^ i64::from(*low);
-            // SAFETY: the CloseFrame just created, under its class.
-            let props = unsafe { Props::new(class, object) };
             props.long(c"code", code);
             if !reason.is_empty() {
                 props.bytes(c"reason", reason);
@@ -701,7 +690,7 @@ fn construct(
         IS_FALSE
     };
     set(object, FINISH, scalar(finish, 0));
-    object
+    frame
 }
 
 /// A zval holding `string`'s reference.
@@ -793,23 +782,17 @@ fn unpack(call: &Call) {
     let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
     let payload = payload.unwrap_or_default();
     let zpayload = if frame.flags & FLAG_RSV1 != 0 {
-        let plain = Owned::default();
-        if !uncompress(plain.as_ptr(), payload) {
+        let Some(plain) = uncompress(payload) else {
             host::set_last_error(PROTOCOL_ERROR);
             call.set_bool(false);
             return;
-        }
+        };
         plain
     } else {
         Owned::string(ZString::new(payload))
     };
     // The Frame takes its own reference to the payload.
-    construct(
-        call.return_value(),
-        i64::from(frame.opcode),
-        &zpayload,
-        frame.flags,
-    );
+    call.set_owned(construct(i64::from(frame.opcode), &zpayload, frame.flags));
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
@@ -1009,15 +992,16 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
     }
     // RFC 7692: the payload is deflated.
     if flags & FLAG_RSV1 != 0 {
-        let plain = Owned::default();
-        if !uncompress(plain.as_ptr(), data.bytes().unwrap_or_default()) {
+        let Some(plain) = uncompress(data.bytes().unwrap_or_default()) else {
             return Ok(OK);
-        }
+        };
         data = plain;
     }
-    let mut args = [server_zval(), new_zval()];
-    let frame = construct(&raw mut args[1], zend_long::from(opcode), &data, flags);
-    set(frame, FD, scalar(IS_LONG, fd));
+    let frame = construct(zend_long::from(opcode), &data, flags);
+    if let Some(object) = frame.object() {
+        set(object, FD, scalar(IS_LONG, fd));
+    }
+    let mut args = [server_zval(), frame.into_zval()];
     if let Err(bailout) = dispatch(server, server_fd, ON_MESSAGE, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
         let _kept = data.into_zval();
@@ -1340,13 +1324,12 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
     }
 
     fn recv(&mut self, socket: swoole_rs_phpclients::Co, call: &Call, timeout: f64) {
-        recv(
+        call.set_owned(recv(
             self.frames,
             &mut self.message,
             socket.as_ptr(),
-            call.return_value(),
             timeout,
-        );
+        ));
     }
 }
 
@@ -1406,18 +1389,15 @@ fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
     }
 }
 
-/// A frame object for `payload` in `return_value`, with the socket's fd.
-fn deliver(return_value: *mut zval, sock: *mut c_void, opcode: u8, payload: &mut zval, flags: u8) {
-    let object = construct(
-        return_value,
-        zend_long::from(opcode),
-        Value::of(payload),
-        flags,
-    );
-    // SAFETY: the frame took its own reference.
-    unsafe { zval_ptr_dtor(payload) };
-    let fd = sock_fd(sock);
-    set(object, FD, scalar(IS_LONG, zend_long::from(fd)));
+/// A frame object for `payload`, with the socket's fd.
+fn deliver(sock: *mut c_void, opcode: u8, payload: &Value, flags: u8) -> Owned {
+    // The frame takes its own reference to the payload.
+    let frame = construct(zend_long::from(opcode), payload, flags);
+    if let Some(object) = frame.object() {
+        let fd = sock_fd(sock);
+        set(object, FD, scalar(IS_LONG, zend_long::from(fd)));
+    }
+    frame
 }
 
 fn bytes_of<'a>(data: *const u8, length: usize) -> &'a [u8] {
@@ -1428,57 +1408,41 @@ fn bytes_of<'a>(data: *const u8, length: usize) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(data, length) }
 }
 
-fn set_type(target: *mut zval, kind: u32) {
-    // SAFETY: a writable zval; these types carry no value.
-    unsafe { (*target).u1 = _zval_struct__bindgen_ty_1 { type_info: kind } };
-}
-
-fn protocol_error(return_value: *mut zval) {
+fn protocol_error() -> Owned {
     host::set_last_error(PROTOCOL_ERROR);
-    set_type(return_value, IS_NULL);
+    Owned::null()
 }
 
-/// The payload as a string zval, inflated when `compressed`.
-fn payload_zval(payload: &[u8], compressed: bool) -> Option<zval> {
-    if !compressed {
-        return Some(zval_of(string::copy(payload)));
+/// The payload as a string, inflated when `compressed`.
+fn payload_string(payload: &[u8], compressed: bool) -> Option<Owned> {
+    if compressed {
+        uncompress(payload)
+    } else {
+        Some(Owned::string(ZString::new(payload)))
     }
-    let mut out = new_zval();
-    uncompress(&raw mut out, payload).then_some(out)
 }
 
 /// `websocket::recv_frame`: the next whole message from a coroutine socket as
 /// a frame object, answering pings and closes the settings leave to it.
 /// `false` when the socket read failed, `""` when it closed, `null` on any
 /// other error.
-pub(crate) fn recv(
-    settings: u32,
-    slot: &mut Assembly,
-    sock: *mut c_void,
-    return_value: *mut zval,
-    timeout: f64,
-) {
+pub(crate) fn recv(settings: u32, slot: &mut Assembly, sock: *mut c_void, timeout: f64) -> Owned {
     let func = c"websocket::recv_frame";
     loop {
         let (received, data, length) = sock_recv(sock, timeout);
         if received < 0 {
-            set_type(return_value, IS_FALSE);
-            return;
+            return Owned::bool(false);
         }
         if received == 0 {
-            // SAFETY: the empty interned string.
-            unsafe { swr_zval_str(return_value, empty_string()) };
-            return;
+            return Owned::string(ZString::empty());
         }
         if length < 2 {
-            protocol_error(return_value);
-            return;
+            return protocol_error();
         }
         // SAFETY: the socket's read buffer, `length` bytes, unmasked in place.
         let buffer = unsafe { std::slice::from_raw_parts_mut(data, length) };
         let Some(frame) = decode(buffer) else {
-            protocol_error(return_value);
-            return;
+            return protocol_error();
         };
         let payload = bytes_of(
             buffer.as_ptr().wrapping_add(frame.header_length),
@@ -1499,9 +1463,8 @@ pub(crate) fn recv(
             _ => false,
         };
         if respond {
-            let mut zpayload = zval_of(string::copy(payload));
-            deliver(return_value, sock, opcode, &mut zpayload, FLAG_FIN);
-            return;
+            let payload = Owned::string(ZString::new(payload));
+            return deliver(sock, opcode, &payload, FLAG_FIN);
         }
         if opcode == OPCODE_CONTINUATION {
             let Some(message) = slot.as_mut() else {
@@ -1510,29 +1473,22 @@ pub(crate) fn recv(
                     "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
                      opcode indicates either text or binary data.",
                 );
-                set_type(return_value, IS_NULL);
-                return;
+                return Owned::null();
             };
             message.data.extend_from_slice(payload);
             if frame.flags & FLAG_FIN == 0 {
                 continue;
             }
             // The whole message is assembled: release its memory once delivered.
-            let Some(message) = slot.take() else { return };
-            let [complete_opcode, complete_flags] = message.ext_flags.to_be_bytes();
-            let Some(mut zpayload) = payload_zval(&message.data, complete_flags & FLAG_RSV1 != 0)
-            else {
-                protocol_error(return_value);
-                return;
+            let Some(message) = slot.take() else {
+                return Owned::null();
             };
-            deliver(
-                return_value,
-                sock,
-                complete_opcode,
-                &mut zpayload,
-                complete_flags | FLAG_FIN,
-            );
-            return;
+            let [complete_opcode, complete_flags] = message.ext_flags.to_be_bytes();
+            let Some(payload) = payload_string(&message.data, complete_flags & FLAG_RSV1 != 0)
+            else {
+                return protocol_error();
+            };
+            return deliver(sock, complete_opcode, &payload, complete_flags | FLAG_FIN);
         }
         if slot.is_some() {
             warning(
@@ -1540,16 +1496,13 @@ pub(crate) fn recv(
                 "All fragments of a message, except for the initial frame, must use the continuation \
                  frame opcode(0).",
             );
-            set_type(return_value, IS_NULL);
-            return;
+            return Owned::null();
         }
         if frame.flags & FLAG_FIN != 0 {
-            let Some(mut zpayload) = payload_zval(payload, frame.flags & FLAG_RSV1 != 0) else {
-                protocol_error(return_value);
-                return;
+            let Some(payload) = payload_string(payload, frame.flags & FLAG_RSV1 != 0) else {
+                return protocol_error();
             };
-            deliver(return_value, sock, opcode, &mut zpayload, frame.flags);
-            return;
+            return deliver(sock, opcode, &payload, frame.flags);
         }
         let size = if payload.is_empty() {
             DEFAULT_BUFFER
