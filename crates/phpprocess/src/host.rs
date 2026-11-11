@@ -6,9 +6,7 @@ use std::{
     ffi::{c_int, c_void},
     ptr::{self, NonNull},
 };
-use swoole_rs_corebase::{
-    swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads,
-};
+use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
@@ -59,9 +57,7 @@ pub(crate) fn server_class() -> *mut zend_class_entry {
 
 /// The running server, unless it is null.
 fn server() -> Option<view::Server<'static>> {
-    let serv = swr_v1_core_server();
-    // SAFETY: `sw_server()`, live until the process deletes it at shutdown.
-    (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) })
+    view::Server::current()
 }
 
 /// Who may construct a Process: 0, or 1 in a started server's master, 2 once

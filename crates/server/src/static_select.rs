@@ -27,7 +27,7 @@ pub trait Handler {
     fn end_part(&self) -> Vec<u8>;
 }
 
-impl<E: Effects> Handler for StaticHandler<E> {
+impl<E: Effects> Handler for StaticHandler<'_, E> {
     fn try_serve(&self) -> bool {
         Self::try_serve(self)
     }
@@ -348,8 +348,9 @@ pub unsafe fn swr_v1_server_static_select(
         wire.request().url_offset as usize,
         wire.request().url_length as usize,
     );
-    // SAFETY: the live server, which outlives the handler.
-    let Some(handler) = (unsafe { StaticHandler::new(server, &url) }) else {
+    // SAFETY: the live server, per the caller.
+    let serv = unsafe { crate::view::Server::from_raw(server) };
+    let Some(handler) = StaticHandler::new(serv, &url) else {
         return false;
     };
     select(&handler, &wire)

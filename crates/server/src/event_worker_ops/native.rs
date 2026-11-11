@@ -47,7 +47,7 @@ use crate::records::{VERIFIED, VERIFIED_TLS};
     clippy::mut_from_ref,
     reason = "native records shared with C++, written by the worker that owns them as workers.cc did"
 )]
-impl Context {
+impl Context<'_> {
     pub(super) fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
@@ -100,7 +100,7 @@ impl Context {
     fn callback(&self, index: u32, data: *mut c_void) {
         if let Some(slot) = self.state().callbacks.slot(index) {
             // SAFETY: the slot takes the server and the event data.
-            unsafe { slot.call(self.serv, data) };
+            unsafe { slot.call(self.serv.raw(), data) };
         }
     }
 }
@@ -112,7 +112,7 @@ fn sized(n: isize) -> u64 {
 
 /// The ops on native objects. The first ones run for each received event.
 #[inline(always)]
-pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let len = || usize::try_from(arg).unwrap_or(usize::MAX);
     Some(match op {
         OP_EVENT_BEGIN => {
@@ -160,7 +160,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let index = if arg == 0 { CB_RECEIVE } else { CB_PACKET };
             let slot = ctx.state().callbacks.slot(index)?;
             // SAFETY: `onReceive` and `onPacket` take the server and a `RecvData`.
-            if unsafe { slot.receive(ctx.serv, (&raw mut recv).cast()) } == 0 {
+            if unsafe { slot.receive(ctx.serv.raw(), (&raw mut recv).cast()) } == 0 {
                 ctx.worker().add_request_count();
                 ctx.counters().request_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -197,7 +197,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_ON_WORKER_ERROR => {
             if let Some(slot) = ctx.state().callbacks.slot(CB_WORKER_ERROR) {
                 // SAFETY: `onWorkerError` takes the server, the worker and its exit status.
-                unsafe { slot.dispatch(ctx.serv, ctx.worker.cast(), ctx.status.cast_mut()) };
+                unsafe { slot.dispatch(ctx.serv.raw(), ctx.worker.cast(), ctx.status.cast_mut()) };
             }
             0
         }
@@ -273,7 +273,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The ops on the reactor.
-fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_REACTOR_STOP => {
             ctx.reactor().fields().running = false;
@@ -351,7 +351,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let pipe = socket(ctx.worker().pipe_worker)?;
             let reactor = Reactor::thread();
             set_nonblock(pipe);
-            reactor.fields().ptr = ctx.serv;
+            reactor.fields().ptr = ctx.serv.raw();
             reactor.add(pipe, EVENT_READ);
             reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
             0
@@ -368,7 +368,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-impl Context {
+impl Context<'_> {
     /// `serv->ports`.
     fn ports(&self) -> &[view::Port<'_>] {
         self.server().ports()
@@ -399,17 +399,18 @@ extern "C-unwind" fn count_coroutines() {
 
 /// The context over this thread's worker and `reactor`, whose `ptr` is the server
 /// (or, in a task worker, its pool, whose `ptr` is).
-fn worker_context(reactor: Reactor) -> Context {
+fn worker_context<'a>(reactor: Reactor) -> Context<'a> {
     let mut serv = reactor.fields().ptr;
     if swoole_get_worker_type() == SW_TASK_WORKER {
         // SAFETY: a task worker's reactor holds its live pool.
         serv = unsafe { (*serv.cast::<swoole_rs_process::process_pool::PoolRecord>()).ptr };
     }
-    context(serv, reactor)
+    // SAFETY: the worker's live server, per the above.
+    context(unsafe { view::Server::from_raw(serv) }, reactor)
 }
 
 /// The context over `serv`, this thread's worker and `reactor`.
-fn context(serv: *mut c_void, reactor: Reactor) -> Context {
+fn context(serv: view::Server<'_>, reactor: Reactor) -> Context<'_> {
     Context {
         serv,
         worker: swoole_rs_process::worker_globals::current_worker(),
@@ -440,17 +441,17 @@ extern "C" fn on_pipe_receive(
 }
 
 /// Runs `operation` with `arg` over `ctx`, whose objects are live.
-fn run(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
+fn run(ctx: &mut Context<'_>, operation: u32, arg: u64) -> i64 {
     swoole_rs_process::workers::run_event_worker(ctx, operation, arg)
 }
 
-impl Context {
+impl<'a> Context<'a> {
     /// The context over `serv`, this thread's worker and reactor.
-    fn of(serv: view::Server<'_>) -> Self {
-        context(serv.raw(), Reactor::thread())
+    fn of(serv: view::Server<'a>) -> Self {
+        context(serv, Reactor::thread())
     }
     /// The context over `serv`, `worker` and this thread's reactor.
-    fn with(serv: view::Server<'_>, worker: Worker<'_>) -> Self {
+    fn with(serv: view::Server<'a>, worker: Worker<'_>) -> Self {
         Self {
             worker: worker.raw(),
             ..Self::of(serv)
@@ -465,7 +466,10 @@ pub fn worker_signal_init(serv: view::Server<'_>) {
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
 pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
-    let mut ctx = context(swoole_rs_corebase::swr_v1_core_server(), Reactor::thread());
+    let Some(serv) = view::Server::current() else {
+        return;
+    };
+    let mut ctx = context(serv, Reactor::thread());
     run(
         &mut ctx,
         RUN_WORKER_SIGNAL,

@@ -33,8 +33,8 @@ mod native;
 pub(crate) use native::start_reactor_processes;
 
 /// What an operation runs over.
-struct Context {
-    serv: *mut c_void,
+struct Context<'a> {
+    serv: view::Server<'a>,
     worker: *mut WorkerRecord,
     reactor: *mut c_void,
     event: *mut Event,
@@ -42,11 +42,10 @@ struct Context {
     now: f64,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     /// The context's live server.
-    fn server(&self) -> view::Server<'_> {
-        // SAFETY: the method that built the context lent its live server for the call.
-        unsafe { view::Server::from_raw(self.serv) }
+    fn server(&self) -> view::Server<'a> {
+        self.serv
     }
 }
 
@@ -56,7 +55,7 @@ const EVENT_CLOSE: c_int = 4;
 const SSL_READY: u32 = 1;
 
 /// Answers each reactor-process op over the context.
-impl swoole_rs_process::workers::Answer for Context {
+impl swoole_rs_process::workers::Answer for Context<'_> {
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
         let ctx = self;
         native::native(ctx, op, arg)
@@ -69,7 +68,7 @@ impl swoole_rs_process::workers::Answer for Context {
 }
 
 /// The factory's work on the message the server's bus just read from the pipe.
-fn pipe(ctx: &Context, op: u32) -> Option<u64> {
+fn pipe(ctx: &Context<'_>, op: u32) -> Option<u64> {
     use crate::base_factory::SendData;
     /// `SW_SERVER_EVENT_RECV_DATA`, `Server::CLOSE_ACTIVELY`.
     const EVENT_RECV_DATA: u8 = 0;
@@ -110,19 +109,14 @@ fn pipe(ctx: &Context, op: u32) -> Option<u64> {
 /// path, and returns the server for its owner to delete. Any other server is left alone.
 #[must_use]
 pub fn release_abandoned_server() -> Option<*mut c_void> {
-    let serv = swoole_rs_corebase::swr_v1_core_server();
-    if serv.is_null() {
-        return None;
-    }
-    // SAFETY: `SwooleG.server`, live while set.
-    let server = unsafe { view::Server::from_raw(serv) };
+    let server = view::Server::current()?;
     if !server.ran_its_single_worker_here() {
         return None;
     }
     // The live event pool only this process uses; destroy frees each part once.
     pool_destroy(server.event_pool_ref());
     crate::master_ops::release_abandoned_base(server);
-    Some(serv)
+    Some(server.raw())
 }
 
 /// `Socket::is_stream(type)`.
@@ -136,7 +130,7 @@ fn reuse_port(config: &crate::ServerConfig) -> bool {
 }
 
 /// The facts and effects on the server and its ports.
-fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
     let port = || {
@@ -198,8 +192,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(unsafe { (*ctx.workers().task_pool).worker_num() })
         }
         OP_INIT_REACTOR => {
-            // SAFETY: the context's live server and the running reactor.
-            unsafe { crate::reactor_entry::init_reactor(serv, reactor(ctx)) };
+            crate::reactor_entry::init_reactor(serv, ctx.reactor_handle());
             0
         }
         OP_SET_MASTER_PID => {
@@ -222,7 +215,8 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_ADD_MASTER_TIMER => {
             let tick = crate::server_methods::master_timer_tick;
             // SAFETY: `tick` takes the server, which outlives the master's timer.
-            let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv) };
+            let node =
+                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv.raw()) };
             config.master_timer = node;
             u64::from(!node.is_null())
         }
@@ -236,7 +230,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The context's reactor, or the thread's.
-fn reactor(ctx: &Context) -> *mut c_void {
+fn reactor(ctx: &Context<'_>) -> *mut c_void {
     if ctx.reactor.is_null() {
         swoole_rs_corebase::thread_reactor()
     } else {
@@ -245,7 +239,7 @@ fn reactor(ctx: &Context) -> *mut c_void {
 }
 
 /// The effects on the context's worker.
-fn worker(ctx: &Context, op: u32) -> Option<u64> {
+fn worker(ctx: &Context<'_>, op: u32) -> Option<u64> {
     match op {
         OP_WORKER_ENTER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_EVENT_WORKER);
@@ -278,7 +272,7 @@ const SW_EVENT_WORKER: c_int = 2;
 
 /// The connection the context selected (`OP_CONN_AT`, `OP_EVENT_CONN_ACTIVE`) and
 /// the event being closed.
-fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let server = ctx.server();
     match op {
         OP_CONN_AT => {

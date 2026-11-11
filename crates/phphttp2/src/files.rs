@@ -5,12 +5,12 @@
 use crate::server::{
     Value, begin_file, current, finish_file, of, respond, send_body, set, zval_of,
 };
-use libc::c_void;
 use std::ffi::CString;
 use swoole_rs_hooks::offload::async_job;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
+use swoole_rs_server::view;
 use swoole_rs_zend::{Value as Zval, bailout};
 
 /// `sw_rs_http2_file_mode`'s modes.
@@ -81,16 +81,15 @@ fn body(ctx: Ctx, data: &[u8], end_stream: bool) -> bool {
 /// when the static handler serves it (true). `server` is the live server.
 /// # Errors
 /// Serving it left a bailout pending; it stays pending for the caller.
-pub(crate) fn static_file(server: *mut c_void, ctx: Ctx) -> Result<bool, bailout::Bailout> {
+pub(crate) fn static_file(server: view::Server<'_>, ctx: Ctx) -> Result<bool, bailout::Bailout> {
     bailout::outcome(serve(server, ctx))
 }
 
-fn serve(server: *mut c_void, ctx: Ctx) -> bool {
+fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
-    // SAFETY: the live server.
-    let Some(handler) = (unsafe { StaticHandler::new(server, uri) }) else {
+    let Some(handler) = StaticHandler::new(server, uri) else {
         return false;
     };
     if !handler.try_serve() {
@@ -155,7 +154,7 @@ fn content_range(offset: i64, length: usize, size: usize) -> String {
 
 /// `http2_server_send_range_file`: the file's ranges, the stream (and so the
 /// context) held while a coroutine reads it.
-fn send_ranges(ctx: Ctx, handler: &StaticHandler) -> bool {
+fn send_ranges(ctx: Ctx, handler: &StaticHandler<'_>) -> bool {
     let _held = of(ctx);
     let trailer = begin_file(ctx, &handler.content_type(), handler.content_length());
     if trailer < 0 {

@@ -56,8 +56,9 @@ struct WorkerStopMessage {
 }
 
 /// What an operation runs over.
-struct Context {
-    serv: *mut c_void,
+struct Context<'a> {
+    /// `None` for a signal that arrives before the server exists.
+    serv: Option<view::Server<'a>>,
     /// The worker being restarted, or the message being read.
     worker: *mut WorkerRecord,
     task: *const EventData,
@@ -68,11 +69,10 @@ struct Context {
     stop: WorkerStopMessage,
 }
 
-impl Context {
-    /// The context's live server.
-    fn server(&self) -> view::Server<'_> {
-        // SAFETY: the method that built the context lent its live server for the call.
-        unsafe { view::Server::from_raw(self.serv) }
+impl<'a> Context<'a> {
+    /// The context's live server, which every op but `OP_MANAGER` runs with.
+    fn server(&self) -> view::Server<'a> {
+        self.serv.unwrap_or_else(|| std::process::abort())
     }
 }
 
@@ -86,9 +86,9 @@ const _: () = assert!(
     clippy::mut_from_ref,
     reason = "native records shared with C++, written by the manager that owns them"
 )]
-impl Context {
+impl<'a> Context<'a> {
     /// The context over `serv`.
-    fn of(serv: *mut c_void) -> Self {
+    fn of(serv: Option<view::Server<'a>>) -> Self {
         Self {
             serv,
             worker: null_mut(),
@@ -164,7 +164,7 @@ const REGISTRY_USER: c_int = 2;
 
 /// `Factory::kill_event_workers()` (`origin` `kill_event_workers`) and
 /// `kill_user_workers()`: SIGTERM each worker of `category`, then wait for each.
-fn kill_workers(ctx: &Context, category: c_int, origin: &core::ffi::CStr) {
+fn kill_workers(ctx: &Context<'_>, category: c_int, origin: &core::ffi::CStr) {
     let registry = ctx.registry();
     let kill = swoole_rs_process::os::kill;
     let wait = |pid| swoole_waitpid(pid, None, 0);
@@ -178,16 +178,12 @@ const SW_MANAGER: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
 
 /// Answers each manager op over the context.
-impl swoole_rs_process::workers::Answer for Context {
+impl swoole_rs_process::workers::Answer for Context<'_> {
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
         let ctx = self;
         if op == OP_MANAGER {
             // `serv ? serv->manager_ : 0`: a signal may arrive before the server exists.
-            return if ctx.serv.is_null() {
-                0
-            } else {
-                ctx.config().manager_ as u64
-            };
+            return ctx.serv.map_or(0, |serv| serv.config().manager_ as u64);
         }
         fact(ctx, op, arg)
             .or_else(|| effect(ctx, op, arg))
@@ -223,7 +219,7 @@ fn exit_status(exited: u64) -> ExitStatus {
 }
 
 /// The facts read from the server, its pools and the context.
-fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let config = ctx.config();
     let workers = ctx.workers();
     let (pool, task_pool) = (ctx.pool(), ctx.task_pool());
@@ -269,8 +265,8 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The effects on the server, its pools and the process.
-fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
+fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
+    let serv = ctx.server();
     let config = ctx.config();
     let callback = |index| ctx.state().callbacks.call_server(index, ctx.server());
     let registry = ctx.registry();
@@ -309,19 +305,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_ON_BEFORE_RELOAD => callback(CB_BEFORE_RELOAD),
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
         OP_DROP_RELOAD_TASK => methods::drop_reload_task(ctx.server().event_pool_ref()),
-        OP_KILL_TASK_WORKERS => {
-            // SAFETY: the context's live server.
-            unsafe {
-                run(
-                    serv,
-                    RUN_KILL_TASK_WORKERS,
-                    null_mut(),
-                    null_mut(),
-                    null(),
-                    0,
-                )
-            };
-        }
+        OP_KILL_TASK_WORKERS => _ = crate::factory_ops::run_server(serv, RUN_KILL_TASK_WORKERS),
         OP_SET_RUNNING => config.running = arg != 0,
         OP_SET_RELOAD_INIT => ctx.pool().reload_init = arg != 0,
         OP_SET_READ_MESSAGE => ctx.pool().read_message = arg != 0,
@@ -391,8 +375,8 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// Finding, checking and replacing the server's children.
-fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
+fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
+    let serv = ctx.server();
     // `Factory::spawn_*_worker(worker)`: the child's pid, or -1.
     let spawn = |op, worker| {
         // SAFETY: the context's live server, and one of its workers.
@@ -447,7 +431,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 
 /// The ops on native objects: the fork, the signals, the barrier, the message box
 /// and the command reply.
-fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_FORK_MANAGER => {
             let serv = ctx.serv;
@@ -520,32 +504,36 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 /// # Safety
 /// `msg` is the live `EventData` the pool popped.
 unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_void) {
-    // The event worker pool's `ptr` is its server.
-    let mut ctx = Context::of(pool.ptr());
+    // SAFETY: the event worker pool's `ptr` is its live server.
+    let serv = unsafe { view::Server::from_raw(pool.ptr()) };
+    let mut ctx = Context::of(Some(serv));
     ctx.task = msg.cast_const().cast();
     run_over(&mut ctx, RUN_READ_WORKER_MESSAGE, 0);
 }
 
 /// `Manager_signal_handler`: the manager's signals over `SwooleG.server`.
 extern "C" fn signal_handler(signo: c_int) {
-    let serv = swoole_rs_corebase::swr_v1_core_server();
-    run_manager(serv, RUN_MANAGER_SIGNAL, i64::from(signo).cast_unsigned());
+    run_manager(
+        view::Server::current(),
+        RUN_MANAGER_SIGNAL,
+        i64::from(signo).cast_unsigned(),
+    );
 }
 
 /// Runs manager `operation` with `arg` over `serv`.
-fn run_manager(serv: *mut c_void, operation: u32, arg: u64) {
+fn run_manager(serv: Option<view::Server<'_>>, operation: u32, arg: u64) {
     run_over(&mut Context::of(serv), operation, arg);
 }
 
 /// Runs `operation` with `arg` over `ctx`, whose objects are live.
-fn run_over(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
+fn run_over(ctx: &mut Context<'_>, operation: u32, arg: u64) -> i64 {
     swoole_rs_process::workers::run_over(ctx, operation, arg)
 }
 
 /// `Server::start_manager_process()`.
 #[must_use]
 pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
-    let code = run_over(&mut Context::of(serv.raw()), RUN_START_MANAGER, 0);
+    let code = run_over(&mut Context::of(Some(serv)), RUN_START_MANAGER, 0);
     c_int::try_from(code).unwrap_or(-1)
 }
 
@@ -557,7 +545,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_
         status.status().cast_unsigned(),
     );
     let arg = u64::from(pid) | u64::from(status) << 32;
-    let code = run_over(&mut Context::of(serv.raw()), RUN_RESTART_WORKER, arg);
+    let code = run_over(&mut Context::of(Some(serv)), RUN_RESTART_WORKER, arg);
     c_int::try_from(code).unwrap_or(-1)
 }
 
@@ -565,5 +553,5 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_
 #[must_use]
 pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
     let arg = u64::from(reload_all_workers);
-    run_over(&mut Context::of(serv.raw()), RUN_RELOAD, arg) != 0
+    run_over(&mut Context::of(Some(serv)), RUN_RELOAD, arg) != 0
 }

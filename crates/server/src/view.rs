@@ -53,6 +53,18 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
+    /// none.
+    #[must_use]
+    pub fn current() -> Option<Server<'static>> {
+        let serv = swoole_rs_corebase::swr_v1_core_server();
+        // SAFETY: null, or the process's live server: only `swr_v1_server_new` sets it,
+        // and the server's shutdown (`OP_FREE_SERVER`, `swr_v1_server_delete`) clears
+        // it before the server goes, after the calls that read it (as C++ reads
+        // `sw_server()`).
+        (!serv.is_null()).then(|| unsafe { Server::from_raw(serv) })
+    }
+
     fn fields(self) -> &'a Fields {
         // SAFETY: the head of a live Server, per the module comment and `from_raw`'s caller.
         unsafe { &*self.raw.cast::<Fields>() }
