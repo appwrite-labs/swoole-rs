@@ -45,8 +45,7 @@ pub fn fd_wait(
     };
     let timeout = if timeout_ms < 0 { -1 } else { timeout_ms };
     loop {
-        // SAFETY: `event` is one local pollfd.
-        let ready = unsafe { libc::poll(&raw mut event, 1, timeout) };
+        let ready = swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut event), timeout);
         if ready == 0 {
             return SocketIoResult {
                 status: 1,
@@ -200,12 +199,9 @@ pub fn sendfile_range(
     length: libc::size_t,
     end: &mut libc::off_t,
 ) -> c_int {
-    // SAFETY: an all-zero stat is a valid out-parameter for fstat.
-    let mut status: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: `status` is one local stat.
-    if unsafe { libc::fstat(file_fd, &raw mut status) } != 0 {
+    let Some(status) = swoole_rs_corebase::sys::fstat(file_fd) else {
         return 1;
-    }
+    };
     if status.st_size == 0 {
         return 2;
     }
