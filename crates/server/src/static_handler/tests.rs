@@ -549,6 +549,7 @@ impl FileCase<'_> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
 fn former_context_gate_files() {
     let ranges: [Option<&[u8]>; 7] = [
         None,
@@ -623,6 +624,7 @@ fn names(names: &[&str]) -> Vec<Vec<u8>> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
 fn former_context_gate_directories() {
     let mut listings = vec![
         names(&[".", ".."]),
@@ -876,6 +878,7 @@ fn random_dates() -> Vec<Vec<u8>> {
 /// process-wide; this process then runs the random dates and the two cases
 /// where the original's arithmetic misbehaves and only the correction runs.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no posix_spawnattr_init")]
 fn former_conditional_gate() {
     if std::env::var_os("SWR_CONDITIONAL_ZONE").is_some() {
         conditional_cases();
