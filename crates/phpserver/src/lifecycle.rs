@@ -469,9 +469,10 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: the object's live server; the master deletes it below.
     let server = (!data.serv.is_null()).then(|| unsafe { view::Server::from_raw(data.serv) });
     if let Some(server) = server {
-        // SAFETY: freeing the object; another thread's object may free over the
-        // same config, which `take_shared` only reads when its slot is empty.
-        let dispatch = crate::port::take_shared(&mut unsafe { server.config_mut() }.private_data_3);
+        let config = server.config_ptr();
+        // SAFETY: the live config's slot; another thread's object freeing over the same
+        // config takes it only through `take_shared` too.
+        let dispatch = unsafe { crate::port::take_shared(&raw mut (*config).private_data_3) };
         bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         for &callable in property.callbacks.iter().filter(|cb| !cb.is_null()) {
             // SAFETY: a callable the property owned.

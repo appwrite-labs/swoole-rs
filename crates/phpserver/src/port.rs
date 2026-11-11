@@ -4,6 +4,7 @@ use crate::{
     port_settings,
     settings::{Settings, Stop},
 };
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{
     ffi::{c_char, c_int, c_void},
     mem::MaybeUninit,
@@ -154,11 +155,9 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
     }
     if !data.port.is_null() {
         // SAFETY: a bound port, which outlives this call.
-        free_callable(take_shared(
-            &mut unsafe { port_config::of(data.port) }
-                .protocol
-                .private_data_1,
-        ));
+        let config = unsafe { port_config::ptr(data.port) };
+        // SAFETY: its live settings' slot, which other threads' objects take only so.
+        free_callable(unsafe { take_shared(&raw mut (*config).protocol.private_data_1) });
         data.port = ptr::null_mut();
     }
 }
@@ -169,13 +168,18 @@ fn take(slot: &mut *mut c_void) -> *mut c_void {
 }
 
 /// A slot on the native server, which every thread's object reaches when it is
-/// freed: an empty one is only read, as upstream's `if (slot)` does, so the threads
-/// don't race on it.
-pub(crate) fn take_shared(slot: &mut *mut c_void) -> *mut c_void {
-    if slot.is_null() {
+/// freed: an empty one is only read, as upstream's `if (slot)` does, and a set one is
+/// swapped out atomically, so exactly one thread gets its callable.
+///
+/// # Safety
+/// `slot` is a live pointer slot that other threads touch at once only through this.
+pub(crate) unsafe fn take_shared(slot: *mut *mut c_void) -> *mut c_void {
+    // SAFETY: per the caller; `AtomicPtr` has the layout of a pointer.
+    let slot = unsafe { AtomicPtr::from_ptr(slot) };
+    if slot.load(Ordering::Acquire).is_null() {
         return ptr::null_mut();
     }
-    take(slot)
+    slot.swap(ptr::null_mut(), Ordering::AcqRel)
 }
 
 /// Free a callable already out of its slot: a destructor this runs may reach
