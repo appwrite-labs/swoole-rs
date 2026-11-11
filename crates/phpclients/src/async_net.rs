@@ -160,7 +160,7 @@ fn execute(object: Obj, slot: usize) -> Result<(), Bailout> {
 fn execute_and_release(object: Obj, slot: usize) -> Result<(), Bailout> {
     execute(object, slot)?;
     if let Some(conn) = object.data().conn() {
-        net::release(object, &conn)?;
+        net::release(object, conn)?;
     }
     // SAFETY: `zval_delref_p`: the reference `connect()` took.
     unsafe { (*object.as_ptr()).gc.refcount -= 1 };
@@ -251,7 +251,7 @@ fn destruct(call: &Call) {
     }
     // A close callback may have freed it already.
     if let Some(conn) = net::this(call).conn() {
-        bailed(net::release(Obj::this(call), &conn));
+        bailed(net::release(Obj::this(call), conn));
     }
 }
 
@@ -375,6 +375,8 @@ fn connect(call: &Call) {
     let Some(result) = bailed(connect.run()) else {
         return call.set_bool(false);
     };
+    // Only the object holds the connection now, so a release below destroys it.
+    drop(fresh);
     if result >= 0 {
         return call.set_bool(true);
     }
@@ -402,7 +404,7 @@ fn connect(call: &Call) {
     // The object's connection, if an error callback did not free it.
     if let Some(remaining) = net::this(call).conn()
         && events & bit(ON_ERROR) == 0
-        && bailed(net::release(object, &remaining)).is_some()
+        && bailed(net::release(object, remaining)).is_some()
     {
         // SAFETY: the reference taken above.
         unsafe { (*object.as_ptr()).gc.refcount -= 1 };

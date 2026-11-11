@@ -63,9 +63,12 @@ pub(crate) const INVALID_PARAMS: c_int = 505;
 /// `ssl_wait_handshake` client fields).
 ///
 /// The object shares it (`Rc`, cells), so PHP code a method runs can re-enter
-/// the object and even release the connection while the method still holds it.
+/// the object and [`release`] the connection while the method still holds it:
+/// the native client then lives until the last holder drops it.
 pub(crate) struct Conn {
     pub(crate) cli: Cli,
+    /// [`release`] ran while a method held it: the last drop destroys `cli`.
+    released: Cell<bool>,
     key: Vec<u8>,
     keep: bool,
     reuse_count: u32,
@@ -85,6 +88,7 @@ impl Conn {
     pub(crate) fn new(cli: Cli) -> Self {
         Self {
             cli,
+            released: Cell::new(false),
             key: Vec::new(),
             keep: false,
             reuse_count: 0,
@@ -98,12 +102,23 @@ impl Conn {
     fn detach(&self) -> Self {
         Self {
             cli: self.cli,
+            released: Cell::new(false),
             key: self.key.clone(),
             keep: self.keep,
             reuse_count: self.reuse_count,
             frame: Cell::new(self.frame.take()),
             ssl_wait: Cell::new(self.ssl_wait.get()),
         }
+    }
+
+    /// PHP code a call reached released the connection: errCode says it is
+    /// not connected, as for a closed client.
+    fn released(&self, object: Obj) -> bool {
+        if self.released.get() {
+            set_last_error(NO_CONNECTION);
+            set_err_code(object, NO_CONNECTION);
+        }
+        self.released.get()
     }
 
     pub(crate) fn flag(&self, name: u32) -> bool {
@@ -157,6 +172,16 @@ impl Conn {
         self.cli
             .net()
             .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
+    }
+}
+
+impl Drop for Conn {
+    /// A released connection's last holder destroys the client; the handler
+    /// or event that dropped it raises a bailout as its last step.
+    fn drop(&mut self) {
+        if self.released.get() {
+            bailout::defer(native::destroy(self.cli));
+        }
     }
 }
 
@@ -458,18 +483,29 @@ pub(crate) fn bailed<T>(result: Result<T, Bailout>) -> Option<T> {
 }
 
 /// `php_swoole_client_free`: release the connection's timer, length callable,
-/// pool entry and client, then the exported socket.
-pub(crate) fn release(object: Obj, conn: &Conn) -> Result<(), Bailout> {
+/// pool entry and client, then the exported socket. The client is destroyed
+/// now unless a method that re-entered PHP still holds the connection; then
+/// its last drop does it.
+pub(crate) fn release(object: Obj, conn: Rc<Conn>) -> Result<(), Bailout> {
+    if conn.released.get() {
+        return Ok(());
+    }
     if conn.keep
         && let Some(pool) = long_connections().as_mut()
     {
         pool.remove_empty(&conn.key);
     }
-    let destroyed = native::destroy(conn.cli);
     let data = object.data();
+    data.set_conn(None);
+    let destroyed = match Rc::try_unwrap(conn) {
+        Ok(conn) => native::destroy(conn.cli),
+        Err(held) => {
+            held.released.set(true);
+            Ok(())
+        }
+    };
     // The reference the object took in getSocket().
     drop(data.zsocket.take());
-    data.set_conn(None);
     destroyed
 }
 
@@ -503,7 +539,7 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
                 conn.set_flag(state::ACTIVE, true);
                 return Some(conn);
             }
-            bailed(release(object, &conn))?;
+            bailed(release(object, conn))?;
         }
     }
     set_last_error(NO_CONNECTION);
@@ -593,7 +629,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
                 conn = Some(pooled);
             } else {
                 bailed(pooled.call(Op::Close).run())?;
-                bailed(release(object, &pooled))?;
+                bailed(release(object, Rc::new(*pooled)))?;
             }
         }
     }
@@ -761,6 +797,9 @@ fn connect(call: &Call) {
     let Some(result) = bailed(connect.run()) else {
         return call.set_bool(false);
     };
+    if conn.released(object) {
+        return call.set_bool(false);
+    }
     if result < 0 {
         set_err_code(object, last_error());
         if conn.flag(state::ASYNC_CONNECT) {
@@ -779,7 +818,7 @@ fn connect(call: &Call) {
             strerror(error),
         );
         warn(ErrorKind::Core, &message);
-        bailed(release(object, &conn));
+        bailed(release(object, conn));
         return call.set_bool(false);
     }
     call.set_bool(true);
@@ -1032,6 +1071,10 @@ fn recv_length(
             call.set_bool(false);
             return None;
         };
+        if conn.released(Obj::this(call)) {
+            call.set_bool(false);
+            return None;
+        }
         length = measured;
         if length != 0 {
             break;
@@ -1242,7 +1285,7 @@ fn close(call: &Call) {
         let Some(result) = bailed(conn.call(Op::Close).run()) else {
             return call.set_bool(false);
         };
-        bailed(release(object, &conn));
+        bailed(release(object, conn));
         return call.set_bool(result >= 0);
     }
     let pushed = {
