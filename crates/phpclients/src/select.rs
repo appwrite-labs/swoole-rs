@@ -17,12 +17,14 @@ const SETS: [(u32, c_short); 3] = [(1, POLLIN), (2, POLLOUT), (3, POLLHUP)];
 fn set(call: &Call, n: u32) -> Option<Owned> {
     let value = call.value(n)?.dereferenced();
     value.array().filter(|array| array.count() > 0)?;
-    Some(value.copy())
+    Some(value.into_owned())
 }
 
 /// `php_swoole_array_length_safe`.
-fn length(array: Option<&Array>) -> usize {
-    array.map_or(0, |array| array.count() as usize)
+fn length(array: Option<&Owned>) -> usize {
+    array
+        .and_then(|array| array.array())
+        .map_or(0, |array| array.count() as usize)
 }
 
 /// `php_swoole_convert_to_fd`, which may warn.
@@ -91,16 +93,16 @@ fn keep_ready(array: &Array, fds: &[pollfd], count: usize, revent: c_short) -> O
 fn select(call: &Call) {
     let parsed = call.arity(3, 4).and_then(|()| {
         Ok((
-            call.array_or_null(1)?,
-            call.array_or_null(2)?,
-            call.array_or_null(3)?,
+            length(call.array_or_null(1)?.as_ref()),
+            length(call.array_or_null(2)?.as_ref()),
+            length(call.array_or_null(3)?.as_ref()),
             call.double(4, CONNECT_TIMEOUT)?,
         ))
     });
     let Ok((read, write, except, timeout)) = parsed else {
         return;
     };
-    let count = length(read).max(length(write)).max(length(except));
+    let count = read.max(write).max(except);
     let mut fds = Vec::with_capacity(count);
     for (n, event) in SETS {
         if let Some(set) = set(call, n)

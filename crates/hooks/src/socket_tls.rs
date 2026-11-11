@@ -11,9 +11,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, owner_fields, owner_tls_host_name, reason_text,
-    swoole_ssl_init, swr_v1_tls_owner_clone, swr_v1_tls_owner_new, swr_v1_tls_owner_socket_context,
-    swr_v1_tls_owner_socket_session,
+    OwnedTlsContext, OwnedTlsFields, TlsContext, owner_fields, owner_tls_host_name, reason_text,
+    swoole_ssl_init, swr_v1_tls_owner_socket_context, swr_v1_tls_owner_socket_session,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -29,7 +28,8 @@ impl Co {
     /// The socket's `SSLContext` owner, or null without one.
     #[must_use]
     pub fn tls_owner(self) -> *const OwnedTlsContext {
-        self.with_extra(|extra| extra.tls)
+        self.with_extra(|extra| extra.tls.as_ref().map(TlsContext::as_ptr))
+            .flatten()
             .unwrap_or(core::ptr::null())
     }
 
@@ -42,13 +42,11 @@ impl Co {
 
     /// The `SSLContext` owner's `tls_host_name`, empty without one.
     pub(crate) fn tls_host_name(self) -> Vec<u8> {
-        let owner = self.tls_owner();
-        if owner.is_null() {
+        let Some(owner) = self.with_extra(|extra| extra.tls.clone()).flatten() else {
             return Vec::new();
-        }
-        // SAFETY: the record's live owner; the name doesn't change while it is copied.
-        let name = unsafe { owner_tls_host_name(owner) };
-        // SAFETY: the view's bytes, copied at once.
+        };
+        let name = owner_tls_host_name(&owner);
+        // SAFETY: the view's bytes, which `owner` keeps live, copied at once.
         unsafe { core::slice::from_raw_parts(name.data.cast::<u8>(), name.length) }.to_vec()
     }
 
@@ -57,10 +55,10 @@ impl Co {
     #[must_use]
     pub fn enable_ssl(self) -> bool {
         self.with_extra(|extra| {
-            if !extra.tls.is_null() {
+            if extra.tls.is_some() {
                 return false;
             }
-            extra.tls = swr_v1_tls_owner_new().owner;
+            extra.tls = Some(TlsContext::new());
             true
         })
         .unwrap_or(false)
@@ -69,14 +67,12 @@ impl Co {
     /// The accepting constructor's TLS: `self`, accepted on `server`, shares the
     /// server's context and gets a session over it, or is closed when that fails.
     pub(crate) fn share_tls(self, server: Self) {
-        let owner = server.tls_owner();
-        if owner.is_null() {
+        let Some(shared) = server.with_extra(|extra| extra.tls.clone()).flatten() else {
             return;
-        }
-        // SAFETY: the server's live ownership handle.
-        let shared = unsafe { swr_v1_tls_owner_clone(owner) };
+        };
+        let owner = shared.as_ptr();
         // The client's metadata takes the reference.
-        self.with_extra(|extra| extra.tls = shared);
+        self.with_extra(|extra| extra.tls = Some(shared));
         if !self.create_session(owner) {
             // Nothing else holds the new socket yet.
             self.close();

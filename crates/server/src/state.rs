@@ -190,9 +190,7 @@ impl ServerState {
             return &[];
         }
         // SAFETY: a live slot of this state; texts are set only while the server is configured.
-        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
-        // SAFETY: the view's bytes stay put until the slot is next set.
-        unsafe { core::slice::from_raw_parts(view.data.cast(), view.length) }
+        unsafe { &*slot }.bytes()
     }
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
@@ -405,9 +403,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
         OP_LC_UNLINK_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
-                let file = c_path(file);
-                // SAFETY: a terminated path.
-                unsafe { libc::unlink(file.as_ptr()) };
+                swoole_rs_corebase::sys::unlink(&c_path(file));
             }
         }
         _ => return None,

@@ -301,7 +301,8 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
     handlers.clone_obj = None;
     handlers.unset_property = Some(unset_property_deny);
-    ClientObject::install(entry, handlers, create, free);
+    // SAFETY: `create` makes a `ClientObject`; `free` ends with its `dtor`.
+    unsafe { ClientObject::install(entry, handlers, create, free) };
 }
 
 method_table! {
@@ -1223,7 +1224,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     }
     let (host, port) = native::address(&address);
-    address_array(call, port, host);
+    address_array(call, port, &host);
 }
 
 /// `getSocket()`: the client's socket as an ext/sockets `Socket`.

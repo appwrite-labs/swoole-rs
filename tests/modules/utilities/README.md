@@ -14,24 +14,25 @@ other 16 test `swoole::String` and run on both engines in the buffer module's
 
 Use a release archive matching the current utility sources, headers and overlays.
 
-## Body and policy gates
+## Pinned differential tests
+
+`crates/utilities/src/upstream.rs` runs the Rust hashes (signed and unsigned
+`char`), pretty-name ranges, level clamp, labels, rotation formats and the
+logger's line and microsecond formatting (truncation, NUL and errno) against the
+pinned bodies the oracle crate compiles (`crates/oracle/shim/utilities.cc`), and
+the spinlock across threads and a forked process. Austin is compared only on
+ASCII input: the pinned body shifts negative promoted `char`s. It runs in
+`utilities-unit`.
+
+## Wait gate
 
 ```sh
-python3 tests/modules/utilities/gate.py --source /pinned/reference \
-  --archive /inputs/libswoole_rs_ffi.a --sanitize --output target/utilities.json
 python3 tests/modules/utilities/wait.py --source /pinned/reference \
   --archive /inputs/libswoole_rs_ffi.a --sanitize --output target/utilities-wait.json
 ```
 
-| Script (dev.py phase) | Checks |
-| --- | --- |
-| `gate.py` (`utilities-native`) | Pinned vs Rust: defined hashes, pretty ranges, levels/labels/rotation, exact line/microsecond formatting, truncation, NUL and errno, thread/shared-mapping spin witnesses; signed and unsigned char |
-| `wait.py` (`utilities-wait`) | Wait/wake result, errno and word; real shared fork wake, Linux futex wait channel and fallback, macOS polling |
-
-`--rust-asan` (with `--sanitize`) additionally requires the utility Rust objects
-to carry ASan imports. On macOS the installed Apple and Rust ASan
-runtimes are incompatible: use `--native-ubsan-only --asan-runtime
-/absolute/path/to/librustc-stable_rt.asan.dylib`. Rust's std stays uninstrumented.
+`wait.py` (`utilities-wait`, Linux) checks the wait/wake result, errno and word,
+a real shared fork wake, and the futex wait channel and fallback.
 
 ## Logger
 

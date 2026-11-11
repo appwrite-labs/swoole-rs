@@ -386,7 +386,7 @@ pub fn response(pool: &PoolRecord, data: &[u8]) -> c_int {
 /// `ProcessPool::send_message(worker_id, message, length)`: to the worker's
 /// master pipe, through the message bus when the pool has one.
 ///
-/// False for a `worker_id` the pool has no worker for.
+/// False for a `worker_id` the pool has no worker for, or a pool without pipes.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn send_message(pool: &PoolRecord, worker_id: u32, message: &[u8]) -> bool {
@@ -405,7 +405,9 @@ pub fn send_message(pool: &PoolRecord, worker_id: u32, message: &[u8]) -> bool {
     }
     // `get_worker`: the pool's record for `worker_id`.
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
-    let Some(worker) = pool.worker(index) else {
+    // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
+    // `destroy` frees them and clears it.
+    let Some(worker) = pool.worker(index).filter(|_| !pool.pipes.is_null()) else {
         return false;
     };
     let pipe = worker.pipe_master();
@@ -484,11 +486,9 @@ pub fn worker_report_error(worker: Worker<'_>, exit_status: &ExitStatus) {
     let ExitStatus { pid, status } = exit_status;
     let signal = libc::WTERMSIG(*status);
     let report = if signal == libc::SIGSEGV {
-        // SAFETY: SwooleG's message, valid until it next changes.
-        unsafe { CStr::from_ptr(swoole_rs_corebase::swr_v1_core_bug_report_message()) }
-            .to_string_lossy()
+        swoole_rs_corebase::bug_report_message()
     } else {
-        "".into()
+        String::new()
     };
     swoole_rs_corebase::log::warning(
         c"Worker::report_error",
@@ -639,8 +639,7 @@ pub fn logger_op(op: c_int) {
 pub(crate) mod tests {
     use super::*;
     use crate::pool::{
-        pool_ipc_free, pool_ipc_new, swr_v1_process_pool_ipc_address_of,
-        swr_v1_process_pool_ipc_listener,
+        pool_ipc_address, pool_ipc_free, pool_ipc_new, swr_v1_process_pool_ipc_listener,
     };
     use std::sync::Mutex;
     use std::thread::{self, ThreadId};
@@ -651,15 +650,8 @@ pub(crate) mod tests {
 
     static LOGGED: Mutex<Vec<Logged>> = Mutex::new(Vec::new());
 
-    unsafe extern "C" fn record(
-        kind: c_int,
-        level: c_int,
-        code: c_int,
-        origin: *const c_char,
-        message: *const c_char,
-    ) {
-        // SAFETY: the log host's NUL-terminated strings.
-        let text = |s| unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+    fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+        let text = |s: &CStr| s.to_string_lossy().into_owned();
         if let Ok(mut logged) = LOGGED.lock() {
             logged.push((
                 kind,
@@ -752,11 +744,9 @@ pub(crate) mod tests {
             (&raw const LISTENER).cast(),
             "the socket is kept"
         );
-        let mut port = 0;
-        // SAFETY: the pool's IPC state; `port` is writable.
-        let address =
-            unsafe { CStr::from_ptr(swr_v1_process_pool_ipc_address_of(pool.ipc, &raw mut port)) };
-        assert_eq!((address, port), (c"127.0.0.1", 9501), "and its address");
+        // SAFETY: the pool's IPC state.
+        let address = pool_ipc_address(unsafe { &*pool.ipc });
+        assert_eq!(address, Some((c"127.0.0.1", 9501)), "and its address");
         // SAFETY: the pool's IPC state, not used again.
         unsafe { pool_ipc_free(pool.ipc, keep) };
     }

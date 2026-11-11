@@ -25,11 +25,11 @@ use crate::{MODE_PROCESS, MODE_THREAD};
 #[repr(C)]
 pub(crate) struct Factory {
     server: *mut c_void,
-    manager: *mut c_void,
+    manager: Option<Box<ThreadManager>>,
 }
 
-/// A factory over `serv`, with thread mode's `manager` or null.
-pub(crate) fn new(serv: *mut c_void, manager: *mut c_void) -> *mut c_void {
+/// A factory over `serv`, with thread mode's `manager` or none.
+pub(crate) fn new(serv: *mut c_void, manager: Option<Box<ThreadManager>>) -> *mut c_void {
     Box::into_raw(Box::new(Factory {
         server: serv,
         manager,
@@ -40,19 +40,17 @@ pub(crate) fn new(serv: *mut c_void, manager: *mut c_void) -> *mut c_void {
 /// `new ThreadFactory(serv)`: a factory whose manager holds `threads` threads, one
 /// for each worker and the manager.
 pub(crate) fn new_thread(serv: *mut c_void, threads: usize) -> *mut c_void {
-    let manager = Box::into_raw(Box::new(ThreadManager::new(threads)));
-    new(serv, manager.cast())
+    new(serv, Some(Box::new(ThreadManager::new(threads))))
 }
 
-/// Thread mode's manager, of the thread factory at `factory`.
+/// Thread mode's manager of the factory at `factory`; none for another mode's.
 ///
 /// # Safety
-/// `factory` is a live thread factory [`new_thread`] made.
-pub(crate) unsafe fn manager<'a>(factory: *mut c_void) -> &'a ThreadManager {
+/// `factory` is a live factory [`new`] made.
+pub(crate) unsafe fn manager<'a>(factory: *mut c_void) -> Option<&'a ThreadManager> {
     // SAFETY: as the caller guarantees.
-    let manager = unsafe { (*factory.cast::<Factory>()).manager };
-    // SAFETY: its manager, which lives as long as it.
-    unsafe { &*manager.cast::<ThreadManager>() }
+    let factory = unsafe { &*factory.cast::<Factory>() };
+    factory.manager.as_deref()
 }
 
 /// `delete factory_`: thread mode's joins its threads and frees its manager first,
@@ -63,9 +61,7 @@ pub(crate) unsafe fn manager<'a>(factory: *mut c_void) -> &'a ThreadManager {
 pub(crate) unsafe fn delete(factory: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let factory = unsafe { Box::from_raw(factory.cast::<Factory>()) };
-    if !factory.manager.is_null() {
-        // SAFETY: the manager `new_thread` made, freed once.
-        let manager = unsafe { Box::from_raw(factory.manager.cast::<ThreadManager>()) };
+    if let Some(manager) = factory.manager {
         manager.join_all();
     }
 }
@@ -111,8 +107,10 @@ pub(crate) fn shutdown(state: &ServerState) -> bool {
             process(factory, RUN_PROCESS_FACTORY_SHUTDOWN, ptr::null_mut(), 0)
         }
         (factory, MODE_THREAD) => {
-            // SAFETY: the server's live thread factory.
-            unsafe { manager(factory) }.join_all();
+            // SAFETY: the server's live factory.
+            if let Some(manager) = unsafe { manager(factory) } {
+                manager.join_all();
+            }
             true
         }
         _ => true,

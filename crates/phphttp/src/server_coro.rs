@@ -7,7 +7,7 @@ use crate::{
     context::{self, CompressionTypes, Ctx},
     host,
     parse::{Key, add_protocol, add_server, parse_request},
-    server::{Callable, call_handler},
+    server::{Callable, NO_THEN, call_handler},
     websocket,
 };
 use std::{
@@ -18,7 +18,7 @@ use std::{
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_buffer::string::CppString as Buffer;
-use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
 use swoole_rs_phpruntime::co;
@@ -292,17 +292,15 @@ fn socket_error<'a>(socket: Co) -> (c_int, &'a CStr) {
 }
 
 /// `get_addr()` and `get_port()`: the network socket's address.
-fn address(socket: Co) -> (&'static CStr, c_int) {
+fn address(socket: Co) -> (ZString, c_int) {
     let address = socket.with_network(|network| {
         network.read(|record| {
             let info = &record.info;
-            let host = swr_v1_clients_address_host(info);
-            // SAFETY: NUL-terminated text, live until the next call.
-            let host = unsafe { CStr::from_ptr(host) };
+            let host = with_host(info, |host| ZString::new(host.to_bytes()));
             (host, swr_v1_clients_address_port(info))
         })
     });
-    address.unwrap_or((c"", 0))
+    address.unwrap_or_else(|| (ZString::new(b""), 0))
 }
 
 /// `SW_EVENT_READ`.
@@ -744,6 +742,9 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
                 zsocket.as_ptr(),
                 self.accept.callback.as_ptr(),
                 &raw mut cid,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         })
         .is_err();
@@ -916,10 +917,8 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     };
-    let socket = call
-        .value(1)
-        .map(Value::dereferenced)
-        .map_or(ptr::null_mut(), get_socket);
+    let conn = call.value(1).map(Value::dereferenced);
+    let socket = conn.as_deref().map_or(ptr::null_mut(), get_socket);
     // SAFETY: the object's live socket, which the server's array keeps.
     let socket = unsafe { Co::of(socket) };
     // The request allocator first.
@@ -937,13 +936,12 @@ fn on_accept(call: &Call) {
     // SAFETY: as above.
     unsafe { z::zend_hash_index_add(server.clients(), cid.cast_unsigned(), zconn) };
     let (remote_addr, remote_port) = address(socket);
-    let remote_addr = ZString::new(remote_addr.to_bytes());
     // The network socket's address becomes the local one.
     let _named = socket.getsockname();
     let (server_addr, _) = address(socket);
     let peer = Peer {
         remote_addr,
-        server_addr: ZString::new(server_addr.to_bytes()),
+        server_addr,
         remote_port,
         server_port: address(server.socket).1,
     };
@@ -1092,7 +1090,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
-            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false)? {
+            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false, NO_THEN)? {
                 host::notice("handler error");
             }
         } else {
@@ -1207,7 +1205,7 @@ fn http2_request(
     let mut args = objects(context);
     let mut result = Ok(());
     if let Some(callable) = callable {
-        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true) {
+        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true, NO_THEN) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = context.state().stream_id;

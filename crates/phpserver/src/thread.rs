@@ -16,10 +16,9 @@ use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
     kind,
-    string::bytes,
     sys::{
-        IS_NULL, swr_zend_string_release, swr_zend_thread_main_request,
-        swr_zend_tsrm_is_main_thread, zend_fcall_info, zend_string, zval_ptr_dtor,
+        IS_NULL, swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_fcall_info,
+        zval_ptr_dtor,
     },
 };
 
@@ -32,6 +31,14 @@ struct Start {
 
 /// The running thread-mode server's [`Start`], from `prepare` until `release`.
 static START: Mutex<Option<Arc<Start>>> = Mutex::new(None);
+
+/// The settings `copy_setting` serialized for the worker threads, until `free_setting`.
+static SETTING: Mutex<Option<Arc<[u8]>>> = Mutex::new(None);
+
+/// Replace the serialized settings.
+fn set_setting(setting: Option<Arc<[u8]>>) {
+    *SETTING.lock().unwrap_or_else(PoisonError::into_inner) = setting;
+}
 
 /// Replace the running server's [`Start`].
 fn set_start(start: Option<Start>) {
@@ -78,19 +85,19 @@ pub(crate) fn worker(object: ServerObject, serv: view::Server<'_>) -> Option<Res
     if !serv.is_worker_thread() {
         return None;
     }
-    Some(run_worker(object, serv))
+    Some(run_worker(object))
 }
 
-fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
-    let serialized = serv.config().private_data_4.cast::<zend_string>();
-    // SAFETY: the persistent string `copy_setting` made.
-    let text = unsafe { bytes(serialized) };
+fn run_worker(object: ServerObject) -> Result<(), Bailout> {
+    let text = SETTING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let text = text.as_deref().unwrap_or_default();
     // `$this->setting`, which upstream releases and unserializes in place: it is
     // released first, and nothing is written once the unserialize bailed out.
     Props::own(object).set(c"setting", &Owned::null());
-    let setting = Owned::default();
-    // SAFETY: an undefined slot this owns, on this PHP thread.
-    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(text, setting.as_ptr()) };
+    let (setting, bailed) = swoole_rs_phpswoole::unserialize(text);
     bailed?;
     Props::own(object).set(c"setting", &setting);
     // The coroutine options are thread-local: each worker thread sets them once.
@@ -194,7 +201,7 @@ pub(crate) fn release() {
 
 /// `copy_setting`: the serializable settings, serialized for the worker
 /// threads to read back.
-pub(crate) fn copy_setting(serv: view::Server<'_>, setting: &Value) -> Result<(), Bailout> {
+pub(crate) fn copy_setting(setting: &Value) -> Result<(), Bailout> {
     // `zend_array_dup` of the settings, without the elements that don't serialize.
     let mut copy = OwnedArray::default();
     if let Some(setting) = setting.array() {
@@ -212,8 +219,7 @@ pub(crate) fn copy_setting(serv: view::Server<'_>, setting: &Value) -> Result<()
     let copy = copy.into_owned();
     let (serialized, bailed) = swoole_rs_phpswoole::serialize(&copy);
     drop(copy);
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    unsafe { serv.config_mut() }.private_data_4 = serialized.cast();
+    set_setting(serialized.map(Arc::from));
     bailed
 }
 
@@ -222,11 +228,5 @@ pub(crate) fn free_setting(serv: view::Server<'_>) {
     if !thread_mode(serv) {
         return;
     }
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    let config = unsafe { serv.config_mut() };
-    let serialized = std::mem::replace(&mut config.private_data_4, ptr::null_mut());
-    if !serialized.is_null() {
-        // SAFETY: the persistent string `copy_setting` made.
-        unsafe { swr_zend_string_release(serialized.cast()) };
-    }
+    set_setting(None);
 }

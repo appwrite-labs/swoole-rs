@@ -220,8 +220,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
-            // SAFETY: the context's live server and worker.
-            unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
+            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker().into());
         }
         OP_CPU_AFFINITY =>
         {
@@ -334,11 +333,8 @@ fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
     const ORIGIN: &core::ffi::CStr = c"Worker_set_cpu_affinity";
     /// `Server::MODE_THREAD`.
     const MODE_THREAD: u8 = 3;
-    let available = (!config.cpu_affinity_available.is_null()).then(|| {
-        let len = usize::try_from(config.cpu_affinity_available_num).unwrap_or(0);
-        // SAFETY: the server's live CPU list and its length.
-        unsafe { core::slice::from_raw_parts(config.cpu_affinity_available, len) }
-    });
+    let available = &config.cpu_affinity_available;
+    let available = (!available.is_empty()).then_some(available.as_slice());
     let outcome = swoole_rs_process::affinity::worker_affinity(
         worker_id,
         available,

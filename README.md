@@ -1,24 +1,40 @@
 # swoole-rs
 
-[![Merge tier](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
+[![Merge tier](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fmerge.json)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
 [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/issues/58)
 [![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)
-[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/issues/1902)
+[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)
 [![crates/ line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fcoverage.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)
+
+[![Miri](https://github.com/appwrite-labs/swoole-rs/actions/workflows/miri.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/miri.yml?query=branch%3Amain)
+[![AddressSanitizer](https://github.com/appwrite-labs/swoole-rs/actions/workflows/asan.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/asan.yml?query=branch%3Amain)
+[![ThreadSanitizer](https://github.com/appwrite-labs/swoole-rs/actions/workflows/tsan.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/tsan.yml?query=branch%3Amain)
+[![ClusterFuzzLite](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml?query=branch%3Amain)
+[![API fuzz](https://github.com/appwrite-labs/swoole-rs/actions/workflows/api-fuzz.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/api-fuzz.yml?query=branch%3Amain)
+[![WebSocket RFC conformance](https://github.com/appwrite-labs/swoole-rs/actions/workflows/conformance.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/conformance.yml?query=branch%3Amain)
+[![Soak](https://github.com/appwrite-labs/swoole-rs/actions/workflows/soak.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/soak.yml?query=branch%3Amain)
+[![PHP versions](https://github.com/appwrite-labs/swoole-rs/actions/workflows/php-versions.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/php-versions.yml?query=branch%3Amain)
+[![Debug PHP](https://github.com/appwrite-labs/swoole-rs/actions/workflows/debug.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/debug.yml?query=branch%3Amain)
 
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 5 are done and nothing is
 compiled from upstream; open are [dropping upstream from the build](https://github.com/appwrite-labs/swoole-rs/issues/1921),
 [faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
 [a hardened runtime](https://github.com/appwrite-labs/swoole-rs/issues/1893). The badges come from `tools/badges.py`
-(`.github/workflows/badges.yml`): the PHPT badge counts tests the Cargo build
+(`.github/workflows/badges.yml`): the merge tier badge is the newest merge-tier run on `main`
+that finished (latest-wins cancels most). The PHPT badge counts tests the Cargo build
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
 (`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The speed badge links to the latest merge-tier callgrind
 results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in
-non-test crate code and how many crates forbid `unsafe_code`; `tools/budget.py` (PR tier)
+non-test crate code and how many crates forbid `unsafe_code`, and links to the per-crate table; `tools/budget.py` (PR tier)
 fails a PR that raises any crate's count above `main`'s (`crates/zend`'s unsafe may rise while the total falls) or drops a crate's `forbid`, and counts the data layouts in
 [Data layout](docs/migration.md#data-layout) the same way. The coverage badge counts lines of `crates/` the Cargo build ran under
 the PHPT corpus, the corpus apps and swoole/library's suite (`tools/coverage.py`, nightly), and links
 to the per-crate table and the entry points no run reached.
+The second row is each nightly verification workflow's latest completed run on `main`, scheduled
+or dispatched by hand (a rerun after a fix shows without waiting for the night): Miri
+over the crates' tests, the AddressSanitizer and ThreadSanitizer builds, ClusterFuzzLite
+(the later of its nightly fuzz batch and corpus prune; a failed batch also opens a p1 issue), the API fuzzer, the WebSocket RFC conformance suite, the soak run, the supported
+PHP versions and a debug PHP build.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
 PHP extension. `swoole.so` builds with Cargo alone (`crates/ext`) from Rust and the owned

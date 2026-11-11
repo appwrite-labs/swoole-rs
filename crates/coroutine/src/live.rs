@@ -33,16 +33,11 @@ impl Live {
 
 impl Scheduler {
     fn live(&self) -> Option<&Live> {
-        // SAFETY: `live` is null or the box `insert` leaked, owned by this scheduler.
-        unsafe { self.live.as_ref() }
+        self.live.as_deref()
     }
 
     pub(crate) fn insert(&mut self, cid: c_long, co: *mut Coroutine) {
-        if self.live.is_null() {
-            self.live = Box::into_raw(Box::default());
-        }
-        // SAFETY: just allocated, or the box from an earlier insert.
-        let live = unsafe { &mut *self.live };
+        let live = self.live.get_or_insert_default();
         let at = live.at(cid);
         match live.entries.get_mut(at) {
             Some(entry) if entry.0 == cid => {
@@ -57,8 +52,7 @@ impl Scheduler {
     }
 
     pub(crate) fn remove(&mut self, cid: c_long) {
-        // SAFETY: as for `live`.
-        let Some(live) = (unsafe { self.live.as_mut() }) else {
+        let Some(live) = self.live.as_deref_mut() else {
             return;
         };
         let at = live.at(cid);
@@ -79,10 +73,8 @@ impl Scheduler {
     /// Frees the registry once no coroutine is live (on deactivation).
     #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn release_live(&mut self) {
-        if self.count() == 0 && !self.live.is_null() {
-            // SAFETY: the box `insert` leaked; nothing else refers to it.
-            drop(unsafe { Box::from_raw(self.live) });
-            self.live = ptr::null_mut();
+        if self.count() == 0 {
+            self.live = None;
         }
     }
 
@@ -218,12 +210,12 @@ mod tests {
             assert!((*sp).older_native(1).is_none());
 
             (*sp).release_live();
-            assert!(!(*sp).live.is_null(), "kept while coroutines are live");
+            assert!((*sp).live.is_some(), "kept while coroutines are live");
             (*sp).remove(1);
             (*sp).remove(3);
             assert_eq!((*sp).count(), 0);
             (*sp).release_live();
-            assert!((*sp).live.is_null());
+            assert!((*sp).live.is_none());
         }
     }
 

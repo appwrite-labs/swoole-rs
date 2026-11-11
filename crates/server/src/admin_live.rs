@@ -6,11 +6,11 @@ use crate::reactor_ops::ThreadRecord;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
 use crate::{MODE_BASE, MODE_PROCESS, ServerConfig};
 use crate::{ServerState, view};
-use core::ffi::{CStr, c_int, c_void};
+use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -56,11 +56,9 @@ fn answer(serv: view::Server<'_>, index: usize, message: &[u8]) -> String {
     run(&mut live, index, message).dump()
 }
 
-/// `Address::get_addr()`, which formats into a per-thread buffer.
+/// `Address::get_addr()`.
 fn address(info: &SocketAddress) -> String {
-    let host = swr_v1_clients_address_host(info);
-    // SAFETY: the text lives until this thread formats another address.
-    Json::utf8(unsafe { CStr::from_ptr(host) }.to_bytes())
+    with_host(info, |host| Json::utf8(host.to_bytes()))
 }
 
 /// `Address::get_port()`.

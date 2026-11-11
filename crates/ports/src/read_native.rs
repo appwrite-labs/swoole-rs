@@ -402,16 +402,9 @@ impl Connection for Read<'_> {
 
     fn client(&mut self) -> (i64, String, i64) {
         let session = self.conn().session_id;
-        let host = self.port.host();
-        let host = if host.data.is_null() {
-            &[][..]
-        } else {
-            // SAFETY: the port's host, `length` bytes unchanged while the port serves.
-            unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) }
-        };
         (
             session,
-            String::from_utf8_lossy(host).into_owned(),
+            String::from_utf8_lossy(self.port.host_bytes()).into_owned(),
             i64::from(self.port.port),
         )
     }

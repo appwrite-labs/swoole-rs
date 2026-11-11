@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
 use swoole_rs_clients::address::{
-    swr_v1_clients_address_assign, swr_v1_clients_address_port, swr_v1_clients_address_type,
+    swr_v1_clients_address_assign, swr_v1_clients_address_port, type_name,
 };
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::{
@@ -152,8 +152,7 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
 
 /// The host as `host.c_str()` prints it.
 fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
-    // SAFETY: a slot's view is NUL-terminated and lives while `config` is borrowed.
-    unsafe { CStr::from_ptr(config.host().data) }.to_string_lossy()
+    config.host_c_str().to_string_lossy()
 }
 
 /// An int option set to 1; 0 or -1 as setsockopt(2).
@@ -215,29 +214,29 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
         return fail();
     }
-    let host = config.host();
+    let host = config.host_bytes();
     let mut address = SocketAddress {
         // SAFETY: the sockaddr union is plain data.
         addr: unsafe { std::mem::zeroed() },
         len: 0,
         kind,
     };
-    // SAFETY: the union and its length, and the host's NUL-terminated bytes.
+    // SAFETY: the union and its length, and the host's bytes, which its slot keeps
+    // NUL-terminated.
     let error = unsafe {
         swr_v1_clients_address_assign(
             (&raw mut address.addr).cast(),
             &raw mut address.len,
             kind,
-            host.data,
-            host.length,
+            host.as_ptr().cast(),
+            host.len(),
             config.port,
             Some(swr_v1_clients_gethostbyname),
         )
     };
     if error != 0 {
         log::set_last_error(error);
-        // SAFETY: a static NUL-terminated name.
-        let name = unsafe { CStr::from_ptr(swr_v1_clients_address_type(kind)) };
+        let name = type_name(kind);
         log::warning(
             c"ListenPort::create_socket",
             format_args!(
@@ -528,7 +527,7 @@ readable_callbacks! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::{close, ssl_context_create, ssl_context_init, ssl_init};
+    use crate::lifecycle::{close, context_create, ssl_context_init, ssl_init};
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 
     /// Stub callbacks, each body distinct so that no two share an address.
@@ -562,9 +561,8 @@ mod tests {
         let config = unsafe { port_config::of(at) };
         config.ssl = 1;
         assert!(ssl_context_init(at), "a stream port's context");
-        let context = config.ssl_context;
-        assert!(!context.is_null(), "published");
-        let fields = unsafe { swoole_rs_tls::owner_fields(context) };
+        let context = config.ssl_context.clone().expect("published");
+        let fields = unsafe { swoole_rs_tls::owner_fields(context.as_ptr()) };
         assert_eq!(
             (
                 fields.prefer_server_ciphers,
@@ -579,13 +577,13 @@ mod tests {
         // No files: ssl_init refuses unless SNI contexts exist.
         assert!(!unsafe { ssl_init(at) }, "no certificate");
         close(at);
-        assert!(config.ssl_context.is_null(), "released");
+        assert!(config.ssl_context.is_none(), "released");
         config.r#type = 2;
         assert!(ssl_context_init(at), "a datagram port's context");
         assert!(config.is_dtls(), "DTLS");
         crate::lifecycle::tls_free(unsafe { &mut **fresh.0 });
         assert!(
-            config.ssl_context.is_null(),
+            config.ssl_context.is_none(),
             "the destructor releases what close left"
         );
     }
@@ -1190,17 +1188,17 @@ mod tests {
         );
 
         assert!(ssl_context_init(at));
-        let context = config.ssl_context;
-        assert!(!unsafe { ssl_context_create(at, context, false) });
+        let context = config.ssl_context.clone().unwrap();
+        assert!(!context_create(config, &context, false));
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
-        let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(unsafe { &*context }).strings[4];
+        let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(&context).strings[4];
         let set = |text: &str| unsafe {
             swoole_rs_corebase::swr_v1_core_string_set(cert_file, text.as_ptr().cast(), text.len())
         };
         assert_eq!(set("server.crt"), 0, "cert_file = \"server.crt\"");
-        assert!(!unsafe { ssl_context_create(at, context, true) });
+        assert!(!context_create(config, &context, true));
         assert_eq!(set(""), 0, "cert_file.clear()");
-        assert!(unsafe { ssl_context_create(at, context, true) });
+        assert!(context_create(config, &context, true));
 
         close(at);
         unsafe { port_config::swr_v1_port_config_free(port) };

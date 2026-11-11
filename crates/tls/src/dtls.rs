@@ -455,8 +455,7 @@ pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
     }
     let reason = crate::swr_v1_socket_ssl_peek_reason();
     let (host, port) = socket.read(|record| crate::upstream::peer(&record.info));
-    // SAFETY: this thread's NUL-terminated error text.
-    let error = unsafe { crate::upstream::text(crate::swr_v1_tls_error()) };
+    let error = crate::error_line();
     log::warning(
         c"Session::listen",
         format_args!(

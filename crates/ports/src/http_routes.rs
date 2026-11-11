@@ -49,12 +49,8 @@ fn route<T>(
 /// The host and port of an address that holds its socket type's member, as
 /// upstream's warnings print them.
 pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
-    use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
-    let host = swr_v1_clients_address_host(address);
-    // SAFETY: the address text is NUL-terminated and lives until the next lookup.
-    let host = unsafe { std::ffi::CStr::from_ptr(host) }
-        .to_string_lossy()
-        .into_owned();
+    use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+    let host = with_host(address, |host| host.to_string_lossy().into_owned());
     (host, swr_v1_clients_address_port(address))
 }
 
@@ -192,11 +188,9 @@ pub mod exports {
             let flags = fragment.offset() as u16;
             context.fragment_flags = flags;
             if frame.opcode == 0 {
-                let conn: *mut ConnectionRecord = &raw mut *conn;
-                // SAFETY: a live server and one of its connections.
-                let max = unsafe {
-                    swoole_rs_server::server_methods::package_max_length(serv, conn.cast())
-                };
+                // SAFETY: the port's live server, as the caller guarantees.
+                let serv = unsafe { view::Server::from_raw(serv) };
+                let max = swoole_rs_server::server_methods::package_max_length(serv, conn);
                 context.package_max_length = max as usize;
             }
         }

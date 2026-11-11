@@ -208,12 +208,9 @@ fn other_socket_listed<F: Facts>(f: &mut F, index: u64, fd: c_int) -> bool {
     const SO_DOMAIN: c_int = 39;
     #[cfg(any(target_arch = "mips", target_arch = "mips64", target_arch = "sparc64"))]
     const SO_DOMAIN: c_int = 0x1029;
-    // SAFETY: an all-zero `stat` is a valid out value.
-    let mut stat: libc::stat = unsafe { core::mem::zeroed() };
-    // SAFETY: `stat` is writable.
-    if unsafe { libc::fstat(fd, &raw mut stat) } == -1 {
+    let Some(stat) = swoole_rs_corebase::sys::fstat(fd) else {
         return false;
-    }
+    };
     if stat.st_mode & libc::S_IFMT != libc::S_IFSOCK {
         return true;
     }

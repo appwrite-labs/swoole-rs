@@ -262,17 +262,11 @@ mod native {
         let (error, message) = match kind {
             0 => (NOT_FOUND, Message::Static(c"get package length failed")),
             1 => {
-                use swoole_rs_clients::address::{
-                    swr_v1_clients_address_host, swr_v1_clients_address_port,
-                };
+                use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
                         let peer = &record.info;
-                        let addr = swr_v1_clients_address_host(peer);
-                        // SAFETY: NUL-terminated text, unchanged until the next address.
-                        let addr = unsafe { CStr::from_ptr(addr) }
-                            .to_string_lossy()
-                            .into_owned();
+                        let addr = with_host(peer, |addr| addr.to_string_lossy().into_owned());
                         (addr, swr_v1_clients_address_port(peer))
                     })
                     .unwrap_or_default();
@@ -1179,8 +1173,8 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
         swoole_rs_corebase::swr_v1_core_string_set(slot, message.as_ptr().cast(), message.len())
     };
     if status == 0 {
-        // SAFETY: the assignment left stable, terminated bytes in the slot.
-        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
+        // SAFETY: the live slot, whose assignment left stable, terminated bytes.
+        let view = unsafe { &*slot }.view();
         // SAFETY: the record's own error string, as above.
         unsafe { socket.set_err_msg(view.data) };
     }

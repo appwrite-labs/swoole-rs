@@ -5,7 +5,7 @@ use crate::co_socket::Co;
 use std::ffi::c_void;
 use std::ptr;
 use swoole_rs_corebase::{ProxyState, StringSlot, swr_v1_core_proxy_free};
-use swoole_rs_tls::{OwnedTlsContext, swr_v1_tls_owner_free};
+use swoole_rs_tls::TlsContext;
 
 /// A destructor callback, which gets the native socket.
 pub type CloseHook = Box<dyn FnOnce(*mut c_void)>;
@@ -15,8 +15,9 @@ pub type CloseHook = Box<dyn FnOnce(*mut c_void)>;
 #[repr(C)]
 pub struct SocketExtra {
     /// The socket's `SSLContext` owner (null without one): one reference, which an
-    /// accepted socket shares with its server and the record releases.
-    pub(crate) tls: *const OwnedTlsContext,
+    /// accepted socket shares with its server. Dropped after the `network::Socket`
+    /// and its session (`swr_v1_hook_co_socket_release`).
+    pub(crate) tls: Option<TlsContext>,
     pub(crate) strings: [StringSlot; 3],
     /// `set_dtor`'s callback.
     close_hook: Option<CloseHook>,
@@ -36,9 +37,6 @@ const _: () = assert!(
 
 impl Drop for SocketExtra {
     fn drop(&mut self) {
-        // SAFETY: the record's own reference, released once; the network::Socket and
-        // its session went first (`swr_v1_hook_co_socket_release`).
-        unsafe { swr_v1_tls_owner_free(self.tls) };
         for proxy in self.proxies {
             // SAFETY: the socket's own proxy, released once.
             unsafe { swr_v1_core_proxy_free(proxy) };
@@ -50,7 +48,7 @@ impl SocketExtra {
     pub(crate) fn alloc() -> *mut Self {
         Box::into_raw(Box::new(Self {
             strings: std::array::from_fn(|_| StringSlot::default()),
-            tls: ptr::null(),
+            tls: None,
             close_hook: None,
             proxies: [ptr::null_mut(); 2],
             #[cfg(feature = "iouring")]
@@ -107,9 +105,14 @@ mod tests {
     #[test]
     fn tls_slot_is_the_extra_records_owner() {
         let extra = SocketExtra::alloc();
-        let owner = swoole_rs_tls::swr_v1_tls_owner_new().owner;
-        unsafe { (*extra).tls = owner };
-        assert_eq!(unsafe { (*extra).tls }, owner);
+        let owner = TlsContext::new();
+        let pointer = owner.as_ptr();
+        unsafe { (*extra).tls = Some(owner) };
+        let slot = unsafe { *extra.cast::<*const swoole_rs_tls::OwnedTlsContext>() };
+        assert_eq!(
+            slot, pointer,
+            "the slot is the owner pointer native code reads"
+        );
         unsafe { SocketExtra::free(extra) };
     }
 }

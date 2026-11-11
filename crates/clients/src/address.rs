@@ -4,7 +4,7 @@
 //! last error.
 use crate::ip::swr_v1_clients_ip;
 use std::cell::UnsafeCell;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::net_address::{
     BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, RAW, RAW6, TCP, TCP6, UDP, UDP6, UNIX_DGRAM,
     UNIX_STREAM, platform_parses,
@@ -173,6 +173,41 @@ pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const
     }
 }
 
+/// `Address::get_addr` for Rust: `f` reads the text, which an IP address formats
+/// into this call's own buffer rather than the thread's scratch, so nothing can
+/// overwrite it while `f` runs.
+pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
+    let mut text = [0u8; 46];
+    let written = if inet4(address.kind) {
+        // inet4 selects the initialized IPv4 union member.
+        let ip = (&raw const address.addr.inet_v4)
+            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in, sin_addr));
+        // SAFETY: the field holds an IPv4 address and `text` has 46 bytes.
+        unsafe { inet_ntop(libc::AF_INET, ip.cast(), text.as_mut_ptr().cast(), 46) }
+    } else if inet6(address.kind) {
+        // inet6 selects the initialized IPv6 union member.
+        let ip = (&raw const address.addr.inet_v6)
+            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in6, sin6_addr));
+        // SAFETY: the field holds an IPv6 address and `text` has 46 bytes.
+        unsafe { inet_ntop(libc::AF_INET6, ip.cast(), text.as_mut_ptr().cast(), 46) }
+    } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
+        // SAFETY: a local socket selects the initialized Unix union member.
+        let path = unsafe { address.addr.un.sun_path };
+        // A byte past the path, so an unterminated one still ends.
+        let mut bytes = [0u8; 109];
+        for (byte, c) in bytes.iter_mut().zip(path) {
+            *byte = c.to_ne_bytes()[0];
+        }
+        return f(CStr::from_bytes_until_nul(&bytes).unwrap_or_default());
+    } else {
+        return f(c"unknown");
+    };
+    if written.is_null() {
+        return f(c"");
+    }
+    f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
+}
+
 /// `Address::get_port`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int {
@@ -211,17 +246,23 @@ pub extern "C" fn swr_v1_clients_address_empty(address: &SocketAddress) -> bool 
 }
 
 /// `Address::type_str`'s original static spelling and family classification.
+#[must_use]
+pub fn type_name(kind: c_int) -> &'static CStr {
+    if inet4(kind) {
+        c"IPv4"
+    } else if inet6(kind) {
+        c"IPv6"
+    } else if matches!(kind, UNIX_STREAM | UNIX_DGRAM) {
+        c"UnixSocket"
+    } else {
+        c"Unknown"
+    }
+}
+
+/// [`type_name`] for native code.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_type(kind: c_int) -> *const c_char {
-    if inet4(kind) {
-        c"IPv4".as_ptr()
-    } else if inet6(kind) {
-        c"IPv6".as_ptr()
-    } else if matches!(kind, UNIX_STREAM | UNIX_DGRAM) {
-        c"UnixSocket".as_ptr()
-    } else {
-        c"Unknown".as_ptr()
-    }
+    type_name(kind).as_ptr()
 }
 
 /// `Address::is_loopback_addr`, preserving exact IPv4 localhost semantics.
@@ -346,5 +387,74 @@ mod tests {
                 valid
             );
         }
+    }
+
+    fn socket_address(kind: c_int, host: &CStr) -> SocketAddress {
+        let mut address = SocketAddress {
+            kind,
+            ..SocketAddress::default()
+        };
+        let error = unsafe {
+            swr_v1_clients_address_assign(
+                (&raw mut address.addr).cast(),
+                &raw mut address.len,
+                kind,
+                host.as_ptr(),
+                host.to_bytes().len(),
+                80,
+                None,
+            )
+        };
+        assert_eq!(error, 0, "{host:?}");
+        address
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton or inet_ntop")]
+    fn with_host_formats_as_the_export_does() {
+        for (kind, host) in [
+            (TCP, c"10.1.2.3"),
+            (UDP, c"127.0.0.1"),
+            (TCP6, c"fe80::1"),
+            (UDP6, c"::ffff:1.2.3.4"),
+            (UNIX_STREAM, c"/tmp/s.sock"),
+            (UNIX_DGRAM, c""),
+        ] {
+            let address = socket_address(kind, host);
+            assert_eq!(with_host(&address, CStr::to_owned).as_c_str(), host);
+            // SAFETY: the export's text, read before this thread formats another.
+            let export = unsafe { CStr::from_ptr(swr_v1_clients_address_host(&address)) };
+            assert_eq!(export, host, "the export agrees");
+        }
+        let unknown = SocketAddress {
+            kind: 9,
+            ..SocketAddress::default()
+        };
+        assert_eq!(with_host(&unknown, CStr::to_owned).as_c_str(), c"unknown");
+    }
+
+    #[test]
+    fn with_host_ends_an_unterminated_unix_path() {
+        let mut address = SocketAddress {
+            kind: UNIX_STREAM,
+            ..SocketAddress::default()
+        };
+        let path = unsafe { &mut address.addr.un.sun_path };
+        path.fill(c_char::from_ne_bytes(*b"x"));
+        let full = vec![b'x'; path.len()];
+        assert!(with_host(&address, |host| host.to_bytes() == full));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton or inet_ntop")]
+    fn with_host_text_outlives_other_formatting() {
+        let v4 = socket_address(TCP, c"10.1.2.3");
+        let v6 = socket_address(TCP6, c"fe80::1");
+        with_host(&v4, |outer| {
+            // Neither another lend nor the export's shared scratch touches `outer`.
+            assert_eq!(with_host(&v6, CStr::to_owned).as_c_str(), c"fe80::1");
+            assert!(!swr_v1_clients_address_host(&v6).is_null());
+            assert_eq!(outer, c"10.1.2.3");
+        });
     }
 }

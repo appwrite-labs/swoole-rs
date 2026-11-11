@@ -365,8 +365,7 @@ pub(crate) fn answer(
         }
         OP_RT_THREAD_WORKER => {
             let worker = worker(server, reactor_id()?)?;
-            // SAFETY: the live server and this thread's worker.
-            unsafe { crate::worker_methods::init_event_worker(server, worker) };
+            crate::worker_methods::init_event_worker(server, (&mut *worker).into());
             sign(add_read(pipe_socket(
                 ctx.thread_record()?,
                 worker.pipe_worker,
@@ -404,7 +403,9 @@ pub(crate) fn answer(
             )
         }
         OP_RT_ADD_WORKER_PIPE | OP_WORKER_PIPE_UNREAD => {
-            let worker = worker(server, arg)?;
+            let Some(worker) = worker(server, arg) else {
+                return Some(sign(-1));
+            };
             let thread = ctx.thread_record()?;
             let sock = pipe_socket(thread, worker.pipe_master);
             if op == OP_WORKER_PIPE_UNREAD {

@@ -626,16 +626,8 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
         fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
         return Err(Stop);
     }
-    let bytes = size_of_val(cpus.as_slice());
-    let available = swoole_rs_corebase::sw_malloc(bytes).cast::<c_int>();
-    // SAFETY: a fresh allocation of `bytes`, apart from `cpus`.
-    unsafe { ptr::copy_nonoverlapping(cpus.as_ptr(), available, cpus.len()) };
     // SAFETY: the live server being configured; nothing else holds its config.
-    let c = unsafe { s.server().config_mut() };
-    c.cpu_affinity_available_num = c_int::try_from(cpus.len()).unwrap_or(c_int::MAX);
-    // SAFETY: null or the previous `sw_malloc` list, which nothing else holds.
-    unsafe { swoole_rs_corebase::sw_free(c.cpu_affinity_available.cast()) };
-    c.cpu_affinity_available = available;
+    unsafe { s.server().config_mut() }.cpu_affinity_available = cpus;
     Ok(true)
 }
 
@@ -782,7 +774,8 @@ fn rewrite_rules(s: &Settings) -> Step {
         return Err(Stop);
     };
     for (key, value) in array.entries() {
-        let Some(replacement) = value.dereferenced().bytes() else {
+        let value = value.dereferenced();
+        let Some(replacement) = value.bytes() else {
             fatal(E_ERROR, c"The `replacement` must be string");
             return Err(Stop);
         };

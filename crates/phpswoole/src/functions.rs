@@ -240,16 +240,15 @@ fn mime_type_delete(call: &Call) {
     }
 }
 
-/// `mime_type::get(path)`: the type, which callers copy before the table changes.
+/// `mime_type::get(path)`.
 #[must_use]
-pub fn mime_type(path: &[u8]) -> &'static CStr {
-    // SAFETY: a table value, kept until its suffix changes, or the fallback.
-    unsafe { CStr::from_ptr(mime::get(path)) }
+pub fn mime_type(path: &[u8]) -> Vec<u8> {
+    mime::get(path)
 }
 
 fn mime_type_get(call: &Call) {
     if let Some([filename]) = strings(call) {
-        call.set_bytes(mime_type(filename.to_bytes()).to_bytes());
+        call.set_bytes(&mime_type(filename.to_bytes()));
     }
 }
 

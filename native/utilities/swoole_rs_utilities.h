@@ -21,8 +21,6 @@ struct SwrLogAction swr_v2_utils_log_frontdoor_step(struct SwrLogFrontdoor *, ui
  * Actions:0done1header2hex-format3ctype4text-byte5text-dot6row7footer. */
 struct SwrLogHex { uint32_t phase; size_t offset, index, hex_length, text_length; };
 uint32_t swr_v2_utils_log_hex_step(struct SwrLogHex *, size_t, int32_t);
-/* LP64 arithmetic. algorithm: PHP=0, Jenkins=1, Austin=2; signed_char is host char semantics. */
-uint64_t swr_v1_utils_hash(const uint8_t *, size_t, uint32_t algorithm, uint8_t signed_char);
 /* Native-compatible aligned shared u32 atomic, native release store remains outside Rust. */
 void swr_v1_utils_spinlock(const uint32_t *, uint32_t cpus, uint32_t backoff_limit);
 #ifdef __linux__ /* matches the Rust cfg(target_os = "linux") */
@@ -33,16 +31,6 @@ int32_t swr_v1_utils_wakeup(const uint32_t *, int32_t n);
 #endif
 /* Borrowed bytes and independent aligned outputs; returns a substring span, never allocates. */
 int32_t swr_v1_utils_pretty_range(const uint8_t *, size_t, uint8_t strip, size_t *, size_t *);
-/* Logging enum policy, returned strings are immutable static NUL-terminated storage. */
-int32_t swr_v1_utils_log_level(int32_t);
-const char *swr_v1_utils_log_label(int32_t);
-const char *swr_v1_utils_log_rotation(int32_t);
-/* Exact Logger::put line, signed printf precision; no callback/allocation.
- * Capacity<=INT_MAX; null output iff zero capacity; inputs/output disjoint. */
-size_t swr_v1_utils_log_line(uint8_t *, size_t, const uint8_t *, int32_t, uint8_t,
-                           int32_t, int32_t, int32_t, const uint8_t *, int32_t);
-/* Exact microsecond suffix, same output bounds and count convention. */
-size_t swr_v1_utils_log_micros(uint8_t *, size_t, int64_t);
 /* swoole::Logger (crates/utilities/src/logger.rs). Worker identity, backtraces
  * and stdout redirection call back into the host (swr_logger_host, crates/process), and
  * diagnostics into corebase's log host, after the logger's lock is released. */

@@ -4,7 +4,7 @@
 use crate::socket::{Report, convert_to_fd, coroutine_check, poll, report};
 use std::{collections::HashMap, ptr};
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
+    ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::{self, Bailout},
     sys::{
         swr_zend_runtime_select_args, swr_zend_stream_from_zval, swr_zend_try_hash_clean,
@@ -59,23 +59,28 @@ impl Arrays {
 }
 
 /// `stream_array_to_fd_set`: each stream's fd polled for `event`; the first
-/// entry of an fd is where its stream goes back.
+/// entry of an fd is where its stream goes back. `array` is a copy: a
+/// warning's handler may assign the by-reference argument while the walk
+/// goes on, and the copy keeps the table it walks alive.
 fn to_fd_set(
-    array: &Array,
+    array: &Owned,
     event: i32,
     rows: &mut Vec<(i32, i32)>,
     found: &mut HashMap<i32, Entry>,
 ) -> Result<(), Bailout> {
+    let Some(array) = array.array() else {
+        return Ok(());
+    };
     let mut entries = array.entries();
     while let Some((key, index, value)) = entries.next_stored() {
         let value = value.dereferenced();
-        let fd = convert_to_fd(value)?;
+        let fd = convert_to_fd(&value)?;
         if fd < 0 {
             continue;
         }
         found
             .entry(fd)
-            .or_insert_with(|| Entry::new(key, index, value));
+            .or_insert_with(|| Entry::new(key, index, &value));
         rows.push((fd, event));
     }
     Ok(())
@@ -93,7 +98,7 @@ fn emulate_read(array: &mut ArrayMut) -> usize {
             let stream = unsafe { swr_zend_stream_from_zval(value.as_ptr()) };
             // SAFETY: null or a live stream.
             if unsafe { stream.as_ref() }.is_some_and(|stream| stream.writepos > stream.readpos) {
-                ready.push(Entry::new(key, index, value));
+                ready.push(Entry::new(key, index, &value));
             }
         }
     }
@@ -187,8 +192,8 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
     let mut rows = Vec::new();
     let mut found = HashMap::new();
     for (which, event) in EVENTS.into_iter().enumerate() {
-        if let Some(array) = arrays.get(which).and_then(|array| array.array()) {
-            to_fd_set(array, event, &mut rows, &mut found)?;
+        if let Some(array) = arrays.get(which).map(|array| array.copy()) {
+            to_fd_set(&array, event, &mut rows, &mut found)?;
         }
     }
     if found.is_empty() {

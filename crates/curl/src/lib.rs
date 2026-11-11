@@ -397,11 +397,7 @@ impl Multi {
         if fds.is_empty() {
             return CURLM_OK;
         }
-        let Ok(count) = libc::nfds_t::try_from(fds.len()) else {
-            return CURLM_INTERNAL_ERROR;
-        };
-        // SAFETY: `count` live pollfds.
-        if unsafe { libc::poll(fds.as_mut_ptr(), count, 0) } < 0 {
+        if swoole_rs_corebase::sys::poll(&mut fds, 0) < 0 {
             return if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
                 CURLM_OK
             } else {

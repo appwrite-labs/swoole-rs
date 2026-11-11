@@ -18,7 +18,6 @@ mod wait_registry;
 pub use logger::*;
 pub use wait_registry::{swr_v1_utils_wait_registry_init, swr_v1_utils_wait_registry_size};
 
-use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 fn promoted(byte: u8, signed: bool) -> u64 {
@@ -125,37 +124,23 @@ fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
     }
 }
 
-/// Pinned LP64 hash variants (0=PHP, 1=Jenkins, 2=Austin).
-/// # Safety
-/// Data is readable for length bytes, null only for empty input. No pointer retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_hash(
-    data: *const u8,
-    length: usize,
-    algorithm: u32,
-    signed_char: u8,
-) -> u64 {
-    if length > isize::MAX as usize || (data.is_null() && length != 0) {
-        return 0;
-    }
+/// Pinned LP64 hash variants (0=PHP, 1=Jenkins, 2=Austin) of `bytes`, promoting
+/// each byte as a signed or unsigned `char`; an unknown algorithm hashes to 0.
+#[must_use]
+pub fn swoole_hash(bytes: &[u8], algorithm: u32, signed_char: bool) -> u64 {
     // Native Jenkins consumes an unsigned-width prefix but mixes the full length.
-    let count = if algorithm == 1 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "native Jenkins' unsigned-width prefix"
-        )]
-        let prefix = length as u32 as usize;
-        prefix
-    } else {
-        length
-    };
-    let bytes = if count == 0 {
-        &[]
-    } else {
-        // SAFETY: non-null, `count <= length <= isize::MAX` (checked above), readable bytes.
-        unsafe { std::slice::from_raw_parts(data, count) }
-    };
-    hash(bytes, length, algorithm, signed_char != 0)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "native Jenkins' unsigned-width prefix"
+    )]
+    let prefix = bytes.len() as u32 as usize;
+    let count = if algorithm == 1 { prefix } else { bytes.len() };
+    hash(
+        bytes.get(..count).unwrap_or_default(),
+        bytes.len(),
+        algorithm,
+        signed_char,
+    )
 }
 
 /// Native-compatible process-shared spinlock. Unlock remains the native release store.
@@ -232,15 +217,19 @@ pub unsafe extern "C" fn swr_v1_utils_pretty_range(
         // SAFETY: non-null, `length <= isize::MAX` (checked above), readable bytes.
         unsafe { std::slice::from_raw_parts(data, length) }
     };
-    let Some(bracket) = bytes.iter().position(|b| *b == b'(') else {
-        return 0;
+    (*begin, *count) = pretty_range(bytes, strip != 0);
+    0
+}
+
+/// `Logger::get_pretty_name`'s substring of `name` as (offset, length).
+fn pretty_range(name: &[u8], strip: bool) -> (usize, usize) {
+    let Some(bracket) = name.iter().position(|b| *b == b'(') else {
+        return (0, 0);
     };
-    let head = bytes.get(..bracket).unwrap_or_default();
+    let head = name.get(..bracket).unwrap_or_default();
     let mut start = head.iter().rposition(|b| *b == b' ').map_or(0, |p| p + 1);
     let method = head.get(start..).unwrap_or_default();
-    if strip != 0
-        && let Some(last) = method.windows(2).rposition(|w| w == b"::")
-    {
+    if strip && let Some(last) = method.windows(2).rposition(|w| w == b"::") {
         // Native rfind skips overlapping separators; a lone separator strips
         // itself, including the original wrapped search at positions zero/one.
         let prior = method
@@ -248,14 +237,11 @@ pub unsafe extern "C" fn swr_v1_utils_pretty_range(
             .and_then(|head| head.windows(2).rposition(|w| w == b"::"));
         start += prior.unwrap_or(last) + 2;
     }
-    *begin = start;
-    *count = bracket - start;
-    0
+    (start, bracket - start)
 }
 
 /// Clamp the configured native logging threshold to its defined enum range.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_log_level(level: i32) -> i32 {
+pub(crate) fn log_level(level: i32) -> i32 {
     level.clamp(0, 6)
 }
 
@@ -270,12 +256,6 @@ fn log_label(level: i32) -> &'static std::ffi::CStr {
     }
 }
 
-/// Static NUL-terminated log label; unknown levels preserve the native INFO fallback.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_log_label(level: i32) -> *const std::ffi::c_char {
-    log_label(level).as_ptr()
-}
-
 /// The rotation date format; unknown modes preserve the native daily fallback.
 fn log_rotation(rotation: i32) -> &'static std::ffi::CStr {
     match rotation {
@@ -286,36 +266,15 @@ fn log_rotation(rotation: i32) -> &'static std::ffi::CStr {
     }
 }
 
-/// Static rotation date format; unknown modes preserve the native daily fallback.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_log_rotation(rotation: i32) -> *const std::ffi::c_char {
-    log_rotation(rotation).as_ptr()
-}
-
-/// A byte the line formatters write: a Rust buffer's, or a C caller's not yet written.
-pub(crate) trait Slot {
-    fn set(&mut self, byte: u8);
-}
-impl Slot for u8 {
-    fn set(&mut self, byte: u8) {
-        *self = byte;
-    }
-}
-impl Slot for MaybeUninit<u8> {
-    fn set(&mut self, byte: u8) {
-        self.write(byte);
-    }
-}
-
-struct LogSink<'a, T> {
-    bytes: &'a mut [T],
+struct LogSink<'a> {
+    bytes: &'a mut [u8],
     required: usize,
 }
-impl<T: Slot> LogSink<'_, T> {
+impl LogSink<'_> {
     fn finish(self) -> usize {
         if self.required > i32::MAX as usize {
             if let Some(first) = self.bytes.first_mut() {
-                first.set(0);
+                *first = 0;
             }
             return usize::MAX;
         }
@@ -323,19 +282,19 @@ impl<T: Slot> LogSink<'_, T> {
         let Some(terminator) = self.bytes.get_mut(written) else {
             return self.required;
         };
-        terminator.set(0);
+        *terminator = 0;
         written
     }
     fn append(&mut self, bytes: &[u8]) {
         let start = self.required.min(self.bytes.len().saturating_sub(1));
         let count = bytes.len().min(self.bytes.len().saturating_sub(1) - start);
         for (output, byte) in self.bytes.iter_mut().skip(start).take(count).zip(bytes) {
-            output.set(*byte);
+            *output = *byte;
         }
         self.required = self.required.saturating_add(bytes.len());
     }
 }
-impl<T: Slot> std::fmt::Write for LogSink<'_, T> {
+impl std::fmt::Write for LogSink<'_> {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
         self.append(value.as_bytes());
         Ok(())
@@ -360,57 +319,6 @@ pub(crate) unsafe fn log_bytes<'a>(data: *const u8, precision: i32) -> &'a [u8] 
     unsafe { std::slice::from_raw_parts(data, length) }
 }
 
-/// Format the pinned `Logger::put` line without allocation or native callbacks.
-/// # Safety
-/// Output is writable for capacity bytes and disjoint from inputs. Each input is
-/// readable through its first NUL or nonnegative precision, whichever comes first;
-/// negative precision requires a terminating NUL. Null is valid only at precision0.
-/// Capacity must fit i32; zero capacity permits null output and queries full size.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_log_line(
-    output: *mut u8,
-    capacity: usize,
-    date: *const u8,
-    date_precision: i32,
-    symbol: u8,
-    pid: i32,
-    worker: i32,
-    level: i32,
-    content: *const u8,
-    content_precision: i32,
-) -> usize {
-    // SAFETY: per the contract.
-    let Some(bytes) = (unsafe { log_output(output, capacity) }) else {
-        return 0;
-    };
-    if (date.is_null() && date_precision != 0) || (content.is_null() && content_precision != 0) {
-        if let Some(first) = bytes.first_mut() {
-            first.write(0);
-        }
-        return 0;
-    }
-    // SAFETY: `date` is readable through its NUL or precision (null only at precision 0).
-    let date = unsafe { log_bytes(date, date_precision) };
-    // SAFETY: as for `date`.
-    let content = unsafe { log_bytes(content, content_precision) };
-    log_line(bytes, date, symbol, pid, worker, level, content)
-}
-
-/// The buffer a C caller lends for a line; `None` when it breaks the contract.
-/// # Safety
-/// `output` is writable for `capacity` bytes and disjoint from the inputs, and
-/// null only for zero capacity.
-unsafe fn log_output<'a>(output: *mut u8, capacity: usize) -> Option<&'a mut [MaybeUninit<u8>]> {
-    if capacity > i32::MAX as usize || (capacity != 0 && output.is_null()) {
-        return None;
-    }
-    if capacity == 0 {
-        return Some(&mut []);
-    }
-    // SAFETY: non-null, `capacity <= i32::MAX` (checked above), writable and disjoint.
-    Some(unsafe { std::slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), capacity) })
-}
-
 /// `bytes` through its first NUL, as printf's `%.*s` reads it.
 fn through_nul(bytes: &[u8]) -> &[u8] {
     memchr::memchr(0, bytes).map_or(bytes, |end| bytes.get(..end).unwrap_or_default())
@@ -420,7 +328,7 @@ fn through_nul(bytes: &[u8]) -> &[u8] {
 /// `date` and `content` read through their first NUL: the full length, or
 /// `usize::MAX` once it no longer fits an `int`.
 pub(crate) fn log_line(
-    output: &mut [impl Slot],
+    output: &mut [u8],
     date: &[u8],
     symbol: u8,
     pid: i32,
@@ -449,7 +357,7 @@ pub(crate) fn log_line(
 }
 
 /// The logger's `<.microseconds>` suffix in `output`, as [`log_line`] writes a line.
-pub(crate) fn log_micros(output: &mut [impl Slot], microseconds: i64) -> usize {
+pub(crate) fn log_micros(output: &mut [u8], microseconds: i64) -> usize {
     use std::fmt::Write;
     let mut sink = LogSink {
         bytes: output,
@@ -463,19 +371,10 @@ pub(crate) fn log_micros(output: &mut [impl Slot], microseconds: i64) -> usize {
     sink.finish()
 }
 
-/// Format the logger's native `<.microseconds>` suffix without allocation.
-/// # Safety
-/// Output is writable for capacity bytes, null only for zero capacity. Capacity
-/// must fit i32; zero queries the full length, otherwise the count is clamped.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_log_micros(
-    output: *mut u8,
-    capacity: usize,
-    microseconds: i64,
-) -> usize {
-    // SAFETY: per the contract.
-    unsafe { log_output(output, capacity) }.map_or(0, |bytes| log_micros(bytes, microseconds))
-}
+// Every test here calls the C++ oracle, which Miri can't run.
+#[cfg(test)]
+#[cfg(not(miri))]
+mod upstream;
 
 #[cfg(test)]
 #[expect(
@@ -498,22 +397,5 @@ mod tests {
         assert_eq!(hash(&[], 0, 2, true), 0);
         assert_ne!(hash(&[255], 1, 0, true), hash(&[255], 1, 0, false));
         assert_eq!(hash(b"hello", 5, 0, true), 210_714_636_441);
-    }
-    #[test]
-    fn spinlock_serializes_contenders() {
-        let lock = AtomicU32::new(0);
-        let value = AtomicU32::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                scope.spawn(|| {
-                    for _ in 0..5000 {
-                        swr_v1_utils_spinlock(Some(&lock), 4, 1024);
-                        value.store(value.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-                        lock.store(0, Ordering::SeqCst);
-                    }
-                });
-            }
-        });
-        assert_eq!(value.load(Ordering::Relaxed), 20000);
     }
 }

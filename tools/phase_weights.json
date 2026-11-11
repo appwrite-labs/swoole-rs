@@ -96,7 +96,6 @@
  "tls-unit": 3,
  "utilities-hash-originals": 6,
  "utilities-logger-originals": 6,
- "utilities-native": 6,
  "utilities-php-logger": 8,
  "utilities-public-storage": 17,
  "utilities-unit": 2,

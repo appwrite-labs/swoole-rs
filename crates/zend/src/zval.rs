@@ -25,6 +25,7 @@ use crate::{
     value,
 };
 use std::{
+    borrow::{Borrow, Cow},
     cell::UnsafeCell,
     ffi::{CStr, c_void},
     ptr,
@@ -76,18 +77,34 @@ impl Value {
         self.kind() == IS_NULL
     }
 
-    /// `ZVAL_DEREF`: the value a reference refers to, else this one.
+    /// `ZVAL_DEREF`, held: what a reference refers to now, as a copy of its own
+    /// (one addref) that PHP code assigning the reference later leaves alone;
+    /// anything else, this value.
     #[must_use]
     #[inline]
-    pub fn dereferenced(&self) -> &Self {
+    pub fn dereferenced(&self) -> Cow<'_, Self> {
         if self.kind() != IS_REFERENCE {
-            return self;
+            return Cow::Borrowed(self);
+        }
+        // SAFETY: the reference, which this zval keeps alive, holds the value;
+        // it is copied before any PHP code can assign it.
+        Cow::Owned(unsafe { &*self.referent().cast::<Self>() }.copy())
+    }
+
+    /// `ZVAL_DEREF`'s slot: the zval a reference refers to, else this one. A
+    /// pointer, since PHP code that assigns the reference rewrites the slot
+    /// under any borrow of it.
+    #[must_use]
+    #[inline]
+    pub fn referent(&self) -> *mut zval {
+        if self.kind() != IS_REFERENCE {
+            return self.as_ptr();
         }
         // SAFETY: a reference zval holds `ref`, at offset 0.
         let reference = unsafe { self.as_ptr().cast::<*mut zend_reference>().read() };
-        let value = reference.wrapping_byte_add(std::mem::offset_of!(zend_reference, val));
-        // SAFETY: the reference, which this zval keeps alive, holds the value.
-        unsafe { &*value.cast::<Self>() }
+        reference
+            .wrapping_byte_add(std::mem::offset_of!(zend_reference, val))
+            .cast()
     }
 
     /// `Z_LVAL_P` of an int, with no conversion.
@@ -286,9 +303,12 @@ impl Value {
 
     /// `Z_OBJPROP_P` of an object: its property table, which Zend builds if
     /// need be and the object keeps.
+    /// # Safety
+    /// No PHP code runs while the table is borrowed: a property write can
+    /// resize the table or replace it.
     #[must_use]
     #[inline]
-    pub fn properties(&self) -> Option<&Array> {
+    pub unsafe fn properties(&self) -> Option<&Array> {
         if self.kind() != IS_OBJECT {
             return None;
         }
@@ -1084,6 +1104,23 @@ impl std::ops::Deref for Owned {
     #[inline]
     fn deref(&self) -> &Value {
         &self.0
+    }
+}
+
+impl Borrow<Value> for Owned {
+    #[inline]
+    fn borrow(&self) -> &Value {
+        self
+    }
+}
+
+impl ToOwned for Value {
+    type Owned = Owned;
+
+    /// [`Value::copy`].
+    #[inline]
+    fn to_owned(&self) -> Owned {
+        self.copy()
     }
 }
 

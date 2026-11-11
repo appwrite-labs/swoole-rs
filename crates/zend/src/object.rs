@@ -89,7 +89,12 @@ impl<T> Object<T> {
 
     /// Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`: the class creates `Object<T>`s
     /// with `create` and frees them with `free`.
-    pub fn install(
+    /// # Safety
+    /// `create` returns the `std` of a new `Object<T>` (one [`Self::create`]
+    /// or [`Self::try_create`] made), and `free` destroys the standard object
+    /// it is given ([`Self::dtor`] or [`Self::try_dtor`]) without freeing it:
+    /// Zend then frees the allocation at `std - OFFSET`.
+    pub unsafe fn install(
         entry: &mut zend_class_entry,
         handlers: &mut zend_object_handlers,
         create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
@@ -297,7 +302,9 @@ pub(crate) fn install_custom<T: Custom>(
 ) {
     handlers.clone_obj = None;
     handlers.unset_property = Some(crate::unset_property_deny);
-    Object::<T>::install(entry, handlers, create::<T>, free::<T>);
+    // SAFETY: `create::<T>` makes `Object<T>`s with `try_create`, and
+    // `free::<T>` ends with `zend_object_std_dtor`.
+    unsafe { Object::<T>::install(entry, handlers, create::<T>, free::<T>) };
     if T::DESTRUCTS {
         handlers.dtor_obj = Some(destruct::<T>);
     }

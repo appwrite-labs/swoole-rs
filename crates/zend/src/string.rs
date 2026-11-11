@@ -50,8 +50,9 @@ pub fn alloc(length: usize) -> *mut zend_string {
         isize::try_from(length).is_ok(),
         "string length {length} overflows"
     );
-    // SAFETY: Zend's request allocator; it bails out rather than return null,
-    // and the header plus `length` plus the NUL cannot wrap.
+    // SAFETY: Zend's request allocator, which never returns null nor, past
+    // memory_limit, bails out (docs/zend.md, memory_limit); the header plus
+    // `length` plus the NUL cannot wrap.
     unsafe { swr_zend_string_alloc(length) }
 }
 

@@ -1181,10 +1181,7 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
     // SAFETY: two writable fds.
     if unsafe { libc::socketpair(domain, kind, protocol, pair.as_mut_ptr()) } != 0 {
         let code = errno();
-        // SAFETY: strerror's text, valid until the next call.
-        let reason = unsafe { libc::strerror(code) };
-        // SAFETY: NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(reason) }.to_string_lossy();
+        let reason = swoole_rs_corebase::sys::strerror(code);
         let message = message!("failed to create sockets: [{code}]: {reason}");
         report(Report::Swoole, E_WARNING, message.as_cstr())?;
         call.set_bool(false);

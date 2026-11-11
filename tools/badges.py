@@ -3,8 +3,11 @@
 
   badges.py --output DIR [--phpt GATE_JSON... --commit SHA]
 
+merge.json     the newest finished (not cancelled) merge-tier run on main: passing or failing,
+               with its commit (--merge SHA:CONCLUSION).
 unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budget.py), and
-               how many crates forbid unsafe_code; the per-crate table goes to the step summary.
+               how many crates forbid unsafe_code. unsafe.md, beside it, is the per-crate table
+               the badge links to.
 speed.json     callgrind instructions per request, Cargo build over upstream, from a merge-tier
                run's callgrind job (--callgrind): how many workloads beat upstream and the
                slowest one. speed.md, beside it, is the per-workload table the badge links to.
@@ -21,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +45,27 @@ def phpt_passing(rows, not_applicable=()):
 
 def endpoint(label, message, color='blue'):
     return {'schemaVersion': 1, 'label': label, 'message': message, 'color': color}
+
+
+def merge(run):
+    """merge.json from SHA:CONCLUSION of the newest finished merge-tier run."""
+    commit, _, conclusion = run.partition(':')
+    passed = conclusion == 'success'
+    return endpoint('merge tier', f"{'passing' if passed else 'failing'} @ {commit[:7]}",
+                    'brightgreen' if passed else 'red')
+
+
+def unsafe_table(unsafe, unforbidden, commit):
+    """unsafe.md: each crate's count, most first, and whether it forbids unsafe_code."""
+    rows = ''.join(f"| `{crate}` | {n:,} | {'✅' if not unforbidden.get(crate) else ''} |\n"
+                   for crate, n in sorted(unsafe.items(), key=lambda item: (-item[1], item[0])))
+    return (f'# Unsafe code by crate\n\n`unsafe` blocks, fns and impls in non-test code of each crate under '
+            f'`crates/`, counted by `tools/budget.py` on `{commit[:7]}`. ✅ marks a crate whose `lib.rs` has '
+            f'`#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate\'s count or drops '
+            f'its `forbid`.\n\n| crate | unsafe | forbids |\n| --- | ---: | :---: |\n{rows}\n'
+            f'Total {sum(unsafe.values()):,}. Goal: the hardened runtime '
+            f'([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), '
+            f'[#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).\n')
 
 
 def speed(result, limits, commit):
@@ -77,6 +102,7 @@ def main():
     parser.add_argument('--commit', help='The commit that run measured')
     parser.add_argument('--callgrind', type=Path, help="A merge-tier run's callgrind.json")
     parser.add_argument('--callgrind-commit', help='The commit that callgrind run measured')
+    parser.add_argument('--merge', help="The newest finished merge-tier run on main, as SHA:CONCLUSION")
     parser.add_argument('--coverage', type=Path, help="A coverage.yml run's report (summary.json, coverage.md)")
     args = parser.parse_args()
     if args.phpt and not args.commit:
@@ -88,15 +114,17 @@ def main():
     unsafe, unforbidden = counts['unsafe'], counts['unforbidden']
     not_applicable = json.loads(NOT_APPLICABLE.read_text())
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
-        rows = ''.join(f'| {crate} | {n} |\n' for crate, n in sorted(unsafe.items(), key=lambda item: -item[1]))
         excluded = ''.join(f'| `{test}` | {reason} |\n' for test, reason in sorted(not_applicable.items()))
         with open(summary, 'a') as out:
-            out.write(f'| crate | unsafe |\n| --- | ---: |\n{rows}\n'
-                      f'| PHPT not applicable | reason |\n| --- | --- |\n{excluded}')
+            out.write(f'| PHPT not applicable | reason |\n| --- | --- |\n{excluded}')
+    (args.output / 'unsafe.md').write_text(unsafe_table(unsafe, unforbidden, subprocess.run(
+        ['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()))
     badges = {
         'unsafe': endpoint('unsafe blocks', f'{sum(unsafe.values()):,} · '
                            f'{len(unforbidden) - sum(unforbidden.values())}/{len(unforbidden)} crates safe'),
     }
+    if args.merge:
+        badges['merge'] = merge(args.merge)
     if args.phpt:
         rows = [row for path in args.phpt for row in json.loads(path.read_text())]
         passing, tests = phpt_passing(rows, not_applicable)

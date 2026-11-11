@@ -222,8 +222,7 @@ pub extern "C" fn clean(this: &SocketPair) {
     };
     let mut buffer = [0_u8; 1024];
     while socket.wait_event(0, EVENT_READ) == OK {
-        // SAFETY: a local buffer of that size.
-        if unsafe { libc::read(socket.fd(), buffer.as_mut_ptr().cast(), buffer.len()) } <= 0 {
+        if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= 0 {
             break;
         }
     }

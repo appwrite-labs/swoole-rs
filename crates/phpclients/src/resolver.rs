@@ -6,6 +6,7 @@
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{
+    cell::UnsafeCell,
     ffi::{c_int, c_void},
     mem::{self, ManuallyDrop},
     ptr,
@@ -116,28 +117,21 @@ pub(crate) use native::swoole_name_resolver_context_reset;
 /// `struct ContextObject { NameResolver::Context *context; zend_object std; }`. The
 /// context is boxed and reached through its pointer: a lookup keeps using it across
 /// PHP code, which may run `__construct` on the same object.
-struct Held(*mut NameResolverContext);
+struct Held(Box<UnsafeCell<NameResolverContext>>);
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
         &CONTEXT
     }
     fn new() -> Self {
-        Self(Box::into_raw(Box::default()))
-    }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        // SAFETY: the box `new` made, dropped once, with its object.
-        drop(unsafe { Box::from_raw(self.0) });
+        Self(Box::default())
     }
 }
 
 /// `swoole_name_resolver_context_get_object_safe`: the object's context, or
 /// Swoole's fatal error.
 fn context_of(held: Option<&Held>) -> Option<*mut NameResolverContext> {
-    let context = held.map(|held| held.0);
+    let context = held.map(|held| held.0.get());
     if context.is_none() {
         // SAFETY: C++'s fatal-error report.
         unsafe { crate::native::unconstructed() };
@@ -185,7 +179,7 @@ fn lookup(call: &Call) {
         return;
     };
     let held = call.value(2).map(Value::dereferenced);
-    let Some(context) = context_of(held.and_then(Value::custom::<Held>)) else {
+    let Some(context) = context_of(held.as_deref().and_then(Value::custom::<Held>)) else {
         return;
     };
     // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
@@ -206,6 +200,7 @@ fn add(call: &Call) {
         Ok(_) => call.set_bool(
             call.value(1)
                 .map(Value::dereferenced)
+                .as_deref()
                 .is_some_and(php_swoole_name_resolver_add),
         ),
         Err(_) => call.set_bool(false),
@@ -257,7 +252,8 @@ fn remove(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let kept = native::swoole_name_resolver_php_remove(call.value(1).map(Value::dereferenced));
+    let kept =
+        native::swoole_name_resolver_php_remove(call.value(1).map(Value::dereferenced).as_deref());
     if !kept.is_null() {
         // Drop the reference `add` took, through the argument as upstream does.
         // SAFETY: the argument holds another reference, so no destructor runs.

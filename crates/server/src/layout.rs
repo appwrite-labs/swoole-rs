@@ -39,7 +39,6 @@ const RECORD_0_OFFSETS: &[usize] = &[
     offset_of!(crate::config::ServerConfig, single_thread),
     offset_of!(crate::config::ServerConfig, running),
     offset_of!(crate::config::ServerConfig, cpu_affinity_available),
-    offset_of!(crate::config::ServerConfig, cpu_affinity_available_num),
     offset_of!(crate::config::ServerConfig, pipe_command),
     offset_of!(crate::config::ServerConfig, send_timeout),
     offset_of!(crate::config::ServerConfig, heartbeat_check_interval),

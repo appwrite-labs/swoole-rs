@@ -279,7 +279,7 @@ fn socket_error_properties(props: Props, socket: Co) -> c_int {
 /// Fill `rv` as `RETURN_ZVAL(property, 1, 0)` does.
 fn return_property(call: &Call, name: &CStr) {
     if let Some(property) = call.this_value().and_then(|this| this.property(name)) {
-        call.set_owned(property.dereferenced().copy());
+        call.set_owned(property.dereferenced().into_owned());
     }
 }
 
@@ -1833,8 +1833,10 @@ fn add_file(call: &Call) {
     if length == 0 {
         length = size - offset;
     }
+    let guessed;
     if kind.is_empty() {
-        kind = swoole_rs_phpswoole::mime_type(c_path.to_bytes()).to_bytes();
+        guessed = swoole_rs_phpswoole::mime_type(c_path.to_bytes());
+        kind = &guessed;
     }
     let filename = if let Some(filename) = filename.filter(|filename| !filename.is_empty()) {
         filename

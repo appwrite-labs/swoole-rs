@@ -247,9 +247,8 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
 
 fn send_content(ctx: Ctx, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
     let available = sw_rs_http2_file_length(length, content.len());
-    // SAFETY: the table's type or the fallback, copied before PHP can change it.
-    let content_type = unsafe { std::ffi::CStr::from_ptr(swoole_rs_framing::mime::get(path)) };
-    let trailer = begin_file(ctx, content_type.to_bytes(), available);
+    let content_type = swoole_rs_framing::mime::get(path);
+    let trailer = begin_file(ctx, &content_type, available);
     if trailer < 0 {
         return false;
     }

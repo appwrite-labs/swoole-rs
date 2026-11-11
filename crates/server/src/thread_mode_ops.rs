@@ -97,8 +97,9 @@ impl Context {
         // SAFETY: the ops reading it run with a live worker in the context.
         unsafe { Worker::new(self.worker) }
     }
-    /// The thread factory's threads.
-    fn manager(&self) -> &ThreadManager {
+    /// The thread factory's threads; none for another mode's factory, which
+    /// [`Context::answer`] aborts on.
+    fn manager(&self) -> Option<&ThreadManager> {
         // SAFETY: the ops reading it run with the context's live thread factory.
         unsafe { factory::manager(self.factory) }
     }
@@ -167,7 +168,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let slot = arg & u64::from(u32::MAX);
     Some(match op {
-        OP_THREAD_MANAGER => (&raw const *ctx.manager()).addr() as u64,
+        OP_THREAD_MANAGER => (&raw const *ctx.manager()?).addr() as u64,
         OP_THREAD_SUPPORTED => u64::from(crate::THREAD_SUPPORTED.load(Ordering::Relaxed)),
         LOG_CALLOC_CONNECTIONS => {
             let max = ctx.tables().max_connection as usize;
@@ -189,7 +190,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_JOIN_THREAD => {
             // An uncaught `std::system_error` upstream: the process ends.
-            if ctx.manager().thread(arg).join().is_err() {
+            if ctx.manager()?.thread(arg).join().is_err() {
                 std::process::abort();
             }
             0
@@ -199,12 +200,12 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_THREAD_EXIT_STATUS => {
-            let thread = ctx.manager().thread(ctx.worker().id().into());
+            let thread = ctx.manager()?.thread(ctx.worker().id().into());
             i64::from(thread.exit_status()).cast_unsigned()
         }
         OP_CALL_WORKER_ERROR => {
             let worker = ctx.worker();
-            let status = ctx.manager().thread(worker.id().into()).exit_status() << 8;
+            let status = ctx.manager()?.thread(worker.id().into()).exit_status() << 8;
             let status = ExitStatus::new(worker.pid(), status);
             crate::event_worker_ops::call_worker_error_callback(ctx.server(), worker, &status);
             0
@@ -220,7 +221,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 ctx.run(RUN_THREAD_BODY, arg);
             };
             // An uncaught `std::system_error` upstream: the process ends.
-            if ctx.manager().thread(slot).start(body).is_err() {
+            if ctx.manager()?.thread(slot).start(body).is_err() {
                 std::process::abort();
             }
             0
@@ -256,7 +257,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_WORKER_THREAD_START => {
-            let thread = Arc::as_ptr(ctx.manager().thread(slot)).cast_mut().cast();
+            let thread = Arc::as_ptr(ctx.manager()?.thread(slot)).cast_mut().cast();
             let mut main = (*ctx, arg);
             // SAFETY: the slot's live thread, and `thread_main` over the context it lends.
             unsafe { worker_thread_start(thread, thread_main, (&raw mut main).cast()) };

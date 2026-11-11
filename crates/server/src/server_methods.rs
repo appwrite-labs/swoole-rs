@@ -603,17 +603,11 @@ unsafe fn native_op(op: u32, ctx: &mut NativeContext) -> bool {
     unsafe { run(RUN_NATIVE_OP, op.into(), ctx) != 0 }
 }
 
-/// `Server::get_package_max_length(conn)`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `conn` one of its connections.
-pub unsafe fn package_max_length(serv: *mut c_void, conn: *mut c_void) -> u32 {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: as the caller guarantees.
-    let fd = unsafe { &*conn.cast::<ConnectionRecord>() }.fd;
+/// `Server::get_package_max_length(conn)`, over one of `serv`'s connections.
+#[must_use]
+pub fn package_max_length(serv: view::Server<'_>, conn: &ConnectionRecord) -> u32 {
     // The connection's live port, as in C++, which doesn't check it either.
-    serv.port_of_fd(fd)
+    serv.port_of_fd(conn.fd)
         .map_or(0, |port| port.protocol.package_max_length)
 }
 

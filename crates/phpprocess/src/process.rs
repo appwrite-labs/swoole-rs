@@ -457,8 +457,7 @@ fn wait(call: &Call) {
     };
     let mut status = 0;
     let options = if blocking { 0 } else { libc::WNOHANG };
-    // SAFETY: `status` is a writable local.
-    let pid = unsafe { libc::waitpid(-1, &raw mut status, options) };
+    let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), options);
     if pid <= 0 {
         call.set_bool(false);
         return;
@@ -743,7 +742,6 @@ fn read(call: &Call) {
         reason = "upstream converts to size_t"
     )]
     let size = size as usize;
-    // Zend's allocator; it bails out when it cannot allocate.
     let mut buffer = ZBuf::with_capacity(size);
     let read = worker::pipe_read(worker, &mut buffer, blocking(process));
     let Ok(length) = usize::try_from(read) else {
