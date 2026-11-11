@@ -15,7 +15,7 @@ use core::ffi::{c_char, c_int, c_long};
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::log;
-use swoole_rs_process::worker_globals::thread_globals;
+use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::Worker;
 
 /// `swoole::SendData`.
@@ -172,9 +172,12 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     if task.info.kind != RECV_DATA && !dgram {
         return Ok(false);
     }
-    // SAFETY: this thread's worker globals; only the fields are read.
-    let globals = unsafe { &*thread_globals() };
-    let (worker, max_request) = (globals.worker, globals.max_request);
+    let (worker, max_request) = with_globals(|g| {
+        (
+            g.worker.load(Ordering::Relaxed),
+            g.max_request.load(Ordering::Relaxed),
+        )
+    });
     if worker.is_null() || max_request != 0 {
         return Ok(false);
     }
@@ -430,6 +433,7 @@ mod tests {
     use crate::records::{ServerTables, SessionRecord};
     use crate::script::Script;
     use core::sync::atomic::AtomicU32;
+    use swoole_rs_process::worker_globals::set_current_worker;
 
     /// One session (id 1, fd 2, reactor/worker 0) on connection 2; worker 0 runs.
     struct Tables {
@@ -549,9 +553,7 @@ mod tests {
         t.conn().recv_queued_bytes = AtomicU32::new(5);
         // SAFETY: a worker record is plain data; zero is a fresh one.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        let globals = thread_globals();
-        // SAFETY: this test thread's worker globals.
-        unsafe { (*globals).worker = &raw mut worker };
+        set_current_worker(&raw mut worker);
         let mut task = send(2, RECV_DATA, 5);
         task.info.time = 1.5;
         let mut s = t.script(&[(OP_ON_RECEIVE, 1)]);
@@ -574,19 +576,15 @@ mod tests {
         assert_eq!(packet.info.fd, 9, "unconverted");
 
         // A request limit, or a factory dispatch, takes the bus.
-        // SAFETY: as above.
-        unsafe { (*globals).max_request = 1 };
+        with_globals(|g| g.max_request.store(1, Ordering::Relaxed));
         let mut task = send(2, RECV_DATA, 5);
         let mut s = t.script(&[]);
         assert!(dispatch(&mut s, &raw mut task, true).unwrap());
         let mut again = send(2, RECV_DATA, 5);
         assert!(dispatch(&mut s, &raw mut again, false).unwrap());
         assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (0, 2));
-        // SAFETY: as above.
-        unsafe {
-            (*globals).max_request = 0;
-            (*globals).worker = core::ptr::null_mut();
-        }
+        with_globals(|g| g.max_request.store(0, Ordering::Relaxed));
+        set_current_worker(core::ptr::null_mut());
     }
 
     #[test]
