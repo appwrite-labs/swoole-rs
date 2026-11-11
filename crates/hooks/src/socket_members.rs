@@ -69,7 +69,8 @@ fn on_ready(event: &Event, kind: u32) -> c_int {
     let hup = source.read(|record| record.event_hup) != 0;
     let co = ready(socket, kind, hup);
     if !co.is_null() {
-        (NATIVE.resume)(co);
+        // SAFETY: the coroutine `ready` chose, parked in its wait on this socket.
+        unsafe { (NATIVE.resume)(co) };
     }
     0
 }

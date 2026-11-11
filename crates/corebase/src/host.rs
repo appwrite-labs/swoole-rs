@@ -37,12 +37,9 @@ pub unsafe extern "C" fn swoole_shell_exec(
     pid: *mut libc::pid_t,
     get_error_stream: bool,
 ) -> c_int {
-    let mut fds = [0 as c_int; 2];
-    // SAFETY: `fds` holds the two descriptors pipe(2) writes.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+    let Some([read, write]) = crate::sys::pipe() else {
         return -1;
-    }
-    let [read, write] = fds;
+    };
     // SAFETY: fork(2) has no memory preconditions; the child only makes
     // async-signal-safe calls before exec, as upstream's did.
     let child = unsafe { libc::fork() };

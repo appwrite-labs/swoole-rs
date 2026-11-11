@@ -94,8 +94,7 @@ pub(crate) unsafe fn from_fd(fd: i32, kind: i32) -> Result<Option<Owned>, Bailou
 /// An object over a duplicate of `fd`, which stays borrowed.
 pub(super) fn duplicate(fd: i32, kind: i32) -> Result<Option<Owned>, Bailout> {
     native::check_reactor()?;
-    // SAFETY: dup borrows the source descriptor and creates an independent owned descriptor.
-    let duplicate = unsafe { libc::dup(fd) };
+    let duplicate = swoole_rs_corebase::sys::dup(fd);
     if duplicate < 0 {
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         crate::net::warn_sys(&format!("dup({fd}) failed"), error);

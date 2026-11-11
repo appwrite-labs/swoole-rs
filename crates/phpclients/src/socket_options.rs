@@ -860,8 +860,7 @@ fn import(call: &Call) {
         return call.set_bool(false);
     }
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
-    // SAFETY: a descriptor query.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    let flags = swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0);
     if flags < 0 {
         warn_sys("fcntl(F_GETFL) failed", errno());
         return call.set_bool(false);

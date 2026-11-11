@@ -279,8 +279,7 @@ pub(crate) fn close_socket(port: *mut c_void) {
     let Some(fd) = (unsafe { Socket::from_ptr(socket) }).map(Socket::fd) else {
         return;
     };
-    // SAFETY: close(2) has no memory preconditions.
-    if unsafe { libc::close(fd) } < 0 {
+    if swoole_rs_corebase::sys::close(fd) < 0 {
         log::sys_warning(
             c"ListenPort::close_socket",
             format_args!("close({fd}) failed"),
