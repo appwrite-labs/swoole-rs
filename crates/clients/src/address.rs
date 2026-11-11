@@ -388,4 +388,73 @@ mod tests {
             );
         }
     }
+
+    fn socket_address(kind: c_int, host: &CStr) -> SocketAddress {
+        let mut address = SocketAddress {
+            kind,
+            ..SocketAddress::default()
+        };
+        let error = unsafe {
+            swr_v1_clients_address_assign(
+                (&raw mut address.addr).cast(),
+                &raw mut address.len,
+                kind,
+                host.as_ptr(),
+                host.to_bytes().len(),
+                80,
+                None,
+            )
+        };
+        assert_eq!(error, 0, "{host:?}");
+        address
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton or inet_ntop")]
+    fn with_host_formats_as_the_export_does() {
+        for (kind, host) in [
+            (TCP, c"10.1.2.3"),
+            (UDP, c"127.0.0.1"),
+            (TCP6, c"fe80::1"),
+            (UDP6, c"::ffff:1.2.3.4"),
+            (UNIX_STREAM, c"/tmp/s.sock"),
+            (UNIX_DGRAM, c""),
+        ] {
+            let address = socket_address(kind, host);
+            assert_eq!(with_host(&address, CStr::to_owned).as_c_str(), host);
+            // SAFETY: the export's text, read before this thread formats another.
+            let export = unsafe { CStr::from_ptr(swr_v1_clients_address_host(&address)) };
+            assert_eq!(export, host, "the export agrees");
+        }
+        let unknown = SocketAddress {
+            kind: 9,
+            ..SocketAddress::default()
+        };
+        assert_eq!(with_host(&unknown, CStr::to_owned).as_c_str(), c"unknown");
+    }
+
+    #[test]
+    fn with_host_ends_an_unterminated_unix_path() {
+        let mut address = SocketAddress {
+            kind: UNIX_STREAM,
+            ..SocketAddress::default()
+        };
+        let path = unsafe { &mut address.addr.un.sun_path };
+        path.fill(c_char::from_ne_bytes(*b"x"));
+        let full = vec![b'x'; path.len()];
+        assert!(with_host(&address, |host| host.to_bytes() == full));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton or inet_ntop")]
+    fn with_host_text_outlives_other_formatting() {
+        let v4 = socket_address(TCP, c"10.1.2.3");
+        let v6 = socket_address(TCP6, c"fe80::1");
+        with_host(&v4, |outer| {
+            // Neither another lend nor the export's shared scratch touches `outer`.
+            assert_eq!(with_host(&v6, CStr::to_owned).as_c_str(), c"fe80::1");
+            assert!(!swr_v1_clients_address_host(&v6).is_null());
+            assert_eq!(outer, c"10.1.2.3");
+        });
+    }
 }

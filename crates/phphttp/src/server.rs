@@ -14,7 +14,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    ffi::{CStr, c_int, c_void},
+    ffi::{c_int, c_void},
     mem::ManuallyDrop,
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
