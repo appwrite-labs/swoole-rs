@@ -244,11 +244,7 @@ impl Ctx {
 
     /// `Context::set_compression_method` from a request's `accept-encoding`.
     pub fn compression_method(self, accept_encoding: &[u8]) {
-        parse::compression_method(
-            send::state(self.0),
-            accept_encoding.as_ptr(),
-            accept_encoding.len(),
-        );
+        parse::compression_method(send::state(self.0), accept_encoding);
     }
 
     /// `Context::compress`: the encoding's name and the compressed body, or

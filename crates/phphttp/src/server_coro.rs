@@ -13,7 +13,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
@@ -152,23 +152,16 @@ impl HttpServer {
     /// `get_handler`: the callable for the request's path, or null.
     fn handler(&self, context: *mut Context) -> *mut Callable {
         let request = &send::state(context).request;
-        let path = swoole_rs_httpbindings::Text {
-            data: request.path.cast(),
-            length: request.path_len as usize,
+        // SAFETY: the request's path, `path_len` bytes.
+        let path = unsafe {
+            std::slice::from_raw_parts(request.path.cast::<u8>(), request.path_len as usize)
         };
         let default = self.default_handler.get();
         self.handlers
             .borrow()
             .iter()
             .filter(|&&(_, handle)| handle != default)
-            .find(|(pattern, _)| {
-                let pattern = swoole_rs_httpbindings::Text {
-                    data: pattern.as_ptr(),
-                    length: pattern.len(),
-                };
-                // SAFETY: the request's path and the pattern's bytes.
-                unsafe { swoole_rs_httpbindings::swr_v1_httpbindings_handler(path, pattern) == 1 }
-            })
+            .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
             .map_or(default, |&(_, handle)| handle)
     }
 
@@ -294,9 +287,10 @@ fn network<'a>(socket: Socket) -> Option<swoole_rs_reactor::Socket<'a>> {
 }
 
 /// The socket's error code and message.
-fn socket_error(socket: Socket) -> (c_int, *const c_char) {
+fn socket_error<'a>(socket: Socket) -> (c_int, &'a CStr) {
     let record = record(socket);
-    (record.err_code, record.err_msg)
+    // SAFETY: the socket's message is NUL-terminated, and kept until its next error.
+    (record.err_code, unsafe { CStr::from_ptr(record.err_msg) })
 }
 
 /// `get_addr()` and `get_port()`: the network socket's address.
@@ -446,8 +440,6 @@ fn props(call: &Call) -> Props<'_> {
 fn set_error(props: Props<'_>, socket: Socket) -> zend_long {
     let (code, message) = socket_error(socket);
     props.long(c"errCode", zend_long::from(code));
-    // SAFETY: the socket's message is NUL-terminated.
-    let message = unsafe { CStr::from_ptr(message) };
     props.bytes(c"errMsg", message.to_bytes());
     zend_long::from(code)
 }
@@ -611,8 +603,7 @@ fn start(call: &Call) {
 
 fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     use swoole_rs_httpbindings::{
-        AcceptErrors, AcceptHost, Action, SettingsCursor, swr_v1_httpbindings_accept_loop,
-        swr_v1_httpbindings_settings,
+        AcceptErrors, Action, SettingsCursor, accept_loop, swr_v1_httpbindings_settings,
     };
     let object = call.this();
     let server = server(server_of(call));
@@ -649,10 +640,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         }
         match action.kind {
             SETTING_LOOKUP => {
-                // SAFETY: the action's key bytes.
-                value = table.get(unsafe {
-                    std::slice::from_raw_parts(action.text.data, action.text.length)
-                });
+                value = table.get(action.text);
                 found = u32::from(value.is_some());
             }
             SETTING_DONE => break,
@@ -678,24 +666,14 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         props: props(call),
         server,
         socket,
-        accept: &raw mut *accept,
-        bailed: Cell::new(false),
+        accept: &mut accept,
+        bailed: false,
     };
-    let host = AcceptHost {
-        data: (&raw mut start).cast(),
-        running: start_running,
-        accept: start_accept,
-        error: start_error,
-        sleep: start_sleep,
-        set_error: start_set_error,
-        fail: start_fail,
-    };
-    // SAFETY: the host's callbacks take its data, `start`.
-    let accepted = unsafe { swr_v1_httpbindings_accept_loop(Some(&host), Some(&errors)) };
-    if start.bailed.get() {
+    let accepted = accept_loop(&mut start, &errors);
+    if start.bailed {
         return Err(bailout::Bailout);
     }
-    Ok(Some(accepted == 1))
+    Ok(Some(accepted))
 }
 
 /// One `start` setting (`SWR_HTTPBINDINGS_SETTING_*`) from its value: a
@@ -762,93 +740,79 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
     Ok(result)
 }
 
-/// The `start` frame the accept loop's host callbacks read (`AcceptHost::data`).
+/// The `start` frame the accept loop drives.
 struct Start<'a> {
     props: Props<'a>,
     server: &'a HttpServer,
     socket: Socket,
-    accept: *mut Accept,
+    accept: &'a mut Accept,
     /// Creating an `onAccept` coroutine bailed out (#913): the loop stops and
     /// `start` re-raises it once the Rust frames are done.
-    bailed: Cell<bool>,
+    bailed: bool,
 }
 
-fn start_of<'a>(data: *mut c_void) -> &'a Start<'a> {
-    // SAFETY: `run_start` passes its live `Start` for the loop.
-    unsafe { &*data.cast::<Start>() }
-}
-
-unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
-    let start = start_of(data);
-    !start.bailed.get() && start.server.running.get()
-}
-
-/// Accept a connection and serve it with `onAccept` in a new coroutine: its
-/// id, or 0.
-unsafe extern "C" fn start_accept(data: *mut c_void, connected: &mut bool) -> i64 {
-    let start = start_of(data);
-    // SAFETY: the live listener, in `start`'s coroutine.
-    let conn = unsafe { co::accept(start.socket, 0.0) };
-    *connected = !conn.is_null();
-    if conn.is_null() {
-        return 0;
+impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
+    fn running(&mut self) -> bool {
+        !self.bailed && self.server.running.get()
     }
-    // The loop's reference to the connection object.
-    let zsocket = Owned::default();
-    // SAFETY: an empty slot and the new connection.
-    if unsafe { swoole_rs_phpclients::init_socket_object(zsocket.as_ptr(), conn) }.is_err() {
-        start.bailed.set(true);
-        return 0;
+
+    /// Accept a connection and serve it with `onAccept` in a new coroutine: its
+    /// id, or 0.
+    fn accept(&mut self) -> Option<i64> {
+        // SAFETY: the live listener, in `start`'s coroutine.
+        let conn = unsafe { co::accept(self.socket, 0.0) };
+        if conn.is_null() {
+            return None;
+        }
+        // The loop's reference to the connection object.
+        let zsocket = Owned::default();
+        // SAFETY: an empty slot and the new connection.
+        if unsafe { swoole_rs_phpclients::init_socket_object(zsocket.as_ptr(), conn) }.is_err() {
+            self.bailed = true;
+            return Some(0);
+        }
+        let mut cid = 0;
+        // A warning's error handler can exit(): start() re-raises it (#913).
+        // SAFETY: the resolved cache, the connection object and the callable's
+        // name; the shim traps what the new coroutine raises.
+        self.bailed = bailout::trapped(unsafe {
+            z::swr_zend_try_facade_coroutine(
+                Some(swoole_rs_phpcoroutines::create_coroutine),
+                &raw mut self.accept.cache,
+                1,
+                zsocket.as_ptr(),
+                self.accept.callback.as_ptr(),
+                &raw mut cid,
+            )
+        })
+        .is_err();
+        if self.bailed {
+            // As upstream, whose bailout jumps past the release: start() raises
+            // it and the request's shutdown frees the object.
+            let _kept = zsocket.into_zval();
+            return Some(0);
+        }
+        Some(cid)
     }
-    // SAFETY: `start`'s accept callable.
-    let accept = unsafe { &mut *start.accept };
-    let mut cid = 0;
-    // A warning's error handler can exit(): start() re-raises it (#913).
-    // SAFETY: the resolved cache, the connection object and the callable's
-    // name; the shim traps what the new coroutine raises.
-    let bailed = bailout::trapped(unsafe {
-        z::swr_zend_try_facade_coroutine(
-            Some(swoole_rs_phpcoroutines::create_coroutine),
-            &raw mut accept.cache,
-            1,
-            zsocket.as_ptr(),
-            accept.callback.as_ptr(),
-            &raw mut cid,
-        )
-    })
-    .is_err();
-    start.bailed.set(bailed);
-    if bailed {
-        // As upstream, whose bailout jumps past the release: start() raises
-        // it and the request's shutdown frees the object.
-        let _kept = zsocket.into_zval();
-        return 0;
+
+    fn error(&mut self) -> (c_int, &CStr) {
+        socket_error(self.socket)
     }
-    cid
-}
 
-unsafe extern "C" fn start_error(data: *mut c_void, message: &mut *const c_char) -> c_int {
-    let (code, text) = socket_error(start_of(data).socket);
-    *message = text;
-    code
-}
+    fn sleep(&mut self) {
+        // A coroutine runs `start`.
+        swoole_rs_hooks::stdio::swoole_coroutine_sleep(ACCEPT_RETRY_TIME);
+    }
 
-unsafe extern "C" fn start_sleep(_: *mut c_void) {
-    // A coroutine runs `start`.
-    swoole_rs_hooks::stdio::swoole_coroutine_sleep(ACCEPT_RETRY_TIME);
-}
+    fn set_error(&mut self) {
+        set_error(self.props, self.socket);
+    }
 
-unsafe extern "C" fn start_set_error(data: *mut c_void) {
-    let start = start_of(data);
-    set_error(start.props, start.socket);
-}
-
-unsafe extern "C" fn start_fail(data: *mut c_void, warning: swoole_rs_httpbindings::Text) {
-    // SAFETY: the loop lends the warning's UTF-8 bytes for the call.
-    let warning = unsafe { std::slice::from_raw_parts(warning.data, warning.length) };
-    host::fatal(std::str::from_utf8(warning).unwrap_or_default());
-    // Keep-alive connections stop once the listener cannot accept.
-    start_of(data).server.running.set(false);
+    fn fail(&mut self, warning: &str) {
+        host::fatal(warning);
+        // Keep-alive connections stop once the listener cannot accept.
+        self.server.running.set(false);
+    }
 }
 
 /// `%s` of a ZPP string: up to its first NUL.

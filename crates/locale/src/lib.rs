@@ -65,6 +65,14 @@ pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
     // SAFETY: both slices hold at least `length` readable bytes.
     unsafe { libc::strncasecmp(left.as_ptr().cast(), right.as_ptr().cast(), length) == 0 }
 }
+/// `isspace(byte)` in the current locale, the byte passed as a native `char`, as the
+/// pinned C passes it.
+#[must_use]
+pub fn is_space(byte: u8) -> bool {
+    let byte = std::ffi::c_int::from(std::ffi::c_char::from_ne_bytes([byte]));
+    // SAFETY: a value in -128..=255, which glibc's, musl's and Apple's tables all index.
+    unsafe { libc::isspace(byte) != 0 }
+}
 /// True when libc's case-insensitive comparison differs at this first byte pair in
 /// every locale, so the call can be skipped: `tolower` keeps ASCII in ASCII except
 /// Turkish `I` (to `ı`), and only Turkish `İ` lowers to an ASCII byte (`i`).

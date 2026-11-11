@@ -625,6 +625,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-httpbindings"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-locale",
+]
 
 [[package]]
 name = "swoole-rs-inflate"
