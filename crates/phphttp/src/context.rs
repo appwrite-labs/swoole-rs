@@ -16,45 +16,18 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Object, Owned, Value, init_object,
+    Owned, Value, init_object,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset, zend_class_entry,
-        zend_object, zend_object_handlers, zend_string, zval, zval_ptr_dtor,
+        swr_zend_efree, swr_zend_http_property_offset, zend_class_entry, zend_object, zend_string,
+        zval, zval_ptr_dtor,
     },
-    unset_property_deny,
     value::set_long,
 };
 
-pub(crate) type Holder = Object<*mut Context>;
-
-/// The context of an object of either class (null once released or before
-/// one is set).
-/// # Safety
-/// `object` is a live `Swoole\Http\Request` or `Swoole\Http\Response`.
-#[must_use]
-pub(crate) unsafe fn context_of(object: *const zend_object) -> *mut Context {
-    // SAFETY: per the caller; only the pointer is copied out.
-    unsafe { *Holder::data(object.cast_mut()) }
-}
-
-/// The method's `$this` context.
-pub(crate) fn this(call: &swoole_rs_zend::Call) -> *mut Context {
-    // SAFETY: the classes' methods are non-static, so `$this` is one of ours.
-    unsafe { context_of(call.this()) }
-}
-
-/// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.
-pub(crate) fn configure(
-    entry: &mut zend_class_entry,
-    handlers: &mut zend_object_handlers,
-    create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-    free: unsafe extern "C" fn(*mut zend_object),
-) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Holder::install(entry, handlers, create, free);
-}
+/// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
+/// (`struct { swoole::http::Context *ctx; zend_object std; }`): its context,
+/// null once released or before one is set.
+pub(crate) type Holder = std::cell::Cell<*mut Context>;
 
 /// `Swoole\Http\Response`'s declared `fd` slot (MINIT).
 static RESPONSE_FD: AtomicU32 = AtomicU32::new(0);
@@ -89,10 +62,12 @@ pub(crate) fn new_object(
     // SAFETY: the context's own zval and a registered class.
     unsafe { init_object(&raw mut slot.value, ce) };
     slot.ptr = &raw mut slot.value;
-    let std = slot.object()?;
-    // SAFETY: one of our objects, laid out as a `Holder`.
-    unsafe { *Holder::data(std) = ctx };
-    Some(std)
+    let object = slot.get()?;
+    match kind {
+        Kind::Request => object.custom::<crate::request::Data>()?.0.set(ctx),
+        Kind::Response => object.custom::<crate::response::Data>()?.0.set(ctx),
+    }
+    slot.object()
 }
 
 /// A new object in `slot`, pointing at `ctx`, with its `fd` property (the
@@ -388,7 +363,7 @@ mod tests {
     fn std_follows_the_context_pointer_as_in_upstream() {
         // `struct HttpRequestObject { HttpContext *ctx; zend_object std; }`
         assert_eq!(
-            Holder::OFFSET,
+            swoole_rs_zend::Object::<crate::request::Data>::OFFSET,
             size_of::<*mut Context>(),
             "std right after ctx"
         );

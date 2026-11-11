@@ -19,17 +19,17 @@ use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, handlers, push_string, set_key,
+    Call, Custom, CustomClass, Invalid, Owned, Props, Value, ZStr, ZString, handlers, push_string,
+    set_key,
     sys::{
-        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
-        zend_string,
+        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_string,
     },
     type_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
 
-static RESPONSE: Class = Class::new();
+static RESPONSE: CustomClass<Data> = CustomClass::new();
 
 /// `WebSocket::OPCODE_TEXT` and `WebSocket::CLOSE_NORMAL` (RFC 6455).
 const OPCODE_TEXT: i64 = 1;
@@ -39,19 +39,34 @@ const WEBSOCKET_PACK_FAILED: c_int = 8505;
 /// `SW_HTTP_INTERNAL_SERVER_ERROR`.
 const INTERNAL_SERVER_ERROR: c_int = 500;
 
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of
-    // it; a null context is valid zeroed data.
-    unsafe { Holder::create(&RESPONSE, ce) }
+/// A response object's context.
+pub(crate) struct Data(pub(crate) Holder);
+
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &RESPONSE
+    }
+
+    fn new() -> Self {
+        Self(Holder::new(ptr::null_mut()))
+    }
 }
 
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    let ctx = unsafe { *Holder::data(std) };
-    let bailed = !ctx.is_null() && release(ctx);
-    // SAFETY: as above.
-    unsafe { Holder::dtor(std) };
-    host::raise(bailed);
+/// The object goes: what the user code it runs raised is raised once it is
+/// freed.
+impl Drop for Data {
+    fn drop(&mut self) {
+        let ctx = self.0.get();
+        if !ctx.is_null() && release(ctx) {
+            swoole_rs_zend::bailout::Bailout.defer();
+        }
+    }
+}
+
+/// The method's `$this` context.
+fn this(call: &Call) -> *mut Context {
+    call.custom::<Data>()
+        .map_or(ptr::null_mut(), |data| data.0.get())
 }
 
 /// The response object is going: finish what the handler left unanswered
@@ -115,14 +130,7 @@ method_table! {
 pub fn response_minit(args: &MinitArgs) {
     let codecs = args.codecs | u32::from(args.compression) << 3;
     let minit = &args.minit;
-    minit.register(
-        &RESPONSE,
-        c"Swoole\\Http\\Response",
-        &METHODS.0,
-        |entry, handlers| {
-            context::configure(entry, handlers, create, free);
-        },
-    );
+    minit.register_object::<Data>(c"Swoole\\Http\\Response", &METHODS.0, 0);
     minit.property_long(&RESPONSE, c"fd", 0, ZEND_ACC_PUBLIC);
     for name in [c"socket", c"header", c"cookie", c"trailer"] {
         minit.property_null(&RESPONSE, name, ZEND_ACC_PUBLIC);
@@ -140,7 +148,7 @@ pub(crate) fn entry() -> *mut zend_class_entry {
 
 /// `http_response_get_and_check_context`: a context that can still respond.
 fn checked(call: &Call) -> Option<*mut Context> {
-    let ctx = context::this(call);
+    let ctx = this(call);
     if ctx.is_null() || host::flags(ctx) & (END | DETACHED) != 0 {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
         return None;
@@ -151,7 +159,7 @@ fn checked(call: &Call) -> Option<*mut Context> {
 /// `php_swoole_http_response_get_context`, setting `SW_ERROR_SESSION_CLOSED`
 /// when there is none.
 fn open(call: &Call) -> Option<*mut Context> {
-    let ctx = context::this(call);
+    let ctx = this(call);
     if ctx.is_null() {
         host::set_last_error(SESSION_CLOSED);
         return None;
@@ -201,7 +209,7 @@ fn init_header(call: &Call) {
 }
 
 fn is_writable(call: &Call) {
-    let ctx = context::this(call);
+    let ctx = this(call);
     call.set_bool(!ctx.is_null() && host::flags(ctx) & (END | DETACHED) == 0);
 }
 
@@ -484,7 +492,7 @@ fn trailer(call: &Call) {
 
 fn ping(call: &Call) {
     let run = || -> Option<()> {
-        let ctx = context::this(call);
+        let ctx = this(call);
         if ctx.is_null() {
             return None;
         }
@@ -704,7 +712,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         let Some(request) = pair
             .index(1)
             .filter(|found| instance_of(found, crate::request::entry()))
-            .and_then(Value::object)
+            .and_then(Value::custom::<crate::request::Data>)
         else {
             return refuse(call, "parameter $1.second must be instanceof Http\\Request");
         };
@@ -716,8 +724,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         };
         object = first;
         paired = true;
-        // SAFETY: a `Swoole\Http\Request`.
-        ctx = unsafe { context::context_of(request) };
+        ctx = request.0.get();
     }
     if object.object().is_some() {
         let server_ce = swoole_rs_phpserver::server_class_entry();
