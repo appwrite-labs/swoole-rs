@@ -19,8 +19,7 @@ use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, handlers, init_object, push_string,
-    set_key,
+    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, handlers, push_string, set_key,
     sys::{
         IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
         zend_string,
@@ -41,8 +40,9 @@ const WEBSOCKET_PACK_FAILED: c_int = 8505;
 const INTERNAL_SERVER_ERROR: c_int = 500;
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it.
-    unsafe { context::create(&RESPONSE, ce) }
+    // SAFETY: Zend calls `create_object` with this class or a subclass of
+    // it; a null context is valid zeroed data.
+    unsafe { Holder::create(&RESPONSE, ce) }
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
@@ -699,7 +699,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let mut paired = false;
     let mut ctx: *mut Context = ptr::null_mut();
     let mut server = None;
-    let mut socket = ptr::null_mut();
+    let mut socket = None;
     if let Some(pair) = object.array() {
         let Some(request) = pair
             .index(1)
@@ -734,10 +734,10 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 );
             }
         } else if instance_of(object, socket_ce) {
-            socket = object.as_ptr();
+            socket = Some(object);
             // SAFETY: a `Swoole\Coroutine\Socket`.
             fd = zend_long::from(websocket::sock_fd(unsafe {
-                swoole_rs_phpclients::get_socket(socket)
+                swoole_rs_phpclients::get_socket(object.as_ptr())
             }));
         } else {
             return refuse(
@@ -755,7 +755,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     if server.is_some_and(|server| !server.is_started()) {
         return refuse(call, "server is not running");
     }
-    if server.is_none() && socket.is_null() {
+    if server.is_none() && socket.is_none() {
         call.set_bool(false);
         return;
     }
@@ -763,8 +763,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         let ctx = context::alloc();
         send::state(ctx).keepalive = 1;
         if let Some(server) = server {
-            // SAFETY: the new context.
-            unsafe { context::init(ctx, server) };
+            context::init(send::state(ctx), server);
         } else {
             crate::parse::init_request_parser(ctx);
             // `Context::init(zval *)`.
@@ -782,30 +781,25 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         ctx
     };
     if let Some(server) = server {
-        // SAFETY: a live context.
-        unsafe { context::bind_server(ctx, server) };
-    } else {
-        // SAFETY: a live context and the socket.
-        unsafe { context::bind(ctx, socket) };
+        context::bind_server(send::state(ctx), server);
+    } else if let Some(socket) = socket {
+        // SAFETY: a `Swoole\Coroutine\Socket`.
+        unsafe { context::bind(send::state(ctx), socket) };
     }
     let ce = RESPONSE.entry();
     let state = send::state(ctx);
     state.fd = fd;
     let slot = &mut state.response.zobject;
-    // SAFETY: the context's own zval and this registered class.
-    unsafe { init_object(&raw mut slot.value, ce) };
-    slot.ptr = &raw mut slot.value;
+    let made = context::new_object(slot, context::Kind::Response, ctx);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it.
     unsafe { call.set_value(slot.value) };
-    let Some(std) = slot.object() else { return };
-    // SAFETY: a `Swoole\Http\Response`.
-    unsafe { context::set_context(std, ctx) };
+    let Some(std) = made else { return };
     // SAFETY: the Response just created, under its class.
     let props = unsafe { Props::new(ce, std) };
     props.long(c"fd", fd);
-    // SAFETY: null or the caller's live socket; the property takes its own reference.
-    if let Some(socket) = unsafe { Value::from_ptr(socket) } {
+    // The property takes its own reference.
+    if let Some(socket) = socket {
         props.value(c"socket", socket);
     }
     if paired && let Some(request) = send::state(ctx).request.zobject.props() {

@@ -84,10 +84,10 @@ fn body(ctx: Ctx, data: &[u8], end_stream: bool) -> bool {
 
 /// `http2_server_is_static_file`: answer the request from the document root
 /// when the static handler serves it (true). `server` is the live server.
-pub(crate) fn static_file(server: *mut c_void, ctx: Ctx) -> bool {
-    let served = serve(server, ctx);
-    bailout::finish();
-    served
+/// # Errors
+/// Serving it left a bailout pending; it stays pending for the caller.
+pub(crate) fn static_file(server: *mut c_void, ctx: Ctx) -> Result<bool, bailout::Bailout> {
+    bailout::outcome(serve(server, ctx))
 }
 
 fn serve(server: *mut c_void, ctx: Ctx) -> bool {

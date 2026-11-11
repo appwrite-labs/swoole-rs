@@ -188,10 +188,7 @@ impl Change {
                     return false;
                 }
                 let mut errors = [0; 2];
-                // SAFETY: two writable ints.
-                let result = unsafe {
-                    registration::kqueue_del(kq, fd, token, socket.events, errors.as_mut_ptr())
-                };
+                let result = registration::kqueue_del(kq, fd, token, socket.events, &mut errors);
                 for error in errors.into_iter().filter(|error| *error != 0) {
                     self.removal_failed(error);
                 }
