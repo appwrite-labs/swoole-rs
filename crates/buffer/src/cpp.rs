@@ -178,23 +178,6 @@ pub fn new_buffer(chunk_size: u32) -> *mut CppBuffer {
     swr_cpp_buffer_new(unsafe { &mut *storage.cast() }, chunk_size)
 }
 
-/// `delete buffer`: runs `~Buffer` and returns the storage to operator delete.
-///
-/// # Safety
-/// `buffer` came from `new Buffer` (or [`new_buffer`]) and is not used again.
-pub unsafe fn delete_buffer(buffer: *mut CppBuffer) {
-    unsafe extern "C" {
-        #[link_name = "_ZdlPv"]
-        fn operator_delete(storage: *mut std::ffi::c_void);
-    }
-    // SAFETY: as the caller promises: a live Buffer nothing else borrows.
-    let this = unsafe { &mut *buffer };
-    // SAFETY: as the caller promises, `this` is not used again.
-    unsafe { swr_cpp_buffer_drop(this) };
-    // SAFETY: `new Buffer`'s storage, its destructor run.
-    unsafe { operator_delete(buffer.cast()) };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
