@@ -251,13 +251,20 @@ unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_o
 }
 
 /// `T`'s `free_obj` handler: drop the data, then free the standard object.
+/// A bailout the drop defers (releasing a callable can run PHP code) is
+/// raised last, unless one was already pending.
 /// # Safety
 /// Zend calls it once, with one of `T`'s objects whose last reference went.
 unsafe extern "C" fn free<T: Custom>(std: *mut zend_object) {
+    // A bailout pending before is its deferrer's to raise.
+    let pending = bailout::pending();
     // SAFETY: per Zend; nothing borrows the data any more.
     unsafe { Object::<T>::data_ptr(std).drop_in_place() };
     // SAFETY: as above.
     unsafe { zend_object_std_dtor(std) };
+    if !pending {
+        bailout::finish();
+    }
 }
 
 /// `T`'s `dtor_obj` handler: `__destruct`, then [`Custom::destruct`].
