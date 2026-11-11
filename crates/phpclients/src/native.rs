@@ -255,20 +255,18 @@ impl Co {
     }
 
     /// `sw_callable_free(protocol.private_data_1)`, the `package_length_func` the socket
-    /// owns: upstream's ordering publishes null only after the callback's destruction
-    /// returns, which frees it even when it bails out.
+    /// owns. It leaves the slot first, so the destructor, which may reach the
+    /// socket, finds none.
     /// # Errors
     /// The callable's destructor bailed out; the bailout stays pending.
     pub fn free_length_callable(self) -> Result<(), Bailout> {
-        // Copy the owned callback pointer without borrowing the protocol across PHP.
-        let callable = self.0.protocol().private_data_1;
+        let callable = self.0.edit_protocol(|protocol| {
+            std::mem::replace(&mut protocol.private_data_1, ptr::null_mut())
+        });
         if callable.is_null() {
             return Ok(());
         }
-        let freed = callable_free(callable);
-        self.0
-            .edit_protocol(|protocol| protocol.private_data_1 = ptr::null_mut());
-        freed
+        callable_free(callable)
     }
 
     /// `accept(timeout)`: the new connection, owned by the caller. It copies
