@@ -1,6 +1,7 @@
 //! `Swoole\Server\Port`: registration, objects and every method over the
 //! `ListenPort` and Server these configure.
 use crate::{
+    callable::Callable,
     port_settings,
     settings::{Settings, Stop},
 };
@@ -30,10 +31,11 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
 const CALLBACKS: usize = 12;
 
-/// `swoole::ServerPortProperty`: pointers only, so Rust lays it out as C++ does.
+/// `swoole::ServerPortProperty`: pointers only, so Rust lays it out as C++ does
+/// (a callback slot is a `zend::Function *`, null when empty).
 #[repr(C)]
 pub struct PortProperty {
-    callbacks: [*mut c_void; CALLBACKS],
+    callbacks: [Option<Callable>; CALLBACKS],
     serv: *mut c_void,
     port: *mut c_void,
     zsetting: *mut zval,
@@ -44,9 +46,8 @@ impl PortProperty {
     pub(crate) fn callback(&self, kind: c_int) -> *mut c_void {
         usize::try_from(kind)
             .ok()
-            .and_then(|kind| self.callbacks.get(kind))
-            .copied()
-            .unwrap_or(ptr::null_mut())
+            .and_then(|kind| self.callbacks.get(kind)?.as_ref())
+            .map_or(ptr::null_mut(), Callable::as_raw)
     }
 }
 
@@ -145,7 +146,8 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
     let data = unsafe { Port::data(object) };
     if !data.property.serv.is_null() {
         for slot in &mut data.property.callbacks {
-            free_callable(take(slot));
+            // Out of its slot first: a destructor this runs may reach the slot again.
+            drop(slot.take());
         }
         data.property.serv = ptr::null_mut();
     }
@@ -306,27 +308,28 @@ fn on(call: &Call) {
     }
     // The property write, the release and the create can each run PHP that
     // calls on() again, so no borrow of the slot lives across them.
-    let Some(old) = data(call).property.callbacks.get_mut(index).map(take) else {
+    let Some(old) = data(call)
+        .property
+        .callbacks
+        .get_mut(index)
+        .map(Option::take)
+    else {
         return call.set_bool(false);
     };
-    free_callable(old);
+    drop(old);
     if swoole_rs_zend::bailout::pending() {
         return;
     }
-    // SAFETY: the callback argument.
-    let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };
-    if callable.is_null() {
+    let Some(callable) = call.value(2).and_then(Callable::create) else {
         return call.set_bool(false);
-    }
-    if let Some(slot) = data(call).property.callbacks.get_mut(index) {
+    };
+    let kept = match data(call).property.callbacks.get_mut(index) {
         // A nested on() stored its callable, and the property, after this one's
         // write: keep that pair and drop ours.
-        free_callable(if slot.is_null() {
-            std::mem::replace(slot, callable)
-        } else {
-            callable
-        });
-    }
+        Some(slot) if slot.is_none() => slot.replace(callable),
+        _ => Some(callable),
+    };
+    drop(kept);
     crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
     call.set_bool(true);
 }

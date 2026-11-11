@@ -3,7 +3,10 @@
 //! command callables), the object's creation and release, `__construct`,
 //! `start()` with `register_callback` and `on_before_start`, `addProcess`,
 //! `addCommand` and `command`.
-use crate::server::{SERVER, ServerData, fatal, running, server};
+use crate::{
+    callable::Callable,
+    server::{SERVER, ServerData, fatal, running, server},
+};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -21,7 +24,7 @@ use swoole_rs_zend::{
     sys::{
         IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array,
         swr_zend_try_json_encode, swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert,
-        zend_object, zend_object_std_dtor, zval, zval_ptr_dtor,
+        zend_object, zend_object_std_dtor, zval,
     },
     value::table,
 };
@@ -233,10 +236,10 @@ type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
 pub(crate) struct Property {
     /// The Port objects, borrowed from `$server->ports`.
     ports: Vec<*mut zend_object>,
-    /// Server-level callbacks (callables) by type.
-    callbacks: [*mut c_void; CALLBACKS],
+    /// Server-level callbacks by type.
+    callbacks: [Option<Callable>; CALLBACKS],
     /// `addCommand`'s callables.
-    commands: Vec<*mut c_void>,
+    commands: Vec<Callable>,
     /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
     send_waiters: HashMap<i64, Waiters>,
     /// The next waiter's token.
@@ -387,8 +390,13 @@ impl ServerObject {
 
     /// `get_callback(kind)`: a callable, or null.
     fn callback(self, kind: usize) -> *mut c_void {
-        self.property(|p| p.callbacks.get(kind).copied())
-            .unwrap_or(ptr::null_mut())
+        self.property(|p| {
+            p.callbacks
+                .get(kind)
+                .and_then(Option::as_ref)
+                .map(Callable::as_raw)
+        })
+        .unwrap_or(ptr::null_mut())
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
@@ -397,32 +405,22 @@ impl ServerObject {
         let Ok(kind) = usize::try_from(kind) else {
             return false;
         };
-        let taken = self.property(|p| {
-            p.callbacks
-                .get_mut(kind)
-                .map(|slot| std::mem::replace(slot, ptr::null_mut()))
-        });
-        let Some(old) = taken else {
+        // Each callable drops out of the property: its destructor may call on() again.
+        let Some(old) = self.property(|p| p.callbacks.get_mut(kind).map(Option::take)) else {
             return false;
         };
-        let free = |unowned: *mut c_void| {
-            // SAFETY: a callable no slot holds, or null, which is ignored.
-            unsafe { swoole_rs_phpruntime::callable_free(unowned) };
-        };
-        free(old);
+        drop(old);
         if bailout::pending() {
             return false;
         }
-        // SAFETY: a live value.
-        let callable = unsafe { swoole_rs_phpruntime::callable_create(callable.as_ptr()) };
-        if callable.is_null() {
+        let Some(callable) = Callable::create(callable) else {
             return false;
-        }
+        };
         // A nested on() (from the old callable's destructor) stored its callable,
         // and the property, after this one's write: keep that pair, drop ours.
-        free(self.property(|p| match p.callbacks.get_mut(kind) {
-            Some(slot) if slot.is_null() => std::mem::replace(slot, callable),
-            _ => callable,
+        drop(self.property(|p| match p.callbacks.get_mut(kind) {
+            Some(slot) if slot.is_none() => slot.replace(callable),
+            _ => Some(callable),
         }));
         true
     }
@@ -490,10 +488,7 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
             );
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        for &callable in property.callbacks.iter().filter(|cb| !cb.is_null()) {
-            // SAFETY: a callable the property owned.
-            unsafe { swoole_rs_phpruntime::callable_free(callable) };
-        }
+        drop(std::mem::take(&mut property.callbacks));
         // `sw_zval_free`: each copy's reference goes.
         drop(std::mem::take(&mut property.user_processes));
         for &port in &property.ports {
@@ -502,10 +497,7 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
         }
         data.serv = ptr::null_mut();
     }
-    for &callable in &property.commands {
-        // SAFETY: a callable the property owned.
-        unsafe { swoole_rs_phpruntime::callable_free(callable) };
-    }
+    // The commands' callables go with it.
     drop(property);
     // SAFETY: the object Zend is freeing.
     unsafe { zend_object_std_dtor(object) };
@@ -868,11 +860,10 @@ fn add_command(call: &Call) {
         fatal(E_WARNING, c"only support worker/task_worker process");
         return call.set_bool(false);
     }
-    // SAFETY: a passed argument.
-    let callable = unsafe { swoole_rs_phpruntime::callable_create(call.zval(3)) };
-    if callable.is_null() {
+    let Some(callable) = call.value(3).and_then(Callable::create) else {
         return call.set_bool(false);
-    }
+    };
+    let handle = callable.as_raw();
     // The property keeps the callable for the server's life.
     #[expect(
         clippy::arc_with_non_send_sync,
@@ -880,14 +871,13 @@ fn add_command(call: &Call) {
     )]
     let handler = std::sync::Arc::new(
         move |_: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
-            command_run(callable, message, reply);
+            command_run(handle, message, reply);
         },
     );
     // Upstream's `(int) types`.
     let types = c_int::from_le_bytes(types.to_le_bytes()[..4].try_into().unwrap_or_default());
     if !swr_v1_server_add_command(serv, name, types, handler) {
-        // SAFETY: the callable created above.
-        unsafe { swoole_rs_phpruntime::callable_free(callable) };
+        drop(callable);
         return call.set_bool(false);
     }
     ServerObject::this(call).property(|p| p.commands.push(callable));
@@ -899,14 +889,12 @@ fn add_command(call: &Call) {
 /// this frame. `callable` is a live command callable.
 fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
     let mut send = |text: &[u8]| reply.extend_from_slice(text);
-    let mut args = [crate::dispatch::undef(), crate::dispatch::undef()];
-    args[0] = crate::dispatch::zserv();
-    // SAFETY: a writable zval and the message's bytes.
-    unsafe { swr_zval_stringl(&raw mut args[1], message.as_ptr().cast(), message.len()) };
+    let message = Owned::string(ZString::new(message)).into_zval();
+    let mut args = [crate::dispatch::zserv(), message];
     let retval = Owned::default();
     let called = crate::dispatch::invoke(callable, &mut args, retval.as_ptr(), false);
-    // SAFETY: the message string made above.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
+    // The message string made above.
+    crate::dispatch::dtor(&mut args[1]);
     let bailed = match called {
         Err(_) => true,
         Ok(false) => {
@@ -1439,7 +1427,7 @@ mod tests {
         // Not dropped: its drop would link `Owned`'s Zend destructor, which the test
         // binary has no PHP to resolve; an empty property owns nothing to free.
         let property = std::mem::ManuallyDrop::new(Property::default());
-        assert!(property.callbacks.iter().all(|cb| cb.is_null()));
+        assert!(property.callbacks.iter().all(Option::is_none));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
         assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);
     }
