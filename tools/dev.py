@@ -829,17 +829,10 @@ def main():
                     row['failed'] |= not outcome['passed']
                 if 'compile' in outcome:
                     row['compile'] = outcome['compile']
+                # A gate's require_build_space refusal (tools/build_upstream.py), which gates
+                # report after their exception's type, stops the run like dev.py's own.
                 error = outcome.get('error')
-                compiler_guard = error == 'Compiler refused by unchanged 4GiB guard' and any(
-                    isinstance(command, dict) and command.get('blocked') == 'unchanged 4GiB guard'
-                    and isinstance(command.get('free_bytes'), dict) and any(
-                        type(free) is int and 0 <= free < 4 * 1024**3
-                        for free in command['free_bytes'].values())
-                    for command in (outcome.get('commands') if isinstance(outcome.get('commands'), list) else []))
-                disk_refused = isinstance(error, str) and (error.startswith('Build disk space low:')
-                    or error in {'Unchanged 4GiB guard', 'Unchanged4GiBguard'}
-                    and outcome.get('minimum_free_bytes') == 4 * 1024**3 and bool(outcome.get('blocked')))
-                if row['failed'] and (disk_refused or compiler_guard):
+                if row['failed'] and isinstance(error, str) and 'Build disk space low:' in error:
                     row['infrastructure_error'] = error
             except (OSError, ValueError) as error:
                 row.update(failed=True, outcome_error=str(error))

@@ -675,17 +675,10 @@ class FocusedPhases(unittest.TestCase):
                 self.assertNotIn('- second', text)
 
     def test_child_disk_refusal_stops_but_behavior_failure_continues(self):
+        # phpcollections/php_runtime.py reports require_build_space's refusal with its type.
         for error, details, expected_calls in [('Build disk space low: fixture needs 4GiB', {}, 1),
-                ('Unchanged 4GiB guard', dict(minimum_free_bytes=4294967296, blocked='/private/scratch'), 1),
-                ('Unchanged4GiBguard', dict(minimum_free_bytes=4294967296, blocked=dict(path='/scratch')), 1),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=[dict(
-                    blocked='unchanged 4GiB guard', free_bytes={'/scratch': 4294967295})]), 1),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=[dict(
-                    blocked='unchanged 4GiB guard', free_bytes={'/scratch': 4294967296})]), 2),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=[dict(
-                    blocked='unchanged 4GiB guard', free_bytes={'/scratch': 'low'})]), 2),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=None), 2),
-                ('Unchanged4GiBguard', {}, 2), ('Behavior comparison failed', {}, 2)]:
+                ('RuntimeError: Build disk space low: 0 bytes free at /scratch; require 4294967296.', {}, 1),
+                ('Behavior comparison failed', {}, 2)]:
             with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory); output = root / 'gate.json'
                 output.write_text(json.dumps(dict(passed=False, error=error, **details)))
