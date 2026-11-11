@@ -428,6 +428,10 @@ impl<'a> Props<'a> {
                         OwnedArray::default().as_ptr(),
                     )
                 }));
+                // The release may have written an array and then bailed out.
+                if bailout::pending() {
+                    return None;
+                }
                 array()?
             }
         };

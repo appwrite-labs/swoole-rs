@@ -1103,7 +1103,11 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     // SAFETY: `$this`'s `setting`, which its class declares; nothing else borrows
     // it, and no PHP code runs, until its last write below.
     let Some(settings) = (unsafe { Props::own(object).zend().array(c"setting") }) else {
-        return Ok(());
+        // A pending bailout reports itself; otherwise PHP code left a non-array there.
+        if bailout::pending() {
+            return Err(Stop);
+        }
+        return stop(E_ERROR, c"Swoole\\Server::$setting must be an array");
     };
     for (key, id) in [
         (c"worker_num", fact::WORKER_NUM),
