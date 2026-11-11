@@ -300,6 +300,8 @@ mod tests {
     thread_local! {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
+    /// The tests share the process-wide `LISTENERS`, so they run one at a time.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn log(entry: String) {
         LOG.with_borrow_mut(|log| log.push(entry));
     }
@@ -367,6 +369,9 @@ mod tests {
 
     #[test]
     fn wakes_once_and_unregisters() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (result, log) = wait(
             &[libc::SIGUSR1, libc::SIGUSR2, libc::SIGUSR1],
             &ops(idle, signalled),
@@ -413,6 +418,9 @@ mod tests {
 
     #[test]
     fn a_registration_without_a_loop_fails_without_parking() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ops = SignalOps {
             listen: unreachable_loop,
             ..ops(idle, signalled)
