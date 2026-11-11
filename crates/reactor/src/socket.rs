@@ -39,6 +39,8 @@ struct Borrow<'a> {
 }
 
 impl<'a> Borrow<'a> {
+    // Always inlined: one locked add on the hot path, with the wait out of line.
+    #[inline(always)]
     #[track_caller]
     fn read(borrows: &'a AtomicU32) -> Self {
         // One locked add: a read counts itself first, and backs out and waits if an edit
@@ -57,6 +59,7 @@ impl<'a> Borrow<'a> {
         Self { borrows, taken: 1 }
     }
 
+    #[inline(always)]
     #[track_caller]
     fn edit(borrows: &'a AtomicU32) -> Self {
         let mut since = None;
@@ -167,6 +170,7 @@ impl<'a> Socket<'a> {
     /// `read`'s result over the record.
     /// # Panics
     /// Inside an `edit` closure over the same record, after waiting a second for it to end.
+    #[inline(always)]
     #[track_caller]
     pub fn read<R>(self, read: impl FnOnce(&SocketFields) -> R) -> R {
         let _borrow = Borrow::read(self.borrows());
@@ -178,6 +182,7 @@ impl<'a> Socket<'a> {
     /// `edit`'s result over the record, which it may change.
     /// # Panics
     /// Inside a `read` or `edit` closure over the same record, after waiting a second for it to end.
+    #[inline(always)]
     #[track_caller]
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
         let _borrow = Borrow::edit(self.borrows());
