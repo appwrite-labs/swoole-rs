@@ -30,12 +30,19 @@ unsafe extern "C" {
     fn async_dispatch(request: *const c_void) -> *mut c_void;
 }
 
-/// `co->yield()`.
-pub(crate) unsafe extern "C" fn park(co: *mut c_void) {
+/// `co->yield()` of the current coroutine (fatal outside one).
+pub(crate) fn park() {
+    let co = current();
     let scheduler = swoole_rs_coroutine::scheduler();
-    // SAFETY: this thread's scheduler; `co` is the running coroutine, as the caller
-    // promises.
+    // SAFETY: this thread's scheduler and its running coroutine.
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler, co.cast()) };
+}
+
+/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
+pub(crate) fn park_for(timeout: f64) -> bool {
+    let co = current();
+    // SAFETY: the running coroutine.
+    unsafe { coroutine_yield_ex(co.cast(), timeout) }
 }
 
 /// `co->resume()`.
@@ -59,7 +66,7 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current,
     dispatch: async_dispatch_event,
     park,
-    park_for: coroutine_yield_ex,
+    park_for,
     resume,
     last_error,
 };

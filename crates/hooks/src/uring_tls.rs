@@ -5,7 +5,7 @@
 //! socket through [`TlsSocket`], in upstream's order (`set_err`, then
 //! `check_return_value(-1)` where upstream calls it).
 
-use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_ulong};
 use swoole_rs_corebase::set_errno;
 
 use openssl_sys as ssl;
@@ -182,25 +182,17 @@ impl<S: TlsSocket> Tls<S> {
     }
 
     /// `ssl_recv`: decrypted bytes into `buf`, or -1.
-    ///
-    /// # Safety
-    /// `buf` holds `n` bytes.
-    pub(crate) unsafe fn recv(&self, buf: *mut c_void, n: usize) -> isize {
-        // SAFETY: `buf` holds `n` bytes.
-        self.transfer(c"ssl_recv", || unsafe {
-            ssl::SSL_read(self.ssl, buf, len(n))
-        })
+    pub(crate) fn recv(&self, buf: &mut [u8]) -> isize {
+        let (at, n) = (buf.as_mut_ptr().cast(), len(buf.len()));
+        // SAFETY: the live session, into `buf`'s first `n` bytes.
+        self.transfer(c"ssl_recv", || unsafe { ssl::SSL_read(self.ssl, at, n) })
     }
 
     /// `ssl_send`: bytes of `buf` encrypted and sent, or -1.
-    ///
-    /// # Safety
-    /// `buf` holds `n` bytes.
-    pub(crate) unsafe fn send(&self, buf: *const c_void, n: usize) -> isize {
-        // SAFETY: `buf` holds `n` bytes.
-        self.transfer(c"ssl_send", || unsafe {
-            ssl::SSL_write(self.ssl, buf, len(n))
-        })
+    pub(crate) fn send(&self, buf: &[u8]) -> isize {
+        let (at, n) = (buf.as_ptr().cast(), len(buf.len()));
+        // SAFETY: the live session, from `buf`'s first `n` bytes.
+        self.transfer(c"ssl_send", || unsafe { ssl::SSL_write(self.ssl, at, n) })
     }
 
     /// `send_once` / `recv_once`: `io` is the network socket's `send` or `recv`,
@@ -235,8 +227,7 @@ impl<S: TlsSocket> Tls<S> {
             offset,
             // SAFETY: `buf` is writable for its length.
             |buf, at| unsafe { libc::pread(file, buf.as_mut_ptr().cast(), buf.len(), at) },
-            // SAFETY: the operation's live TLS state, and the bytes read.
-            |data| unsafe { self.send(data.as_ptr().cast(), data.len()) },
+            |data| self.send(data),
             || classify(errno()),
         )
     }
@@ -484,13 +475,13 @@ mod tests {
                 "errCode 0"
             );
 
-            assert_eq!(tls.send(b"ping".as_ptr().cast(), 4), 4);
+            assert_eq!(tls.send(b"ping"), 4);
 
             let mut buf = [0_u8; 16];
-            assert_eq!(tls.recv(buf.as_mut_ptr().cast(), 16), 2);
+            assert_eq!(tls.recv(&mut buf), 2);
 
             // the next read sees the close_notify
-            assert!(tls.recv(buf.as_mut_ptr().cast(), 16) <= 0);
+            assert!(tls.recv(&mut buf) <= 0);
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 [SSL_RESET, -1],

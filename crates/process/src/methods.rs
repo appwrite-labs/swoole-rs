@@ -500,25 +500,20 @@ pub unsafe extern "C" fn send_message(
 /// `SW_CHAN_LOCK`; `data` is writable for `size` bytes.
 #[must_use]
 pub unsafe fn pop_message(pool: *const PoolRecord, data: *mut c_void, size: usize) -> c_int {
-    use swoole_rs_memory::channel::{swr_v1_memory_channel_lock, swr_v1_memory_channel_out};
     // SAFETY: the caller lends a live pool.
     let message_box = unsafe { (*pool).message_box };
     if message_box.is_null() {
         return -1;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "Channel::pop takes upstream's int length"
-    )]
-    let size = size as c_int;
-    // SAFETY: the box is a live channel record with its mutex.
-    unsafe { swr_v1_memory_channel_lock(message_box.cast(), true) };
-    // SAFETY: the locked channel (its record's first field) and the caller's buffer.
-    let length = unsafe { swr_v1_memory_channel_out(message_box.cast(), data, size, 1) };
-    // SAFETY: this thread holds the lock.
-    unsafe { swr_v1_memory_channel_lock(message_box.cast(), false) };
-    length
+    // SAFETY: the box is a live channel record whose mutex serializes its users.
+    let message_box = unsafe { &*message_box.cast::<swoole_rs_memory::channel::Record>() };
+    let data = if size == 0 {
+        &mut []
+    } else {
+        // SAFETY: the caller lends `size` writable bytes.
+        unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), size) }
+    };
+    message_box.pop(data, true)
 }
 
 /// `Worker::set_max_request(max_request, grace)`: this process's request limit.
@@ -855,7 +850,7 @@ pub(crate) mod tests {
     #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn pop_message_takes_the_oldest_message_from_the_box() {
         use swoole_rs_memory::channel::{
-            swr_v1_memory_channel_bytes, swr_v1_memory_channel_in, swr_v1_memory_channel_init,
+            Record, swr_v1_memory_channel_bytes, swr_v1_memory_channel_init,
         };
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
@@ -864,7 +859,7 @@ pub(crate) mod tests {
         let none = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
         assert_eq!(none, -1, "no box");
         let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
-        let record = memory.as_mut_ptr().cast();
+        let record = memory.as_mut_ptr().cast::<Record>();
         // SAFETY: the buffer is aligned and as long as the record needs; 2 is SW_CHAN_LOCK.
         assert_eq!(
             unsafe { swr_v1_memory_channel_init(record, 256, 16, 2) },
@@ -873,20 +868,8 @@ pub(crate) mod tests {
         );
         pool.message_box = record.cast();
         for message in [&b"first"[..], b"second"] {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "short"
-            )]
-            // SAFETY: the box's channel is its record's first field.
-            let pushed = unsafe {
-                swr_v1_memory_channel_in(
-                    record.cast(),
-                    message.as_ptr().cast(),
-                    message.len() as i32,
-                )
-            };
-            assert_eq!(pushed, 0, "pushed");
+            // SAFETY: the record made above.
+            assert_eq!(unsafe { &*record }.push(message), 0, "pushed");
         }
         // SAFETY: as above.
         let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };

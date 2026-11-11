@@ -289,8 +289,8 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring).filter(|_| nfds == 1) {
-        // SAFETY: one pollfd.
-        return unsafe { crate::uring::poll(ring, fds, timeout) };
+        // SAFETY: one pollfd, as the caller promises.
+        return crate::uring::poll(ring, unsafe { &mut *fds }, timeout);
     }
     // SAFETY: as the caller promises, in a coroutine.
     unsafe { swr_v1_hook_poll(fds, nfds, timeout, &crate::poll::NATIVE) }
@@ -471,7 +471,7 @@ pub unsafe extern "C" fn swoole_coroutine_write(
 ///
 /// # Safety
 /// `buf` holds `len` readable bytes, or `len` is 0.
-unsafe fn bytes<'a>(buf: *const c_void, len: usize) -> &'a [u8] {
+pub(crate) unsafe fn bytes<'a>(buf: *const c_void, len: usize) -> &'a [u8] {
     if len == 0 {
         return &[];
     }
@@ -483,7 +483,7 @@ unsafe fn bytes<'a>(buf: *const c_void, len: usize) -> &'a [u8] {
 ///
 /// # Safety
 /// `buf` holds `len` writable bytes, or `len` is 0.
-unsafe fn bytes_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [u8] {
+pub(crate) unsafe fn bytes_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [u8] {
     if len == 0 {
         return &mut [];
     }

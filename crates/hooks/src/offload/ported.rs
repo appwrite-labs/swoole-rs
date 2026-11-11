@@ -140,11 +140,11 @@ unsafe extern "C" fn dispatch(event: *const AsyncEvent) -> *mut AsyncEvent {
     QUEUED.set(true);
     copy
 }
-unsafe extern "C" fn park(_: *mut c_void) {
+fn park() {
     record("yield".into());
     complete_worker();
 }
-unsafe extern "C-unwind" fn park_for(_: *mut c_void, seconds: f64) -> bool {
+fn park_for(seconds: f64) -> bool {
     record(format!("yield-ex:{}", seconds.to_bits()));
     let ok = knobs().yield_ok;
     if ok {
@@ -238,10 +238,9 @@ fn async_event(
 
 /// `System::sleep` as the hybrid's system.cc composes it.
 fn sleep(seconds: f64) -> c_int {
-    let co = current();
+    current();
     let seconds = sleep_timeout(seconds, 0.001);
-    // SAFETY: fake.
-    unsafe { park_for(co, seconds) };
+    park_for(seconds);
     if is_canceled() { -1 } else { 0 }
 }
 

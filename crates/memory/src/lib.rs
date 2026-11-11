@@ -7,10 +7,6 @@
         reason = "the tests check against std model collections"
     )
 )]
-#![expect(
-    clippy::missing_safety_doc,
-    reason = "every export is covered by the module-local C contract"
-)]
 #![cfg_attr(
     not(test),
     deny(
@@ -40,8 +36,7 @@ mod allocation_tests;
 
 pub use channel::{
     swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_full,
-    swr_v1_memory_channel_in, swr_v1_memory_channel_init, swr_v1_memory_channel_lock,
-    swr_v1_memory_channel_out, swr_v1_memory_channel_print, swr_v1_memory_channel_signal,
+    swr_v1_memory_channel_in, swr_v1_memory_channel_init, swr_v1_memory_channel_out,
 };
 
 pub mod members;
