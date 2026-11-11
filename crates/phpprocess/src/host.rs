@@ -225,6 +225,7 @@ impl Callable {
                 coroutine,
                 create_coroutine,
                 swr_zend_callable_warning,
+                swoole_rs_zend::host::NO_THEN,
             )
         };
         deferred(called).unwrap_or(false)

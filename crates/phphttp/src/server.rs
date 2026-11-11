@@ -275,14 +275,14 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
     let result = handle(server, conn, ctx, session, server_fd, &facts).and_then(|route| {
-        if route == REQUEST {
-            // False leaves it queued, with its objects.
-            if !context::before_request(ctx) {
-                return Ok(());
-            }
-            call(ctx, facts.coroutine)?;
+        if route != REQUEST {
+            return context::release_objects(ctx);
         }
-        context::release_objects(ctx)
+        // False leaves it queued, with its objects.
+        if !context::before_request(ctx) {
+            return Ok(());
+        }
+        call(ctx, facts.coroutine)
     });
     bailout::raise(result);
     DONE
@@ -308,21 +308,23 @@ fn enable_coroutine(server: view::Server<'_>) -> bool {
     }
 }
 
-pub(crate) use swoole_rs_zend::host::callable::Callable;
+pub(crate) use swoole_rs_zend::host::{NO_THEN, Then, callable::Callable};
 
 /// `zend::function::call(callable, args.len(), args, nullptr, coroutine)`:
-/// whether the handler was called.
+/// whether the handler was called; in a coroutine, then `then`
+/// (`swoole_rs_zend::host::Then`).
 /// # Errors
 /// It bailed out.
 pub(crate) fn call_handler(
     callable: *mut Callable,
     args: &mut [zval],
     coroutine: bool,
+    then: Then,
 ) -> Result<bool, bailout::Bailout> {
     // SAFETY: a live handle.
     let cache = unsafe { swoole_rs_zend::host::callable::cache(callable) };
-    // SAFETY: a resolved cache and the two arguments; the coroutine leaf and
-    // the reporter run inside C traps.
+    // SAFETY: a resolved cache and the two arguments; the coroutine leaf,
+    // `then` and the reporter run inside C traps.
     let called = unsafe {
         swoole_rs_zend::host::function_call(
             cache,
@@ -332,6 +334,7 @@ pub(crate) fn call_handler(
             coroutine,
             swoole_rs_phpcoroutines::create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
+            then,
         )
     };
     called.map_err(|bailout| {
@@ -354,15 +357,21 @@ pub(crate) fn call_port(
     if callback.is_null() {
         return Ok(None);
     }
-    call_handler(callback.cast(), args, enable_coroutine(server)).map(Some)
+    call_handler(callback.cast(), args, enable_coroutine(server), NO_THEN).map(Some)
 }
 
-/// `http_server_process_request`: the handler with the request's objects.
+/// `http_server_process_request`: the handler with the request's objects,
+/// then the context's references to them released; in a coroutine, inside
+/// the call's own trap.
 fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = ctx.state();
+    let callback = state.callback.cast();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
-    match call_handler(state.callback.cast(), &mut args, coroutine) {
-        Err(bailout) => return Err(bailout),
+    let mut release = context::Release::new(ctx);
+    match call_handler(callback, &mut args, coroutine, release.then()) {
+        // The objects stay held, as upstream's jump skipped their release.
+        Err(bailout) if !release.begun() => return Err(bailout),
+        Err(bailout) => bailout.defer(),
         Ok(false) => {
             host::notice("Swoole\\Http\\Server->onRequest handler error");
             context::send(ctx, SERVICE_UNAVAILABLE);
@@ -370,7 +379,7 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
         }
         Ok(true) => {}
     }
-    Ok(())
+    release.finish()
 }
 
 /// A queued request's turn (`swoole_event_defer`): run its handler, then
@@ -383,9 +392,7 @@ unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
     };
     // SAFETY: per the caller.
     let mut ctx = unsafe { Ctx::of(ctx.cast()) };
-    let result = call(ctx, enable_coroutine(context::server(ctx.state())))
-        .and_then(|()| context::release_objects(ctx));
-    bailout::raise(result);
+    bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
 }
 
 /// Where `onReceive` sends data before any parsing.
@@ -579,9 +586,13 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         }
     }
     let state = ctx.state();
+    let callback = state.callback.cast();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
-    match call_handler(state.callback.cast(), &mut args, facts.coroutine) {
-        Err(bailout) => return Err(bailout),
+    let mut release = context::Release::new(ctx);
+    match call_handler(callback, &mut args, facts.coroutine, release.then()) {
+        // As in `call`.
+        Err(bailout) if !release.begun() => return Err(bailout),
+        Err(bailout) => bailout.defer(),
         Ok(false) => {
             let stream_id = ctx.state().stream_id;
             (http2.reset)(ctx, stream_id, HTTP2_INTERNAL_ERROR);
@@ -589,7 +600,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         }
         Ok(true) => {}
     }
-    context::release_objects(ctx)
+    release.finish()
 }
 
 /// `php_swoole_http_server_onClose`: forget the session's addresses, then

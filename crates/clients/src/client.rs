@@ -1124,7 +1124,7 @@ fn close(this: Handle) -> c_int {
     else {
         return OK;
     };
-    // Closes the client's descriptor once; -1 marks it closed.
+    // Once: -1 marks the client's descriptor closed.
     swoole_rs_corebase::sys::close(fd)
 }
 

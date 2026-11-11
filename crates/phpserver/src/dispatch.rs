@@ -136,6 +136,7 @@ pub(crate) fn invoke(
             coroutine,
             create_coroutine,
             swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     };
     called.map_err(|bailout| {
@@ -1111,6 +1112,7 @@ fn call_unlimited(
             false,
             create_coroutine,
             swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     };
     // SAFETY: what `swr_zend_stack_unlimit` saved.

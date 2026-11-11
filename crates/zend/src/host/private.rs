@@ -264,11 +264,26 @@ pub unsafe fn call_anyway(frame: *mut zend_fcall_info, cache: *mut zend_fcall_in
 pub type Create =
     unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, *mut u8) -> c_long;
 
-/// Invoke directly or create a coroutine, preserving the immediate fatal-exception check.
+/// The caller's work after a coroutine call, `body(arg)` (`None`: none), done
+/// inside the call's own `zend_try`, which saves it a setjmp (#3260). It runs
+/// where the caller's code after [`function_call`] would: once the coroutine
+/// runs or waits and no exception is pending, so the call's exception check
+/// stays before it. A direct call, or one that did not run, leaves it undone,
+/// so `body` records in `arg` that it began. As [`bailout::trap`]'s body,
+/// `body`'s frame owns nothing that needs a drop.
+pub type Then = (sys::swr_zend_then, *mut c_void);
+
+/// Invoke directly or create a coroutine, preserving the immediate fatal-exception check;
+/// in a coroutine, then `then`.
 /// # Errors
-/// PHP bailed out; no jump is resumed while a Rust caller owns its state.
+/// PHP bailed out, in the call or in `then`; no jump is resumed while a Rust caller owns its state.
 /// # Safety
-/// A live resolved cache, argument span and optional return slot. `create` is the coroutine leaf.
+/// A live resolved cache, argument span and optional return slot. `create` is the coroutine leaf,
+/// and `then` may be called.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "zend::function::call's arguments, its two leaves and the caller's work after it"
+)]
 pub unsafe fn function_call(
     cache: *mut zend_fcall_info_cache,
     argc: u32,
@@ -277,9 +292,11 @@ pub unsafe fn function_call(
     coroutine: bool,
     create: Create,
     report: unsafe extern "C" fn(*const c_char),
+    (then, arg): Then,
 ) -> Result<bool, bailout::Bailout> {
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
     bailout::outcome(())?;
+    let mut ran = false;
     let success = if coroutine {
         if !retval.is_null() {
             // SAFETY: coroutines publish null before creation and have no return value.
@@ -299,6 +316,9 @@ pub unsafe fn function_call(
                 argv,
                 ptr::null_mut(),
                 &raw mut result,
+                then,
+                arg,
+                &raw mut ran,
             )
         });
         result >= 0
@@ -306,7 +326,8 @@ pub unsafe fn function_call(
         // SAFETY: the caller lends a resolved cache and live arguments.
         unsafe { direct_call(ptr::null_mut(), cache, argc, argv, retval, report) == 0 }
     };
-    if !bailout::pending() {
+    // `then` ran with no exception pending, as this check would have found it.
+    if !ran && !bailout::pending() {
         // SAFETY: callbacks outside the VM must report an exception immediately.
         unsafe { fatal_exception() };
     }
@@ -316,6 +337,9 @@ pub unsafe fn function_call(
         Ok(success)
     }
 }
+
+/// No [`Then`].
+pub const NO_THEN: Then = (None, ptr::null_mut());
 
 /// `zend::function::call(name, argc, argv)` into `retval`, a bailout left
 /// pending: the caller finishes or relays it.
