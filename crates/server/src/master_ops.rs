@@ -1168,11 +1168,12 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 (libc::SO_SNDBUF, port.kernel_socket_send_buffer_size)
             };
             let fd = o.port_fd();
-            let length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
-            // SAFETY: `size` is a readable int of `length` bytes.
-            sign(unsafe {
-                libc::setsockopt(fd, libc::SOL_SOCKET, name, (&raw const size).cast(), length)
-            })
+            sign(swoole_rs_corebase::sys::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                name,
+                &size,
+            ))
         }
         OP_DGRAM_PORT => {
             let fd = o.port_fd();

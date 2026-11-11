@@ -379,8 +379,27 @@ pub fn getpid() -> pid_t {
     std::process::id().cast_signed()
 }
 
+/// The kernel's id for the calling thread.
+#[must_use]
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn gettid() -> libc::c_long {
+    // SAFETY: SYS_gettid takes no arguments.
+    unsafe { libc::syscall(libc::SYS_gettid) }
+}
+
+/// The kernel's id for the calling thread.
+#[must_use]
+#[cfg(target_vendor = "apple")]
+pub fn gettid() -> libc::c_long {
+    let mut id = 0_u64;
+    // SAFETY: a null thread means the caller; `id` is a live out-parameter.
+    unsafe { libc::pthread_threadid_np(0, &raw mut id) };
+    id.cast_signed()
+}
+
 /// `clock_gettime(2)`: the clock's time, or `None` with errno set.
 #[must_use]
+#[inline]
 pub fn clock_gettime(clock: libc::clockid_t) -> Option<libc::timespec> {
     let mut now = libc::timespec {
         tv_sec: 0,

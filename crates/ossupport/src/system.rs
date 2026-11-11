@@ -23,8 +23,7 @@ pub extern "C" fn swr_v1_os_is_root_user() -> bool {
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
 fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     use swoole_rs_corebase::sys;
-    // SAFETY: a static C string.
-    if !nochdir && unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
+    if !nochdir && sys::chdir(c"/") != 0 {
         log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
         return false;
     }
@@ -136,8 +135,7 @@ fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
     if !root.is_empty() {
         // SAFETY: a valid C string.
         if unsafe { libc::chroot(root.as_ptr()) } == 0 {
-            // SAFETY: a static C string.
-            if unsafe { libc::chdir(c"/".as_ptr()) } < 0 {
+            if swoole_rs_corebase::sys::chdir(c"/") < 0 {
                 warn(5);
             }
         } else {
@@ -250,17 +248,9 @@ pub extern "C" fn swoole_get_cpu_affinity(set: &mut CpuSet) -> c_int {
     unsafe(export_name = "_Z27swoole_thread_get_native_idv")
 )]
 pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     {
-        // SAFETY: SYS_gettid takes no arguments.
-        unsafe { libc::syscall(libc::SYS_gettid) }
-    }
-    #[cfg(target_vendor = "apple")]
-    {
-        let mut id = 0_u64;
-        // SAFETY: a null thread means the caller; `id` is a live out-parameter.
-        unsafe { libc::pthread_threadid_np(0, &raw mut id) };
-        id.cast_signed()
+        swoole_rs_corebase::sys::gettid()
     }
     #[cfg(target_os = "freebsd")]
     {

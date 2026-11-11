@@ -425,8 +425,7 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let certificate = Owned::default();
     let retval = certificate.as_ptr();
     let read = || {
-        // SAFETY: zero is an undefined zval, which the next line fills.
-        let mut string: zval = unsafe { std::mem::zeroed() };
+        let mut string: zval = swoole_rs_zend::UNDEF;
         // SAFETY: the caller's bytes, copied into a new string.
         unsafe { swr_zval_stringl(&raw mut string, pem.as_ptr().cast(), pem.len()) };
         let name = c"openssl_x509_read";

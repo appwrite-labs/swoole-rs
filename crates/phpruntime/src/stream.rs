@@ -1175,16 +1175,14 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
     };
     #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) casts")]
     let (domain, kind, protocol) = (domain as c_int, kind as c_int, protocol as c_int);
-    let mut pair = [0; 2];
-    // SAFETY: two writable fds.
-    if unsafe { libc::socketpair(domain, kind, protocol, pair.as_mut_ptr()) } != 0 {
+    let Some(pair) = swoole_rs_corebase::sys::socketpair(domain, kind, protocol) else {
         let code = errno();
         let reason = swoole_rs_corebase::sys::strerror(code);
         let message = message!("failed to create sockets: [{code}]: {reason}");
         report(Report::Swoole, E_WARNING, message.as_cstr())?;
         call.set_bool(false);
         return Ok(());
-    }
+    };
     call.set_array();
     check_reactor();
     for fd in pair {

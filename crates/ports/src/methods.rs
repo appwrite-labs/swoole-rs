@@ -128,10 +128,8 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
     }
     config.listening = true;
     let fd = socket.fd();
-    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
     for (level, option, name, value) in listen_options(config) {
-        // SAFETY: `value` is a live c_int of `size` bytes.
-        if unsafe { libc::setsockopt(fd, level, option, (&raw const value).cast(), size) } != 0 {
+        if swoole_rs_corebase::sys::setsockopt(fd, level, option, &value) != 0 {
             log::sys_warning(
                 c"ListenPort::listen",
                 format_args!("setsockopt({name}) failed"),
@@ -157,10 +155,7 @@ fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
 
 /// An int option set to 1; 0 or -1 as setsockopt(2).
 fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
-    let one: c_int = 1;
-    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
-    // SAFETY: `one` is a live c_int of `size` bytes.
-    unsafe { libc::setsockopt(fd, level, option, (&raw const one).cast(), size) }
+    swoole_rs_corebase::sys::setsockopt::<c_int>(fd, level, option, &1)
 }
 
 /// `ListenPort::create_socket()`: keeps the port's socket unless the server

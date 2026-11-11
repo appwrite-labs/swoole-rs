@@ -16,7 +16,7 @@ use std::{
     ptr,
     str::FromStr,
 };
-use swoole_rs_corebase::sys::zeroed;
+use swoole_rs_corebase::sys::{setsockopt, zeroed};
 use swoole_rs_zend::{
     Array, Call, Value, bailout, report,
     sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array},
@@ -122,14 +122,13 @@ fn socklen<T>() -> socklen_t {
     socklen_t::try_from(size_of::<T>()).unwrap_or(0)
 }
 
-/// `setsockopt(fd, level, name, value, sizeof value)`.
-fn setsockopt<T>(fd: c_int, level: c_int, name: c_int, value: &T) -> c_int {
-    // SAFETY: `value` is readable for its size.
-    unsafe { libc::setsockopt(fd, level, name, ptr::from_ref(value).cast(), socklen::<T>()) }
-}
-
 /// `dosockopt:`: set it, or report the socket error.
-fn apply<T>(s: Sock, level: c_int, name: c_int, value: &T) -> Result<c_int, Stop> {
+fn apply<T: swoole_rs_corebase::sys::Pod>(
+    s: Sock,
+    level: c_int,
+    name: c_int,
+    value: &T,
+) -> Result<c_int, Stop> {
     if setsockopt(s.fd, level, name, value) != 0 {
         socket_error(s.socket, "unable to set socket option", errno())?;
         return Ok(FAILURE);

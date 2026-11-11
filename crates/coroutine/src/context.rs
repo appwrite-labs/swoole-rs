@@ -142,8 +142,7 @@ pub unsafe fn swr_v1_context_init(
                 c"failed to malloc stack memory.",
             );
         }
-        // SAFETY: exit has no preconditions.
-        unsafe { libc::exit(254) };
+        std::process::exit(254);
     }
     // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
     let fctx = unsafe { swoole_make_fcontext(stack.wrapping_add(size).cast(), size, first_frame) };

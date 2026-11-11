@@ -150,8 +150,7 @@ fn set_task_path(
     if bytes.first() != Some(&b'/') {
         return Err(TaskDir::Relative);
     }
-    // SAFETY: a NUL-terminated path.
-    if unsafe { libc::access(dir.as_ptr(), libc::R_OK) } < 0 {
+    if crate::sys::access(dir, libc::R_OK) < 0 {
         // SAFETY: `dir` lends its bytes; `scratch` is disjoint and writable.
         let status = unsafe {
             crate::swr_v1_corebase_mkdir_complete(

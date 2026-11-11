@@ -185,10 +185,8 @@ pub fn swr_v1_core_init() -> bool {
     RECORD.init.store(true, Ordering::Relaxed);
     swr_v1_core_set_running(true);
     swr_v1_core_set_enable_coroutine(true);
-    // SAFETY: sysconf has no memory preconditions.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    // SAFETY: sysconf has no memory preconditions.
-    let cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+    let page = crate::sys::sysconf(libc::_SC_PAGESIZE);
+    let cpus = crate::sys::sysconf(libc::_SC_NPROCESSORS_ONLN);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

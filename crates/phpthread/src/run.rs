@@ -182,8 +182,7 @@ pub fn thread_minit(minit: &Minit) {
     unsafe { swr_zend_guard_register(Some(guard_context), Some(thread_bailout)) };
     let class = thread::register(minit);
     // `std::thread::hardware_concurrency()`.
-    // SAFETY: no preconditions.
-    let cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(0);
+    let cpus = swoole_rs_corebase::sys::sysconf(libc::_SC_NPROCESSORS_ONLN).max(0);
     minit.class_constant_long(class, c"HARDWARE_CONCURRENCY", cpus);
     // SAFETY: no preconditions; TSRM's static name.
     let api = unsafe { swr_zend_tsrm_api_name() };
@@ -238,8 +237,7 @@ pub extern "C" fn thread_rshutdown() {
             c"php_swoole_thread_rshutdown",
             format_args!("Fatal Error: {running} active threads are running, cannot exit safely."),
         );
-        // SAFETY: upstream's exit.
-        unsafe { libc::exit(200) };
+        std::process::exit(200);
     }
     request::release();
 }

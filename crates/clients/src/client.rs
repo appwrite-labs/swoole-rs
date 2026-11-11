@@ -1009,18 +1009,8 @@ impl Handle {
     pub fn bind(self, host: &CStr, port: c_int) -> c_int {
         let fd = self.socket().fd();
         let enable: c_int = 1;
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-        let size = size_of::<c_int>() as libc::socklen_t;
-        // SAFETY: setsockopt(2) reads the int it is lent.
-        if unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEADDR,
-                (&raw const enable).cast(),
-                size,
-            )
-        } < 0
+        if swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable)
+            < 0
         {
             log::sys_warning(
                 c"bind",

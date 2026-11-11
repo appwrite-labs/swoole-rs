@@ -482,16 +482,8 @@ impl CoSocket {
         let mut result = 0;
         if tcp {
             let on: c_int = 1;
-            // SAFETY: an int option of the size given.
-            let set = unsafe {
-                libc::setsockopt(
-                    fd,
-                    libc::IPPROTO_TCP,
-                    libc::TCP_NODELAY,
-                    (&raw const on).cast(),
-                    socklen::<c_int>(),
-                )
-            };
+            let set =
+                swoole_rs_corebase::sys::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, &on);
             if set < 0 {
                 result |= NODELAY_FAILED;
             }
