@@ -16,7 +16,6 @@ use std::{
     ptr,
     rc::Rc,
 };
-use swoole_rs_hooks::address::swr_v1_hooks_parse_address;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, Value,
     bailout::Bailout,
@@ -247,8 +246,7 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 /// `parse_ip_address_ex`: host and port of `name`, else the error text when
 /// `error` wants it.
 fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(CString, i32)> {
-    // SAFETY: `name` lends its bytes for the call.
-    let plan = unsafe { swr_v1_hooks_parse_address(name.as_ptr(), name.len()) };
+    let plan = swoole_rs_hooks::address::parse(name);
     if plan.status != 0 {
         let what = if plan.status == 1 {
             "IPv6 address"

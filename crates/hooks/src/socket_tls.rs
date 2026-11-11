@@ -11,8 +11,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, owner_fields, owner_tls_host_name, reason_text, swoole_ssl_init,
-    swr_v1_tls_owner_clone, swr_v1_tls_owner_new, swr_v1_tls_owner_socket_context,
+    OwnedTlsContext, OwnedTlsFields, owner_fields, owner_tls_host_name, reason_text,
+    swoole_ssl_init, swr_v1_tls_owner_clone, swr_v1_tls_owner_new, swr_v1_tls_owner_socket_context,
     swr_v1_tls_owner_socket_session,
 };
 
@@ -29,12 +29,27 @@ impl Co {
     /// The socket's `SSLContext` owner, or null without one.
     #[must_use]
     pub fn tls_owner(self) -> *const OwnedTlsContext {
-        let extra = self.extra();
-        if extra.is_null() {
-            return core::ptr::null();
+        self.with_extra(|extra| extra.tls)
+            .unwrap_or(core::ptr::null())
+    }
+
+    /// The `SSLContext` owner's fields, or none without one.
+    pub(crate) fn tls_fields(self) -> Option<OwnedTlsFields> {
+        let owner = self.tls_owner();
+        // SAFETY: the record's live owner, whose fields nothing writes meanwhile.
+        (!owner.is_null()).then(|| unsafe { owner_fields(owner) })
+    }
+
+    /// The `SSLContext` owner's `tls_host_name`, empty without one.
+    pub(crate) fn tls_host_name(self) -> Vec<u8> {
+        let owner = self.tls_owner();
+        if owner.is_null() {
+            return Vec::new();
         }
-        // SAFETY: the record's live extra.
-        unsafe { (*extra).tls }
+        // SAFETY: the record's live owner; the name doesn't change while it is copied.
+        let name = unsafe { owner_tls_host_name(owner) };
+        // SAFETY: the view's bytes, copied at once.
+        unsafe { core::slice::from_raw_parts(name.data.cast::<u8>(), name.length) }.to_vec()
     }
 
     /// `Socket::enable_ssl_encrypt()`: a fresh `SSLContext` owner; false when the
@@ -93,9 +108,12 @@ impl Co {
 
     /// `Socket::ssl_create(context)`: the socket's TLS session over `owner`.
     fn create_session(self, owner: *const OwnedTlsContext) -> bool {
-        // SAFETY: the record's live extra and its host name slot.
-        let hostname = unsafe { &raw const (*self.extra()).strings[2] };
-        // SAFETY: the live owner, network::Socket and slot; TLS is initialised.
+        let Some(hostname) = self.with_extra(|extra| &raw const extra.strings[2]) else {
+            set_err(self, SSL_CREATE_SESSION_FAILED);
+            return false;
+        };
+        // SAFETY: the live owner, network::Socket and the record's host name slot;
+        // TLS is initialised.
         let result = unsafe { swr_v1_tls_owner_socket_session(owner, self.socket(), hostname) };
         let origin = c"Socket::ssl_create";
         match result.status {
@@ -124,11 +142,10 @@ impl Co {
             .with_network(|network| socket_ssl_verify(network, allow_self_signed))
             .unwrap_or(false)
             && {
-                // SAFETY: the live owner of the socket's context.
-                let name = unsafe { owner_tls_host_name(self.tls_owner()) };
-                name.length == 0 || {
-                    // SAFETY: the view's NUL-terminated bytes, live for the call.
-                    let name = unsafe { CStr::from_ptr(name.data) };
+                let mut name = self.tls_host_name();
+                name.is_empty() || {
+                    name.push(0);
+                    let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
                     self.with_network(|network| socket_ssl_check_host(network, name))
                         .unwrap_or(false)
                 }
@@ -148,13 +165,7 @@ impl Co {
     /// this socket, then the socket is handshaked. In a coroutine.
     #[must_use]
     pub fn ssl_handshake(self) -> bool {
-        let owner = self.tls_owner();
-        let fields = if owner.is_null() {
-            swoole_rs_tls::OwnedTlsFields::default()
-        } else {
-            // SAFETY: the live owner.
-            unsafe { owner_fields(owner) }
-        };
+        let fields = self.tls_fields().unwrap_or_default();
         let mut state = Handshake {
             socket: self,
             timer: Timer::new(self, READ, self.read_timeout()),
@@ -282,8 +293,8 @@ impl Handshaking for Handshake {
     }
 
     fn verify(&mut self) -> bool {
-        // SAFETY: the live owner; verified only with a context.
-        let fields = unsafe { owner_fields(self.socket.tls_owner()) };
+        // Verified only with a context.
+        let fields = self.socket.tls_fields().unwrap_or_default();
         self.socket.ssl_verify(fields.allow_self_signed != 0)
     }
 }

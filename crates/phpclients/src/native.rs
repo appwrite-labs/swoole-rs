@@ -416,12 +416,8 @@ impl Co {
         let received = match op {
             Transfer::Peek => self.0.peek(out),
             Transfer::RecvAll => self.0.recv_all(out),
-            // SAFETY: `out`'s writable bytes.
-            Transfer::RecvLine => unsafe { self.0.recv_line(out.as_mut_ptr(), out.len()) },
-            Transfer::RecvWithBuffer => {
-                // SAFETY: `out`'s writable bytes.
-                unsafe { self.0.recv_with_buffer(out.as_mut_ptr(), out.len()) }
-            }
+            Transfer::RecvLine => self.0.recv_line(out),
+            Transfer::RecvWithBuffer => self.0.recv_with_buffer(out),
             _ => self.0.recv(out),
         };
         filled(buffer, received)

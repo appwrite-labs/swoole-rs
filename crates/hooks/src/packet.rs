@@ -139,13 +139,10 @@ impl Packet {
     /// `recv_packet_with_eof_protocol`.
     fn eof_protocol(&mut self) -> isize {
         let protocol = self.protocol;
-        // SAFETY: `eof` points to `eof_len` bytes of the socket's protocol.
-        let eof = unsafe {
-            core::slice::from_raw_parts(
-                protocol.package_eof.as_ptr(),
-                usize::from(protocol.package_eof_len),
-            )
-        };
+        let eof = protocol
+            .package_eof
+            .get(..usize::from(protocol.package_eof_len))
+            .unwrap_or(&protocol.package_eof);
         let maximum = protocol.package_max_length as usize;
         let mut buffered = self.buffer().length > 0;
         loop {
