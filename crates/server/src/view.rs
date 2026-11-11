@@ -605,6 +605,7 @@ mod tests {
     /// one, or one with a manager or a task worker. Unit tests link no
     /// `swr_v1_server_new`, so the test lends the server its shared record.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let state = crate::swr_v1_server_state_new();
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];

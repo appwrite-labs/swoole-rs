@@ -985,6 +985,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no SOCK_DGRAM sockets")]
     fn a_family_maps_to_its_type() {
         let mut socket = record();
         assert_eq!(
@@ -1004,6 +1005,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri aborts on a socket domain other than AF_INET and AF_INET6"
+    )]
     fn an_unknown_type_fails_to_open() {
         let mut socket = record();
         assert_eq!(new(&mut socket, NEW_BY_TYPE, 0, 99, 0, 0), 0);

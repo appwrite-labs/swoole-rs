@@ -218,8 +218,8 @@ impl Minit {
     }
 
     /// Register `T`'s class as `name` with `methods` and `flags` added to its
-    /// `ce_flags`: not serializable and, as Swoole's custom objects are, not
-    /// cloneable, with `unset` denied, its objects embedding a `T`
+    /// `ce_flags`: not serializable (unless [`Custom::serializable`](crate::Custom::serializable))
+    /// and, as Swoole's custom objects are, not cloneable, with `unset` denied, its objects embedding a `T`
     /// ([`Custom`](crate::Custom)).
     /// # Panics
     /// The class is already registered, or `methods` is not `PHP_FE_END`-terminated.
@@ -233,7 +233,10 @@ impl Minit {
         let table = terminated(methods);
         assert!(class.entry().is_null(), "a class registers once");
         let configure = |entry: &mut zend_class_entry, handlers: &mut _| {
-            entry.ce_flags |= flags | ZEND_ACC_NOT_SERIALIZABLE;
+            entry.ce_flags |= flags;
+            if !T::serializable() {
+                entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+            }
             crate::object::install_custom::<T>(entry, handlers);
         };
         // SAFETY: MINIT, with a static, terminated table; `configure` gives the

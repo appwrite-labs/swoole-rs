@@ -83,9 +83,11 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
 /// is an array.
-/// The context's reference keeps the response object, and so the array, live
-/// while its slot is borrowed.
-fn property(response: &Slot, which: usize) -> Option<&Array> {
+/// A header, cookie or trailer property of the response object. Not tied to a
+/// borrow of the context's state: a value's `__toString` may reach the same
+/// context while the property is walked. Nothing holds a reference to the
+/// array for the walk; that is #3263.
+fn property<'a>(response: &Slot, which: usize) -> Option<&'a Array> {
     let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
@@ -298,13 +300,16 @@ pub fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
     buffer.get(start..).unwrap_or_default()
 }
 
+/// The state is borrowed per step through `ctx`, never across a header
+/// value's `__toString`, which may reach the same context.
 fn build(
-    state: &mut State,
+    mut ctx: crate::context::Ctx,
     body: *const c_char,
     mut length: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0;
+    let state = ctx.state();
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
     if state.response.reason.is_null() {
@@ -327,22 +332,22 @@ fn build(
             let (key, flag) = header_key(key);
             if flag > 0 {
                 if compression {
-                    if flag == CONTENT_TYPE && state.accept_compression != 0 && typed {
+                    if flag == CONTENT_TYPE && ctx.state().accept_compression != 0 && typed {
                         content_type = Some(to_string(value_)?.into_owned());
                     }
                     if flag == CONTENT_ENCODING && value_.str().is_some() {
-                        state.accept_compression = 0;
+                        ctx.state().accept_compression = 0;
                     }
                     // https://github.com/swoole/swoole-src/issues/4857
                     // https://github.com/swoole/swoole-src/issues/5026
-                    if flag == CONTENT_LENGTH && state.accept_compression != 0 {
+                    if flag == CONTENT_LENGTH && ctx.state().accept_compression != 0 {
                         log_conflict(
                             "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
                         );
                         return Ok(());
                     }
                 }
-                if flag == CONTENT_LENGTH && state.send_chunked != 0 {
+                if flag == CONTENT_LENGTH && ctx.state().send_chunked != 0 {
                     log_conflict(
                         "You have set 'Transfer-Encoding', 'Content-Length' will be ignored",
                     );
@@ -359,6 +364,7 @@ fn build(
                 add_custom_header(out, &key, value_)
             }
         });
+        let state = ctx.state();
         if walked.is_ok() && compression && state.accept_compression != 0 && typed {
             let kind = content_type
                 .as_ref()
@@ -368,6 +374,7 @@ fn build(
         }
         walked?;
     }
+    let state = ctx.state();
 
     // http cookies
     if let Some(cookie) = property(&state.response.zobject, 1) {
@@ -442,13 +449,13 @@ fn build(
 /// # Errors
 /// A header value's `__toString` bailed out.
 pub(crate) fn header<R>(
-    mut ctx: crate::context::Ctx,
+    ctx: crate::context::Ctx,
     body: *const c_char,
     length: usize,
     f: impl FnOnce(&mut Vec<u8>) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        build(ctx.state(), body, length, out)?;
+        build(ctx, body, length, out)?;
         Ok(f(out))
     })
 }

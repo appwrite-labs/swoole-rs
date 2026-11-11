@@ -484,7 +484,7 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
         }
         minit.long_constant(name, value);
     }
-    crate::port::minit(&minit, !thread, sockets);
+    crate::port::minit(&minit, sockets);
 }
 
 /// The constants `php_swoole_server_minit` registers, in its order (the values

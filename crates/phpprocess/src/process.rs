@@ -8,7 +8,7 @@ use crate::{
     worker::{self, WorkerView},
 };
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicU32, Ordering},
@@ -45,10 +45,14 @@ static PROCESS: CustomClass<Process> = CustomClass::new();
 static ROUND_ID: AtomicU32 = AtomicU32::new(0);
 
 /// `struct ProcessObject`: the worker it owns (null before its constructor
-/// ran), its exported socket, pipe type and flags.
+/// ran), the queue it owns, its exported socket, pipe type and flags.
+///
+/// The worker record's queue pointer never owns: it points into `queue` after
+/// `useQueue`, or at the pool's queue on a worker from `Pool::getProcess`, which
+/// the pool frees. Only `queue` is ever freed here, by dropping it.
 #[derive(Default)]
 struct Process {
-    worker: Cell<*mut c_void>,
+    worker: WorkerSlot,
     socket: Cell<*mut zend_object>,
     pipe_type: Cell<c_int>,
     enable_coroutine: Cell<bool>,
@@ -66,16 +70,6 @@ impl Custom for Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        let worker = self.worker.get();
-        if !worker.is_null() {
-            let queue = queue_of(worker);
-            if !queue.is_null() {
-                // SAFETY: the object owns its worker and the worker its boxed queue.
-                drop(unsafe { Box::from_raw(queue) });
-            }
-            // SAFETY: as above.
-            unsafe { worker::free(worker) };
-        }
         let socket = self.socket.get();
         if !socket.is_null() {
             // SAFETY: the object holds one reference to its exported socket.
@@ -143,8 +137,8 @@ fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
 
 /// `f` over a live worker's queue, or `None` when it has none.
 fn with_queue<R>(worker: *mut c_void, f: impl FnOnce(&QueueRecord) -> R) -> Option<R> {
-    // SAFETY: null, or the worker's boxed queue, which lives until `freeQueue` or the
-    // object's drop, neither of which runs during `f`.
+    // SAFETY: null, or a queue its Process object or the pool owns, which lives until
+    // `freeQueue` or its owner's drop, neither of which runs during `f`.
     unsafe { queue_of(worker).as_ref() }.map(f)
 }
 
@@ -496,7 +490,8 @@ fn use_queue(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let worker = checked(this(call));
+    let process = this(call);
+    let worker = checked(process);
     if key > 0 && !key_is_valid(key) {
         fatal(
             E_WARNING,
@@ -533,9 +528,10 @@ fn use_queue(call: &Call) {
         queue.set_capacity(capacity);
     }
     let id = queue.id();
-    // The worker owns the queue from here.
+    if let Some(process) = process {
+        process.worker.queue.own(worker, Box::new(queue));
+    }
     let record = worker::record(worker);
-    record.set_queue(Box::into_raw(Box::new(queue)).cast());
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -572,16 +568,68 @@ fn stat_queue(call: &Call) {
 }
 
 fn free_queue(call: &Call) {
-    let worker = checked(this(call));
-    let queue = queue_of(worker);
-    // SAFETY: the worker's live queue, if any.
-    let freed = !queue.is_null() && unsafe { &mut *queue }.destroy();
-    if freed {
-        // SAFETY: the worker's boxed queue, freed once and forgotten.
-        drop(unsafe { Box::from_raw(queue) });
-        worker::record(worker).set_queue(ptr::null_mut());
+    let process = this(call);
+    let worker = checked(process);
+    call.set_bool(process.is_some_and(|process| process.worker.queue.free(worker)));
+}
+
+/// The worker a Process owns (null before its constructor ran) and the queue it
+/// owns, freed together when the slot drops; a queue the worker borrows (the
+/// pool's) is never freed here.
+#[derive(Default)]
+struct WorkerSlot {
+    worker: Cell<*mut c_void>,
+    queue: QueueSlot,
+}
+
+impl WorkerSlot {
+    fn get(&self) -> *mut c_void {
+        self.worker.get()
     }
-    call.set_bool(freed);
+
+    fn set(&self, worker: *mut c_void) {
+        self.worker.set(worker);
+    }
+}
+
+impl Drop for WorkerSlot {
+    fn drop(&mut self) {
+        let worker = self.worker.get();
+        if !worker.is_null() {
+            // SAFETY: the slot owns its worker; `queue` drops after it.
+            unsafe { worker::free(worker) };
+        }
+    }
+}
+
+/// The queue a Process owns, if any. A worker's queue pointer is set from here
+/// or borrowed from a pool; only the box held here is ever freed, by dropping it.
+#[derive(Default)]
+struct QueueSlot(RefCell<Option<Box<QueueRecord>>>);
+
+impl QueueSlot {
+    /// Takes `queue` and points `worker` at it; a queue it owned before is dropped.
+    fn own(&self, worker: *mut c_void, queue: Box<QueueRecord>) {
+        let mut owned = self.0.borrow_mut();
+        // Point at the box once it is in place: moving it would invalidate an earlier pointer.
+        let queue = owned.insert(queue);
+        worker::record(worker).set_queue(ptr::from_mut(&mut **queue).cast());
+    }
+
+    /// `freeQueue` on `worker`: destroys and drops a queue this slot owns, and only
+    /// detaches one the worker borrows (the pool's).
+    fn free(&self, worker: *mut c_void) -> bool {
+        if queue_of(worker).is_null() {
+            return false;
+        }
+        let mut owned = self.0.borrow_mut();
+        if owned.as_mut().is_some_and(|queue| !queue.destroy()) {
+            return false;
+        }
+        worker::record(worker).set_queue(ptr::null_mut());
+        *owned = None;
+        true
+    }
 }
 
 fn kill(call: &Call) {
@@ -1107,6 +1155,55 @@ handlers! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // These drop a `WorkerSlot`, the part of a Process that owns its worker and
+    // queue: the Process's own drop also releases its socket through PHP, which
+    // unit-test binaries don't link.
+
+    /// A Process's worker slot whose worker borrows `queue`, as one from
+    /// `Pool::getProcess` does.
+    fn borrowing(queue: &mut QueueRecord) -> WorkerSlot {
+        let slot = WorkerSlot::default();
+        slot.set(worker::new());
+        worker::record(slot.get()).set_queue(ptr::from_mut(queue).cast());
+        slot
+    }
+
+    #[test]
+    fn a_borrowed_queue_outlives_the_process() {
+        let mut queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
+        drop(borrowing(&mut queue));
+        assert!(queue.stat().is_some(), "the owner's queue still exists");
+    }
+
+    #[test]
+    fn free_queue_detaches_a_borrowed_queue() {
+        let mut queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
+        let slot = borrowing(&mut queue);
+        let worker = slot.get();
+        assert!(slot.queue.free(worker), "detached");
+        assert!(queue_of(worker).is_null(), "the worker no longer has it");
+        assert!(!slot.queue.free(worker), "nothing left to free");
+        drop(slot);
+        assert!(queue.stat().is_some(), "the owner's queue still exists");
+    }
+
+    #[test]
+    fn free_queue_destroys_an_owned_queue() {
+        let slot = WorkerSlot::default();
+        slot.set(worker::new());
+        let worker = slot.get();
+        let queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
+        let id = queue.id();
+        slot.queue.own(worker, Box::new(queue));
+        assert_eq!(
+            with_queue(worker, QueueRecord::id),
+            Some(id),
+            "the worker points at it"
+        );
+        assert!(slot.queue.free(worker), "destroyed");
+        assert!(queue_of(worker).is_null(), "and detached");
+    }
 
     #[test]
     fn queue_keys_cover_signed_and_unsigned_key_t() {

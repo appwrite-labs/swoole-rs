@@ -4,7 +4,7 @@
 //! as upstream's ZPP block does and makes one call on the coroutine socket
 //! (`crate::native`).
 use crate::{
-    native::{self, Co, Socket, Transfer},
+    native::{self, Co, Transfer},
     net::{SOCK_SSL, SOCK_TCP, SOCK_TCP6, SOCK_UNIX_STREAM, check_type, socket_type},
     socket::{Sock, strerror, warn},
 };
@@ -13,14 +13,10 @@ use std::{cell::Cell, ffi::CStr, ptr};
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
-    Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
+    Array, Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
     bailout::Bailout,
     string::ZBuf,
-    sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
-        zend_object_handlers, zend_string,
-    },
-    unset_property_deny,
+    sys::{ZEND_ACC_PUBLIC, zend_string},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -29,26 +25,45 @@ const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
 const NO_CONNECTION: c_int = 5001;
 
-/// `struct ClientCoroObject { SocketImpl *socket; zval zsocket; zval zobject; zend_object std; }`,
-/// with the object itself as a pointer, not a zval. Cells, so PHP code a method
-/// runs (or the socket's close hook) can reach the same data: nothing borrows it
-/// mutably.
-#[repr(C)]
+/// `struct ClientCoroObject { SocketImpl *socket; zval zsocket; ... }`: the
+/// `Coroutine\Socket` object, from connect until its close, whose core socket
+/// is the client's (`socket`). A cell, so PHP code a method runs (or the
+/// socket's close hook) can reach it. It drops with the client.
 pub(crate) struct Data {
-    socket: Cell<Socket>,
-    /// The `Coroutine\Socket` object, from connect until its close; zeroed
-    /// bytes are `IS_UNDEF`.
     zsocket: Cell<Owned>,
-    /// The client object itself, without a reference.
-    object: *mut zend_object,
+}
+
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &CLIENT
+    }
+
+    fn new() -> Self {
+        Self {
+            zsocket: Cell::default(),
+        }
+    }
+}
+
+/// `client_coro_free_object`: close the socket. The client is going, so the
+/// close hook's property writes are moot: the drop lets go of the socket itself.
+impl Drop for Data {
+    fn drop(&mut self) {
+        let Some(socket) = self.co() else { return };
+        swoole_rs_hooks::socket_extra::set_close_hook(socket.handle(), Box::new(drop));
+        socket.close();
+        free_length_callable(self);
+        drop(self.zsocket.take());
+    }
 }
 
 impl Data {
     /// The client's socket, while it has one.
     fn co(&self) -> Option<Co> {
-        let socket = self.socket.get();
-        // SAFETY: a socket the client holds is live.
-        (!socket.is_null()).then(|| unsafe { Co::new(socket) })
+        let held = self.zsocket.take();
+        let socket = Sock::of(&held).and_then(Sock::co);
+        self.zsocket.set(held);
+        socket
     }
 
     /// A new reference to the `Coroutine\Socket` object, if the client has one.
@@ -60,33 +75,7 @@ impl Data {
     }
 }
 
-type ClientObject = Object<Data>;
-
-static CLIENT: Class = Class::new();
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass; zeroed data is no socket.
-    let std = unsafe { ClientObject::create(&CLIENT, ce) };
-    // SAFETY: the object just created.
-    unsafe { ClientObject::data(std) }.object = std;
-    std
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees a client object.
-    if let Some(socket) = unsafe { ClientObject::data(std) }.co() {
-        socket.close();
-    }
-    // SAFETY: as above.
-    unsafe { ClientObject::dtor(std) };
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    ClientObject::install(entry, handlers, create, free);
-}
+static CLIENT: CustomClass<Data> = CustomClass::new();
 
 method_table! {
     static METHODS = [
@@ -115,7 +104,7 @@ swoole_rs_zend::minit!(client_coro_minit => register);
 
 /// MINIT, as `php_swoole_client_coro_minit` did.
 fn register(minit: &Minit) -> Result<(), Bailout> {
-    minit.register(&CLIENT, c"Swoole\\Coroutine\\Client", &METHODS.0, configure);
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Client", &METHODS.0, 0);
     if swoole_rs_phpswoole::globals().use_shortname.get() {
         minit.alias(&CLIENT, c"Co\\Client")?;
     }
@@ -137,10 +126,9 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 
-fn this(call: &Call) -> &Data {
-    // SAFETY: client methods are non-static, so `$this` is a client object, live
-    // for the call; its data is only ever shared (its fields are cells).
-    unsafe { &*ClientObject::data_ptr(call.this()) }
+/// The client data of `$this`; None in a static call.
+fn this(call: &Call) -> Option<&Data> {
+    call.custom()
 }
 
 /// `Address::verify_port(port, true)`, over upstream's `int` port.
@@ -159,15 +147,6 @@ fn report(call: &Call, code: c_int, message: &CStr) {
 /// class; None in a static call.
 fn props(call: &Call) -> Option<Props<'_>> {
     call.props(Some(&CLIENT))
-}
-
-impl Data {
-    /// Property writes on the client object this data lives in.
-    fn props(&self) -> Props<'_> {
-        // SAFETY: the object holding this data, live while it is borrowed; the
-        // class declares every name written.
-        unsafe { Props::new(CLIENT.entry(), self.object) }
-    }
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
@@ -208,15 +187,20 @@ fn type_property(call: &Call) -> i64 {
         .map_or(0, Value::long)
 }
 
-/// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
-fn socket_closed(data: &Data) {
+/// The socket's length callable goes, deferring a destructor's bailout.
+fn free_length_callable(data: &Data) {
     if let Some(socket) = data.co()
         && let Err(bailout) = socket.free_length_callable()
     {
         bailout.defer();
     }
-    data.socket.set(ptr::null_mut());
-    let props = data.props().own();
+}
+
+/// `client_coro_socket_dtor`: the socket is going; the client (`data`, with
+/// its properties `props`) lets go of it.
+fn socket_closed(data: &Data, props: Props) {
+    free_length_callable(data);
+    let props = props.own();
     props.null(c"socket");
     props.bool(c"connected", false);
     drop(data.zsocket.take());
@@ -225,14 +209,15 @@ fn socket_closed(data: &Data) {
 /// `client_coro_create_socket`: a `Coroutine\Socket` for the client's
 /// `type`, published in its `socket` and `fd` properties; null on failure,
 /// with errCode/errMsg set.
-fn create_socket(data: &Data, kind: i64) -> Option<Co> {
+fn create_socket(call: &Call, data: &Data, kind: i64) -> Option<Co> {
+    let this = props(call)?;
     #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
     let socket_kind = socket_type(kind) as i32;
     let created = match crate::socket::owner::create_kind(socket_kind) {
         Ok(Some(created)) => created,
         Ok(None) => {
             let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            report_object(Some(data.props()), code, error_message(code));
+            report_object(Some(this), code, error_message(code));
             return None;
         }
         Err(bailout) => {
@@ -241,26 +226,24 @@ fn create_socket(data: &Data, kind: i64) -> Option<Co> {
         }
     };
     let socket = Sock::of(&created).and_then(Sock::co)?;
-    let props = data.props().own();
-    props.long(c"fd", i64::from(socket.handle().sock_fd()));
-    props.value(c"socket", &created);
+    let own = this.own();
+    own.long(c"fd", i64::from(socket.handle().sock_fd()));
+    own.value(c"socket", &created);
     data.zsocket.set(created);
     let client = ptr::from_ref(data);
+    // SAFETY: `$this` holds the client, which outlives the hook on its socket:
+    // its drop replaces the hook before it closes the socket.
+    let hooked = unsafe { Props::new(CLIENT.entry(), call.this()) };
     swoole_rs_hooks::socket_extra::set_close_hook(
         socket.handle(),
-        // SAFETY: the client outlives the hook on its socket (freeing it closes
-        // the socket first), and its data is only ever shared.
-        Box::new(move |_| socket_closed(unsafe { &*client })),
+        // SAFETY: as above; the client's data is only ever shared.
+        Box::new(move |_| socket_closed(unsafe { &*client }, hooked)),
     );
     socket.use_zend_strings();
     socket.handle().set_zero_copy(true);
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
-        report_object(
-            Some(data.props()),
-            libc::EISCONN,
-            error_message(libc::EISCONN),
-        );
-        socket_closed(data);
+        report_object(Some(this), libc::EISCONN, error_message(libc::EISCONN));
+        socket_closed(data, this);
         return None;
     }
     Some(socket)
@@ -271,7 +254,7 @@ fn create_socket(data: &Data, kind: i64) -> Option<Co> {
 /// socket (`tmp_socket`); else errCode/errMsg say "Client no connection" and
 /// the method returns false.
 fn connected(call: &Call) -> Option<(Co, Owned)> {
-    if let Some(zsocket) = this(call).zsocket()
+    if let Some(zsocket) = this(call).and_then(Data::zsocket)
         && let Some(socket) = Sock::of(&zsocket).and_then(Sock::co)
     {
         return Some((socket, zsocket));
@@ -285,8 +268,8 @@ fn connected(call: &Call) -> Option<(Co, Owned)> {
 /// client's socket; None (with the error reported) when it has one already, the
 /// port is invalid or creation fails.
 fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
-    let data = this(call);
-    if !data.socket.get().is_null() {
+    let data = this(call)?;
+    if data.co().is_some() {
         report(call, libc::EISCONN, strerror(libc::EISCONN));
         return None;
     }
@@ -296,8 +279,7 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
         warn(true, "The port is invalid");
         return None;
     }
-    let socket = create_socket(data, kind)?;
-    data.socket.set(socket.as_ptr());
+    let socket = create_socket(call, data, kind)?;
     if let Some(settings) = setting(call) {
         crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
     }
@@ -311,7 +293,7 @@ fn datagram_socket(call: &Call) -> Option<Co> {
 
 /// The client's socket, if it has one.
 fn client_socket(call: &Call) -> Option<Co> {
-    this(call).co()
+    this(call)?.co()
 }
 
 /// `__construct(int $type)`.
@@ -592,7 +574,7 @@ fn getpeername(call: &Call) {
 
 /// `exportSocket(): Socket|null`: the client's `Coroutine\Socket`, shared.
 fn export_socket(call: &Call) {
-    match this(call).zsocket() {
+    match this(call).and_then(Data::zsocket) {
         Some(zsocket) => call.set_owned(zsocket),
         None => call.set_null(),
     }

@@ -13,7 +13,7 @@ use std::os::unix::fs::FileExt;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::{
     DataHead, datahead_dump, log, microtime, swr_v1_core_current_task_id,
-    swr_v1_core_set_current_task_id,
+    swr_v1_core_set_current_task_id, task_tmpfile,
 };
 
 use swoole_rs_buffer::string::CppString;
@@ -229,14 +229,6 @@ pub struct EventData {
     data: [u8; IPC_PAYLOAD],
 }
 
-/// `SwooleG.task_tmpfile`, the template of a task's temporary file, which each
-/// caller copies at once.
-pub(crate) fn task_tmpfile() -> &'static CStr {
-    // SAFETY: the NUL-terminated path, changed only by `swoole_init` and the
-    // `task_tmpdir` setting.
-    unsafe { CStr::from_ptr(swoole_rs_corebase::swr_v1_core_task_tmpfile()) }
-}
-
 /// `SW_SERVER_EVENT_TASK`.
 const EVENT_TASK: u8 = 8;
 const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
@@ -292,7 +284,7 @@ impl EventData {
             reserved: 0,
             time: microtime(),
         };
-        let packed = pack_payload(&mut self.data, data, task_tmpfile());
+        let packed = pack_payload(&mut self.data, data, &task_tmpfile());
         if !packed.ok {
             return false;
         }
