@@ -368,7 +368,9 @@ fn length_safe(array: Option<&HeldArray>) -> usize {
 }
 
 /// Each element of a held array, with its string key (None for an integer key).
-fn entries(array: Option<&HeldArray>) -> impl Iterator<Item = (Option<&[u8]>, &Zval)> {
+/// The server's and the client's header walks go through here, so the table
+/// they walk is one a [`HeldArray`] keeps live.
+pub(crate) fn entries(array: Option<&HeldArray>) -> impl Iterator<Item = (Option<&[u8]>, &Zval)> {
     array
         .and_then(|array| array.array())
         .into_iter()
