@@ -657,9 +657,18 @@ fn flock() {
 }
 
 fn read_dir() {
-    // SAFETY: opendir(3)/readdir(3) on /tmp, which has `.` and `..`.
+    // Upstream lists /tmp, which parallel phases write between the two listings (#2829):
+    // a directory of this test's own holds a fixed set of entries instead.
+    let root = std::env::temp_dir().join(format!("swoole-rs-read-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for name in ["a", "b"] {
+        std::fs::File::create(root.join(name)).unwrap();
+    }
+    let path = std::ffi::CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
+
+    // SAFETY: opendir(3)/readdir(3) on the directory above, which has `.` and `..`.
     let (dir1, dir2) = unsafe {
-        let fp = opendir(c"/tmp".as_ptr());
+        let fp = opendir(path.as_ptr());
         let dir1 = d_name(readdir(fp));
         let dir2 = d_name(readdir(fp));
         closedir(fp);
@@ -668,7 +677,7 @@ fn read_dir() {
 
     let fn_ = || {
         // SAFETY: a NUL-terminated path.
-        let fp = unsafe { swoole_coroutine_opendir(c"/tmp".as_ptr()) };
+        let fp = unsafe { swoole_coroutine_opendir(path.as_ptr()) };
         assert!(!fp.is_null());
 
         // SAFETY: an open directory stream.
@@ -685,6 +694,7 @@ fn read_dir() {
 
     run(fn_);
     fn_();
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 fn readlink() {

@@ -13,6 +13,7 @@ use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
+use swoole_rs_websocket_ffi::frame_api::get_package_length;
 use swoole_rs_zend::{
     Array, Call, Value, bailout, set_object, string,
     sys::{zend_object, zval, zval_ptr_dtor},
@@ -59,8 +60,6 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
 }
 
 unsafe extern "C" {
-    #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-    fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
 }
@@ -263,7 +262,7 @@ impl Co {
         record.protocol.package_length_size = WEBSOCKET_HEADER_LEN;
         record.protocol.package_length_offset = 0;
         record.protocol.package_body_offset = 0;
-        record.protocol.get_package_length = websocket_package_length as *mut c_void;
+        record.protocol.get_package_length = get_package_length as *mut c_void;
     }
 
     /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.

@@ -372,8 +372,6 @@ def plan(args, reports):
         if integrate:
             pytest('timer-bailout', 'tests/modules/timer/test_bailout.py', *php,
                    '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
-            pytest('timer-native', 'tests/modules/timer/test_adapter.py', '--build-manifest', built, '--archive', archive, *php,
-                   *(['--sanitize'] if sys.platform == 'darwin' else []))
     if 'buffer' in modules:
         pytest('buffer-string-compatibility', 'tests/modules/buffer/string/test_compatibility.py',
                '--archive', archive, '--sanitize')

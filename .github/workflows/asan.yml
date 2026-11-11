@@ -27,7 +27,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - run: test -f target/upstream/src/run-tests.php || python3 tools/build_upstream.py
       - uses: actions/cache@v4
         with:
@@ -43,3 +43,5 @@ jobs:
           path: |
             target/asan/*.json
             target/reports/dev/*/loop.json
+            target/reports/dev/*/reference-build.log
+            target/upstream/build.log

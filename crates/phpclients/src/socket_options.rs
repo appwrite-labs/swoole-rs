@@ -606,7 +606,7 @@ fn get_option(call: &Call) {
             return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
         }
         call.set_array();
-        for (key, value) in native::tcp_fields(&info) {
+        for (key, value) in swoole_rs_server::tcp_fields(&info) {
             #[expect(clippy::cast_possible_wrap, reason = "upstream's (zend_long) cast")]
             call.add_assoc_long(key, value as i64);
         }

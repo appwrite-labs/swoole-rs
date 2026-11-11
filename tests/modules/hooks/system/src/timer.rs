@@ -38,8 +38,6 @@ unsafe extern "C" {
     #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
     fn swoole_timer_tick(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
     fn swr_case_timer_exchange(timer: *mut c_void) -> *mut c_void;
-    fn swr_case_timer_count() -> usize;
-    fn swr_case_timer_reinit();
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
     #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
@@ -182,7 +180,7 @@ fn sys() {
     });
 
     // SAFETY: SwooleTG.timer is set; the signal-driven timer's select loop, as upstream's.
-    while unsafe { swr_case_timer_count() } > 0 {
+    while swoole_rs_timer::php::stats().is_some_and(|(count, _)| count > 0) {
         unsafe {
             sleep(10);
             swoole_signal_dispatch();
@@ -304,8 +302,12 @@ fn reinit() {
 
     event_init();
 
-    // SAFETY: `after` created this thread's timer.
-    unsafe { swr_case_timer_reinit() };
+    // SAFETY: `after` created this thread's timer, which the exchange puts back.
+    let timer = unsafe { swr_case_timer_exchange(std::ptr::null_mut()) };
+    // SAFETY: as above.
+    unsafe { swr_case_timer_exchange(timer) };
+    // SAFETY: this thread's live timer.
+    swoole_rs_timer::owner_reinit(unsafe { &*timer.cast() }, false);
 
     let ms1 = now_ms();
 

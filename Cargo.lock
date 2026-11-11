@@ -572,6 +572,7 @@ dependencies = [
  "swoole-rs-memory",
  "swoole-rs-process",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
 ]
 
 [[package]]
@@ -731,9 +732,12 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
+ "swoole-rs-server",
  "swoole-rs-tls",
+ "swoole-rs-websocket-ffi",
  "swoole-rs-zend",
 ]
 

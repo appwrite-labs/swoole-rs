@@ -2,7 +2,7 @@
 //! `swoole_rs_phpruntime::co` and the socket's record, plus Swoole's PHP error
 //! reporting; and `Swoole\Client`'s `network::Client`, whose operations
 //! crates/clients runs.
-use crate::settings::{default_length_func, php_swoole_length_func};
+use crate::settings::php_swoole_length_func;
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
@@ -29,20 +29,6 @@ const LOG_WARNING: c_int = 4;
 
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
-
-unsafe extern "C" {
-    /// crates/server's `tcp_info` fields, in upstream's order.
-    #[cfg(target_os = "linux")]
-    fn swr_v1_server_tcp_info(info: *const c_void, out: *mut Fact, cap: usize) -> usize;
-}
-
-/// `swr_v1_server_fact`.
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct Fact {
-    name: *const c_char,
-    value: u64,
-}
 
 /// `SW_TIMEOUT_*`.
 const TIMEOUT_CONNECT: c_int = 1 << 1;
@@ -502,7 +488,8 @@ impl Co {
         if kind == 0 {
             mqtt_set_protocol(protocol);
         } else {
-            protocol.get_package_length = default_length_func as *mut c_void;
+            protocol.get_package_length =
+                swoole_rs_ports::framing_recv::default_length_func as *mut c_void;
         }
     }
 
@@ -613,29 +600,6 @@ pub(crate) fn length_callable(socket: Co, value: *mut zval) {
     protocol.package_length_size = 0;
     protocol.package_length_type = 0;
     protocol.package_length_offset = IPC_BUFFER_SIZE;
-}
-
-/// The fields of `info`, in upstream's order (crates/server's list).
-#[cfg(target_os = "linux")]
-pub(crate) fn tcp_fields(info: &libc::tcp_info) -> impl Iterator<Item = (&'static CStr, u64)> {
-    let mut facts = [const {
-        Fact {
-            name: std::ptr::null(),
-            value: 0,
-        }
-    }; 64];
-    // SAFETY: a `tcp_info` and room for 64 facts.
-    let n = unsafe {
-        swr_v1_server_tcp_info(
-            std::ptr::from_ref(info).cast(),
-            facts.as_mut_ptr(),
-            facts.len(),
-        )
-    };
-    facts.into_iter().take(n).map(|fact| {
-        // SAFETY: a static field name.
-        (unsafe { CStr::from_ptr(fact.name) }, fact.value)
-    })
 }
 
 /// A live `network::Client` (crates/clients' state), from [`create`] until

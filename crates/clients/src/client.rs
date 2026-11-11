@@ -217,7 +217,8 @@ struct Tail {
 }
 
 /// `async::Handler`: runs on a pool thread, or as the completion.
-type AsyncHandler = extern "C" fn(*mut AsyncEvent);
+/// The pool lends the handler its copy of the event, exclusively, for the call.
+type AsyncHandler = extern "C" fn(&mut AsyncEvent);
 
 /// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
 /// DNS record.
@@ -1402,18 +1403,14 @@ fn dns_lookup(this: Handle) -> c_int {
 
 /// `async::handler_gethostbyname`, on a pool thread, over the pool's copy of the
 /// event [`dns_lookup`] dispatched.
-extern "C" fn resolve(event: *mut AsyncEvent) {
-    // SAFETY: the pool's copy of the event, exclusive while the handler runs.
-    let event = unsafe { &mut *event };
+extern "C" fn resolve(event: &mut AsyncEvent) {
     // SAFETY: its request record, held by the copy.
     (event.retval, event.error) = crate::resolver::host(unsafe { &*event.data });
 }
 
 /// `Client_onResolveCompleted`, on the client's thread, over the completed copy
 /// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: *mut AsyncEvent) {
-    // SAFETY: the completed copy, live for the call.
-    let event = unsafe { &*event };
+extern "C" fn resolve_completed(event: &mut AsyncEvent) {
     // SAFETY: its request record, held by the copy.
     let address = crate::resolver::address(unsafe { &*event.data });
     resolved(
@@ -2204,7 +2201,10 @@ fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Client_onTimeout`: the async connect of the client at `data` timed out.
-extern "C-unwind" fn on_timeout(data: *mut c_void) {
+///
+/// # Safety
+/// `data` is a live client.
+unsafe extern "C-unwind" fn on_timeout(data: *mut c_void) {
     let this = Handle(data.cast());
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(core::ptr::null_mut());
