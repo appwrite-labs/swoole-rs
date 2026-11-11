@@ -104,7 +104,11 @@ def main():
                     row['error'] = f'{type(error).__name__}: {error}'
                 report['results'].append(row)
                 write_report(args.output, report)
-    print(json.dumps({'matched': sum(row['matched'] for row in report['results']), 'scenarios': len(report['results'])}))
+    # The summary is the log tail the phases artifact keeps: name what differed (#3350).
+    mismatched = [{key: row.get(key) for key in ('engine', 'mode', 'scenario', 'coroutines', 'error')}
+                  for row in report['results'] if not row['matched']]
+    print(json.dumps({'matched': sum(row['matched'] for row in report['results']), 'scenarios': len(report['results']),
+                      **({'mismatched': mismatched} if mismatched else {})}))
     return int(any(not row['matched'] for row in report['results']))
 
 

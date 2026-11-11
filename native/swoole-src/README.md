@@ -10,5 +10,3 @@ bundles from elsewhere and that has no Rust replacement:
 - `thirdparty/php*/pdo_*`, `thirdparty/pdo_oci`, `thirdparty/pdo_sqlite`: PHP's own PDO
   drivers, adapted by Swoole to its coroutine hooks. PHP License 3.01, as each file's header says.
 - `thirdparty/php/ssh2`: PECL ssh2, adapted the same way. PHP License 3.01 (`LICENSE`).
-- `thirdparty/boost/asm`: boost.context's switch for the architectures build.rs supports. Boost
-  Software License 1.0 (`LICENSE`).

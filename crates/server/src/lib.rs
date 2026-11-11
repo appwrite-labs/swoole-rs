@@ -265,8 +265,13 @@ pub(crate) unsafe fn run_method(
     };
     match (operation, state) {
         // Outside `run`'s match, with the state known and no reactor context, so
-        // each op an accept makes folds to its answer (#2964).
+        // each op an accept or a send makes folds to its answer (#2964, #3335).
         (ops::RUN_ACCEPT, Some(_)) => connection::accept(&mut native),
+        (ops::RUN_ST_SEND, _) => state::send(
+            &mut native,
+            core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
+        )
+        .map(i64::from),
         _ => run(&mut native, operation, arg),
     }
     .unwrap_or(SW_ERR)
@@ -283,11 +288,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        // Every message sent: matched here, not after the fallback chain below.
-        ops::RUN_ST_SEND => i64::from(state::send(
-            h,
-            core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
-        )?),
         RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
         RUN_INCOMING => connection::incoming(h)?,
         RUN_IDLE_TIMEOUT => {
@@ -420,7 +420,7 @@ mod mode_tests {
         };
         assert_eq!(host.get(OP_MODE), Ok(2));
         // SAFETY: created above and not used again.
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
     }
 }
 

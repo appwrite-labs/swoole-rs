@@ -227,9 +227,6 @@ unsafe extern "C-unwind" {
     fn socket_catch_write_error(socket: *mut Record, error: c_int) -> c_int;
     #[link_name = "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"]
     fn socket_catch_write_pipe_error(socket: *mut Record, error: c_int) -> c_int;
-    /// `network::Socket`'s defaults, which its constructor copies the timeouts from.
-    static swr_v1_socket_defaults: [f64; 4];
-
     fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool;
     fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int;
     fn swr_v1_socket_domain_and_type(
@@ -614,8 +611,15 @@ impl Socket {
 fn stack_socket() -> Box<MaybeUninit<Record>> {
     // SAFETY: every field is an integer, float, bool or pointer, valid zeroed.
     let mut record = Box::new(MaybeUninit::<Record>::zeroed());
-    // SAFETY: the zeroed record; the defaults only change through their setters.
-    unsafe { (*record.as_mut_ptr()).timeouts = swr_v1_socket_defaults };
+    let defaults = swoole_rs_reactor::SOCKET_DEFAULTS.timeouts();
+    let timeouts = [
+        defaults.dns,
+        defaults.connect,
+        defaults.read,
+        defaults.write,
+    ];
+    // SAFETY: the zeroed record.
+    unsafe { (*record.as_mut_ptr()).timeouts = timeouts };
     record
 }
 

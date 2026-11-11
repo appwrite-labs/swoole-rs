@@ -177,20 +177,13 @@ impl ServerState {
     }
 
     /// One of `texts`' slots.
-    pub(crate) fn text_slot(&self, index: usize) -> *const StringSlot {
-        self.texts
-            .get(index)
-            .map_or(core::ptr::null(), core::ptr::from_ref)
+    pub(crate) fn text_slot(&self, index: usize) -> Option<&StringSlot> {
+        self.texts.get(index)
     }
 
     /// The bytes of one of `texts`, which no other thread sets meanwhile.
     pub(crate) fn text(&self, index: usize) -> &[u8] {
-        let slot = self.text_slot(index);
-        if slot.is_null() {
-            return &[];
-        }
-        // SAFETY: a live slot of this state; texts are set only while the server is configured.
-        unsafe { &*slot }.bytes()
+        self.text_slot(index).map_or(&[], StringSlot::bytes)
     }
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
@@ -199,14 +192,7 @@ impl ServerState {
     pub(crate) fn set_isolation(&self) {
         let text = |index| CString::new(self.text(index)).unwrap_or_default();
         let (root, user, group) = (text(0), text(1), text(2));
-        // SAFETY: three C strings.
-        unsafe {
-            swoole_rs_ossupport::swr_v1_os_set_isolation(
-                group.as_ptr(),
-                user.as_ptr(),
-                root.as_ptr(),
-            );
-        }
+        swoole_rs_ossupport::set_isolation(&group, &user, &root);
     }
 
     /// `Server::lock()`: blocks until this thread holds the lock.
@@ -357,7 +343,9 @@ impl ServerState {
 /// the slot lives as long as `state`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_text_slot(state: &ServerState, index: usize) -> *const StringSlot {
-    state.text_slot(index)
+    state
+        .text_slot(index)
+        .map_or(core::ptr::null(), core::ptr::from_ref)
 }
 
 /// `text.c_str()`: the bytes up to the first NUL.
@@ -383,14 +371,8 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
             let path = core::ptr::with_exposed_provenance::<c_char>(usize::try_from(arg).ok()?);
             // SAFETY: per the caller.
             let path = unsafe { CStr::from_ptr(path) }.to_bytes();
-            // SAFETY: a live slot of this state, set only while the server is configured.
-            unsafe {
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    state.text_slot(TEXT_DOCUMENT_ROOT),
-                    path.as_ptr().cast(),
-                    path.len(),
-                )
-            };
+            // SAFETY: a slot of this state, set only while the server is configured.
+            unsafe { state.texts[TEXT_DOCUMENT_ROOT].set_shared(path) };
         }
         OP_LC_WRITE_PID => {
             let file = state.text(TEXT_PID_FILE);
@@ -412,7 +394,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 }
 
 /// # Safety
-/// The result is freed once with `swr_v1_server_state_free`.
+/// The result is freed once, as a `Box`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
     let mut config = crate::config::ServerConfig::default();
@@ -431,6 +413,9 @@ pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
         drop(unsafe { Box::from_raw(state) });
     }
 }
+
+#[cfg(test)]
+pub(crate) use swr_v1_server_state_free as free_state;
 
 /// A lock of one of the state's lists, which a panic can't leave inconsistent.
 fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -876,7 +861,7 @@ mod tests {
         // SAFETY: a live state.
         assert_eq!(unsafe { &*state }.next_round(), 0);
         // SAFETY: freed once.
-        unsafe { swr_v1_server_state_free(state) };
+        unsafe { free_state(state) };
     }
 
     #[test]
@@ -887,7 +872,7 @@ mod tests {
         assert_eq!(unsafe { native_fact(&state, OP_ST_SET_ROOT, arg) }, Some(0));
         assert_eq!(state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
         assert_eq!(state.text(TEXT_PID_FILE), b"");
-        assert!(state.text_slot(TEXT_COUNT).is_null());
+        assert!(state.text_slot(TEXT_COUNT).is_none());
         assert_eq!(unsafe { native_fact(&state, OP_SET_MAXFD, 0) }, None);
 
         let state = std::sync::Arc::new(state);
@@ -931,13 +916,7 @@ mod tests {
         assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
         let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
         let bytes = path.to_str().unwrap().as_bytes();
-        unsafe {
-            swoole_rs_corebase::swr_v1_core_string_set(
-                state.text_slot(TEXT_PID_FILE),
-                bytes.as_ptr().cast(),
-                bytes.len(),
-            )
-        };
+        unsafe { state.texts[TEXT_PID_FILE].set_shared(bytes) };
         assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),

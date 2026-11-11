@@ -275,7 +275,7 @@ pub extern "C" fn swr_v1_server_connection(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
+    use crate::state::{free_state, swr_v1_server_state_new};
 
     /// A table field naming a test's own records, so several states can share them as
     /// processes share a mapping. Nothing frees it: the test owns `items`.
@@ -318,7 +318,7 @@ pub(crate) mod tests {
             );
             assert_eq!(slot.fd, if edge { 0 } else { 23 });
         }
-        unsafe { swr_v1_server_state_free(state) };
+        unsafe { free_state(state) };
     }
 
     #[test]
@@ -372,7 +372,7 @@ pub(crate) mod tests {
             assert_eq!(swr_v1_server_connection(&*state, 2, 4), expected);
             (*expected).active = 0;
             assert!(swr_v1_server_connection(&*state, 1, 2).is_null());
-            swr_v1_server_state_free(state);
+            free_state(state);
         }
     }
 }

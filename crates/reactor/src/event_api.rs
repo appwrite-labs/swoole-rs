@@ -257,17 +257,20 @@ thread_local! {
 }
 
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
-/// nothing without one.
+/// nothing without one, and the process ends if it can't allocate.
 pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
-    field_mut(|fields| {
-        let queue = &raw mut fields.destroy_callbacks;
-        // SAFETY: the live reactor's destroy queue; `call` is safe with any data.
-        let pushed =
-            unsafe { crate::swr_v1_reactor_deferred_push(queue, call, std::ptr::null_mut(), None) };
-        if pushed != 0 {
-            std::process::abort();
-        }
-    });
+    // SAFETY: `call` is safe with any data.
+    unsafe { on_destroy_with(call, std::ptr::null_mut()) };
+}
+
+/// Runs `call(data)` when the thread's `Reactor` is destroyed; nothing without one,
+/// and the process ends if it can't allocate.
+///
+/// # Safety
+/// `call(data)` is sound when the reactor is destroyed.
+pub unsafe fn on_destroy_with(call: crate::DeferCall, data: *mut c_void) {
+    // SAFETY: as the caller promises.
+    field_mut(|fields| unsafe { crate::defer_destroy(fields, call, data) });
 }
 
 /// `sw_reactor()->running = running`, when there is a reactor.

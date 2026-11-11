@@ -63,6 +63,12 @@ pub extern "C-unwind" fn swoole_timer_create(manually_trigger: bool) -> *mut c_v
     timer.cast()
 }
 
+/// `SwooleTG.timer->count()`, or 0 without a timer.
+#[must_use]
+pub fn thread_timer_count() -> usize {
+    current().map_or(0, Timer::count)
+}
+
 /// `int64_t swoole_timer_get_next_msec()`: -1 without a timer.
 #[unsafe(export_name = "_Z26swoole_timer_get_next_msecv")]
 pub extern "C" fn swoole_timer_get_next_msec() -> i64 {

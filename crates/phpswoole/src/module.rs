@@ -424,10 +424,7 @@ extern "C" fn ready() {
         clippy::cast_sign_loss,
         reason = "upstream assigns the zend_long to a uint32_t"
     )]
-    // SAFETY: MINIT, before any thread reads the process-wide defaults.
-    unsafe {
-        swoole_rs_reactor::swr_v1_socket_defaults.buffer_size = size as u32;
-    }
+    swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size as u32);
     swr_phpswoole_pcre_jit_off();
     swoole_rs_zend::host::known_init();
 }
@@ -436,6 +433,12 @@ extern "C" fn ready() {
 /// # Errors
 /// The library's code bailed out.
 pub fn load_library() -> Result<(), Bailout> {
+    /// The loader swaps the process-global `zend_compile_string` around its
+    /// eval: one thread at a time, or a thread's restore undoes another's swap.
+    static LOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _loading = LOADING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: the loader, a zend_try body.
     if unsafe { swr_zend_try_hook(Some(load_library_body)) } == 0 {
         Ok(())
@@ -517,7 +520,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     // SAFETY: PHP's directory, which lives for the request.
     let directory = unsafe { swr_zend_temporary_directory() };
     // SAFETY: a NUL-terminated path, which the setter copies.
-    unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(directory) };
+    swoole_rs_corebase::set_task_tmpdir(unsafe { CStr::from_ptr(directory) });
     php_swoole_register_shutdown_function(c"swoole_internal_call_user_shutdown_begin");
     // SAFETY: this request's compiler globals.
     if globals.enable_library.get() && unsafe { swr_zend_compiling_preload() } == 0 {

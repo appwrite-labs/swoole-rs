@@ -13,12 +13,10 @@ use crate::typed::{Detached, Front};
 use crate::{
     EMPTY, OK, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_stats,
     swr_v1_buffer_typed_consume, swr_v1_buffer_typed_create, swr_v1_buffer_typed_front,
-    swr_v1_buffer_typed_pop, swr_v1_buffer_typed_push,
+    swr_v1_buffer_typed_pop,
 };
 use std::mem::MaybeUninit;
 use std::ptr;
-
-const TYPE_CLOSE: u32 = 2;
 
 /// `swoole::Buffer`: its only member is the queue handle.
 #[repr(C)]
@@ -105,8 +103,7 @@ upstream! {
     "_ZN6swoole6Buffer11typed_closeEv", "_ZN6swoole6Buffer11typed_closeEv" =>
     /// `typed_close()`: queues a payload-free CLOSE marker.
     pub extern "C" fn swr_cpp_buffer_typed_close(this: &CppBuffer) {
-        // SAFETY: a CLOSE marker carries no token or disposer.
-        check(this.with(|queue| unsafe { swr_v1_buffer_typed_push(Some(queue), TYPE_CLOSE, ptr::null_mut(), None) }));
+        check(this.with(crate::Buffer::push_close));
     }
     "_ZN6swoole6Buffer3popEv", "_ZN6swoole6Buffer3popEv" =>
     /// `pop()`: drops the first entry, if any.
@@ -174,6 +171,8 @@ pub unsafe fn delete_buffer(buffer: *mut CppBuffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TYPE_CLOSE: u32 = 2;
 
     /// Runs `body` over a constructed Buffer, then destroys it.
     fn with_buffer(chunk_size: u32, body: impl FnOnce(&CppBuffer)) {

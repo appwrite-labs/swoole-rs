@@ -351,7 +351,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
 mod tests {
     use super::*;
     use crate::ops::{FIELD_WORKER_NUM, OP_FIELD, OP_RUNNING, OP_SET_FIELD, OP_SET_RUNNING};
-    use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
+    use crate::state::{free_state, swr_v1_server_state_new};
 
     #[test]
     fn runtime_defaults_and_native_views_share_owned_slots() {
@@ -372,7 +372,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
             assert!(!(*config).running);
             assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
-            swr_v1_server_state_free(state);
+            free_state(state);
         }
     }
 
@@ -419,7 +419,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_LAST_PORT_FD, 0), Some(7));
             assert_eq!(native_fact(&*state, OP_PORT_DEFAULT_IDLE, 1), Some(0));
             assert_eq!(native_fact(&*state, OP_PORT_IDLE, 1), Some(10));
-            swr_v1_server_state_free(state);
+            free_state(state);
             for port in ports {
                 crate::port_config::swr_v1_port_config_free(port);
             }

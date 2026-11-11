@@ -444,8 +444,7 @@ fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             }))
         }
         OP_SIGNAL_SET => {
-            // SAFETY: Rust's signal handler for the manager.
-            unsafe { crate::event_worker_ops::swr_workers_signal_set(arg, signal_handler) };
+            crate::event_worker_ops::swr_workers_signal_set(arg, signal_handler);
             0
         }
         OP_MANAGER_BARRIER => {

@@ -497,9 +497,7 @@ impl CoSocket {
             }
         }
         if matches!(socket_type, 2 | 4) {
-            // SAFETY: a plain read of the default, which only the owning thread assigns.
-            let size =
-                unsafe { (*ptr::addr_of!(swoole_rs_reactor::swr_v1_socket_defaults)).buffer_size };
+            let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
             swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
         }
         self.protocol.package_length_type = b'N';

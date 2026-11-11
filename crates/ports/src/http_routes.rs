@@ -67,6 +67,7 @@ fn length_size(conn: &ConnectionRecord) -> u8 {
 #[cfg(not(test))]
 pub mod exports {
     use std::ffi::{c_int, c_void};
+    use std::mem::MaybeUninit;
     use std::sync::atomic::Ordering;
 
     use swoole_rs_buffer::string::{CppString, delete_string, new_string};
@@ -75,9 +76,8 @@ pub mod exports {
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::{ConnectionRecord, view};
-    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame};
+    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
-    use swoole_rs_websocket_ffi::swr_v1_ws_encode;
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
     use crate::framing_recv::{Packages, Recv};
@@ -163,11 +163,18 @@ pub mod exports {
         let serv = unsafe { (*proto).private_data_2 };
         // SAFETY: as the caller guarantees.
         let rdata = unsafe { &*rdata.cast::<RecvData>() };
-        let (data, length) = (rdata.data, rdata.info.len as usize);
-        // SAFETY: `decode` unmasks the frame's bytes in place, as upstream's does.
-        let Ok(frame) = (unsafe { decode_frame(data.cast_mut(), length) }) else {
+        let length = rdata.info.len as usize;
+        let bytes = if length == 0 {
+            &mut []
+        } else {
+            // SAFETY: the whole frame, as the caller guarantees; `decode` unmasks it in
+            // place, as upstream's does.
+            unsafe { std::slice::from_raw_parts_mut(rdata.data.cast_mut(), length) }
+        };
+        let Ok(frame) = decode_frame(bytes) else {
             return -1;
         };
+        let bytes: &[u8] = bytes;
         // SAFETY: as the caller guarantees.
         let conn = unsafe { connection(socket) };
         let fragment = conn.websocket_buffer.cast::<CppString>();
@@ -210,8 +217,11 @@ pub mod exports {
                 ext_flags: decision.ext_flags,
                 ..DataHead::default()
             },
-            data: data.wrapping_add(decision.offset),
+            data: bytes.as_ptr().wrapping_add(decision.offset),
         };
+        let payload = bytes
+            .get(decision.offset..)
+            .and_then(|rest| rest.get(..decision.length));
         let dispatch_task = |dispatch: &RecvData| {
             // SAFETY: upstream's arguments, with this frame's payload or whole message.
             unsafe { dispatch_task(proto, socket.cast(), (&raw const *dispatch).cast()) }
@@ -228,14 +238,7 @@ pub mod exports {
             Action::Append | Action::Finish => {
                 // SAFETY: the decision appends only to a live fragment.
                 let buffer = unsafe { &mut *fragment };
-                // SAFETY: the payload's bytes.
-                unsafe {
-                    swoole_rs_buffer::string::swr_string_append(
-                        buffer,
-                        dispatch.data,
-                        decision.length,
-                    );
-                }
+                buffer.append(payload.unwrap_or_default());
                 if decision.action == Action::Finish {
                     #[expect(
                         clippy::cast_possible_truncation,
@@ -258,18 +261,10 @@ pub mod exports {
             }
             Action::ClientClose => {
                 dispatch_task(&dispatch);
-                let mut reply = [0u8; CLOSE_REPLY_MAX];
-                // SAFETY: the close payload and a disjoint local output.
-                let size = unsafe {
-                    swr_v1_ws_encode(
-                        dispatch.data,
-                        decision.length,
-                        8,
-                        1,
-                        reply.as_mut_ptr(),
-                        reply.len(),
-                    )
-                };
+                let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
+                let size = payload.map_or(0, |payload| {
+                    encode_parts(payload.len(), payload, 8, 1, &mut reply)
+                });
                 if size != 0 {
                     // SAFETY: a live socket and the encoded reply.
                     unsafe {

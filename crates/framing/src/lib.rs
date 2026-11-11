@@ -35,29 +35,23 @@ pub enum UnpackError {
 /// # Errors
 /// An unknown format, or fewer bytes than its width.
 pub fn unpack(format: u8, data: &[u8]) -> Result<i64, UnpackError> {
-    let width = width(format);
-    if width == 0 {
-        return Err(UnpackError::Format);
-    }
-    let field = data.get(..width).ok_or(UnpackError::Short)?;
-    let mut raw = [0u8; 8];
-    for (slot, &byte) in raw.iter_mut().zip(field) {
-        *slot = byte;
+    fn field<const N: usize>(data: &[u8]) -> Result<[u8; N], UnpackError> {
+        data.first_chunk().copied().ok_or(UnpackError::Short)
     }
     Ok(match format {
-        b'c' => i64::from(raw[0].cast_signed()),
-        b'C' => i64::from(raw[0]),
-        b's' => i64::from(i16::from_ne_bytes([raw[0], raw[1]])),
-        b'S' => i64::from(u16::from_ne_bytes([raw[0], raw[1]])),
-        b'n' => i64::from(u16::from_be_bytes([raw[0], raw[1]])),
-        b'v' => i64::from(u16::from_le_bytes([raw[0], raw[1]])),
-        b'i' | b'l' => i64::from(i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]])),
-        b'I' | b'L' => i64::from(u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]])),
-        b'N' => i64::from(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]])),
-        b'V' => i64::from(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])),
-        b'q' | b'Q' => i64::from_ne_bytes(raw),
-        b'J' => u64::from_be_bytes(raw).cast_signed(),
-        b'P' => u64::from_le_bytes(raw).cast_signed(),
+        b'c' => i64::from(i8::from_ne_bytes(field(data)?)),
+        b'C' => i64::from(u8::from_ne_bytes(field(data)?)),
+        b's' => i64::from(i16::from_ne_bytes(field(data)?)),
+        b'S' => i64::from(u16::from_ne_bytes(field(data)?)),
+        b'n' => i64::from(u16::from_be_bytes(field(data)?)),
+        b'v' => i64::from(u16::from_le_bytes(field(data)?)),
+        b'i' | b'l' => i64::from(i32::from_ne_bytes(field(data)?)),
+        b'I' | b'L' => i64::from(u32::from_ne_bytes(field(data)?)),
+        b'N' => i64::from(u32::from_be_bytes(field(data)?)),
+        b'V' => i64::from(u32::from_le_bytes(field(data)?)),
+        b'q' | b'Q' => i64::from_ne_bytes(field(data)?),
+        b'J' => u64::from_be_bytes(field(data)?).cast_signed(),
+        b'P' => u64::from_le_bytes(field(data)?).cast_signed(),
         _ => return Err(UnpackError::Format),
     })
 }
@@ -92,16 +86,12 @@ pub fn default_length(
     if data.len() < need {
         return DefaultLength::Need(i64::try_from(need).unwrap_or(i64::MAX));
     }
-    if width(format) == 0 {
-        return DefaultLength::Format;
-    }
-    let Some(field) = data.get(offset as usize..) else {
-        return DefaultLength::Invalid;
-    };
+    let field = data.get(offset as usize..).unwrap_or_default();
     match unpack(format, field) {
         Ok(value) if value >= 0 => value
             .checked_add(i64::from(body_offset))
             .map_or(DefaultLength::Invalid, DefaultLength::Total),
+        Err(UnpackError::Format) => DefaultLength::Format,
         _ => DefaultLength::Invalid,
     }
 }

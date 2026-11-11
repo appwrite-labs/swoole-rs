@@ -14,10 +14,10 @@ use crate::ops::{
 };
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
-    RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
-    RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
-    RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND,
-    RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_IDLE_WORKERS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT,
+    RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER,
+    RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS,
+    RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -495,10 +495,33 @@ pub fn sendwait(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool
     unsafe { run(RUN_SENDWAIT, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
 
-/// `Server::has_kernel_nobufs_error(session_id)`.
+/// `Server::has_kernel_nobufs_error(session_id)`: whether a send to the session's
+/// socket, or in process mode to its reactor pipe, hit `ENOBUFS` since the last
+/// call (which clears it). Called after every `Server::send`, so it reads the
+/// records directly rather than through the op runner.
 #[must_use]
 pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bool {
-    run_on(serv, RUN_KERNEL_NOBUFS, session_id.cast_unsigned()) != 0
+    let state = serv.state();
+    // `get_connection(int)` of the session id, as master.cc did.
+    #[expect(clippy::cast_possible_truncation, reason = "C++'s int parameter")]
+    let fd = session_id as c_int;
+    let Some(conn) = state.connection(c_long::from(fd), 0) else {
+        return false;
+    };
+    let Some(socket) = conn.socket() else {
+        return false;
+    };
+    let config = state.config_ref();
+    if u64::from(config.mode_) != crate::MODE_PROCESS {
+        return socket.take_kernel_nobufs();
+    }
+    // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
+    let pipes = i64::from(state.tables_ref().reactor_pipe_num);
+    let index = session_id % pipes;
+    let id = i64::from(conn.reactor_id) + index * i64::from(config.reactor_num);
+    let id = u16::try_from(id).unwrap_or(u16::MAX);
+    serv.worker_pipe(id, false)
+        .is_some_and(|pipe| pipe.take_kernel_nobufs())
 }
 
 /// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`.
@@ -911,8 +934,6 @@ mod tests {
             assert_ne!(sent().3, 0, "a SendData is lent");
             assert!(!sendwait(server(), 9, &[0; 4]), "sendwait result");
             assert_eq!(sent().1, 9, "sendwait passes the session");
-            assert!(!has_kernel_nobufs_error(server(), 11), "nobufs result");
-            assert_eq!(sent().1, 11, "nobufs passes the session");
             assert!(
                 !sendfile(server(), 12, &b"fx"[..1], 3, 99),
                 "sendfile result"
@@ -1033,6 +1054,71 @@ mod tests {
                 worker == 2 && h.kind == EVENT_PIPE_MESSAGE,
                 "worker and pipe type"
             );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+    fn kernel_nobufs_takes_the_sockets_flag_or_in_process_mode_the_reactor_pipes() {
+        use crate::records::ConnectionRecord;
+        use crate::records::tests::naming;
+        use swoole_rs_process::worker_record::WorkerRecord;
+        use swoole_rs_reactor::SocketRecord;
+
+        // SAFETY: plain records, for which zero is valid.
+        let (mut sock, mut pipe): (SocketRecord, SocketRecord) =
+            unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
+        sock.kernel_nobufs = true;
+        pipe.kernel_nobufs = true;
+        // SAFETY: as above.
+        let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
+        connections[3].socket = (&raw mut sock).cast();
+        connections[3].reactor_id = 1;
+        // SAFETY: as above.
+        let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
+        // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
+        workers[3].pipe_worker = (&raw mut pipe).cast();
+        let state = crate::swr_v1_server_state_new();
+        // SAFETY: a fresh state; the records above outlive every read below.
+        let fields = unsafe {
+            let config = (*state).config();
+            // The whole `serv->gs`, as `ServerObject` maps it: the worker lookup reads its
+            // zeroed event pool, past the counters.
+            (*config).gs =
+                swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
+            (*config).workers = naming(&mut workers);
+            (*config).worker_num = 4;
+            (*config).reactor_num = 2;
+            let tables = &mut *(*state).tables();
+            tables.connection_list = naming(&mut connections);
+            tables.max_connection = 4;
+            tables.reactor_pipe_num = 2;
+            [state.cast::<c_void>(), config.cast::<c_void>()]
+        };
+        // SAFETY: laid out as a Server's head, over the live state and config.
+        let serv = unsafe { view::Server::from_raw((&raw const fields).cast_mut().cast()) };
+        let set_mode = |mode: u8| {
+            // SAFETY: the state's config, which no reference holds across this write.
+            unsafe { (*(*state).config()).mode_ = mode };
+        };
+
+        set_mode(1);
+        assert!(!has_kernel_nobufs_error(serv, 2), "no socket");
+        assert!(!has_kernel_nobufs_error(serv, 4), "past the table");
+        assert!(has_kernel_nobufs_error(serv, 3), "the socket's flag");
+        assert!(!has_kernel_nobufs_error(serv, 3), "taken");
+        assert!(pipe.kernel_nobufs, "base mode leaves the pipe");
+
+        sock.kernel_nobufs = true;
+        set_mode(2);
+        assert!(has_kernel_nobufs_error(serv, 3), "the reactor pipe's flag");
+        assert!(!has_kernel_nobufs_error(serv, 3), "taken");
+        assert!(sock.kernel_nobufs, "process mode leaves the socket");
+
+        // SAFETY: allocated above, not used again.
+        unsafe {
+            (*(*state).config()).gs.free();
+            crate::swr_v1_server_state_free(state);
         }
     }
 }

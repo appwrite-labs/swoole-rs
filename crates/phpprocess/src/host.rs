@@ -22,8 +22,7 @@ use swoole_rs_zend::{
     },
 };
 
-/// A `swSignalHandler`: a function's address, `SIG_IGN` or 0 (none).
-type Handler = usize;
+use swoole_rs_reactor::signal_upstream::{self, Handler};
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
 unsafe extern "C" {
@@ -285,8 +284,7 @@ pub(crate) fn main_thread() -> bool {
 
 /// `swoole_signal_set(signo, handler, safety)`: the handler it replaced.
 pub(crate) fn signal_swap(signo: c_int, handler: Handler, safety: bool) -> Handler {
-    // SAFETY: a signal number and a handler or none.
-    unsafe { swoole_rs_reactor::signal_upstream::swoole_signal_set(signo, handler, safety) }
+    signal_upstream::set(signo, handler, safety)
 }
 
 fn set_signal(signo: c_int, handler: Handler, safety: bool) {

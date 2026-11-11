@@ -61,15 +61,22 @@ per_thread! {
     static INTERRUPT: RefCell<Option<Interrupt>> = RefCell::new(None);
 }
 
-/// The interrupt function Zend ran before activation (process-global, as
-/// `zend_interrupt_function` is).
-static ORIGINAL_INTERRUPT: Mutex<swr_zend_interrupt_handler> = Mutex::new(None);
+/// How many threads' runtimes are active, and the interrupt function Zend ran
+/// before the first of them. `zend_interrupt_function` is process-global: the
+/// first activation installs ours and the last deactivation restores Zend's,
+/// so no thread saves another's hook as the original or removes it under one
+/// still running.
+static INTERRUPT_HOOK: Mutex<(usize, swr_zend_interrupt_handler)> = Mutex::new((0, None));
+
+fn interrupt_hook() -> std::sync::MutexGuard<'static, (usize, swr_zend_interrupt_handler)> {
+    INTERRUPT_HOOK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The interrupt function Zend ran before activation.
 fn original_interrupt() -> swr_zend_interrupt_handler {
-    *ORIGINAL_INTERRUPT
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    interrupt_hook().1
 }
 
 pub(crate) fn activated() -> bool {
@@ -144,11 +151,13 @@ fn activate() -> Result<(), Bailout> {
         swoole_rs_phpswoole::load_library()?;
     }
     host::check_reactor();
-    // SAFETY: replaces Zend's interrupt function, restored by `deactivate`.
-    let original = unsafe { swr_zend_coroutine_set_interrupt(Some(interrupt_function)) };
-    *ORIGINAL_INTERRUPT
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = original;
+    let mut hook = interrupt_hook();
+    if hook.0 == 0 {
+        // SAFETY: replaces Zend's interrupt function, restored by the last `deactivate`.
+        hook.1 = unsafe { swr_zend_coroutine_set_interrupt(Some(interrupt_function)) };
+    }
+    hook.0 += 1;
+    drop(hook);
     if host::flag(host::PREEMPTIVE) || CONFIG.with(|c| c.preemptive.get()) {
         interrupt_start();
     }
@@ -172,8 +181,13 @@ pub(crate) fn deactivate() -> Result<(), Bailout> {
         host::unhook();
     }
     host::detach();
-    // SAFETY: restores Zend's interrupt function.
-    unsafe { swr_zend_coroutine_set_interrupt(original_interrupt()) };
+    let mut hook = interrupt_hook();
+    hook.0 = hook.0.saturating_sub(1);
+    if hook.0 == 0 {
+        // SAFETY: restores Zend's interrupt function.
+        unsafe { swr_zend_coroutine_set_interrupt(hook.1) };
+    }
+    drop(hook);
     if CONFIG.with(|c| c.deadlock_check.get()) {
         deadlock_check()?;
     }

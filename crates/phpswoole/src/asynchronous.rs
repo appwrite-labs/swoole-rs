@@ -156,9 +156,7 @@ fn async_set(call: &Call) {
 /// `swoole_async_dns_lookup_coro(string $domain, float $timeout = 5, int $type = AF_INET)`.
 fn dns_lookup(call: &Call) {
     crate::coroutine_check();
-    // SAFETY: a read of the process-wide default, which only the main thread's
-    // option setters write.
-    let default_timeout = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.dns };
+    let default_timeout = swoole_rs_reactor::SOCKET_DEFAULTS.dns.get();
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
             call.value(1),

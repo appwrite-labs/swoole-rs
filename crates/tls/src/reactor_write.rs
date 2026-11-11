@@ -10,7 +10,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Event, FlushEffects, Socket, SocketRecord, WriteEffects, WritePayload, swr_v1_socket_defaults,
+    Event, FlushEffects, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
@@ -81,8 +81,7 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
         socket,
         payload,
     };
-    // SAFETY: `Socket::default_buffer_size`, which only the main thread sets.
-    let default_size = unsafe { swr_v1_socket_defaults.buffer_size };
+    let default_size = SOCKET_DEFAULTS.buffer_size();
     // SAFETY: as the caller promises.
     let result =
         unsafe { swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops) };
@@ -222,8 +221,7 @@ impl FlushEffects for Flush<'_> {
     }
 
     fn wait_writable(&self) -> c_int {
-        // SAFETY: `Socket::default_write_timeout`, which only the main thread sets.
-        let timeout = unsafe { swr_v1_socket_defaults.timeouts.write };
+        let timeout = SOCKET_DEFAULTS.write.get();
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream's static_cast<int>(sec2msec(...))"

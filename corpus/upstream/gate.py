@@ -15,7 +15,7 @@ fail, #998, #1948: 2 passes in 9 against cargo's 0 is no evidence of a regressio
 otherwise it is a regression. If upstream passes every re-run, any failed cargo re-run is a regression
 and passing them all is a pass on re-run. Cargo re-runs until it has both passed and
 failed, so one failed re-run of a test racy on both engines doesn't decide it. When cargo both passed and failed its
-re-runs, upstream gets more re-runs (up to 24 in all) before that verdict: a test racy
+re-runs, upstream gets more re-runs (up to 48 in all) before that verdict: a test racy
 on both engines then shows an upstream failure too. Only regressions fail the gate, and
 a flagged test without cargo re-runs stays one.
 
@@ -56,9 +56,10 @@ REPORTS = [('leak', re.compile(r'memory leaks? detected')), ('assertion', re.com
 RERUNS = 3
 # Upstream re-runs for a test cargo failed every re-run of after upstream failed
 # one (#998, #1948), and for a test cargo both passed and failed on re-run (#1285: an
-# upstream race failing 5-10% of runs shows in 24 runs far more often than in 9).
+# upstream race failing 5-10% of runs shows in 24 runs far more often than in 9; at 10%,
+# 24 clean passes still happen 8% of the time, 48 under 1%: array_method/method.phpt).
 EXTENDED_RERUNS = 9
-MIXED_RERUNS = 24
+MIXED_RERUNS = 48
 STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
@@ -154,7 +155,7 @@ def recheck(tests, rechecked):
 
 def pending(tests, rechecked, engine='upstream', results=()):
     """Flagged tests still worth re-running on `engine`. Upstream stops at its first failed
-    re-run; `upstream-extended` continues upstream, to 24 re-runs for a test cargo
+    re-run; `upstream-extended` continues upstream, to 48 re-runs for a test cargo
     both passed and failed, or to 9 for one it failed every re-run of after upstream
     failed one. Another engine stops once its verdict is settled (a pass after an upstream
     failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its

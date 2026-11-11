@@ -36,20 +36,19 @@ use crate::ops::{
     OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
     OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
     OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
-    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_IDLE_TIME, OP_PORT_NODELAY,
-    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE,
-    OP_REACTOR_ADD_READ, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
-    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
-    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
-    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER,
+    OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ,
+    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS,
+    OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND,
+    OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
     OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
-    OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SOCKET_NOBUFS,
-    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH,
-    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
-    OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
-    OP_WRONG_OPERATION,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR,
+    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY,
+    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING,
+    OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
+    OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
     OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_PIPE_BIND,
@@ -1120,30 +1119,15 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.conn().high_watermark = 1;
             0
         }
-        OP_FD_CONN | OP_VERIFY_CONN | OP_SOCKET_CONN => {
-            // OP_SOCKET_CONN: `get_connection(int)` of the session id, as master.cc did.
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s int parameter")]
-            let fd = arg as c_int;
-            let (key, kind) = match op {
-                OP_FD_CONN => (libc::c_long::from(o.ctx.server_fd), 0),
-                OP_VERIFY_CONN => (arg.cast_signed(), 3),
-                _ => (libc::c_long::from(fd), 0),
+        OP_FD_CONN | OP_VERIFY_CONN => {
+            let (key, kind) = if op == OP_FD_CONN {
+                (libc::c_long::from(o.ctx.server_fd), 0)
+            } else {
+                (arg.cast_signed(), 3)
             };
             let conn = state.connection(key, kind);
-            let missing = conn.as_ref().is_none_or(|conn| conn.socket.is_null());
             o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| (&raw mut *conn).cast());
-            if op != OP_SOCKET_CONN {
-                return Some(u64::from(!o.ctx.conn.is_null()));
-            }
-            o.ctx.session_id = arg.cast_signed();
-            if missing {
-                return Some(0);
-            }
-            if u64::from(o.config().mode_) == MODE_PROCESS {
-                3
-            } else {
-                1
-            }
+            u64::from(!o.ctx.conn.is_null())
         }
 
         // The context's own fields.
@@ -1236,19 +1220,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SC_FLAGS => send_flags(o),
         OP_SC_VERIFY => verify(o),
-        OP_PIPE_NOBUFS => {
-            // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
-            let pipes = i64::from(o.tables().reactor_pipe_num);
-            let index = o.ctx.session_id % pipes;
-            let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
-            let id = u16::try_from(id).unwrap_or(u16::MAX);
-            let pipe = o.server().worker_pipe(id, false);
-            u64::from(pipe.is_some_and(|pipe| pipe.take_kernel_nobufs()))
-        }
-        OP_SOCKET_NOBUFS => {
-            let socket = o.conn_socket();
-            u64::from(socket.is_some_and(|socket| socket.take_kernel_nobufs()))
-        }
         OP_SC_TOUCH_SEND => {
             o.conn().last_send_time = swoole_rs_corebase::microtime();
             0
@@ -1499,8 +1470,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
             let worker = unsafe { &mut *worker };
-            // SAFETY: a worker `create_worker` set up; shutdown holds no lock of it.
-            unsafe { crate::worker_methods::destroy_worker(worker) };
+            crate::worker_methods::destroy_worker(worker);
             0
         }
         OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
@@ -1521,12 +1491,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_HTTP_DEFAULTS => {
             // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
-            let strings = |kind, op| {
-                // SAFETY: the live state; these operations lend no bytes.
-                unsafe {
-                    crate::swr_v1_server_static_config(o.state, kind, op, core::ptr::null(), 0)
-                }
-            };
+            let strings = |kind, op| crate::static_config::config(o.state, kind, op, &[]);
             if o.config().enable_static_handler && strings(0, 1) == 0 {
                 strings(0, 3);
                 strings(0, 2);
@@ -1787,7 +1752,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const SW_FD_PIPE: c_int = 3;
     use swoole_rs_error::swoole_clear_last_error_msg;
     use swoole_rs_reactor::event_api::swoole_event_wait;
-    use swoole_rs_reactor::signal_upstream::{swoole_signal_clear, swoole_signal_set};
+    use swoole_rs_reactor::signal_upstream::{self, Handler};
     use swoole_rs_reactor::swoole_event_free;
     // `SwooleTG.timer`.
     let timer = swoole_rs_corebase::thread_timer;
@@ -1828,19 +1793,19 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
             let handler = if op == OP_SIGNAL_HANDLE {
-                crate::server_methods::master_signal_handler as *const () as usize
+                let handler = crate::server_methods::master_signal_handler as *const () as usize;
+                // SAFETY: the master's handler, which runs while `SwooleG.server` is live.
+                unsafe { Handler::from_raw(handler) }
             } else {
-                0
+                Handler::NONE
             };
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let signo = arg as c_int;
-            // SAFETY: a handler nothing unloads, or none.
-            _ = unsafe { swoole_signal_set(signo, handler, false) };
+            _ = signal_upstream::set(signo, handler, false);
             0
         }
         OP_MARK_SHUTDOWN => {
-            // SAFETY: the master, which owns the signal handlers.
-            unsafe { swoole_signal_clear() };
+            signal_upstream::clear();
             o.gs().start.store(0, SeqCst);
             o.gs().shutdown.store(1, SeqCst);
             0
@@ -1871,7 +1836,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH,
         OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
     };
-    use swoole_rs_clients::address::{Resolve, swr_v1_clients_address_assign};
+    use swoole_rs_clients::address::assign;
     use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
     use swoole_rs_ossupport::swoole_daemon;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
@@ -1916,22 +1881,15 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.socket_type = port.r#type;
             conn.object = ls;
             conn.info.kind = port.r#type;
-            let host = port.host_bytes();
             let info = &mut conn.info;
-            let resolve: Resolve = swoole_rs_corebase::swr_v1_clients_gethostbyname;
-            // SAFETY: the connection's address storage and the port's host, which
-            // its slot keeps NUL-terminated.
-            let error = unsafe {
-                swr_v1_clients_address_assign(
-                    (&raw mut info.addr).cast(),
-                    &raw mut info.len,
-                    port.r#type,
-                    host.as_ptr().cast(),
-                    host.len(),
-                    port.port,
-                    Some(resolve),
-                )
-            };
+            let error = assign(
+                &mut info.addr,
+                &mut info.len,
+                port.r#type,
+                port.host.bytes_with_nul(),
+                port.port,
+                true,
+            );
             if error != 0 {
                 log::set_last_error(error);
             }
@@ -2493,15 +2451,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             port.r#type = o.ctx.socket_type;
             port.port = o.ctx.number;
             let host = o.host();
-            // SAFETY: the new port's own slot.
-            let set = unsafe {
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    &raw const *port.host,
-                    host.as_ptr(),
-                    host.count_bytes(),
-                )
-            };
-            if set < 0 {
+            if port.host.set(host.to_bytes()) < 0 {
                 // `throw std::bad_alloc()`, which nothing catches.
                 std::process::abort();
             }
@@ -2773,7 +2723,7 @@ mod tests {
                 answer(core::ptr::null_mut(), None, &*state, OP_SEND_TIMEOUT, 0),
                 None
             );
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2819,7 +2769,7 @@ mod tests {
                 answer(&raw mut ctx, None, &*state, OP_IP_KEY, 0),
                 Some(0x0a00_0001)
             );
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2851,7 +2801,7 @@ mod tests {
                 answer(&raw mut ctx, None, &*state, OP_WARNING_TIME, 0),
                 Some(7)
             );
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2870,7 +2820,7 @@ mod tests {
                 Some(8)
             );
             answer(&raw mut ctx, None, &*state, OP_SC_ADVANCE, 3);
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
         assert_eq!(ctx.length, 5);
         assert_eq!(ctx.data, data[3..].as_ptr().cast());
@@ -2896,7 +2846,7 @@ mod tests {
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2910,7 +2860,7 @@ mod tests {
         // SAFETY: the context's buffer and name are live above.
         let name = unsafe { answer(&raw mut ctx, None, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
         assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
         assert_eq!(&buffer[16..23], b"/tmp/a\0");
     }
@@ -2956,7 +2906,7 @@ mod tests {
             (*gs).connection_nums.free();
             tables.session_list.free();
             config.gs.free();
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -3012,7 +2962,7 @@ mod tests {
             assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);
             swoole_rs_buffer::cpp::delete_buffer(buffer);
             crate::port_config::swr_v1_port_config_free(config);
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 }

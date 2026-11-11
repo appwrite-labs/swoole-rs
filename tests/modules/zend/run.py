@@ -5,6 +5,7 @@ with upstream's.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import sys
 
@@ -35,7 +36,12 @@ def main():
         row = dict(script=script.name, arguments=arguments)
         for engine in engines:
             result = run_isolated(engine.command(script, *arguments), timeout=30)
-            row[engine.name] = dict(exit=result.returncode, output=result.stdout + result.stderr)
+            # The limit is the usage at the time plus headroom, and usage counts each engine's own
+            # allocations where the request heap is malloc's (the sanitizer lanes): the place and size
+            # of the failing allocation are what must match.
+            output = re.sub(r'Allowed memory size of \d+ bytes', 'Allowed memory size of N bytes',
+                            result.stdout + result.stderr)
+            row[engine.name] = dict(exit=result.returncode, output=output)
         row['passed'] = all(row[engine.name] == row[oracle.name] for engine in engines)
         report['cases'].append(row)
         print(('ok' if row['passed'] else 'FAIL') + f' {script.stem} {" ".join(arguments)}')

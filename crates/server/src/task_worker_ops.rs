@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
+use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods::{
     swoole_set_worker_id, swoole_set_worker_type, worker_set_max_request,
 };
@@ -178,10 +179,9 @@ const PIPE_MASTER: c_int = 1;
 /// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
 const SW_WORKER_BUSY: u8 = 1;
 const SW_WORKER_IDLE: u8 = 2;
-/// `SW_LOG_ERROR`, `SW_WAIT`, `Lock::MUTEX`.
+/// `SW_LOG_ERROR`, `SW_WAIT`.
 const SW_LOG_ERROR: c_int = 5;
 const SW_WAIT: c_int = 2;
-const MUTEX: i32 = 3;
 /// `SW_EVENT_WRITE`.
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `sizeof(EventData)`.
@@ -268,8 +268,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
             }
         }
-        // SAFETY: Rust's signal handler for the worker.
-        OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, worker_signal_handler) },
+        OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
         OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server, ctx.worker()),
         OP_WORKER_STOP_CALLBACK => call_worker_stop_callback(ctx.server, ctx.worker()),
         OP_WORKER_INIT => {
@@ -421,16 +420,12 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             };
             signed(sent as i64)
         }
-        OP_LOCK_WORKER => {
-            let lock = ctx.worker().lock();
-            // SAFETY: the source worker's live mutex.
-            signed(unsafe { swoole_rs_locks::swr_v1_locks_lock(lock, MUTEX, libc::LOCK_EX, -1, 0) })
-        }
-        OP_UNLOCK_WORKER => {
-            let lock = ctx.worker().lock();
-            // SAFETY: the source worker's live mutex, which this process holds.
-            signed(unsafe { swoole_rs_locks::swr_v1_locks_unlock(lock, MUTEX) })
-        }
+        OP_LOCK_WORKER => signed(ctx.worker().lock().map_or(libc::EINVAL, SharedMutex::lock)),
+        OP_UNLOCK_WORKER => signed(
+            ctx.worker()
+                .lock()
+                .map_or(libc::EINVAL, SharedMutex::unlock),
+        ),
         _ => return None,
     })
 }

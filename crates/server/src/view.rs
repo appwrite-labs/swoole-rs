@@ -147,14 +147,11 @@ impl<'a> Server<'a> {
     /// # Safety
     /// The server is not started, so no other thread reads the text.
     pub unsafe fn set_text(self, index: usize, value: &[u8]) {
-        let slot = self.state().text_slot(index);
-        if slot.is_null() {
+        let Some(slot) = self.state().text_slot(index) else {
             return;
-        }
-        // SAFETY: a live slot, set only while the server is configured.
-        let status = unsafe {
-            swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
         };
+        // SAFETY: a slot set only while the server is configured, per the caller.
+        let status = unsafe { slot.set_shared(value) };
         if status < 0 {
             // C++'s assignment threw `std::bad_alloc`, which nothing catches.
             std::process::abort();
@@ -164,10 +161,7 @@ impl<'a> Server<'a> {
     /// `insert(value)` into the static collection `kind`: 0 `locations`,
     /// 1 `http_index_files`, 2 `http_compression_types`.
     pub fn insert_static_string(self, kind: u32, value: &[u8]) {
-        // SAFETY: the live state and a byte span (non-null even when empty).
-        unsafe {
-            crate::swr_v1_server_static_config(self.state(), kind, 4, value.as_ptr(), value.len())
-        };
+        crate::static_config::config(self.state(), kind, 4, value);
     }
 
     /// `url_rewrite_rules`: add one rule.
@@ -204,12 +198,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn compression_type(self, kind: Option<&[u8]>) -> bool {
         let state = self.state();
-        let op = |operation, data: &[u8]| {
-            // SAFETY: the live state and a byte span (non-null even when empty).
-            unsafe {
-                crate::swr_v1_server_static_config(state, 2, operation, data.as_ptr(), data.len())
-            }
-        };
+        let op = |operation, data: &[u8]| crate::static_config::config(state, 2, operation, data);
         let types = op(1, &[]) != 0;
         match kind {
             Some(kind) if types => op(5, kind) != op(0, &[]),
@@ -667,7 +656,7 @@ mod tests {
         config.task_worker_num = 0;
         config.factory_ = core::ptr::null_mut();
         config.gs.free();
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
     }
 
     /// A port counts its connections in the per-worker cells when it has them, one
@@ -693,6 +682,6 @@ mod tests {
         assert_eq!(serv.port_connections(&port), 0);
         port.gs = core::ptr::null_mut();
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
     }
 }

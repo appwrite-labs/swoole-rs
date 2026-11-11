@@ -321,6 +321,12 @@ impl Logger {
 }
 
 impl Logger {
+    /// `Logger::open`.
+    pub fn open(&self, file: &CStr) -> bool {
+        let file = file.to_owned();
+        self.with(|state, effects| state.open(file, effects))
+    }
+
     /// `new Logger()` writing to `stdout_stream`.
     #[must_use]
     pub fn new(stdout_stream: *mut FILE, host: LoggerHost) -> Self {
@@ -388,8 +394,7 @@ pub unsafe extern "C" fn swr_v1_logger_free(logger: *mut Logger) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_logger_open(logger: &Logger, file: *const c_char) -> bool {
     // SAFETY: a NUL-terminated path.
-    let file = unsafe { CStr::from_ptr(file) }.to_owned();
-    logger.with(|state, effects| state.open(file, effects))
+    logger.open(unsafe { CStr::from_ptr(file) })
 }
 
 /// `Logger::reopen`.
@@ -583,9 +588,14 @@ pub extern "C" fn swoole_get_log_level() -> c_int {
     unsafe(export_name = "_Z19swoole_set_log_filePKc")
 )]
 pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
+    // SAFETY: a NUL-terminated path, per the contract.
+    set_log_file(unsafe { CStr::from_ptr(file) });
+}
+
+/// [`swoole_set_log_file`] over a C string.
+pub fn set_log_file(file: &CStr) {
     if let Some(logger) = process_logger() {
-        // SAFETY: a live logger and, per the contract, a NUL-terminated path.
-        unsafe { swr_v1_logger_open(logger, file) };
+        logger.open(file);
     }
 }
 
