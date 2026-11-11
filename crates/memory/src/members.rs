@@ -326,11 +326,19 @@ impl GlobalMemory {
     /// reader still holds it.
     fn delete(&self) {
         let pool = self.pool.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !pool.is_null() && self.users.load(Ordering::SeqCst) == 0 {
+        if pool.is_null() {
+            return;
+        }
+        if self.users.load(Ordering::SeqCst) == 0 {
             // SAFETY: `GlobalImpl::new`'s box, taken out of this memory, freed once. A
             // `with` that counted itself before this load holds it, so none does; one that
             // counts itself after it loads null.
             drop(unsafe { Box::from_raw(pool) });
+        } else {
+            // Still read, or lent out by `pool::words`: kept reachable, so a leak check
+            // doesn't report it.
+            static KEPT: AtomicPtr<GlobalImpl> = AtomicPtr::new(ptr::null_mut());
+            KEPT.store(pool, Ordering::SeqCst);
         }
     }
 }
