@@ -14,11 +14,11 @@ use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::mem;
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
-use std::{mem, ptr};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
 
