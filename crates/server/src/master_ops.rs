@@ -2642,13 +2642,13 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 data: c.message.cast(),
             };
             head(&mut task.info);
-            let worker = o.server().worker(process_id);
-            // SAFETY: one of the live server's workers.
-            let worker = unsafe { &*worker };
+            let Some(worker) = o.server().worker_record(process_id) else {
+                return Some(0);
+            };
             let pipe = if c.action == TO_REACTOR_THREAD {
-                worker.pipe_worker
+                worker.pipe_worker()
             } else {
-                worker.pipe_master
+                worker.pipe_master()
             };
             let bus = server_message_bus(o.state);
             // SAFETY: a worker pipe and the message.

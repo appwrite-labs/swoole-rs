@@ -168,10 +168,17 @@ fn live(co: Co) -> &'static swoole_rs_coroutine::Coroutine {
     unsafe { &*state(co) }
 }
 
+/// The Rust state `co` points at, a live coroutine's or null, borrowed for one read.
+fn live_or_none(
+    co: *const swoole_rs_coroutine::Coroutine,
+) -> Option<&'static swoole_rs_coroutine::Coroutine> {
+    // SAFETY: callers pass a live coroutine or null.
+    unsafe { co.as_ref() }
+}
+
 /// The facade of `co`'s Rust state, null for none.
 fn native(co: *const swoole_rs_coroutine::Coroutine) -> Co {
-    // SAFETY: a live coroutine or null.
-    unsafe { co.as_ref() }.map_or(std::ptr::null_mut(), |co| co.native)
+    live_or_none(co).map_or(std::ptr::null_mut(), |co| co.native)
 }
 
 pub(crate) fn count() -> usize {
@@ -230,8 +237,7 @@ pub(crate) fn by_cid(cid: c_long) -> Co {
 
 /// The task of `co`, null for none.
 fn task(co: Co) -> *mut c_void {
-    // SAFETY: a live coroutine or null.
-    unsafe { state(co).as_ref() }.map_or(std::ptr::null_mut(), |co| co.task)
+    live_or_none(state(co)).map_or(std::ptr::null_mut(), |co| co.task)
 }
 
 pub(crate) fn task_by_cid(cid: c_long) -> *mut c_void {
@@ -246,15 +252,13 @@ fn running_or(cid: c_long) -> Co {
 /// `Coroutine::get_elapsed`.
 pub(crate) fn elapsed(cid: c_long) -> c_long {
     let co = running_or(cid);
-    // SAFETY: a live coroutine or null.
-    unsafe { state(co).as_ref() }.map_or(-1, |co| absolute_msec() - co.init_msec)
+    live_or_none(state(co)).map_or(-1, |co| absolute_msec() - co.init_msec)
 }
 
 /// `Coroutine::get_execute_time`.
 pub(crate) fn execute_time(cid: c_long) -> c_long {
     let co = running_or(cid);
-    // SAFETY: a live coroutine or null.
-    unsafe { state(co).as_ref() }.map_or(-1, |co| co.execute_usec(now_us()))
+    live_or_none(state(co)).map_or(-1, |co| co.execute_usec(now_us()))
 }
 
 /// The live coroutines' ids, newest first, up to `cids.len()`; how many.

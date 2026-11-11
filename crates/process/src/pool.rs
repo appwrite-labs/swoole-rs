@@ -1048,11 +1048,9 @@ pub unsafe fn pool_dispatch(
         native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
         return false;
     }
-    let worker = workers.wrapping_add(index);
     // SAFETY: the chosen worker's record.
-    let id = unsafe { Record::new(worker).id() };
-    // SAFETY: as above.
-    let pipe = unsafe { Record::new(worker).pipe_master() };
+    let worker = unsafe { Record::new(workers.wrapping_add(index)) };
+    let (id, pipe) = (worker.id(), worker.pipe_master());
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
     // SAFETY: as the caller guarantees.
     let sent = unsafe {
