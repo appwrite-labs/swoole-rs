@@ -116,16 +116,12 @@ pub struct FileSize {
 
 #[must_use]
 pub fn file_size(fd: c_int) -> FileSize {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: `stat` is writable storage for one `struct stat`.
-    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } < 0 {
+    let Some(stat) = swoole_rs_corebase::sys::fstat(fd) else {
         return FileSize {
             size: -1,
             error: errno(),
         };
-    }
-    // SAFETY: fstat succeeded, so it initialised `stat`.
-    let stat = unsafe { stat.assume_init() };
+    };
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
         return FileSize {
             size: -1,

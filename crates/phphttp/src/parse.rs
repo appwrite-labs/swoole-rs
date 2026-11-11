@@ -1027,15 +1027,10 @@ fn file_size(fp: *mut libc::FILE) -> i64 {
     unsafe { libc::fflush(fp) };
     // SAFETY: as above.
     let fd = unsafe { libc::fileno(fp) };
-    // SAFETY: all zeroes is a valid `stat`.
-    let mut status: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: an open descriptor and a writable `stat`.
-    if unsafe { libc::fstat(fd, &raw mut status) } < 0
-        || status.st_mode & libc::S_IFMT != libc::S_IFREG
-    {
-        return -1;
+    match swoole_rs_corebase::sys::fstat(fd) {
+        Some(status) if status.st_mode & libc::S_IFMT == libc::S_IFREG => status.st_size,
+        _ => -1,
     }
-    status.st_size
 }
 
 fn errno() -> c_int {

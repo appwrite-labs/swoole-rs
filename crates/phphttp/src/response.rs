@@ -10,7 +10,7 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{c_int, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
@@ -261,14 +261,11 @@ fn stat(file: &ZStr) -> Result<libc::stat, ()> {
         return Ok(unsafe { stat.assume_init() });
     }
     let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    // SAFETY: strerror accepts any error number.
-    let reason = unsafe { libc::strerror(error) };
-    // SAFETY: strerror returns a NUL-terminated message.
-    let reason = unsafe { CStr::from_ptr(reason) };
+    let reason = swoole_rs_corebase::sys::strerror(error);
     let mut message = b"stat(".to_vec();
     message.extend_from_slice(path.to_bytes());
     message.extend_from_slice(b") failed, Error: ");
-    message.extend_from_slice(reason.to_bytes());
+    message.extend_from_slice(reason.as_bytes());
     message.extend_from_slice(format!("[{error}]").as_bytes());
     host::report(error, false, message);
     Err(())
