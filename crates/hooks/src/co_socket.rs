@@ -19,36 +19,39 @@ use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 pub use swoole_rs_corebase::net_types::Protocol;
 
 /// `coroutine::Socket`'s scalar fields. Native objects (`String`, `Allocator`,
-/// `NameResolver::Context`) are opaque here.
+/// `NameResolver::Context`) are opaque here. The pointers are crate-private: other
+/// crates read them through [`Co`] and set them only through its `unsafe` setters,
+/// and this crate reaches a record by reference only in `unsafe`, so what `Co`'s
+/// safe methods dereference stays live.
 #[repr(C)]
 pub struct CoSocket {
     pub err_code: c_int,
-    pub err_msg: *const c_char,
+    pub(crate) err_msg: *const c_char,
     pub open_length_check: bool,
     pub open_eof_check: bool,
     pub http2: bool,
     pub protocol: Protocol,
     /// `swSocketType`.
     pub kind: c_int,
-    pub socket: *mut SocketRecord,
+    pub(crate) socket: *mut SocketRecord,
     pub sock_domain: c_int,
     pub sock_type: c_int,
     pub sock_protocol: c_int,
     pub sock_fd: c_int,
     pub connect_port: c_int,
     pub backlog: c_int,
-    pub buffer_allocator: *const c_void,
+    pub(crate) buffer_allocator: *const c_void,
     pub buffer_init_size: usize,
-    pub read_buffer: *mut c_void,
-    pub write_buffer: *mut c_void,
+    pub(crate) read_buffer: *mut c_void,
+    pub(crate) write_buffer: *mut c_void,
     pub ssl_is_server: bool,
     pub ssl_handshaked: bool,
     pub zero_copy: bool,
-    pub resolve_context: *mut c_void,
+    pub(crate) resolve_context: *mut c_void,
     /// The coroutines, barriers and timers bound to each direction.
-    pub state: *mut SocketState,
+    pub(crate) state: *mut SocketState,
     /// The record's metadata, which `init` makes and `fini` releases.
-    pub extra: *mut crate::socket_extra::SocketExtra,
+    pub(crate) extra: *mut crate::socket_extra::SocketExtra,
 }
 
 /// Field offsets native code asserts too (`swoole_rs_co_socket.h`).
@@ -101,15 +104,34 @@ pub const FD_WARNINGS_SHIFT: u32 = 8;
 pub struct Co(*mut CoSocket);
 
 macro_rules! fields {
-    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty;)*) => {$(
+    (get $(#[$doc:meta])* $field:ident: $ty:ty) => {
         $(#[$doc])*
         #[must_use]
         pub fn $field(self) -> $ty {
             // SAFETY: `new`'s contract: a live record; only the field is read.
             unsafe { (*self.0).$field }
         }
+    };
+    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty;)*) => {$(
+        fields!(get $(#[$doc])* $field: $ty);
         $(#[$doc])*
         pub fn $set(self, value: $ty) {
+            // SAFETY: `new`'s contract: a live record; only the field is written.
+            unsafe { (*self.0).$field = value };
+        }
+    )*};
+}
+
+/// The pointer fields, which `Co`'s methods and native code dereference: read freely,
+/// set only by a caller that vouches for the new value.
+macro_rules! pointers {
+    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty;)*) => {$(
+        fields!(get $(#[$doc])* $field: $ty);
+        $(#[$doc])*
+        ///
+        /// # Safety
+        /// `value` is what the field's doc says, for as long as the record holds it.
+        pub unsafe fn $set(self, value: $ty) {
             // SAFETY: `new`'s contract: a live record; only the field is written.
             unsafe { (*self.0).$field = value };
         }
@@ -150,27 +172,50 @@ impl Co {
 
     fields! {
         err_code, set_err_code: c_int;
-        err_msg, set_err_msg: *const c_char;
+        /// The length and EOF protocol.
+        protocol, set_protocol: Protocol;
         open_length_check, set_open_length_check: bool;
         open_eof_check, set_open_eof_check: bool;
         http2, set_http2: bool;
         kind, set_kind: c_int;
-        /// The `network::Socket`, null before the socket opens.
-        socket, set_socket: *mut SocketRecord;
         sock_domain, set_sock_domain: c_int;
         sock_type, set_sock_type: c_int;
         sock_protocol, set_sock_protocol: c_int;
         sock_fd, set_sock_fd: c_int;
         connect_port, set_connect_port: c_int;
         backlog, set_backlog: c_int;
-        read_buffer, set_read_buffer: *mut c_void;
-        write_buffer, set_write_buffer: *mut c_void;
         ssl_is_server, set_ssl_is_server: bool;
         ssl_handshaked, set_ssl_handshaked: bool;
         zero_copy, set_zero_copy: bool;
+    }
+
+    pointers! {
+        /// `errMsg`: a NUL-terminated message, static, `swoole_strerror`'s, the thread's
+        /// last error message or the record's own error string.
+        err_msg, set_err_msg: *const c_char;
+        /// The `network::Socket`: null before the socket opens, else a live record that
+        /// nothing else frees while this one holds it.
+        socket, set_socket: *mut SocketRecord;
+        /// The buffers' allocator: null for the default, else a live `Allocator`.
+        buffer_allocator, set_buffer_allocator: *const c_void;
+        /// Null, or the live `String` the record owns.
+        read_buffer, set_read_buffer: *mut c_void;
+        /// Null, or the live `String` the record owns.
+        write_buffer, set_write_buffer: *mut c_void;
+        /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
+        /// The live bound state, which `fini` frees.
         state, set_state: *mut SocketState;
+        /// Null once released, else the live metadata, which `fini` frees.
         extra, set_extra: *mut crate::socket_extra::SocketExtra;
+    }
+
+    /// The protocol's address, for the native length callbacks.
+    #[must_use]
+    pub fn protocol_ptr(self) -> *const Protocol {
+        self.0
+            .wrapping_byte_add(offset_of!(CoSocket, protocol))
+            .cast()
     }
 
     /// `is_closed`.
@@ -190,16 +235,17 @@ impl Co {
         if !slot.is_null() {
             return slot.cast();
         }
-        // SAFETY: `new`'s contract: a live record, whose allocator is null or live.
-        let allocator = unsafe { (*self.0).buffer_allocator }.cast::<Allocator>();
-        // SAFETY: as above.
-        let made = new_sized_string(BUFFER_SIZE_BIG, unsafe { allocator.as_ref() }).cast();
-        if write {
-            self.set_write_buffer(made);
+        let allocator = self.buffer_allocator().cast::<Allocator>();
+        // SAFETY: the field's contract: null or a live allocator.
+        let made = new_sized_string(BUFFER_SIZE_BIG, unsafe { allocator.as_ref() });
+        let field = if write {
+            Self::set_write_buffer
         } else {
-            self.set_read_buffer(made);
-        }
-        made.cast()
+            Self::set_read_buffer
+        };
+        // SAFETY: a live String, which the record owns now.
+        unsafe { field(self, made.cast()) };
+        made
     }
 
     /// `f` over [`Co::buffer`]'s String. `f` is immediate.
@@ -208,12 +254,11 @@ impl Co {
         f(unsafe { &mut *self.buffer(write) })
     }
 
-    /// `f` over the `network::Socket`, or `None` before the socket opens. `f` is
-    /// immediate: it neither yields nor reaches the record through another handle.
+    /// `f` over the `network::Socket`, or `None` before the socket opens: an
+    /// [`edit`](Socket::edit), so a nested borrow of the same record panics.
+    #[track_caller]
     pub fn net<T>(self, f: impl FnOnce(&mut SocketFields) -> T) -> Option<T> {
-        // SAFETY: `new`'s contract: null or a live network::Socket, borrowed only
-        // for the immediate call.
-        unsafe { self.socket().as_mut() }.map(|record| f(record))
+        self.with_network(|network| network.edit(f))
     }
 
     /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
@@ -221,13 +266,6 @@ impl Co {
     pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
         // SAFETY: `new`'s contract: null or a live network::Socket, for the call.
         unsafe { Socket::from_ptr(self.socket()) }.map(f)
-    }
-
-    /// `f` over the whole record. `f` is immediate: it neither yields nor reaches the
-    /// record through another handle.
-    pub fn with<T>(self, f: impl FnOnce(&mut CoSocket) -> T) -> T {
-        // SAFETY: `new`'s contract: a live record, borrowed only for the call.
-        f(unsafe { &mut *self.0 })
     }
 
     /// The record's metadata, `None` once released. `f` is immediate.
@@ -284,16 +322,6 @@ impl CoSocket {
     pub unsafe fn record(&self) -> &mut SocketFields {
         // SAFETY: as the caller promises.
         unsafe { &mut (*self.socket).fields }
-    }
-
-    /// The socket's proxies' owners: SOCKS5, then HTTP. Each stays put until a
-    /// setter replaces it or the socket goes.
-    #[must_use]
-    pub fn proxies(&self) -> [Option<&swoole_rs_corebase::ProxyState>; 2] {
-        // SAFETY: the record's live metadata.
-        let owners = unsafe { (*self.extra).proxies };
-        // SAFETY: each null or a live owner.
-        owners.map(|owner| unsafe { owner.as_ref() })
     }
 
     fn new(state: *mut SocketState) -> Self {
@@ -524,7 +552,7 @@ pub fn make_quiet(
 
 /// The warnings [`make_quiet`]'s `result` holds, over its socket.
 pub fn warn_created(socket: Co, result: u32) {
-    socket.with(|socket| swr_v1_hook_co_socket_created(socket, result));
+    swr_v1_hook_co_socket_created(socket, result);
 }
 
 /// `delete socket` of a socket Rust made or accepted: `~Socket`, then its storage.
@@ -614,7 +642,9 @@ impl CoSocket {
 /// and nothing changed, if socket(2) failed.
 pub(crate) fn reinit(socket: Co, socket_type: c_int) -> Option<*mut SocketRecord> {
     let owner = socket.this();
-    socket.with(|socket| socket.reinit(owner, socket_type))
+    // SAFETY: `new`'s contract: a live record, borrowed only for the call, which
+    // reaches it through no handle.
+    unsafe { &mut *socket.0 }.reinit(owner, socket_type)
 }
 
 impl CoSocket {
@@ -650,19 +680,18 @@ pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
     let mut socket = Box::new(CoSocket::new(SocketState::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     let timeouts = server.net(|record| record.timeouts);
-    // SAFETY: the server's live record, read here only.
-    let server = unsafe { &*server.raw() };
-    socket.kind = server.kind;
-    socket.sock_domain = server.sock_domain;
-    socket.sock_type = server.sock_type;
-    socket.sock_protocol = server.sock_protocol;
+    let kind = server.kind();
+    socket.kind = kind;
+    socket.sock_domain = server.sock_domain();
+    socket.sock_type = server.sock_type();
+    socket.sock_protocol = server.sock_protocol();
     socket.socket = conn;
     let mut result = OPENED;
     // SAFETY: as the caller promises.
     if let Some(network) = unsafe { Socket::from_ptr(conn) } {
         socket.sock_fd = network.edit(|record| {
             record.object = owner;
-            record.socket_type = server.kind;
+            record.socket_type = kind;
             record.fd_type = FD_CO_SOCKET;
             record.fd
         });
@@ -671,14 +700,14 @@ pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
             network.edit(|record| record.timeouts = timeouts);
         }
     }
-    socket.open_length_check = server.open_length_check;
-    socket.open_eof_check = server.open_eof_check;
-    socket.http2 = server.http2;
-    socket.protocol = server.protocol;
-    socket.ssl_is_server = server.ssl_is_server;
-    swr_v1_hook_co_socket_created(&socket, result);
+    socket.open_length_check = server.open_length_check();
+    socket.open_eof_check = server.open_eof_check();
+    socket.http2 = server.http2();
+    socket.protocol = server.protocol();
+    socket.ssl_is_server = server.ssl_is_server();
     // SAFETY: the record just made, with its state and metadata, which the caller owns.
     let socket = unsafe { Co::new(Box::into_raw(socket)) };
+    swr_v1_hook_co_socket_created(socket, result);
     socket.with_state(|state| state.flags.connected = true);
     socket
 }
@@ -686,13 +715,13 @@ pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
 /// What a constructor's bits report (`Socket::created`): a failed socket(2) becomes
 /// the last error; the fd option and `TCP_NODELAY` failures are warnings.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_co_socket_created(socket: &CoSocket, result: u32) {
+pub extern "C" fn swr_v1_hook_co_socket_created(socket: Co, result: u32) {
     use swoole_rs_corebase::log;
     if result & OPENED == 0 {
         log::set_last_error(crate::co_io::errno());
         return;
     }
-    let fd = socket.sock_fd;
+    let fd = socket.sock_fd();
     let warnings = result >> FD_WARNINGS_SHIFT;
     if warnings & 1 != 0 {
         log::sys_warning(
@@ -924,6 +953,16 @@ mod tests {
         release(socket);
     }
 
+    /// `net` borrows through the reactor's count, so a nested borrow of one record
+    /// panics instead of aliasing it.
+    #[test]
+    #[should_panic(expected = "overlaps a read or edit of the same record")]
+    fn a_nested_net_of_one_record_panics() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.net(|_| co.net(|_| ()));
+    }
+
     #[test]
     fn reinit_swaps_the_socket_and_hands_back_the_old_one() {
         let mut socket = record();
@@ -983,13 +1022,16 @@ mod tests {
     /// warnings leave it alone.
     #[test]
     fn created_publishes_a_failed_socket() {
-        let socket = TestSocket::new();
+        let mut socket = TestSocket::new();
         swoole_rs_corebase::log::set_last_error(0);
         crate::co_io::set_errno(libc::EMFILE);
-        swr_v1_hook_co_socket_created(&socket.0, 0);
+        swr_v1_hook_co_socket_created(socket.co(), 0);
         assert_eq!(swoole_rs_corebase::log::last_error(), libc::EMFILE);
         swoole_rs_corebase::log::set_last_error(0);
-        swr_v1_hook_co_socket_created(&socket.0, OPENED | NODELAY_FAILED | 3 << FD_WARNINGS_SHIFT);
+        swr_v1_hook_co_socket_created(
+            socket.co(),
+            OPENED | NODELAY_FAILED | 3 << FD_WARNINGS_SHIFT,
+        );
         assert_eq!(swoole_rs_corebase::log::last_error(), 0);
     }
 }

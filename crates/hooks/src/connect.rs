@@ -3,13 +3,15 @@
 //! SOCKS5 and HTTP proxy exchanges and the TLS handshake) over the socket's record,
 //! its proxies' owners and its resolver context, and `ssl_handshake`'s steps and
 //! waits. Native code keeps only the name lookup (`Host::lookup`).
-use crate::co_io::{NATIVE, available, borrowed_err, default_err, errno, owned_err, set_err};
+use crate::co_io::{
+    Message, NATIVE, available, borrowed_err, default_err, errno, owned_err, set_err,
+};
 use crate::co_socket::{Co, CoSocket, reinit};
 use crate::packet::recv_packet;
 use crate::socket_members::{assign, put_host};
 use crate::socket_scope::ProtocolScope;
 use core::ffi::{c_char, c_int, c_void};
-use core::ptr::{self as ptr, null_mut};
+use core::ptr::null_mut;
 
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{
@@ -359,7 +361,7 @@ impl Connecting for Live<'_> {
 
     fn set_err_text(&mut self, code: c_int, text: Option<&[u8]>) {
         match text {
-            None => borrowed_err(self.socket, code, (NATIVE.strerror)(code)),
+            None => borrowed_err(self.socket, code, Message::Strerror),
             // A failed copy (allocation) leaves the previous message.
             Some(text) => {
                 owned_err(self.socket, code, text);
@@ -518,12 +520,12 @@ impl Connecting for Live<'_> {
 
     fn http_response(&mut self) -> (isize, bool) {
         let scope = ProtocolScope::new(self.socket);
-        self.socket.with(|record| {
-            record.open_eof_check = true;
-            record.open_length_check = false;
-            record.protocol.package_eof_len = 4;
-            record.protocol.package_eof = *b"\r\n\r\n\0\0\0\0";
-        });
+        self.socket.set_open_eof_check(true);
+        self.socket.set_open_length_check(false);
+        let mut protocol = self.socket.protocol();
+        protocol.package_eof_len = 4;
+        protocol.package_eof = *b"\r\n\r\n\0\0\0\0";
+        self.socket.set_protocol(protocol);
         let n = recv_packet(self.socket, 0.0);
         let accepted = n > 0
             && self
@@ -562,8 +564,9 @@ impl Co {
             context if context.is_null() => (&raw mut fallback).cast(),
             context => context,
         };
-        // SAFETY: the live record, whose proxies stay put while it connects.
-        let [socks5, http] = unsafe { &*self.raw() }.proxies();
+        let proxies = self.with_extra(|extra| extra.proxies).unwrap_or_default();
+        // SAFETY: each null or a live owner, which stays put while the socket connects.
+        let [socks5, http] = proxies.map(|owner| unsafe { owner.as_ref() });
         let mut live = Live {
             socket: self,
             resolve,
@@ -604,10 +607,8 @@ impl Co {
     /// The socket's HTTP proxy owner, or null.
     #[must_use]
     pub fn http_proxy(self) -> *mut ProxyState {
-        self.with(|socket| {
-            let [_, http] = socket.proxies();
-            http.map_or(null_mut(), |http| ptr::from_ref(http).cast_mut())
-        })
+        self.with_extra(|extra| extra.proxies[1])
+            .unwrap_or(null_mut())
     }
 }
 

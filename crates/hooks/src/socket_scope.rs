@@ -16,22 +16,20 @@ pub struct ProtocolScope {
 impl ProtocolScope {
     #[must_use]
     pub fn new(socket: Co) -> Self {
-        socket.with(|record| Self {
+        Self {
             socket,
-            eof: record.open_eof_check,
-            length: record.open_length_check,
-            protocol: record.protocol,
-        })
+            eof: socket.open_eof_check(),
+            length: socket.open_length_check(),
+            protocol: socket.protocol(),
+        }
     }
 }
 
 impl Drop for ProtocolScope {
     fn drop(&mut self) {
-        self.socket.with(|record| {
-            record.open_eof_check = self.eof;
-            record.open_length_check = self.length;
-            record.protocol = self.protocol;
-        });
+        self.socket.set_open_eof_check(self.eof);
+        self.socket.set_open_length_check(self.length);
+        self.socket.set_protocol(self.protocol);
     }
 }
 

@@ -68,14 +68,16 @@ impl Coroutine {
     }
 }
 
-/// A cancelable yield's cancel function: `call(native, data)` marks the
-/// coroutine canceled ([`Coroutine::mark_canceled`]) once nothing can fail, then
-/// wakes it and returns whether it did.
+/// A cancelable yield's cancel function: `call(native, data)` copies the
+/// yield's closure out of `data`, marks the coroutine canceled
+/// ([`Coroutine::mark_canceled`]), then runs the copy, which wakes it and
+/// returns whether it did. The copy keeps the call off the yield's frame, which
+/// the wake may end.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Canceler {
-    pub call: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-    pub data: *mut c_void,
+    pub call: unsafe fn(*mut c_void, *const c_void) -> bool,
+    pub data: *const c_void,
 }
 
 /// The effects the scheduler runs, each given a `swoole::Coroutine` record

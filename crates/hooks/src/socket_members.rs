@@ -8,7 +8,7 @@
 //! which crates/phpclients and crates/phphttp link by name.
 use crate::buffered::{recv_buffered, recv_line};
 use crate::co_io::{
-    NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
+    Message, NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
 };
 use crate::co_socket::{Co, peer_name};
 use crate::sendfile::{FAILED, ZERO, send_range};
@@ -738,7 +738,11 @@ impl Co {
         timer.stop();
         match outcome {
             0 => return true,
-            ZERO => borrowed_err(self, SYSTEM_CALL_FAIL, c"sendfile return zero".as_ptr()),
+            ZERO => borrowed_err(
+                self,
+                SYSTEM_CALL_FAIL,
+                Message::Static(c"sendfile return zero"),
+            ),
             FAILED => {
                 let fd = self.sock_fd();
                 self.set_err_text(
