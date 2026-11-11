@@ -36,4 +36,14 @@ typedef struct {
     zend_string *result;
 } swr_zend_http_string;
 void swr_zend_http_get_string(void *arg);
+/* A context's references to its request and response objects, released in
+ * that order as a zend::bailout::trap body (a property's __destruct may run):
+ * `arg` is a swr_zend_http_release, whose `begun` counts the releases begun,
+ * so after a bailout in the request's a second call releases the response. */
+typedef struct {
+    zval *request;
+    zval *response;
+    uint8_t begun;
+} swr_zend_http_release;
+void swr_zend_http_release_objects(void *arg);
 #endif

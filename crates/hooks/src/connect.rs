@@ -14,14 +14,10 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr::null_mut;
 
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_corebase::{
-    CoreStringView, NameResolverContext, ProxyState, StringSlot, log, swr_v1_core_string_set,
-    swr_v1_core_string_view,
-};
+use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
 use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
-use swoole_rs_tls::owner_tls_host_name;
 use swoole_rs_tls::upstream::socket_free;
 
 // SAFETY: libc's declaration; the libc crate doesn't bind it.
@@ -266,15 +262,6 @@ fn stoi(text: &[u8]) -> c_int {
     c_int::try_from(if negative { -value } else { value }).unwrap_or(0)
 }
 
-/// A copy of a string view's bytes.
-///
-/// # Safety
-/// `view` is live for the call.
-unsafe fn bytes(view: CoreStringView) -> Vec<u8> {
-    // SAFETY: as the caller promises.
-    unsafe { core::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
-}
-
 /// A live native socket's `connect(host)`.
 struct Live<'a> {
     socket: Co,
@@ -287,24 +274,17 @@ struct Live<'a> {
 }
 
 impl Live<'_> {
-    fn slot(&self, index: usize) -> *const StringSlot {
-        let extra = self.socket.extra();
-        // SAFETY: the record's live extra record.
-        let strings = unsafe { &raw const (*extra).strings };
-        strings.cast::<StringSlot>().wrapping_add(index)
-    }
-
+    /// A failed copy (allocation) leaves the previous string.
     fn set_slot(&self, index: usize, value: &[u8]) {
-        // SAFETY: the record's live slot; `value` is readable. A failed copy
-        // (allocation) leaves the previous string.
-        unsafe { swr_v1_core_string_set(self.slot(index), value.as_ptr().cast(), value.len()) };
+        self.socket
+            .with_extra(|extra| extra.strings.get_mut(index).map(|slot| slot.set(value)));
     }
 
     fn string(&self, index: usize) -> Vec<u8> {
-        // SAFETY: a live slot.
-        let view = unsafe { swr_v1_core_string_view(self.slot(index)) };
-        // SAFETY: its bytes, copied at once.
-        unsafe { bytes(view) }
+        self.socket
+            .with_extra(|extra| extra.strings.get(index).map(|slot| slot.bytes().to_vec()))
+            .flatten()
+            .unwrap_or_default()
     }
 
     /// The SOCKS5 packet's first `length` bytes.
@@ -487,25 +467,17 @@ impl Connecting for Live<'_> {
         let Some(http) = self.http else {
             return Vec::new();
         };
-        let tls = self.socket.tls_owner();
-        let mut name = Vec::new();
-        if !tls.is_null() {
-            // SAFETY: the live owner's host name.
-            let view = unsafe { owner_tls_host_name(tls) };
-            // SAFETY: its bytes, copied at once.
-            name = unsafe { bytes(view) };
-        }
+        let mut name = self.socket.tls_host_name();
         if name.is_empty() {
             name = http.string(3).to_vec();
         }
         self.socket.with_buffer(true, |write| {
-            let (at, size) = (write.as_mut_ptr(), write.size());
-            // SAFETY: the write buffer's `size` bytes, which nothing else borrows.
-            let output = unsafe { core::slice::from_raw_parts_mut(at, size) };
-            let written = proxy_connect(http, &name, output);
-            // SAFETY: the `written <= size` bytes just packed.
-            unsafe { write.set_len(written) };
-            write.view().to_vec()
+            let mut request = vec![0; write.size()];
+            let written = proxy_connect(http, &name, &mut request);
+            request.truncate(written);
+            write.clear();
+            write.append(&request);
+            request
         })
     }
 
@@ -562,7 +534,7 @@ impl Co {
             resolve,
             socks5,
             http,
-            address: crate::socket_members::empty_address(),
+            address: SocketAddress::default(),
             resolved: false,
         };
         connect_host(&mut live, host, port)
@@ -943,6 +915,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn tls_host_name_and_proxy_family_switch() {
         // An IPv4 socket whose proxy (::1) is IPv6 reopens as TCP6.
         let mut ops = connect_ops(PROXY_SOCKS5, true, libc::AF_INET);
@@ -1141,6 +1114,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn ip_checks_match_inet_pton() {
         assert!(is_ip(libc::AF_INET, b"127.0.0.1"));
         assert!(!is_ip(libc::AF_INET, b"localhost"));

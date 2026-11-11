@@ -51,7 +51,9 @@ pub use object::{
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use value::{obj_of as object_of, push_str as push_string};
-pub use zval::{Array, ArrayMut, Entries, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString};
+pub use zval::{
+    Array, ArrayMut, Entries, HeldArray, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString,
+};
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
 /// methods, `zif_<function>` for functions) so upstream's tables name them

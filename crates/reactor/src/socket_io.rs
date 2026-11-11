@@ -161,21 +161,8 @@ pub fn fd_pending_error(fd: c_int) -> SocketIoResult {
 pub fn socket_error(fd: c_int) -> Result<c_int, c_int> {
     let mut pending: c_int = 0;
     // Upstream passes sizeof(len), which equals sizeof(int).
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sizeof(int) fits socklen_t"
-    )]
-    let mut length = size_of::<libc::socklen_t>() as libc::socklen_t;
-    // SAFETY: `pending` and `length` are locals of the sizes passed.
-    let read = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_ERROR,
-            (&raw mut pending).cast::<c_void>(),
-            &raw mut length,
-        )
-    };
+    let read =
+        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut pending);
     if read < 0 { Err(errno()) } else { Ok(pending) }
 }
 

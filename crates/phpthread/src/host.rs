@@ -55,21 +55,20 @@ pub(crate) fn co_socket_cast(object: &Value) -> Option<(c_int, c_int)> {
     if class.is_null() || !unsafe { swr_zend_instanceof(ce, class) } {
         return None;
     }
-    // SAFETY: a live Coroutine\Socket zval.
-    let socket = unsafe { swoole_rs_phpclients::get_socket(object.as_ptr()) };
+    let socket = swoole_rs_phpclients::get_socket(object);
     if socket.is_null() {
         return Some((-1, 0));
     }
-    // SAFETY: a live socket.
-    let record = unsafe { swoole_rs_phpruntime::co::record(socket) };
-    if record.sock_fd < 0 {
+    // SAFETY: the object's live socket, used only in this call.
+    let socket = unsafe { swoole_rs_phpclients::Co::new(socket) }.handle();
+    if socket.sock_fd() < 0 {
         return Some((-1, 0));
     }
-    let fd = swoole_rs_corebase::sys::dup(record.sock_fd);
+    let fd = swoole_rs_corebase::sys::dup(socket.sock_fd());
     if fd < 0 {
         return Some((-1, 0));
     }
-    Some((fd, record.kind))
+    Some((fd, socket.kind()))
 }
 
 /// A coroutine socket of type `kind` over `fd`, which it takes; `None` on

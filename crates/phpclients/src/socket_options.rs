@@ -547,7 +547,7 @@ fn get_option(call: &Call) {
             Err(Stop) => {}
         };
     } else if level == i64::from(libc::IPPROTO_IPV6) {
-        match multicast::get_ipv6(socket, level_int, name_int, call.return_value()) {
+        match multicast::get_ipv6(call, socket, level_int, name_int) {
             Ok(0) | Err(Stop) => return,
             Ok(-1) => return call.set_bool(false),
             Ok(_) => {}
@@ -862,8 +862,7 @@ fn import(call: &Call) {
         return call.set_bool(false);
     }
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
-    // SAFETY: a descriptor query.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    let flags = swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0);
     if flags < 0 {
         warn_sys("fcntl(F_GETFL) failed", errno());
         return call.set_bool(false);

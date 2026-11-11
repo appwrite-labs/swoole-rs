@@ -113,8 +113,7 @@ pub(crate) fn child_exit<H: Host>(h: &mut H) -> crate::Effect<bool> {
         return Ok(false);
     }
     let mut status: libc::c_int = 0;
-    // SAFETY: `status` is a valid out pointer for the call.
-    let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) };
+    let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), libc::WNOHANG);
     if pid > 0 && i64::from(pid) == h.signed(OP_MANAGER_PID)? {
         h.op(LOG_MANAGER_EXIT, u64::from(status.cast_unsigned()))?;
     }

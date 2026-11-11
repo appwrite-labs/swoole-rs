@@ -5,9 +5,10 @@
 //! The instance is created on the first request, registers the ring fd, the exit
 //! condition and the end-of-loop submit, and is freed with the reactor.
 use crate::uring::{self, Config, Host, Uring};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
@@ -22,17 +23,17 @@ const EVENT_READ: c_int = 1 << 9;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
-/// The thread's `Iouring`: the engine (null if the ring could not be created) and
+/// The thread's `Iouring`: the engine (none if the ring could not be created) and
 /// its fd's record on `reactor`.
 struct Iouring {
-    engine: *mut Uring,
+    engine: Option<Rc<Uring>>,
     socket: *mut SocketRecord,
     reactor: *mut c_void,
 }
 
 thread_local! {
     /// `SwooleTG.iouring`.
-    static INSTANCE: Cell<*mut Iouring> = const { Cell::new(ptr::null_mut()) };
+    static INSTANCE: RefCell<Option<Iouring>> = const { RefCell::new(None) };
 }
 
 /// The engine's callbacks into the coroutine scheduler, the thread's instance and
@@ -48,28 +49,25 @@ pub(crate) static HOST: Host = Host {
 };
 
 /// `Iouring::get_instance()->engine`, creating the instance on first use.
-fn instance() -> *mut Uring {
-    let mut iouring = INSTANCE.get();
-    if iouring.is_null() {
+fn instance() -> Option<Rc<Uring>> {
+    if INSTANCE.with_borrow(Option::is_none) {
         if !swoole_event_is_available() {
             log::error(
                 c"Iouring::get_instance",
                 format_args!("The event loop is unavailable, unable to create io_uring instance."),
             );
         }
-        iouring = create(swr_v1_event_current());
-        INSTANCE.set(iouring);
+        let iouring = create(swr_v1_event_current());
+        INSTANCE.set(Some(iouring));
     }
-    // SAFETY: the thread's live instance.
-    unsafe { (*iouring).engine }
+    current()
 }
 
-/// `co->yield(&cancel_fn)`, where cancelling cancels `event`'s request.
-///
-/// # Safety
-/// As `swoole_rs_coroutine::yield_with_cancel`: `co` is the running coroutine.
-unsafe fn suspend(co: *mut c_void, event: *mut c_void) {
-    // SAFETY: the current coroutine, suspended in `event`'s operation.
+/// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
+/// `event`'s request.
+fn suspend(co: *mut c_void, event: *mut c_void) {
+    // SAFETY: the running coroutine, suspended in `event`'s operation, whose
+    // frames own nothing with a destructor.
     unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event)) };
 }
 
@@ -86,7 +84,7 @@ fn timeout_full(ring_fd: c_int) {
 
 /// `new Iouring(reactor)`: open the engine, logging why it failed, then register
 /// the ring fd and the reactor callbacks.
-fn create(reactor: *mut c_void) -> *mut Iouring {
+fn create(reactor: *mut c_void) -> Iouring {
     let host = crate::stdio::host();
     let config = Config {
         entries: swoole_rs_corebase::swr_v1_core_iouring_entries(),
@@ -96,11 +94,11 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
         probe_ftruncate: host.is_some_and(|host| host.uring_ftruncate),
     };
     let opened = uring::open(config, &HOST);
-    let iouring = Box::into_raw(Box::new(Iouring {
+    let mut iouring = Iouring {
         engine: opened.uring,
         socket: ptr::null_mut(),
         reactor,
-    }));
+    };
     let origin = c"Iouring::Iouring";
     match opened.status {
         1 => log::error(
@@ -148,16 +146,11 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
         }
         _ => {}
     }
-    // SAFETY: the engine opened.
-    let fd = unsafe { &*opened.uring }.fd();
-    let socket = {
-        let mut socket = SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int);
-        socket.object = iouring.cast();
-        socket
-    }
-    .into_raw();
-    // SAFETY: the new instance, not yet shared.
-    unsafe { (*iouring).socket = socket };
+    let Some(engine) = &iouring.engine else {
+        return iouring;
+    };
+    let socket = SocketRecord::with_fd(engine.fd(), FdType::SW_FD_IOURING as c_int).into_raw();
+    iouring.socket = socket;
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
     swoole_rs_reactor::event_api::on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit);
@@ -173,7 +166,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
 
 /// The exit condition: requests in flight or waiting keep the loop running.
 extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
-    if !INSTANCE.get().is_null()
+    if INSTANCE.with_borrow(Option::is_some)
         && with_engine(|engine| engine.task_num() == 0 && engine.waiting_num() == 0).unwrap_or(true)
     {
         *event_num -= 1;
@@ -188,12 +181,9 @@ extern "C-unwind" fn submit() {
 
 /// The reactor's destroy callback: `delete SwooleTG.iouring`.
 extern "C-unwind" fn destroyed(_data: *mut c_void) {
-    let iouring = INSTANCE.replace(ptr::null_mut());
-    if iouring.is_null() {
+    let Some(iouring) = INSTANCE.take() else {
         return;
-    }
-    // SAFETY: `create` boxed it; nothing refers to it any more.
-    let iouring = unsafe { Box::from_raw(iouring) };
+    };
     let socket = iouring.socket;
     // SAFETY: the record `create` registered on the closing reactor.
     if let Some(record) = unsafe { Socket::from_ptr(socket) } {
@@ -206,23 +196,14 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     }
     // SAFETY: as above; nothing uses it afterwards.
     unsafe { swoole_rs_tls::upstream::socket_free(socket) };
-    // SAFETY: the engine, with nothing in flight as the loop has ended.
-    unsafe { uring::close(iouring.engine) };
+    // The engine goes with it, with nothing in flight as the loop has ended.
 }
 
-/// `Iouring::callback`: the ring fd is readable; `object` is its record's.
-///
-/// # Safety
-/// `object` is the ring fd record's object, a live instance.
-pub(crate) unsafe fn ready(object: *mut c_void) -> c_int {
-    // SAFETY: as the caller promises.
-    let engine = unsafe { (*object.cast::<Iouring>()).engine };
-    // SAFETY: the instance's live engine, from the event loop.
-    if unsafe { uring::wakeup(engine) } {
-        0
-    } else {
-        -1
-    }
+/// `Iouring::callback`: the ring fd is readable. The thread's instance owns the ring
+/// fd's record, so the event's object isn't needed.
+pub(crate) fn ready() -> c_int {
+    let woken = current().is_some_and(|engine| uring::wakeup(&engine));
+    if woken { 0 } else { -1 }
 }
 
 /// The engine's operations crates/reactor calls; it sits below this crate, so
@@ -243,15 +224,13 @@ pub(crate) static REACTOR: UringOps = UringOps {
 /// The epoll wait was interrupted (EINTR) on a thread with an instance.
 fn interrupted() -> bool {
     let eintr = std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
-    eintr && !current().is_null()
+    eintr && current().is_some()
 }
 
 /// `reactor->iouring_interrupt_handler`: harvest the completions.
 fn interrupt() {
-    let engine = current();
-    if !engine.is_null() {
-        // SAFETY: the thread's live engine, from the event loop.
-        unsafe { uring::wakeup(engine) };
+    if let Some(engine) = current() {
+        uring::wakeup(&engine);
     }
 }
 
@@ -269,18 +248,15 @@ unsafe fn waitpid(
     uring::waitpid(&HOST, pid, unsafe { status.as_mut() }, options, timeout)
 }
 
-/// The thread's engine, or null before the first request (`SwooleTG.iouring`).
-fn current() -> *mut Uring {
-    // SAFETY: null or the thread's live instance.
-    unsafe { INSTANCE.get().as_ref() }.map_or(ptr::null_mut(), |iouring| iouring.engine)
+/// The thread's engine, or none before the first request (`SwooleTG.iouring`).
+/// Resuming coroutines re-enters the instance, so callers hold their own handle.
+fn current() -> Option<Rc<Uring>> {
+    INSTANCE.with_borrow(|iouring| iouring.as_ref()?.engine.clone())
 }
 
-/// `f` over the thread's engine once it has one. Only this module calls it, and no
-/// `f` re-enters the engine or resumes a coroutine.
-fn with_engine<R>(f: impl FnOnce(&mut Uring) -> R) -> Option<R> {
-    // SAFETY: null or the thread's live engine, which no other borrow reaches while
-    // `f` runs: the engine's own borrows end before any coroutine switch.
-    unsafe { current().as_mut() }.map(f)
+/// `f` over the thread's engine once it has one.
+fn with_engine<R>(f: impl FnOnce(&Uring) -> R) -> Option<R> {
+    current().map(|engine| f(&engine))
 }
 
 /// `Co::stats()`'s `io_uring` counts once the thread has an engine: requests in

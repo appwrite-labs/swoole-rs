@@ -41,7 +41,9 @@ fn atoi(text: &[u8]) -> i32 {
     port
 }
 
-fn plan(name: &[u8]) -> AddressPlan {
+/// The plan of `name`.
+#[must_use]
+pub fn parse(name: &[u8]) -> AddressPlan {
     let failed = |status| AddressPlan {
         status,
         ..AddressPlan::default()
@@ -76,24 +78,12 @@ fn plan(name: &[u8]) -> AddressPlan {
     }
 }
 
-/// # Safety
-/// `name` denotes `length` initialized bytes, or is null for length 0. No pointer
-/// is retained.
-#[must_use]
-pub unsafe fn swr_v1_hooks_parse_address(name: *const u8, length: usize) -> AddressPlan {
-    if length == 0 || name.is_null() || length > isize::MAX as usize {
-        return plan(&[]);
-    }
-    // SAFETY: `name` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
-    plan(unsafe { std::slice::from_raw_parts(name, length) })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn parsed(name: &[u8]) -> Option<(&[u8], i32)> {
-        let plan = plan(name);
+        let plan = parse(name);
         (plan.status == 0).then(|| (&name[plan.host_offset..][..plan.host_length], plan.port))
     }
 
@@ -109,12 +99,12 @@ mod tests {
 
     #[test]
     fn failures_match_upstream() {
-        assert_eq!(plan(b"[fe80::1]").status, 1);
-        assert_eq!(plan(b"[fe80::1]x80").status, 1);
-        assert_eq!(plan(b"[:").status, 1);
-        assert_eq!(plan(b"localhost").status, 2);
-        assert_eq!(plan(b"host:").status, 2);
-        assert_eq!(plan(b"[").status, 2);
-        assert_eq!(plan(b"").status, 2);
+        assert_eq!(parse(b"[fe80::1]").status, 1);
+        assert_eq!(parse(b"[fe80::1]x80").status, 1);
+        assert_eq!(parse(b"[:").status, 1);
+        assert_eq!(parse(b"localhost").status, 2);
+        assert_eq!(parse(b"host:").status, 2);
+        assert_eq!(parse(b"[").status, 2);
+        assert_eq!(parse(b"").status, 2);
     }
 }

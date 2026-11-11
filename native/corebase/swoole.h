@@ -304,14 +304,6 @@ struct RustField {
 #define SW_RUST_FIELD(type, name)                                                                                     \
     RustField<type, decltype(swr_v1_core_##name()), swr_v1_core_##name, swr_v1_core_set_##name> name
 
-// A SwooleG path whose bytes Rust holds (crates/corebase/src/config_state.rs).
-template <const char *(*get)()>
-struct RustPath {
-    const char *c_str() const {
-        return get();
-    }
-};
-
 // SwooleG's layout: Rust defines the symbol (crates/corebase/src/config_state.rs, which
 // asserts the same layout). The fields come first; the empty accessor members follow.
 struct Global {
@@ -320,7 +312,6 @@ struct Global {
     uint32_t max_sockets;
     double dns_cache_refresh_time;
     Allocator std_allocator;
-    RustPath<swr_v1_core_task_tmpfile> task_tmpfile;
 
     SW_RUST_FIELD(bool, running);
     SW_RUST_FIELD(bool, enable_signalfd);

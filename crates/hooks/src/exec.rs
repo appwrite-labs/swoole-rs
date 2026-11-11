@@ -6,9 +6,6 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_reactor::wait_upstream::system_waitpid_safe;
 
-/// `SW_ERROR_CO_OUT_OF_COROUTINE`.
-const OUT_OF_COROUTINE: c_int = 10001;
-
 /// The most one read takes from the pipe: a Linux pipe's default capacity.
 const CHUNK: usize = 1 << 16;
 
@@ -21,15 +18,7 @@ const CHUNK: usize = 1 << 16;
 ///
 /// Outside a coroutine it raises upstream's fatal error, which does not return.
 pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>> {
-    if swoole_rs_coroutine::current().is_null() {
-        // SAFETY: Swoole's fatal error hook; this frame owns nothing.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            );
-        }
-    }
+    crate::wait_event::native::current();
     let mut pid = 0;
     // SAFETY: a NUL-terminated command and a writable pid.
     let fd =

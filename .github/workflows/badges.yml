@@ -32,49 +32,54 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
-      # The newest finished merge-tier run on main with a gate result (a gate missing a shard
-      # uploads no phpt.json) from every build variant too: a variant job that died before its
-      # gate would take its tests out of the count, which reads as a regression (#3223).
-      # Latest-wins cancels most runs, so they are skipped before the limit, or 20 of them
-      # hide every finished run. The list is its own command so that a refused API call fails
-      # the step instead of leaving the badge stale without a word.
-      # Not on a push: a push changes none of the run results below, and looking them up costs
-      # about 40 API calls from the hourly limit every job shares. The badges that come from
-      # the checkout are still rewritten.
-      - name: Find gate run
-        id: gate
+      # From the newest completed merge-tier runs on main, newest first:
+      # - gate/: the newest with a gate result (a gate missing a shard uploads no phpt.json)
+      #   from every build variant too: a variant job that died before its gate would take its
+      #   tests out of the count, which reads as a regression (#3223).
+      # - cg/ and cg-previous/: the two newest whose callgrind job uploaded a result (it uploads
+      #   one when the limits fail too, which is when the badge matters most), for the badge
+      #   and the ratchet.
+      # Latest-wins cancels most runs, so they are skipped before the limit, or 20 of them hide
+      # every finished run. One call lists a run's artifacts, and only what it has is downloaded
+      # (#3257). A refused API call fails the step instead of leaving a badge stale silently.
+      # Not on a push: a push changes none of these results, and they cost about 30 calls of
+      # the hourly API limit every job shares. The checkout's badges are still rewritten.
+      - name: Find merge-tier runs
+        id: runs
         if: github.event_name != 'push'
         run: |
-          runs=$(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId')
-          for run in $runs; do
-            rm -rf gate
-            gh run download "$run" -n phpt -D gate/phpt 2>/dev/null && [ -f gate/phpt/phpt.json ] || continue
-            for variant in zts stdext iouring cares threadcontext alpine root; do
-              gh run download "$run" -n "phpt-$variant" -D "gate/$variant" 2>/dev/null || { echo "::warning::run $run has no phpt-$variant gate"; continue 2; }
-            done
-            echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"
-            break
-          done
-      # The two newest completed merge-tier runs on main whose callgrind job uploaded a result
-      # (it uploads one when the limits fail too, which is when the badge matters most):
-      # cg/ is the newest, for the badge, and cg-previous/ the one before it.
-      - name: Find callgrind runs
-        id: callgrind
-        if: github.event_name != 'push'
-        run: |
-          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
-            dir=cg
-            [ -f cg/callgrind.json ] && dir=cg-previous
-            # Each shard's callgrind-N artifact holds its own callgrind.json; merge the workloads.
-            gh run download "$run" -p 'callgrind-*' -D "$dir" 2>/dev/null \
-              && jq -s '.[0] + {instructions_per_request: (map(.instructions_per_request) | add)}' "$dir"/callgrind-*/callgrind.json > "$dir/callgrind.json" 2>/dev/null
-            if [ ! -s "$dir/callgrind.json" ]; then
-              rm -rf "$dir"
-            elif [ "$dir" = cg ]; then
-              echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"
-            else
-              break
+          gates=(phpt phpt-zts phpt-stdext phpt-iouring phpt-cares phpt-threadcontext phpt-alpine phpt-root)
+          runs=$(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,headSha,conclusion -q '.[] | select(.conclusion != "cancelled") | "\(.databaseId):\(.headSha)"')
+          for pair in $runs; do
+            run=${pair%%:*} sha=${pair#*:}
+            names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" -q '.artifacts[] | select(.expired | not) | .name')
+            if [ ! -d gate ] && grep -qx phpt <<< "$names"; then
+              wanted=()
+              missing=
+              for name in "${gates[@]}"; do
+                wanted+=(-n "$name")
+                grep -qx "$name" <<< "$names" || missing+=" $name"
+              done
+              if [ -n "$missing" ]; then
+                echo "::warning::run $run has no$missing gate"
+              else
+                gh run download "$run" "${wanted[@]}" -D gate
+                if [ -f gate/phpt/phpt.json ]; then echo "gate=$sha" >> "$GITHUB_OUTPUT"; else rm -rf gate; fi
+              fi
             fi
+            if [ ! -d cg-previous ] && grep -q '^callgrind-' <<< "$names"; then
+              dir=cg
+              [ -d cg ] && dir=cg-previous
+              # Each shard's callgrind-N artifact holds its own callgrind.json; merge the workloads.
+              gh run download "$run" -p 'callgrind-*' -D "$dir"
+              jq -s '.[0] + {instructions_per_request: (map(.instructions_per_request) | add)}' "$dir"/callgrind-*/callgrind.json > "$dir/callgrind.json" 2>/dev/null || :
+              if [ ! -s "$dir/callgrind.json" ]; then
+                rm -rf "$dir"
+              elif [ "$dir" = cg ]; then
+                echo "callgrind=$sha" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+            if [ -d gate ] && [ -d cg-previous ]; then break; fi
           done
       # When both runs beat a record once rounded up, file one ready ticket for an executor
       # (GITHUB_TOKEN may not open pull requests here, and one it opened would start no PR tier).
@@ -112,8 +117,8 @@ jobs:
       - name: Write badges
         run: >
           python3 tools/badges.py --output out
-          ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json gate/*/gate.json --commit {0}', steps.gate.outputs.commit) || '' }}
-          ${{ steps.callgrind.outputs.commit && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.callgrind.outputs.commit) || '' }}
+          ${{ steps.runs.outputs.gate && format('--phpt gate/*/phpt*.json gate/*/gate.json --commit {0}', steps.runs.outputs.gate) || '' }}
+          ${{ steps.runs.outputs.callgrind && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.runs.outputs.callgrind) || '' }}
           ${{ hashFiles('coverage/summary.json') != '' && '--coverage coverage' || '' }}
       - name: Push badges
         working-directory: out

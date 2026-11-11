@@ -23,11 +23,8 @@ use swoole_rs_http2::{
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
-    Array, Owned, Value as Zval, ZString, bailout, string,
-    sys::{
-        add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_property_array, swr_zend_url_decode,
-        zend_object, zval,
-    },
+    Array, Owned, Props, Value as Zval, ZString, bailout, string,
+    sys::{add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_url_decode, zend_object, zval},
     value,
 };
 
@@ -493,10 +490,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
         headers.add(b"server", b"swoole-http-server");
     }
     if missing & MISSING_DATE != 0 {
-        let date = swoole_rs_phphttp::http2::date();
-        // SAFETY: the cached date string.
-        let date = unsafe { string::bytes(date) };
-        headers.add(b"date", date);
+        swoole_rs_phphttp::http2::date(|date| headers.add(b"date", date));
     }
     if missing & MISSING_CONTENT_TYPE != 0 {
         headers.add(b"content-type", b"text/html");
@@ -769,12 +763,10 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int 
     let trailer = has_trailer(ctx);
     let response = zval_of(ctx, Value::Response);
     let object = object(response);
-    // SAFETY: the live Response object and its declared `header` property.
-    let ce = unsafe { (*object).ce };
-    // SAFETY: the live object of that class.
-    let zheader = unsafe { swr_zend_property_array(ce, object, c"header".as_ptr(), 6) };
-    // SAFETY: the property's live array.
-    let zheader = unsafe { Zval::from_ptr(zheader) }.and_then(Zval::array);
+    // SAFETY: the live Response object, under its own class.
+    let props = unsafe { Props::new(ptr::null_mut(), object) }.own();
+    // SAFETY: `header` is only read here.
+    let zheader = unsafe { props.array(c"header") }.and_then(|header| header.array());
     if zheader.is_none_or(|zheader| zheader.find(b"content-type").is_none()) {
         ctx.set_header(b"content-type", content_type);
     }

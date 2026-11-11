@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
@@ -217,14 +217,16 @@ struct Tail {
     size: usize,
 }
 
-/// `async::Handler`: runs on a pool thread, or as the completion.
-/// The pool lends the handler its copy of the event, exclusively, for the call.
+/// `async::Handler`: runs on a pool thread over its own copy of the event, of which
+/// the pool keeps `error` and `retval`.
 type AsyncHandler = extern "C" fn(&mut AsyncEvent);
+
+/// The completion, on the dispatching thread.
+type AsyncCallback = extern "C" fn(&AsyncEvent);
 
 /// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
 /// DNS record.
 #[repr(C)]
-#[derive(Clone, Copy)]
 struct AsyncEvent {
     task_id: usize,
     canceled: u8,
@@ -235,7 +237,7 @@ struct AsyncEvent {
     timestamp: f64,
     object: *mut c_void,
     handler: Option<AsyncHandler>,
-    callback: Option<AsyncHandler>,
+    callback: Option<AsyncCallback>,
 }
 
 #[cfg(target_pointer_width = "64")]
@@ -247,19 +249,25 @@ const _: () = assert!(
 );
 
 // SAFETY: crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
-// above this crate.
+// above this crate. Its `dispatch` is a safe fn over this layout: only this module
+// builds an event, whose request is null or live.
 #[cfg(not(test))]
 unsafe extern "C" {
     /// `async::dispatch`: queues a copy of the event, holding its own reference
     /// to the request; null without a pool.
     #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    fn async_dispatch(event: *const c_void) -> *mut c_void;
+    #[expect(
+        improper_ctypes,
+        reason = "the request record is opaque behind its pointer; Rust defines both sides"
+    )]
+    safe fn async_dispatch(event: &AsyncEvent) -> *mut c_void;
 }
 
 /// The public, trivially copyable fields of `network::Client`. C++ keeps typed
 /// aliases in its base record; protocol callbacks and addresses retain their
 /// original identity and lifetime, including direct SDK field writes.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ClientRecord {
     pub http2: bool,
     pub open_length_check: bool,
@@ -287,7 +295,7 @@ const _: () = {
 /// One client's state, its public record first: `network::Client`.
 #[repr(C)]
 pub struct Client {
-    record: UnsafeCell<ClientRecord>,
+    record: Cell<ClientRecord>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -319,6 +327,20 @@ impl Client {
             Proxy::Socks5 => &self.socks5,
             Proxy::Http => &self.http_proxy,
         }
+    }
+
+    /// A copy of the public record.
+    pub fn record(&self) -> ClientRecord {
+        self.record.get()
+    }
+
+    /// Edit a copy of the public record and write it back, so no reference
+    /// into the record is live while `edit` runs.
+    pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
+        let mut record = self.record.get();
+        let result = edit(&mut record);
+        self.record.set(record);
+        result
     }
 
     /// One of the flags above; false for any other.
@@ -371,7 +393,7 @@ impl Handle {
     fn fields(self) -> &'static mut ClientRecord {
         // SAFETY: the live client's record, which SDK callers reach only between
         // its operations.
-        unsafe { &mut *self.get().record.get() }
+        unsafe { &mut *self.get().record.as_ptr() }
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
@@ -815,7 +837,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     };
     let mut client = Box::new(Client {
         // SAFETY: all-zero pointers, bools, addresses and Protocol are valid.
-        record: UnsafeCell::new(unsafe { core::mem::zeroed() }),
+        record: Cell::new(unsafe { core::mem::zeroed() }),
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
@@ -1102,8 +1124,8 @@ fn close(this: Handle) -> c_int {
     else {
         return OK;
     };
-    // SAFETY: closes the client's descriptor once; -1 marks it closed.
-    unsafe { libc::close(fd) }
+    // Once: -1 marks the client's descriptor closed.
+    swoole_rs_corebase::sys::close(fd)
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
@@ -1112,8 +1134,7 @@ fn shutdown(this: Handle, how: c_int) -> c_int {
         return ERR;
     }
     let fd = this.socket().fd();
-    // SAFETY: shutdown(2) on the client's descriptor.
-    let call = |how| unsafe { libc::shutdown(fd, how) };
+    let call = |how| swoole_rs_corebase::sys::shutdown(fd, how);
     match how {
         libc::SHUT_RD if this.flag(SHUTDOWN_READ) || call(how) != 0 => ERR,
         libc::SHUT_WR if this.flag(SHUTDOWN_WRITE) || call(how) < 0 => ERR,
@@ -1355,17 +1376,16 @@ fn dns_lookup(this: Handle) -> c_int {
         handler: Some(resolve),
         callback: Some(resolve_completed),
     };
-    // SAFETY: a complete event over a live request; the pool's copy holds its
-    // own reference to it.
-    if unsafe { async_dispatch((&raw const event).cast()) }.is_null() {
+    // The pool's copy holds its own reference to the request.
+    if async_dispatch(&event).is_null() {
         ERR
     } else {
         OK
     }
 }
 
-/// `async::handler_gethostbyname`, on a pool thread, over the pool's copy of the
-/// event [`dns_lookup`] dispatched.
+/// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
+/// [`dns_lookup`] dispatched.
 extern "C" fn resolve(event: &mut AsyncEvent) {
     // SAFETY: its request record, held by the copy.
     (event.retval, event.error) = crate::resolver::host(unsafe { &*event.data });
@@ -1373,7 +1393,7 @@ extern "C" fn resolve(event: &mut AsyncEvent) {
 
 /// `Client_onResolveCompleted`, on the client's thread, over the completed copy
 /// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: &mut AsyncEvent) {
+extern "C" fn resolve_completed(event: &AsyncEvent) {
     // SAFETY: its request record, held by the copy.
     let address = crate::resolver::address(unsafe { &*event.data });
     resolved(
@@ -1686,19 +1706,8 @@ mod ops {
 
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`.
     pub(super) fn socket_error(this: Handle, error: &mut c_int) -> c_int {
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-        let mut length = size_of::<c_int>() as libc::socklen_t;
         let fd = this.socket().fd();
-        // SAFETY: `error` holds an int and `length` says so.
-        unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                core::ptr::from_mut(error).cast(),
-                &raw mut length,
-            )
-        }
+        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
     }
 }
 

@@ -166,8 +166,7 @@ fn local_mac(call: &Call) {
     // Upstream's 4096-byte buffer, as whole requests.
     const REQUESTS: usize = 4096 / size_of::<libc::ifreq>();
 
-    // SAFETY: plain socket creation.
-    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    let sock = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
     if sock < 0 {
         sys_warning(b"socket creation failed");
         call.set_bool(false);
@@ -186,8 +185,7 @@ fn local_mac(call: &Call) {
     // SAFETY: a socket and an ifconf over a live buffer.
     if unsafe { libc::ioctl(sock, SIOCGIFCONF, &raw mut conf) } < 0 {
         sys_warning(b"ioctl SIOCGIFCONF failed");
-        // SAFETY: our socket.
-        unsafe { libc::close(sock) };
+        swoole_rs_corebase::sys::close(sock);
         call.set_bool(false);
         return;
     }
@@ -219,8 +217,7 @@ fn local_mac(call: &Call) {
             add_address(&mut array, name.to_bytes(), &bytes);
         }
     }
-    // SAFETY: our socket.
-    unsafe { libc::close(sock) };
+    swoole_rs_corebase::sys::close(sock);
     call.set_owned(array.into_owned());
 }
 

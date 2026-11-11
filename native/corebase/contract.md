@@ -103,8 +103,9 @@ compiles unchanged. Both sides assert the layout. `swr_v1_core_timer_slot` is
 
 Rust defines the `SwooleG` symbol: the fields native code reads in place
 (`max_sockets`, `dns_cache_refresh_time`, `std_allocator`) followed by the bytes of
-`swoole::Global`'s empty accessor members. `task_tmpfile` is a `RustPath` view
-over Rust's string slot (`swr_v1_core_task_tmpfile`). `swr_v1_core_set_task_tmpdir` is
+`swoole::Global`'s empty accessor members. `task_tmpfile` lives in Rust only:
+`task_tmpfile()` hands each reader an `Arc<CStr>`, so a path another thread
+replaces stays alive while it is used. `swr_v1_core_set_task_tmpdir` is
 `swoole_set_task_tmpdir` under its lock; swoole.h's inline wrapper keeps upstream's
 throw on an empty path. Both sides assert the layout.
 

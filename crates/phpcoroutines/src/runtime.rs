@@ -357,6 +357,7 @@ pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result
             coroutine,
             create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     }
 }
@@ -385,6 +386,7 @@ pub fn call_handler(
             coroutine,
             create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     }
 }
@@ -413,6 +415,7 @@ unsafe extern "C" fn zend_function_call(
             coroutine,
             create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     };
     let called = matches!(result, Ok(true));

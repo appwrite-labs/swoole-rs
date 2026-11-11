@@ -48,7 +48,9 @@ impl Co {
             return false;
         }
         set_err(self, libc::ECANCELED);
-        (NATIVE.resume)(self.with_state(|state| state.co(event)));
+        let co = self.with_state(|state| state.co(event));
+        // SAFETY: the coroutine bound for `event`, parked in its wait on this socket.
+        unsafe { (NATIVE.resume)(co) };
         true
     }
 
@@ -210,17 +212,7 @@ unsafe fn connect(
 
 /// `getsockopt(fd, SOL_SOCKET, SO_ERROR)` into `error`.
 fn so_error(fd: c_int, error: &mut c_int) -> c_int {
-    let mut length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
-    // SAFETY: the caller's int and its size.
-    unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_ERROR,
-            (&raw mut *error).cast(),
-            &raw mut length,
-        )
-    }
+    swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
 }
 
 /// The lifecycle gate's former scenarios, ported: each runs Rust's operation and
@@ -285,7 +277,8 @@ mod tests {
         }
         if event == READ || event == WRITE {
             set_err(s, libc::ECANCELED);
-            (NATIVE.resume)(state(s).co(event));
+            // SAFETY: the coroutine bound for `event`, parked in its wait on `s`.
+            unsafe { (NATIVE.resume)(state(s).co(event)) };
             true
         } else {
             set_err(s, libc::EINVAL);

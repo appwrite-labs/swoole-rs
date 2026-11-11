@@ -9,6 +9,11 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
+pub(super) use swoole_rs_hooks::async_threads::dispatch;
+use swoole_rs_hooks::async_threads::swr_v1_async_threads_stats;
+pub(super) use swoole_rs_hooks::offload::AsyncEvent;
+use swoole_rs_hooks::offload::{Callback, Handler};
+
 use super::timer::{swoole_timer_del, tick};
 use super::{_exit, fork, getpid, run, spawn_exec};
 
@@ -16,41 +21,16 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_AIO_BAD_REQUEST: c_int = 4001;
 const STDIN_FILENO: c_int = 0;
 
-/// `swoole::AsyncEvent` (native/ossupport/swoole_async.h).
-#[repr(C)]
-pub(super) struct AsyncEvent {
-    task_id: usize,
-    canceled: u8,
-    error: c_int,
-    data: *mut c_void,
-    retval: isize,
-    pipe_socket: *mut c_void,
-    timestamp: f64,
+/// `AsyncEvent event = {}`, with these members set.
+///
+/// # Safety
+/// As [`AsyncEvent::request`]: `handler` and `callback` are sound over `object`.
+pub(super) unsafe fn new_event(
     object: *mut c_void,
-    handler: Option<extern "C" fn(*mut AsyncEvent)>,
-    callback: Option<extern "C" fn(*mut AsyncEvent)>,
-}
-
-impl AsyncEvent {
-    /// `AsyncEvent event = {}`, with these members set.
-    pub(super) fn new(
-        object: *mut c_void,
-        handler: Option<extern "C" fn(*mut AsyncEvent)>,
-        callback: Option<extern "C" fn(*mut AsyncEvent)>,
-    ) -> Self {
-        Self {
-            task_id: 0,
-            canceled: 0,
-            error: 0,
-            data: std::ptr::null_mut(),
-            retval: 0,
-            pipe_socket: std::ptr::null_mut(),
-            timestamp: 0.0,
-            object,
-            handler,
-            callback,
-        }
-    }
+    handler: Option<Handler>,
+    callback: Option<Callback>,
+) -> AsyncEvent {
+    unsafe { AsyncEvent::request(object, handler, callback, std::ptr::null_mut()) }
 }
 
 unsafe extern "C" {
@@ -64,14 +44,10 @@ unsafe extern "C" {
     fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int;
     #[link_name = "_Z11swoole_randii"]
     fn swoole_rand(min: c_int, max: c_int) -> c_int;
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    pub(super) fn async_dispatch(event: *const AsyncEvent) -> *mut AsyncEvent;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
     fn swoole_event_wait() -> c_int;
-    /// `sw_async_threads()`'s `get_task_num()`, `get_worker_num()` and `get_queue_size()`.
-    fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     fn usleep(usec: u32) -> c_int;
     fn getsid(pid: c_int) -> c_int;
     fn isatty(fd: c_int) -> c_int;
@@ -174,31 +150,25 @@ fn wexitstatus(status: c_int) -> c_int {
 /// `callback_count`: callbacks run on the dispatching thread.
 static CALLBACK_COUNT: AtomicI32 = AtomicI32::new(0);
 
-extern "C" fn count_callback(_: *mut AsyncEvent) {
+extern "C" fn count_callback(_: &AsyncEvent) {
     CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-pub(super) extern "C" fn count_handle(event: *mut AsyncEvent) {
+pub(super) extern "C" fn count_handle(event: &mut AsyncEvent) {
     // SAFETY: the event's object is the case's live counter.
-    unsafe { (*(*event).object.cast::<AtomicI32>()).fetch_add(1, Ordering::SeqCst) };
+    unsafe { (*event.object().cast::<AtomicI32>()).fetch_add(1, Ordering::SeqCst) };
 }
 
-extern "C" fn sleep_and_count_handle(event: *mut AsyncEvent) {
+extern "C" fn sleep_and_count_handle(event: &mut AsyncEvent) {
     // SAFETY: usleep(3) on a pool thread.
     unsafe { usleep(swoole_rand(50_000, 100_000).unsigned_abs()) };
     count_handle(event);
 }
 
-fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
-    // SAFETY: a live event whose handler may run on a pool thread.
-    unsafe { async_dispatch(event) }
-}
-
 /// `(get_worker_num(), get_queue_size(), get_task_num())`.
 fn stats() -> (i64, i64, i64) {
     let (mut task_num, mut worker_num, mut queue_size) = (0, 0, 0);
-    // SAFETY: three writable counts.
-    unsafe { swr_v1_async_threads_stats(&mut task_num, &mut worker_num, &mut queue_size) };
+    swr_v1_async_threads_stats(&mut task_num, &mut worker_num, &mut queue_size);
     (worker_num, queue_size, task_num)
 }
 
@@ -216,18 +186,21 @@ fn async_dispatch_() {
     let count = 1000;
     CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let handle_count = AtomicI32::new(0);
-    let event = AsyncEvent::new(
-        (&raw const handle_count).cast_mut().cast(),
-        Some(count_handle),
-        Some(count_callback),
-    );
+    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
+    let event = unsafe {
+        new_event(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(count_handle),
+            Some(count_callback),
+        )
+    };
 
     event_init();
 
     for _ in 0..count {
         let ret = dispatch(&event);
         // SAFETY: the pool's live copy.
-        assert_eq!(unsafe { (*ret).object }, event.object);
+        assert_eq!(unsafe { (*ret).object() }, event.object());
     }
 
     event_wait();
@@ -244,11 +217,14 @@ fn schedule() {
 
     event_init();
 
-    let event = AsyncEvent::new(
-        (&raw const handle_count).cast_mut().cast(),
-        Some(sleep_and_count_handle),
-        Some(count_callback),
-    );
+    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
+    let event = unsafe {
+        new_event(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(sleep_and_count_handle),
+            Some(count_callback),
+        )
+    };
 
     // SwooleG's settings, before the pool exists.
     swoole_rs_corebase::swr_v1_core_set_aio_core_worker_num(4);
@@ -266,7 +242,7 @@ fn schedule() {
             i += 1;
             let ret = dispatch(event);
             // SAFETY: the pool's live copy.
-            assert_eq!(unsafe { (*ret).object }, event.object);
+            assert_eq!(unsafe { (*ret).object() }, event.object());
             count.set(count.get() - 1);
             let (worker_num, queue_size, task_num) = stats();
             if count.get() == 0 {
@@ -300,9 +276,7 @@ fn schedule() {
     assert_eq!(i64::from(CALLBACK_COUNT.load(Ordering::SeqCst)), n);
 }
 
-extern "C" fn bad_request_callback(event: *mut AsyncEvent) {
-    // SAFETY: the completed event.
-    let event = unsafe { &*event };
+extern "C" fn bad_request_callback(event: &AsyncEvent) {
     assert_eq!(event.retval, -1);
     assert_eq!(event.error, SW_ERROR_AIO_BAD_REQUEST);
     CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -311,21 +285,25 @@ extern "C" fn bad_request_callback(event: *mut AsyncEvent) {
 fn misc() {
     CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let handle_count = AtomicI32::new(0);
-    let event = AsyncEvent::new(
-        (&raw const handle_count).cast_mut().cast(),
-        Some(count_handle),
-        Some(count_callback),
-    );
+    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
+    let event = unsafe {
+        new_event(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(count_handle),
+            Some(count_callback),
+        )
+    };
 
     event_init();
 
     let ret = dispatch(&event);
     // SAFETY: the pool's live copy.
-    assert_eq!(unsafe { (*ret).object }, event.object);
+    assert_eq!(unsafe { (*ret).object() }, event.object());
 
     // sw_async_threads()->notify_one() has no exported counterpart (tests README).
 
-    let event2 = AsyncEvent::new(std::ptr::null_mut(), None, Some(bad_request_callback));
+    // SAFETY: the callback reads only the event's retval and error.
+    let event2 = unsafe { new_event(std::ptr::null_mut(), None, Some(bad_request_callback)) };
     let rv = dispatch(&event2);
     assert!(!rv.is_null());
 

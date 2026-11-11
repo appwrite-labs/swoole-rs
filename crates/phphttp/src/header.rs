@@ -16,12 +16,11 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::php_format_date;
 use swoole_rs_zend::sys::{
     swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, swr_zend_http_property_offset,
-    swr_zend_string_release, zend_class_entry, zend_string, zval,
+    zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, string};
+use swoole_rs_zend::{Array, HeldArray, Key, Value, ZStr, ZString, bailout, string};
 
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
@@ -83,15 +82,17 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
 /// is an array.
-/// The context's reference keeps the response object, and so the array, live
-/// while its slot is borrowed.
-fn property(response: &Slot, which: usize) -> Option<&Array> {
+/// A header, cookie or trailer array of the response object, with a reference
+/// of its own (`GC_TRY_ADDREF`). A value's `__toString` may reach the same
+/// context, or replace the property, while the array is walked: the hold keeps
+/// it live and borrows nothing from the context's state.
+fn property(response: &Slot, which: usize) -> Option<HeldArray> {
     let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
     let slot = object.wrapping_byte_add(offset).cast::<zval>();
     // SAFETY: a declared property slot of the context's live response.
-    unsafe { Value::from_ptr(slot) }.and_then(Value::array)
+    unsafe { Value::from_ptr(slot) }?.hold()
 }
 
 /// `swr_zend_http_string`: `zval_get_string`'s argument and result.
@@ -163,35 +164,25 @@ fn each<'a, E>(
 
 php_local! {
     /// `php_swoole_http_get_date`'s per-second cache: the time and its text.
-    static DATE_CACHE: std::cell::Cell<(libc::time_t, *mut zend_string)> =
-        std::cell::Cell::new((0, ptr::null_mut()));
+    static DATE_CACHE: std::cell::Cell<Option<(libc::time_t, ZString)>> =
+        std::cell::Cell::new(None);
 }
 
-/// The `Date` header for now, formatted at most once a second.
-pub(crate) fn date() -> *mut zend_string {
+/// `f` of the `Date` header for now, formatted at most once a second.
+pub(crate) fn date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
     let now = swoole_rs_corebase::time_now();
-    let (time, date) = DATE_CACHE.get();
-    if now == time && !date.is_null() {
-        return date;
-    }
-    if !date.is_null() {
-        // SAFETY: the cache's reference.
-        unsafe { swr_zend_string_release(date) };
-    }
-    let format = c"D, d M Y H:i:s T";
-    // SAFETY: a NUL-terminated format and its length.
-    let date = unsafe { php_format_date(format.as_ptr(), format.count_bytes(), now, false) };
-    DATE_CACHE.set((now, date));
-    date
+    let (time, date) = DATE_CACHE
+        .take()
+        .filter(|(time, _)| *time == now)
+        .unwrap_or_else(|| (now, ZString::format_date(c"D, d M Y H:i:s T", now, false)));
+    let result = f(date.bytes());
+    DATE_CACHE.set(Some((time, date)));
+    result
 }
 
 /// `php_swoole_http_response_rshutdown`: drop the cached date.
 pub extern "C" fn response_rshutdown() {
-    let (_, date) = DATE_CACHE.replace((0, ptr::null_mut()));
-    if !date.is_null() {
-        // SAFETY: the cache's reference.
-        unsafe { swr_zend_string_release(date) };
-    }
+    drop(DATE_CACHE.take());
 }
 
 /// `swoole_http_has_crlf`, warning as upstream does.
@@ -298,13 +289,16 @@ pub fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
     buffer.get(start..).unwrap_or_default()
 }
 
+/// The state is borrowed per step through `ctx`, never across a header
+/// value's `__toString`, which may reach the same context.
 fn build(
-    state: &mut State,
+    mut ctx: crate::context::Ctx,
     body: *const c_char,
     mut length: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0;
+    let state = ctx.state();
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
     if state.response.reason.is_null() {
@@ -319,7 +313,9 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    if let Some(header) = property(&state.response.zobject, 0) {
+    if let Some(header) = property(&state.response.zobject, 0)
+        && let Some(header) = header.array()
+    {
         // Asked once, like upstream's `compression_types` test.
         let typed = compression && crate::context::compression_type(state, None);
         let mut content_type: Option<ZString> = None;
@@ -327,22 +323,22 @@ fn build(
             let (key, flag) = header_key(key);
             if flag > 0 {
                 if compression {
-                    if flag == CONTENT_TYPE && state.accept_compression != 0 && typed {
+                    if flag == CONTENT_TYPE && ctx.state().accept_compression != 0 && typed {
                         content_type = Some(to_string(value_)?.into_owned());
                     }
                     if flag == CONTENT_ENCODING && value_.str().is_some() {
-                        state.accept_compression = 0;
+                        ctx.state().accept_compression = 0;
                     }
                     // https://github.com/swoole/swoole-src/issues/4857
                     // https://github.com/swoole/swoole-src/issues/5026
-                    if flag == CONTENT_LENGTH && state.accept_compression != 0 {
+                    if flag == CONTENT_LENGTH && ctx.state().accept_compression != 0 {
                         log_conflict(
                             "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
                         );
                         return Ok(());
                     }
                 }
-                if flag == CONTENT_LENGTH && state.send_chunked != 0 {
+                if flag == CONTENT_LENGTH && ctx.state().send_chunked != 0 {
                     log_conflict(
                         "You have set 'Transfer-Encoding', 'Content-Length' will be ignored",
                     );
@@ -359,6 +355,7 @@ fn build(
                 add_custom_header(out, &key, value_)
             }
         });
+        let state = ctx.state();
         if walked.is_ok() && compression && state.accept_compression != 0 && typed {
             let kind = content_type
                 .as_ref()
@@ -368,9 +365,12 @@ fn build(
         }
         walked?;
     }
+    let state = ctx.state();
 
     // http cookies
-    if let Some(cookie) = property(&state.response.zobject, 1) {
+    if let Some(cookie) = property(&state.response.zobject, 1)
+        && let Some(cookie) = cookie.array()
+    {
         each::<()>(cookie, |_, value_| {
             if let Some(line) = value_.bytes()
                 && !has_crlf(line)
@@ -388,12 +388,11 @@ fn build(
         out.extend_from_slice(b"Server: swoole-http-server\r\n");
     }
     if flags & DATE == 0 {
-        let date = date();
-        // SAFETY: a live string.
-        let date = unsafe { string::bytes(date) };
-        out.extend_from_slice(b"Date: ");
-        out.extend_from_slice(date);
-        out.extend_from_slice(b"\r\n");
+        date(|date| {
+            out.extend_from_slice(b"Date: ");
+            out.extend_from_slice(date);
+            out.extend_from_slice(b"\r\n");
+        });
     }
     // websocket protocol (subsequent header info is unnecessary)
     if state.upgrade == 1 {
@@ -442,13 +441,13 @@ fn build(
 /// # Errors
 /// A header value's `__toString` bailed out.
 pub(crate) fn header<R>(
-    mut ctx: crate::context::Ctx,
+    ctx: crate::context::Ctx,
     body: *const c_char,
     length: usize,
     f: impl FnOnce(&mut Vec<u8>) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        build(ctx.state(), body, length, out)?;
+        build(ctx, body, length, out)?;
         Ok(f(out))
     })
 }
@@ -462,7 +461,9 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        if let Some(trailer) = property(&ctx.state().response.zobject, 2) {
+        if let Some(trailer) = property(&ctx.state().response.zobject, 2)
+            && let Some(trailer) = trailer.array()
+        {
             each(trailer, |key, value_| {
                 let Ok(name) = key else { return Ok(()) };
                 if value_.is_null() {

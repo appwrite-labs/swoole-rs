@@ -2,7 +2,7 @@
 //! `ListenPort` and Server these configure.
 use crate::{
     callable::Callable,
-    port_settings,
+    port_settings::{self, Source as _},
     settings::{Settings, Stop},
 };
 use std::{
@@ -118,8 +118,7 @@ pub(crate) static PORT: CustomClass<PortData> = CustomClass::new();
 /// Swoole was built with ext/sockets. `port` is a live `ListenPort`.
 pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     let fd = port.fd();
-    // SAFETY: a descriptor the port owns.
-    let fd = unsafe { libc::dup(fd) };
+    let fd = swoole_rs_corebase::sys::dup(fd);
     if fd < 0 {
         return call.set_bool(false);
     }
@@ -401,14 +400,12 @@ fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Res
         },
         port,
     };
-    // SAFETY: a bound port; set() is its only user while it runs.
-    let config = unsafe { port_config::of(port) };
-    port_settings::apply(&source, config)?;
-    if config.ssl == 0 {
+    port_settings::apply(&source)?;
+    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context));
+    if ssl == 0 {
         return Ok(());
     }
-    let dgram = port_settings::is_dgram(config.r#type);
-    port_settings::tls(&source, config.ssl_context, dgram)
+    port_settings::tls(&source, context, port_settings::is_dgram(kind))
 }
 
 swoole_rs_zend::handlers! {

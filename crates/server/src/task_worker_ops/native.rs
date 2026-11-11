@@ -1,7 +1,7 @@
 //! The task worker's ops on native objects (its pool's callbacks, its pipe in the
 //! reactor and the commands sent to it), and the callbacks that run its operations:
 //! what workers.cc's `TaskWorkerContext::call` and `TaskWorker_*` did.
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
@@ -107,11 +107,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// `TaskWorker_onTask`: the pool's task callback.
-extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: &mut DataHead) -> c_int {
-    run_task(task_pool(pool), worker, task)
+extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+    run_task(task_pool(pool), worker, task.as_ptr().cast())
 }
 
-/// The task pool its callbacks are passed.
+/// The task pool its callbacks are passed: [`TaskFn`]'s contract makes it the
+/// server's.
+///
+/// [`TaskFn`]: swoole_rs_process::process_pool::TaskFn
 fn task_pool(pool: PoolRef<'_>) -> TaskPool<'_> {
     TaskPool {
         raw: pool.raw(),
@@ -190,20 +193,21 @@ pub(crate) fn init_task_workers(serv: crate::view::Server<'_>) -> bool {
 }
 
 /// `Server::finish(data, data_len, flags, current_task)`: the task's result to the
-/// worker that sent it.
-///
-/// # Safety
-/// `current_task` is null or a live `EventData`.
+/// worker that sent it. With no `current_task`, the task this worker runs; false
+/// when there is none.
 #[must_use]
-pub unsafe fn finish(
+pub fn finish(
     serv: crate::view::Server<'_>,
     data: &[u8],
     flags: c_int,
-    current_task: *const c_void,
+    current_task: Option<&DataHead>,
 ) -> bool {
     let mut buf = MaybeUninit::<EventData>::uninit();
+    let latest = super::LATEST_TASK.get();
     let mut ctx = Context::over(serv);
-    ctx.task = current_task.cast();
+    ctx.task = current_task
+        .or(latest.as_ref())
+        .map_or(core::ptr::null(), core::ptr::from_ref);
     ctx.buf = buf.as_mut_ptr().cast();
     (ctx.data, ctx.data_len) = (data.as_ptr(), data.len());
     run_with(&mut ctx, RUN_FINISH, u64::from(flags.cast_unsigned())) != 0

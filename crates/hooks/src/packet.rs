@@ -139,13 +139,10 @@ impl Packet {
     /// `recv_packet_with_eof_protocol`.
     fn eof_protocol(&mut self) -> isize {
         let protocol = self.protocol;
-        // SAFETY: `eof` points to `eof_len` bytes of the socket's protocol.
-        let eof = unsafe {
-            core::slice::from_raw_parts(
-                protocol.package_eof.as_ptr(),
-                usize::from(protocol.package_eof_len),
-            )
-        };
+        let eof = protocol
+            .package_eof
+            .get(..usize::from(protocol.package_eof_len))
+            .unwrap_or(&protocol.package_eof);
         let maximum = protocol.package_max_length as usize;
         let mut buffered = self.buffer().length > 0;
         loop {
@@ -496,7 +493,9 @@ pub(crate) mod tests {
         assert_eq!(results, [3, 2, 0]);
         assert_eq!(fake.buffer.length, 0);
     }
-    fn buffered_fixture() -> (Box<Fake>, crate::co_socket::TestSocket) {
+    /// The socket points at the fake, so the caller makes it once the box has stopped
+    /// moving: a move reasserts the box's unique ownership and ends that pointer.
+    fn buffered_fake() -> Box<Fake> {
         let mut fake = Box::new(Fake {
             storage: vec![0; 8],
             buffer: ReadBuffer {
@@ -512,13 +511,13 @@ pub(crate) mod tests {
             receives: 0,
         });
         fake.buffer.str = fake.storage.as_mut_ptr();
-        let socket = socket_for(&mut fake, false, b"", 1024);
-        (fake, socket)
+        fake
     }
 
     #[test]
     fn buffered_record_reads_publish_the_buffer_across_receives() {
-        let (fake, mut socket) = buffered_fixture();
+        let mut fake = buffered_fake();
+        let mut socket = socket_for(&mut fake, false, b"", 1024);
         let mut out = [0; 4];
         for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
             assert_eq!(
@@ -540,7 +539,8 @@ pub(crate) mod tests {
 
     #[test]
     fn unavailable_record_reads_do_not_allocate_or_receive() {
-        let (fake, mut socket) = buffered_fixture();
+        let mut fake = buffered_fake();
+        let mut socket = socket_for(&mut fake, false, b"", 1024);
         socket.0.sock_fd = -1;
         let mut out = [0; 1];
         assert_eq!(recv_buffered(socket.co(), &mut out), -1);
@@ -551,7 +551,8 @@ pub(crate) mod tests {
 
     #[test]
     fn packet_timer_failure_precedes_buffer_allocation() {
-        let (fake, mut socket) = buffered_fixture();
+        let mut fake = buffered_fake();
+        let mut socket = socket_for(&mut fake, false, b"", 1024);
         crate::co_io::test_host::TIMER_OK.set(false);
         assert_eq!(recv_packet(socket.co(), 1.0), 0);
         assert_eq!((fake.gets, fake.receives), (0, 0));

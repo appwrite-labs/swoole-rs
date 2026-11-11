@@ -64,6 +64,7 @@ jobs:
       h2spec: ${{ steps.paths.outputs.h2spec }}
       asan: ${{ steps.paths.outputs.asan }}
       tsan: ${{ steps.paths.outputs.tsan }}
+      callgrind: ${{ steps.paths.outputs.callgrind }}
       families: ${{ steps.phpt.outputs.families }}
       engines: ${{ steps.phpt.outputs.engines }}
       baseline: ${{ steps.phpt.outputs.baseline }}
@@ -136,6 +137,10 @@ jobs:
           fi
           if echo "$changed" | grep -qE '^(tools/(tsan\.py|tsan_canary\.rs)|\.github/workflows/tsan\.yml|\.devcontainer/php\.sh)$'; then
             echo tsan=true >> "$GITHUB_OUTPUT"
+          fi
+          # What the callgrind workloads build and run.
+          if echo "$changed" | grep -qE '^(crates/|native/|benchmarks/|Cargo\.(toml|lock)$|tools/build_(upstream|ext)\.py$|\.devcontainer/|\.github/workflows/callgrind\.yml$)'; then
+            echo callgrind=true >> "$GITHUB_OUTPUT"
           fi
 
   # The Cargo-built swoole.so with every module, the halfclose repair and the cURL and
@@ -235,6 +240,14 @@ jobs:
       actions: read
     with:
       variant: ${{ matrix.variant }}
+
+  # The merge tier's instruction counts, when a PR touches what they build and run. Blocking:
+  # a slowdown past a limit that reached the queue would fail its group and rebuild every
+  # group behind it (#3261).
+  callgrind:
+    needs: changes
+    if: needs.changes.outputs.callgrind == 'true'
+    uses: ./.github/workflows/callgrind.yml
 
   # HTTP/2 conformance (merge tier), when a PR touches HTTP/2 code. Informative.
   h2spec:
@@ -351,7 +364,7 @@ jobs:
   # name those jobs directly. asan and tsan stay informative.
   required:
     if: always()
-    needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, variant]
+    needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, variant, callgrind]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

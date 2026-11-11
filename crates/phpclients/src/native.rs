@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
-    client::{self, Client, ClientRecord, Op},
+    client::{self, Client, Op},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::co_socket::Co as Handle;
@@ -113,11 +113,8 @@ impl NewSocket {
 /// # Errors
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
-    // SAFETY: a hook that owns nothing, run below the C bailout trap.
-    if unsafe { swoole_rs_zend::sys::swr_zend_try_hook(Some(swoole_rs_check_reactor)) } != 0 {
-        return Err(Bailout);
-    }
-    Ok(())
+    // SAFETY: starting the reactor holds nothing a bailout would skip dropping.
+    unsafe { bailout::trap_with(swoole_rs_phpruntime::check_reactor) }
 }
 
 /// Whether the build has an optional SSL option: the host name (0) or grease
@@ -255,20 +252,18 @@ impl Co {
     }
 
     /// `sw_callable_free(protocol.private_data_1)`, the `package_length_func` the socket
-    /// owns: upstream's ordering publishes null only after the callback's destruction
-    /// returns, which frees it even when it bails out.
+    /// owns. It leaves the slot first, so the destructor, which may reach the
+    /// socket, finds none.
     /// # Errors
     /// The callable's destructor bailed out; the bailout stays pending.
     pub fn free_length_callable(self) -> Result<(), Bailout> {
-        // Copy the owned callback pointer without borrowing the protocol across PHP.
-        let callable = self.0.protocol().private_data_1;
+        let callable = self.0.edit_protocol(|protocol| {
+            std::mem::replace(&mut protocol.private_data_1, ptr::null_mut())
+        });
         if callable.is_null() {
             return Ok(());
         }
-        let freed = callable_free(callable);
-        self.0
-            .edit_protocol(|protocol| protocol.private_data_1 = ptr::null_mut());
-        freed
+        callable_free(callable)
     }
 
     /// `accept(timeout)`: the new connection, owned by the caller. It copies
@@ -416,12 +411,8 @@ impl Co {
         let received = match op {
             Transfer::Peek => self.0.peek(out),
             Transfer::RecvAll => self.0.recv_all(out),
-            // SAFETY: `out`'s writable bytes.
-            Transfer::RecvLine => unsafe { self.0.recv_line(out.as_mut_ptr(), out.len()) },
-            Transfer::RecvWithBuffer => {
-                // SAFETY: `out`'s writable bytes.
-                unsafe { self.0.recv_with_buffer(out.as_mut_ptr(), out.len()) }
-            }
+            Transfer::RecvLine => self.0.recv_line(out),
+            Transfer::RecvWithBuffer => self.0.recv_with_buffer(out),
             _ => self.0.recv(out),
         };
         filled(buffer, received)
@@ -587,17 +578,10 @@ impl Cli {
         unsafe { &*self.0 }
     }
 
-    /// The client's public record, at the start of its state; borrowed only
-    /// between its operations.
-    pub(crate) fn record<'a>(self) -> &'a mut ClientRecord {
-        // SAFETY: as in `get`; nothing else touches the record while the borrow lasts.
-        unsafe { &mut *self.0.cast::<ClientRecord>() }
-    }
-
     /// `cli->socket`, while the client has one.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
         // SAFETY: null or a constructed client's socket, live while the client is.
-        unsafe { Net::from_ptr(self.record().socket) }
+        unsafe { Net::from_ptr(self.get().record().socket) }
     }
 
     /// crates/clients' handle on the client.
@@ -644,7 +628,9 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
 pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
-    let callable = std::mem::replace(&mut cli.record().protocol.private_data_1, ptr::null_mut());
+    let callable = cli.get().edit_record(|record| {
+        std::mem::replace(&mut record.protocol.private_data_1, ptr::null_mut())
+    });
     if !callable.is_null() {
         callable_free(callable)?;
     }
@@ -718,8 +704,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
     if !built_with(Switch::Sockets) {
         return None;
     }
-    // SAFETY: dup(2) of the client's descriptor.
-    let fd = unsafe { libc::dup(cli.net()?.fd()) };
+    let fd = swoole_rs_corebase::sys::dup(cli.net()?.fd());
     if fd < 0 {
         return None;
     }
@@ -814,9 +799,4 @@ pub(crate) enum Transfer {
     RecvWithBuffer = 4,
     Send = 5,
     SendAll = 6,
-}
-
-/// `php_swoole_check_reactor()`; a `swr_zend_try_hook` body.
-pub(crate) unsafe extern "C" fn swoole_rs_check_reactor() {
-    swoole_rs_phpruntime::check_reactor();
 }

@@ -17,7 +17,7 @@ use swoole_rs_zend::{
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
         swr_zend_tsrm_api_name, swr_zend_tsrm_is_main_thread, swr_zend_tsrm_is_shutdown,
-        zend_declare_class_constant_string, zval_ptr_dtor,
+        zend_declare_class_constant_string,
     },
 };
 
@@ -128,6 +128,11 @@ unsafe extern "C" fn epilogue(_start: *mut c_void) {
     if unsafe { swr_zend_guard_pending() } != 0 {
         swoole_rs_reactor::event_api::swoole_event_bail_out();
     }
+    clear_exit();
+}
+
+/// The thread-exit mark goes: nothing is left for the exit to leave.
+fn clear_exit() {
     // SAFETY: no preconditions.
     unsafe { swr_zend_guard_clear() };
 }
@@ -144,22 +149,30 @@ pub extern "C" fn thread_bailout() {
         // SAFETY: a live native scope's jump buffer; this frame owns nothing.
         unsafe { swr_zend_bailout_to(target) };
     }
-    let co = swoole_rs_phpcoroutines::current();
-    if !co.is_null() {
+    if swoole_rs_phpcoroutines::in_coroutine() {
         // Return to the immediate native resumer; Rust owners relay the
         // pending exit after cleanup. This request never resumes an exited
         // PHP frame.
         loop {
-            swoole_rs_phpcoroutines::yield_coroutine(co);
+            swoole_rs_phpcoroutines::suspend();
         }
+    }
+    let script = BAILOUT.get();
+    if script.is_null() {
+        // The script is over: the exit ends the request-shutdown step Zend
+        // runs it in, and the rest of the shutdown runs as usual.
+        clear_exit();
     }
     // SAFETY: the thread's script scope, or Zend's current one; this frame
     // owns nothing.
-    unsafe { swr_zend_bailout_to(BAILOUT.get()) };
+    unsafe { swr_zend_bailout_to(script) };
 }
 
+/// The running coroutine's id as the scopes' context token, null outside one.
 extern "C" fn guard_context() -> *mut c_void {
-    swoole_rs_phpcoroutines::current()
+    swoole_rs_phpcoroutines::Coroutine::current().map_or(ptr::null_mut(), |co| {
+        ptr::without_provenance_mut(usize::try_from(co.cid()).unwrap_or(usize::MAX))
+    })
 }
 
 /// MINIT (`php_swoole_thread_minit`): the exit scopes' hooks, `Swoole\Thread`
@@ -215,11 +228,7 @@ pub unsafe extern "C" fn thread_rinit() {
 /// RSHUTDOWN: drop the thread's arguments; the main thread exits the process
 /// while other threads run, else releases what RINIT kept.
 pub extern "C" fn thread_rshutdown() {
-    if let Some(argv) = ARGV.take() {
-        let mut argv = argv.into_zval();
-        // SAFETY: the thread's arguments, which this releases.
-        unsafe { zval_ptr_dtor(&raw mut argv) };
-    }
+    drop(ARGV.take());
     if !main_thread() {
         return;
     }

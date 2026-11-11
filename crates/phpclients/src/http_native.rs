@@ -7,7 +7,7 @@ use libc::{c_char, c_int, c_void, size_t};
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
-use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
+use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
@@ -23,10 +23,11 @@ use swoole_rs_zend::{
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
 /// the message it is assembling. Framing is crates/phphttp's, which depends
 /// on this crate, so it registers the state's constructor at MINIT
-/// ([`register_websocket`]).
+/// ([`register_websocket`]). Methods take `&self`: a `recv` yields, and other
+/// coroutines use the client meanwhile.
 pub trait WebSocket {
     /// `WebSocket::apply_setting(settings, vht, false)`.
-    fn apply(&mut self, settings: &Array);
+    fn apply(&self, settings: &Array);
     /// Whether the client offers `permessage-deflate`.
     fn compression(&self) -> bool;
     /// Pack a frame of `data` and send it on `socket`: 0, 1 if packing failed
@@ -42,7 +43,7 @@ pub trait WebSocket {
     ) -> c_int;
     /// `websocket::recv_frame` on `socket` into the call's return slot; a
     /// bailout it defers is the handler's to raise.
-    fn recv(&mut self, socket: Co, call: &Call, timeout: f64);
+    fn recv(&self, socket: Co, call: &Call, timeout: f64);
 }
 
 static WEBSOCKET: OnceLock<fn() -> Box<dyn WebSocket>> = OnceLock::new();
@@ -257,9 +258,7 @@ pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Opt
 
 /// `AsyncFile::write()`: whether all of `data` was written.
 pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool {
-    // SAFETY: a descriptor and the caller's bytes.
-    unsafe { swoole_coroutine_write(fd, data.as_ptr().cast(), data.len()) }.cast_unsigned()
-        == data.len()
+    write(fd, data).cast_unsigned() == data.len()
 }
 
 /// `AsyncFile::close()`. It can yield, so a caller lets go of the descriptor

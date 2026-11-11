@@ -10,6 +10,7 @@ use crate::{
     send,
 };
 use std::{
+    cell::Cell,
     ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
     ptr, slice,
@@ -1242,33 +1243,36 @@ pub(crate) fn upgrade(context: Ctx) -> Result<bool, bailout::Bailout> {
 }
 
 /// `Coroutine\Http\Client`'s `WebSocketSettings` and the message it is
-/// assembling.
+/// assembling, in cells: a `recv` yields, and other coroutines push or apply
+/// settings meanwhile.
 struct ClientWebSocket {
     /// `OPEN_*_FRAME` bits for [`recv`].
-    frames: u32,
-    mask: bool,
-    compression: bool,
-    message: Assembly,
+    frames: Cell<u32>,
+    mask: Cell<bool>,
+    compression: Cell<bool>,
+    /// Out of the cell while a `recv` assembles it.
+    message: Cell<Assembly>,
 }
 
 /// A client's WebSocket state, as `WebSocketSettings` starts; registered
 /// with crates/phpclients at MINIT.
 fn client_websocket() -> Box<dyn swoole_rs_phpclients::WebSocket> {
     Box::new(ClientWebSocket {
-        frames: 0,
-        mask: true,
-        compression: false,
-        message: None,
+        frames: Cell::new(0),
+        mask: Cell::new(true),
+        compression: Cell::new(false),
+        message: Cell::new(None),
     })
 }
 
 impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
-    fn apply(&mut self, table: &Array) {
-        self.mask = setting(table, b"websocket_mask").unwrap_or(true);
+    fn apply(&self, table: &Array) {
+        self.mask
+            .set(setting(table, b"websocket_mask").unwrap_or(true));
         if ZLIB.load(Relaxed)
             && let Some(on) = setting(table, b"websocket_compression")
         {
-            self.compression = on;
+            self.compression.set(on);
         }
         for (key, bit) in [
             (&b"open_websocket_close_frame"[..], OPEN_CLOSE_FRAME),
@@ -1276,17 +1280,15 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
             (b"open_websocket_pong_frame", OPEN_PONG_FRAME),
         ] {
             if let Some(on) = setting(table, key) {
-                self.frames = if on {
-                    self.frames | bit
-                } else {
-                    self.frames & !bit
-                };
+                let frames = self.frames.get();
+                self.frames
+                    .set(if on { frames | bit } else { frames & !bit });
             }
         }
     }
 
     fn compression(&self) -> bool {
-        self.compression
+        self.compression.get()
     }
 
     fn push(
@@ -1300,7 +1302,7 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
     ) -> c_int {
         let mut frame =
             FrameObject::new(Some(data), opcode, i64::from(byte(i64::from(flags))), code);
-        if self.mask {
+        if self.mask.get() {
             frame.flags |= FLAG_MASK;
         }
         if compress {
@@ -1317,13 +1319,11 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         })
     }
 
-    fn recv(&mut self, socket: swoole_rs_phpclients::Co, call: &Call, timeout: f64) {
-        call.set_owned(recv(
-            self.frames,
-            &mut self.message,
-            socket.as_ptr(),
-            timeout,
-        ));
+    fn recv(&self, socket: swoole_rs_phpclients::Co, call: &Call, timeout: f64) {
+        let mut message = self.message.take();
+        let frame = recv(self.frames.get(), &mut message, socket.as_ptr(), timeout);
+        self.message.set(message);
+        call.set_owned(frame);
     }
 }
 

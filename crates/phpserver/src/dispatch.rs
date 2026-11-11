@@ -136,6 +136,7 @@ pub(crate) fn invoke(
             coroutine,
             create_coroutine,
             swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     };
     called.map_err(|bailout| {
@@ -869,13 +870,9 @@ fn send_wake(session_id: i64, cancel: bool) {
     if waiters.is_null() {
         return;
     }
-    loop {
-        let co = crate::lifecycle::send_next(waiters, !cancel);
-        if co.is_null() {
-            break;
-        }
+    while let Some(co) = crate::lifecycle::send_next(waiters, !cancel) {
         // SAFETY: a coroutine parked in `send_yield`, until it wakes.
-        unsafe { swoole_rs_phpcoroutines::wake(co, cancel) };
+        unsafe { co.wake(cancel) };
     }
     crate::lifecycle::send_waiters_free(waiters);
 }
@@ -1115,6 +1112,7 @@ fn call_unlimited(
             false,
             create_coroutine,
             swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
         )
     };
     // SAFETY: what `swr_zend_stack_unlimit` saved.
