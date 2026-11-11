@@ -11,22 +11,20 @@ use libc::{c_int, iovec};
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
-    marker::PhantomData,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, Class, Invalid, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
+    Array, Call, Class, Custom, CustomClass, Invalid, Minit, Object, Owned, OwnedArray, Props,
+    Value, ZString,
     bailout::Bailout,
     string::ZBuf,
     sys::{
-        E_WARNING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        module_registry, zend_class_entry, zend_get_type_by_const, zend_hash_str_find, zend_object,
-        zend_object_handlers, zval,
+        E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry,
+        zend_get_type_by_const, zend_object, zval,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -43,146 +41,113 @@ const EVENT_WRITE: i64 = 1 << 10;
 /// `IOV_MAX` on Linux and Apple.
 const IOV_MAX: u32 = 1024;
 
-/// Rust owns the core pointer and imported stream. Native SDK
-/// facades access them only through the typed Rust entry points below.
-///
-/// Cells, valid all-zero (a null socket, an undefined stream): methods, and
-/// PHP code they run, share the data.
-#[repr(C)]
+/// The object's state: the core socket it owns (none before the constructor
+/// ran) and the stream it imported (undefined unless it imported one). Cells:
+/// methods, and PHP code they run, share the data. It drops with the object.
 pub(crate) struct Data {
-    socket: Cell<Socket>,
+    socket: Cell<Option<Co>>,
     stream: Cell<Owned>,
 }
 
-type SocketObject = Object<Data>;
-
-static SOCKET: Class = Class::new();
-static EXCEPTION: Class = Class::new();
-
-/// A `Coroutine\Socket` object, live for `'a`. Only this module writes its
-/// data: `socket` is null or the live core socket the object owns, and
-/// `stream` an initialized zval, undefined unless the socket was imported.
-#[derive(Clone, Copy)]
-pub(crate) struct Sock<'a>(*mut zend_object, PhantomData<&'a zend_object>);
-
-impl<'a> Sock<'a> {
-    /// `$this` of a socket method.
-    pub(crate) fn this(call: &'a Call) -> Self {
-        // SAFETY: socket methods are non-static, so `$this` is a socket object,
-        // which the frame holds for the call.
-        unsafe { Self::new(call.this()) }
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &SOCKET
     }
 
-    /// The socket object `value` holds, if it holds one.
-    pub(crate) fn of(value: &'a Value) -> Option<Self> {
-        let object = value.object_of(&SOCKET)?;
-        // SAFETY: only `create` gives an object the socket class's handlers,
-        // and the value holds it for `'a`.
-        Some(unsafe { Self::new(object) })
+    fn new() -> Self {
+        Self::owning(None)
     }
-
-    /// # Safety
-    /// `object` is a socket object, live for `'a`.
-    unsafe fn new(object: *mut zend_object) -> Self {
-        Self(object, PhantomData)
-    }
-
-    fn data(self) -> &'a Data {
-        // SAFETY: the live object's data, only ever shared (its fields are cells).
-        unsafe { &*SocketObject::data_ptr(self.0) }
-    }
-
-    /// The core socket, or null before the constructor ran.
-    pub(crate) fn socket(self) -> Socket {
-        self.data().socket.get()
-    }
-
-    /// The core socket, once constructed.
-    pub(crate) fn co(self) -> Option<Co> {
-        let socket = self.socket();
-        // SAFETY: a socket the object holds stays live while the object does.
-        (!socket.is_null()).then(|| unsafe { Co::new(socket) })
-    }
-
-    /// The object takes `socket`, then `socket_coro_init` publishes it: zero
-    /// copy and the zend string allocator, then the fd, domain, type and
-    /// protocol properties. A socket it held before leaks.
-    fn adopt(self, socket: NewSocket) {
-        let socket = socket.into_co();
-        self.data().socket.set(socket.as_ptr());
-        let props = self.props();
-        for (name, field) in [c"fd", c"domain", c"type", c"protocol"]
-            .into_iter()
-            .zip(socket.adopt())
-        {
-            props.long(name, field);
-        }
-    }
-
-    /// Property writes under the socket class.
-    fn props(self) -> Props<'a> {
-        // SAFETY: the live object and the registered class.
-        unsafe { Props::new(SOCKET.entry(), self.0) }
-    }
-
-    /// The imported stream's slot.
-    fn stream(self) -> *mut zval {
-        self.data().stream.as_ptr().cast()
-    }
-
-    /// Whether the object holds an imported stream.
-    fn has_stream(self) -> bool {
-        let stream = self.data().stream.take();
-        let held = stream.kind() != IS_UNDEF;
-        self.data().stream.set(stream);
-        held
-    }
-
-    /// The slot takes `stream`, which it held none of.
-    fn hold_stream(self, stream: Owned) {
-        self.data().stream.set(stream);
-    }
-
-    /// The slot forgets its stream, which closed without releasing it.
-    fn forget_stream(self) {
-        std::mem::forget(self.data().stream.take());
-    }
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass with zero-initializable data.
-    let object = match unsafe { SocketObject::try_create(&SOCKET, ce) } {
-        Ok(object) => object,
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    };
-    swoole_rs_zend::bailout::finish();
-    object
 }
 
 /// Upstream does not close here: the engine may be shutting down, and closing
 /// would resume other coroutines.
-unsafe extern "C" fn free(std: *mut zend_object) {
-    swoole_rs_zend::bailout::finish_after(|| {
-        // SAFETY: Zend frees a socket object, live until this returns.
-        let sock = unsafe { Sock::new(std) };
-        // SAFETY: Zend transfers the object's core/resource custody to this final release.
-        let released = unsafe { owner::release(sock) };
-        let result = released.and_then(|()| {
-            // SAFETY: core custody has finished; now run the object's property destructors.
-            unsafe { SocketObject::try_dtor(std) }
-        });
-        swoole_rs_zend::bailout::defer(result);
-    });
+impl Drop for Data {
+    fn drop(&mut self) {
+        swoole_rs_zend::bailout::defer(owner::release(self));
+    }
 }
 
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    SocketObject::install(entry, handlers, create, free);
+impl Data {
+    fn owning(socket: Option<Co>) -> Self {
+        Self {
+            socket: Cell::new(socket),
+            stream: Cell::default(),
+        }
+    }
+
+    /// The core socket, once constructed.
+    fn co(&self) -> Option<Co> {
+        self.socket.get()
+    }
+
+    /// The imported stream's slot.
+    fn stream(&self) -> *mut zval {
+        self.stream.as_ptr().cast()
+    }
+
+    /// Whether the object holds an imported stream.
+    fn has_stream(&self) -> bool {
+        let stream = self.stream.take();
+        let held = stream.kind() != IS_UNDEF;
+        self.stream.set(stream);
+        held
+    }
+}
+
+static SOCKET: CustomClass<Data> = CustomClass::new();
+static EXCEPTION: Class = Class::new();
+
+/// A `Coroutine\Socket` object, live for `'a`: its data and its properties.
+#[derive(Clone, Copy)]
+pub(crate) struct Sock<'a>(&'a Data, Props<'a>);
+
+impl<'a> Sock<'a> {
+    /// `$this` of a socket method.
+    pub(crate) fn this(call: &'a Call) -> Option<Self> {
+        call.this_value().and_then(Self::of)
+    }
+
+    /// The socket object `value` holds, if it holds one.
+    pub(crate) fn of(value: &'a Value) -> Option<Self> {
+        Some(Self(value.custom()?, value.props(Some(&SOCKET))?))
+    }
+
+    fn data(self) -> &'a Data {
+        self.0
+    }
+
+    /// The core socket, once constructed.
+    pub(crate) fn co(self) -> Option<Co> {
+        self.0.co()
+    }
+
+    /// `socket_coro_init`: zero copy and the zend string allocator, then the
+    /// fd, domain, type and protocol properties of the socket it holds.
+    fn publish(self) {
+        let Some(socket) = self.co() else { return };
+        for (name, field) in [c"fd", c"domain", c"type", c"protocol"]
+            .into_iter()
+            .zip(socket.adopt())
+        {
+            self.1.long(name, field);
+        }
+    }
+
+    /// The object takes `socket`, then publishes it. A socket it held before leaks.
+    fn adopt(self, socket: NewSocket) {
+        self.0.socket.set(Some(socket.into_co()));
+        self.publish();
+    }
+
+    /// The slot takes `stream`, which it held none of.
+    fn hold_stream(self, stream: Owned) {
+        self.0.stream.set(stream);
+    }
+
+    /// The slot forgets its stream, which closed without releasing it.
+    fn forget_stream(self) {
+        std::mem::forget(self.0.stream.take());
+    }
 }
 
 method_table! {
@@ -244,7 +209,7 @@ swoole_rs_zend::minit!(socket_minit => register);
 /// unless `ext/sockets` is loaded (the `AI_*` ones that configure found).
 fn register(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
-    minit.register(&SOCKET, c"Swoole\\Coroutine\\Socket", &METHODS.0, configure);
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Socket", &METHODS.0, 0);
     if shortname {
         minit.alias(&SOCKET, c"Co\\Socket")?;
     }
@@ -269,9 +234,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     if shortname {
         minit.alias(&EXCEPTION, c"Co\\Socket\\Exception")?;
     }
-    // SAFETY: the module registry is complete before any MINIT runs.
-    let loaded = unsafe { zend_hash_str_find(&raw const module_registry, c"sockets".as_ptr(), 7) };
-    if loaded.is_null() {
+    if !swoole_rs_zend::module_loaded(c"sockets") {
         register_constants(minit);
     }
     for (name, value) in constants::ALWAYS {
@@ -310,7 +273,9 @@ fn register_constants(minit: &Minit) {
 /// `object` is a live `Coroutine\Socket` object.
 pub unsafe fn socket_of(object: *mut zend_object) -> Socket {
     // SAFETY: per the caller.
-    unsafe { Sock::new(object) }.socket()
+    unsafe { &*Object::<Data>::data_ptr(object) }
+        .co()
+        .map_or(ptr::null_mut(), Co::as_ptr)
 }
 
 /// `swoole_get_socket_coro`: the constructed, open socket of `$this`; else
@@ -333,7 +298,7 @@ pub(crate) fn strerror(code: c_int) -> &'static CStr {
 /// The constructed socket of `$this`; else a fatal error, and the method
 /// returns false.
 fn constructed(call: &Call) -> Option<Co> {
-    let socket = Sock::this(call).co();
+    let socket = Sock::this(call).and_then(Sock::co);
     if socket.is_none() {
         // SAFETY: a fatal error; the handler owns nothing it skips.
         unsafe { native::unconstructed() };
@@ -344,7 +309,9 @@ fn constructed(call: &Call) -> Option<Co> {
 
 /// errCode and errMsg.
 fn set_error(call: &Call, code: c_int, message: &CStr) {
-    let props = Sock::this(call).props();
+    let Some(props) = call.props(Some(&SOCKET)) else {
+        return;
+    };
     props.long(c"errCode", i64::from(code));
     props.bytes(c"errMsg", message.to_bytes());
 }
@@ -425,8 +392,10 @@ fn construct(call: &Call) {
     let Ok((domain, kind, protocol)) = parsed else {
         return call.set_bool(false);
     };
-    let sock = Sock::this(call);
-    if !sock.socket().is_null() {
+    let Some(sock) = Sock::this(call) else {
+        return call.set_bool(false);
+    };
+    if sock.co().is_some() {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
@@ -899,8 +868,10 @@ fn shutdown(call: &Call) {
 
 /// `close(): bool`.
 fn close(call: &Call) {
-    let Some(socket) = open(call) else { return };
-    match owner::close(Sock::this(call), socket) {
+    let (Some(socket), Some(sock)) = (open(call), Sock::this(call)) else {
+        return;
+    };
+    match owner::close(sock, socket) {
         Ok(()) => call.set_bool(true),
         Err(error) => error.defer(),
     }
@@ -964,7 +935,11 @@ fn ssl_handshake(call: &Call) {
 
 /// `isClosed(): bool`: unconstructed counts as closed.
 fn is_closed(call: &Call) {
-    call.set_bool(Sock::this(call).co().is_none_or(Co::is_closed));
+    call.set_bool(
+        Sock::this(call)
+            .and_then(Sock::co)
+            .is_none_or(Co::is_closed),
+    );
 }
 
 swoole_rs_zend::handlers! {
@@ -1052,7 +1027,8 @@ pub unsafe fn get_socket(value: *const zval) -> Socket {
     let value = unsafe { Value::from_ptr(value) };
     value
         .and_then(Sock::of)
-        .map_or(ptr::null_mut(), Sock::socket)
+        .and_then(Sock::co)
+        .map_or(ptr::null_mut(), Co::as_ptr)
 }
 
 /// `php_swoole_socket_is_closed(zobject)`.
@@ -1081,15 +1057,5 @@ mod tests {
             "negative means SW_BUFFER_SIZE_BIG"
         );
         assert_eq!(buffer_length(10), 10, "positive lengths are kept");
-    }
-
-    #[test]
-    fn data_matches_socket_object() {
-        // SocketImpl *, zval, then the zend_object.
-        assert_eq!(
-            SocketObject::OFFSET,
-            size_of::<Socket>() + size_of::<zval>(),
-            "std follows the socket and stream"
-        );
     }
 }

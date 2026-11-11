@@ -582,6 +582,7 @@ fn writable_after_a_failed_connect_reports_the_error() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
 fn tls_connect_waits_for_the_stream_then_connects() {
     let client = client(1, true, true);
     assert!(enable_ssl(Handle(client)).is_some());
@@ -628,6 +629,7 @@ fn stream_read_delivers_data_and_closes_at_eof() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no sendto")]
 fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     let client = client(2, false, false);
     // The record's descriptor is -1, so sendto(2) fails.
@@ -652,11 +654,17 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert_eq!((*fields).protocol.package_length_type, b'N');
         assert_eq!((*fields).protocol.package_length_size, 4);
         assert_eq!((*fields).protocol.package_max_length, 2 * 1024 * 1024);
-        assert_eq!(
-            (*fields).protocol.on_package.map(|f| f as usize),
-            Some(on_package as swoole_rs_corebase::net_types::OnPackage as usize)
-        );
-        assert_eq!((*fields).socket, Handle(client).socket_ptr());
+        // Miri gives each use of a fn item its own address, as codegen may.
+        if !cfg!(miri) {
+            assert_eq!(
+                (*fields).protocol.on_package.map(|f| f as usize),
+                Some(on_package as swoole_rs_corebase::net_types::OnPackage as usize)
+            );
+        }
+        // Read first: the handle borrows the whole record, which would end a reference
+        // assert_eq! had already taken to the field.
+        let socket = Handle(client).socket_ptr();
+        assert_eq!((*fields).socket, socket);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle(client).input_init();
         (*fields).open_length_check = true;
@@ -733,6 +741,7 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
 fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let client = client(1, false, false);
     assert!(enable_ssl(Handle(client)).is_some());

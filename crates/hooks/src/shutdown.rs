@@ -180,6 +180,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shutdown on a socketpair")]
     fn half_closes_then_both_disconnects() {
         let fds = pair();
         let mut flags = connected();
@@ -227,6 +228,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shutdown on a socketpair")]
     fn tls_closes_first() {
         let fds = pair();
         let closed = core::cell::Cell::new(false);
