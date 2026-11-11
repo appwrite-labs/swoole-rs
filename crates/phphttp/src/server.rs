@@ -643,7 +643,7 @@ fn worker() -> Option<Worker> {
         concurrency: unsafe { &raw mut (*current).concurrency },
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency,
-        shutdown: swoole_rs_process::methods::worker_is_shutdown(current),
+        shutdown: swoole_rs_process::methods::worker_is_shutdown(),
     })
 }
 
