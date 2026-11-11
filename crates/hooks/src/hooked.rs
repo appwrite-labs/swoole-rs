@@ -400,8 +400,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
         // SAFETY: no pointer arguments.
         return unsafe { crate::uring::close_fd(ring, fd) };
     }
-    // SAFETY: native `async`, in a coroutine.
-    unsafe { swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload)) }
+    swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload))
 }
 
 /// Hooked `read(2)`: a coroutine socket reads; any other fd reads on the ring, or

@@ -1,22 +1,18 @@
 //! `System::init_reactor`'s readiness handlers for coroutine sockets
 //! (`SW_FD_CO_SOCKET`), hooked polls (`SW_FD_CO_POLL`) and event waiters
-//! (`SW_FD_CO_EVENT`). Native code registers them through `set`
-//! and lends `wake`, which defers a parked coroutine's resume.
+//! (`SW_FD_CO_EVENT`), registered through `set`; a ready waiter's coroutine resumes
+//! through [`wake`], deferred on the thread's reactor.
 use crate::poll::swr_v1_hook_poll_ready;
 use crate::socket_members;
 use crate::wait_event::{ERROR, READ, WRITE, event_ready};
 use core::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_reactor::{Event, Handler, Running, SocketRecord};
 
-/// `Reactor::set_handler(fd_type, events, handler)`.
-pub type SetHandler = unsafe extern "C" fn(*mut c_void, c_int, c_int, Handler);
-/// `reactor->defer(co->resume())`.
-pub type Wake = unsafe extern "C" fn(*mut c_void);
-
-/// Native's `wake`, the same function for every reactor.
-static WAKE: OnceLock<Wake> = OnceLock::new();
+#[cfg(not(test))]
+use defer_resume as wake;
+#[cfg(test)]
+use tests::wake;
 
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
@@ -36,7 +32,7 @@ extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -
     let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
     let co = unsafe { event_ready(waiter, KIND) };
-    if let Some(wake) = WAKE.get().filter(|_| !co.is_null()) {
+    if !co.is_null() {
         // SAFETY: `co` stays parked until the deferred resume runs.
         unsafe { wake(co) };
     }
@@ -44,16 +40,8 @@ extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -
 }
 
 /// Registers the coroutine socket (`Socket::init_reactor`), poll and event-waiter
-/// handlers on `reactor`.
-///
-/// # Safety
-/// `set` registers on `reactor`; `wake` defers a resume on the calling thread's reactor.
-pub unsafe extern "C" fn swr_v1_hook_init_reactor(
-    reactor: *mut c_void,
-    set: SetHandler,
-    wake: Wake,
-) {
-    WAKE.get_or_init(|| wake);
+/// handlers through `set(fd_type, events, handler)`.
+pub fn swr_v1_hook_init_reactor(mut set: impl FnMut(c_int, c_int, Handler)) {
     let poll = FdType::SW_FD_CO_POLL as c_int;
     let waiter = FdType::SW_FD_CO_EVENT as c_int;
     let socket = FdType::SW_FD_CO_SOCKET as c_int;
@@ -69,8 +57,7 @@ pub unsafe extern "C" fn swr_v1_hook_init_reactor(
         (waiter, ERROR, waiter_ready::<ERROR>),
     ];
     for (fd_type, events, handler) in handlers {
-        // SAFETY: the caller's registrar for `reactor`.
-        unsafe { set(reactor, fd_type, events, handler) };
+        set(fd_type, events, handler);
     }
 }
 
@@ -83,22 +70,25 @@ pub unsafe extern "C" fn swr_v1_hook_init_reactor(
 #[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE")]
 pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
-    // SAFETY: the caller's reactor; `defer_resume` defers onto this thread's.
-    unsafe { swr_v1_hook_init_reactor(reactor, set_handler, defer_resume) };
-    // SAFETY: as above.
-    unsafe {
-        set_handler(
-            reactor,
-            FdType::SW_FD_AIO as c_int,
-            READ,
-            crate::async_threads::callback,
-        );
+    let mut set = |fd_type, events, handler| {
+        // SAFETY: the caller's live reactor.
+        unsafe {
+            swoole_rs_reactor::reactor_upstream::reactor_set_handler(
+                reactor,
+                fd_type,
+                events,
+                Some(handler),
+            );
+        }
     };
+    swr_v1_hook_init_reactor(&mut set);
+    set(
+        FdType::SW_FD_AIO as c_int,
+        READ,
+        crate::async_threads::callback,
+    );
     #[cfg(feature = "iouring")]
-    // SAFETY: as above.
-    unsafe {
-        set_handler(reactor, FdType::SW_FD_IOURING as c_int, READ, iouring_ready);
-    }
+    set(FdType::SW_FD_IOURING as c_int, READ, iouring_ready);
 }
 
 /// `Iouring::callback`.
@@ -109,28 +99,12 @@ extern "C" fn iouring_ready(_: Running<'_>, event: &mut Event) -> c_int {
     unsafe { crate::iouring::ready(iouring) }
 }
 
-/// `Reactor::set_handler`.
-#[cfg(feature = "upstream-symbols")]
-unsafe extern "C" fn set_handler(
-    reactor: *mut c_void,
-    fd_type: c_int,
-    events: c_int,
-    handler: Handler,
-) {
-    // SAFETY: the caller's live reactor.
-    unsafe {
-        swoole_rs_reactor::reactor_upstream::reactor_set_handler(
-            reactor,
-            fd_type,
-            events,
-            Some(handler),
-        );
-    }
-}
-
 /// `sw_reactor()->defer([co] { co->resume(); })`.
-#[cfg(feature = "upstream-symbols")]
-unsafe extern "C" fn defer_resume(co: *mut c_void) {
+///
+/// # Safety
+/// `co` stays parked until the deferred resume runs, on the thread's running loop.
+#[cfg(not(test))]
+unsafe fn defer_resume(co: *mut c_void) {
     // SAFETY: the coroutine stays parked until this deferred resume runs.
     unsafe { defer(swoole_rs_coroutine::resume, co, None) };
 }
@@ -140,7 +114,7 @@ unsafe extern "C" fn defer_resume(co: *mut c_void) {
 ///
 /// # Safety
 /// The thread's reactor loop is running; `call(data)` is sound when it runs.
-#[cfg(any(feature = "upstream-symbols", not(test)))]
+#[cfg(not(test))]
 pub(crate) unsafe fn defer(
     call: swoole_rs_reactor::DeferCall,
     data: *mut c_void,
@@ -173,10 +147,10 @@ mod tests {
         static WOKEN: Cell<u32> = const { Cell::new(0) };
     }
 
-    unsafe extern "C" fn set(_: *mut c_void, fd_type: c_int, events: c_int, handler: Handler) {
+    fn set(fd_type: c_int, events: c_int, handler: Handler) {
         HANDLERS.with_borrow_mut(|handlers| handlers.push((fd_type, events, handler)));
     }
-    unsafe extern "C" fn wake(co: *mut c_void) {
+    pub(super) unsafe fn wake(co: *mut c_void) {
         assert_eq!(co, CO);
         WOKEN.set(WOKEN.get() + 1);
     }
@@ -218,7 +192,7 @@ mod tests {
 
     #[test]
     fn registers_nine_handlers_and_wakes_a_waiter_once() {
-        unsafe { swr_v1_hook_init_reactor(core::ptr::null_mut(), set, wake) };
+        swr_v1_hook_init_reactor(set);
         assert_eq!(HANDLERS.with_borrow(Vec::len), 9);
         for fd_type in [
             FdType::SW_FD_CO_SOCKET,
