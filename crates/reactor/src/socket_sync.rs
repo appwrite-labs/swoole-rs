@@ -313,4 +313,72 @@ mod tests {
             libc::close(fds[1]);
         }
     }
+
+    /// Each wait asks for the descriptor again, as upstream's `wait_event` reads
+    /// `this->fd`: a signal handler an earlier wait dispatched may have swapped it.
+    #[test]
+    fn each_wait_asks_for_the_descriptor() {
+        thread_local! {
+            static FD: std::cell::Cell<(c_int, c_int)> = const { std::cell::Cell::new((-1, -1)) };
+        }
+        struct Moving(SyncHooks);
+        impl SyncEffects for Moving {
+            fn fd(&self) -> c_int {
+                FD.with(|fd| fd.get().0)
+            }
+            fn dont_restart(&self) -> bool {
+                self.0.dont_restart()
+            }
+            fn dispatch(&self) -> Option<unsafe extern "C" fn()> {
+                self.0.dispatch()
+            }
+            fn prepare(&self) {}
+            fn events(&self, _: c_int) -> i16 {
+                libc::POLLIN
+            }
+            unsafe fn io(&self, _: *mut c_void, length: usize, _: c_int) -> isize {
+                // The first call swaps in the readable descriptor and would block.
+                let (now, next) = FD.with(std::cell::Cell::get);
+                if now == next {
+                    return length.cast_signed();
+                }
+                FD.with(|fd| fd.set((next, next)));
+                set_errno(libc::EAGAIN);
+                -1
+            }
+            fn catch_error(&self, error: c_int) -> c_int {
+                self.0.catch_error(error)
+            }
+            fn take_nobufs(&self) -> bool {
+                self.0.take_nobufs()
+            }
+            fn set_last_error(&self, error: c_int) {
+                self.0.set_last_error(error);
+            }
+        }
+        let (mut idle, mut ready) = ([0; 2], [0; 2]);
+        for pair in [&mut idle, &mut ready] {
+            // SAFETY: `pair` receives a socket pair.
+            let made =
+                unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) };
+            assert_eq!(made, 0);
+        }
+        // SAFETY: one byte into the second pair, so its other end reads.
+        assert_eq!(unsafe { libc::write(ready[1], b"x".as_ptr().cast(), 1) }, 1);
+        FD.with(|fd| fd.set((idle[0], ready[0])));
+        let mut nobufs = false;
+        let hooks = Moving(hooks(idle[0], &mut nobufs, three));
+        let mut buffer = [0_u8; 4];
+        // SAFETY: local hooks and buffer.
+        let result = unsafe {
+            swr_v1_socket_sync(&hooks, SYNC_ONCE, buffer.as_mut_ptr().cast(), 4, 0, 1, 1000)
+        };
+        assert_eq!(result, 4, "the wait polled the swapped descriptor");
+        // SAFETY: closes the pairs this test opened.
+        unsafe {
+            for fd in idle.into_iter().chain(ready) {
+                libc::close(fd);
+            }
+        }
+    }
 }

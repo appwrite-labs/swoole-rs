@@ -82,7 +82,7 @@ def verdict_failed(row, require_all):
     """Named exclusions stay non-passing; a real failure is never waived."""
     if row['status'] == 'failed':
         return True
-    return (require_all and row['status'] != 'passed' and row['test'] not in RACY | THREAD_CONTEXT_RACY
+    return (require_all and row['status'] != 'passed' and row['test'] not in RACY | THREAD_CONTEXT_RACY | SANITIZER_RACY
             and not (row['status'] == 'excluded' and row['test'] in EXCLUDED))
 
 
@@ -244,9 +244,20 @@ THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        'hybrid 37 of 40, #1948)'}
 
 
+# Racy only under ASan and UBSan (tools/asan.py), whose slowdown changes the test's timing.
+SANITIZER_RACY = {'tests/swoole_websocket_server/get_large_requests.phpt':
+                  "the server's onMessage sleeps 1 ms and the last client asserts the worker that "
+                  "answers it peaked above one coroutine; slowed clients send too far apart for "
+                  "two frames to overlap in one worker, on both engines (tools/asan.py in Docker, "
+                  '12 runs each: upstream 4, cargo 1, all on line 30; Sanitizers runs on main 2 of 4, #2992)'}
+# A capability the engine reports, and the originals racy only with it.
+CONDITIONALLY_RACY = {'thread_context': THREAD_CONTEXT_RACY, 'sanitizers': SANITIZER_RACY}
+
+
 def racy(case, metadata):
-    if 'thread_context' in metadata.get('capabilities', []) and case['path'] in THREAD_CONTEXT_RACY:
-        return THREAD_CONTEXT_RACY[case['path']]
+    for capability, cases in CONDITIONALLY_RACY.items():
+        if capability in metadata.get('capabilities', []) and case['path'] in cases:
+            return cases[case['path']]
     return RACY.get(case['path'])
 
 
