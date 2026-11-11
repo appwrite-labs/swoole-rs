@@ -114,9 +114,12 @@ class Differences(unittest.TestCase):
         self.assertEqual(only, {'upstream': [], 'cargo': ['d']})
         self.assertEqual(unstable, ['b', 'c', 'e'])
 
-    def test_a_read_that_found_nothing_is_timing_but_other_eagains_are_not(self):
-        empty = ['recvfrom(0) = EAGAIN', 'recvmsg(0) = EAGAIN', 'read() = EAGAIN', 'readv() = EAGAIN']
-        gated = ['sendto(MSG_NOSIGNAL) = EAGAIN', 'accept4(SOCK_CLOEXEC) = EAGAIN', 'recvfrom(MSG_PEEK) = ECONNRESET']
+    def test_a_read_or_send_that_would_block_is_timing_but_other_eagains_are_not(self):
+        # Whether a send finds the buffer full depends on how fast the peer drains it: upstream
+        # did it once in two runs of 11-buffer-lifecycle where the Cargo build did it twice (#2924).
+        empty = ['recvfrom(0) = EAGAIN', 'recvmsg(0) = EAGAIN', 'read() = EAGAIN', 'readv() = EAGAIN',
+                 'sendto(MSG_NOSIGNAL) = EAGAIN', 'sendfile() = EAGAIN', 'writev() = EAGAIN']
+        gated = ['accept4(SOCK_CLOEXEC) = EAGAIN', 'recvfrom(MSG_PEEK) = ECONNRESET', 'sendto(0) = ECONNRESET']
         runs = {'upstream': [Counter(['recvfrom(0) = ok'])] * 2,
                 'cargo': [Counter(['recvfrom(0) = ok', *empty, *gated])] * 2}
         only, unstable = differences(runs)
