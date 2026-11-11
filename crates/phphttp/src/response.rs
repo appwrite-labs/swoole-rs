@@ -132,9 +132,8 @@ pub fn response_minit(args: &MinitArgs) {
     for name in [c"socket", c"header", c"cookie", c"trailer"] {
         minit.property_null(&RESPONSE, name, ZEND_ACC_PUBLIC);
     }
-    let ce = RESPONSE.entry();
-    crate::header::minit(ce);
-    context::response_minit(ce);
+    crate::header::minit(&RESPONSE);
+    context::response_minit();
     crate::parse::minit(codecs);
 }
 
@@ -413,8 +412,8 @@ fn status(call: &Call) {
         response.reason = if reason.is_empty() {
             ptr::null_mut()
         } else {
-            // SAFETY: the reason's bytes, copied into request memory.
-            unsafe { z::swr_zend_http_estrndup(reason.as_ptr().cast(), reason.len()) }
+            // The reason's bytes, copied into request memory.
+            crate::parse::estrndup(reason).cast()
         };
         call.set_bool(true);
         Some(())
@@ -578,7 +577,8 @@ fn recv(call: &Call) {
         let mut ctx = websocket(call)?;
         let timeout = call.arity(0, 1).and_then(|()| call.double(1, 0.0)).ok()?;
         let state = ctx.state();
-        let (settings, socket) = (u32::from(state.websocket_settings), state.private_data);
+        // `websocket` checked the context is bound to a coroutine socket.
+        let (settings, socket) = (u32::from(state.websocket_settings), context::socket(state)?);
         let frame = websocket::recv(settings, &mut state.ws_buffer, socket, timeout);
         match frame.kind() {
             // `""`: the peer closed.
@@ -702,7 +702,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         let server_ce = swoole_rs_phpserver::server_class_entry();
         let socket_ce = swoole_rs_phpclients::socket_class();
         if instance_of(object, server_ce) {
-            let Some(checked) = websocket::server_of(object.as_ptr(), object) else {
+            let Some(checked) = websocket::server_of(object) else {
                 return;
             };
             server = Some(checked);

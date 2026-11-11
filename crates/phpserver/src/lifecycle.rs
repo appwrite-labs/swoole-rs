@@ -211,7 +211,7 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
-type Waiters = Rc<RefCell<VecDeque<(u64, Coroutine)>>>;
+pub(crate) type Waiters = Rc<RefCell<VecDeque<(u64, Coroutine)>>>;
 
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
@@ -1362,26 +1362,22 @@ pub fn php_swoole_server_send_yield(
 }
 
 /// Take the session's waiting coroutines out of the running server to wake
-/// (`onBufferEmpty` resumes each, `onClose` cancels each): null when none
-/// wait. Release with `send_waiters_free`.
-pub(crate) fn send_waiters(session_id: i64) -> *mut c_void {
+/// (`onBufferEmpty` resumes each, `onClose` cancels each), none when none
+/// wait; never dropped implicitly, so a frame that holds them owns nothing a
+/// bailout would skip.
+pub(crate) fn send_waiters(session_id: i64) -> Option<std::mem::ManuallyDrop<Waiters>> {
     ServerObject::running()
         // Without waiters, skip hashing the key: SipHash is most of an onClose (#2964).
         .property(|p| {
             let waiters = &mut p.send_waiters;
             (!waiters.is_empty()).then(|| waiters.remove(&session_id))?
         })
-        .map_or(ptr::null_mut(), |waiters| {
-            Box::into_raw(Box::new(waiters)).cast()
-        })
+        .map(std::mem::ManuallyDrop::new)
 }
 
 /// The next coroutine to wake: `pop` takes it off the queue (a resume), else
 /// it stays first until its `send_yield` leaves (a cancel).
-/// `waiters` is from `send_waiters` and not yet freed.
-pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> Option<Coroutine> {
-    // SAFETY: per the caller.
-    let waiters = unsafe { &*waiters.cast::<Waiters>() };
+pub(crate) fn send_next(waiters: &Waiters, pop: bool) -> Option<Coroutine> {
     let mut queue = waiters.borrow_mut();
     let next = if pop {
         queue.pop_front()
@@ -1389,12 +1385,6 @@ pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> Option<Coroutine> {
         queue.front().copied()
     };
     next.map(|(_, co)| co)
-}
-
-/// Release what `send_waiters` took, once.
-pub(crate) fn send_waiters_free(waiters: *mut c_void) {
-    // SAFETY: per the caller.
-    drop(unsafe { Box::from_raw(waiters.cast::<Waiters>()) });
 }
 
 fn nothing(_: &Call) {}

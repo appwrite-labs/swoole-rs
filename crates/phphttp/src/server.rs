@@ -266,9 +266,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let state = ctx.state();
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
-    let zdata = state.request.zdata.as_ptr();
-    // SAFETY: the request's own zval, which nothing else borrows; the data moves into it.
-    php_swoole_get_recv_data(server, unsafe { &mut *zdata }, request);
+    // The data moves into the request's own zval.
+    php_swoole_get_recv_data(server, &state.request.zdata, request);
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
     let result = handle(server, conn, ctx, session, server_fd, &facts).and_then(|route| {
@@ -616,10 +615,10 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
     php_swoole_server_on_close(server, info);
 }
 
-/// The counters of the worker serving requests.
+/// The counters of the worker serving requests, for one admission or release.
 struct Worker {
     /// `Worker::concurrency`.
-    concurrency: *mut u32,
+    concurrency: &'static mut u32,
     /// `ServerGS::concurrency`, shared by every worker.
     server_concurrency: &'static AtomicU32,
     max_concurrency: u32,
@@ -637,8 +636,9 @@ fn worker() -> Option<Worker> {
     // SAFETY: `server` is the live server here.
     let server = unsafe { view::Server::from_raw(server) };
     Some(Worker {
-        // SAFETY: the current worker's live record.
-        concurrency: unsafe { &raw mut (*current).concurrency },
+        // SAFETY: the current worker's live record, whose counter only this
+        // thread writes, and only through this short-lived borrow.
+        concurrency: unsafe { &mut (*current).concurrency },
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency,
         shutdown: swoole_rs_process::methods::worker_is_shutdown(),
@@ -660,10 +660,8 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
         return false;
     };
     worker.server_concurrency.fetch_add(1, SeqCst);
-    // SAFETY: this worker's own counter.
-    let concurrency = unsafe { &mut *worker.concurrency };
-    *concurrency += 1;
-    if *concurrency > worker.max_concurrency {
+    *worker.concurrency += 1;
+    if *worker.concurrency > worker.max_concurrency {
         QUEUED.with_borrow_mut(|queued| queued.push_back(ctx));
         return false;
     }
@@ -686,9 +684,7 @@ pub(crate) fn release_request() {
         return;
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
-    // SAFETY: this worker's own counter.
-    let concurrency = unsafe { &mut *worker.concurrency };
-    *concurrency = concurrency.wrapping_sub(1);
+    *worker.concurrency = worker.concurrency.wrapping_sub(1);
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         let reactor = swoole_rs_reactor::event_api::swr_v1_event_reactor();
         // SAFETY: the thread's live reactor, which begins with its prepared state.
