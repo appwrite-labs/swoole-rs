@@ -3,7 +3,7 @@
 //! looking a handler up, clearing the table and blocking every signal.
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
 //! table, `SIGNALS`.
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_int};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, PoisonError};
 
@@ -303,7 +303,7 @@ pub fn swoole_signal_unblock_all() {
     swoole_rs_corebase::signal_unblock_all();
 }
 
-/// [`swoole_signal_to_str`]'s text, in a buffer of its own.
+/// `swoole_signal_to_str`'s text, in a buffer of its own.
 pub struct SignalName([u8; 64]);
 
 impl SignalName {
@@ -325,19 +325,6 @@ pub fn signal_name(signo: c_int) -> SignalName {
     let mut buf = [0; 64];
     signal_text(text.to_bytes(), signo, &mut buf);
     SignalName(buf)
-}
-
-/// `char *swoole_signal_to_str(int)`: [`signal_name`] in upstream's static 64-byte
-/// buffer.
-pub fn swoole_signal_to_str(signo: c_int) -> *mut c_char {
-    struct Buffer(std::cell::UnsafeCell<[u8; 64]>);
-    // SAFETY: upstream's function-static buffer, shared as upstream shares it.
-    unsafe impl Sync for Buffer {}
-    static BUF: Buffer = Buffer(std::cell::UnsafeCell::new([0; 64]));
-    // SAFETY: the static buffer, written here only, as upstream writes it.
-    let buf = unsafe { &mut *BUF.0.get() };
-    *buf = signal_name(signo).0;
-    buf.as_mut_ptr().cast()
 }
 
 /// `snprintf(buf, 64, "%s", name)`, then `": <signo>"` into what is left when
@@ -447,8 +434,8 @@ mod tests {
         let mut near = [b'y'; 61].to_vec();
         near.extend_from_slice(b": 1");
         assert_eq!(text(&[b'y'; 61], 15), &near[..63]);
-        // SAFETY: the export returns its NUL-terminated static buffer.
-        let named = unsafe { CStr::from_ptr(swoole_signal_to_str(libc::SIGTERM)) };
+        let named = signal_name(libc::SIGTERM);
+        let named = named.as_cstr();
         assert!(named.to_bytes().ends_with(b": 15"), "{named:?}");
     }
 }
