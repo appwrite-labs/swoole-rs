@@ -450,6 +450,15 @@ pub struct Entries<'a> {
 impl<'a> Entries<'a> {
     /// The next element with its key, a string or an integer.
     pub fn next_keyed(&mut self) -> Option<(Key<'a>, &'a Value)> {
+        let (name, index, value) = self.next_stored()?;
+        let key = name.map_or(Key::Index(index), |name| Key::Name(name.bytes()));
+        Some((key, value))
+    }
+
+    /// The next element with its key as the table stores it: the string
+    /// (None for an integer key), and the integer, to put an element back
+    /// under (`zend::KeyValue`).
+    pub fn next_stored(&mut self) -> Option<(Option<&'a ZStr>, zend_ulong, &'a Value)> {
         let (mut key, mut index) = (ptr::null_mut(), 0);
         // SAFETY: a live table and our position in it; `key` and `index` are
         // writable locals.
@@ -463,11 +472,8 @@ impl<'a> Entries<'a> {
         };
         // SAFETY: null or an element of the borrowed table.
         let value = unsafe { Value::from_ptr(found) }?;
-        if key.is_null() {
-            return Some((Key::Index(index), value));
-        }
-        // SAFETY: the table keeps its key strings alive.
-        Some((Key::Name(unsafe { bytes(key) }), value))
+        // SAFETY: null or a key string, which the table keeps alive.
+        Some((unsafe { ZStr::from_ptr(key) }, index, value))
     }
 }
 
@@ -911,13 +917,26 @@ impl ArrayMut {
     /// what was there (as [`release`] does), and references the key itself.
     #[inline]
     pub fn update(&mut self, key: &ZStr, value: Owned) {
+        self.update_at(key.as_ptr(), 0, value);
+    }
+
+    /// `zend_hash_index_update`, as [`ArrayMut::update`].
+    #[inline]
+    pub fn update_index(&mut self, index: zend_ulong, value: Owned) {
+        self.update_at(ptr::null_mut(), index, value);
+    }
+
+    /// [`ArrayMut::update`] under `key`, or under `index` when `key` is null.
+    #[inline]
+    fn update_at(&mut self, key: *mut zend_string, index: zend_ulong, value: Owned) {
         let Some(array) = self.separate().and_then(|_| self.0.array()) else {
             return;
         };
         let mut value = value.into_zval();
-        // SAFETY: as `add_new`.
+        // SAFETY: a live table and a borrowed key or null; the table takes the
+        // value and references the key itself.
         bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_hash_update(array.as_ptr(), key.as_ptr(), &raw mut value)
+            swr_zend_try_hash_update(array.as_ptr(), key, index, &raw mut value)
         }));
     }
 

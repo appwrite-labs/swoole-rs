@@ -19,13 +19,13 @@ use swoole_rs_process::{
     pool::swr_v1_process_pool_ipc_listener,
     process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
     signal::swoole_signal_isset,
-    worker_globals::thread_globals,
     worker_record,
 };
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, Value, ZString, handlers, long_zval,
-    message, string,
+    message,
+    string::{self, ZBuf},
     sys::{
         IS_ARRAY, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_array_init,
         zend_class_entry, zend_hash_index_update, zend_object, zend_object_handlers,
@@ -111,8 +111,7 @@ fn pool_free(pool: Pool) {
 
 /// `SwooleWG.worker`'s status, and its request count once idle again.
 fn worker_busy(busy: bool) {
-    // SAFETY: this thread's worker globals.
-    let worker = unsafe { (*thread_globals()).worker };
+    let worker = swoole_rs_process::worker_globals::current_worker();
     // SAFETY: this process's worker.
     let worker = unsafe { Worker::new(worker) };
     if busy {
@@ -129,21 +128,20 @@ fn message_data(pool: Pool, message: *mut c_void) -> Owned {
     let message = unsafe { &*message.cast::<RecvData>() };
     let (length, data) = (message.info.len as usize, message.data);
     let string = if length == 0 {
-        string::copy(b"")
+        ZString::new(b"")
     } else if message.info.flags & EVENT_DATA_OBJ_PTR != 0 {
-        let string = string::from_val(data);
-        // SAFETY: the bus allocates its packets as zend strings of at least `length` bytes.
-        unsafe { string::truncate(string, length) };
+        // SAFETY: the bus allocates its packets as unshared zend strings of at
+        // least `length` written bytes.
+        let packet = unsafe { ZBuf::from_raw(string::from_val(data), length) };
         // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
         // string is now the caller's.
         unsafe { swoole_rs_server::bus_move_packet(record(pool).message_bus) };
-        string
+        packet.into_zstring()
     } else {
         // SAFETY: `length` bytes at `data`.
-        string::copy(unsafe { std::slice::from_raw_parts(data, length) })
+        ZString::new(unsafe { std::slice::from_raw_parts(data, length) })
     };
-    // SAFETY: a live string whose reference the value takes.
-    Owned::string(unsafe { ZString::from_raw(string) })
+    Owned::string(string)
 }
 
 /// `struct ProcessPoolObject`: the pool, its six callables and two flags.
@@ -935,17 +933,15 @@ fn get_process(call: &Call) {
                     props.long(c"pipe", i64::from(pipe));
                 }
             }
-            if let Some(std) = object.object() {
-                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-                set_worker_of(std, worker, true, c_int::from(view.is_async));
-            }
+            // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
+            set_worker_of(&object, worker, true, c_int::from(view.is_async));
             let mut object = object.into_zval();
             // SAFETY: a live table; it takes the new object's reference.
             unsafe { zend_hash_index_update(table.as_ptr(), key, &raw mut object) };
         }
         Some(found) => {
-            if let Some(std) = found.object() {
-                let worker = crate::process::worker_of(std);
+            if found.object().is_some() {
+                let worker = crate::process::worker_of(found);
                 #[expect(
                     clippy::cast_sign_loss,
                     clippy::cast_possible_truncation,

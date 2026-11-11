@@ -96,7 +96,7 @@ fn config() -> MutexGuard<'static, Config> {
 /// `swoole_set_dns_server`: `host[:port]`, where an absent or invalid port is 53.
 /// The text ends at its first NUL, and the port converts as `sw_atoi` (`strtol`
 /// narrowed to `int`).
-fn set_dns_server(server: &[u8]) {
+pub fn set_dns_server(server: &[u8]) {
     let plan = dns_endpoint(server);
     let mut port = DNS_PORT;
     if plan.has_port != 0 {

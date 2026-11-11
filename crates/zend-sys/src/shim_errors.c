@@ -74,10 +74,21 @@ int swr_zend_try_ptr_dtor(zval *value) {
     SWR_TRAP(zval_ptr_dtor(value));
 }
 
-int swr_zend_try_hash_update(HashTable *table, zend_string *key, zval *value) {
-    /* A new key releases nothing, so no PHP code can run and needs no trap. */
-    if (zend_hash_add(table, key, value)) return 0;
-    SWR_TRAP(zend_hash_update(table, key, value));
+int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong index, zval *value) {
+    /* A new key releases nothing, so no PHP code can run and needs no trap. A
+     * null key is the integer `index` (zend_hash_index_update). */
+    if (key ? zend_hash_add(table, key, value) != NULL
+            : zend_hash_index_add(table, index, value) != NULL) {
+        return 0;
+    }
+    if (key) {
+        SWR_TRAP(zend_hash_update(table, key, value));
+    }
+    SWR_TRAP(zend_hash_index_update(table, index, value));
+}
+
+int swr_zend_try_hash_clean(HashTable *table) {
+    SWR_TRAP(zend_hash_clean(table));
 }
 
 int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value) {

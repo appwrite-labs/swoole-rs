@@ -8,7 +8,7 @@ use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
     Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray, Parsed,
     bailout::{self, Bailout},
-    class_name, kind, message,
+    kind, message,
     sys::{
         IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         swr_zend_callable, zend_array, zend_array_destroy, zend_array_dup, zend_class_entry,
@@ -120,8 +120,7 @@ fn this(call: &Call) -> &'static mut Scheduler {
 
 /// The "scheduler is running/started, unable to execute %s->%s" warning.
 fn refuse(call: &Call, state: &str, method: &str) {
-    // SAFETY: `$this` is live.
-    let class = unsafe { class_name(call.this()) };
+    let class = call.class_name().unwrap_or_default();
     let text = message!(
         "scheduler is {state}, unable to execute {}->{method}",
         class.to_string_lossy()
@@ -257,7 +256,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     if let Some(value) = options.get(b"name_resolver") {
         if let Some(resolvers) = value.array() {
             for (_, resolver) in resolvers.entries() {
-                host::add_name_resolver(resolver.as_ptr());
+                host::add_name_resolver(resolver);
             }
         } else {
             host::fatal_error(E_WARNING, c"name_resolver must be an array");
@@ -406,9 +405,9 @@ fn rshutdown() -> Result<(), Bailout> {
         return Ok(());
     };
     loop {
-        // SAFETY: the resolver list; every PHP resolver matches null. Each
-        // match is unlinked and returned (crates/phpclients).
-        let resolver = unsafe { (families.name_resolver_remove)(ptr::null_mut()) };
+        // Every PHP resolver matches `None`; each match is unlinked and returned
+        // (crates/phpclients).
+        let resolver = (families.name_resolver_remove)(None);
         if resolver.is_null() {
             break;
         }

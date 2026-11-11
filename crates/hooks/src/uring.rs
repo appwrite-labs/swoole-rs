@@ -10,7 +10,7 @@
 //! ([`wakeup`]) writes the result into it before resuming it.
 
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::{mem, ptr};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys as os;
@@ -831,39 +831,28 @@ fn statx_to_stat(statx: &libc::statx, stat: &mut libc::stat) {
     stat.st_ctime_nsec = statx.stx_ctime.tv_nsec.into();
 }
 
-unsafe fn statx(
-    host: &Host,
-    dfd: c_int,
-    path: *const c_char,
-    flags: c_int,
-    stat: *mut libc::stat,
-) -> c_int {
+fn statx(host: &Host, dfd: c_int, path: &CStr, flags: c_int, stat: &mut libc::stat) -> c_int {
     // SAFETY: an all-zero statx is valid.
     let mut buf: libc::statx = unsafe { mem::zeroed() };
     let mask = libc::STATX_BASIC_STATS | libc::STATX_BTIME;
     // SAFETY: `buf` and `path` outlive the request.
     let ret = request(host, -1.0, |sqe| unsafe {
-        sys::swr_uring_prep_statx(sqe, dfd, path, flags, mask, (&raw mut buf).cast());
+        sys::swr_uring_prep_statx(sqe, dfd, path.as_ptr(), flags, mask, (&raw mut buf).cast());
     });
     if ret == 0 {
-        // SAFETY: the caller's contract.
-        statx_to_stat(&buf, unsafe { &mut *stat });
+        statx_to_stat(&buf, stat);
     }
     int(ret)
 }
 
-/// # Safety
-/// `stat` is valid.
-pub unsafe fn fstat(host: &Host, fd: c_int, stat: *mut libc::stat) -> c_int {
-    // SAFETY: the caller's contract; the empty path is a literal.
-    unsafe { statx(host, fd, c"".as_ptr(), libc::AT_EMPTY_PATH, stat) }
+/// `fstat(2)` of `fd` into `stat`.
+pub fn fstat(host: &Host, fd: c_int, stat: &mut libc::stat) -> c_int {
+    statx(host, fd, c"", libc::AT_EMPTY_PATH, stat)
 }
 
-/// # Safety
-/// `path` and `stat` are valid.
-pub unsafe fn stat(host: &Host, path: *const c_char, stat: *mut libc::stat) -> c_int {
-    // SAFETY: the caller's contract.
-    unsafe { statx(host, libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, stat) }
+/// `stat(2)` of `path` into `stat`; upstream's ring `lstat` is this too.
+pub fn stat(host: &Host, path: &CStr, stat: &mut libc::stat) -> c_int {
+    statx(host, libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, stat)
 }
 
 /// `waitpid` through `IORING_OP_WAITID`; `WNOHANG` stays a plain waitpid(2).

@@ -338,30 +338,12 @@ impl PoolHost for Native<'_> {
     }
 }
 
-/// The `OP_*` effects that are calls into the process-wide worker, signal, timer,
-/// event and wait state: `None` for the rest, which native code does.
+/// The `OP_*` effects that are calls into the process-wide worker and signal state:
+/// `None` for the rest, which native code does (the timer, event loop and wait
+/// effects too, since crates/reactor and crates/timer depend on this crate).
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: u32, arg: u64) -> Option<i64> {
     use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
-    // SAFETY: crates/timer's and crates/reactor's functions, and
-    // crates/reactor's swoole_waitpid, under their upstream symbols. Declarations,
-    // since crates/reactor (and through it crates/timer) depends on this crate.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z25swoole_timer_is_availablev"]
-        fn swoole_timer_is_available() -> bool;
-        #[link_name = "_Z17swoole_timer_freev"]
-        fn swoole_timer_free();
-        #[link_name = "_Z19swoole_timer_selectv"]
-        fn swoole_timer_select();
-        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-        fn swoole_timer_del(node: *mut c_void) -> bool;
-        #[link_name = "_Z17swoole_event_waitv"]
-        fn swoole_event_wait() -> c_int;
-        #[link_name = "_Z25swoole_event_is_availablev"]
-        fn swoole_event_is_available() -> bool;
-        #[link_name = "_Z14swoole_waitpidiPii"]
-        fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    }
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the int the operation widened"
@@ -374,47 +356,15 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         }
         OP_IS_MASTER => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
         OP_CURRENT_WORKER => {
-            // SAFETY: this thread's worker globals.
-            let worker = unsafe { (*crate::worker_globals::thread_globals()).worker };
+            let worker = crate::worker_globals::current_worker();
             worker.expose_provenance().cast_signed() as i64
         }
         OP_SIGNAL_DISPATCH => {
             crate::signal::swoole_signal_dispatch();
             0
         }
-        OP_TIMER_SELECT => {
-            // SAFETY: the thread's timer, when it has one.
-            unsafe { swoole_timer_select() };
-            0
-        }
-        OP_TIMER_FREE => {
-            // SAFETY: as above.
-            if unsafe { swoole_timer_is_available() } {
-                // SAFETY: the thread's timer, freed once.
-                unsafe { swoole_timer_free() };
-            }
-            0
-        }
-        OP_TIMER_DEL => {
-            // SAFETY: a node of the thread's timer, deleted once.
-            unsafe {
-                swoole_timer_del(ptr::with_exposed_provenance_mut(
-                    usize::try_from(arg).unwrap_or(0),
-                ))
-            };
-            0
-        }
-        // SAFETY: the thread's event loop.
-        OP_EVENT_WAIT => i64::from(unsafe { swoole_event_wait() }),
-        // SAFETY: as above.
-        OP_EVENT_AVAILABLE => i64::from(unsafe { swoole_event_is_available() }),
         // crates/corebase's fork, with its process bookkeeping.
         OP_FORK => i64::from(swoole_rs_corebase::swoole_fork(0)),
-        OP_WAITPID => {
-            let mut status = 0;
-            // SAFETY: `status` is writable.
-            i64::from(unsafe { swoole_waitpid(int, &raw mut status, 0) })
-        }
         _ => return None,
     })
 }

@@ -325,12 +325,14 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
             0
         }
         OP_SPLIT => {
-            let eof = p.package_eof.as_ptr();
-            let eof_len = usize::from(p.package_eof_len);
+            // The protocol's settings bound the length by the array.
+            let Some(eof) = p.package_eof.get(..usize::from(p.package_eof_len)) else {
+                return -1;
+            };
             let context = ptr::from_ref(r).cast();
-            // SAFETY: the EOF holds `eof_len > 0` bytes (the loop checks it); the
-            // handler takes this receive.
-            unsafe { b.split(eof, eof_len, split_part, context) as i64 }
+            // SAFETY: the EOF is not empty (the loop checks it); the handler takes
+            // this receive.
+            unsafe { b.split(eof, split_part, context) as i64 }
         }
         OP_SSL_PENDING => {
             let ssl = s.read(|s| s.ssl);

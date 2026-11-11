@@ -15,7 +15,6 @@
 )]
 use core::cell::{Cell, UnsafeCell};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
-use core::mem::MaybeUninit;
 use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
@@ -41,12 +40,13 @@ use swoole_rs_process::pool::{
 };
 use swoole_rs_process::process_pool::{
     CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP,
-    OP_ADD_PIPE, OP_ALLOC_WORKERS, OP_BOX_PUSH, OP_BUS_BUFFER, OP_DONT_RESTART, OP_EVENT_INIT,
-    OP_EXIT_CALLBACK, OP_FREE_MESSAGE_BOX, OP_FREE_MESSAGE_BUS, OP_FREE_PIPES, OP_FREE_WORKERS,
-    OP_HAVE_MSGQUEUE, OP_KILL_TIMER, OP_MAIN_LOOP, OP_NEW_MESSAGE_BOX, OP_NEW_MESSAGE_BUS,
-    OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD, OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND,
-    OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP, OP_RELOAD_TIMER, OP_REMOVE_PIPE,
-    OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_INIT, OP_UNLIMIT_PIPES, OP_WORKER_ERROR, OP_WORKER_INIT,
+    OP_ADD_PIPE, OP_ALLOC_WORKERS, OP_BOX_PUSH, OP_BUS_BUFFER, OP_DONT_RESTART, OP_EVENT_AVAILABLE,
+    OP_EVENT_INIT, OP_EVENT_WAIT, OP_EXIT_CALLBACK, OP_FREE_MESSAGE_BOX, OP_FREE_MESSAGE_BUS,
+    OP_FREE_PIPES, OP_FREE_WORKERS, OP_HAVE_MSGQUEUE, OP_KILL_TIMER, OP_MAIN_LOOP,
+    OP_NEW_MESSAGE_BOX, OP_NEW_MESSAGE_BUS, OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD,
+    OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND, OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP,
+    OP_RELOAD_TIMER, OP_REMOVE_PIPE, OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_DEL, OP_TIMER_FREE,
+    OP_TIMER_INIT, OP_TIMER_SELECT, OP_UNLIMIT_PIPES, OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT,
     OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, RAISE, RUN_MAIN, pool_run_op,
 };
 use swoole_rs_process::reload_task::ReloadTask;
@@ -57,10 +57,11 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
-    owner_reinit, swoole_timer_create, swoole_timer_get_next_msec, swoole_timer_is_available,
-    swoole_timer_select, swr_v1_timer_add_plain,
+    owner_reinit, swoole_timer_create, swoole_timer_del, swoole_timer_free,
+    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
+    swr_v1_timer_add_plain,
 };
-use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
+use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
@@ -318,10 +319,7 @@ fn free_pipes(pool: Pool) {
 
 /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`: 0 (and no pipes) when it fails.
 fn new_pipe(pool: Pool, worker: Worker) -> i64 {
-    let mut storage = Box::new(MaybeUninit::<SocketPair>::uninit());
-    unix_socket_new(&mut storage, true, libc::SOCK_DGRAM);
-    // SAFETY: the constructor initialised it.
-    let mut built = unsafe { storage.assume_init() };
+    let mut built = Box::new(unix_socket(true, libc::SOCK_DGRAM));
     let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
@@ -502,6 +500,36 @@ main_loops! {
 
 // ---------------------------------------------------------------- the table
 
+/// The effects on the thread's timer and event loop, and the blocking wait.
+fn loop_ops(op: u32, arg: u64) -> Option<i64> {
+    Some(match op {
+        OP_TIMER_SELECT => {
+            swoole_timer_select();
+            0
+        }
+        OP_TIMER_FREE => {
+            if swoole_timer_is_available() {
+                swoole_timer_free();
+            }
+            0
+        }
+        OP_TIMER_DEL => {
+            let node = ptr::with_exposed_provenance_mut(usize::try_from(arg).unwrap_or(0));
+            // SAFETY: a node of the thread's timer the pool added, deleted once.
+            unsafe { swoole_timer_del(node) };
+            0
+        }
+        OP_EVENT_WAIT => i64::from(swoole_rs_reactor::event_api::swoole_event_wait()),
+        OP_EVENT_AVAILABLE => i64::from(swoole_event_is_available()),
+        OP_WAITPID => i64::from(swoole_rs_reactor::wait_upstream::swoole_waitpid(
+            arg as c_int,
+            Some(&mut 0),
+            0,
+        )),
+        _ => return None,
+    })
+}
+
 /// `pool_call`'s lifecycle effects: the pool's objects.
 fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
     Some(match op {
@@ -586,7 +614,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             swoole_set_worker_type(SW_WORKER);
             swoole_set_worker_id(record.id());
             swoole_set_worker_pid(record.pid());
-            crate::worker_methods::set_current_worker(worker);
+            swoole_rs_process::worker_globals::set_current_worker(worker);
             0
         }
         OP_EVENT_INIT => {
@@ -777,6 +805,7 @@ impl PoolNative for Native {
     fn call(&self, c: &PoolCall, op: u32, arg: u64) -> i64 {
         let (pool, worker) = pool_worker(c);
         objects(pool, worker, op, arg)
+            .or_else(|| loop_ops(op, arg))
             .or_else(|| worker_ops(pool, worker, op, arg))
             .unwrap_or_else(|| master_ops(pool, worker, op, arg))
     }

@@ -156,7 +156,7 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
         OP_ON_WORKER_START => (CB_WORKER_START, ctx.worker.cast()),
         OP_ON_WORKER_STOP => (CB_WORKER_STOP, ctx.worker.cast()),
         OP_ON_WORKER_EXIT => {
-            let current = crate::worker_methods::current_worker();
+            let current = swoole_rs_process::worker_globals::current_worker();
             (CB_WORKER_EXIT, current.cast())
         }
         OP_ON_BEFORE_SHUTDOWN => (CB_BEFORE_SHUTDOWN, core::ptr::null_mut()),

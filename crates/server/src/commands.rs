@@ -238,7 +238,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         .named
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
-    let worker = crate::worker_methods::current_worker();
+    let worker = swoole_rs_process::worker_globals::current_worker();
     let input = CommandInput {
         started,
         found: found.is_some(),
