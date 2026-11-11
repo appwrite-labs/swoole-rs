@@ -28,7 +28,7 @@ runs:
     # from this week holds the base set, so a job with other extras downloads just those.
     # Until main saves the new week's cache, last week's still holds most packages.
     - id: apt
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: .apt-cache
         key: apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.packages }}
@@ -44,7 +44,7 @@ runs:
         [ ! -f /etc/apt/apt-mirrors.txt ] || sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
         APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}
     - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: .apt-cache
         key: ${{ steps.apt.outputs.cache-primary-key }}

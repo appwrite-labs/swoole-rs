@@ -16,10 +16,10 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
       - id: upstream
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -35,7 +35,7 @@ jobs:
           python3 tests/modules/websocket/autobahn.py ${{ github.event_name != 'pull_request' && '--full --timeout 4200' || '' }}
           --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
           --output target/reports/autobahn.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: rfc-conformance-results

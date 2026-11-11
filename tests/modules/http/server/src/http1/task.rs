@@ -1388,7 +1388,18 @@ unsafe extern "C" fn no_idle_on_start(_: *mut c_void, serv: *mut c_void) {
         let mut c = std::net::TcpStream::connect((TEST_HOST, port)).unwrap();
         std::io::Write::write_all(&mut c, PACKET).unwrap();
 
-        sleep(3.0);
+        // The event worker can queue all 1024 tasks before a task worker has marked itself
+        // busy, so where upstream sleeps 3 s this sends another packet each second until the
+        // master's once-a-second timer has logged the warning, for up to 10 s.
+        for _ in 0..10 {
+            sleep(1.0);
+            if read_text(TEST_LOG_FILE)
+                .is_some_and(|log| log.contains("No idle task worker is available"))
+            {
+                break;
+            }
+            std::io::Write::write_all(&mut c, PACKET).unwrap();
+        }
         drop(c);
 
         kill_pid(serv.get_master_pid());

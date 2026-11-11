@@ -28,7 +28,7 @@ jobs:
     outputs:
       php: ${{ steps.install.outputs.php }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: install
         uses: ./.github/actions/install
         with:
@@ -36,7 +36,7 @@ jobs:
           php: latest
       - uses: ./.github/actions/instantclient
       - id: upstream
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -57,7 +57,7 @@ jobs:
           CARGO_BUILD_TARGET=$(rustc -vV | sed -n 's/^host: //p') python3 tools/build_ext.py --php-sockets $services
           mkdir -p target/phpt
           cp target/ext/swoole.so target/phpt/cargo.so
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: phpt-engines
           path: target/phpt/
@@ -72,7 +72,7 @@ jobs:
       matrix:
         index: [1, 2, 3, 4, 5, 6]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Every service upstream's PHPTs expect (corpus/upstream/services.yml).
       - name: List services
         id: services
@@ -91,7 +91,7 @@ jobs:
           python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 60 --external-network
           ${{ steps.extensions.outputs.args }} --engine cargo=target/phpt/cargo.so
           --output target/coverage/phpt.json || [ $? -eq 1 ]
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: profraw-phpt-${{ matrix.index }}
@@ -104,20 +104,20 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: php-mysql php-pgsql php-redis php-mongodb unixodbc libfbclient2 libaio1t64
           php: ${{ needs.build.outputs.php }}
       - uses: ./.github/actions/instantclient
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: target/phpt
@@ -131,10 +131,14 @@ jobs:
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
           --engine cargo=target/phpt/cargo.so --output target/coverage/corpus.json || true
       # The differential suite as integrate's api-fuzz runs it (#2255): seed 0's programs and the cases.
-      # The Cargo build links curl's CURLFile class, so curl loads first, as for the corpus above.
+      # The Cargo build links symbols of curl, sockets and others, so every installed extension
+      # loads first, as for the PHPTs.
+      - name: List PHP extensions
+        id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - name: Run differential suite
         run: >
-          python3 tests/differential/fuzz.py --php-extension pdo --php-extension pdo_sqlite --php-extension curl
+          python3 tests/differential/fuzz.py ${{ steps.extensions.outputs.args }}
           --engine upstream=target/upstream/src/modules/swoole.so
           --engine cargo=target/phpt/cargo.so --seed 0 --programs 500 --cases tests/differential/cases || true
       - name: Prepare swoole/library
@@ -154,7 +158,7 @@ jobs:
           $compose ps && exit 1
       - name: Run swoole/library suite
         run: python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: profraw-apps
@@ -166,16 +170,16 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rustup
       - name: Add llvm-tools
         run: rustc --version && rustup component add llvm-tools
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: target/phpt
       # One directory per artifact: every job's pool files have the same names.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: profraw-*
           path: target/coverage/profraw
@@ -183,7 +187,7 @@ jobs:
         run: >
           python3 tools/coverage.py --engine target/phpt/cargo.so --profiles target/coverage/profraw
           --output target/coverage/report | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: |
