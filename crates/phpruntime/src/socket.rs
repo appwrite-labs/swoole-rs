@@ -5,7 +5,7 @@ use std::{ffi::CStr, mem::MaybeUninit, ptr::NonNull};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
-use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
+use swoole_rs_tls::upstream::{send_sync, socket_recv_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value,
     bailout::{self, Bailout},
@@ -104,9 +104,10 @@ unsafe fn io(socket: Co, op: Io, buf: *mut c_char, length: usize) -> isize {
     // SAFETY: per the caller.
     let out = || unsafe { bytes_mut(buf, length) };
     match op {
+        Io::SendSync => socket
+            .with_network(|network| send_sync(network, data(), 0))
+            .unwrap_or(-1),
         // SAFETY: the live network::Socket and the caller's buffer.
-        Io::SendSync => unsafe { socket_send_sync(network, buf.cast(), length, 0) },
-        // SAFETY: as above.
         Io::RecvSync => unsafe { socket_recv_sync(network, buf.cast(), length, 0) },
         Io::SendAll => socket.send_all(data()),
         Io::SendOnce => socket.send_once(data()),

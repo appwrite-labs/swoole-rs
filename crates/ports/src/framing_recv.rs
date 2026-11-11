@@ -249,10 +249,9 @@ fn effect<K: Packages>(r: &Recv<'_>, op: u32, arg: u64, flags: u32) -> i64 {
     s.edit(|s| s.recv_wait = u8::from(flags & FLAG_WAIT != 0));
     match op {
         OP_RECV => {
-            let at = b.as_mut_ptr().wrapping_add(b.len());
-            let size = usize::try_from(arg).unwrap_or(usize::MAX);
-            // SAFETY: the live socket and the buffer's free tail of at least `size` bytes.
-            let n = unsafe { swoole_rs_tls::upstream::socket_recv(s.as_ptr(), at.cast(), size, 0) };
+            let tail = b.spare();
+            let size = usize::try_from(arg).unwrap_or(usize::MAX).min(tail.len());
+            let n = swoole_rs_tls::upstream::recv(s, tail.get_mut(..size).unwrap_or_default(), 0);
             if n >= 0 {
                 return n as i64;
             }

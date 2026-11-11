@@ -233,14 +233,8 @@ pub(crate) fn answer(
             factory::end(state, arg.cast_signed(), CLOSE_ACTIVELY);
             0
         }
-        OP_WR_SENDFILE => {
-            // SAFETY: the context's live session socket.
-            sign(unsafe { swoole_rs_tls::upstream::socket_handle_sendfile(ctx.sock?.as_ptr()) })
-        }
-        OP_WR_SEND => {
-            // SAFETY: as above.
-            sign(unsafe { swoole_rs_tls::upstream::socket_handle_send(ctx.sock?.as_ptr()) })
-        }
+        OP_WR_SENDFILE => sign(swoole_rs_tls::upstream::socket_handle_sendfile(ctx.sock?)),
+        OP_WR_SEND => sign(swoole_rs_tls::upstream::socket_handle_send(ctx.sock?)),
         OP_PC_NOTIFY => {
             let mut head = DataHead {
                 reactor_id: i16::try_from(reactor_id()?).unwrap_or_default(),

@@ -187,13 +187,11 @@ pub unsafe extern "C-unwind" fn reactor_writev(
 
 impl FlushEffects for Flush<'_> {
     fn handle_send(&self) -> c_int {
-        // SAFETY: the flush's live socket.
-        unsafe { socket_handle_send(self.socket.as_ptr()) }
+        socket_handle_send(self.socket)
     }
 
     fn handle_sendfile(&self) -> c_int {
-        // SAFETY: the flush's live socket.
-        unsafe { socket_handle_sendfile(self.socket.as_ptr()) }
+        socket_handle_sendfile(self.socket)
     }
 
     fn close(&self) -> c_int {

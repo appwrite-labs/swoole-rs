@@ -28,7 +28,7 @@ use swoole_rs_reactor::{
     CLASS_DGRAM, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord, type_is,
 };
 use swoole_rs_tls::upstream::{
-    sendfile as socket_sendfile_fd, socket_peek, socket_readv, socket_recv, socket_send,
+    peek, recv, send, sendfile as socket_sendfile_fd, socket_readv, socket_recv, socket_send,
     socket_ssl_get_peer_certificate_pem, socket_writev,
 };
 
@@ -601,8 +601,8 @@ impl Co {
         let mut timer = Timer::new(self, WRITE, self.timeout(timeout_kind(WRITE)));
         let mut offset = offset;
         let send = |offset: &mut libc::off_t, length| {
-            // SAFETY: the socket's current network::Socket and the open file.
-            unsafe { socket_sendfile_fd(self.socket(), file.0, offset, length) }
+            self.with_network(|socket| socket_sendfile_fd(socket, file.0, offset, length))
+                .unwrap_or(-1)
         };
         let ready = || timer.start() && wait_for(self, WRITE);
         let outcome = send_range(&mut offset, end, send, ready);
@@ -699,9 +699,10 @@ impl Co {
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait. The
     /// socket is open.
     pub fn recv_once(self, buf: &mut [u8]) -> isize {
-        let (buf, n) = (buf.as_mut_ptr().cast(), buf.len());
-        // SAFETY: the open socket's network::Socket, into the caller's buffer.
-        let io = || unsafe { socket_recv(self.socket(), buf, n, 0) };
+        let mut io = || {
+            self.with_network(|socket| recv(socket, buf, 0))
+                .unwrap_or(-1)
+        };
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::once(&ops, io);
@@ -713,9 +714,10 @@ impl Co {
     /// is open.
     #[must_use]
     pub fn send_once(self, buf: &[u8]) -> isize {
-        let (buf, n) = (buf.as_ptr().cast_mut().cast(), buf.len());
-        // SAFETY: the open socket's network::Socket, from the caller's buffer.
-        let io = || unsafe { socket_send(self.socket(), buf, n, 0) };
+        let io = || {
+            self.with_network(|socket| send(socket, buf, 0))
+                .unwrap_or(-1)
+        };
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::once(&ops, io);
@@ -726,8 +728,9 @@ impl Co {
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`.
     /// The socket is open.
     pub fn peek(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
-        // SAFETY: the open socket's network::Socket, into the caller's buffer.
-        let result = unsafe { socket_peek(self.socket(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+        let result = self
+            .with_network(|socket| peek(socket, buf, 0))
+            .unwrap_or(-1);
         check(self, result);
         result
     }

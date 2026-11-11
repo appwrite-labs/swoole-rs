@@ -14,7 +14,7 @@ use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::ptr::NonNull;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
-use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_corebase::{log, set_errno, sys::ReadSlot};
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
@@ -509,6 +509,27 @@ pub unsafe extern "C" fn socket_peek(
     unsafe { socket_record_peek(socket, buffer, length, flags, tls_peek) }
 }
 
+/// [`socket_send`] of `data` over a handle.
+pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
+    let (buffer, length) = (data.as_ptr().cast(), data.len());
+    // SAFETY: `data`'s bytes; the TLS call is valid for the socket.
+    unsafe { socket_record_send(socket, buffer, length, flags, tls_send, steady_ms) }
+}
+
+/// [`socket_recv`] into `buffer` over a handle.
+pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
+    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    // SAFETY: `buffer`'s bytes; the TLS call is valid for the socket.
+    unsafe { socket_record_recv(socket, at, length, flags, tls_recv, steady_ms) }
+}
+
+/// [`socket_peek`] into `buffer` over a handle.
+pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
+    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    // SAFETY: `buffer`'s bytes; the TLS call is valid for the socket.
+    unsafe { socket_record_peek(socket, at, length, flags, tls_peek) }
+}
+
 /// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither
 /// ends the stream nor fails with an error that closes it.
 ///
@@ -525,19 +546,11 @@ pub unsafe extern "C" fn socket_check_liveness(socket: *mut SocketRecord) -> boo
 }
 
 /// [`socket_check_liveness`] over a socket's handle.
+#[must_use]
 pub fn check_liveness(socket: Socket<'_>) -> bool {
-    let mut byte = 0u8;
+    let mut byte = [0u8];
     set_errno(0);
-    // SAFETY: a one-byte buffer, and the TLS peek valid for the socket.
-    let peeked = unsafe {
-        socket_record_peek(
-            socket,
-            (&raw mut byte).cast(),
-            1,
-            libc::MSG_DONTWAIT,
-            tls_peek,
-        )
-    };
+    let peeked = peek(socket, &mut byte, libc::MSG_DONTWAIT);
     !(peeked == 0 || (peeked < 0 && socket.catch_error(errno()) == CLOSE))
 }
 
@@ -696,6 +709,24 @@ pub unsafe fn socket_send_sync(
 ) -> isize {
     // SAFETY: as the caller promises.
     unsafe { sync(socket, Io::Send, SYNC_SEND, buffer, length, flags, true) }
+}
+
+/// [`socket_send_sync`] of `data` over a handle.
+#[must_use]
+pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
+    let (buffer, length) = (data.as_ptr().cast(), data.len());
+    // SAFETY: a live record and `data`'s bytes.
+    unsafe {
+        sync(
+            socket.as_ptr(),
+            Io::Send,
+            SYNC_SEND,
+            buffer,
+            length,
+            flags,
+            true,
+        )
+    }
 }
 
 /// `ssize_t Socket::recv_sync(void *, size_t, int)`: `MSG_WAITALL` is cleared for
@@ -923,17 +954,9 @@ pub unsafe extern "C" fn socket_ssl_get_peer_certificate_string(
 }
 
 /// `Socket::ssl_sendfile` over a descriptor.
-///
-/// # Safety
-/// `socket` is a live record holding an SSL and `offset` writable.
-unsafe fn ssl_sendfile(
-    socket: Socket<'_>,
-    fd: c_int,
-    offset: *mut libc::off_t,
-    size: usize,
-) -> isize {
+fn ssl_sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, size: usize) -> isize {
     let mut nobufs = false;
-    // SAFETY: the caller's offset, and tls_send for this record.
+    // SAFETY: the caller's offset, and tls_send for this record, which checks its SSL.
     let result = unsafe {
         ssl_sendfile_fd(
             fd,
@@ -957,28 +980,13 @@ unsafe fn ssl_sendfile(
 
 /// `Socket::sendfile` over a descriptor: through OpenSSL when the socket holds an
 /// SSL, else the platform's sendfile.
-///
-/// # Safety
-/// `socket` is a live record, `fd` an open file and `offset` writable.
-pub unsafe fn sendfile(
-    socket: *mut SocketRecord,
-    fd: c_int,
-    offset: *mut libc::off_t,
-    length: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
+pub fn sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, length: usize) -> isize {
     let (out, ssl) = socket.read(|record| (record.fd, record.ssl()));
     if !ssl.is_null() {
-        // SAFETY: as the caller promises.
-        return unsafe { ssl_sendfile(socket, fd, offset, length) };
+        return ssl_sendfile(socket, fd, offset, length);
     }
     // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
-    // SAFETY: the caller's writable offset.
-    let offset = unsafe { offset.as_mut() };
-    let sent = swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, offset, length);
+    let sent = swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
     if cfg!(not(target_os = "linux")) && sent.warn != 0 {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }
@@ -991,11 +999,7 @@ fn send_chunk(socket: Socket<'_>, request: &mut SocketFileRequest) -> (isize, us
     let fd = request.descriptor();
     let fields = request.fields();
     let chunk = sendfile_chunk(fields.begin, fields.end);
-    // SAFETY: the live record, the request's descriptor and its offset.
-    (
-        unsafe { sendfile(socket.as_ptr(), fd, &raw mut fields.begin, chunk) },
-        chunk,
-    )
+    (sendfile(socket, fd, &mut fields.begin, chunk), chunk)
 }
 
 /// `check_sendfile_parameters`'s origin.
@@ -1122,8 +1126,7 @@ struct Output<'a>(Socket<'a>);
 
 impl OutputEffects for Output<'_> {
     fn send(&self, data: &[u8]) -> isize {
-        // SAFETY: the live record and the queue's bytes.
-        unsafe { socket_send(self.0.as_ptr(), data.as_ptr().cast(), data.len(), 0) }
+        send(self.0, data, 0)
     }
 
     fn cork(&self) -> bool {
@@ -1147,15 +1150,9 @@ impl OutputEffects for Output<'_> {
     }
 }
 
-/// `int Socket::handle_send()`: sends the queue's front.
-///
-/// # Safety
-/// `socket` is a live record with a nonempty output buffer.
-pub unsafe fn socket_handle_send(socket: *mut SocketRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
+/// `int Socket::handle_send()`: sends the queue's front, aborting without one.
+#[must_use]
+pub fn socket_handle_send(record: Socket<'_>) -> c_int {
     let hooks = Output(record);
     let queue = out_queue(record);
     // SAFETY: the live record's queue and the hooks over it.
@@ -1180,22 +1177,20 @@ pub unsafe fn socket_handle_send(socket: *mut SocketRecord) -> c_int {
 /// progress instead of dropping the file.
 const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 
-/// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file.
-///
-/// # Safety
-/// `socket` is a live record whose output buffer's front is a sendfile request.
-pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
+/// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file, aborting
+/// when the front is not one.
+#[must_use]
+pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     let hooks = Output(socket);
     let mut front = swoole_rs_buffer::TypedFront::default();
     buffer_check(with_queue(socket, |queue| {
         swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_deref(), Some(&mut front))
     }));
-    // SAFETY: the front is a request `socket_sendfile_async` queued, which the queue
-    // keeps until the pop below.
+    if front.kind != SENDFILE_TOKEN {
+        std::process::abort();
+    }
+    // SAFETY: a sendfile token: only `socket_sendfile_async` queues one, as a request
+    // the queue keeps until the pop below.
     let request = unsafe { &mut *front.token.cast::<SocketFileRequest>() };
     request.cork(&hooks);
     let (rv, requested) = send_chunk(socket, request);
@@ -1228,6 +1223,9 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
     result.code
 }
 
+/// The queue's token kind for a [`SocketFileRequest`].
+const SENDFILE_TOKEN: u32 = 1;
+
 /// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:
 /// the checked request queued behind the output, which is created on first use.
 ///
@@ -1255,7 +1253,14 @@ pub unsafe fn socket_sendfile_async(
     let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
     let status = with_queue(socket, |queue| {
         // SAFETY: the queue now owns the request.
-        unsafe { swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose) }
+        unsafe {
+            swoole_rs_buffer::swr_v1_buffer_typed_push(
+                queue,
+                SENDFILE_TOKEN,
+                request.cast(),
+                dispose,
+            )
+        }
     });
     if status != 0 {
         // SAFETY: the queue refused the request, which is still ours.
@@ -1718,13 +1723,14 @@ mod tests {
             file_request(c"/nonexistent/x", 0, 0).is_none(),
             "a file that won't open is refused"
         );
-        assert_eq!(unsafe { socket_handle_sendfile(socket) }, 0);
+        let handle = unsafe { Socket::from_ptr(socket) }.unwrap();
+        assert_eq!(socket_handle_sendfile(handle), 0);
         assert_eq!(read_all(&right, 5), b"bcdef");
         assert_eq!(
             unsafe { swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"tail".as_ptr(), 4) },
             0
         );
-        assert_eq!(unsafe { socket_handle_send(socket) }, 0);
+        assert_eq!(socket_handle_send(handle), 0);
         assert_eq!(read_all(&right, 4), b"tail");
         let (mut length, mut count) = (0, 0);
         swoole_rs_buffer::swr_v1_buffer_stats(

@@ -18,7 +18,7 @@ use swoole_rs_reactor::{Event, Socket, SocketRecord};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
-use swoole_rs_tls::upstream::{socket_recv, socket_send};
+use swoole_rs_tls::upstream::{send, socket_recv};
 
 use crate::framing_recv::{self, Callbacks, Packages};
 use crate::http_routes::exports::{Frames, RecvData, dispatch_request, dispatch_task};
@@ -136,15 +136,7 @@ impl Read<'_> {
     }
 
     fn send_bytes(&self, packet: &[u8]) {
-        // SAFETY: the live socket and `packet`'s bytes.
-        unsafe {
-            socket_send(
-                self.socket.as_ptr(),
-                packet.as_ptr().cast(),
-                packet.len(),
-                0,
-            )
-        };
+        send(self.socket, packet, 0);
     }
 
     /// One receive of `mode` through the port's protocol, its packages handled by `K`.
