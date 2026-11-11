@@ -6,7 +6,7 @@
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
-use crate::reactor_upstream::{prepared, reactor_change, reactor_interest};
+use crate::reactor_upstream::{reactor_change, reactor_interest};
 use crate::{ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -224,8 +224,7 @@ pub fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option
 #[must_use]
 pub fn current_prepared() -> Option<crate::ReactorPrepared> {
     let reactor = current();
-    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
-    (!reactor.is_null()).then(|| unsafe { prepared(reactor) })
+    (!reactor.is_null()).then(|| crate::ReactorPrepared::of(reactor))
 }
 
 /// A field of the thread's `Reactor`, written; `None` without one.
