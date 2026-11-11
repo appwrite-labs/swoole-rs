@@ -29,8 +29,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     sys::{
-        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_http_build_query, swr_zend_sensitive_parameter,
-        zend_class_entry, zend_object, zval,
+        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -241,8 +241,8 @@ fn ce() -> *mut zend_class_entry {
 
 /// Property access on a client object.
 mod props {
-    use super::{CLIENT, CStr, Call, Value, zend_object};
-    use swoole_rs_zend::{Props, sys::swr_zend_property_not_null};
+    use super::{CLIENT, Call};
+    use swoole_rs_zend::Props;
 
     /// Writes on `$this`, a client method's object, under the client class;
     /// None in a static call.
@@ -250,16 +250,7 @@ mod props {
         call.props(Some(&CLIENT))
     }
 
-    /// `sw_zend_read_property_not_null_ex`: the property unless it is null.
-    /// # Safety
-    /// As [`swoole_rs_zend::property`].
-    pub(super) unsafe fn not_null<'a>(object: *mut zend_object, name: &CStr) -> Option<&'a Value> {
-        // SAFETY: per the caller.
-        let found =
-            unsafe { swr_zend_property_not_null(object, name.as_ptr(), name.count_bytes()) };
-        // SAFETY: null or a live property.
-        unsafe { Value::from_ptr(found) }
-    }
+    pub(super) use swoole_rs_zend::property_not_null as not_null;
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
@@ -757,14 +748,10 @@ impl Client {
                     b"application/x-www-form-urlencoded",
                 );
                 if fields.count() > 0 {
-                    // SAFETY: a live array zval.
-                    let query = unsafe { swr_zend_http_build_query(body.as_ptr()) };
-                    if query.is_null() {
+                    let Some(query) = body.http_build_query() else {
                         warn(false, c"http_build_query failed");
                         return false;
-                    }
-                    // SAFETY: the reference the query builder returned.
-                    let query = unsafe { ZString::from_raw(query) };
+                    };
                     request::content_length(&mut out, query.bytes().len());
                     out.extend_from_slice(query.bytes());
                 } else {

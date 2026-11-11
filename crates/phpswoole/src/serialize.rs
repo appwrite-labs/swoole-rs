@@ -3,26 +3,21 @@
 //! the caller to raise once its frames are gone.
 use std::ffi::c_int;
 use swoole_rs_zend::{
-    Owned, Value, ZString,
+    Owned, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_facade_exception, swr_zend_serialize, swr_zend_unserialize},
+    sys::{swr_zend_facade_exception, swr_zend_unserialize},
 };
 
 /// `serialize($value)`'s bytes (`None` when it threw), and whether it bailed out.
 pub fn serialize(value: &Value) -> (Option<Box<[u8]>>, Result<(), Bailout>) {
-    let mut bailed = false;
-    // SAFETY: a live zval, on the thread running PHP that holds it.
-    let serialized = unsafe { swr_zend_serialize(value.as_ptr(), &raw mut bailed) };
-    let mut result = None;
-    if !bailed && !serialized.is_null() {
-        // SAFETY: the new string serialize made, released on drop.
-        let serialized = unsafe { ZString::from_raw(serialized) };
-        // SAFETY: a pure read of EG(exception).
-        if unsafe { swr_zend_facade_exception() }.is_null() {
-            result = Some(serialized.bytes().into());
-        }
-    }
-    (result, bailout::trapped(c_int::from(bailed)))
+    let serialized = match value.serialize() {
+        Ok(serialized) => serialized,
+        Err(bailout) => return (None, Err(bailout)),
+    };
+    // SAFETY: a pure read of EG(exception).
+    let threw = !unsafe { swr_zend_facade_exception() }.is_null();
+    let bytes = serialized.filter(|_| !threw);
+    (bytes.map(|bytes| bytes.bytes().into()), Ok(()))
 }
 
 /// `unserialize($text)`, as far as it parsed (a failure warns with its offset),

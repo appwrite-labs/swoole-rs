@@ -41,7 +41,8 @@ pub use descriptor::{contain, last_fatal_error, pause_shutdown, restore_shutdown
 pub use error::{E_ERROR, E_WARNING, Message, report, throw_exception, zend_error};
 pub use function::create_object_deny;
 pub use helpers::{
-    EMPTY_FCC, EMPTY_FCI, long_zval, module_loaded, numeric, property, time, update_property,
+    EMPTY_FCC, EMPTY_FCI, long_zval, module_loaded, numeric, property, property_not_null, time,
+    update_property,
 };
 pub use local::Php;
 pub use minit::{Minit, Parent};
