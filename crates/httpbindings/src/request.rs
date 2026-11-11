@@ -149,6 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "libc's strncasecmp and isspace are foreign calls")]
     fn token_lists_keep_the_pinned_fast_path_and_scan() {
         assert_eq!(token_list_fast(b"", c"websocket"), Some(false));
         let fast = size_of::<*const u8>() - 1;
