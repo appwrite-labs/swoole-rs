@@ -9,7 +9,7 @@
 [![Miri](https://github.com/appwrite-labs/swoole-rs/actions/workflows/miri.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/miri.yml?query=branch%3Amain+event%3Aschedule)
 [![AddressSanitizer](https://github.com/appwrite-labs/swoole-rs/actions/workflows/asan.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/asan.yml?query=branch%3Amain+event%3Aschedule)
 [![ThreadSanitizer](https://github.com/appwrite-labs/swoole-rs/actions/workflows/tsan.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/tsan.yml?query=branch%3Amain+event%3Aschedule)
-[![Fuzzing](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml?query=branch%3Amain+event%3Aschedule)
+[![ClusterFuzzLite](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/cflite_batch.yml?query=branch%3Amain+event%3Aschedule)
 [![API fuzz](https://github.com/appwrite-labs/swoole-rs/actions/workflows/api-fuzz.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/api-fuzz.yml?query=branch%3Amain+event%3Aschedule)
 [![WebSocket RFC conformance](https://github.com/appwrite-labs/swoole-rs/actions/workflows/conformance.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/conformance.yml?query=branch%3Amain+event%3Aschedule)
 [![Soak](https://github.com/appwrite-labs/swoole-rs/actions/workflows/soak.yml/badge.svg?branch=main&event=schedule)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/soak.yml?query=branch%3Amain+event%3Aschedule)
@@ -31,8 +31,8 @@ fails a PR that raises any crate's count above `main`'s (`crates/zend`'s unsafe 
 the PHPT corpus, the corpus apps and swoole/library's suite (`tools/coverage.py`, nightly), and links
 to the per-crate table and the entry points no run reached.
 The second row is each nightly verification workflow's latest scheduled run on `main`: Miri
-over the crates' tests, the AddressSanitizer and ThreadSanitizer builds, ClusterFuzzLite's
-fuzz batch, the API fuzzer, the WebSocket RFC conformance suite, the soak run, the supported
+over the crates' tests, the AddressSanitizer and ThreadSanitizer builds, ClusterFuzzLite
+(the later of its nightly fuzz batch and corpus prune; a failed batch also opens a p1 issue), the API fuzzer, the WebSocket RFC conformance suite, the soak run, the supported
 PHP versions and a debug PHP build.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
