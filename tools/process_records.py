@@ -11,7 +11,7 @@ refinements={'pool':'ProcessPool *','queue':'swr_v1_os_msg_queue *','pipe_object
 text='#ifndef SWOOLE_RS_PROCESS_VIEWS_H\n#define SWOOLE_RS_PROCESS_VIEWS_H\n// Generated from crates/process/src/{worker_record,process_pool}.rs and crates/tls/src/socket_pair.rs.\n// Typed native loans only; Rust owns the record layouts and operations.\n'
 for record,file,view in [('WorkerRecord','process/src/worker_record','SWR_WORKER_RECORD_FIELDS'),('PoolRecord','process/src/process_pool','SWR_POOL_RECORD_FIELDS'),('SocketPair','tls/src/socket_pair','SWR_SOCKET_PAIR_RECORD_FIELDS')]:
  s=Path('crates/'+file+'.rs').read_text().split('pub struct '+record+' {',1)[1].split('\n}',1)[0]
- fields=re.findall(r'^    (?:pub )?(\w+): ([^,]+),',s,re.M)
+ fields=re.findall(r'^    (?:pub(?:\(crate\))? )?(\w+): ([^,]+),',s,re.M)
  text+='#define '+view+' '+chr(92)+chr(10)
  for name,ty in fields:
   if ty == '[c_int; 2]':decl='int '+name+'[2]'

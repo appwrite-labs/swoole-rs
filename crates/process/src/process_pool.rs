@@ -68,7 +68,9 @@ pub struct PoolRecord {
     pub round_id: u32,
     pub workers: *mut WorkerRecord,
     pub pipes: *mut c_void,
-    pub registry: *mut WorkerRegistry,
+    /// Null, or the box `create` made: crate-private, so safe code elsewhere can't
+    /// forge it.
+    pub(crate) registry: *mut WorkerRegistry,
     pub queue: *mut c_void,
     pub ipc: *mut PoolIpc,
     pub message_box: *mut c_void,
@@ -78,20 +80,19 @@ pub struct PoolRecord {
 }
 
 impl PoolRecord {
+    /// The registry `create` made, or null.
+    #[must_use]
+    pub fn registry(&self) -> *mut WorkerRegistry {
+        self.registry
+    }
+
     /// `f` over the registry `create` made; `None` before it.
     pub(crate) fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
-        with_registry(self.registry, f)
+        // SAFETY: `registry` is crate-private: null, or the box `create` made until
+        // `destroy` frees it. Only these calls reach it, one at a time, so nothing else
+        // borrows it while `f` runs.
+        unsafe { self.registry.as_mut() }.map(f)
     }
-}
-
-/// `f` over `registry`, a pool's: null or the box `create` made, which only these
-/// calls reach, one at a time.
-fn with_registry<R>(
-    registry: *mut WorkerRegistry,
-    f: impl FnOnce(&mut WorkerRegistry) -> R,
-) -> Option<R> {
-    // SAFETY: as above: null or live, and borrowed by nothing else while `f` runs.
-    unsafe { registry.as_mut() }.map(f)
 }
 
 /// A live pool, as the pool passes one to its callbacks. Like [`Worker`], it reads
@@ -660,9 +661,15 @@ impl<H: PoolHost> Pool<H> {
         unsafe { std::slice::from_raw_parts(self.workers(), self.worker_num() as usize) }
     }
 
+    /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
+    fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
+        // SAFETY: `p` is the live pool this runs over.
+        unsafe { &*self.p }.with_registry(f)
+    }
+
     /// `get_worker_by_pid`: the pool's worker at `pid`, or null.
     fn worker_by_pid(&self, pid: c_int) -> *mut WorkerRecord {
-        with_registry(self.registry(), |registry| registry.lookup(pid))
+        self.with_registry(|registry| registry.lookup(pid))
             .map_or(ptr::null_mut(), <*mut c_void>::cast)
     }
 
@@ -827,7 +834,7 @@ impl<H: PoolHost> Pool<H> {
         // SAFETY: one of the pool's records.
         let worker = unsafe { Worker::new(worker) };
         let old = worker.pid();
-        with_registry(self.registry(), |registry| registry.unregister(old));
+        self.with_registry(|registry| registry.unregister(old));
         let pid = self.on(worker.raw(), OP_FORK, 0);
         if pid == 0 {
             self.child(worker.raw())?;
@@ -836,7 +843,7 @@ impl<H: PoolHost> Pool<H> {
         let pid = c_int::try_from(pid).unwrap_or(-1);
         worker.set_pid(pid);
         let record = worker.raw().cast();
-        with_registry(self.registry(), |registry| {
+        self.with_registry(|registry| {
             registry.register(pid, record, 0);
         });
         Ok(pid.into())
@@ -1072,7 +1079,7 @@ impl<H: PoolHost> Pool<H> {
             if self.spawn(worker).is_err() {
                 crate::pool::raise_bailout();
             }
-            with_registry(self.registry(), |registry| registry.detach(pid));
+            self.with_registry(|registry| registry.detach(pid));
         }
         self.set_read_message(false);
     }
@@ -1084,7 +1091,8 @@ impl<H: PoolHost> Pool<H> {
         if worker.is_null() {
             if self.on_worker_not_found().is_some() {
                 self.op(OP_ON_WORKER_NOT_FOUND, exited(pid, status));
-            } else if !with_registry(self.registry(), |registry| registry.reap_detached(pid))
+            } else if !self
+                .with_registry(|registry| registry.reap_detached(pid))
                 .unwrap_or(false)
             {
                 self.op(LOG_UNKNOWN_CHILD, u64::from(pid.cast_unsigned()));
