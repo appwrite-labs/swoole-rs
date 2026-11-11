@@ -4,7 +4,7 @@
 
 /* memory_limit must not bail out of an allocation Rust makes (docs/zend.md, memory_limit). */
 #ifndef ZEND_HAS_OOM
-#warning "this PHP bails out of the allocator at memory_limit, over Rust frames: build against 8.2.35, 8.3.36, 8.4.27, 8.5.12 or later"
+#error "this PHP bails out of the allocator at memory_limit, over Rust frames: build against 8.2.35, 8.3.36, 8.4.27, 8.5.12 or later"
 #endif
 
 zend_string *swr_zend_string_alloc(size_t length) {

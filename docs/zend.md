@@ -195,7 +195,7 @@ Rust reaches only through `bailout::call`. Past the hard limit (twice
 `memory_limit`, or 1 GiB above it) the allocator ends the process with
 `_exit(137)`. So `ZString`, `ZBuf`, `OwnedArray`, `ArrayMut` and `Callable`
 allocate with no `setjmp`. An older PHP bails out of the allocator, over the
-Rust frames that called it, and zend-sys warns when built against one.
+Rust frames that called it, so zend-sys refuses to build against one.
 `tests/modules/zend/memory_limit.php` reaches the limit inside a `ZBuf` and
 compares the outcome with upstream's.
 
