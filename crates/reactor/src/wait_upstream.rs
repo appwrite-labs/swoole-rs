@@ -88,8 +88,7 @@ mod registry {
     }
 
     /// The current coroutine while the thread has a loop.
-    unsafe extern "C" fn current() -> *mut c_void {
-        // SAFETY: no preconditions.
+    extern "C" fn current() -> *mut c_void {
         if crate::event_api::swr_v1_event_current().is_null() {
             return ptr::null_mut();
         }

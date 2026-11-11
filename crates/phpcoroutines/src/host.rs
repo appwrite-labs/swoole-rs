@@ -592,7 +592,7 @@ fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
 }
 
 /// The reactor's destroy callback.
-unsafe extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
+extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
     bailout::raise(crate::runtime::deactivate());
 }
 

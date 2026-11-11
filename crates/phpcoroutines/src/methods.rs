@@ -393,7 +393,7 @@ fn set_time_limit(call: &Call) {
     call.set_bool(true);
 }
 
-unsafe extern "C-unwind" fn time_limit(cid: *mut c_void) {
+extern "C-unwind" fn time_limit(cid: *mut c_void) {
     let cid = c_long::try_from(cid.addr()).unwrap_or_default();
     if let Some(ctx) = context::by_cid(cid) {
         // Its timer has fired.
