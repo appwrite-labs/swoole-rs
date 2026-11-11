@@ -91,6 +91,41 @@ unsafe fn record<'a>(conn: *mut ConnectionRecord) -> &'a mut ConnectionRecord {
     unsafe { &mut *conn }
 }
 
+/// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
+fn close_event(c: &ConnectionRecord, fd: c_long) -> DataHead {
+    DataHead {
+        fd,
+        reactor_id: if c.close_actively != 0 {
+            -1
+        } else {
+            i16::from(c.reactor_id)
+        },
+        server_fd: low16(c.server_fd),
+        ..DataHead::default()
+    }
+}
+
+/// `ProcessFactory`'s onClose for session `fd`: `call` runs with the close event
+/// while the connection `conn` gives is marked closing. onClose reaches the same
+/// record by session (`exist()`, `getClientInfo()`, `close()`), so `conn` is asked
+/// again after it rather than a reference held across it.
+#[cfg_attr(
+    not(any(test, feature = "upstream-symbols")),
+    expect(dead_code, reason = "only process mode's factory ops call it")
+)]
+pub(crate) fn on_close<'a>(
+    conn: impl Fn() -> Option<&'a mut ConnectionRecord>,
+    fd: c_long,
+    call: impl FnOnce(&mut DataHead),
+) -> Option<()> {
+    let c = conn()?;
+    let mut info = close_event(c, fd);
+    c.closing = 1;
+    call(&mut info);
+    conn()?.closing = 0;
+    Some(())
+}
+
 /// `Server::create_base_factory`: one reactor per worker and per-worker counters.
 pub(crate) fn create<H: Host>(h: &mut H) -> crate::Effect<i64> {
     h.get(OP_BASE_REACTORS)?;
@@ -334,28 +369,17 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         return Ok(false);
     }
     c.closing = 1;
-    // `if_do_close_callback`: once, by whoever sets `closed`.
-    if h.is(OP_HAS_ON_CLOSE)? {
-        // SAFETY: the record is still the session's; native code did not free it.
-        let c = unsafe { record(conn) };
-        if c.closed
+    // `if_do_close_callback`: once, by whoever sets `closed`. The slot's presence
+    // is Rust's fact, so nothing else reaches the record before onClose.
+    if h.is(OP_HAS_ON_CLOSE)?
+        && c.closed
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-        {
-            let info = DataHead {
-                fd: id,
-                reactor_id: if c.close_actively != 0 {
-                    -1
-                } else {
-                    i16::from(c.reactor_id)
-                },
-                server_fd: low16(c.server_fd),
-                ..DataHead::default()
-            };
-            h.op(OP_ON_CLOSE, address(&raw const info))?;
-        }
+    {
+        let info = close_event(c, id);
+        h.op(OP_ON_CLOSE, address(&raw const info))?;
     }
-    // SAFETY: as above; the callback has returned.
+    // SAFETY: as above, re-derived: onClose, which reaches it by session, has returned.
     let c = unsafe { record(conn) };
     c.closing = 0;
     c.close_errno = 0;
@@ -673,5 +697,27 @@ mod tests {
         let close = send(1, 4, 0);
         assert!(!finish(&mut s, &raw const close).unwrap(), "unknown event");
         assert_eq!(s.called(OP_FORWARD), 0);
+    }
+
+    /// onClose sees its connection closing through the session lookup
+    /// `$server->exist()` and `close()` use, and writes through its own
+    /// reference to the slot; the caller's write after it is still valid
+    /// (`cargo miri test` checks the aliasing).
+    #[test]
+    fn on_close_reaches_the_record_by_session() {
+        let mut t = Tables::new();
+        t.conn().close_actively = 1;
+        let s = t.script(&[]);
+        // As process mode's factory holds the slot `OP_SESSION_CONN` looked up.
+        let conn = s.state.connection_ptr(1, crate::records::VERIFIED);
+        let mut seen = None;
+        let call = |info: &mut DataHead| {
+            let c = s.state.connection(1, crate::records::BY_SESSION).unwrap();
+            seen = Some((info.fd, info.reactor_id, info.server_fd, c.closing));
+            c.close_errno = 104;
+        };
+        on_close(|| unsafe { conn.as_mut() }, 1, call).unwrap();
+        assert_eq!(seen, Some((1, -1, 7, 1)), "closing during onClose");
+        assert_eq!((t.conn().closing, t.conn().close_errno), (0, 104));
     }
 }
