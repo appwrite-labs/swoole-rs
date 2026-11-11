@@ -377,6 +377,8 @@ class Lanes(unittest.TestCase):
         self.assertTrue(commands['abi'][commands['abi'].index('--extension') + 1].endswith('target/ext/swoole.so'))
         self.assertIn('--native', commands['cargo-build'])
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
+        # An -ffi crate's tests run with its module's (#2996 moved error's there).
+        self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
         for family in ['logger', 'hash', 'global-logger', 'redirect']:
