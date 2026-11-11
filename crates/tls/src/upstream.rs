@@ -5,7 +5,7 @@
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
 use crate::{
-    Cert, Ssl, SocketTls, SslHandshakeResult, SslIoResult, swr_v1_socket_ssl_accept,
+    Cert, SocketTls, Ssl, SslHandshakeResult, SslIoResult, swr_v1_socket_ssl_accept,
     swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
     swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_pem, swr_v1_socket_ssl_recv,
     swr_v1_socket_ssl_send, swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
@@ -319,8 +319,7 @@ fn error_reason_text() -> (c_int, String) {
 #[must_use]
 pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
     let dtls = socket.read(|record| record.dtls != 0);
-    let Some(result) = with_tls(socket, |tls, ssl| swr_v1_socket_ssl_accept(tls, ssl, dtls))
-    else {
+    let Some(result) = with_tls(socket, |tls, ssl| swr_v1_socket_ssl_accept(tls, ssl, dtls)) else {
         return ERROR;
     };
     handshake(result);
@@ -1011,14 +1010,24 @@ pub(crate) fn buffer_check(status: i32) {
     }
 }
 
-/// A socket's `out_buffer` queue: `Buffer`'s first member is its Rust handle.
-///
-/// # Safety
-/// `socket` has an output buffer.
-pub(crate) unsafe fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_buffer::Buffer {
+/// A socket's `out_buffer` queue, null without one: `Buffer`'s first member is its
+/// Rust handle.
+pub(crate) fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_buffer::Buffer {
     let buffer = socket.read(|record| record.output.out_buffer);
-    // SAFETY: the live Buffer's first member.
+    if buffer.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: a socket's output buffer is a live `Buffer`, which only the socket frees.
     unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() }
+}
+
+/// `f` over the socket's queue (None without one).
+pub(crate) fn with_queue<R>(
+    socket: Socket<'_>,
+    f: impl FnOnce(Option<&mut swoole_rs_buffer::Buffer>) -> R,
+) -> R {
+    // SAFETY: null or the socket's live queue, borrowed for `f` alone.
+    f(unsafe { out_queue(socket).as_mut() })
 }
 
 /// The queued output's effects on a socket.
@@ -1061,8 +1070,7 @@ pub unsafe fn socket_handle_send(socket: *mut SocketRecord) -> c_int {
         return -1;
     };
     let hooks = Output(record);
-    // SAFETY: as the caller promises.
-    let queue = unsafe { out_queue(record) };
+    let queue = out_queue(record);
     // SAFETY: the live record's queue and the hooks over it.
     let output = unsafe { handle_send_owned(record, queue, &hooks) };
     buffer_check(output.status);
@@ -1095,14 +1103,10 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
         return -1;
     };
     let hooks = Output(socket);
-    // SAFETY: as the caller promises.
-    let queue = unsafe { out_queue(socket) };
     let mut front = swoole_rs_buffer::TypedFront::default();
-    // SAFETY: the live queue, borrowed for this call.
-    buffer_check(swoole_rs_buffer::swr_v1_buffer_typed_front(
-        unsafe { queue.as_ref() },
-        Some(&mut front),
-    ));
+    buffer_check(with_queue(socket, |queue| {
+        swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_deref(), Some(&mut front))
+    }));
     // SAFETY: the front is a request `socket_sendfile_async` queued, which the queue
     // keeps until the pop below.
     let request = unsafe { &mut *front.token.cast::<SocketFileRequest>() };
@@ -1123,9 +1127,9 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
     }
     if result.pop {
         let mut detached = swoole_rs_buffer::TypedDetached::default();
-        // SAFETY: the live queue, borrowed for this call.
-        let queue = unsafe { queue.as_mut() };
-        let status = swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut detached));
+        let status = with_queue(socket, |queue| {
+            swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut detached))
+        });
         if status != BUFFER_EMPTY {
             buffer_check(status);
             if let Some(dispose) = detached.dispose {
@@ -1162,13 +1166,10 @@ pub unsafe fn socket_sendfile_async(
         socket.edit(|record| record.output.out_buffer = buffer.cast());
     }
     let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
-    // SAFETY: the socket's output buffer exists now.
-    let queue = unsafe { out_queue(socket) };
-    // SAFETY: the live output queue.
-    let queue = unsafe { queue.as_mut() };
-    // SAFETY: the queue now owns the request.
-    let status =
-        unsafe { swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose) };
+    let status = with_queue(socket, |queue| {
+        // SAFETY: the queue now owns the request.
+        unsafe { swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose) }
+    });
     if status != 0 {
         // SAFETY: the queue refused the request, which is still ours.
         unsafe { SocketFileRequest::dispose(request.cast()) };
@@ -1276,8 +1277,8 @@ pub unsafe fn socket_ssl_create(
         0 => return 0,
         1 => log::warning(c"Socket::ssl_create", format_args!("SSL_new() failed")),
         2 => {
-            let reason = crate::reason_string(error)
-                .map_or_else(|| "(null)".into(), CStr::to_string_lossy);
+            let reason =
+                crate::reason_string(error).map_or_else(|| "(null)".into(), CStr::to_string_lossy);
             log::warning(
                 c"Socket::ssl_create",
                 format_args!("SSL_set_fd() failed. Error: {reason}[{error}]"),
@@ -1690,7 +1691,9 @@ mod tests {
         let mut right = SocketRecord::with_fd(fds[1], 0);
         let sent = unsafe { socket_send_sync(&raw mut left, b"ping".as_ptr().cast(), 4, 0) };
         assert_eq!(sent, 4);
-        assert!(check_liveness(unsafe { Socket::from_ptr(&raw mut right) }.unwrap()));
+        assert!(check_liveness(
+            unsafe { Socket::from_ptr(&raw mut right) }.unwrap()
+        ));
         let mut buffer = [0u8; 4];
         let received = unsafe {
             socket_recv_sync(
@@ -1704,7 +1707,9 @@ mod tests {
         assert_eq!(right.total_recv_bytes, 4);
         assert_ne!(right.output.nonblock, 0);
         unsafe { libc::close(fds[0]) };
-        assert!(!check_liveness(unsafe { Socket::from_ptr(&raw mut right) }.unwrap()));
+        assert!(!check_liveness(
+            unsafe { Socket::from_ptr(&raw mut right) }.unwrap()
+        ));
         unsafe { libc::close(fds[1]) };
     }
 }

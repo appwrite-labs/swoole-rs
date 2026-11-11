@@ -4,10 +4,9 @@
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use openssl_sys::{
-    BIO, BIO_ctrl, DTLS_method, EVP_MD,
-    EVP_PKEY, EVP_PKEY_free, EVP_sha1, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,
-    SSL_CTRL_SET_GROUPS_LIST, SSL_CTX, SSL_CTX_check_private_key, SSL_CTX_clear_options,
-    SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_new,
+    BIO, BIO_ctrl, DTLS_method, EVP_MD, EVP_PKEY, EVP_PKEY_free, EVP_sha1, OPENSSL_NPN_NEGOTIATED,
+    OPENSSL_init_ssl, SSL, SSL_CTRL_SET_GROUPS_LIST, SSL_CTX, SSL_CTX_check_private_key,
+    SSL_CTX_clear_options, SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_new,
     SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_cipher_list,
     SSL_CTX_set_client_CA_list, SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode,
     SSL_CTX_set_options, SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode,

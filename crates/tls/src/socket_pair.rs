@@ -267,13 +267,19 @@ mod tests {
         assert!(!pair.master_socket.is_null() && !pair.worker_socket.is_null());
         let sent = *b"wire";
         let mut received = [0_u8; 4];
-        assert_eq!(unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) }, 4);
+        assert_eq!(
+            unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) },
+            4
+        );
         assert_eq!(
             unsafe { read(&*this, received.as_mut_ptr().cast(), received.len()) },
             4
         );
         assert_eq!(received, sent);
-        assert_eq!(unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) }, 4);
+        assert_eq!(
+            unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) },
+            4
+        );
         set_blocking(unsafe { &mut *this }, false);
         clean(unsafe { &*this });
         assert!(unsafe { read(&*this, received.as_mut_ptr().cast(), received.len()) } < 0);

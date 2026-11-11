@@ -7,8 +7,8 @@ use openssl_sys::{
     BIO, BIO_METHOD, BIO_clear_flags, BIO_get_data, BIO_meth_free, BIO_meth_new,
     BIO_meth_set_create__fixed_rust, BIO_meth_set_ctrl__fixed_rust,
     BIO_meth_set_destroy__fixed_rust, BIO_meth_set_read__fixed_rust,
-    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init,
-    SSL, SSL_set_bio,
+    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init, SSL,
+    SSL_set_bio,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicPtr, Ordering};

@@ -126,9 +126,10 @@ pub unsafe extern "C" fn swr_v1_tls_owner_free(owner: *const OwnedTlsContext) {
 /// OpenSSL's reason text for `error`, or `(null)` as printf shows a missing one.
 #[must_use]
 pub fn reason_text(error: std::os::raw::c_ulong) -> String {
-    crate::reason_string(error).map_or_else(|| "(null)".into(), |reason| {
-        reason.to_string_lossy().into_owned()
-    })
+    crate::reason_string(error).map_or_else(
+        || "(null)".into(),
+        |reason| reason.to_string_lossy().into_owned(),
+    )
 }
 /// `tls_host_name`'s slot.
 const TLS_HOST_NAME: usize = 8;
@@ -724,11 +725,8 @@ mod tests {
                 );
                 assert_eq!((*socket).fields.output.ssl_send, 1);
                 assert_eq!((*prepared.fields).http_v2, 1);
-                let result = swr_v1_tls_owner_socket_session(
-                    prepared.owner,
-                    socket,
-                    Arc::as_ptr(&hostname),
-                );
+                let result =
+                    swr_v1_tls_owner_socket_session(prepared.owner, socket, Arc::as_ptr(&hostname));
                 assert_eq!(result.status, 0);
                 let ssl = (*socket).fields.ssl.cast::<openssl_sys::SSL>();
                 assert_eq!(

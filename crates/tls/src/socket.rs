@@ -631,8 +631,12 @@ mod tests {
             let (ssl, _) = client();
             let mut tls = SocketTls::default();
             let mut buffer = [0_u8; 16];
-            let read =
-                swr_v1_socket_ssl_recv(&mut tls, handle(ssl), buffer.as_mut_ptr().cast(), buffer.len());
+            let read = swr_v1_socket_ssl_recv(
+                &mut tls,
+                handle(ssl),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            );
             assert_eq!(
                 read,
                 SslIoResult {
@@ -722,7 +726,11 @@ mod tests {
         unsafe {
             let check = |cert, name: &str| {
                 let cert = Cert(std::ptr::NonNull::new(cert).unwrap());
-                if cert.matches_host(name.as_bytes()) { 1 } else { 2 }
+                if cert.matches_host(name.as_bytes()) {
+                    1
+                } else {
+                    2
+                }
             };
             let named = |common: &str| {
                 let cert = X509_new();
@@ -753,7 +761,10 @@ mod tests {
                 c_long::from(X509_V_OK)
             );
             SSL_set_verify_result(ssl, c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT));
-            assert_eq!(swr_v1_socket_ssl_verify(handle(ssl), true), c_long::from(X509_V_OK));
+            assert_eq!(
+                swr_v1_socket_ssl_verify(handle(ssl), true),
+                c_long::from(X509_V_OK)
+            );
             assert_eq!(
                 swr_v1_socket_ssl_verify(handle(ssl), false),
                 c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT)
@@ -856,7 +867,12 @@ mod tests {
             let (ssl, read) = client();
             let mut tls = SocketTls::default();
             let mut buffer = [0_u8; 16];
-            swr_v1_socket_ssl_recv(&mut tls, handle(ssl), buffer.as_mut_ptr().cast(), buffer.len());
+            swr_v1_socket_ssl_recv(
+                &mut tls,
+                handle(ssl),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            );
             let garbage = [
                 0x16_u8, 0x03, 0x03, 0x00, 0x05, 0xff, 0xff, 0xff, 0xff, 0xff,
             ];
@@ -865,8 +881,12 @@ mod tests {
                 garbage.as_ptr().cast(),
                 c_int::try_from(garbage.len()).unwrap(),
             );
-            let result =
-                swr_v1_socket_ssl_recv(&mut tls, handle(ssl), buffer.as_mut_ptr().cast(), buffer.len());
+            let result = swr_v1_socket_ssl_recv(
+                &mut tls,
+                handle(ssl),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            );
             assert_eq!(
                 result,
                 SslIoResult {
