@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
@@ -260,6 +260,7 @@ unsafe extern "C" {
 /// aliases in its base record; protocol callbacks and addresses retain their
 /// original identity and lifetime, including direct SDK field writes.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ClientRecord {
     pub http2: bool,
     pub open_length_check: bool,
@@ -287,7 +288,7 @@ const _: () = {
 /// One client's state, its public record first: `network::Client`.
 #[repr(C)]
 pub struct Client {
-    record: UnsafeCell<ClientRecord>,
+    record: Cell<ClientRecord>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -319,6 +320,20 @@ impl Client {
             Proxy::Socks5 => &self.socks5,
             Proxy::Http => &self.http_proxy,
         }
+    }
+
+    /// A copy of the public record.
+    pub fn record(&self) -> ClientRecord {
+        self.record.get()
+    }
+
+    /// Edit a copy of the public record and write it back, so no reference
+    /// into the record is live while `edit` runs.
+    pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
+        let mut record = self.record.get();
+        let result = edit(&mut record);
+        self.record.set(record);
+        result
     }
 
     /// One of the flags above; false for any other.
@@ -371,7 +386,7 @@ impl Handle {
     fn fields(self) -> &'static mut ClientRecord {
         // SAFETY: the live client's record, which SDK callers reach only between
         // its operations.
-        unsafe { &mut *self.get().record.get() }
+        unsafe { &mut *self.get().record.as_ptr() }
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
@@ -815,7 +830,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     };
     let mut client = Box::new(Client {
         // SAFETY: all-zero pointers, bools, addresses and Protocol are valid.
-        record: UnsafeCell::new(unsafe { core::mem::zeroed() }),
+        record: Cell::new(unsafe { core::mem::zeroed() }),
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
