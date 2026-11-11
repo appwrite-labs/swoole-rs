@@ -41,14 +41,14 @@ pub use descriptor::{contain, last_fatal_error, pause_shutdown, restore_shutdown
 pub use error::{E_ERROR, E_WARNING, Message, report, throw_exception, zend_error};
 pub use function::create_object_deny;
 pub use helpers::{
-    EMPTY_FCC, EMPTY_FCI, each_value, long_zval, module_loaded, property, time, update_property,
+    EMPTY_FCC, EMPTY_FCI, long_zval, module_loaded, property, time, update_property,
 };
 pub use local::Php;
 pub use minit::{Minit, Parent};
 pub use object::{Custom, CustomClass, Object, Props, init_object, new_object, set_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
-pub use value::{get_long as to_long, obj_of as object_of, push_str as push_string};
+pub use value::{obj_of as object_of, push_str as push_string};
 pub use zval::{Array, ArrayMut, Entries, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString};
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for

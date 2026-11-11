@@ -1,14 +1,13 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
-//! hash iteration, typed property updates.
+//! typed property updates.
 use crate::{
     Value,
     sys::{
-        module_registry, php_time, swr_zend_hash_foreach, swr_zend_property_slot, zend_array,
-        zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find, zend_object,
-        zval,
+        module_registry, php_time, swr_zend_property_slot, zend_class_entry, zend_fcall_info,
+        zend_fcall_info_cache, zend_hash_str_find, zend_object, zval,
     },
 };
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
 
 /// An empty `zend_fcall_info` (no function, object or arguments), for a
 /// parser or the caller to fill.
@@ -33,24 +32,6 @@ pub fn module_loaded(name: &CStr) -> bool {
 pub fn time() -> i64 {
     // SAFETY: reads the clock.
     unsafe { php_time() }
-}
-
-/// `ZEND_HASH_FOREACH_VAL`: `each` returns false to stop early.
-/// # Safety
-/// `table` is a live array that `each` does not modify, and `each` does not
-/// unwind.
-pub unsafe fn each_value<F: FnMut(*mut zval) -> bool>(table: *const zend_array, mut each: F) {
-    unsafe extern "C" fn trampoline<F: FnMut(*mut zval) -> bool>(
-        value: *mut zval,
-        context: *mut c_void,
-    ) -> bool {
-        // SAFETY: `context` is the closure `each_value` passed, live for the loop.
-        let each = unsafe { &mut *context.cast::<F>() };
-        each(value)
-    }
-    let context = (&raw mut each).cast::<c_void>();
-    // SAFETY: per the caller; the closure outlives the loop.
-    unsafe { swr_zend_hash_foreach(table, Some(trampoline::<F>), context) };
 }
 
 /// `sw_zend_read_property_ex`: the declared property's slot (an uninitialised
