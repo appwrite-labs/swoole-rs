@@ -29,11 +29,7 @@ use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE, CB_WOR
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::view;
 
-// SAFETY: crates/coroutine's and crates/reactor's bodies.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z22swoole_coroutine_countv"]
-    safe fn coroutine_count() -> usize;
-}
+use swoole_rs_coroutine::swoole_coroutine_count as coroutine_count;
 
 /// `Reactor::PRIORITY_TRY_EXIT`, `PRIORITY_WORKER_CALLBACK`; `SW_FD_PIPE`.
 const PRIORITY_TRY_EXIT: c_int = 4;

@@ -37,7 +37,7 @@ mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
-pub use functions::mime_type;
+pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
@@ -208,8 +208,12 @@ pub fn check_reactor() {
 unsafe extern "C" {
     /// crates/phpevents' loop setup, on this thread.
     safe fn php_swoole_reactor_init() -> c_int;
-    /// crates/coroutine: whether this thread runs a coroutine.
-    safe fn swoole_coroutine_is_in() -> u8;
+}
+
+/// `Coroutine::get_current() != nullptr`: whether this thread runs a coroutine.
+#[must_use]
+pub fn in_coroutine() -> bool {
+    !swoole_rs_coroutine::current().is_null()
 }
 
 /// `Coroutine::get_current_safe()`: Swoole's fatal error outside a coroutine,
@@ -217,7 +221,7 @@ unsafe extern "C" {
 pub fn coroutine_check() {
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
-    if swoole_coroutine_is_in() == 0 {
+    if !in_coroutine() {
         // SAFETY: as upstream raises it here; the callers' frames own nothing.
         unsafe {
             swoole_rs_corebase::fatal_error(

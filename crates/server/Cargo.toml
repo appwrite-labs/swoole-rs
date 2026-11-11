@@ -25,6 +25,7 @@ halfclose = []
 libc = "=0.2.191"
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-clients = { path = "../clients" }
+swoole-rs-coroutine = { path = "../coroutine" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-ossupport = { path = "../ossupport" }

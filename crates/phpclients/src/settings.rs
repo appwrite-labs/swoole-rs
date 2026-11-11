@@ -8,6 +8,7 @@ use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_clients::client::{ClientRecord, OPEN_SSL};
 use swoole_rs_corebase::net_types::Protocol;
+use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
     Array, E_ERROR, Value as Zval, ZString, bailout, long_zval, string,
@@ -22,13 +23,6 @@ const INPUT_BUFFER_SIZE: i64 = 2 * 1024 * 1024;
 
 /// `SW_IPC_BUFFER_SIZE`: the length offset a length function's protocol keeps.
 const IPC_BUFFER_SIZE: u16 = 8192;
-
-// The C++ framing functions a client's protocol points at.
-unsafe extern "C" {
-    /// `Protocol::default_length_func`.
-    #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
-    pub(crate) fn default_length_func();
-}
 
 /// `php_swoole_length_func`: the packet length the PHP callable in the
 /// protocol's `private_data_1` returns for the bytes so far, or -1. A bailout

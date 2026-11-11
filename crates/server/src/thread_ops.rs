@@ -11,6 +11,9 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::workers::entry::{
+    call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
+};
 use swoole_rs_reactor::{Socket, SocketRecord, reactor_upstream};
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
@@ -56,16 +59,6 @@ struct DgramPacket {
     socket_type: c_int,
     socket_addr: SocketAddress,
     length: u32,
-}
-
-// SAFETY: crates/process' methods under their upstream symbols.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole6Server26call_worker_start_callbackEPNS_6WorkerE"]
-    fn call_worker_start_callback(serv: *mut c_void, worker: *mut WorkerRecord);
-    #[link_name = "_ZN6swoole6Server25call_worker_stop_callbackEPNS_6WorkerE"]
-    fn call_worker_stop_callback(serv: *mut c_void, worker: *mut WorkerRecord);
-    #[link_name = "_ZN6swoole6Server17stop_async_workerEPNS_6WorkerE"]
-    fn stop_async_worker(serv: *mut c_void, worker: *mut WorkerRecord);
 }
 
 /// The context's thread.
@@ -290,19 +283,20 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_WORKER_START | OP_WORKER_STOP => {
-            let worker = worker(server, this(ctx).id);
+            let worker: *mut WorkerRecord = worker(server, this(ctx).id);
             if op == OP_WORKER_START {
                 // SAFETY: the live server and this thread's worker.
-                unsafe { call_worker_start_callback(serv, worker) };
+                unsafe { call_worker_start_callback(serv, worker.cast()) };
             } else {
                 // SAFETY: as above.
-                unsafe { call_worker_stop_callback(serv, worker) };
+                unsafe { call_worker_stop_callback(serv, worker.cast()) };
             }
             0
         }
         OP_STOP_THREAD_WORKER => {
+            let worker: *mut WorkerRecord = worker(server, reactor_id());
             // SAFETY: the live server and this reactor's worker.
-            unsafe { stop_async_worker(serv, worker(server, reactor_id())) };
+            unsafe { stop_async_worker(serv, worker.cast()) };
             0
         }
         OP_THREAD_INIT | OP_THREAD0_INIT => {

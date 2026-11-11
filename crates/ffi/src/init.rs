@@ -12,10 +12,6 @@ use swoole_rs_corebase::native::{self, LOGGER_NEW, NativeHost};
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_memory::members::pool;
 
-unsafe extern "C-unwind" {
-    safe fn swoole_coroutine_is_in() -> u8;
-}
-
 // src/fatal.c.
 unsafe extern "C" {
     safe fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
@@ -48,7 +44,7 @@ extern "C-unwind" fn swoole_init() {
         timer_free: || swoole_rs_timer::swoole_timer_free(),
         event_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
-        coroutine_is_in: || swoole_coroutine_is_in() != 0,
+        coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
     swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
     swoole_rs_ports::register_methods();
