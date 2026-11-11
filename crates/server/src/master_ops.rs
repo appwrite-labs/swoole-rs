@@ -1634,9 +1634,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SSL_CREATE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL,
         OP_TIMER_DETACHED, OP_TIMER_REINIT,
     };
-    use swoole_rs_timer::{
-        swoole_timer_del, swr_v1_timer_owner_reactor, swr_v1_timer_owner_reinit,
-    };
+    use swoole_rs_timer::{owner_reactor, owner_reinit, swoole_timer_del};
     /// `SW_FD_PIPE`.
     const SW_FD_PIPE: c_int = 3;
     use swoole_rs_error::swoole_clear_last_error_msg;
@@ -1664,15 +1662,12 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: this thread's live timer.
             u64::from(
                 !timer.is_null()
-                    && swr_v1_timer_owner_reactor(unsafe {
-                        &*timer.cast::<swoole_rs_timer::Owner>()
-                    })
-                    .is_null(),
+                    && owner_reactor(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }).is_null(),
             )
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            swr_v1_timer_owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
+            owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
             0
         }
         OP_ST_TIMER_DEL => {

@@ -18,10 +18,9 @@ borrow holds across a callback or destructor, so a bailout never skips a release
 `swr_v1_timer_add_plain` adds one whose callback is a function of its data alone,
 for Rust callers, which call it by path. With a reactor it hooks
 `Reactor::timeout_msec`, the timer-priority end callback, the exit condition and a
-destroy callback that frees this thread's timer. `native/timer/swoole_timer.h` is the C++ view: `TimerNode`,
-and a `Timer` class with no data members whose methods call
-`swr_v1_timer_owner_*`. `crates/timer/src/wrapper.rs` is the `swoole_timer_*` API
-over it, with `SwooleTG.timer` through `swr_v1_core_timer_slot`.
+destroy callback that frees this thread's timer. `native/timer/swoole_timer.h` declares `TimerNode` and the
+`swoole_timer_*` API for C++; `swoole::Timer` is opaque there, as no C++ reaches into
+the timer. `crates/timer/src/wrapper.rs` is that API, with `SwooleTG.timer` through `swr_v1_core_timer_slot`.
 
 A Zend bailout longjmps out of a callback or destructor over `select`'s Rust
 frames, which hold nothing to drop. A C++ exception a callback or destructor

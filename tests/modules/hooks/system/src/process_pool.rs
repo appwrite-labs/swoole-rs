@@ -238,7 +238,8 @@ unsafe extern "C" {
     fn swr_case_set_isolation_user(user: *const c_char);
     fn swr_case_worker_max_request() -> u32;
     fn swr_case_current_worker() -> *mut Worker;
-    fn swr_case_timer_remove(id: c_long) -> bool;
+    #[link_name = "_Z18swoole_timer_clearl"]
+    fn swoole_timer_clear(timer_id: c_long) -> bool;
 
     #[link_name = "_ZN6swoole11ProcessPool6createEji9swIPCMode"]
     fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int;
@@ -1824,10 +1825,10 @@ fn reload_from_child_exit_callback() {
     assert_eq!(wait(pool), SW_OK);
     wait_all_child_processes();
     // SAFETY: this thread's timer.
-    unsafe { swr_case_timer_remove(watchdog) };
+    unsafe { swoole_timer_clear(watchdog) };
     if counter_get(31) != 0 {
         // SAFETY: as above.
-        unsafe { swr_case_timer_remove(completion) };
+        unsafe { swoole_timer_clear(completion) };
     }
     assert_eq!(counter_get(31), 0);
     assert_eq!(counter_get(26), 0);

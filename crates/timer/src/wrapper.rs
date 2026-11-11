@@ -4,7 +4,7 @@
 //! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
 //! lazy creation, unit conversion and warnings, over the Rust-owned timer
 //! (`owner.rs`).
-use crate::owner::{Callback, Owner as Timer, Plain, TimerNode, swr_v1_timer_owner_free};
+use crate::owner::{Callback, Owner as Timer, Plain, TimerNode, free};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
@@ -17,13 +17,13 @@ fn slot() -> *mut *mut Timer {
     swoole_rs_corebase::swr_v1_core_timer_slot().cast()
 }
 
-fn timer() -> *mut Timer {
+pub(crate) fn timer() -> *mut Timer {
     // SAFETY: this thread's live slot.
     unsafe { *slot() }
 }
 
 /// Publishes `timer` (or null) as this thread's.
-fn publish(timer: *mut Timer) {
+pub(crate) fn publish(timer: *mut Timer) {
     // SAFETY: this thread's live slot.
     unsafe { *slot() = timer };
 }
@@ -233,13 +233,13 @@ extern "C" fn swoole_timer_exists(timer_id: c_long) -> bool {
 
 /// `bool swoole_timer_clear(long timer_id)`: `Timer::remove(id)`.
 #[unsafe(export_name = "_Z18swoole_timer_clearl")]
-extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
+pub(crate) extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
     available(c"swoole_timer_clear").is_some_and(|timer| timer.remove(timer_id))
 }
 
 /// `TimerNode *swoole_timer_get(long timer_id)`.
 #[unsafe(export_name = "_Z16swoole_timer_getl")]
-extern "C" fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
+pub(crate) extern "C" fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
     available(c"swoole_timer_get").map_or(std::ptr::null_mut(), |timer| timer.token(timer_id))
 }
 
@@ -253,7 +253,7 @@ pub extern "C-unwind" fn swoole_timer_free() {
         return;
     }
     // SAFETY: the timer swoole_timer_create made, freed once.
-    unsafe { swr_v1_timer_owner_free(timer) };
+    unsafe { free(timer) };
     publish(std::ptr::null_mut());
 }
 

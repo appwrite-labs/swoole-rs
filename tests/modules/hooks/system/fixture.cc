@@ -140,15 +140,6 @@ Timer *swr_case_timer_exchange(Timer *timer) {
     SwooleTG.timer = timer;
     return previous;
 }
-size_t swr_case_timer_count() {
-    return sw_timer()->count();
-}
-void swr_case_timer_reinit() {
-    sw_timer()->reinit();
-}
-bool swr_case_timer_remove(long id) {
-    return sw_timer()->remove(id);
-}
 
 // os/process_pool.cpp (process_pool.rs): the record sizes its mirrors check, and what its
 // TESTs reach that isn't an exported symbol: the inline swoole_set_isolation, SwooleWG and
