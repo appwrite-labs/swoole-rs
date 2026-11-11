@@ -52,11 +52,12 @@ accounting, the mutex and the pipe.
 - Too-short output, invalid lengths and wrap tags outside 0/1 fail without
   mutating state, storage or output.
 - Partial wrap uses the pinned overflow-space behavior.
-- `channel_lock(record,lock)` locks or unlocks the mutex; push, pop and peek take
-  it around in/out as upstream. Unlocked in/out require caller serialization.
-- `channel_signal(record,notify)`: notify writes one 8-byte token, wait reads one
+- `Record::push`, `pop` (consume) and peek take the record's mutex around in/out
+  as upstream, with `SW_CHAN_LOCK`; without it a `Record` stays on one thread.
+  `print` reads the queue under the same mutex.
+- `Record::signal(notify)`: notify writes one 8-byte token, wait reads one
   (blocking, retrying `EINTR`); 0 or -1.
-- `channel_print` writes upstream's text through C stdio.
+- `Record::print` writes upstream's text through C stdio.
 - `channel_full(state)`: 40-byte snapshot of head/tail, size/bytes, count and tags;
   returns 0/1, -1 for NULL. Uses explicit unsigned wrapping arithmetic.
 

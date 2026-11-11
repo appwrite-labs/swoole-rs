@@ -37,7 +37,7 @@ use crate::base_factory::{SendData, is_stream_event, low16};
 use crate::callbacks::{CB_CLOSE, CB_USER_WORKER_START, CallbackSlot};
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{VERIFIED, VERIFIED_TLS};
-use crate::{ConnectionRecord, ServerCounters, view};
+use crate::{ConnectionRecord, view};
 
 /// The context crates/process's factory methods run over (its `FactoryContext`).
 #[repr(C)]
@@ -419,9 +419,10 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let record = ctx.worker();
             record.set_pid(pid);
             let id = worker_id(u64::from(record.id()));
-            let shared = ctx.worker_at(id);
-            // SAFETY: the worker's shared copy.
-            unsafe { Worker::new(shared).set_pid(pid) };
+            // The worker's shared copy.
+            if let Some(shared) = ctx.server().worker_record(id) {
+                shared.set_pid(pid);
+            }
             ctx.registry().register(pid, worker.cast(), REGISTRY_USER);
         }
         OP_FORGET_USER_WORKER => {
@@ -479,8 +480,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let (tables, config) = (ctx.tables(), ctx.config());
-    // SAFETY: the server's shared counters, mapped for its life.
-    let gs = unsafe { &*config.gs.as_ptr().cast::<ServerCounters>() };
+    let gs = ctx.server().counters();
     let task_worker_pid = || {
         // SAFETY: the server's live task pool.
         let pool = unsafe { &*ctx.task_pool() };

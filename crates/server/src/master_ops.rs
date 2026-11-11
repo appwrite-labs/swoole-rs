@@ -13,7 +13,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Socket, SocketFields, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackSlot;
@@ -87,6 +87,10 @@ use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
+use swoole_rs_process::workers::ops::{
+    RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
+    RUN_STOP_WORKER_THREADS,
+};
 use swoole_rs_tls::socket_pair::SocketPair;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
@@ -151,17 +155,6 @@ fn call_hook(kind: c_int, serv: *mut core::ffi::c_void) {
         // SAFETY: the server hooks take the server.
         unsafe { hook::swoole_call_hook(kind, serv) };
     }
-}
-
-/// A `ListenPort`'s settings.
-///
-/// # Safety
-/// `port` is a live `ListenPort`.
-unsafe fn port_config<'a>(port: *mut core::ffi::c_void) -> &'a mut PortConfig {
-    // SAFETY: a `ListenPort` starts with its settings pointer (shared.rs).
-    let config = unsafe { *port.cast::<*mut PortConfig>() };
-    // SAFETY: the port's settings live as long as it.
-    unsafe { &mut *config }
 }
 
 fn sign(value: impl Into<i64>) -> u64 {
@@ -256,7 +249,7 @@ impl Objects<'_> {
     }
     fn port(&self) -> &mut PortConfig {
         // SAFETY: the ops reading it run with a live port in the context.
-        unsafe { port_config(self.ctx.port) }
+        unsafe { crate::port_config::of(self.ctx.port) }
     }
     /// The settings of `serv->ports[index]`, if there is one.
     fn port_at(&self, index: u64) -> Option<&mut PortConfig> {
@@ -1428,6 +1421,18 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
+/// Thread mode's `Server` method `operation` over the live server alone; the
+/// builds without thread mode's ops have no server to run it over.
+fn thread_mode(serv: crate::view::Server<'_>, operation: u32) -> i64 {
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    return crate::thread_mode_ops::run_server(serv, operation);
+    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
+    {
+        let _ = (serv, operation);
+        std::process::abort()
+    }
+}
+
 /// The ops that call a `Server` method crates/server or crates/process defines,
 /// or else `None`. `ProcessPool`'s methods and the process factory are
 /// [`factory_ops`]', which only the hybrid builds: their runners link the C++
@@ -1442,11 +1447,13 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         // SAFETY: per the caller, for this and each call below.
         OP_LC_START_BASE => sign(unsafe { entry::start_reactor_processes(serv) }),
-        // SAFETY: as above.
-        OP_LC_START_THREAD => sign(unsafe { entry::start_worker_threads(serv) }),
+        OP_LC_START_THREAD => {
+            let started = thread_mode(o.server(), RUN_START_WORKER_THREADS);
+            #[expect(clippy::cast_possible_truncation, reason = "the method's int result")]
+            sign(started as c_int)
+        }
         OP_STOP_WORKER_THREADS => {
-            // SAFETY: as above.
-            unsafe { entry::stop_worker_threads(serv) };
+            thread_mode(o.server(), RUN_STOP_WORKER_THREADS);
             0
         }
         OP_STOP_SINGLE_WORKER => {
@@ -1460,8 +1467,8 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let factory = if u64::from(o.config().mode_) == MODE_BASE {
                 crate::server_methods::create_base_factory(o.server())
             } else {
-                // SAFETY: as above.
-                unsafe { entry::create_thread_factory(serv) }
+                let factory = thread_mode(o.server(), RUN_CREATE_THREAD_FACTORY);
+                core::ptr::with_exposed_provenance_mut(usize::try_from(factory).unwrap_or(0))
             };
             o.config().factory_ = factory;
             u64::from(!factory.is_null())
@@ -1484,8 +1491,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
         OP_DESTROY_FACTORY if arg == MODE_THREAD => {
-            // SAFETY: as above.
-            unsafe { entry::destroy_thread_factory(serv) };
+            thread_mode(o.server(), RUN_DESTROY_THREAD_FACTORY);
             0
         }
         OP_ALLOC_CONNECTION_NUMS => {
@@ -1738,14 +1744,14 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: null or the server's live command pipe.
             if let Some(pipe) = unsafe { pipe.as_ref() } {
                 let (reactor, kind, events) = if op == OP_PIPE_COMMAND_ADD {
-                    (o.ctx.reactor.cast_const(), 0, SW_EVENT_READ)
+                    (o.reactor(), 0, SW_EVENT_READ)
                 } else {
-                    (swoole_rs_corebase::thread_reactor().cast_const(), 2, 0)
+                    (crate::reactor_handle::Reactor::thread(), 2, 0)
                 };
-                // SAFETY: a live reactor and the pipe's live end.
-                unsafe {
-                    reactor_upstream::reactor_change(reactor, pipe.master_socket, kind, events)
-                };
+                // SAFETY: the pipe's live end.
+                if let Some(master) = unsafe { Socket::from_ptr(pipe.master_socket) } {
+                    reactor.change(master, kind, events);
+                }
             }
             0
         }
@@ -1886,10 +1892,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STORE_LISTEN => {
             let index = usize::try_from(arg).unwrap_or(usize::MAX);
-            let ls = *o.tables().ports().get(index)?;
-            // SAFETY: one of the server's live ports.
-            let port = unsafe { ls.config_mut() };
-            let ls = ls.raw();
+            let &listen = o.tables().ports().get(index)?;
+            let (ls, port) = (listen.raw(), listen.config());
             let socket = o.server().port_socket_at(index)?;
             let fd = socket.fd();
             let at = isize::try_from(fd).unwrap_or(isize::MAX);
@@ -1991,7 +1995,10 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let mut event = unsafe { swoole_rs_reactor::Event::new(conn.fd, 0, 0, conn.socket) };
             // SAFETY: the context's live reactor and an event over its live connection.
             unsafe {
-                reactor_upstream::trigger_close_event(o.ctx.reactor, (&raw mut event).cast())
+                swoole_rs_reactor::reactor_upstream::trigger_close_event(
+                    o.ctx.reactor,
+                    (&raw mut event).cast(),
+                )
             };
             0
         }

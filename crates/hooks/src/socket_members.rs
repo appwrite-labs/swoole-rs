@@ -535,8 +535,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             // SAFETY: the live view, the caller's buffer and the local address.
             return unsafe {
-                ring::swr_v1_hook_uring_io(
-                    &ops,
+                ops.io(
                     ring::SENDTO,
                     buf.as_ptr().cast_mut().cast(),
                     buf.len(),
@@ -572,12 +571,10 @@ impl Co {
 
     /// `Socket::recv(buf, n)`.
     pub fn recv(self, buf: &mut [u8]) -> isize {
-        uring!(self, |ops| ring::plain(
-            ops,
-            ring::RECV,
-            buf.as_mut_ptr().cast(),
-            buf.len()
-        ));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::recv(&ops, buf);
+        }
         let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
         self.transfer_in(0, buf, call)
     }
@@ -585,24 +582,20 @@ impl Co {
     /// `Socket::send(buf, n)`.
     #[must_use]
     pub fn send(self, buf: &[u8]) -> isize {
-        uring!(self, |ops| ring::plain(
-            ops,
-            ring::SEND,
-            buf.as_ptr().cast_mut().cast(),
-            buf.len()
-        ));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::send(&ops, ring::SEND, buf);
+        }
         let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
         self.transfer_out(0, buf, call)
     }
 
     /// `Socket::recv_all(buf, n)`.
     pub fn recv_all(self, buf: &mut [u8]) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_io_all(
-            ops,
-            false,
-            buf.as_mut_ptr().cast(),
-            buf.len()
-        ));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::recv_all(&ops, buf);
+        }
         let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
         self.transfer_in(ALL, buf, call)
     }
@@ -610,24 +603,20 @@ impl Co {
     /// `Socket::send_all(buf, n)`.
     #[must_use]
     pub fn send_all(self, buf: &[u8]) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_io_all(
-            ops,
-            true,
-            buf.as_ptr().cast_mut().cast(),
-            buf.len()
-        ));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::send_all(&ops, buf);
+        }
         let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
         self.transfer_out(ALL, buf, call)
     }
 
     /// `Socket::read(buf, n)`.
     pub fn read(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
-        uring!(self, |ops| ring::plain(
-            ops,
-            ring::READ,
-            buf.as_mut_ptr().cast(),
-            buf.len()
-        ));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::read(&ops, buf);
+        }
         let call = call!(|s, at, len| libc::read((*s).fields.fd, at.cast(), len));
         self.transfer_in(0, buf, call)
     }
@@ -635,12 +624,10 @@ impl Co {
     /// `Socket::write(buf, n)`.
     #[must_use]
     pub fn write(self, buf: &[u8]) -> isize {
-        uring!(self, |ops| ring::plain(
-            ops,
-            ring::WRITE,
-            buf.as_ptr().cast_mut().cast(),
-            buf.len()
-        ));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::send(&ops, ring::WRITE, buf);
+        }
         let call = call!(|s, at, len| libc::write((*s).fields.fd, at.cast(), len));
         self.transfer_out(0, buf, call)
     }
@@ -790,8 +777,7 @@ impl Co {
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t,
     ) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_io(
-            ops,
+        uring!(self, |ops| ops.io(
             ring::RECVFROM,
             buf,
             n,
@@ -820,8 +806,7 @@ impl Co {
     /// # Safety
     /// `msg` is as recvmsg(2) takes it.
     pub unsafe fn recvmsg(self, msg: *mut libc::msghdr, flags: c_int) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_io(
-            ops,
+        uring!(self, |ops| ops.io(
             ring::RECVMSG,
             null_mut(),
             0,
@@ -841,8 +826,7 @@ impl Co {
     /// `msg` is as sendmsg(2) takes it.
     #[must_use]
     pub unsafe fn sendmsg(self, msg: *const libc::msghdr, flags: c_int) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_io(
-            ops,
+        uring!(self, |ops| ops.io(
             ring::SENDMSG,
             null_mut(),
             0,
@@ -860,9 +844,13 @@ impl Co {
     /// socket is open.
     pub fn recv_once(self, buf: &mut [u8]) -> isize {
         let (buf, n) = (buf.as_mut_ptr().cast(), buf.len());
-        uring!(self, |ops| ring::once(ops, buf, n, false));
         // SAFETY: the open socket's network::Socket, into the caller's buffer.
-        unsafe { socket_recv(self.socket(), buf, n, 0) }
+        let io = || unsafe { socket_recv(self.socket(), buf, n, 0) };
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::once(&ops, io);
+        }
+        io()
     }
 
     /// `Socket::send_once(buf, n)`: one `network::Socket` send, no wait. The socket
@@ -870,9 +858,13 @@ impl Co {
     #[must_use]
     pub fn send_once(self, buf: &[u8]) -> isize {
         let (buf, n) = (buf.as_ptr().cast_mut().cast(), buf.len());
-        uring!(self, |ops| ring::once(ops, buf, n, true));
         // SAFETY: the open socket's network::Socket, from the caller's buffer.
-        unsafe { socket_send(self.socket(), buf, n, 0) }
+        let io = || unsafe { socket_send(self.socket(), buf, n, 0) };
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::once(&ops, io);
+        }
+        io()
     }
 
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`.

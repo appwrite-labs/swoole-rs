@@ -177,7 +177,7 @@ mod tests {
         unsafe { SocketRecord::free(socket.cast()) };
     }
     /// The reactor fires write, then read, on the waiter's socket.
-    unsafe extern "C" fn park(_: *mut c_void, _: f64) -> i32 {
+    fn park(_: f64) -> i32 {
         let mut event =
             unsafe { Event::new(7, 0, FdType::SW_FD_CO_EVENT as c_int, SOCKET.get().cast()) };
         for events in [WRITE, READ] {
