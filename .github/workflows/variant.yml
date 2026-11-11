@@ -23,7 +23,8 @@ jobs:
       - id: install
         uses: ./.github/actions/install
       # Each variant's build flags, the --ri swoole line that shows them, and its families.
-      - run: |
+      - name: Set variant options
+        run: |
           php=php abi='--php-extension sockets'
           run=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
           case $VARIANT in
@@ -58,27 +59,32 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - if: inputs.variant == 'zts'
+      - name: Clear cached builds
+        if: inputs.variant == 'zts'
         run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - if: inputs.variant == 'zts'
         uses: actions/cache@v6
         with:
           path: target/php-zts
           key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
-      - if: inputs.variant == 'zts'
+      - name: Build ZTS PHP
+        if: inputs.variant == 'zts'
         run: .devcontainer/php.sh target/php-zts --enable-zts
       - id: upstream
         uses: ./.github/actions/upstream
         with:
           args: ${{ env.UPSTREAM }}
           php: ${{ inputs.variant == 'zts' && hashFiles('.devcontainer/php.sh') || steps.install.outputs.php }}
-      - run: cargo fetch --locked
-      - if: inputs.variant == 'cares'
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Lint and test clients with c-ares
+        if: inputs.variant == 'cares'
         run: |
           cargo clippy --locked -p swoole-rs-clients --features cares --all-targets -- -D warnings
           cargo test --locked -p swoole-rs-clients --features cares completion_
       # The control is the pinned reference itself, unpatched.
-      - run: |
+      - name: Build cargo engine
+        run: |
           python3 tools/build_ext.py $BUILD
           mkdir -p "target/phpt/$VARIANT"
           cp ${{ steps.upstream.outputs.library }} target/phpt/upstream.so
@@ -92,11 +98,13 @@ jobs:
           --extension target/ext/swoole.so --reference target/phpt/upstream.so
       # On a PR, upstream's report comes from main's latest run of this job while nothing it
       # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
-      - if: github.event_name == 'pull_request'
+      - name: Load upstream baseline
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: corpus/upstream/baseline.sh "$VARIANT" "$PHP"
-      - if: inputs.variant == 'cares'
+      - name: Run c-ares runtime cases
+        if: inputs.variant == 'cares'
         run: >
           python3 tests/modules/clients/cares.py $RUN
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
@@ -104,7 +112,8 @@ jobs:
       # The original System DNS timeout case against a resolver that answers late (#1190).
       # Its 712 comes from c-ares's own timeout; the thread-pool lookup reports 10018 on
       # both engines, and the runner's resolver fails before the 1 ms deadline.
-      - if: inputs.variant == 'cares'
+      - name: Run DNS timeout originals
+        if: inputs.variant == 'cares'
         run: >
           sudo python3 tests/modules/corebase/slow_resolver.py --
           python3 corpus/upstream/run.py
@@ -126,7 +135,8 @@ jobs:
               --build-manifest target/ext/build-manifest.json \
               --output target/phpt/zts/collections-$profile.json
           done
-      - run: corpus/upstream/families.sh "target/phpt/$VARIANT" target/phpt/upstream.so target/phpt/cargo.so $FAMILIES $RUN
+      - name: Run and gate PHPTs
+        run: corpus/upstream/families.sh "target/phpt/$VARIANT" target/phpt/upstream.so target/phpt/cargo.so $FAMILIES $RUN
       - if: inputs.variant == 'zts'
         name: Thread server exit lifecycle companion
         run: >
