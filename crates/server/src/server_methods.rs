@@ -182,37 +182,6 @@ pub fn destroy(serv: view::Server<'_>) {
     }
 }
 
-/// The module whose context each `Server` and `ThreadFactory` method of
-/// crates/process's entry.rs runs its operation over, as workers.cc's
-/// `workers_enter` built it.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn workers_enter(operation: u32) -> swoole_rs_process::workers::entry::WorkersEnter {
-    use swoole_rs_process::workers::ops::{
-        RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_FINISH, RUN_INIT_TASK_WORKERS,
-        RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD,
-        RUN_RESTART_WORKER, RUN_START_MANAGER, RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS,
-        RUN_THREAD_FACTORY_START, RUN_THREAD_ID, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD,
-        RUN_THREAD_TERMINATE_MANAGER,
-    };
-    match operation {
-        RUN_INIT_TASK_WORKERS | RUN_FINISH => crate::task_worker_ops::enter,
-        RUN_REACTOR_PROCESS_START | RUN_REACTOR_PROCESS_MAIN => crate::reactor_process_ops::enter,
-        RUN_START_MANAGER | RUN_RELOAD | RUN_RESTART_WORKER | RUN_READ_WORKER_MESSAGE => {
-            crate::manager_ops::enter
-        }
-        RUN_CREATE_THREAD_FACTORY
-        | RUN_DESTROY_THREAD_FACTORY
-        | RUN_THREAD_FACTORY_START
-        | RUN_THREAD_MANAGER_WAIT
-        | RUN_THREAD_RELOAD
-        | RUN_THREAD_TERMINATE_MANAGER
-        | RUN_THREAD_ID
-        | RUN_START_WORKER_THREADS
-        | RUN_STOP_WORKER_THREADS => crate::thread_mode_ops::enter,
-        _ => std::process::abort(),
-    }
-}
-
 /// `Server::start_master_thread(reactor)`.
 ///
 /// # Safety
