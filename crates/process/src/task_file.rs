@@ -394,14 +394,17 @@ impl<'a> Packed<'a> {
             return Some((payload.as_ptr().cast(), payload.len(), flags));
         }
         let pkg = PacketTask::read(payload);
-        if buffer.size < pkg.length {
+        if buffer.size() < pkg.length {
             buffer.extend(pkg.length);
         }
-        let str = buffer.str;
+        let str = buffer.as_mut_ptr();
         let target: &mut [u8] = if pkg.length == 0 {
             &mut []
         } else {
+            // Zeroed first: past the String's content, its allocation is uninitialized.
             // SAFETY: a live String of `size` (at least `pkg.length > 0`) bytes at `str`.
+            unsafe { str.write_bytes(0, pkg.length) };
+            // SAFETY: as above, now initialized.
             unsafe { std::slice::from_raw_parts_mut(str, pkg.length) }
         };
         let read = read_file(pkg.path(), target, flags & PEEK != 0);
@@ -425,7 +428,8 @@ impl<'a> Packed<'a> {
             }
             return None;
         }
-        buffer.length = pkg.length;
+        // SAFETY: the read filled the buffer's first `pkg.length` bytes.
+        unsafe { buffer.set_len(pkg.length) };
         Some((str.cast_const().cast(), pkg.length, flags))
     }
 }
@@ -632,7 +636,7 @@ mod tests {
                 .unwrap();
             assert_eq!(length, 5);
             assert_eq!(data, unsafe { (*event).data.as_ptr() }.cast());
-            assert!(string.str.is_null());
+            assert!(string.as_ptr().is_null());
         }
 
         #[test]
@@ -657,8 +661,8 @@ mod tests {
             let (bytes, length, _) = unsafe { Packed::from_raw(event.cast()) }
                 .unpack(&mut string)
                 .unwrap();
-            assert_eq!((string.length, string.size, length), (9000, 9000, 9000));
-            assert_eq!(bytes, string.str.cast_const().cast());
+            assert_eq!((string.len(), string.size(), length), (9000, 9000, 9000));
+            assert_eq!(bytes, string.as_ptr().cast());
             let read = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), 9000) };
             assert_eq!(read, data.as_slice());
             assert!(!std::path::Path::new(&path).exists());

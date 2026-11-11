@@ -1420,8 +1420,8 @@ fn sock_recv(sock: *mut c_void, timeout: f64) -> (isize, *mut u8, usize) {
     // SAFETY: as above.
     let buffer = unsafe { co::record(sock) }.read_buffer.cast::<CppString>();
     // SAFETY: a packet read leaves it in the socket's read buffer.
-    let buffer = unsafe { &*buffer };
-    (received, buffer.str, buffer.length)
+    let buffer = unsafe { &mut *buffer };
+    (received, buffer.as_mut_ptr(), buffer.len())
 }
 
 /// `sock->get_fd()`.

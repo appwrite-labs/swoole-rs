@@ -60,16 +60,18 @@ fn header_only_mask(flags: u8) -> bool {
 /// `encode`/`pack_close_frame`'s tail: reserve `size` bytes past the buffer's
 /// length, let `write` fill them, and count them only when it wrote `size`.
 fn append_frame(buffer: &mut CppString, size: usize, write: impl FnOnce(*mut u8) -> usize) -> bool {
-    if size == 0 || size > usize::MAX - buffer.length {
+    let length = buffer.len();
+    if size == 0 || size > usize::MAX - length {
         return false;
     }
-    if buffer.length + size > buffer.size {
-        buffer.reserve(buffer.length + size);
+    if length + size > buffer.size() {
+        buffer.reserve(length + size);
     }
-    if write(buffer.str.wrapping_add(buffer.length)) != size {
+    if write(buffer.as_mut_ptr().wrapping_add(length)) != size {
         return false;
     }
-    buffer.length += size;
+    // SAFETY: `write` filled the `size` bytes after the content, inside the buffer.
+    unsafe { buffer.set_len(length + size) };
     true
 }
 
@@ -296,7 +298,7 @@ mod tests {
         let text = b"hello world";
         assert!(unsafe { encode(&mut buffer, text.as_ptr().cast(), text.len(), 1, FIN | MASK,) });
         let mut frame: Frame = unsafe { std::mem::zeroed() };
-        assert!(unsafe { decode(&mut frame, buffer.str.cast(), buffer.length) });
+        assert!(unsafe { decode(&mut frame, buffer.as_mut_ptr().cast(), buffer.len()) });
         assert_eq!(frame.header[0], 0x81, "FIN and OPCODE_TEXT");
         assert_eq!(frame.header[1] >> 7, 1, "MASK");
         assert_eq!(frame.header_length, 6);
@@ -321,7 +323,7 @@ mod tests {
                 FIN | MASK | HEADER_ONLY,
             )
         });
-        assert_eq!(buffer.length, 6);
+        assert_eq!(buffer.len(), 6);
         buffer.dispose();
     }
 
@@ -334,12 +336,9 @@ mod tests {
         assert!(!unsafe { encode(&mut buffer, payload.as_ptr().cast(), 126, 9, FIN) });
         assert!(!unsafe { pack_close_frame(&mut buffer, 1000, payload.as_ptr().cast(), 126, FIN) });
         assert!(!unsafe { pack_close_frame(&mut buffer, 1000, payload.as_ptr().cast(), 124, FIN) });
-        assert_eq!(buffer.length, 0);
+        assert_eq!(buffer.len(), 0);
         assert!(unsafe { pack_close_frame(&mut buffer, 1000, c"bye".as_ptr(), 3, FIN) });
-        assert_eq!(
-            unsafe { std::slice::from_raw_parts(buffer.str, buffer.length) },
-            b"\x88\x05\x03\xe8bye"
-        );
+        assert_eq!(buffer.view(), b"\x88\x05\x03\xe8bye");
         buffer.dispose();
     }
 
@@ -379,7 +378,7 @@ mod tests {
             )
         });
         let mut ws: Frame = unsafe { std::mem::zeroed() };
-        assert!(unsafe { decode(&mut ws, buffer.str.cast(), buffer.length) });
+        assert!(unsafe { decode(&mut ws, buffer.as_mut_ptr().cast(), buffer.len()) });
 
         let log = std::env::temp_dir().join(format!(
             "swoole-websocket-encode-{}.log",
@@ -411,16 +410,16 @@ mod tests {
         let mut buffer = string();
         let mut frame: Frame = unsafe { std::mem::zeroed() };
         for opcode in [OPCODE_CLOSE, 9, 10] {
-            buffer.length = 0;
+            buffer.clear();
             assert!(unsafe { encode(&mut buffer, c"".as_ptr(), 0, opcode, FIN | RSV1) });
             assert!(
-                !unsafe { decode(&mut frame, buffer.str.cast(), buffer.length) },
+                !unsafe { decode(&mut frame, buffer.as_mut_ptr().cast(), buffer.len()) },
                 "{opcode}"
             );
         }
-        buffer.length = 0;
+        buffer.clear();
         assert!(unsafe { encode(&mut buffer, c"".as_ptr(), 0, 1, FIN | RSV1) });
-        assert!(unsafe { decode(&mut frame, buffer.str.cast(), buffer.length) });
+        assert!(unsafe { decode(&mut frame, buffer.as_mut_ptr().cast(), buffer.len()) });
         buffer.dispose();
     }
 

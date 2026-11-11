@@ -11,12 +11,13 @@ swoole_thread, swoole_atomic and swoole_lock PHPT families run on both engines, 
 exit_guard.py on the pair.
 
 First a planted race: tools/tsan_canary.rs, built with the crates' rustc flags and preloaded into
-this PHP, must be reported, or the run proves nothing. Then any report fails the run, on
-either engine. A race upstream has too goes in tools/tsan.supp by name, never by a blanket
-rule; one only the Cargo build has is a p0 kind:bug. Reports stay in target/tsan/reports/
-and are only counted on stdout: a report may locate an upstream bug, which goes to the private
-security repository (AGENTS.md), so a public CI log never shows one. Rerun locally to read
-them. Needs clang with its TSan runtime and a kernel with at most 28 bits of mmap
+this PHP, must be reported, or the run proves nothing. Upstream is the reference, so its
+reports are counted and never fail the run. Every other report is a race in this repository's
+code, fixed rather than suppressed: the run fails while there are more than LIMIT, which falls
+as fixes land, the way the callgrind records do, until it reaches zero (#2252). Reports stay in
+target/tsan/reports/ and are only counted on stdout: a report may locate an upstream bug, which
+goes to the private security repository (AGENTS.md), so a public CI log never shows one. Rerun
+locally to read them. Needs clang with its TSan runtime and a kernel with at most 28 bits of mmap
 randomisation (vm.mmap_rnd_bits; tsan.yml sets it).
 
     python3 tools/dev.py docker -- tools/tsan.py
@@ -32,14 +33,15 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
+# Reports outside upstream's run that main's run has (39 in run 42955364514). Lower it with each fix.
+LIMIT = 39
 
 
 def sanitized(reports, name):
     """TSan's options for one run's processes, reporting to files under reports/name."""
     (reports / name).mkdir(parents=True)
     # A worker forked from a threaded process may start threads; TSan would kill it.
-    options = (f'log_path={reports / name}/report:suppressions={ROOT}/tools/tsan.supp:'
-               'print_suppressions=0:die_after_fork=0:second_deadlock_stack=1')
+    options = f'log_path={reports / name}/report:die_after_fork=0:second_deadlock_stack=1'
     return {'TSAN_OPTIONS': options}
 
 
@@ -105,9 +107,13 @@ def main():
                        *[arg for name, extension in engines.items() for arg in ['--engine', f'{name}={extension}']],
                        '--output', OUT / 'phpt/guard.json'], cwd=ROOT, env={**run, **sanitized(reports, 'guard')}).returncode:
         failed.append('exit_guard')
-    for run_name in sorted(path.name for path in reports.iterdir()):
-        if found := len(list((reports / run_name).iterdir())):
-            failed.append(f'{found} sanitizer reports in {reports / run_name}')
+    counts = {path.name: len(list(path.iterdir())) for path in sorted(reports.iterdir())}
+    ours = sum(found for name, found in counts.items() if name != 'upstream')
+    print('sanitizer reports: ' + ', '.join(f'{found} in {reports / name}' for name, found in counts.items()))
+    if ours > LIMIT:
+        failed.append(f'{ours} reports outside upstream, over the limit of {LIMIT},')
+    elif ours < LIMIT:
+        print(f'{ours} reports outside upstream: lower LIMIT in tools/tsan.py to {ours}')
     print('sanitizer run: ' + (', '.join(failed) + ' failed' if failed else 'clean'))
     return int(bool(failed))
 

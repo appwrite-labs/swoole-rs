@@ -89,7 +89,7 @@ unsafe extern "C" fn tls_buffer(
 ) -> *mut c_char {
     // SAFETY: the live socket of the operation.
     let socket = unsafe { socket(context) };
-    let (at, length) = socket.with_buffer(write, |buffer| (buffer.str, buffer.size));
+    let (at, length) = socket.with_buffer(write, |buffer| (buffer.as_mut_ptr(), buffer.size()));
     // SAFETY: the caller's size slot.
     unsafe { *size = length };
     at.cast()

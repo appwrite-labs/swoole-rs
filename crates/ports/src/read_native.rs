@@ -186,11 +186,10 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
     match op {
         OP_RECV => {
             let b = buffer(c);
-            let at = if arg == 0 { b.length } else { 0 };
-            // SAFETY: `at` is within the live buffer.
-            let start = unsafe { b.str.add(at) };
+            let (at, size) = (if arg == 0 { b.len() } else { 0 }, b.size());
+            let start = b.as_mut_ptr().wrapping_add(at);
             // SAFETY: the live socket and `size - at` writable bytes at `start`.
-            let received = unsafe { socket_recv(c.socket.as_ptr(), start.cast(), b.size - at, 0) };
+            let received = unsafe { socket_recv(c.socket.as_ptr(), start.cast(), size - at, 0) };
             status(received as i64)
         }
         OP_RECV_BUFFER => {
@@ -202,7 +201,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             let release = !held.is_null() && {
                 // SAFETY: the socket's receive buffer, when set, is live.
                 let held = unsafe { &*held };
-                (arg == 0 || held.length == 0) && held.size > SW_BUFFER_SIZE_BIG as usize * 2
+                (arg == 0 || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
             };
             if release {
                 // SAFETY: `new String`'s, which nothing uses after.
@@ -333,9 +332,7 @@ fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
             0
         }
         OP_BUF_HEADER_END => {
-            let b = buffer(c);
-            // SAFETY: the buffer's `length` bytes.
-            let bytes = unsafe { core::slice::from_raw_parts(b.str, b.length) };
+            let bytes = buffer(c).view();
             u64::from(bytes.windows(4).any(|w| w == b"\r\n\r\n"))
         }
         OP_REQ_MULTIPART_INIT => {
@@ -371,7 +368,7 @@ fn dispatch(c: &mut Read<'_>, op: u32, length: u64) -> u64 {
             },
             ..DataHead::default()
         },
-        data: buffer(c).str,
+        data: buffer(c).as_mut_ptr(),
     };
     // SAFETY: the live port.
     let proto: *const c_void = unsafe { &raw const (*c.port).protocol }.cast();

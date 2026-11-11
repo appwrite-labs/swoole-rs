@@ -105,7 +105,7 @@ pub(super) fn thread_buffer() -> *mut c_void {
     thread_local! {
         static SHARED: *mut CppString = {
             let mut buffer = Box::new(CppString::EMPTY);
-            buffer.alloc(64, core::ptr::null());
+            buffer.alloc(64, None);
             Box::into_raw(buffer)
         };
     }

@@ -103,14 +103,14 @@ impl Packages for Callbacks {
     }
     #[inline(always)]
     fn dispatch(r: &Recv<'_>, b: &CppString, start: usize) -> c_int {
-        let length = b.offset.unsigned_abs();
+        let length = b.offset().unsigned_abs();
         // SAFETY: the live protocol and socket, and the package's `length` bytes from
         // `start`, inside the buffer (the loop dispatches only a whole one).
         unsafe {
             dispatch(
                 r.protocol,
                 r.socket.as_ptr(),
-                b.str.wrapping_add(start).cast_const(),
+                b.as_ptr().wrapping_add(start),
                 length,
             )
         }
@@ -219,17 +219,18 @@ impl<K: Packages> Effects for With<'_, K> {
     fn buffer(&self) -> Buffer {
         let b = self.0.string();
         Buffer {
-            length: b.length,
-            size: b.size,
-            offset: b.offset,
+            length: b.len(),
+            size: b.size(),
+            offset: b.offset(),
         }
     }
     #[inline(always)]
     fn set_buffer(&mut self, length: usize, offset: i64) {
         // SAFETY: the receive's live buffer; no other reference to it is live.
         let b = unsafe { &mut *self.0.buffer };
-        b.length = length;
-        b.offset = offset;
+        // SAFETY: framing::recv counts only the bytes its receives wrote.
+        unsafe { b.set_len(length) };
+        b.set_offset(offset);
     }
     #[inline(always)]
     fn data(&self) -> &[u8] {
@@ -259,7 +260,7 @@ fn effect<K: Packages>(r: &Recv<'_>, op: u32, arg: u64, flags: u32) -> i64 {
     s.edit(|s| s.recv_wait = u8::from(flags & FLAG_WAIT != 0));
     match op {
         OP_RECV => {
-            let at = b.str.wrapping_add(b.length);
+            let at = b.as_mut_ptr().wrapping_add(b.len());
             let size = usize::try_from(arg).unwrap_or(usize::MAX);
             // SAFETY: the live socket and the buffer's free tail of at least `size` bytes.
             let n = unsafe { swoole_rs_tls::upstream::socket_recv(s.as_ptr(), at.cast(), size, 0) };
@@ -342,10 +343,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
         }
         OP_PAGE => i64::from(swr_v1_core_pagesize()),
         OP_LOG_MALFORMED => {
-            let message = format!(
-                "received {} bytes of malformed data, remote_addr=",
-                b.length
-            );
+            let message = format!("received {} bytes of malformed data, remote_addr=", b.len());
             proto_error(
                 s,
                 ErrorCode::SW_ERROR_PACKAGE_MALFORMED_DATA,
@@ -361,7 +359,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
                 origin,
                 format_args!(
                     "bad request, no length found in {} bytes, remote_addr=",
-                    b.length
+                    b.len()
                 ),
             );
             0
@@ -373,7 +371,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
                     arg.cast_signed()
                 )
             } else {
-                format!("The received data packet is too large, length={}", b.length)
+                format!("The received data packet is too large, length={}", b.len())
             };
             proto_error(
                 s,
@@ -590,7 +588,7 @@ mod tests {
         protocol.package_max_length = 1024;
         protocol.on_package = record as *mut c_void;
         let mut buffer = CppString::EMPTY;
-        buffer.alloc(8, core::ptr::null());
+        buffer.alloc(8, None);
         PACKAGES.with_borrow_mut(Vec::clear);
         (socket, pair[0], protocol, buffer)
     }
@@ -634,7 +632,7 @@ mod tests {
         let status = recv_with_eof_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
-        assert_eq!(buffer.length, 1);
+        assert_eq!(buffer.len(), 1);
         buffer.dispose();
         unsafe { libc::close(peer) };
         unsafe { libc::close(socket.fd) };

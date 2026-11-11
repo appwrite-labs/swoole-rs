@@ -180,13 +180,13 @@ pub mod exports {
         if !fragment.is_null() {
             // SAFETY: the connection's live fragment buffer.
             let fragment = unsafe { &*fragment };
-            context.fragment_length = fragment.length;
+            context.fragment_length = fragment.len();
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "the fragment's offset holds its uint16_t ext_flags"
             )]
-            let flags = fragment.offset as u16;
+            let flags = fragment.offset() as u16;
             context.fragment_flags = flags;
             if frame.opcode == 0 {
                 let conn: *mut ConnectionRecord = &raw mut *conn;
@@ -225,7 +225,7 @@ pub mod exports {
                 // SAFETY: the payload's bytes.
                 let buffer = unsafe { new_string(dispatch.data, decision.length) };
                 // SAFETY: just constructed.
-                unsafe { (*buffer).offset = decision.ext_flags.into() };
+                unsafe { (*buffer).set_offset(decision.ext_flags.into()) };
                 conn.websocket_buffer = buffer.cast();
             }
             Action::Append | Action::Finish => {
@@ -238,9 +238,9 @@ pub mod exports {
                         clippy::cast_possible_truncation,
                         reason = "bounded by package_max_length"
                     )]
-                    let whole = buffer.length as u32;
+                    let whole = buffer.len() as u32;
                     dispatch.info.len = whole;
-                    dispatch.data = buffer.str;
+                    dispatch.data = buffer.as_mut_ptr();
                     dispatch_task(&dispatch);
                     // SAFETY: `new String`'s, not used again.
                     unsafe { delete_string(fragment) };
@@ -304,10 +304,10 @@ pub mod exports {
         fn dispatch(r: &Recv, b: &CppString, start: usize) -> c_int {
             let frame = RecvData {
                 info: DataHead {
-                    len: u32::try_from(b.offset).unwrap_or(u32::MAX),
+                    len: u32::try_from(b.offset()).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
-                data: b.str.wrapping_add(start).cast_const(),
+                data: b.as_ptr().wrapping_add(start),
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
             unsafe {

@@ -351,7 +351,8 @@ impl Facts for Live<'_> {
         let buffer = swoole_rs_corebase::thread_buffer();
         let buffer = buffer.cast::<swoole_rs_buffer::string::CppString>();
         // SAFETY: null, or this thread's live buffer.
-        let thread_buffer = unsafe { buffer.as_ref() }.map_or(0, |buffer| buffer.size);
+        let thread_buffer =
+            unsafe { buffer.as_ref() }.map_or(0, swoole_rs_buffer::string::CppString::size);
         let sockets = registry().map(Registry::sockets).unwrap_or_default();
         let out_buffers = sockets
             .iter()

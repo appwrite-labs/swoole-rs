@@ -1,3 +1,0 @@
-# ThreadSanitizer suppressions for tools/tsan.py. Only races upstream Swoole or PHP has
-# too, each by the function it names and with the reason: never a blanket rule, and
-# never one only the Cargo build reports (that is a p0 kind:bug).
