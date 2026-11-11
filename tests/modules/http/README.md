@@ -207,7 +207,7 @@ upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
 mapping the forked processes inherit, as core-tests' memory-pool counters are, and an
 expectation in a callback records its failure there, so here one in a forked worker fails
 the case too. `no_idle_task_worker`'s client waits on a shared flag its `onWorkerStart`
-sets, where upstream's waited on a process-shared mutex it unlocked, and `thread`'s and
+sets, where upstream's waited on a process-shared mutex it unlocked. Where upstream sleeps 3 s after its 1024 tasks, its client sends another packet each second until the warning is logged, for up to 10 s: the event worker can queue all 1024 before a task worker marks itself busy (arm64 timing, #2834). And `thread`'s and
 `task_thread`'s on one `onStart` sets. `task_ipc_queue_5`, `thread` and `task_thread` run in
 thread mode (see the MODE_THREAD TESTs below). `thread` reads the event pool's
 `read_message` after the task pool, where crates/server lays it out, and leaves out its
@@ -248,14 +248,14 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `protocols` | crates/ports `methods::tests::server_protocols` | |
 | `sendwait`, `forward_message`, `pause_and_resume`, `max_queued_bytes` | same names (`server_conn.rs`) | the client thread starts before `serv.start()`, as upstream's |
 | `system` | same name | its listening socket takes a port the kernel picks, where upstream's took `get_random_port()` |
-| `no_idle_worker`, `overflow_1` .. `overflow_4`, `max_request_1`, `max_request_2`, `watermark`, `discard_data` | same names | the client thread starts in `onStart`, as upstream's |
+| `no_idle_worker`, `overflow_1` .. `overflow_4`, `max_request_1`, `max_request_2`, `watermark`, `discard_data` | same names | the client thread starts in `onStart`, as upstream's; `no_idle_worker`'s client keeps sending a packet each millisecond after upstream's 1024, until the warning is logged (for up to 10 s), where upstream sleeps 3 s, since the reactor can take the burst in too few reads (arm64 timing, #2834) |
 | `udp_packet` | same name | the server socket `sendto` answers on is `req->info.server_fd`, which `get_server_socket` looks up; the forked client's assertions fail the case |
 | `pipe_message`, `reopen_log` | same names | |
 | `reopen_log2` | same name | `signal_handler_reopen_logger` has no entry of its own in the crates; `master_signal_handler(SIGWINCH)` runs its body |
 | `command_1`, `command_2` | same names | `add_command` and `command` are crates/server's `swr_v1_server_add_command` and `swr_v1_server_command` |
 | `abnormal_pipeline_data` | same name | `send_fn` writes its datagram to worker 0's `pipe_master` (from `view::Server::worker(0)`), retrying while the pipe is full, as `send_sync` does |
 | `base_event_worker_pool_cleanup` | same name | the pool's `map_` (pid to worker) is its `registry` in crates/process |
-| `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `swoole_rs_server::bus_move_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts |
+| `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `swoole_rs_server::bus_move_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts; `abort_worker`'s c2 waits (up to 10 s) for the third `onWorkerStart`, the replacement's, because the manager retires the dead worker's sessions only after reaping it, so upstream's c2 can reach `onReceive` first (arm64 timing, #2834) |
 | `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
 
 The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`,
