@@ -261,7 +261,8 @@ fn lookup(call: &Call) {
     let mut run = swoole_rs_hooks::resolve::LookupCall {
         name: name.as_ptr().cast(),
         length: name.len(),
-        context: context.cast(),
+        // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
+        context: unsafe { &mut *context.cast() },
         out: (&raw mut result).cast(),
         assign: assign_vec,
     };

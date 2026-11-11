@@ -281,11 +281,6 @@ struct Peer {
     server_port: c_int,
 }
 
-unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
-    fn get_read_buffer(socket: Socket) -> *mut Buffer;
-}
-
 /// A live socket's record: the listener, or a connection the loop serves.
 fn record<'a>(socket: Socket) -> &'a mut co::CoSocket {
     // SAFETY: the server's sockets outlive their use here.

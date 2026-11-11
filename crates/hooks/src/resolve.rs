@@ -159,10 +159,10 @@ pub unsafe fn name_resolver_lookup(
 
 /// `swoole_name_resolver_lookup_call`.
 #[repr(C)]
-pub struct LookupCall {
+pub struct LookupCall<'a> {
     pub name: *const c_char,
     pub length: usize,
-    pub context: *mut NameResolverContext,
+    pub context: &'a mut NameResolverContext,
     pub out: *mut c_void,
     pub assign: Put,
 }
@@ -175,11 +175,9 @@ pub struct LookupCall {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: *mut c_void) {
     // SAFETY: as the caller promises.
-    let call = unsafe { &*call.cast::<LookupCall>() };
+    let call = unsafe { &mut *call.cast::<LookupCall<'_>>() };
     // SAFETY: as the caller promises.
-    let context = unsafe { &mut *call.context };
-    // SAFETY: as the caller promises.
-    unsafe { name_resolver_lookup(call.name, call.length, context, call.out, call.assign) };
+    unsafe { name_resolver_lookup(call.name, call.length, call.context, call.out, call.assign) };
 }
 
 /// A coroutine socket's lookup: the context's type and timeout set first, the
