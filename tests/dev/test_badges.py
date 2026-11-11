@@ -30,6 +30,22 @@ class Badges(unittest.TestCase):
         self.assertIn('| timer | 80 | 100 | 0.8000× |  | ✅ |', table)
         self.assertIn('`abcdef0`', table)
 
+    def test_merge_reads_the_newest_finished_run(self):
+        self.assertEqual(badges.merge('abcdef0123:success'),
+                         badges.endpoint('merge tier', 'passing @ abcdef0', 'brightgreen'))
+        self.assertEqual(badges.merge('abcdef0123:failure'),
+                         badges.endpoint('merge tier', 'failing @ abcdef0', 'red'))
+
+    def test_unsafe_table_lists_crates_most_first_and_marks_forbid(self):
+        table = badges.unsafe_table({'zend': 1200, 'clients': 0, 'server': 3400},
+                                    {'zend': True, 'clients': False, 'server': True}, 'abcdef0123')
+        self.assertLess(table.index('`server`'), table.index('`zend`'))
+        self.assertLess(table.index('`zend`'), table.index('`clients`'))
+        self.assertIn('| `server` | 3,400 |  |', table)
+        self.assertIn('| `clients` | 0 | ✅ |', table)
+        self.assertIn('`abcdef0`', table)
+        self.assertIn('Total 4,600.', table)
+
 
 if __name__ == '__main__':
     unittest.main()
