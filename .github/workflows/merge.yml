@@ -151,7 +151,7 @@ jobs:
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
-  # (fat LTO, as release builds ship) over upstream may not rise more than 1% above
+  # (fat LTO, as release builds ship) over upstream may not rise more than 2% above
   # benchmarks/callgrind_limits.
   # plaintext covers the bridge, echo-1k buffer, json the router app and service-health the
   # SQLite service's dispatch (php -n: PDO is dynamic).
