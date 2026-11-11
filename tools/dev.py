@@ -133,8 +133,11 @@ def plan(args, reports):
                       for argument in ['--php-extension', extension]]
     # A module without a crate (wrappers) has nothing to unit-test.
     crates = Path(__file__).resolve().parents[1] / 'crates'
+    # A module's -ffi crate (error-ffi, websocket-ffi) holds the tests of what it exports.
     for module in (m for m in modules if (crates / m / 'Cargo.toml').exists()):
-        add(module + '-unit', 'cargo', 'test', '--locked', '-p', 'swoole-rs-' + module,
+        packages = [arg for crate in (module, module + '-ffi') if (crates / crate / 'Cargo.toml').exists()
+                    for arg in ('-p', 'swoole-rs-' + crate)]
+        add(module + '-unit', 'cargo', 'test', '--locked', *packages,
             *([args.test] if args.test and args.lane == 'edit' else []))
     if args.lane == 'edit':
         return commands
