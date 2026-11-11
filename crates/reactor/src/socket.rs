@@ -28,22 +28,16 @@ struct Borrow<'a> {
 impl<'a> Borrow<'a> {
     #[track_caller]
     fn read(borrows: &'a AtomicU32) -> Self {
-        let mut readers = borrows.load(Ordering::Relaxed);
-        loop {
-            assert!(
-                readers & EDIT == 0,
-                "a socket's read runs inside an edit of the same record"
-            );
-            match borrows.compare_exchange_weak(
-                readers,
-                readers + 1,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return Self { borrows, taken: 1 },
-                Err(now) => readers = now,
-            }
-        }
+        // One locked add: a read counts itself first, and backs out if an edit holds the
+        // record. (An edit only ever starts from zero, so the brief count blocks none
+        // that wasn't already conflicting.)
+        let borrow = Self { borrows, taken: 1 };
+        // On failure the assert unwinds through `borrow`, which takes the count back.
+        assert!(
+            borrows.fetch_add(1, Ordering::Acquire) & EDIT == 0,
+            "a socket's read runs inside an edit of the same record"
+        );
+        borrow
     }
 
     #[track_caller]
