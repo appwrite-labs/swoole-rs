@@ -36,7 +36,7 @@ jobs:
               families='swoole_coroutine swoole_coroutine_system swoole_client_coro swoole_http_client_coro swoole_socket_coro';;
             # Each coroutine on its own thread (crates/coroutine/src/thread.rs).
             threadcontext) build=--configure=--enable-thread-context probe='thread context'
-              families='swoole_coroutine swoole_channel_coro swoole_coroutine_scheduler swoole_coroutine_system';;
+              families='swoole_coroutine swoole_channel_coro swoole_coroutine_scheduler swoole_coroutine_system swoole_event';;
             # A thread-safe PHP, whose headers zend-sys binds (PHP_CONFIG), with sockets and curl
             # compiled in: upstream's own thread CI (SWOOLE_THREAD), and Thread\Atomic and Thread\Lock,
             # which only exist in this build.

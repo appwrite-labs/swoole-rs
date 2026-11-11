@@ -407,39 +407,38 @@ unsafe fn answer<T: Default>(out: *mut T, op: impl FnOnce() -> Option<(i32, T)>)
 
 /// The token `id` was added with, or null. Native code applies every view it is
 /// handed to its token, so a lookup that only needs the token copies no view.
-/// # Safety
-/// The handle is null or live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_token(queue: *const Timer, id: i64) -> *mut c_void {
-    // SAFETY: null or a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
-    unsafe { queue.as_ref() }.map_or(ptr::null_mut(), |state| state.token(id))
+pub extern "C" fn swr_v1_timer_token(queue: Option<&Timer>, id: i64) -> *mut c_void {
+    queue.map_or(ptr::null_mut(), |state| state.token(id))
 }
 
 /// # Safety
-/// Handle and exclusive output must follow ABI v1 validity/disjointness rules.
+/// `out` is null or valid, aligned output disjoint from the handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_stats_get(queue: *const Timer, out: *mut TimerStats) -> i32 {
-    // SAFETY: null or a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
-    let state = unsafe { queue.as_ref() };
+pub unsafe extern "C" fn swr_v1_timer_stats_get(
+    queue: Option<&Timer>,
+    out: *mut TimerStats,
+) -> i32 {
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(|state| (OK, state.stats()))) }
+    unsafe { answer(out, || queue.map(|state| (OK, state.stats()))) }
 }
 
 /// # Safety
-/// Handle/count/ID storage must be valid, aligned and mutually disjoint per ABI v1.
+/// Count/ID storage must be valid, aligned and mutually disjoint per ABI v1.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_ids(
-    queue: *const Timer,
+    queue: Option<&Timer>,
     ids: *mut i64,
     capacity: usize,
     count: *mut usize,
 ) -> i32 {
     // SAFETY: `count` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(count) } || queue.is_null() {
+    if !unsafe { zero(count) } {
         return INVALID;
     }
-    // SAFETY: non-null (checked above); a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
-    let state = unsafe { &*queue };
+    let Some(state) = queue else {
+        return INVALID;
+    };
     // SAFETY: `count` is non-null (checked above), valid, aligned and writable.
     unsafe { count.write(state.heap.len()) };
     if capacity > (isize::MAX as usize) / mem::size_of::<i64>() {
@@ -694,21 +693,20 @@ mod tests {
         let q = Owned::new();
         let a = q.add(0, 2, false, 1);
         let b = q.add(0, 1, false, 2);
-        let queue = q.0.as_ptr().cast_const();
         let mut ids = [99, 99];
         let mut count = 99;
         assert_eq!(
-            unsafe { swr_v1_timer_ids(queue, ptr::null_mut(), 0, &raw mut count) },
+            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ptr::null_mut(), 0, &raw mut count) },
             CAPACITY
         );
         assert_eq!(count, 2);
         assert_eq!(
-            unsafe { swr_v1_timer_ids(queue, ids.as_mut_ptr(), 1, &raw mut count) },
+            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ids.as_mut_ptr(), 1, &raw mut count) },
             CAPACITY
         );
         assert_eq!(ids, [99, 99]);
         assert_eq!(
-            unsafe { swr_v1_timer_ids(queue, ids.as_mut_ptr(), 2, &raw mut count) },
+            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ids.as_mut_ptr(), 2, &raw mut count) },
             OK
         );
         ids.sort_unstable();
@@ -718,7 +716,7 @@ mod tests {
             q.invariant();
         }
         assert_eq!(
-            unsafe { swr_v1_timer_ids(queue, ptr::null_mut(), 0, &raw mut count) },
+            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ptr::null_mut(), 0, &raw mut count) },
             OK
         );
         assert_eq!(count, 0);
@@ -945,12 +943,11 @@ mod tests {
     fn token_finds_live_timers_only() {
         let q = Owned::new();
         let view = q.add(0, 5, false, 7);
-        let queue = q.0.as_ptr().cast_const();
-        assert_eq!(unsafe { swr_v1_timer_token(queue, view.id) }, view.token);
-        assert!(unsafe { swr_v1_timer_token(queue, view.id + 1) }.is_null());
-        assert!(unsafe { swr_v1_timer_token(ptr::null(), view.id) }.is_null());
+        assert_eq!(swr_v1_timer_token(Some(&q.0.borrow()), view.id), view.token);
+        assert!(swr_v1_timer_token(Some(&q.0.borrow()), view.id + 1).is_null());
+        assert!(swr_v1_timer_token(None, view.id).is_null());
         assert_eq!(q.q().remove(view.id).0, RELEASE);
-        assert!(unsafe { swr_v1_timer_token(queue, view.id) }.is_null());
+        assert!(swr_v1_timer_token(Some(&q.0.borrow()), view.id).is_null());
     }
 
     #[test]
@@ -961,17 +958,19 @@ mod tests {
             count: 7,
             ..TimerStats::default()
         };
-        let queue = q.0.as_ptr().cast_const();
-        assert_eq!(unsafe { swr_v1_timer_stats_get(queue, &raw mut stats) }, OK);
+        assert_eq!(
+            unsafe { swr_v1_timer_stats_get(Some(&q.0.borrow()), &raw mut stats) },
+            OK
+        );
         assert_eq!(stats, q.stats());
         stats.count = 7;
         assert_eq!(
-            unsafe { swr_v1_timer_stats_get(ptr::null(), &raw mut stats) },
+            unsafe { swr_v1_timer_stats_get(None, &raw mut stats) },
             INVALID
         );
         assert_eq!(stats, TimerStats::default());
         assert_eq!(
-            unsafe { swr_v1_timer_stats_get(queue, ptr::null_mut()) },
+            unsafe { swr_v1_timer_stats_get(Some(&q.0.borrow()), ptr::null_mut()) },
             INVALID
         );
     }

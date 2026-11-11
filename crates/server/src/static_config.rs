@@ -57,15 +57,9 @@ pub(crate) fn strings<R>(
 
 /// Share the current collection identity. Replacing the Server's optional
 /// collection leaves already-bound contexts holding the original table.
-/// # Safety
-/// `state` is live; the result needs one `_owner_free`.
+/// The result needs one `_owner_free`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_static_owner(
-    state: *const ServerState,
-    kind: u32,
-) -> *const c_void {
-    // SAFETY: the caller lends a live Server state.
-    let state = unsafe { &*state };
+pub extern "C" fn swr_v1_server_static_owner(state: &ServerState, kind: u32) -> *const c_void {
     let Ok(kind) = usize::try_from(kind) else {
         return core::ptr::null();
     };
@@ -119,11 +113,11 @@ pub unsafe extern "C" fn swr_v1_server_static_mime(
 /// 5 find (count when absent), 6 append preserving duplicates. The named index
 /// setter does its original duplicate lookup before appending.
 /// # Safety
-/// `state` is live; insertion/search lends `length` readable bytes (non-null even
+/// Insertion/search lends `length` readable bytes (non-null even
 /// when empty). Writes use the original configuration's synchronization.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_static_config(
-    state: *const ServerState,
+    state: &ServerState,
     kind: u32,
     operation: u32,
     data: *const u8,
@@ -135,8 +129,6 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
     if kind >= 3 {
         return 0;
     }
-    // SAFETY: the caller lends a live Server state.
-    let state = unsafe { &*state };
     if operation == 3 {
         // Assignment replaces the shared_ptr identity; contexts holding the old
         // table continue to observe it, rather than a copy or the new collection.
@@ -171,18 +163,15 @@ pub unsafe extern "C" fn swr_v1_server_static_config(
         _ => 0,
     }
 }
-/// # Safety
-/// `state` is live and `length` writable. Bytes remain borrowed until collection
-/// replacement or server destruction; no replacement races a native reader.
+/// Bytes remain borrowed until collection replacement or server destruction; no
+/// replacement races a native reader.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_static_text(
-    state: *const ServerState,
+pub extern "C" fn swr_v1_server_static_text(
+    state: &ServerState,
     kind: u32,
     index: usize,
-    length: *mut usize,
+    length: &mut usize,
 ) -> *const u8 {
-    // SAFETY: the caller lends a live Server state.
-    let state = unsafe { &*state };
     let Ok(kind) = usize::try_from(kind) else {
         return core::ptr::null();
     };
@@ -194,10 +183,7 @@ pub unsafe extern "C" fn swr_v1_server_static_text(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let value = strings.values.get(index);
-    // SAFETY: the caller supplies writable output length.
-    unsafe {
-        length.write(value.map_or(0, |value| value.len()));
-    }
+    *length = value.map_or(0, |value| value.len());
     value.map_or(core::ptr::null(), |value| value.as_ptr())
 }
 
@@ -206,10 +192,10 @@ pub(crate) fn add_rewrite_rule(state: &ServerState, pattern: &[u8], replacement:
     owner(state).rewrite_rules.add(pattern, replacement);
 }
 /// # Safety
-/// `state` is live; each span lends `length` readable bytes (null only when empty).
+/// Each span lends `length` readable bytes (null only when empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_static_rewrite_add(
-    state: *const ServerState,
+    state: &ServerState,
     pattern: *const u8,
     pattern_length: usize,
     replacement: *const u8,
@@ -223,8 +209,6 @@ pub unsafe extern "C" fn swr_v1_server_static_rewrite_add(
             unsafe { core::slice::from_raw_parts(data, length) }
         }
     };
-    // SAFETY: the caller lends a live Server state.
-    let state = unsafe { &*state };
     add_rewrite_rule(
         state,
         span(pattern, pattern_length),
@@ -233,17 +217,11 @@ pub unsafe extern "C" fn swr_v1_server_static_rewrite_add(
 }
 /// Upstream's `Server::apply_rewrite_rules`: rewrite the static context's URL by the
 /// server's rules. True when a rule applied.
-/// # Safety
-/// `state` is live and `context` is a live static context no one else uses meanwhile.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_static_rewrite(
-    state: *const ServerState,
-    context: *mut HttpStaticContext,
+pub extern "C" fn swr_v1_server_static_rewrite(
+    state: &ServerState,
+    context: &mut HttpStaticContext,
 ) -> bool {
-    // SAFETY: the caller lends a live Server state.
-    let state = unsafe { &*state };
-    // SAFETY: the caller lends the context exclusively.
-    let context = unsafe { &mut *context };
     apply_rewrite_rules(state, context)
 }
 /// Upstream's `Server::apply_rewrite_rules` over the server's rules.
@@ -259,7 +237,7 @@ mod tests {
         let state = ServerState::new();
         unsafe {
             let input = |kind, op, bytes: &[u8]| {
-                swr_v1_server_static_config(&raw const state, kind, op, bytes.as_ptr(), bytes.len())
+                swr_v1_server_static_config(&state, kind, op, bytes.as_ptr(), bytes.len())
             };
             assert_eq!(input(0, 1, b""), 0);
             input(0, 2, b"");
@@ -272,7 +250,7 @@ mod tests {
             assert_eq!(input(1, 5, b"index.php"), 0);
             assert_eq!(input(1, 5, b"missing"), 2);
             let mut length = 0;
-            let text = swr_v1_server_static_text(&raw const state, 1, 1, &raw mut length);
+            let text = swr_v1_server_static_text(&state, 1, 1, &mut length);
             assert_eq!(core::slice::from_raw_parts(text, length), b"index.html");
             input(2, 4, b"text/html");
             input(2, 4, b"Text/Html");
@@ -291,7 +269,7 @@ mod tests {
             input(1, 3, b"");
             assert_eq!(input(1, 1, b""), 0);
             assert_eq!(input(1, 0, b""), 0);
-            assert!(swr_v1_server_static_text(&raw const state, 1, 0, &raw mut length).is_null());
+            assert!(swr_v1_server_static_text(&state, 1, 0, &mut length).is_null());
         }
     }
     #[test]
@@ -301,7 +279,7 @@ mod tests {
         let address = std::ptr::from_ref(state) as usize;
         let append = move |bytes: &'static [u8]| unsafe {
             swr_v1_server_static_config(
-                address as *const ServerState,
+                &*(address as *const ServerState),
                 1,
                 6,
                 bytes.as_ptr(),
@@ -310,7 +288,7 @@ mod tests {
         };
         append(b"index.php");
         let mut length = 0;
-        let lent = unsafe { swr_v1_server_static_text(state, 1, 0, &raw mut length) };
+        let lent = swr_v1_server_static_text(state, 1, 0, &mut length);
         strings(state, 1, |enabled, values| {
             assert!(enabled);
             let (done, wait) = std::sync::mpsc::channel();
@@ -345,9 +323,9 @@ mod tests {
     fn shared_context_owner_observes_mutation_and_outlives_native_server() {
         let state = Box::new(ServerState::new());
         unsafe {
-            let handle = swr_v1_server_static_owner(&raw const *state, 2);
+            let handle = swr_v1_server_static_owner(&state, 2);
             assert!(!swr_v1_server_static_mime(handle, core::ptr::null(), 0));
-            swr_v1_server_static_config(&raw const *state, 2, 4, b"text/html".as_ptr(), 9);
+            swr_v1_server_static_config(&state, 2, 4, b"text/html".as_ptr(), 9);
             assert!(swr_v1_server_static_mime(handle, core::ptr::null(), 0));
             assert!(swr_v1_server_static_mime(handle, b"text/html".as_ptr(), 9));
             let copy = swr_v1_server_static_owner_clone(handle);

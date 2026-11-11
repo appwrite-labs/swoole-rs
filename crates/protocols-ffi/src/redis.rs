@@ -39,40 +39,38 @@ pub unsafe extern "C" fn swr_v1_resp_handler_key(
 pub unsafe extern "C" fn swr_v1_resp_php_next(
     data: *const u8,
     length: usize,
-    state: *mut RespPhpState,
-    span: *mut RespSpan,
-    range: *mut u8,
+    state: Option<&mut RespPhpState>,
+    span: Option<&mut RespSpan>,
+    mut range: Option<&mut u8>,
 ) -> i32 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
-    if state.is_null() || span.is_null() {
+    set(&mut range, 0);
+    let (Some(state), Some(span)) = (state, span) else {
         return -1;
-    }
+    };
     // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
     let Some(bytes) = (unsafe { crate::input(data, length) }) else {
         return -1;
     };
-    // SAFETY: `state` is non-null (checked above), aligned and initialized per the export's contract.
-    let mut current = unsafe { state.read() };
+    let mut current = *state;
     let mut overflow = false;
     let result = resp_php_next(bytes, &mut current, &mut overflow);
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
+    set(&mut range, u8::from(overflow));
     let Ok(event) = result else {
         return -1;
     };
-    // SAFETY: `state` is non-null (checked above), aligned, exclusive and writable.
-    unsafe { state.write(current) };
+    *state = current;
     let Some(event) = event else {
         return 0;
     };
-    // SAFETY: `span` is non-null (checked above), aligned, exclusive and writable.
-    unsafe { span.write(event) };
+    *span = event;
     1
+}
+
+/// Writes an optional out flag.
+fn set(flag: &mut Option<&mut u8>, value: u8) {
+    if let Some(flag) = flag {
+        **flag = value;
+    }
 }
 
 /// # Safety
@@ -87,7 +85,7 @@ pub unsafe extern "C" fn swr_v1_resp_parse(
     capacity: usize,
 ) -> i64 {
     // SAFETY: forwards the caller's input and output contract; the range output is omitted.
-    unsafe { swr_v1_resp_parse_range(data, length, output, capacity, std::ptr::null_mut()) }
+    unsafe { swr_v1_resp_parse_range(data, length, output, capacity, None) }
 }
 
 /// The optional range output reports libc-compatible signed-long overflow,
@@ -101,22 +99,16 @@ pub unsafe extern "C" fn swr_v1_resp_parse_range(
     length: usize,
     output: *mut RespSpan,
     capacity: usize,
-    range: *mut u8,
+    mut range: Option<&mut u8>,
 ) -> i64 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
+    set(&mut range, 0);
     // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
     let Some(bytes) = (unsafe { crate::input(data, length) }) else {
         return -1;
     };
     let mut overflow = false;
     let count = resp_spans(bytes, |_| {}, &mut overflow);
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
+    set(&mut range, u8::from(overflow));
     let Some(count) = count else { return -1 };
     if output.is_null() {
         return if capacity == 0 {
@@ -155,12 +147,9 @@ pub unsafe extern "C" fn swr_v1_resp_scan(
     length: usize,
     output: *mut RespSpan,
     capacity: usize,
-    range: *mut u8,
+    mut range: Option<&mut u8>,
 ) -> i64 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
+    set(&mut range, 0);
     if (output.is_null() && capacity != 0)
         || capacity > isize::MAX as usize / std::mem::size_of::<RespSpan>()
     {
@@ -182,10 +171,7 @@ pub unsafe extern "C" fn swr_v1_resp_scan(
         },
         &mut overflow,
     );
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
+    set(&mut range, u8::from(overflow));
     count.map_or(-1, |count| i64::try_from(count).unwrap_or(-1))
 }
 
@@ -228,21 +214,11 @@ pub unsafe extern "C" fn swr_v1_resp_receive(
     length: usize,
     capacity: usize,
     maximum: usize,
-    request: *mut RespRequest,
-    set_offset: *mut u8,
+    request: Option<&mut RespRequest>,
+    set_offset: Option<&mut u8>,
 ) -> i32 {
     // SAFETY: forwards the caller's input and output contract; the range output is omitted.
-    unsafe {
-        swr_v1_resp_receive_range(
-            data,
-            length,
-            capacity,
-            maximum,
-            request,
-            set_offset,
-            std::ptr::null_mut(),
-        )
-    }
+    unsafe { swr_v1_resp_receive_range(data, length, capacity, maximum, request, set_offset, None) }
 }
 
 /// [`resp_receive_range`]: its action, with `set_offset` written; -1 for invalid input.
@@ -255,15 +231,15 @@ pub unsafe extern "C" fn swr_v1_resp_receive_range(
     length: usize,
     capacity: usize,
     maximum: usize,
-    request: *mut RespRequest,
-    set_offset: *mut u8,
-    range: *mut u8,
+    request: Option<&mut RespRequest>,
+    set_offset: Option<&mut u8>,
+    mut range: Option<&mut u8>,
 ) -> i32 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
-    if request.is_null() || set_offset.is_null() || length > capacity {
+    set(&mut range, 0);
+    let (Some(request), Some(set_offset)) = (request, set_offset) else {
+        return -1;
+    };
+    if length > capacity {
         return -1;
     }
     // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
@@ -271,15 +247,9 @@ pub unsafe extern "C" fn swr_v1_resp_receive_range(
         return -1;
     };
     let mut overflow = false;
-    // SAFETY: `request` is non-null (checked above), aligned, exclusive and writable.
-    let request = unsafe { &mut *request };
     let (action, offset) = resp_receive_range(bytes, capacity, maximum, request, &mut overflow);
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
-    // SAFETY: `set_offset` is non-null (checked above), aligned and writable per the export's contract.
-    unsafe { set_offset.write(u8::from(offset)) };
+    set(&mut range, u8::from(overflow));
+    *set_offset = u8::from(offset);
     action.cast_signed()
 }
 
@@ -335,9 +305,9 @@ mod tests {
                 swr_v1_resp_php_next(
                     malformed.as_ptr(),
                     malformed.len(),
-                    &raw mut state,
-                    &raw mut event,
-                    &raw mut range,
+                    Some(&mut state),
+                    Some(&mut event),
+                    Some(&mut range),
                 )
             },
             -1
@@ -362,7 +332,7 @@ mod tests {
                         wire.len(),
                         output.as_mut_ptr(),
                         capacity,
-                        &raw mut range,
+                        Some(&mut range),
                     )
                 },
                 3
@@ -386,7 +356,7 @@ mod tests {
                     wire.len(),
                     output.as_mut_ptr(),
                     2,
-                    &raw mut range,
+                    Some(&mut range),
                 )
             },
             -1
@@ -431,7 +401,7 @@ mod tests {
                 wire.len(),
                 spans.as_mut_ptr(),
                 16,
-                &raw mut range,
+                Some(&mut range),
             )
         };
         assert_eq!((count, range), (1, 0));

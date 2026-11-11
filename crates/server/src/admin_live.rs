@@ -87,16 +87,14 @@ unsafe extern "C" fn answer(
 
 /// `Address::get_addr()`, which formats into a per-thread buffer.
 fn address(info: &SocketAddress) -> String {
-    // SAFETY: a live socket's address.
-    let host = unsafe { swr_v1_clients_address_host(info) };
+    let host = swr_v1_clients_address_host(info);
     // SAFETY: the text lives until this thread formats another address.
     Json::utf8(unsafe { CStr::from_ptr(host) }.to_bytes())
 }
 
 /// `Address::get_port()`.
 fn port(info: &SocketAddress) -> i64 {
-    // SAFETY: a live socket's address.
-    unsafe { swr_v1_clients_address_port(info) }.into()
+    swr_v1_clients_address_port(info).into()
 }
 
 /// `Socket::get_out_buffer_length()`.
@@ -106,7 +104,7 @@ fn out_buffer_length(socket: &SocketRecord) -> u64 {
         return 0;
     }
     // SAFETY: the socket's live output buffer.
-    unsafe { swoole_rs_buffer::cpp::swr_cpp_buffer_length(buffer.cast()) }.into()
+    swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() }).into()
 }
 
 fn socket(s: &SocketRecord) -> Socket {
@@ -156,9 +154,11 @@ fn timer_count() -> u64 {
         return 0;
     }
     // SAFETY: this thread's live timer.
-    let queue = unsafe { swr_v1_timer_owner_queue(timer.cast()) };
+    let queue = swr_v1_timer_owner_queue(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() });
     let mut stats = TimerStats::default();
-    // SAFETY: the timer's live queue and a `TimerStats` to fill.
+    // SAFETY: the timer's live queue, not borrowed elsewhere during this read.
+    let queue = unsafe { queue.as_ref() };
+    // SAFETY: a `TimerStats` to fill.
     unsafe { swr_v1_timer_stats_get(queue, &raw mut stats) };
     stats.count as u64
 }

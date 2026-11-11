@@ -159,12 +159,10 @@ pub unsafe extern "C" fn swr_v1_os_sendfile(
 
 /// The `!HAVE_SENDFILE` fallback: one `pread` of at most `SW_BUFFER_SIZE_BIG`
 /// bytes at `*offset`, written once; the offset advances by what was written.
-/// # Safety
-/// `offset` points to a valid, exclusively borrowed `off_t`.
-pub unsafe extern "C" fn swr_v1_os_sendfile_copy(
+pub extern "C" fn swr_v1_os_sendfile_copy(
     out_fd: c_int,
     in_fd: c_int,
-    offset: *mut off_t,
+    offset: &mut off_t,
     size: usize,
 ) -> Sendfile {
     #[expect(
@@ -173,9 +171,7 @@ pub unsafe extern "C" fn swr_v1_os_sendfile_copy(
     )]
     let mut buf = [0_u8; 65536];
     let amount = size.min(buf.len());
-    // SAFETY: `offset` is valid per the contract.
-    let at = unsafe { *offset };
-    let n = sys::pread(in_fd, buf.get_mut(..amount).unwrap_or_default(), at);
+    let n = sys::pread(in_fd, buf.get_mut(..amount).unwrap_or_default(), *offset);
     if n <= 0 {
         return Sendfile {
             result: -1,
@@ -189,8 +185,7 @@ pub unsafe extern "C" fn swr_v1_os_sendfile_copy(
             warn: 2,
         };
     }
-    // SAFETY: `offset` is valid per the contract.
-    unsafe { *offset += isize_to_off(written) };
+    *offset += isize_to_off(written);
     Sendfile {
         result: written,
         warn: 0,
@@ -315,7 +310,7 @@ pub unsafe extern "C" fn swoole_sendfile(
     )))]
     {
         // SAFETY: as the caller promises.
-        let sent = unsafe { swr_v1_os_sendfile_copy(out_fd, in_fd, offset, size) };
+        let sent = swr_v1_os_sendfile_copy(out_fd, in_fd, unsafe { &mut *offset }, size);
         match sent.warn {
             1 => swoole_rs_corebase::log::sys_warning(origin, format_args!("pread() failed")),
             2 => swoole_rs_corebase::log::sys_warning(origin, format_args!("write() failed")),
@@ -429,17 +424,13 @@ mod tests {
         let source = scratch(b"0123456789");
         let sink = scratch(b"");
         let mut offset: off_t = 2;
-        let sent = unsafe {
-            swr_v1_os_sendfile_copy(sink.as_raw_fd(), source.as_raw_fd(), &raw mut offset, 5)
-        };
+        let sent = swr_v1_os_sendfile_copy(sink.as_raw_fd(), source.as_raw_fd(), &mut offset, 5);
         assert_eq!(
             (sent, offset),
             (Sendfile { result: 5, warn: 0 }, 7),
             "five bytes from offset two"
         );
-        let sent = unsafe {
-            swr_v1_os_sendfile_copy(sink.as_raw_fd(), source.as_raw_fd(), &raw mut offset, 0)
-        };
+        let sent = swr_v1_os_sendfile_copy(sink.as_raw_fd(), source.as_raw_fd(), &mut offset, 0);
         assert_eq!(
             sent,
             Sendfile {

@@ -14,27 +14,24 @@ pub(crate) type Socket = co::Socket;
 pub(crate) unsafe fn swoole_http2_client_coro_create_socket(
     host: *const c_char,
     length: size_t,
-    converted: *mut *mut zend_string,
-    socket: *mut Socket,
-    error: *mut c_int,
+    converted: &mut *mut zend_string,
+    socket: &mut Socket,
+    error: &mut c_int,
 ) -> *mut zend_object {
     // SAFETY: per the caller, `length` readable bytes.
     let kind = unsafe { swoole_rs_reactor::swr_v1_socket_host_type(host.cast(), length) };
     // SAFETY: as above; `erase` never exceeds the length.
     let name = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
     let name = swoole_rs_zend::string::copy(name.get(kind.erase..).unwrap_or_default());
-    // SAFETY: a writable out-parameter.
-    unsafe { *converted = name };
+    *converted = name;
     let object = swoole_rs_phpclients::create_socket(kind.socket_type);
     if object.is_null() {
-        // SAFETY: as above.
-        unsafe { *error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) };
+        *error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         return ptr::null_mut();
     }
     // SAFETY: the new object is a socket object.
     let pointer = unsafe { swoole_rs_phpclients::socket_of(object) };
-    // SAFETY: a writable out-parameter.
-    unsafe { *socket = pointer };
+    *socket = pointer;
     object
 }
 
@@ -119,12 +116,11 @@ pub(crate) unsafe fn swoole_http2_client_coro_send_all(
 /// `errCode`, with `errMsg` in `message`.
 pub(crate) unsafe fn swoole_http2_client_coro_error(
     socket: Socket,
-    message: *mut *const c_char,
+    message: &mut *const c_char,
 ) -> c_int {
     // SAFETY: per the caller.
     let record = unsafe { co::record(socket) };
-    // SAFETY: a writable out-parameter.
-    unsafe { *message = record.err_msg };
+    *message = record.err_msg;
     record.err_code
 }
 

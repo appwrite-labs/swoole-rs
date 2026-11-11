@@ -337,7 +337,7 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
                             let expected =
                                 (head == tail && head_tag != tail_tag) || modular == size;
                             assert_eq!(
-                                unsafe { swr_v1_memory_channel_full(&raw const state) },
+                                swr_v1_memory_channel_full(Some(&state)),
                                 i32::from(expected)
                             );
                         }
@@ -346,7 +346,7 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
             }
         }
     }
-    assert_eq!(unsafe { swr_v1_memory_channel_full(ptr::null()) }, -1);
+    assert_eq!(swr_v1_memory_channel_full(None), -1);
 }
 
 /// `swoole::Channel` as upstream's `include/swoole_channel.h` drove the record: `make`, the
