@@ -917,8 +917,14 @@ mod tests {
                 })
             })
             .collect();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        assert!(!waiters[0].is_finished(), "the lock is held");
+        // Both blocked in the wait before the unlock, so it must hand over twice.
+        while state.locked.0.lock().unwrap().1 < 2 {
+            std::thread::yield_now();
+        }
+        assert!(
+            !waiters.iter().any(std::thread::JoinHandle::is_finished),
+            "the lock is held"
+        );
         assert_eq!(unsafe { native_fact(&state, OP_UNLOCK, 0) }, Some(0));
         for waiter in waiters {
             waiter.join().unwrap();
