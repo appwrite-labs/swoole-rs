@@ -86,9 +86,23 @@ impl Sock {
     }
 }
 
+/// libc's plain socket structs: integers, byte arrays and nullable pointers, so all-zero
+/// bytes are a valid value. Private, so no other type can be zeroed through it.
+trait CStruct: Copy {}
+
+impl CStruct for in6_addr {}
+impl CStruct for sockaddr_in {}
+impl CStruct for sockaddr_in6 {}
+impl CStruct for libc::addrinfo {}
+impl CStruct for libc::sockaddr_storage {}
+impl CStruct for libc::group_req {}
+impl CStruct for libc::group_source_req {}
+impl CStruct for libc::ifreq {}
+impl CStruct for libc::in6_pktinfo {}
+
 /// A C struct, all zero (as upstream's `= {0}` and `memset`).
-fn zeroed<T: Copy>() -> T {
-    // SAFETY: only used for libc's plain socket structs, valid all zero.
+fn zeroed<T: CStruct>() -> T {
+    // SAFETY: every `CStruct` is valid all zero.
     unsafe { MaybeUninit::<T>::zeroed().assume_init() }
 }
 

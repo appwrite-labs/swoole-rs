@@ -1,7 +1,7 @@
 //! Upstream's `ZendArray`: a table of items behind a reader-writer lock,
 //! shared by every Map or `ArrayList` object (in any thread) that refers to it.
 use crate::{
-    item::{Item, set},
+    item::Item,
     table::{Key, Table},
 };
 use std::{
@@ -9,13 +9,8 @@ use std::{
     sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use swoole_rs_zend::{
-    Array as ZArray, Call, Key as ZKey, Value as ZValue, bailout,
-    sys::{
-        IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zval_stringl, zend_hash_index_add,
-        zend_hash_next_index_insert_new, zend_hash_str_add, zend_sort, zend_ulong, zend_value,
-        zval,
-    },
-    value,
+    Array as ZArray, Call, Key as ZKey, Owned, OwnedArray, Value as ZValue, ZString, bailout,
+    sys::{zend_sort, zend_ulong},
 };
 
 #[derive(Debug, Default)]
@@ -73,13 +68,8 @@ impl Array {
     }
 
     /// `strkey_offsetGet` / `intkey_offsetGet`.
-    /// # Safety
-    /// In a request; `out` is the return slot.
-    pub(crate) unsafe fn get(&self, key: &Key, out: *mut zval) {
-        if let Some(item) = self.read().get(key) {
-            // SAFETY: per the caller.
-            unsafe { item.fetch(out) };
-        }
+    pub(crate) fn get(&self, key: &Key) -> Option<Owned> {
+        self.read().get(key).and_then(Item::fetch)
     }
 
     pub(crate) fn exists(&self, key: &Key) -> bool {
@@ -149,17 +139,15 @@ impl Array {
         }
     }
 
-    /// `index_offsetGet`: false when `index` is not below the count.
-    /// # Safety
-    /// As `get`.
-    pub(crate) unsafe fn index_get(&self, index: i64, out: *mut zval) -> bool {
+    /// `index_offsetGet`, the item in the return slot of `call`: false when
+    /// `index` is not below the count.
+    pub(crate) fn index_get(&self, index: i64, call: &Call) -> bool {
         let table = self.read();
         if !below(index, table.len()) {
             return false;
         }
-        if let Some(item) = table.get_int(index) {
-            // SAFETY: per the caller.
-            unsafe { item.fetch(out) };
+        if let Some(value) = table.get_int(index).and_then(Item::fetch) {
+            call.set_owned(value);
         }
         true
     }
@@ -221,86 +209,51 @@ impl Array {
     }
 
     /// `keys`.
-    /// # Safety
-    /// `out` is the return slot.
-    pub(crate) unsafe fn keys(&self, out: *mut zval) {
+    pub(crate) fn keys(&self) -> Owned {
         let table = self.read();
-        // SAFETY: per the caller.
-        unsafe { swr_zend_array_init(out) };
-        // SAFETY: an array zval.
-        let array = unsafe { value::table(out) };
+        let mut array = OwnedArray::default();
         for (key, _) in table.iter() {
-            let mut value = zval_null();
             match key {
-                Key::Int(index) => set(&raw mut value, IS_LONG, zend_value { lval: *index }),
-                // SAFETY: Zend copies the bytes.
-                Key::Str(name) => unsafe {
-                    swr_zval_stringl(&raw mut value, name.as_ptr().cast(), name.len());
-                },
+                Key::Int(index) => array.push_long(*index),
+                Key::Str(name) => array.push_bytes(name),
             }
-            // SAFETY: an array zval; the array takes the value.
-            unsafe { zend_hash_next_index_insert_new(array, &raw mut value) };
         }
+        array.into_owned()
     }
 
     /// `values`.
-    /// # Safety
-    /// In a request; `out` is the return slot.
-    pub(crate) unsafe fn values(&self, out: *mut zval) {
+    pub(crate) fn values(&self) -> Owned {
         let table = self.read();
-        // SAFETY: per the caller.
-        unsafe { swr_zend_array_init(out) };
-        // SAFETY: an array zval.
-        let array = unsafe { value::table(out) };
+        let mut array = OwnedArray::default();
         for (_, item) in table.iter() {
-            let mut value = zval_null();
-            // SAFETY: per the caller.
-            unsafe { item.fetch_or_null(&raw mut value) };
-            // SAFETY: an array zval; the array takes the value.
-            unsafe { zend_hash_next_index_insert_new(array, &raw mut value) };
+            array.push(item.fetch_or_null());
         }
+        array.into_owned()
     }
 
     /// `to_array`.
-    /// # Safety
-    /// In a request; `out` is writable and holds nothing.
-    pub(crate) unsafe fn to_array(&self, out: *mut zval) {
+    pub(crate) fn to_array(&self) -> Owned {
         let table = self.read();
-        // SAFETY: per the caller.
-        unsafe { swr_zend_array_init(out) };
-        // SAFETY: an array zval.
-        let array = unsafe { value::table(out) };
+        let mut array = OwnedArray::default();
         for (key, item) in table.iter() {
-            let mut value = zval_null();
-            // SAFETY: per the caller.
-            unsafe { item.fetch_or_null(&raw mut value) };
+            let value = item.fetch_or_null();
             match key {
                 #[expect(clippy::cast_sign_loss, reason = "Zend's int keys are zend_ulong")]
-                // SAFETY: a live array; it takes the value.
-                Key::Int(index) => unsafe {
-                    zend_hash_index_add(array, *index as zend_ulong, &raw mut value)
-                },
-                // SAFETY: as above; Zend copies the key.
-                Key::Str(name) => unsafe {
-                    zend_hash_str_add(array, name.as_ptr().cast(), name.len(), &raw mut value)
-                },
-            };
+                Key::Int(index) => array.insert_index(*index as zend_ulong, value),
+                // A table's string keys are never numeric, so this is `zend_hash_str_add`.
+                Key::Str(name) => array.insert(name, value),
+            }
         }
+        array.into_owned()
     }
 
     /// `find`: the key of the first item equal to `search`, or nothing.
-    /// # Safety
-    /// `out` is the return slot.
-    pub(crate) unsafe fn find(&self, search: &ZValue, out: *mut zval) {
+    pub(crate) fn find(&self, search: &ZValue) -> Option<Owned> {
         let table = self.read();
         let found = table.iter().find(|(_, item)| item.equals(search));
-        match found {
-            Some((Key::Int(index), _)) => set(out, IS_LONG, zend_value { lval: *index }),
-            // SAFETY: per the caller; Zend copies the bytes.
-            Some((Key::Str(name), _)) => unsafe {
-                swr_zval_stringl(out, name.as_ptr().cast(), name.len());
-            },
-            None => {}
+        match found? {
+            (Key::Int(index), _) => Some(Owned::long(*index)),
+            (Key::Str(name), _) => Some(Owned::string(ZString::new(name))),
         }
     }
 
@@ -344,27 +297,17 @@ fn length(table: &Table<Item>) -> i64 {
     i64::try_from(table.len()).unwrap_or(i64::MAX)
 }
 
-fn zval_null() -> zval {
-    let mut value = swoole_rs_zend::UNDEF;
-    set(&raw mut value, IS_NULL, zend_value { lval: 0 });
-    value
-}
-
 /// `zval_get_long`, or -1 for null (`ZVAL_IS_NULL(zkey) ? -1 : zval_get_long(zkey)`).
 pub(crate) fn list_index(key: &ZValue) -> i64 {
     if key.is_null() { -1 } else { key.long() }
 }
 
 /// `INIT_DECR_VALUE`: `delta` negated as a float, or as an int.
-pub(crate) fn negate(delta: &ZValue) -> zval {
-    let mut value = zval_null();
-    if let Some(double) = delta.as_double() {
-        set(&raw mut value, IS_DOUBLE, zend_value { dval: -double });
-    } else {
-        let lval = delta.long().wrapping_neg();
-        set(&raw mut value, IS_LONG, zend_value { lval });
+pub(crate) fn negate(delta: &ZValue) -> Owned {
+    match delta.as_double() {
+        Some(double) => Owned::double(-double),
+        None => Owned::long(delta.long().wrapping_neg()),
     }
-    value
 }
 
 /// A thread's arguments: a shared table each new thread copies into its

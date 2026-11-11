@@ -30,15 +30,15 @@ use swoole_rs_websocket::{
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Owned, Props, Value, ZStr, ZString, bailout, handlers, init_object,
     method_table,
-    string::{self, bytes},
+    string::{self},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset, swr_zend_instanceof,
-        swr_zend_ws_property_not_null, swr_zval_copy, swr_zval_is_true, swr_zval_str,
-        zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long, zend_object,
-        zend_string, zend_value, zval, zval_ptr_dtor,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
+        swr_zend_ws_property_not_null, swr_zval_str, zend_ce_stringable, zend_class_entry,
+        zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
+        zval_ptr_dtor,
     },
-    value::{self, empty_string, get_long, obj_of},
+    value::{empty_string, obj_of},
 };
 
 static SERVER: Class = Class::new();
@@ -140,9 +140,6 @@ const ON_MESSAGE: c_int = 8;
 const OK: c_int = 0;
 const ERR: c_int = -1;
 
-/// `swoole::Server`, opaque.
-type Server = c_void;
-
 /// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
 /// tells a WebSocket server by it.
 #[must_use]
@@ -160,8 +157,10 @@ struct Connection {
 }
 
 /// `php_swoole_server_get_and_check_server(object)`: `None` after the
-/// `E_ERROR` of a server object never constructed.
-pub(crate) fn server_of(object: *mut zval) -> Option<*mut Server> {
+/// `E_ERROR` of a server object never constructed. The view lives while
+/// `_held`, which holds the object (the method's frame, or the value), is
+/// borrowed.
+pub(crate) fn server_of<T: ?Sized>(object: *mut zval, _held: &T) -> Option<view::Server<'_>> {
     // SAFETY: a `Swoole\Server` object.
     let server = unsafe { php_swoole_server_get_ptr(object) };
     if server.is_null() {
@@ -175,47 +174,33 @@ pub(crate) fn server_of(object: *mut zval) -> Option<*mut Server> {
         bailout::defer(swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message));
         return None;
     }
-    Some(server)
-}
-
-/// `Server::is_started()`.
-pub(crate) fn started(server: *mut Server) -> bool {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
-    server.is_started()
+    // SAFETY: a constructed server object's live server.
+    Some(unsafe { view::Server::from_raw(server) })
 }
 
 /// `conn->websocket_status = status` of the session's slot.
-fn set_status(server: *mut Server, fd: zend_long, status: i64) {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn set_status(server: view::Server<'_>, fd: zend_long, status: i64) {
     if let Some(conn) = server.by_session(fd) {
         conn.websocket_status = u8::try_from(status).unwrap_or_default();
     }
 }
 
 /// `Server::send`; with `wait`, waiting in a coroutine while the buffer is full.
-fn send(server: *mut Server, fd: zend_long, data: &[u8], wait: bool) -> bool {
+fn send(server: view::Server<'_>, fd: zend_long, data: &[u8], wait: bool) -> bool {
     if wait {
-        // SAFETY: a live server and the bytes.
-        return unsafe { context::server_send(server, fd, data.as_ptr().cast(), data.len()) };
+        return context::server_send(server, fd, data);
     }
-    // SAFETY: as above.
-    server_methods::send(unsafe { view::Server::from_raw(server) }, fd, data)
+    server_methods::send(server, fd, data)
 }
 
 /// `Server::close(fd, reset)`.
-fn close(server: *mut Server, fd: zend_long, reset: bool) -> bool {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn close(server: view::Server<'_>, fd: zend_long, reset: bool) -> bool {
     server_methods::close(server, fd, reset)
 }
 
 /// The port's `open_websocket_{close,ping,pong}_frame` bits, or `None` when
 /// the session is gone (`get_port_by_session_id`).
-fn port_frames(server: *mut Server, fd: zend_long) -> Option<u8> {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
     let conn = server.by_session(fd)?;
     let port = server.port_by_fd(conn.fd);
     // SAFETY: a live port.
@@ -223,9 +208,7 @@ fn port_frames(server: *mut Server, fd: zend_long) -> Option<u8> {
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
-fn port_protocol<'a>(server: *mut Server, server_fd: c_int) -> &'a [u8] {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn port_protocol<'a>(server: view::Server<'_>, server_fd: c_int) -> &'a [u8] {
     let port = server.port_by_server_fd(server_fd);
     if port.is_null() {
         return &[];
@@ -263,12 +246,10 @@ method_table! {
 
 /// MINIT: the three classes and the constants, as
 /// `php_swoole_websocket_server_minit` registered them.
-/// # Safety
-/// Called once, at MINIT, after `Swoole\Http\Server` is registered.
-pub unsafe fn websocket_minit(args: &MinitArgs) {
+/// After `Swoole\Http\Server` is registered.
+pub fn websocket_minit(args: &MinitArgs) {
     let serializable = args.thread;
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
+    let minit = &args.minit;
     ZLIB.store(args.zlib, Relaxed);
     swoole_rs_phpclients::register_websocket(client_websocket);
     // Its objects are the parent's (no handlers of its own are installed).
@@ -328,7 +309,7 @@ pub unsafe fn websocket_minit(args: &MinitArgs) {
         minit.property_long(&CLOSE_FRAME, name, value, ZEND_ACC_PUBLIC);
     }
     minit.property_string(&CLOSE_FRAME, c"reason", c"", ZEND_ACC_PUBLIC);
-    constants(&minit);
+    constants(minit);
 }
 
 /// The global constants, `SWOOLE_WEBSOCKET_*` then the BC `WEBSOCKET_*`, in
@@ -385,11 +366,11 @@ fn constants(minit: &Minit) {
 }
 
 /// `swoole::websocket::FrameObject`: an outgoing frame.
-pub struct FrameObject {
+pub struct FrameObject<'a> {
     opcode: u8,
     flags: u8,
     code: u16,
-    data: *mut zval,
+    data: Option<&'a Value>,
 }
 
 /// Truncate to a byte, as upstream's `uint8_t` fields do.
@@ -397,17 +378,12 @@ fn byte(value: i64) -> u8 {
     value.to_le_bytes()[0]
 }
 
-impl FrameObject {
+impl<'a> FrameObject<'a> {
     /// `FrameObject(zdata, opcode, flags, code)`: a `Frame` object's
     /// properties, or the arguments around any other value.
-    fn new(data: *mut zval, opcode: i64, flags: i64, code: i64) -> Self {
-        // SAFETY: the caller's live zval.
-        let value = unsafe { Value::from_ptr(data) };
-        let frame = value.and_then(|value| Some((value.object()?, value.class()?)));
-        // SAFETY: two registered classes.
-        let frame =
-            frame.filter(|&(_, class)| unsafe { swr_zend_instanceof(class, FRAME.entry()) });
-        let Some((object, _)) = frame else {
+    fn new(data: Option<&'a Value>, opcode: i64, flags: i64, code: i64) -> Self {
+        let frame = data.filter(|value| value.instance_of(&FRAME));
+        let Some(object) = frame.and_then(Value::object) else {
             #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
             #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
             let code = code as u16;
@@ -423,18 +399,19 @@ impl FrameObject {
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == OPCODE_CLOSE {
-            code = not_null(object, c"code").map_or(CLOSE_NORMAL, |code| {
-                // SAFETY: the live property.
-                unsafe { get_long(code) }
-            });
+            let found = not_null(object, c"code");
+            // SAFETY: the live property.
+            let found = found.and_then(|found| unsafe { Value::from_ptr(found) });
+            code = found.map_or(CLOSE_NORMAL, Value::long);
             not_null(object, c"reason")
         } else {
             not_null(object, c"data")
         };
         let mut flags = byte(long(c"flags") & FLAGS_ALL);
-        if let Some(finish) = not_null(object, c"finish") {
-            // SAFETY: the live property.
-            if unsafe { swr_zval_is_true(finish) } {
+        let finish = not_null(object, c"finish");
+        // SAFETY: the live property.
+        if let Some(finish) = finish.and_then(|finish| unsafe { Value::from_ptr(finish) }) {
+            if finish.truthy() {
                 flags |= FLAG_FIN;
             } else {
                 flags &= !FLAG_FIN;
@@ -447,7 +424,9 @@ impl FrameObject {
             opcode,
             flags,
             code,
-            data: data.unwrap_or(ptr::null_mut()),
+            // SAFETY: the live property, or the read's `rv`, which the frame
+            // keeps until the next read.
+            data: data.and_then(|data| unsafe { Value::from_ptr(data) }),
         }
     }
 }
@@ -504,8 +483,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         host::fatal("the maximum value of opcode is 10");
         return None;
     }
-    // SAFETY: null or a live zval.
-    let data = unsafe { Value::from_ptr(frame.data) }.filter(|data| !data.is_null());
+    let data = frame.data.filter(|data| !data.is_null());
     let data = data.map(Value::string);
     let data = data.as_deref().map_or(&[][..], ZStr::bytes);
     if bailout::pending() {
@@ -689,23 +667,23 @@ fn uncompress(payload: *mut zval, data: &[u8]) -> bool {
 }
 
 /// `websocket::construct_frame`: a `Frame`, or a `CloseFrame` with the close
-/// payload's code and reason.
-fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags: u8) {
+/// payload's code and reason; the new object.
+fn construct(
+    frame: *mut zval,
+    opcode: zend_long,
+    payload: &Value,
+    mut flags: u8,
+) -> *mut zend_object {
     let class = if opcode == zend_long::from(OPCODE_CLOSE) {
         CLOSE_FRAME.entry()
     } else {
         FRAME.entry()
     };
     // SAFETY: the caller's writable slot and a registered class.
-    unsafe { init_object(frame, class) };
-    // SAFETY: the object just created.
-    let object = unsafe { obj_of(frame) };
+    let object = unsafe { init_object(frame, class) };
     if class == CLOSE_FRAME.entry() {
-        // SAFETY: a close payload is a string.
-        let data = unsafe { value::str_of(payload) };
-        // SAFETY: a live string.
-        let data = unsafe { bytes(data) };
-        if let [high, low, reason @ ..] = data {
+        // A close payload is a string.
+        if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default() {
             // `(payload[0] << 8) ^ (payload[1] & 0xFF)` over a signed char.
             let code = (i64::from(high.cast_signed()) << 8) ^ i64::from(*low);
             // SAFETY: the CloseFrame just created, under its class.
@@ -716,10 +694,8 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
             }
         }
     } else {
-        let mut data = new_zval();
-        // SAFETY: the live payload; the Frame takes its own reference.
-        unsafe { swr_zval_copy(&raw mut data, payload) };
-        set(object, DATA, data);
+        // The Frame takes its own reference.
+        set(object, DATA, payload.copy().into_zval());
     }
     if flags & FLAG_RSV1 != 0 {
         flags |= FLAG_COMPRESS;
@@ -732,6 +708,7 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
         IS_FALSE
     };
     set(object, FINISH, scalar(finish, 0));
+    object
 }
 
 /// A zval holding `string`'s reference.
@@ -743,7 +720,7 @@ pub(crate) fn zval_of(string: *mut zend_string) -> zval {
 }
 
 /// `swoole_websocket_server_pack`'s body: the packed frame, or `""`.
-fn pack_value(call: &Call, data: *mut zval, opcode: i64, flags: i64) {
+fn pack_value(call: &Call, data: Option<&Value>, opcode: i64, flags: i64) {
     match pack(&FrameObject::new(data, opcode, flags, 0)) {
         // SAFETY: the return slot takes the new string.
         Some(packed) => unsafe { call.set_string(packed.into_string()) },
@@ -754,7 +731,7 @@ fn pack_value(call: &Call, data: *mut zval, opcode: i64, flags: i64) {
 fn pack_method(call: &Call) {
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
-            call.zval(1),
+            call.value(1),
             call.long(2, i64::from(OPCODE_TEXT))?,
             call.long(3, i64::from(FLAG_FIN))?,
         ))
@@ -766,7 +743,8 @@ fn pack_method(call: &Call) {
 }
 
 fn to_string(call: &Call) {
-    pack_value(call, call.this_zval(), 0, 0);
+    // SAFETY: `$this`, which the frame holds for the call.
+    pack_value(call, unsafe { Value::from_ptr(call.this_zval()) }, 0, 0);
 }
 
 /// `websocket::decode` of a whole frame, warning as it does; the input is
@@ -836,15 +814,15 @@ fn unpack(call: &Call) {
     construct(
         call.return_value(),
         i64::from(frame.opcode),
-        zpayload.as_ptr(),
+        &zpayload,
         frame.flags,
     );
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
-fn server(call: &Call) -> Option<*mut Server> {
-    let server = server_of(call.this_zval())?;
-    if !started(server) {
+fn server(call: &Call) -> Option<view::Server<'_>> {
+    let server = server_of(call.this_zval(), call)?;
+    if !server.is_started() {
         host::fatal("server is not running");
         return None;
     }
@@ -852,13 +830,11 @@ fn server(call: &Call) -> Option<*mut Server> {
 }
 
 /// `Server::get_connection_verify(fd) != nullptr`.
-pub(crate) fn server_connection(server: *mut Server, fd: zend_long) -> bool {
+pub(crate) fn server_connection(server: view::Server<'_>, fd: zend_long) -> bool {
     connection(server, fd, true).is_some()
 }
 
-fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connection> {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn connection(server: view::Server<'_>, fd: zend_long, verify: bool) -> Option<Connection> {
     let conn = if verify {
         server.verified(fd)
     } else {
@@ -873,7 +849,7 @@ fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connec
 }
 
 /// `swoole_websocket_server_push`: a packed frame to a WebSocket connection.
-fn push_frame(server: *mut Server, fd: zend_long, frame: &[u8]) -> bool {
+fn push_frame(server: view::Server<'_>, fd: zend_long, frame: &[u8]) -> bool {
     if fd <= 0 {
         host::fatal(&format!("fd[{fd}] is invalid"));
         return false;
@@ -893,12 +869,11 @@ fn push(call: &Call) {
         let server = server(call)?;
         call.arity(2, 4).ok()?;
         let fd = call.long(1, 0).ok()?;
-        let data = call.zval(2);
+        let data = call.value(2);
         let opcode = call.long(3, i64::from(OPCODE_TEXT)).ok()?;
-        let flags = call.zval_or_null(4).map_or(i64::from(FLAG_FIN), |flags| {
-            // SAFETY: a passed argument.
-            unsafe { get_long(flags) }
-        });
+        let flags = call
+            .zval_or_null(4)
+            .map_or(i64::from(FLAG_FIN), Value::long);
         let Some(conn) = connection(server, fd, true) else {
             host::set_last_error(SESSION_NOT_EXIST);
             host::fatal(&format!("session#{fd} does not exists"));
@@ -946,7 +921,7 @@ fn ping(call: &Call) {
         let payload = call.str(2).ok()?;
         let mut data = zval_of(payload.unwrap_or_else(empty_string));
         let frame = FrameObject::new(
-            &raw mut data,
+            Some(Value::of(&mut data)),
             i64::from(OPCODE_PING),
             i64::from(FLAG_FIN),
             0,
@@ -985,7 +960,7 @@ handlers! {
 /// Run a server callback; `Err` if it bailed out. A failed call warns
 /// `"Swoole\WebSocket\Server->{event} handler error"` and closes `fd`.
 fn dispatch(
-    server: *mut Server,
+    server: view::Server<'_>,
     server_fd: c_int,
     event: c_int,
     args: &mut [zval],
@@ -1022,13 +997,13 @@ pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> c_int 
 fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout::Bailout> {
     let info = request.info();
     let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
-    let server = view.raw();
+    let server = view;
     let Some(settings) = port_frames(server, fd) else {
         return Ok(ERR);
     };
     let mut data = Owned::default();
-    // SAFETY: an empty slot for the payload.
-    unsafe { php_swoole_get_recv_data(view, data.as_ptr(), request) };
+    // SAFETY: the empty slot `data` owns, for the payload.
+    php_swoole_get_recv_data(view, unsafe { &mut *data.as_ptr() }, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = message_policy(opcode, settings);
     if delivery != 0 {
@@ -1048,14 +1023,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         data = plain;
     }
     let mut args = [server_zval(), new_zval()];
-    construct(
-        &raw mut args[1],
-        zend_long::from(opcode),
-        data.as_ptr(),
-        flags,
-    );
-    // SAFETY: the Frame just built.
-    let frame = unsafe { obj_of(&raw const args[1]) };
+    let frame = construct(&raw mut args[1], zend_long::from(opcode), &data, flags);
     set(frame, FD, scalar(IS_LONG, fd));
     if let Err(bailout) = dispatch(server, server_fd, ON_MESSAGE, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
@@ -1069,7 +1037,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
 
 /// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.
 pub(crate) fn handshake_open(context: *mut c_void) -> Result<(), bailout::Bailout> {
-    let server = send::state(context).private_data;
+    let server = context::server(send::state(context));
     let fd = host::fd(context);
     if handshake(context)? {
         on_open(server, context)
@@ -1080,7 +1048,7 @@ pub(crate) fn handshake_open(context: *mut c_void) -> Result<(), bailout::Bailou
 }
 
 /// A handshake `onHandshake` answers: the connection is upgrading.
-pub(crate) fn upgrading(server: *mut c_void, fd: zend_long) {
+pub(crate) fn upgrading(server: view::Server<'_>, fd: zend_long) {
     set_status(server, fd, STATUS_HANDSHAKE);
 }
 
@@ -1117,7 +1085,7 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
     set_header(context, b"Sec-WebSocket-Version", b"13")?;
     let fd = host::fd(context);
     if host::flags(context) & CO_SOCKET == 0 {
-        let server = send::state(context).private_data;
+        let server = context::server(send::state(context));
         let Some(conn) = connection(server, fd, false) else {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
@@ -1161,7 +1129,7 @@ fn closed(func: &CStr, fd: zend_long) {
 }
 
 /// `swoole_websocket_onOpen`.
-fn on_open(server: *mut Server, context: *mut Context) -> Result<(), bailout::Bailout> {
+fn on_open(server: view::Server<'_>, context: *mut Context) -> Result<(), bailout::Bailout> {
     let fd = host::fd(context);
     let Some(conn) = connection(server, fd, false) else {
         closed(c"swoole_websocket_onOpen", fd);
@@ -1188,15 +1156,12 @@ pub(crate) fn request(context: *mut c_void) {
 /// The coroutine `Response::push`: a frame over the context's socket.
 pub(crate) fn response_push(
     context: *mut Context,
-    data: *mut zval,
+    data: &Value,
     opcode: i64,
-    flags: Option<*mut zval>,
+    flags: Option<&Value>,
 ) -> bool {
-    let flags = flags.map_or(i64::from(FLAG_FIN), |flags| {
-        // SAFETY: a passed argument.
-        unsafe { get_long(flags) }
-    });
-    let mut frame = FrameObject::new(data, opcode, flags, 0);
+    let flags = flags.map_or(i64::from(FLAG_FIN), Value::long);
+    let mut frame = FrameObject::new(Some(data), opcode, flags, 0);
     frame.flags &= !FLAG_MASK;
     if send::state(context).websocket_compression != 0 {
         frame.flags |= FLAG_COMPRESS;
@@ -1226,7 +1191,7 @@ pub(crate) fn response_disconnect(
         reason
     });
     let frame = FrameObject::new(
-        &raw mut data,
+        Some(Value::of(&mut data)),
         i64::from(OPCODE_CLOSE),
         i64::from(FLAG_FIN),
         code,
@@ -1284,7 +1249,7 @@ pub(crate) fn accept(context: *mut Context) {
 /// otherwise the handshake failed and the connection closes.
 pub(crate) fn handshaked(context: *mut Context) {
     let state = send::state(context);
-    let (server, fd) = (state.private_data, state.fd);
+    let (server, fd) = (crate::context::server(state), state.fd);
     let Some(conn) = connection(server, fd, true) else {
         return;
     };
@@ -1362,12 +1327,8 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         code: i64,
         compress: bool,
     ) -> c_int {
-        let mut frame = FrameObject::new(
-            data.as_ptr(),
-            opcode,
-            i64::from(byte(i64::from(flags))),
-            code,
-        );
+        let mut frame =
+            FrameObject::new(Some(data), opcode, i64::from(byte(i64::from(flags))), code);
         if self.mask {
             frame.flags |= FLAG_MASK;
         }
@@ -1454,12 +1415,15 @@ fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
 
 /// A frame object for `payload` in `return_value`, with the socket's fd.
 fn deliver(return_value: *mut zval, sock: *mut c_void, opcode: u8, payload: &mut zval, flags: u8) {
-    construct(return_value, zend_long::from(opcode), payload, flags);
+    let object = construct(
+        return_value,
+        zend_long::from(opcode),
+        Value::of(payload),
+        flags,
+    );
     // SAFETY: the frame took its own reference.
     unsafe { zval_ptr_dtor(payload) };
     let fd = sock_fd(sock);
-    // SAFETY: the frame just created.
-    let object = unsafe { obj_of(return_value) };
     set(object, FD, scalar(IS_LONG, zend_long::from(fd)));
 }
 

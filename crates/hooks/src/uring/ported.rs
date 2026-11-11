@@ -353,17 +353,15 @@ fn sendfile() {
     thread::spawn(move || {
         with_engine(|| {
             let mut offset: libc::off_t = 0;
-            let rv = unsafe {
-                uring::sendfile(
-                    &HOST,
-                    out_fd,
-                    file_fd,
-                    &raw mut offset,
-                    TEST_JPG_SIZE,
-                    -1.0,
-                    0,
-                )
-            };
+            let rv = uring::sendfile(
+                &HOST,
+                out_fd,
+                file_fd,
+                Some(&mut offset),
+                TEST_JPG_SIZE,
+                -1.0,
+                0,
+            );
             sent_tx.send(rv).unwrap();
         });
     });

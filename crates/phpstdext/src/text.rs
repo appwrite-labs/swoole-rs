@@ -2,12 +2,11 @@
 //! functions, whose PCRE calls are src/stdext.c's and JSON call zend-sys's.
 use std::{ffi::c_void, ptr};
 use swoole_rs_zend::{
-    Call, handlers,
+    Call, UNDEF, ZStr, handlers,
     sys::{
-        swr_zend_array_init, swr_zend_emalloc, swr_zend_treat_string, swr_zend_try_json_decode_ex,
-        zend_array_count, zend_long, zend_string, zval,
+        swr_zend_emalloc, swr_zend_treat_string, swr_zend_try_json_decode_ex, zend_long,
+        zend_string, zval,
     },
-    value::table,
 };
 
 unsafe extern "C" {
@@ -36,44 +35,38 @@ impl Drop for Pattern {
     }
 }
 
-unsafe fn match_pattern(
-    regex: *mut zend_string,
-    subject: *mut zend_string,
-    value: *mut zval,
-    global: u8,
-    num_args: u32,
+/// Upstream's `php_do_pcre_match` once its arguments parsed.
+fn match_pattern(
+    call: &Call,
+    regex: &ZStr,
+    subject: &ZStr,
+    global: bool,
     flags: zend_long,
     offset: zend_long,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     let mut compiled = ptr::null_mut();
     // SAFETY: both argument strings stay live; compilation warnings are trapped below Rust.
     swoole_rs_zend::bailout::trapped(i32::from(unsafe {
-        swr_phpstdext_pcre_cache(regex, &raw mut compiled)
+        swr_phpstdext_pcre_cache(regex.as_ptr(), &raw mut compiled)
     }))?;
     if compiled.is_null() {
-        // SAFETY: like RETVAL_FALSE, write the caller's fresh return slot type.
-        unsafe {
-            (*value).u1 = swoole_rs_zend::sys::_zval_struct__bindgen_ty_1 {
-                type_info: swoole_rs_zend::sys::IS_FALSE,
-            }
-        };
+        call.set_bool(false);
         return Ok(());
     }
     // SAFETY: PHP's live cache entry is retained before any matching effect.
     unsafe { swr_phpstdext_pcre_retain(compiled) };
     let compiled = Pattern(compiled);
-    // SAFETY: all-zero initializes the native function's count zval to undefined.
-    let mut count = unsafe { std::mem::zeroed::<zval>() };
+    let mut count = UNDEF;
     // SAFETY: PHP borrows the retained pattern, subject and writable result slots
     // inside a native trap, below the Pattern owner and all caller frames.
     swoole_rs_zend::bailout::trapped(i32::from(unsafe {
         swr_phpstdext_pcre_match(
             compiled.0,
-            subject,
+            subject.as_ptr(),
             &raw mut count,
-            value,
-            global == 1,
-            num_args >= 3,
+            call.return_value(),
+            global,
+            call.num_args() >= 3,
             flags,
             offset,
         )
@@ -99,8 +92,7 @@ fn parse_str(call: &Call) {
     let Ok(text) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         return;
     };
-    // SAFETY: the return slot.
-    unsafe { swr_zend_array_init(call.return_value()) };
+    call.set_array();
     // `estrndup`: the SAPI frees it.
     // SAFETY: Zend's request allocator.
     let copy = unsafe { swr_zend_emalloc(text.len() + 1) }.cast::<u8>();
@@ -113,36 +105,31 @@ fn parse_str(call: &Call) {
 }
 
 fn str_is_empty(call: &Call) {
-    if let Ok(Some(string)) = call.arity(1, 1).and_then(|()| call.str(1)) {
-        // SAFETY: a live argument string.
-        call.set_bool(unsafe { (*string).len } == 0);
+    if let Ok(Some(string)) = call.arity(1, 1).and_then(|()| call.zstr(1)) {
+        call.set_bool(string.bytes().is_empty());
     }
 }
 
 fn array_is_empty(call: &Call) {
-    if let Ok(array) = call.arity(1, 1).and_then(|()| call.array(1)) {
-        // SAFETY: a live array argument.
-        // SAFETY: as above.
-        let ht = unsafe { table(array) };
-        // SAFETY: a live table.
-        call.set_bool(unsafe { zend_array_count(ht) } == 0);
+    if let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) {
+        call.set_bool(array.count() == 0);
     }
 }
 
 fn match_one(call: &Call) {
-    pcre_match(call, 0);
+    pcre_match(call, false);
 }
 
 fn match_all(call: &Call) {
-    pcre_match(call, 1);
+    pcre_match(call, true);
 }
 
 /// Upstream's `php_do_pcre_match`.
-fn pcre_match(call: &Call, global: u8) {
+fn pcre_match(call: &Call, global: bool) {
     let parsed = call.arity(2, 4).and_then(|()| {
         Ok((
-            call.str(1)?,
-            call.str(2)?,
+            call.zstr(1)?,
+            call.zstr(2)?,
             call.long(3, 0)?,
             call.long(4, 0)?,
         ))
@@ -150,19 +137,7 @@ fn pcre_match(call: &Call, global: u8) {
     let Ok((Some(subject), Some(regex), flags, offset)) = parsed else {
         return;
     };
-    // SAFETY: the original argument strings and return slot remain live while
-    // the Rust owner retains, matches and releases PHP's real cached pattern.
-    let result = unsafe {
-        match_pattern(
-            regex,
-            subject,
-            call.return_value(),
-            global,
-            call.num_args(),
-            flags,
-            offset,
-        )
-    };
+    let result = match_pattern(call, regex, subject, global, flags, offset);
     swoole_rs_zend::bailout::defer(result);
 }
 

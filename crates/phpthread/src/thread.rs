@@ -6,8 +6,8 @@ use crate::{
     run,
 };
 use std::{
-    ffi::{CStr, c_int},
-    ptr,
+    cell::Cell,
+    ffi::c_int,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI32, Ordering},
@@ -15,16 +15,12 @@ use std::{
 };
 use swoole_rs_phpstubs::thread;
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Message, Minit, Object, bailout, message,
-    sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        add_assoc_long_ex, swr_zend_array_init, zend_class_entry, zend_object,
-    },
-    unset_property_deny,
+    Call, Class, Custom, CustomClass, E_WARNING, Message, Minit, OwnedArray, bailout, message,
+    sys::{ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-static THREAD: Class = Class::new();
+static THREAD: CustomClass<PhpThread> = CustomClass::new();
 
 /// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_INVALID_PARAMS`.
 const SYSTEM_CALL_FAIL: i64 = 502;
@@ -43,29 +39,23 @@ struct PhpThread {
     /// The OS thread, as `std::thread` holds it.
     thread: swoole_rs_corebase::Thread,
     state: Arc<State>,
-    constructed: bool,
+    constructed: Cell<bool>,
 }
 
-type ThreadObject = Object<*mut PhpThread>;
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class.
-    let std = unsafe { ThreadObject::create(&THREAD, ce) };
-    // SAFETY: the object just created.
-    unsafe { *ThreadObject::data(std) = Box::into_raw(Box::default()) };
-    std
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees one of our objects.
-    let thread = std::mem::replace(unsafe { ThreadObject::data(std) }, ptr::null_mut());
-    if !thread.is_null() {
-        // SAFETY: the object owned it since `create`.
-        let thread = unsafe { Box::from_raw(thread) };
-        thread.thread.join().ok();
+impl Custom for PhpThread {
+    fn class() -> &'static CustomClass<Self> {
+        &THREAD
     }
-    // SAFETY: as above.
-    unsafe { ThreadObject::dtor(std) };
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Drop for PhpThread {
+    /// The object's free: join the thread.
+    fn drop(&mut self) {
+        self.thread.join().ok();
+    }
 }
 
 method_table! {
@@ -94,23 +84,11 @@ method_table! {
 
 /// `php_swoole_thread_minit`'s class registration, then `Swoole\Thread\Error`.
 pub(crate) fn register(minit: &Minit) -> &'static Class {
-    minit.register(&THREAD, c"Swoole\\Thread", &METHODS.0, |entry, handlers| {
-        entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-        handlers.clone_obj = None;
-        handlers.unset_property = Some(unset_property_deny);
-        ThreadObject::install(entry, handlers, create, free);
-    });
+    minit.register_object::<PhpThread>(c"Swoole\\Thread", &METHODS.0, ZEND_ACC_FINAL);
     minit.property_long(&THREAD, c"id", 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
     // After Swoole\Thread, as upstream's order has it.
     crate::request::error_minit(minit);
     &THREAD
-}
-
-fn this(call: &Call) -> &'static mut PhpThread {
-    // SAFETY: the instance methods run on our objects.
-    let thread = unsafe { *ThreadObject::data(call.this()) };
-    // SAFETY: the object holds its `PhpThread` from `create` until `free`.
-    unsafe { &mut *thread }
 }
 
 /// `__construct(string $script_file, mixed ...$args)`.
@@ -118,8 +96,11 @@ fn construct(call: &Call) {
     let Ok(file) = call.arity(1, u32::MAX).and_then(|()| call.string(1, b"")) else {
         return;
     };
-    let thread = this(call);
-    if thread.constructed {
+    // The instance methods run on our objects.
+    let Some(thread) = call.custom::<PhpThread>() else {
+        return;
+    };
+    if thread.constructed.get() {
         call.throw_constructed_twice();
         return;
     }
@@ -161,58 +142,69 @@ fn construct(call: &Call) {
     });
     if let Err(errno) = started {
         // `std::system_error::what()`: the OS message.
-        let text = std::ffi::CString::new(strerror(errno)).unwrap_or_default();
+        let text = std::ffi::CString::new(host::strerror(errno)).unwrap_or_default();
         call.throw(swoole_rs_phpswoole::exception(), &text, SYSTEM_CALL_FAIL);
         return;
     }
-    thread.constructed = true;
+    thread.constructed.set(true);
     if let Some(id) = thread.thread.id() {
         #[expect(
             clippy::cast_possible_wrap,
             reason = "upstream's (zend_long) pthread_t"
         )]
-        call.update_property_long(Some(&THREAD), c"id", id as i64);
+        call.update_property_long(Some(&*THREAD), c"id", id as i64);
     }
 }
 
-fn strerror(errno: i32) -> String {
+/// `pthread_self()`.
+fn me() -> libc::pthread_t {
     // SAFETY: no preconditions.
-    let text = unsafe { libc::strerror(errno) };
-    // SAFETY: strerror returns a static or thread-local NUL-terminated message.
-    unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned()
+    unsafe { libc::pthread_self() }
+}
+
+/// An empty `sched_param`.
+fn sched_param() -> libc::sched_param {
+    // SAFETY: an all-zero sched_param is valid.
+    unsafe { std::mem::zeroed() }
+}
+
+/// `body` on `$this`, which the instance methods run on.
+fn with_this(call: &Call, body: impl FnOnce(&PhpThread)) {
+    if let Some(thread) = call.custom::<PhpThread>() {
+        body(thread);
+    }
 }
 
 fn is_alive(call: &Call) {
-    call.set_bool(this(call).state.living.load(Ordering::Acquire));
+    with_this(call, |this| {
+        call.set_bool(this.state.living.load(Ordering::Acquire));
+    });
 }
 
 fn join(call: &Call) {
-    call.set_bool(this(call).thread.join().is_ok());
+    with_this(call, |this| call.set_bool(this.thread.join().is_ok()));
 }
 
 fn joinable(call: &Call) {
-    call.set_bool(this(call).thread.joinable());
+    with_this(call, |this| call.set_bool(this.thread.joinable()));
 }
 
 fn detach(call: &Call) {
-    call.set_bool(this(call).thread.detach());
+    with_this(call, |this| call.set_bool(this.thread.detach()));
 }
 
 fn get_exit_status(call: &Call) {
-    call.set_long(i64::from(
-        this(call).state.exit_status.load(Ordering::Acquire),
-    ));
+    with_this(call, |this| {
+        call.set_long(i64::from(this.state.exit_status.load(Ordering::Acquire)));
+    });
 }
 
 fn get_arguments(call: &Call) {
-    run::arguments(call.return_value());
+    run::arguments(call);
 }
 
 fn get_id(call: &Call) {
-    // SAFETY: no preconditions.
-    let id = unsafe { libc::pthread_self() };
+    let id = me();
     #[expect(
         clippy::cast_possible_wrap,
         reason = "upstream's (zend_long) pthread_t"
@@ -221,7 +213,7 @@ fn get_id(call: &Call) {
 }
 
 fn get_info(call: &Call) {
-    run::info(call.return_value());
+    call.set_owned(run::info());
 }
 
 fn active_count(call: &Call) {
@@ -250,24 +242,20 @@ fn warn(message: &Message) {
 /// `setAffinity`/`getAffinity` (`HAVE_CPU_AFFINITY`: Linux here).
 pub mod thread_affinity {
     use super::{Call, message, warn};
-    use swoole_rs_phpprocess::{array_to_cpu_set, cpu_set_to_array};
+    use swoole_rs_phpprocess::CpuSet;
 
     pub(super) fn set(call: &Call) {
-        let Ok(Some(_)) = call.arity(1, 1).and_then(|()| call.array_table(1)) else {
+        let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
             return;
         };
-        // SAFETY: an all-zero cpu set is empty.
-        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-        // SAFETY: the array argument and a local set.
-        if !unsafe { array_to_cpu_set(call.zval(1), (&raw mut set).cast()) } {
+        let Some(set) = CpuSet::from_array(array) else {
             call.set_bool(false);
             return;
-        }
-        // SAFETY: no preconditions.
-        let me = unsafe { libc::pthread_self() };
+        };
         // SAFETY: a valid cpu set.
-        if unsafe { libc::pthread_setaffinity_np(me, size_of::<libc::cpu_set_t>(), &raw const set) }
-            != 0
+        if unsafe {
+            libc::pthread_setaffinity_np(super::me(), size_of::<libc::cpu_set_t>(), set.as_ptr())
+        } != 0
         {
             warn(&message!("pthread_setaffinity_np() failed"));
             call.set_bool(false);
@@ -277,20 +265,21 @@ pub mod thread_affinity {
     }
 
     pub(super) fn get(call: &Call) {
-        // SAFETY: an all-zero cpu set is empty.
-        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-        // SAFETY: no preconditions.
-        let me = unsafe { libc::pthread_self() };
+        let mut set = CpuSet::empty();
         // SAFETY: `set` is writable.
-        if unsafe { libc::pthread_getaffinity_np(me, size_of::<libc::cpu_set_t>(), &raw mut set) }
-            < 0
+        if unsafe {
+            libc::pthread_getaffinity_np(
+                super::me(),
+                size_of::<libc::cpu_set_t>(),
+                set.as_mut_ptr(),
+            )
+        } < 0
         {
             warn(&message!("pthread_getaffinity_np() failed"));
             call.set_bool(false);
             return;
         }
-        // SAFETY: the return slot and a valid set.
-        unsafe { cpu_set_to_array(call.return_value(), (&raw const set).cast()) };
+        call.set_owned(set.to_array());
     }
 
     super::handlers! {
@@ -306,15 +295,13 @@ fn set_priority(call: &Call) {
     else {
         return;
     };
-    // SAFETY: an all-zero sched_param is valid.
-    let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+    let mut param = sched_param();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's int conversions"
     )]
     let mut sched_policy = policy as c_int;
-    // SAFETY: no preconditions.
-    let me = unsafe { libc::pthread_self() };
+    let me = me();
     if policy == -1 {
         // SAFETY: writable locals.
         unsafe { libc::pthread_getschedparam(me, &raw mut sched_policy, &raw mut param) };
@@ -336,31 +323,18 @@ fn set_priority(call: &Call) {
 }
 
 fn get_priority(call: &Call) {
-    // SAFETY: an all-zero sched_param is valid.
-    let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+    let mut param = sched_param();
     let mut policy: c_int = 0;
-    // SAFETY: no preconditions.
-    let me = unsafe { libc::pthread_self() };
     // SAFETY: writable locals.
-    if unsafe { libc::pthread_getschedparam(me, &raw mut policy, &raw mut param) } != 0 {
+    if unsafe { libc::pthread_getschedparam(me(), &raw mut policy, &raw mut param) } != 0 {
         warn(&message!("pthread_getschedparam() failed"));
         call.set_bool(false);
         return;
     }
-    let out = call.return_value();
-    // SAFETY: the return slot.
-    unsafe { swr_zend_array_init(out) };
-    // SAFETY: an array zval; Zend copies the keys.
-    unsafe { add_assoc_long_ex(out, c"policy".as_ptr(), 6, i64::from(policy)) };
-    // SAFETY: as above.
-    unsafe {
-        add_assoc_long_ex(
-            out,
-            c"priority".as_ptr(),
-            8,
-            i64::from(param.sched_priority),
-        );
-    };
+    let mut array = OwnedArray::default();
+    array.insert_long(b"policy", i64::from(policy));
+    array.insert_long(b"priority", i64::from(param.sched_priority));
+    call.set_owned(array.into_owned());
 }
 
 fn get_native_id(call: &Call) {

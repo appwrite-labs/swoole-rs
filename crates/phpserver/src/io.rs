@@ -4,7 +4,7 @@
 use crate::lifecycle::Props;
 use crate::server::{fatal, no_payload, running, server};
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     mem::MaybeUninit,
     ptr,
 };
@@ -12,10 +12,8 @@ use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::{net_types::AddressStorage, swr_v1_clients_gethostbyname};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Value, bailout, kind, message,
-    string::bytes,
-    sys::{IS_NULL, IS_STRING, IS_TRUE, swr_zval_copy, zend_read_property, zval},
-    to_long, type_of,
+    Call, E_ERROR, E_WARNING, Owned, Value, bailout, message,
+    sys::{IS_TRUE, zend_read_property, zval},
 };
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
@@ -61,9 +59,7 @@ fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
 /// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
 /// raised from the handler, which owns nothing.
 fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
-    let port = crate::lifecycle::ServerObject::this(call).port_at(0);
-    // SAFETY: the primary port's object zval.
-    let object = unsafe { swoole_rs_zend::object_of(port) };
+    let object = crate::lifecycle::ServerObject::this(call).port_at(0);
     // SAFETY: a live Port object, its class, the result slot and the arguments.
     let called = unsafe { bailout::call_method(object, crate::PORT.entry(), method, retval, args) };
     bailout::raise(called);
@@ -86,10 +82,10 @@ fn on(call: &Call) {
         if bailout::pending() {
             return;
         }
-        let mut retval = crate::dispatch::undef();
-        port_call(call, b"on", &raw mut retval, &[name, cb]);
+        let retval = Owned::default();
+        port_call(call, b"on", retval.as_ptr(), &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
-        return call.set_bool(kind(&retval) == IS_TRUE);
+        return call.set_bool(retval.kind() == IS_TRUE);
     };
     let object = crate::lifecycle::ServerObject::this(call);
     let set = call.value(2).is_some_and(|cb| {
@@ -106,8 +102,8 @@ fn get_callback(call: &Call) {
     let name = call.zval(1);
     if let Some((_, property)) = call.value(1).and_then(lookup) {
         let mut rv = std::mem::MaybeUninit::<zval>::uninit();
-        // SAFETY: `$this` is live; its own class is the scope (subclasses).
-        let scope = unsafe { (*call.this()).ce };
+        // `$this`'s own class is the scope (subclasses).
+        let scope = crate::lifecycle::ServerObject::this(call).class();
         // SAFETY: `$this`, its class and a scratch zval.
         let value = unsafe {
             zend_read_property(
@@ -119,10 +115,10 @@ fn get_callback(call: &Call) {
                 rv.as_mut_ptr(),
             )
         };
-        // SAFETY: Zend returned a live zval.
-        if unsafe { type_of(value) } != IS_NULL {
-            // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
-            return unsafe { swr_zval_copy(call.return_value(), value) };
+        // SAFETY: Zend returned a live zval, which the object keeps for the call.
+        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+            // `RETURN_ZVAL(property, 1, 0)`.
+            return call.set_owned(value.copy());
         }
     }
     if bailout::pending() {
@@ -152,16 +148,14 @@ fn listen(call: &Call) {
         // `serv->get_port(type, host, port)`, compared as C strings.
         let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
         let listening = |config: &PortConfig| {
-            let name = config.host();
-            // SAFETY: the port's host bytes.
-            let name = unsafe { std::slice::from_raw_parts(name.data.cast::<u8>(), name.length) };
-            config.port == port && config.r#type == kind && name == host
+            config.port == port && config.r#type == kind && config.host_bytes() == host
         };
         serv.find_port(listening)
     } else {
-        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
-        let host = unsafe { CStr::from_ptr(address.as_ptr().cast()) };
-        server_methods::add_port(serv, kind, host, port)
+        // The host as C reads it: up to its first NUL.
+        let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
+        let host = CString::new(host).unwrap_or_default();
+        server_methods::add_port(serv, kind, &host, port)
     };
     if ls.is_null() {
         return call.set_bool(false);
@@ -169,8 +163,8 @@ fn listen(call: &Call) {
     // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
     let zport =
         unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };
-    // SAFETY: `RETVAL_ZVAL(port_object, 1, 0)`.
-    unsafe { swr_zval_copy(call.return_value(), zport) };
+    // `RETVAL_ZVAL(port_object, 1, 0)`.
+    call.set_owned(zport);
 }
 
 /// `network::Socket::sendto(host, port, data, length)` on `socket`: the bytes
@@ -224,26 +218,20 @@ fn send(call: &Call) {
     let Some(serv) = running(call) else { return };
     let parsed = call
         .arity(2, 3)
-        .and_then(|()| Ok((call.str(2)?, call.long(3, -1)?)));
-    let Ok((Some(data), server_socket)) = parsed else {
+        .and_then(|()| Ok((call.zstr(2)?, call.long(3, -1)?)));
+    let (Ok((Some(data), server_socket)), Some(zfd)) = (parsed, call.value(1)) else {
         return call.set_bool(false);
     };
-    let zfd = call.zval(1);
-    // SAFETY: a passed argument.
-    let kind = unsafe { type_of(zfd) };
-    if kind == IS_NULL {
+    if zfd.is_null() {
         fatal(E_WARNING, c"fd can not be null");
         return call.set_bool(false);
     }
-    // SAFETY: a live string the frame keeps.
-    let payload = unsafe { bytes(data) };
+    let payload = data.bytes();
     if payload.is_empty() {
         no_payload();
         return call.set_bool(false);
     }
-    if kind == IS_STRING {
-        // SAFETY: an IS_STRING zval.
-        let path = unsafe { swoole_rs_zend::string_of(zfd) }.unwrap_or_default();
+    if let Some(path) = zfd.bytes() {
         let config = serv.config();
         if path.first() == Some(&b'/') && config.have_dgram_sock {
             let socket = if server_socket == -1 {
@@ -256,14 +244,12 @@ fn send(call: &Call) {
             return call.set_bool(sent);
         }
     }
-    // SAFETY: a passed argument.
-    let fd = unsafe { to_long(zfd) };
+    let fd = zfd.long();
     if fd <= 0 {
         fatal(E_WARNING, message!("invalid fd[{fd}]").as_cstr());
         return call.set_bool(false);
     }
-    // SAFETY: a live server and string.
-    call.set_bool(unsafe { crate::instance::send(serv, fd, data) });
+    call.set_bool(crate::instance::send(serv, fd, payload));
 }
 
 fn sendto(call: &Call) {
@@ -372,7 +358,10 @@ fn send_message(call: &Call) {
         return call.set_bool(false);
     }
     let mut buf = crate::task::EventData::new();
-    if crate::task::pack(call.zval(1), &mut buf) < 0 {
+    if call
+        .value(1)
+        .is_none_or(|data| crate::task::pack(data, &mut buf) < 0)
+    {
         return call.set_bool(false);
     }
     #[expect(
@@ -419,7 +408,10 @@ fn task_finish(call: &Call) {
 
 /// `php_swoole_server_task_finish` of the data argument into the return slot.
 fn finished(call: &Call, serv: *mut c_void, req: *mut c_void) {
-    match crate::task::finish_task(serv, call.zval(1), req) {
+    let Some(data) = call.value(1) else {
+        return call.set_bool(false);
+    };
+    match crate::task::finish_task(serv, data, req) {
         Ok(done) => call.set_bool(done),
         Err(bailout) => bailout.defer(),
     }

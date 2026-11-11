@@ -16,14 +16,14 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Object, Value, ZString, bailout, message,
+    Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
     sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
         zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
         zend_update_property, zval,
     },
-    type_of, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -100,17 +100,14 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     swoole_rs_zend::bailout::finish();
 }
 
-/// A new Port object (an emalloc'd zval) bound to `port` and its server `serv`.
+/// A new Port object bound to `port` and its server `serv`.
 /// # Safety
 /// `serv` is a live server and `port` one of its ports.
-pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zval {
-    // SAFETY: Zend's request allocator; the Server object frees it.
-    let zport = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: a writable zval and the registered class.
-    unsafe { swoole_rs_zend::init_object(zport, PORT.entry()) };
+pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned, *mut zend_object) {
+    // SAFETY: the registered class.
+    let zport = unsafe { Owned::new_object(PORT.entry()) };
+    let object = zport.object().unwrap_or(ptr::null_mut());
     // SAFETY: the object just created, one of ours.
-    let object = unsafe { swoole_rs_zend::object_of(zport) };
-    // SAFETY: as above.
     let data = unsafe { Port::data(object) };
     data.port = port;
     data.property.serv = serv;
@@ -124,7 +121,7 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zv
         (&raw mut data.property).cast(),
         true,
     );
-    zport
+    (zport, object)
 }
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
@@ -355,10 +352,10 @@ fn get_callback(call: &Call) {
                 rv.as_mut_ptr(),
             )
         };
-        // SAFETY: Zend returned a live zval.
-        if unsafe { type_of(value) } != IS_NULL {
-            // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
-            return unsafe { swr_zval_copy(call.return_value(), value) };
+        // SAFETY: Zend returned a live zval, which the object or `rv` holds.
+        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+            // `RETURN_ZVAL(property, 1, 0)`.
+            return call.set_owned(value.copy());
         }
     }
     call.set_null();
@@ -395,19 +392,19 @@ pub(crate) fn merge_setting(
 /// enabled, then the merge into `$this->setting`, which the property keeps.
 fn finish(
     call: &Call,
-    settings: *mut zval,
+    settings: &Value,
     property: &mut PortProperty,
 ) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
         // `zval params[1] = {*zset}`: a copy without a reference.
         // SAFETY: the live settings argument.
-        let mut params = [unsafe { settings.read() }];
+        let mut params = [unsafe { settings.as_ptr().read() }];
         // SAFETY: as above.
         unsafe {
             swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
         }?;
     }
-    property.zsetting = merge_setting(PORT.entry(), call.this(), settings)?;
+    property.zsetting = merge_setting(PORT.entry(), call.this(), settings.as_ptr())?;
     Ok(())
 }
 
@@ -428,9 +425,12 @@ fn set(call: &Call) {
 }
 
 /// The `ListenPort` and TLS options of `set()`.
-fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: *mut zval) -> Result<(), Stop> {
+fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Result<(), Stop> {
     let source = port_settings::Zend {
-        settings: Settings { serv, vht },
+        settings: Settings {
+            serv,
+            vht: vht.array(),
+        },
         port,
     };
     // SAFETY: a bound port; set() is its only user while it runs.

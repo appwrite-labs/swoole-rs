@@ -688,7 +688,8 @@ pub extern "C" fn swr_v1_locks_coroutine_release(word: Option<&AtomicU32>) -> i3
     if a.load(Ordering::Relaxed) == 0 {
         return 0;
     }
-    a.store(0, Ordering::Relaxed);
+    // Release: the next holder sees what this one wrote.
+    a.store(0, Ordering::Release);
     1
 }
 #[unsafe(no_mangle)]
@@ -734,6 +735,44 @@ mod tests {
         assert_eq!(unsafe { swr_v1_locks_unlock(aligned, 99) }, EINVAL);
     }
 
+    /// `swr_v1_locks_coroutine_release` publishes its holder's writes to the next holder
+    /// `swr_v1_locks_coroutine_try` admits, whichever process (here thread) that is. The
+    /// `HELD` flag only says when to start trying; it orders nothing.
+    #[test]
+    fn coroutine_release_publishes_the_holders_writes() {
+        struct Data(std::cell::UnsafeCell<u64>);
+        unsafe impl Sync for Data {}
+        impl Data {
+            fn get(&self) -> *mut u64 {
+                self.0.get()
+            }
+        }
+        let data = Data(std::cell::UnsafeCell::new(0));
+        let word = AtomicU32::new(0);
+        let held = std::sync::atomic::AtomicBool::new(false);
+        let acquire = |cid| {
+            while swr_v1_locks_coroutine_try(Some(&word), 0, 0, 1, cid, 1) != 1 {
+                thread::yield_now();
+            }
+        };
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                acquire(1);
+                unsafe { *data.get() = 42 };
+                held.store(true, Ordering::Relaxed);
+                assert_eq!(swr_v1_locks_coroutine_release(Some(&word)), 1);
+            });
+            scope.spawn(|| {
+                while !held.load(Ordering::Relaxed) {
+                    thread::yield_now();
+                }
+                acquire(2);
+                assert_eq!(unsafe { *data.get() }, 42);
+                assert_eq!(swr_v1_locks_coroutine_release(Some(&word)), 1);
+            });
+        });
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_barrier_init")]
     fn barrier_releases_every_party_together() {
@@ -753,14 +792,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_init")]
     fn safe_locks_lock_and_refuse_what_they_cannot_hold() {
         let lock = super::Lock::private(MUTEX).expect("a mutex");
         assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), 0);
         assert_eq!(lock.unlock(), 0);
         assert!(super::Lock::private(42).is_none(), "no such kind");
-        let short = Box::leak(Box::new([AtomicU64::new(0)]));
-        assert!(super::Lock::shared(MUTEX, short).is_none(), "too small");
+        // Taken back after the refusal, which keeps no reference, so Miri sees no leak.
+        let short = Box::into_raw(Box::new([AtomicU64::new(0)]));
+        assert!(
+            super::Lock::shared(MUTEX, unsafe { &mut *short }).is_none(),
+            "too small"
+        );
+        drop(unsafe { Box::from_raw(short) });
     }
 
     // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.

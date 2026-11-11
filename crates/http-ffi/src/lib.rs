@@ -10,18 +10,14 @@
 )]
 use std::cell::UnsafeCell;
 use std::ffi::c_char;
-use std::mem::MaybeUninit;
 use std::{ptr, slice};
-use swoole_rs_http::{HttpCookie, HttpSpan, HttpStaticContext, HttpStaticPath, STATUS_CODES};
+use swoole_rs_http::{HttpSpan, HttpStaticContext, HttpStaticPath, STATUS_CODES};
 
 pub mod http_server;
 mod owned_proxy;
 pub use owned_proxy::*;
 mod request;
-pub use request::{
-    HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
-    parse_multipart_data, request_free, request_new,
-};
+pub use request::{HttpForm, HttpNative, HttpRequest, HttpString, request_free, request_new};
 #[cfg(test)]
 mod pin_helpers;
 
@@ -46,91 +42,6 @@ unsafe fn bytes<'a>(data: *const u8, length: usize) -> Result<&'a [u8], i32> {
     Ok(unsafe { slice::from_raw_parts(data, length) })
 }
 
-/// Required encoded capacity, INCLUDING the trailing NUL. No allocation occurs.
-/// # Safety
-/// Input is readable and output is aligned/writable/disjoint.
-pub unsafe fn swr_v1_http_url_capacity(
-    data: *const u8,
-    length: usize,
-    output: Option<&mut usize>,
-) -> i32 {
-    let Some(output) = output else {
-        return INVALID;
-    };
-    *output = 0;
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    match unsafe { bytes(data, length) }.and_then(swoole_rs_http::url_capacity) {
-        Ok(n) => {
-            *output = n;
-            0
-        }
-        Err(status) => status,
-    }
-}
-/// Encode into disjoint native-owned storage, terminating it. No mutation on error.
-/// # Safety
-/// Input is readable; output capacity is writable, disjoint from input/length.
-/// Length output is valid/aligned. No allocation, callback or borrow escapes.
-pub unsafe fn swr_v1_http_url_encode(
-    data: *const u8,
-    length: usize,
-    output: *mut u8,
-    capacity: usize,
-    written: Option<&mut usize>,
-) -> i32 {
-    let Some(written) = written else {
-        return INVALID;
-    };
-    *written = 0;
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(input) => input,
-        Err(status) => return status,
-    };
-    let needed = match swoole_rs_http::url_capacity(input) {
-        Ok(needed) => needed,
-        Err(status) => return status,
-    };
-    if output.is_null() || capacity < needed {
-        return INVALID;
-    }
-    // SAFETY: non-null, `needed <= capacity`; the caller lends writable, disjoint storage.
-    let output = unsafe { slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), needed) };
-    match swoole_rs_http::url_encode(input, output) {
-        Ok(length) => {
-            *written = length;
-            0
-        }
-        Err(status) => status,
-    }
-}
-/// Decode in place, preserving malformed escapes and decoding '+' as space.
-/// # Safety
-/// Data is writable for length+1 initialized input bytes; written is disjoint.
-pub unsafe fn swr_v1_http_url_decode(
-    data: *mut u8,
-    length: usize,
-    written: Option<&mut usize>,
-) -> i32 {
-    let Some(written) = written else {
-        return INVALID;
-    };
-    *written = 0;
-    if length >= isize::MAX as usize {
-        return OVERFLOW;
-    }
-    if data.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null, `length + 1 <= isize::MAX` (checked above) writable initialized bytes.
-    let buffer = unsafe { slice::from_raw_parts_mut(data, length + 1) };
-    let decoded = swoole_rs_http::url_decode(buffer.get_mut(..length).unwrap_or_default());
-    if let Some(nul) = buffer.get_mut(decoded) {
-        *nul = 0;
-    }
-    *written = decoded;
-    0
-}
 /// Find legacy multipart boundary without allocating or retaining input.
 /// # Safety
 /// Input is readable; output is valid/aligned/disjoint. Status 1=found, 0=absent.
@@ -256,38 +167,6 @@ pub unsafe extern "C" fn swr_v1_http_multipart_filename(data: *mut u8, capacity:
         Err(status) => status,
     }
 }
-/// Tokenize one cookie; native invokes its callback after Rust returns.
-/// Buffer capacity may contain uninitialized suffix bytes: reads stop at its
-/// initialized NUL terminator. Delimiter/'=' mutations match legacy `strtok_r`.
-/// # Safety
-/// Buffer is writable through capacity<=`isize::MAX`, initialized through a NUL
-/// reachable from cursor; cursor/output are valid/aligned/disjoint. Callback may
-/// mutate the native buffer between calls, but never retains a Rust reference.
-pub unsafe fn swr_v1_http_cookie_next(
-    data: *mut u8,
-    capacity: usize,
-    cursor: Option<&mut usize>,
-    output: Option<&mut HttpCookie>,
-) -> i32 {
-    let (Some(cursor), Some(output)) = (cursor, output) else {
-        return INVALID;
-    };
-    *output = HttpCookie::default();
-    // SAFETY: as the caller guarantees.
-    let data = match unsafe { cookies(data, capacity, *cursor) } {
-        Ok(data) => data,
-        Err(status) => return status,
-    };
-    match swoole_rs_http::cookie_next(data, cursor) {
-        Ok(Some(value)) => {
-            *output = value;
-            1
-        }
-        Ok(None) => 0,
-        Err(status) => status,
-    }
-}
-
 /// `location_match` for `tests/modules/http/locale_gate.cc`.
 /// # Safety
 /// Input spans are initialized; aligned state is writable and disjoint. No

@@ -19,8 +19,8 @@ use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Minit, Owned, Props, Value, ZStr, ZString, handlers, init_object,
-    push_string, set_key,
+    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, handlers, init_object, push_string,
+    set_key,
     sys::{
         IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
         zend_string,
@@ -112,12 +112,9 @@ method_table! {
 /// MINIT: register the class as `php_swoole_http_response_minit` did, after
 /// `Swoole\Http\Request`'s; the parser learns the codecs built in (`codecs`:
 /// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe fn response_minit(args: &MinitArgs) {
+pub fn response_minit(args: &MinitArgs) {
     let codecs = args.codecs | u32::from(args.compression) << 3;
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
+    let minit = &args.minit;
     minit.register(
         &RESPONSE,
         c"Swoole\\Http\\Response",
@@ -451,7 +448,7 @@ fn header(call: &Call) {
     let run = || -> Option<()> {
         let parsed = call
             .arity(2, 3)
-            .and_then(|()| Ok((call.string_opt(1)?, call.passed(2), call.bool(3, true)?)));
+            .and_then(|()| Ok((call.string_opt(1)?, call.value(2), call.bool(3, true)?)));
         let (Some(key), Some(value), format) = parsed.ok()? else {
             return None;
         };
@@ -565,7 +562,7 @@ fn push(call: &Call) {
         let ctx = websocket(call)?;
         let parsed = call.arity(1, 3).and_then(|()| {
             Ok((
-                call.passed(1),
+                call.value(1),
                 call.long(2, OPCODE_TEXT)?,
                 call.zval_or_null(3),
             ))
@@ -643,7 +640,7 @@ fn create_response(call: &Call) {
 
 /// `Context::set_header`: `$response->header[key] = value`, the key in
 /// canonical case when `format` (lower case over HTTP/2).
-pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, format: bool) -> bool {
+pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: &Value, format: bool) -> bool {
     if key.len() > HEADER_KEY_SIZE - 1 {
         host::notice("header key is too long");
         return false;
@@ -666,10 +663,10 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
         }
         _ => key,
     };
-    // SAFETY: the value the array now also references.
-    unsafe { z::swr_zval_try_addref(value) };
+    // The array takes this copy's reference.
+    let mut value = value.copy().into_zval();
     // SAFETY: the live header array and the name's bytes, which Zend copies.
-    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), value) };
+    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), &raw mut value) };
     true
 }
 
@@ -678,7 +675,7 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
 pub(crate) fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) {
     // This frame's reference; the header array takes its own.
     let value = Owned::string(ZString::new(value));
-    set_header(ctx, key, value.as_ptr(), false);
+    set_header(ctx, key, &value, false);
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -701,7 +698,7 @@ fn instance_of(object: &Value, ce: *mut zend_class_entry) -> bool {
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let mut paired = false;
     let mut ctx: *mut Context = ptr::null_mut();
-    let mut server: *mut c_void = ptr::null_mut();
+    let mut server = None;
     let mut socket = ptr::null_mut();
     if let Some(pair) = object.array() {
         let Some(request) = pair
@@ -726,11 +723,11 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         let server_ce = swoole_rs_phpserver::server_class_entry();
         let socket_ce = swoole_rs_phpclients::socket_class();
         if instance_of(object, server_ce) {
-            let Some(checked) = websocket::server_of(object.as_ptr()) else {
+            let Some(checked) = websocket::server_of(object.as_ptr(), object) else {
                 return;
             };
-            server = checked;
-            if !websocket::server_connection(server, fd) {
+            server = Some(checked);
+            if !websocket::server_connection(checked, fd) {
                 return refuse(
                     call,
                     &format!("parameter $2 ({fd}) must be valid connection session_id"),
@@ -750,19 +747,25 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         }
     } else {
         fd = object.long();
-        server = swoole_rs_corebase::swr_v1_core_server();
+        let core = swoole_rs_corebase::swr_v1_core_server();
+        // SAFETY: null or the process's live server.
+        server =
+            (!core.is_null()).then(|| unsafe { swoole_rs_server::view::Server::from_raw(core) });
     }
-    if !server.is_null() && !websocket::started(server) {
+    if server.is_some_and(|server| !server.is_started()) {
         return refuse(call, "server is not running");
     }
-    if server.is_null() && socket.is_null() {
+    if server.is_none() && socket.is_null() {
         call.set_bool(false);
         return;
     }
     let ctx = if ctx.is_null() {
         let ctx = context::alloc();
         send::state(ctx).keepalive = 1;
-        if server.is_null() {
+        if let Some(server) = server {
+            // SAFETY: the new context.
+            unsafe { context::init(ctx, server) };
+        } else {
             crate::parse::init_request_parser(ctx);
             // `Context::init(zval *)`.
             let state = send::state(ctx);
@@ -773,16 +776,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 state.enable_compression = 1;
                 state.compression_level = 1;
             }
-        } else {
-            // SAFETY: the live server.
-            unsafe { context::init(ctx, server) };
         }
         ctx
     } else {
         ctx
     };
-    // SAFETY: a live context, and the server or the socket.
-    unsafe { context::bind(ctx, server, socket) };
+    if let Some(server) = server {
+        // SAFETY: a live context.
+        unsafe { context::bind_server(ctx, server) };
+    } else {
+        // SAFETY: a live context and the socket.
+        unsafe { context::bind(ctx, socket) };
+    }
     let ce = RESPONSE.entry();
     let state = send::state(ctx);
     state.fd = fd;
@@ -813,16 +818,13 @@ fn redirect(call: &Call) {
     let mut run = || -> Option<()> {
         let parsed = call
             .arity(1, 2)
-            .map(|()| (call.passed(1), call.zval_or_null(2)));
+            .map(|()| (call.value(1), call.zval_or_null(2)));
         let (Some(url), code) = parsed.ok()? else {
             return None;
         };
         let ctx = checked(call)?;
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int status")]
-        let status = code.map_or(302, |code| {
-            // SAFETY: the argument.
-            unsafe { z::swr_zval_get_long(code) as c_int }
-        });
+        let status = code.map_or(302, |code| code.long() as c_int);
         send::state(ctx).response.status = status;
         set_header(ctx, b"Location", url, false);
         if swoole_rs_zend::bailout::pending() {

@@ -5,39 +5,32 @@ use crate::{
     item::{IS_BARRIER, Item, Value},
 };
 use std::{
-    ptr,
+    cell::OnceCell,
     sync::{Arc, Barrier},
 };
 use swoole_rs_phpstubs::thread_barrier;
 use swoole_rs_zend::{
-    Call, Class, Minit, Object, Value as ZValue, set_object,
-    sys::{ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_object, zval},
-    unset_property_deny,
+    Call, Custom, CustomClass, Minit, Owned, Value as ZValue, new_object, sys::ZEND_ACC_FINAL,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-static BARRIER: Class = Class::new();
+/// A Barrier object's barrier, unset until `__construct` (or when read back
+/// from an unconstructed one).
+pub(crate) struct BarrierObject(OnceCell<Arc<Barrier>>);
+
+static BARRIER: CustomClass<BarrierObject> = CustomClass::new();
+
+impl Custom for BarrierObject {
+    fn class() -> &'static CustomClass<Self> {
+        &BARRIER
+    }
+    fn new() -> Self {
+        Self(OnceCell::new())
+    }
+}
 
 /// `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: i64 = 504;
-
-type BarrierObject = Object<*const Barrier>;
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class; null is valid zeroed data.
-    unsafe { BarrierObject::create(&BARRIER, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees one of our objects.
-    let shared = std::mem::replace(unsafe { BarrierObject::data(std) }, ptr::null());
-    if !shared.is_null() {
-        // SAFETY: the reference the object held.
-        drop(unsafe { Arc::from_raw(shared) });
-    }
-    // SAFETY: as above.
-    unsafe { BarrierObject::dtor(std) };
-}
 
 method_table! {
     static METHODS = [
@@ -48,63 +41,35 @@ method_table! {
 
 /// `php_swoole_thread_barrier_minit`.
 pub fn barrier_minit(minit: &Minit) {
-    minit.register(
-        &BARRIER,
-        c"Swoole\\Thread\\Barrier",
-        &METHODS.0,
-        |entry, handlers| {
-            entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-            handlers.clone_obj = None;
-            handlers.unset_property = Some(unset_property_deny);
-            BarrierObject::install(entry, handlers, create, free);
-        },
-    );
+    minit.register_object::<BarrierObject>(c"Swoole\\Thread\\Barrier", &METHODS.0, ZEND_ACC_FINAL);
 }
 
 /// A Barrier stored in a container, by reference; `None` for other objects.
+/// Upstream shares an unconstructed one's null resource; reading it back
+/// gives an unconstructed Barrier.
 pub(crate) fn shared(value: &ZValue) -> Option<Item> {
-    if value.class()? != BARRIER.entry() {
-        return None;
-    }
-    let std = value.object()?;
-    // SAFETY: one of our objects.
-    let barrier = unsafe { *BarrierObject::data(std) };
-    let value = if barrier.is_null() {
-        // Upstream shares the null resource; reading it back gives an
-        // unconstructed Barrier.
-        None
-    } else {
-        // SAFETY: the object's live reference.
-        unsafe { Arc::increment_strong_count(barrier) };
-        // SAFETY: the reference just added.
-        Some(unsafe { Arc::from_raw(barrier) })
-    };
+    let barrier = value.custom::<BarrierObject>()?;
     Some(Item {
         kind: IS_BARRIER,
-        value: Value::Barrier(value),
+        value: Value::Barrier(barrier.0.get().cloned()),
     })
 }
 
 /// `php_swoole_thread_barrier_create`: an object over `barrier`.
-/// # Safety
-/// In a request; `out` is writable and holds nothing.
-pub(crate) unsafe fn object(out: *mut zval, barrier: Option<&Arc<Barrier>>) {
-    // SAFETY: after MINIT; the class's own entry.
-    let std = unsafe { BarrierObject::create(&BARRIER, BARRIER.entry()) };
-    if let Some(barrier) = barrier {
-        // SAFETY: the object just created.
-        unsafe { *BarrierObject::data(std) = Arc::into_raw(Arc::clone(barrier)) };
-    }
-    // SAFETY: per the caller.
-    unsafe { set_object(out, std) };
+pub(crate) fn object(barrier: Option<&Arc<Barrier>>) -> Owned {
+    new_object(BarrierObject(
+        barrier.cloned().map(OnceCell::from).unwrap_or_default(),
+    ))
 }
 
 /// `__construct(int $count)`: the constructed check comes before the
 /// arguments, as upstream's does.
 fn construct(call: &Call) {
-    // SAFETY: the methods are non-static and the class final.
-    let slot = unsafe { BarrierObject::data(call.this()) };
-    if !slot.is_null() {
+    // The methods are non-static and the class final.
+    let Some(BarrierObject(cell)) = call.custom() else {
+        return;
+    };
+    if cell.get().is_some() {
         call.throw_constructed_twice();
         return;
     }
@@ -120,19 +85,18 @@ fn construct(call: &Call) {
         return;
     }
     let count = usize::try_from(count).unwrap_or(usize::MAX);
-    *slot = Arc::into_raw(Arc::new(Barrier::new(count)));
+    _ = cell.set(Arc::new(Barrier::new(count)));
 }
 
 fn wait(call: &Call) {
-    // SAFETY: as in `construct`.
-    let barrier = unsafe { *BarrierObject::data(call.this()) };
-    if barrier.is_null() {
+    let Some(BarrierObject(cell)) = call.custom() else {
+        return;
+    };
+    let Some(barrier) = cell.get() else {
         // Swoole's fatal error, which exits; this frame owns nothing.
         host::unconstructed(true);
         return;
-    }
-    // SAFETY: the object holds a reference for as long as it lives.
-    let barrier = unsafe { &*barrier };
+    };
     barrier.wait();
 }
 

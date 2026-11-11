@@ -7,8 +7,6 @@ use crate::co_socket::Co;
 use crate::shutdown::READ;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
-#[cfg(not(test))]
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
@@ -36,7 +34,7 @@ pub struct Host {
 }
 
 #[cfg(not(test))]
-static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
+static HOST: std::sync::OnceLock<&'static Host> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -50,15 +48,15 @@ thread_local! {
 /// link only then, not into every binary that links hooks.
 #[cfg(not(test))]
 pub(crate) fn install_native() {
-    HOST.store((&raw const native::HOST).cast_mut(), Ordering::Release);
+    HOST.get_or_init(|| &native::HOST);
 }
 
 /// The installed table.
 #[cfg(not(test))]
 pub(crate) fn host() -> &'static Host {
-    // SAFETY: the runtime's static table is installed by swoole_init
-    // (stdio::swr_v1_hook_install), before any socket operation runs.
-    unsafe { &*HOST.load(Ordering::Acquire) }
+    // swoole_init installs it (stdio::swr_v1_hook_install) before any socket
+    // operation runs.
+    HOST.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
 /// This thread's table.

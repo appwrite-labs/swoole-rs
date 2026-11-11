@@ -25,7 +25,6 @@
 
 mod client;
 mod files;
-mod native;
 mod server;
 mod session;
 

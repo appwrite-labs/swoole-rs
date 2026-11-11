@@ -144,9 +144,7 @@ pub unsafe fn socket_create(out: *mut zval, fd: c_int) -> bool {
     #[cfg(feature = "sockets")]
     {
         // SAFETY: ext/sockets' class, set at its MINIT; `out` per the caller.
-        unsafe { swoole_rs_zend::sys::object_init_ex(out, socket_ce) };
-        // SAFETY: the new `Socket` object.
-        let object = unsafe { swoole_rs_zend::value::obj_of(out) };
+        let object = unsafe { swoole_rs_zend::init_object(out, socket_ce) };
         // SAFETY: the new `Socket`, whose `php_socket` precedes its object.
         unsafe { socket_import_file_descriptor(fd, php_socket(object)) }
     }

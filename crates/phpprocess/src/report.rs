@@ -7,27 +7,8 @@ pub(crate) const INVALID_PARAMS: i32 = 505;
 pub(crate) const OPERATION_NOT_SUPPORT: i32 = 507;
 pub(crate) const PHP_RUNTIME_NOTICE: i32 = 510;
 
-pub(crate) fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-/// Set `errno` (to 0 before a call whose -1 result is ambiguous).
-pub(crate) fn set_errno(value: i32) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // SAFETY: the calling thread's errno slot.
-        let slot = unsafe { libc::__errno_location() };
-        // SAFETY: as above.
-        unsafe { *slot = value };
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        // SAFETY: the calling thread's errno slot.
-        let slot = unsafe { libc::__error() };
-        // SAFETY: as above.
-        unsafe { *slot = value };
-    }
-}
+/// `errno`, and setting it (to 0 before a call whose -1 result is ambiguous).
+pub(crate) use swoole_rs_corebase::sys::{errno, set_errno};
 
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 

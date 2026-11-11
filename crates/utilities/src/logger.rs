@@ -670,6 +670,9 @@ pub unsafe extern "C" fn swr_v1_utils_log(
 }
 
 #[cfg(test)]
+mod ported;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;

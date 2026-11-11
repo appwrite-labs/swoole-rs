@@ -146,6 +146,17 @@ impl Call {
         unsafe { crate::object::custom(self.this_object()?) }
     }
 
+    /// `ZEND_THIS` holding an object, borrowed for the call, or None without
+    /// one (a static method).
+    #[must_use]
+    #[inline]
+    pub fn this_value(&self) -> Option<&Value> {
+        // SAFETY: a live frame.
+        let this = unsafe { &raw const (*self.frame).This };
+        // SAFETY: the frame holds `This` for the call.
+        unsafe { Value::from_ptr(this) }.filter(|this| this.object().is_some())
+    }
+
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
     #[inline]
     pub(crate) fn this_object(&self) -> Option<*mut zend_object> {
@@ -336,8 +347,8 @@ impl Call {
     /// # Errors
     /// The argument is not an array; Zend has thrown.
     #[inline]
-    pub fn array(&self, n: u32) -> Result<*mut zval, Invalid> {
-        self.array_ref(n).map(|_| self.arg(n))
+    pub fn array(&self, n: u32) -> Result<&Value, Invalid> {
+        self.array_ref(n).map(|_| self.arg_value(n))
     }
 
     /// [`Call::array`]'s table, borrowed for the call.

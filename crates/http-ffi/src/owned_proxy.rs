@@ -158,16 +158,10 @@ pub unsafe fn swr_v1_http_proxy_connect(
     length
 }
 
-/// `HttpProxy::handshake`: whether `data[..length]` accepts the CONNECT, setting the
-/// last error when the proxy refused it.
-/// # Safety
-/// data lends `length` bytes (null only when empty).
+/// `HttpProxy::handshake`: whether `input` accepts the CONNECT, setting the last
+/// error when the proxy refused it.
 #[must_use]
-pub unsafe fn swr_v1_http_proxy_accept(data: *const u8, length: usize) -> bool {
-    // SAFETY: the caller's bytes.
-    let Ok(input) = (unsafe { crate::bytes(data, length) }) else {
-        return false;
-    };
+pub fn proxy_accept(input: &[u8]) -> bool {
     let status = proxy_handshake(input);
     if status == -2 {
         log::set_last_error(HANDSHAKE_FAILED);
@@ -390,7 +384,7 @@ mod tests {
             unsafe { oracle::handshake(input.as_ptr(), input.len(), &raw mut last_error) };
         assert_eq!(errno(), libc::EINTR, "upstream handshake keeps errno");
         log::set_last_error(0);
-        let candidate = unsafe { swr_v1_http_proxy_accept(input.as_ptr(), input.len()) };
+        let candidate = proxy_accept(input);
         assert_eq!(errno(), libc::EINTR, "candidate handshake keeps errno");
         assert_eq!(
             (accepted, last_error),

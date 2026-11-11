@@ -3,7 +3,7 @@
 use std::{cell::RefCell, ffi::CStr};
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_zend::{Call, Custom, CustomClass, Minit, Owned, OwnedArray, Value, ZStr, ZString};
+use swoole_rs_zend::{Call, Custom, CustomClass, Owned, OwnedArray, Value, ZStr, ZString};
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_ERROR_HTTP_COOKIE_UNAVAILABLE`.
@@ -218,11 +218,8 @@ method_table! {
 
 /// `php_swoole_http_cookie_minit`: register the class (not serializable,
 /// clone and unset denied, custom object).
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe fn php_swoole_http_cookie_minit(args: &MinitArgs) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
+pub fn php_swoole_http_cookie_minit(args: &MinitArgs) {
+    let minit = &args.minit;
     minit.register_object::<Held>(c"Swoole\\Http\\Cookie", &METHODS.0, 0);
 }
 

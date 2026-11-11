@@ -8,97 +8,58 @@ use crate::{
     queue::Queue,
     table::Key,
 };
-use std::{ffi::c_void, ptr, sync::Arc};
+use std::{cell::OnceCell, ptr, sync::Arc};
 use swoole_rs_phpstubs::thread_arraylist;
 use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Minit, Object, Value as ZValue, bailout, set_object,
+    Call, Custom, CustomClass, Invalid, Minit, Owned, Value as ZValue, bailout, new_object,
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
-        IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, ZPP_ERROR_WRONG_ARG, swr_zend_dval_to_lval_safe,
-        swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_argument_type_error,
-        zend_ce_arrayaccess, zend_ce_countable, zend_class_entry, zend_class_implements,
-        zend_object, zend_object_handlers, zend_type_error, zend_ulong,
-        zend_use_resource_as_offset, zend_wrong_parameter_error, zval,
+        IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
+        ZPP_ERROR_WRONG_ARG, swr_zend_dval_to_lval_safe, swr_zend_handle_numeric_str,
+        swr_zend_resource_handle, zend_argument_type_error, zend_type_error, zend_ulong,
+        zend_use_resource_as_offset, zend_wrong_parameter_error,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-static MAP: Class = Class::new();
-static LIST: Class = Class::new();
-static QUEUE: Class = Class::new();
-
-/// An object's reference (`Arc::into_raw`), or null.
-type Shared<T> = Object<*const T>;
-
-unsafe extern "C" fn create_map(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class; null is valid zeroed data.
-    unsafe { Shared::<Array>::create(&MAP, ce) }
+/// An object's reference to its shared table or queue, unset until
+/// `__construct` (or when made by reading a value back).
+trait Shared: Custom {
+    type Target;
+    fn cell(&self) -> &OnceCell<Arc<Self::Target>>;
+    fn around(shared: &Arc<Self::Target>) -> Self;
 }
 
-unsafe extern "C" fn create_list(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: as `create_map`.
-    unsafe { Shared::<Array>::create(&LIST, ce) }
+macro_rules! shared {
+    ($($name:ident($target:ty): $class:ident;)*) => {$(
+        pub(crate) struct $name(OnceCell<Arc<$target>>);
+        static $class: CustomClass<$name> = CustomClass::new();
+        impl Custom for $name {
+            fn class() -> &'static CustomClass<Self> {
+                &$class
+            }
+            fn new() -> Self {
+                Self(OnceCell::new())
+            }
+        }
+        impl Shared for $name {
+            type Target = $target;
+            fn cell(&self) -> &OnceCell<Arc<$target>> {
+                &self.0
+            }
+            fn around(shared: &Arc<$target>) -> Self {
+                Self(OnceCell::from(Arc::clone(shared)))
+            }
+        }
+    )*};
 }
 
-unsafe extern "C" fn create_queue(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: as `create_map`.
-    unsafe { Shared::<Queue>::create(&QUEUE, ce) }
-}
-
-unsafe extern "C" fn free_array(std: *mut zend_object) {
-    // SAFETY: Zend frees a Map or ArrayList.
-    unsafe { release::<Array>(std) };
-}
-
-unsafe extern "C" fn free_queue(std: *mut zend_object) {
-    // SAFETY: Zend frees a Queue.
-    unsafe { release::<Queue>(std) };
-}
-
-/// `del_ref` the object's reference, then the standard destructor.
-unsafe fn release<T>(std: *mut zend_object) {
-    // SAFETY: per the caller, one of our objects.
-    let shared = std::mem::replace(unsafe { Shared::<T>::data(std) }, ptr::null());
-    if !shared.is_null() {
-        // SAFETY: the reference the object held.
-        drop(unsafe { Arc::from_raw(shared) });
-    }
-    // SAFETY: per the caller.
-    unsafe { Shared::<T>::dtor(std) };
-}
-
-/// Final and not serializable, clone and unset denied, custom object.
-fn configure(
-    create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-    free: unsafe extern "C" fn(*mut zend_object),
-) -> impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers) {
-    move |entry, handlers| {
-        entry.ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-        handlers.clone_obj = None;
-        handlers.unset_property = Some(unset_property_deny);
-        Shared::<c_void>::install(entry, handlers, create, free);
-    }
-}
-
-/// `zend_class_implements(ce, n, ...)`: `ArrayAccess` (unless only `Countable`)
-/// and `Countable`.
-/// # Safety
-/// MINIT, after `register`.
-unsafe fn implements(class: &Class, array_access: bool) {
-    if array_access {
-        // SAFETY: Zend's interface, set before any extension's MINIT.
-        let interface = unsafe { zend_ce_arrayaccess };
-        // SAFETY: per the caller.
-        unsafe { zend_class_implements(class.entry(), 1, interface) };
-    }
-    // SAFETY: as above.
-    let interface = unsafe { zend_ce_countable };
-    // SAFETY: per the caller.
-    unsafe { zend_class_implements(class.entry(), 1, interface) };
+shared! {
+    Map(Array): MAP;
+    List(Array): LIST;
+    QueueObject(Queue): QUEUE;
 }
 
 method_table! {
@@ -122,16 +83,11 @@ method_table! {
     ];
 }
 
-/// `php_swoole_thread_map_minit`.
+/// `php_swoole_thread_map_minit`: final, `ArrayAccess` and `Countable`.
 pub fn map_minit(minit: &Minit) {
-    minit.register(
-        &MAP,
-        c"Swoole\\Thread\\Map",
-        &MAP_METHODS.0,
-        configure(create_map, free_array),
-    );
-    // SAFETY: MINIT; Zend's own interfaces.
-    unsafe { implements(&MAP, true) };
+    minit.register_object::<Map>(c"Swoole\\Thread\\Map", &MAP_METHODS.0, ZEND_ACC_FINAL);
+    minit.implements(&MAP, minit.array_access());
+    minit.implements(&MAP, minit.countable());
 }
 
 method_table! {
@@ -153,14 +109,13 @@ method_table! {
 
 /// `php_swoole_thread_arraylist_minit`.
 pub fn arraylist_minit(minit: &Minit) {
-    minit.register(
-        &LIST,
+    minit.register_object::<List>(
         c"Swoole\\Thread\\ArrayList",
         &ARRAYLIST_METHODS.0,
-        configure(create_list, free_array),
+        ZEND_ACC_FINAL,
     );
-    // SAFETY: MINIT; Zend's own interfaces.
-    unsafe { implements(&LIST, true) };
+    minit.implements(&LIST, minit.array_access());
+    minit.implements(&LIST, minit.countable());
     minit.property_long(&LIST, c"id", 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
 }
 
@@ -176,14 +131,12 @@ method_table! {
 
 /// `php_swoole_thread_queue_minit`.
 pub fn queue_minit(minit: &Minit) {
-    minit.register(
-        &QUEUE,
+    minit.register_object::<QueueObject>(
         c"Swoole\\Thread\\Queue",
         &QUEUE_METHODS.0,
-        configure(create_queue, free_queue),
+        ZEND_ACC_FINAL,
     );
-    // SAFETY: MINIT; Zend's own interface.
-    unsafe { implements(&QUEUE, false) };
+    minit.implements(&QUEUE, minit.countable());
     minit.class_constant_long(&QUEUE, c"NOTIFY_ONE", NOTIFY_ONE);
     minit.class_constant_long(&QUEUE, c"NOTIFY_ALL", NOTIFY_ALL);
 }
@@ -194,28 +147,27 @@ const NOTIFY_ALL: i64 = 2;
 /// Store a Map, `ArrayList` or Queue by reference (`CAST_OBJ_TO_RESOURCE`).
 /// An unconstructed one ends the request with upstream's fatal error.
 pub(crate) fn shared(value: &ZValue) -> Option<Item> {
-    let (std, ce) = (value.object()?, value.class()?);
-    let (kind, list) = if ce == MAP.entry() {
-        (IS_MAP, false)
-    } else if ce == LIST.entry() {
-        (IS_ARRAYLIST, true)
-    } else if ce == QUEUE.entry() {
-        (IS_QUEUE, false)
+    let (kind, list, shared) = if let Some(map) = value.custom::<Map>() {
+        (
+            IS_MAP,
+            false,
+            map.0.get().map(|array| Value::Array(Arc::clone(array))),
+        )
+    } else if let Some(list) = value.custom::<List>() {
+        (
+            IS_ARRAYLIST,
+            true,
+            list.0.get().map(|array| Value::Array(Arc::clone(array))),
+        )
     } else {
-        return None;
+        let queue = value.custom::<QueueObject>()?;
+        (
+            IS_QUEUE,
+            false,
+            queue.0.get().map(|queue| Value::Queue(Arc::clone(queue))),
+        )
     };
-    let value = if kind == IS_QUEUE {
-        // SAFETY: one of our Queues.
-        let queue = unsafe { *Shared::<Queue>::data(std) };
-        // SAFETY: the object's live reference, if any.
-        (!queue.is_null()).then(|| Value::Queue(unsafe { clone(queue) }))
-    } else {
-        // SAFETY: one of our Maps or ArrayLists.
-        let array = unsafe { *Shared::<Array>::data(std) };
-        // SAFETY: as above.
-        (!array.is_null()).then(|| Value::Array(unsafe { clone(array) }))
-    };
-    let Some(value) = value else {
+    let Some(value) = shared else {
         crate::host::defer(crate::host::Pending::Unconstructed { list });
         return Some(Item {
             kind: swoole_rs_zend::sys::IS_UNDEF,
@@ -225,64 +177,35 @@ pub(crate) fn shared(value: &ZValue) -> Option<Item> {
     Some(Item { kind, value })
 }
 
-/// A new reference from an object's.
-/// # Safety
-/// `shared` is a live reference.
-unsafe fn clone<T>(shared: *const T) -> Arc<T> {
-    // SAFETY: per the caller.
-    unsafe { Arc::increment_strong_count(shared) };
-    // SAFETY: the reference just added.
-    unsafe { Arc::from_raw(shared) }
-}
-
 /// `php_swoole_thread_{arraylist,map}_create`: an object over `array`.
-/// # Safety
-/// In a request; `out` is writable and holds nothing.
-pub(crate) unsafe fn array_object(out: *mut zval, kind: u32, array: &Arc<Array>) {
-    let class = if kind == IS_ARRAYLIST { &LIST } else { &MAP };
-    // SAFETY: after MINIT; the class's own entry.
-    let std = unsafe { Shared::<Array>::create(class, class.entry()) };
-    // SAFETY: the object just created.
-    unsafe { *Shared::<Array>::data(std) = Arc::into_raw(Arc::clone(array)) };
-    // SAFETY: per the caller.
-    unsafe { set_object(out, std) };
+pub(crate) fn array_object(kind: u32, array: &Arc<Array>) -> Owned {
+    if kind == IS_ARRAYLIST {
+        new_object(List::around(array))
+    } else {
+        new_object(Map::around(array))
+    }
 }
 
 /// `php_swoole_thread_queue_create`.
-/// # Safety
-/// As `array_object`.
-pub(crate) unsafe fn queue_object(out: *mut zval, queue: &Arc<Queue>) {
-    // SAFETY: after MINIT; the class's own entry.
-    let std = unsafe { Shared::<Queue>::create(&QUEUE, QUEUE.entry()) };
-    // SAFETY: the object just created.
-    unsafe { *Shared::<Queue>::data(std) = Arc::into_raw(Arc::clone(queue)) };
-    // SAFETY: per the caller.
-    unsafe { set_object(out, std) };
+pub(crate) fn queue_object(queue: &Arc<Queue>) -> Owned {
+    new_object(QueueObject::around(queue))
 }
 
-/// The object's reference slot.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "the slot is in the Zend object, not the call"
-)]
-fn slot<T>(call: &Call) -> &mut *const T {
-    // SAFETY: the methods are non-static and the classes final, so `$this` is
-    // one of our objects of this kind.
-    unsafe { Shared::<T>::data(call.this()) }
+/// The object's reference cell: the methods are non-static and the classes
+/// final, so `$this` is one of `T`'s objects.
+fn cell<T: Shared>(call: &Call) -> Option<&OnceCell<Arc<T::Target>>> {
+    call.custom::<T>().map(Shared::cell)
 }
 
 /// The object's table or queue, or the fatal error upstream raises
 /// (`*_fetch_object_check`); nothing is held when it bails out.
-fn constructed<T>(call: &Call, list: bool) -> Option<&'static T> {
-    let shared = *slot::<T>(call);
-    if shared.is_null() {
+fn constructed<T: Shared>(call: &Call, list: bool) -> Option<&T::Target> {
+    let shared = cell::<T>(call)?.get();
+    if shared.is_none() {
         // The fatal error; this frame owns nothing.
         host::unconstructed(list);
-        return None;
     }
-    // SAFETY: the object holds a reference for as long as it lives, which
-    // outlasts the call.
-    Some(unsafe { &*shared })
+    shared.map(|shared| &**shared)
 }
 
 /// `Z_PARAM_ARRAY_HT_OR_NULL` of optional argument 1.
@@ -311,11 +234,14 @@ fn array_or_null(call: &Call) -> Result<Option<&swoole_rs_zend::Array>, Invalid>
 }
 
 /// `__construct(?array $array = null)` of Map and `ArrayList`.
-fn construct_array(call: &Call, list: bool) {
+fn construct_array<T: Shared<Target = Array>>(call: &Call, list: bool) {
     let Ok(array) = call.arity(0, 1).and_then(|()| array_or_null(call)) else {
         return;
     };
-    if !slot::<Array>(call).is_null() {
+    let Some(cell) = cell::<T>(call) else {
+        return;
+    };
+    if cell.get().is_some() {
         call.throw_constructed_twice();
         return;
     }
@@ -330,7 +256,7 @@ fn construct_array(call: &Call, list: bool) {
     if bailout::pending() {
         return;
     }
-    *slot::<Array>(call) = Arc::into_raw(shared);
+    _ = cell.set(shared);
 }
 
 // Map.
@@ -381,9 +307,9 @@ fn map_key(key: &swoole_rs_zend::Value) -> Option<Key> {
 }
 
 /// Parse `(mixed $key[, ...])`, check the object, and resolve the key.
-fn map_call(call: &Call, min: u32, max: u32) -> Option<(&'static Array, Key)> {
+fn map_call(call: &Call, min: u32, max: u32) -> Option<(&Array, Key)> {
     call.arity(min, max).ok()?;
-    let map = constructed::<Array>(call, false)?;
+    let map = constructed::<Map>(call, false)?;
     let key = map_key(call.value(1)?)?;
     Some((map, key))
 }
@@ -396,21 +322,16 @@ fn delta(call: &Call, decrement: bool, step: impl FnOnce(&ZValue)) {
     if !decrement {
         return step(given);
     }
-    let negated = negate(given);
-    // SAFETY: a live local zval, borrowed only by `step`.
-    if let Some(negated) = unsafe { ZValue::from_ptr(&raw const negated) } {
-        step(negated);
-    }
+    step(&negate(given));
 }
 
 fn map_construct(call: &Call) {
-    construct_array(call, false);
+    construct_array::<Map>(call, false);
 }
 
 fn map_get(call: &Call) {
-    if let Some((map, key)) = map_call(call, 1, 1) {
-        // SAFETY: in a handler; the return slot.
-        unsafe { map.get(&key, call.return_value()) };
+    if let Some(value) = map_call(call, 1, 1).and_then(|(map, key)| map.get(&key)) {
+        call.set_owned(value);
     }
 }
 
@@ -464,47 +385,46 @@ fn map_find(call: &Call) {
     if call.arity(1, 1).is_err() {
         return;
     }
-    if let Some((map, search)) = constructed::<Array>(call, false).zip(call.value(1)) {
-        // SAFETY: in a handler; the return slot.
-        unsafe { map.find(search, call.return_value()) };
+    let found = constructed::<Map>(call, false)
+        .zip(call.value(1))
+        .and_then(|(map, search)| map.find(search));
+    if let Some(found) = found {
+        call.set_owned(found);
     }
 }
 
 fn map_count(call: &Call) {
-    if let Some(map) = constructed::<Array>(call, false) {
+    if let Some(map) = constructed::<Map>(call, false) {
         call.set_long(i64::try_from(map.count()).unwrap_or(i64::MAX));
     }
 }
 
 fn map_keys(call: &Call) {
-    if let Some(map) = constructed::<Array>(call, false) {
-        // SAFETY: the return slot.
-        unsafe { map.keys(call.return_value()) };
+    if let Some(map) = constructed::<Map>(call, false) {
+        call.set_owned(map.keys());
     }
 }
 
 fn map_values(call: &Call) {
-    if let Some(map) = constructed::<Array>(call, false) {
-        // SAFETY: in a handler; the return slot.
-        unsafe { map.values(call.return_value()) };
+    if let Some(map) = constructed::<Map>(call, false) {
+        call.set_owned(map.values());
     }
 }
 
 fn map_to_array(call: &Call) {
-    if let Some(map) = constructed::<Array>(call, false) {
-        // SAFETY: in a handler; the return slot.
-        unsafe { map.to_array(call.return_value()) };
+    if let Some(map) = constructed::<Map>(call, false) {
+        call.set_owned(map.to_array());
     }
 }
 
 fn map_clean(call: &Call) {
-    if let Some(map) = constructed::<Array>(call, false) {
+    if let Some(map) = constructed::<Map>(call, false) {
         map.clean();
     }
 }
 
 fn map_sort(call: &Call) {
-    if let Some(map) = constructed::<Array>(call, false) {
+    if let Some(map) = constructed::<Map>(call, false) {
         map.sort(false);
     }
 }
@@ -536,21 +456,20 @@ fn out_of_range(call: &Call) {
 }
 
 /// Parse `(int $index)` and check the object.
-fn list_long(call: &Call) -> Option<(&'static Array, i64)> {
+fn list_long(call: &Call) -> Option<(&Array, i64)> {
     let index = call.arity(1, 1).and_then(|()| call.long(1, 0)).ok()?;
-    Some((constructed::<Array>(call, true)?, index))
+    Some((constructed::<List>(call, true)?, index))
 }
 
 fn list_construct(call: &Call) {
-    construct_array(call, true);
+    construct_array::<List>(call, true);
 }
 
 fn list_get(call: &Call) {
-    if let Some((list, index)) = list_long(call) {
-        // SAFETY: in a handler; the return slot.
-        if !unsafe { list.index_get(index, call.return_value()) } {
-            out_of_range(call);
-        }
+    if let Some((list, index)) = list_long(call)
+        && !list.index_get(index, call)
+    {
+        out_of_range(call);
     }
 }
 
@@ -564,7 +483,7 @@ fn list_set(call: &Call) {
     if call.arity(2, 2).is_err() {
         return;
     }
-    let Some(list) = constructed::<Array>(call, true) else {
+    let Some(list) = constructed::<List>(call, true) else {
         return;
     };
     let Some((index, value)) = call.value(1).zip(call.value(2)) else {
@@ -579,7 +498,7 @@ fn list_step(call: &Call, decrement: bool) {
     if call.arity(1, 2).is_err() {
         return;
     }
-    let Some((list, key)) = constructed::<Array>(call, true).zip(call.value(1)) else {
+    let Some((list, key)) = constructed::<List>(call, true).zip(call.value(1)) else {
         return;
     };
     delta(call, decrement, |delta| {
@@ -607,33 +526,34 @@ fn list_find(call: &Call) {
     if call.arity(1, 1).is_err() {
         return;
     }
-    if let Some((list, search)) = constructed::<Array>(call, true).zip(call.value(1)) {
-        // SAFETY: in a handler; the return slot.
-        unsafe { list.find(search, call.return_value()) };
+    let found = constructed::<List>(call, true)
+        .zip(call.value(1))
+        .and_then(|(list, search)| list.find(search));
+    if let Some(found) = found {
+        call.set_owned(found);
     }
 }
 
 fn list_count(call: &Call) {
-    if let Some(list) = constructed::<Array>(call, true) {
+    if let Some(list) = constructed::<List>(call, true) {
         call.set_long(i64::try_from(list.count()).unwrap_or(i64::MAX));
     }
 }
 
 fn list_clean(call: &Call) {
-    if let Some(list) = constructed::<Array>(call, true) {
+    if let Some(list) = constructed::<List>(call, true) {
         list.clean();
     }
 }
 
 fn list_to_array(call: &Call) {
-    if let Some(list) = constructed::<Array>(call, true) {
-        // SAFETY: in a handler; the return slot.
-        unsafe { list.to_array(call.return_value()) };
+    if let Some(list) = constructed::<List>(call, true) {
+        call.set_owned(list.to_array());
     }
 }
 
 fn list_sort(call: &Call) {
-    if let Some(list) = constructed::<Array>(call, true) {
+    if let Some(list) = constructed::<List>(call, true) {
         list.sort(true);
     }
 }
@@ -659,19 +579,19 @@ handlers! {
 const NO_PAYLOAD: i32 = 550;
 
 fn queue_construct(call: &Call) {
-    let shared = slot::<Queue>(call);
-    if !shared.is_null() {
-        call.throw_constructed_twice();
+    let Some(cell) = cell::<QueueObject>(call) else {
         return;
+    };
+    if cell.set(Arc::default()).is_err() {
+        call.throw_constructed_twice();
     }
-    *shared = Arc::into_raw(Arc::default());
 }
 
 fn queue_push(call: &Call) {
     let Ok(notify) = call.arity(1, 2).and_then(|()| call.long(2, 0)) else {
         return;
     };
-    let Some(queue) = constructed::<Queue>(call, false) else {
+    let Some(queue) = constructed::<QueueObject>(call, false) else {
         return;
     };
     let Some(value) = call.value(1) else {
@@ -692,7 +612,7 @@ fn queue_pop(call: &Call) {
     let Ok(timeout) = call.arity(0, 1).and_then(|()| call.double(1, 0.0)) else {
         return;
     };
-    let Some(queue) = constructed::<Queue>(call, false) else {
+    let Some(queue) = constructed::<QueueObject>(call, false) else {
         return;
     };
     let item = if timeout == 0.0 {
@@ -707,20 +627,19 @@ fn queue_pop(call: &Call) {
         }
         item
     };
-    if let Some(item) = item {
-        // SAFETY: in a handler; the return slot.
-        unsafe { item.fetch(call.return_value()) };
+    if let Some(value) = item.as_ref().and_then(Item::fetch) {
+        call.set_owned(value);
     }
 }
 
 fn queue_count(call: &Call) {
-    if let Some(queue) = constructed::<Queue>(call, false) {
+    if let Some(queue) = constructed::<QueueObject>(call, false) {
         call.set_long(i64::try_from(queue.count()).unwrap_or(i64::MAX));
     }
 }
 
 fn queue_clean(call: &Call) {
-    if let Some(queue) = constructed::<Queue>(call, false) {
+    if let Some(queue) = constructed::<QueueObject>(call, false) {
         queue.clean();
     }
 }

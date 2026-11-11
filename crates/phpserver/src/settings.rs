@@ -4,20 +4,15 @@
 use crate::lifecycle::ServerObject;
 use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{CStr, CString, c_int},
     ptr,
     sync::atomic::Ordering,
 };
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Value, bailout, message, report,
-    string::bytes,
-    sys::{
-        IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
-        swr_zend_try_facade_update, zend_string, zend_ulong, zval,
-    },
-    type_of,
+    Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
+    sys::{swr_zend_callable_warning, swr_zend_try_facade_update},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -195,7 +190,7 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
 /// The settings array and the Server being configured.
 pub(crate) struct Settings<'a> {
     pub(crate) serv: view::Server<'a>,
-    pub(crate) vht: *mut zval,
+    pub(crate) vht: Option<&'a Array>,
 }
 
 /// Stop: a bailout is pending (upstream never ran past it).
@@ -211,17 +206,15 @@ pub(crate) fn checked() -> Step {
     }
 }
 
-impl Settings<'_> {
+impl<'a> Settings<'a> {
     /// The server being configured.
     pub(crate) fn server(&self) -> view::Server<'_> {
         self.serv
     }
 
     /// `php_swoole_array_get_value(vht, key, ztmp)`: present and not null.
-    pub(crate) fn get(&self, key: &CStr) -> Option<&Value> {
-        // SAFETY: the settings array, live for the call.
-        let vht = unsafe { Value::from_ptr(self.vht) }?.array()?;
-        vht.get(key.to_bytes())
+    pub(crate) fn get(&self, key: &CStr) -> Option<&'a Value> {
+        self.vht?.get(key.to_bytes())
     }
 
     fn get_any(&self, keys: &[&CStr]) -> Option<&Value> {
@@ -321,10 +314,7 @@ fn notice(message: &CStr) -> Step {
 
 fn set(call: &Call) {
     let serv = server(call);
-    let s = Settings {
-        serv,
-        vht: ptr::null_mut(),
-    };
+    let s = Settings { serv, vht: None };
     if s.fact(field::WORKER_THREAD) != 0 {
         set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
         return call.set_bool(false);
@@ -342,7 +332,10 @@ fn set(call: &Call) {
     let Ok(vht) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let s = Settings { serv, vht };
+    let s = Settings {
+        serv,
+        vht: vht.array(),
+    };
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     let this = ServerObject::this(call);
@@ -358,10 +351,8 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: ServerObject, settings: *mut zval) -> Result<(), bailout::Bailout> {
+fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> {
     let port = this.port_at(0);
-    // SAFETY: the primary port's object zval.
-    let port = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: the live Port object, its class and the settings argument.
     unsafe {
         bailout::call_method(
@@ -369,10 +360,11 @@ fn finish(this: ServerObject, settings: *mut zval) -> Result<(), bailout::Bailou
             crate::PORT.entry(),
             b"set",
             ptr::null_mut(),
-            &[settings],
+            &[settings.as_ptr()],
         )
     }?;
-    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings).map(|_| ())
+    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings.as_ptr())
+        .map(|_| ())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.
@@ -380,8 +372,7 @@ fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
     use field as f;
     // php_swoole_set_global_option, _coroutine_option and _aio_option; the
     // first defers its fatal error for a size that does not parse.
-    // SAFETY: the settings argument, an array.
-    let Some(vht) = unsafe { Value::from_ptr(s.vht) }.and_then(Value::array) else {
+    let Some(vht) = s.vht else {
         return Ok(true);
     };
     if !swoole_rs_phpswoole::set_global(vht) {
@@ -463,7 +454,7 @@ fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
                 return Ok(());
             }
             // SAFETY: a live server, not started.
-            unsafe { crate::dispatch::set_dispatch_func(s.serv.raw(), handle) }
+            unsafe { crate::dispatch::set_dispatch_func(s.serv, handle) }
         });
         if set.is_err() {
             bailout::defer(set);
@@ -793,46 +784,6 @@ fn http(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
 
 /// `url_rewrite_rules`: string keys to string replacements.
 fn rewrite_rules(s: &Settings) -> Step {
-    unsafe extern "C" fn each(
-        _index: zend_ulong,
-        key: *mut zend_string,
-        value: *mut zval,
-        context: *mut c_void,
-    ) -> bool {
-        // SAFETY: the `Rules` passed below, live for the loop.
-        let rules = unsafe { &mut *context.cast::<Rules>() };
-        let mut value = value;
-        // SAFETY: a live value; ZVAL_DEREF.
-        if unsafe { type_of(value) } == IS_REFERENCE {
-            // SAFETY: a live value.
-            let inner = unsafe { (*value).value };
-            // SAFETY: a reference zval holds `ref`.
-            let reference = unsafe { inner.ref_ };
-            // SAFETY: a live reference.
-            value = unsafe { &raw mut (*reference).val };
-        }
-        // SAFETY: as above.
-        let Some(replacement) = (unsafe { swoole_rs_zend::string_of(value) }) else {
-            rules.bad = true;
-            return false;
-        };
-        // An integer key has no pattern; upstream reads a null string there.
-        let pattern: &[u8] = if key.is_null() {
-            b""
-        } else {
-            // SAFETY: a live key.
-            unsafe { bytes(key) }
-        };
-        rules
-            .settings
-            .server()
-            .add_rewrite_rule(pattern, replacement);
-        true
-    }
-    struct Rules<'a> {
-        settings: &'a Settings<'a>,
-        bad: bool,
-    }
     let Some(value) = s.get(c"url_rewrite_rules") else {
         return Ok(());
     };
@@ -840,15 +791,14 @@ fn rewrite_rules(s: &Settings) -> Step {
         fatal(E_ERROR, c"The `url_rewrite_rules` must be array");
         return Err(Stop);
     };
-    let mut rules = Rules {
-        settings: s,
-        bad: false,
-    };
-    // SAFETY: a live array; `each` neither modifies it nor unwinds.
-    unsafe { swr_zend_hash_foreach_key(array.as_ptr(), Some(each), (&raw mut rules).cast()) };
-    if rules.bad {
-        fatal(E_ERROR, c"The `replacement` must be string");
-        return Err(Stop);
+    for (key, value) in array.entries() {
+        let Some(replacement) = value.dereferenced().bytes() else {
+            fatal(E_ERROR, c"The `replacement` must be string");
+            return Err(Stop);
+        };
+        // An integer key has no pattern; upstream reads a null string there.
+        let pattern = key.unwrap_or_default();
+        s.server().add_rewrite_rule(pattern, replacement);
     }
     Ok(())
 }

@@ -4,26 +4,25 @@
 //! `swoole_*` wrappers that move that first argument where the function
 //! expects it.
 use crate::{
-    CONTINUE, DISPATCH,
+    CONTINUE, DISPATCH, Frame,
     aliases::{self, Receiver},
-    deref, ex_var, rt_constant,
+    offset,
 };
 use std::{
     ffi::{CStr, c_int},
     mem::offset_of,
-    ptr,
+    ptr, slice,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
     bailout::{Bailout, trap},
     string,
     sys::{
-        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_UNUSED, IS_VAR,
-        swr_zend_compiled_function_find, swr_zend_efree, swr_zend_emalloc, swr_zend_function_find,
-        swr_zend_push_nested_call, swr_zend_try_call_known, swr_zend_zval_release,
-        zend_execute_data, zend_function, zend_throw_error, zend_zval_type_name, zval,
+        IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_compiled_function_find, swr_zend_efree,
+        swr_zend_emalloc, swr_zend_function_find, swr_zend_push_nested_call,
+        swr_zend_try_call_known, swr_zend_zval_release, zend_execute_data, zend_function,
+        zend_throw_error, zend_zval_type_name, zval,
     },
-    type_of,
     value::str_of,
 };
 
@@ -62,21 +61,13 @@ pub(crate) fn compiled_function(name: &CStr) -> *mut zend_function {
 /// # Safety
 /// Zend's user opcode handler contract: a live frame at this opline.
 pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: a live frame.
-    let opline = unsafe { (*frame).opline };
-    // SAFETY: the frame's current opline.
-    let op = unsafe { &*opline };
-    let object = match u32::from(op.op1_type) {
-        // SAFETY: a constant operand.
-        IS_CONST => unsafe { rt_constant(opline, op.op1) },
-        IS_UNUSED => return DISPATCH,
-        // SAFETY: a variable operand holds its slot.
-        _ => ex_var(frame, unsafe { op.op1.var }),
+    // SAFETY: per Zend's contract.
+    let frame = unsafe { Frame::new(frame) };
+    let op = frame.op();
+    let Some(object) = op.op1() else {
+        return DISPATCH;
     };
-    // SAFETY: the operand's live zval.
-    let target = unsafe { deref(object) };
-    // SAFETY: as above.
-    let receiver = match unsafe { type_of(target) } {
+    let receiver = match object.dereferenced().kind() {
         IS_ARRAY => Receiver::Array,
         IS_STRING => Receiver::String,
         IS_RESOURCE => Receiver::Stream,
@@ -84,12 +75,15 @@ pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_d
     };
     // SAFETY: Zend's request allocator, freed by the method call.
     let info = unsafe { swr_zend_emalloc(size_of::<CallInfo>()) }.cast::<CallInfo>();
-    // SAFETY: the method name, op2's constant.
-    let name = unsafe { rt_constant(opline, op.op2) };
+    // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)` as upstream reads it.
+    let name = op
+        .at
+        .wrapping_byte_offset(offset(op.op2).cast_signed() as isize)
+        .cast::<zval>();
     // SAFETY: a live literal; zvals are plain copies, as upstream's are.
-    let func = unsafe { *name };
+    let func = unsafe { name.read() };
     // SAFETY: the operand's live zval.
-    let this = unsafe { *object };
+    let this = unsafe { object.as_ptr().read() };
     // SAFETY: a fresh allocation of a `CallInfo`.
     unsafe {
         info.write(CallInfo {
@@ -105,56 +99,49 @@ pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_d
     }
     .load(Ordering::Relaxed);
     // SAFETY: a registered function; the frame passes `object` as upstream does.
-    let call = unsafe { swr_zend_push_nested_call(method, op.extended_value, object.cast()) };
+    let call =
+        unsafe { swr_zend_push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
     // SAFETY: the frame just pushed.
     unsafe { (*call).run_time_cache = info.cast() };
     // SAFETY: this live frame.
-    let previous = unsafe { (*frame).call };
+    let previous = unsafe { (*frame.as_ptr()).call };
     // SAFETY: the frame just pushed.
     unsafe { (*call).prev_execute_data = previous };
     // SAFETY: this live frame.
-    unsafe { (*frame).call = call };
-    // SAFETY: as above.
-    unsafe { (*frame).opline = opline.wrapping_add(1) };
+    unsafe { (*frame.as_ptr()).call = call };
+    frame.jump(op.at.wrapping_add(1));
     CONTINUE
 }
 
 /// `ZEND_CALL_FRAME_SLOT`: zvals before a frame's first argument.
 const FRAME_SLOT: usize = size_of::<zend_execute_data>().div_ceil(size_of::<zval>());
 
-/// `ZEND_CALL_ARG(frame, 1)` and `ZEND_CALL_NUM_ARGS(frame)`.
+/// `ZEND_CALL_ARG(frame, 1)` through `ZEND_CALL_NUM_ARGS(frame)`.
 /// # Safety
-/// `frame` is a live call frame.
-pub(crate) unsafe fn arguments(frame: *mut zend_execute_data) -> (*mut zval, usize) {
+/// `frame` is a live call frame, which outlives `'a`.
+unsafe fn arguments<'a>(frame: *mut zend_execute_data) -> &'a [zval] {
     // SAFETY: per the caller.
     let this = unsafe { (*frame).This };
     // SAFETY: a call frame's `This.u2` holds the argument count.
     let count = unsafe { this.u2.num_args } as usize;
-    (frame.cast::<zval>().wrapping_add(FRAME_SLOT), count)
-}
-
-/// `ecalloc(count, sizeof(zval))`.
-fn zvals(count: usize) -> *mut zval {
-    // SAFETY: Zend's request allocator; the caller frees it.
-    unsafe { swr_zend_emalloc(count * size_of::<zval>()) }.cast()
+    let first = frame.cast::<zval>().wrapping_add(FRAME_SLOT);
+    // SAFETY: the frame's arguments follow its header.
+    unsafe { slice::from_raw_parts(first, count) }
 }
 
 /// `zend_call_known_function(function, ..., retval, count, argv)` under
-/// `zend_try`, then free `argv`.
+/// `zend_try`.
 /// # Safety
-/// `function` is live; `argv` holds `count` zvals from [`zvals`].
+/// `function` is live and `value` a writable return slot.
 unsafe fn call(
     function: *mut zend_function,
     value: *mut zval,
-    argv: *mut zval,
-    count: usize,
+    argv: &mut [zval],
 ) -> Result<(), Bailout> {
     // A frame's argument count plus one at most.
-    let count = u32::try_from(count).unwrap_or(u32::MAX);
-    // SAFETY: per the caller.
-    let bailed = unsafe { swr_zend_try_call_known(function, value, count, argv) };
-    // SAFETY: allocated by `zvals`; the callee keeps no pointer to it.
-    unsafe { swr_zend_efree(argv.cast()) };
+    let count = u32::try_from(argv.len()).unwrap_or(u32::MAX);
+    // SAFETY: per the caller; Zend copies the arguments and keeps no pointer to `argv`.
+    let bailed = unsafe { swr_zend_try_call_known(function, value, count, argv.as_mut_ptr()) };
     if bailed != 0 { Err(Bailout) } else { Ok(()) }
 }
 
@@ -215,15 +202,12 @@ unsafe fn call_alias(
         }
         return Ok(());
     }
+    // SAFETY: per the caller, the handler's `CallInfo`; a plain copy, as upstream's.
+    let this = unsafe { this_of(info).read() };
     // SAFETY: a live frame.
-    let (args, count) = unsafe { arguments(frame) };
-    let argv = zvals(count + 1);
-    // SAFETY: `argv` holds `count + 1` zvals; plain copies, as upstream's.
-    unsafe { ptr::copy_nonoverlapping(this_of(info), argv, 1) };
-    // SAFETY: the frame's `count` arguments into the rest of `argv`.
-    unsafe { ptr::copy_nonoverlapping(args, argv.wrapping_add(1), count) };
-    // SAFETY: a live function and `argv` from `zvals`.
-    unsafe { call(function, value, argv, count + 1) }?;
+    let mut argv = [slice::from_ref(&this), unsafe { arguments(frame) }].concat();
+    // SAFETY: a live function and the caller's return slot.
+    unsafe { call(function, value, &mut argv) }?;
     // SAFETY: the handler's copy of op1's type.
     if u32::from(unsafe { (*info).op1_type }) == IS_VAR {
         // SAFETY: a C body releasing the receiver, which may run destructors.
@@ -240,25 +224,12 @@ fn this_of(info: *mut CallInfo) -> *mut zval {
 /// Upstream's `move_first_element`: the first argument moves to `position`.
 /// With `position` or fewer arguments the first argument moves to the end, and
 /// the target function reports the missing arguments itself.
-/// # Safety
-/// `src` and `dst` hold `count` zvals.
-unsafe fn move_first(src: *const zval, dst: *mut zval, count: usize, position: usize) {
-    let Some(last) = count.checked_sub(1) else {
-        return;
+fn move_first(args: &[zval], position: usize) -> Vec<zval> {
+    let Some((first, rest)) = args.split_first() else {
+        return Vec::new();
     };
-    let position = position.min(last);
-    // SAFETY: per the caller, `position + 1 <= count`.
-    unsafe { ptr::copy_nonoverlapping(src.wrapping_add(1), dst, position) };
-    // SAFETY: as above.
-    unsafe { ptr::copy_nonoverlapping(src, dst.wrapping_add(position), 1) };
-    // SAFETY: as above.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            src.wrapping_add(position + 1),
-            dst.wrapping_add(position + 1),
-            last - position,
-        );
-    }
+    let (before, after) = rest.split_at(position.min(rest.len()));
+    [before, slice::from_ref(first), after].concat()
 }
 
 /// `SW_CREATE_PHP_FUNCTION_WRAPPER`: call `name` with the first argument moved
@@ -278,12 +249,9 @@ unsafe fn forward(
         function.store(target, Ordering::Relaxed);
     }
     // SAFETY: a live frame.
-    let (args, count) = unsafe { arguments(frame) };
-    let argv = zvals(count);
-    // SAFETY: both hold `count` zvals.
-    unsafe { move_first(args, argv, count, position) };
-    // SAFETY: a registered core function and `argv` from `zvals`.
-    swoole_rs_zend::bailout::raise(unsafe { call(target, value, argv, count) });
+    let mut argv = move_first(unsafe { arguments(frame) }, position);
+    // SAFETY: a registered core function and the caller's return slot.
+    swoole_rs_zend::bailout::raise(unsafe { call(target, value, &mut argv) });
 }
 
 macro_rules! wrappers {
@@ -342,10 +310,10 @@ mod tests {
         for (index, slot) in src.iter_mut().enumerate() {
             slot.value.lval = i64::try_from(index).unwrap();
         }
-        let mut dst = vec![unsafe { std::mem::zeroed::<zval>() }; count];
-        // SAFETY: both hold `count` zvals.
-        unsafe { move_first(src.as_ptr(), dst.as_mut_ptr(), count, position) };
-        dst.iter().map(|slot| unsafe { slot.value.lval }).collect()
+        move_first(&src, position)
+            .iter()
+            .map(|slot| unsafe { slot.value.lval })
+            .collect()
     }
 
     #[test]

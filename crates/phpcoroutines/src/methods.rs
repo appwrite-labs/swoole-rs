@@ -24,7 +24,7 @@ use swoole_rs_zend::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
         swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
-        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_object, zend_objects_new,
+        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_objects_new,
         zend_throw_exception_object, zval,
     },
 };
@@ -164,7 +164,7 @@ fn yield_(call: &Call) {
     call.set_bool(true);
 }
 
-unsafe extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
+extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
     set_yielded(host::cid(co), false);
     host::resume(co);
     true
@@ -206,8 +206,14 @@ impl Join {
         if !this.pending.is_empty() {
             return;
         }
-        let resume = Box::new((this.co, Rc::clone(&this.canceled)));
-        host::defer(join_resume, Box::into_raw(resume).cast());
+        let resume = JoinResume {
+            co: this.co,
+            canceled: Rc::clone(&this.canceled),
+        };
+        if swoole_rs_reactor::event_api::swoole_event_defer_value(resume).is_err() {
+            // Upstream dereferences `sw_reactor()` here unchecked.
+            std::process::abort();
+        }
     }
 
     /// Stop waiting for the contexts registered so far.
@@ -219,14 +225,22 @@ impl Join {
     }
 }
 
-unsafe extern "C-unwind" fn join_resume(data: *mut c_void) {
-    // SAFETY: the box `Join::closed` passed.
-    let resume = unsafe { Box::from_raw(data.cast::<(*mut c_void, Rc<Cell<bool>>)>()) };
-    let (co, canceled) = (resume.0, resume.1.get());
-    drop(resume);
-    if !canceled {
-        host::resume(co);
+/// The joiner's resume, deferred to the loop once its last joined coroutine closed.
+struct JoinResume {
+    co: *mut c_void,
+    canceled: Rc<Cell<bool>>,
+}
+
+impl swoole_rs_reactor::event_api::Deferred for JoinResume {
+    fn run(self) {
+        // The token goes before the resume, which may not return.
+        let (co, canceled) = (self.co, self.canceled.get());
+        drop(self);
+        if !canceled {
+            host::resume(co);
+        }
     }
+    fn dispose(self) {}
 }
 
 /// `Co::join(array $cid_array, float $timeout = -1)`.
@@ -392,7 +406,7 @@ fn set_time_limit(call: &Call) {
     call.set_bool(true);
 }
 
-unsafe extern "C-unwind" fn time_limit(cid: *mut c_void) {
+extern "C-unwind" fn time_limit(cid: *mut c_void) {
     let cid = c_long::try_from(cid.addr()).unwrap_or_default();
     if let Some(ctx) = context::by_cid(cid) {
         // Its timer has fired.
@@ -487,9 +501,7 @@ fn get_context(call: &Call) {
     }
     let object = if object.is_null() {
         // SAFETY: the return slot, with Swoole's registered context class.
-        unsafe { init_object(call.return_value(), classes::context_class()) };
-        // SAFETY: the new object.
-        let object = unsafe { swoole_rs_zend::value::obj_of(call.return_value()) };
+        let object = unsafe { init_object(call.return_value(), classes::context_class()) };
         // The context takes the object's first reference.
         ctx.set_context(object);
         object
@@ -640,9 +652,7 @@ fn list(call: &Call) {
     drop(cids);
     let iterator = classes::iterator();
     // SAFETY: the return slot, with Swoole's registered iterator class.
-    unsafe { init_object(call.return_value(), iterator) };
-    // SAFETY: the new object.
-    let object: *mut zend_object = unsafe { swoole_rs_zend::value::obj_of(call.return_value()) };
+    let object = unsafe { init_object(call.return_value(), iterator) };
     let constructor = iterator
         .wrapping_byte_add(mem::offset_of!(zend_class_entry, constructor))
         .cast();

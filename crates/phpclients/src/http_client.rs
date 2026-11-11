@@ -8,7 +8,7 @@ use crate::{
     http_native::{self as native, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
     native::{Co, Socket, swoole_rs_php_error, unconstructed},
-    socket::socket_of,
+    socket::Sock,
 };
 use libc::{c_char, c_int, c_void};
 use std::{
@@ -18,7 +18,6 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_error::strerror_with;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
@@ -74,10 +73,11 @@ static FEATURES: AtomicU32 = AtomicU32::new(0);
 static CLIENT: Class = Class::new();
 static EXCEPTION: Class = Class::new();
 
-/// `struct HttpClientObject { Client *client; zend_object std; }`.
+/// `struct HttpClientObject { Client *client; zend_object std; }`: zeroed,
+/// no client.
 #[repr(C)]
 pub(crate) struct Data {
-    client: *mut Client,
+    client: Option<Box<Client>>,
 }
 
 type ClientObject = Object<Data>;
@@ -187,19 +187,8 @@ fn features() -> u32 {
 }
 
 /// `swoole_strerror(code)`.
-fn strerror<'a>(code: c_int) -> &'a CStr {
-    extern "C" fn system(code: i32) -> *const c_char {
-        // SAFETY: a pure query; the text stays valid until the next call.
-        unsafe { libc::strerror(code) }
-    }
-    // Known and system messages are static; an unknown one is this thread's buffer.
-    let message = strerror_with(code, Some(system));
-    if message.is_null() {
-        c""
-    } else {
-        // SAFETY: a NUL-terminated message.
-        unsafe { CStr::from_ptr(message) }
-    }
+fn strerror(code: c_int) -> &'static CStr {
+    swoole_rs_phpruntime::strerror(code)
 }
 
 fn c_bytes(bytes: &[u8]) -> CString {
@@ -528,8 +517,8 @@ impl Client {
         if self.body.capacity() == 0 {
             self.body.reserve(BODY_SIZE);
         }
-        let object = match native::swoole_http_client_coro_create_socket(self.socket_type) {
-            Ok(object) => object,
+        let zsocket = match native::swoole_http_client_coro_create_socket(self.socket_type) {
+            Ok(zsocket) => zsocket,
             Err(error) => {
                 if !bailout::pending() {
                     self.set_error(error, strerror(error), CONNECT_FAILED);
@@ -537,16 +526,14 @@ impl Client {
                 return false;
             }
         };
-        // SAFETY: the conn takes the new object's reference.
-        let zsocket = unsafe { Owned::object(object) };
-        // SAFETY: the conn lives as long as the client; its old value is empty.
-        unsafe { (*self.conn).zsocket = zsocket };
-        // SAFETY: a live `Coroutine\Socket` object.
-        let socket = unsafe { socket_of(object) };
-        // SAFETY: the conn lives as long as the client.
-        unsafe { (*self.conn).socket = socket };
-        // SAFETY: the new socket, which the conn's object keeps live.
-        let socket = unsafe { Co::new(socket) };
+        let Some(socket) = Sock::of(&zsocket).and_then(Sock::co) else {
+            return false;
+        };
+        // SAFETY: the conn lives as long as the client, and nothing else
+        // borrows it; its old socket is empty.
+        let conn = unsafe { &mut *self.conn };
+        conn.zsocket = zsocket;
+        conn.socket = socket.as_ptr();
         if self.ssl && !socket.enable_ssl() {
             self.set_socket_error(socket, CONNECT_FAILED);
             self.close(true);
@@ -1519,12 +1506,7 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees a client object.
-    let data = unsafe { ClientObject::data(std) };
-    let client = std::mem::replace(&mut data.client, ptr::null_mut());
-    if !client.is_null() {
-        // SAFETY: the client the constructor boxed, dropped once.
-        drop(unsafe { Box::from_raw(client) });
-    }
+    drop(unsafe { ClientObject::data(std) }.client.take());
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
     bailout::finish();
@@ -1647,13 +1629,14 @@ fn this<'a>(call: &Call) -> &'a mut Data {
 
 /// `http_client_coro_get_client`: the constructed client; a fatal error if not.
 fn client<'a>(call: &Call) -> &'a mut Client {
-    let client = this(call).client;
-    if client.is_null() {
+    let data = this(call);
+    if data.client.is_none() {
         // SAFETY: a fatal error; it does not return.
         unsafe { unconstructed() };
     }
-    // SAFETY: a constructed client lives as long as its object.
-    unsafe { &mut *client }
+    data.client
+        .as_deref_mut()
+        .unwrap_or_else(|| unreachable!("a fatal error does not return"))
 }
 
 /// `__construct(string $host, int $port = 0, bool $ssl = false)`.
@@ -1665,7 +1648,7 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     let object = call.this();
-    if !this(call).client.is_null() {
+    if this(call).client.is_some() {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
@@ -1676,7 +1659,7 @@ fn construct(call: &Call) {
         call.throw(&EXCEPTION, c"host is empty", i64::from(libc::EINVAL));
         return call.set_bool(false);
     }
-    this(call).client = Box::into_raw(Client::new(object, host, port, ssl));
+    this(call).client = Some(Client::new(object, host, port, ssl));
 }
 
 fn destruct(_call: &Call) {}
@@ -1728,10 +1711,8 @@ fn set_array_property(call: &Call, name: &CStr) {
         return call.set_bool(false);
     };
     // SAFETY: an array argument the frame owns.
-    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array) };
-    if let Some(array) = call.value(1) {
-        props::this(call).value(name, array);
-    }
+    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array.as_ptr()) };
+    props::this(call).value(name, array);
     call.set_bool(true);
 }
 

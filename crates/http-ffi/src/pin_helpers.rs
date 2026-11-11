@@ -4,8 +4,7 @@
 //! `tests/modules/http/gate.cc`, `status_buffer_gate.cc` and `dispatch_gate.cc` compared.
 use crate::{
     HttpSpan, NATIVE_STATUS_CODES, swr_v1_http_boundary, swr_v1_http_method,
-    swr_v1_http_method_string, swr_v1_http_url_capacity, swr_v1_http_url_decode,
-    swr_v1_http_url_encode, swr_v2_http_status_message,
+    swr_v1_http_method_string, swr_v2_http_status_message,
 };
 use std::ffi::{CStr, c_char, c_int};
 
@@ -223,33 +222,20 @@ fn methods_match_the_pin() {
 }
 
 fn encode(input: &[u8]) -> Vec<u8> {
-    let (mut capacity, mut written) = (0, 0);
-    // SAFETY: `input` is initialized for its length; `capacity` is a local.
-    let status =
-        unsafe { swr_v1_http_url_capacity(input.as_ptr(), input.len(), Some(&mut capacity)) };
-    assert_eq!(status, 0);
-    let mut output = vec![0xa5; capacity];
-    // SAFETY: `output` holds `capacity` bytes.
-    let status = unsafe {
-        swr_v1_http_url_encode(
-            input.as_ptr(),
-            input.len(),
-            output.as_mut_ptr(),
-            capacity,
-            Some(&mut written),
-        )
-    };
-    assert_eq!((status, written + 1, output[written]), (0, capacity, 0));
-    output.truncate(written);
+    // SAFETY: `input` is initialized for its length.
+    let encoded = unsafe { crate::http_server::url_encode(input.as_ptr().cast(), input.len()) };
+    // SAFETY: a NUL-terminated copy from `sw_malloc`.
+    let output = unsafe { CStr::from_ptr(encoded) }.to_bytes().to_vec();
+    // SAFETY: from `sw_malloc`, not used again.
+    unsafe { swoole_rs_corebase::sw_free(encoded.cast()) };
     output
 }
 
 fn decode(input: &[u8]) -> Vec<u8> {
-    let (mut data, mut written) = ([input, b"\0"].concat(), 0);
+    let mut data = [input, b"\0"].concat();
     // SAFETY: `data` holds the input and its NUL.
-    let status =
-        unsafe { swr_v1_http_url_decode(data.as_mut_ptr(), input.len(), Some(&mut written)) };
-    assert_eq!((status, data[written]), (0, 0));
+    let written = unsafe { crate::http_server::url_decode(data.as_mut_ptr().cast(), input.len()) };
+    assert_eq!(data[written], 0);
     data.truncate(written);
     data
 }

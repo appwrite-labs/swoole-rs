@@ -1,11 +1,16 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
-use crate::{
-    native::{self, Socket},
-    session::IdMap,
-};
+use crate::session::IdMap;
 use libc::{c_char, c_int, c_void};
-use std::{collections::VecDeque, ffi::CStr, marker::PhantomData, ptr};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    ffi::CStr,
+    marker::PhantomData,
+    ptr,
+    rc::Rc,
+};
+use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
     Http2Settings, Http2WindowPlan,
     hpack::{Decoder, Encoder, Error},
@@ -17,13 +22,14 @@ use swoole_rs_http2::{
     sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
+use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString, string,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, add_assoc_stringl_ex,
         swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge, zend_class_entry,
-        zend_object, zend_object_handlers, zend_wrong_parameter_class_error, zval,
+        zend_object, zend_object_handlers, zend_wrong_parameter_class_error,
     },
     unset_property_deny,
 };
@@ -94,14 +100,14 @@ pub(crate) struct Data {
 type ClientObject = Object<Data>;
 type PlainObject = Object<()>;
 
-/// What the socket's close hook changes, allocated apart from the client.
-/// The hook drops the socket; the client releases what hangs off it
-/// (streams, queue, HPACK) the next time it looks (`reap`).
+/// What the socket's close hook changes, shared with the client. The hook
+/// drops the socket; the client releases what hangs off it (streams, queue,
+/// HPACK) the next time it looks (`reap`).
 struct Conn {
     object: *mut zend_object,
-    socket: Socket,
-    zsocket: Owned,
-    closed: bool,
+    socket: Cell<Option<Co>>,
+    zsocket: RefCell<Owned>,
+    closed: Cell<bool>,
 }
 
 impl Conn {
@@ -152,7 +158,7 @@ enum Frame {
 
 struct Client {
     object: *mut zend_object,
-    conn: *mut Conn,
+    conn: Rc<Conn>,
     host: Vec<u8>,
     port: i64,
     ssl: bool,
@@ -178,6 +184,20 @@ fn strerror<'a>(code: c_int) -> &'a CStr {
 
 fn ce() -> *mut zend_class_entry {
     CLIENT.entry()
+}
+
+/// `convert_to_type(host)`: the socket type and how much of the host goes.
+fn host_type(host: &[u8]) -> swoole_rs_reactor::HostType {
+    // SAFETY: the host's bytes.
+    unsafe { swoole_rs_reactor::swr_v1_socket_host_type(host.as_ptr(), host.len()) }
+}
+
+/// `php_swoole_socket_set` when `settings` is an array.
+fn apply(socket: Co, settings: &Value) {
+    if settings.array().is_some() {
+        // SAFETY: a live socket and array; 0 applies every setting.
+        unsafe { swoole_rs_phpclients::socket_settings(socket.this(), settings.as_ptr(), 0) };
+    }
 }
 
 fn frame_header(kind: u32, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
@@ -240,28 +260,25 @@ impl Headers {
 
 type Streams<T = Stream> = IdMap<u32, T>;
 
-/// The socket's close hook.
-/// # Safety
-/// `conn` is the live `Conn` the client registered.
-pub(crate) unsafe fn socket_dtor(conn: *mut c_void) {
-    // SAFETY: per the caller; no other `&mut` to the conn is live across the hook.
-    let conn = unsafe { &mut *conn.cast::<Conn>() };
-    conn.socket = ptr::null_mut();
-    conn.closed = true;
+/// The socket's close hook (`socket_dtor`), over the conn `connect` gave it.
+fn socket_closed(conn: &Conn) {
+    conn.socket.set(None);
+    conn.closed.set(true);
     conn.props().bool(c"connected", false);
     conn.props().null(c"socket");
     // Emptied before the socket object's reference goes.
-    drop(std::mem::take(&mut conn.zsocket));
+    let zsocket = conn.zsocket.take();
+    drop(zsocket);
 }
 
 impl Client {
     fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Box<Self> {
-        let conn = Box::into_raw(Box::new(Conn {
+        let conn = Rc::new(Conn {
             object,
-            socket: ptr::null_mut(),
-            zsocket: Owned::default(),
-            closed: false,
-        }));
+            socket: Cell::new(None),
+            zsocket: RefCell::default(),
+            closed: Cell::new(false),
+        });
         let local = sw_rs_http2_default_settings();
         Box::new(Self {
             object,
@@ -283,24 +300,13 @@ impl Client {
     }
 
     /// The live socket, read fresh: the close hook may have cleared it.
-    fn socket(&self) -> Socket {
-        // SAFETY: the conn lives as long as the client.
-        unsafe { (*self.conn).socket }
-    }
-
-    fn conn(&mut self) -> &mut Conn {
-        // SAFETY: as above; the close hook does not run while this is borrowed.
-        unsafe { &mut *self.conn }
-    }
-
-    fn zsocket(&self) -> &Value {
-        // SAFETY: as above.
-        unsafe { &(*self.conn).zsocket }
+    fn socket(&self) -> Option<Co> {
+        self.conn.socket.get()
     }
 
     /// `SW_CLIENT_PRESERVE_SOCKET`: a reference to the socket object for the call.
     fn hold_socket(&self) -> Owned {
-        self.zsocket().copy()
+        self.conn.zsocket.borrow().copy()
     }
 
     /// Writes under the client class.
@@ -311,7 +317,7 @@ impl Client {
 
     /// `socket_dtor`'s release of what hung off the closed socket.
     fn reap(&mut self) {
-        if !std::mem::take(&mut self.conn().closed) {
+        if !self.conn.closed.replace(false) {
             return;
         }
         self.queue.clear();
@@ -321,17 +327,14 @@ impl Client {
 
     /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
     fn update_error(&self, code: c_int, message: &[u8]) {
-        // SAFETY: a plain store into Swoole's thread error.
-        unsafe { native::swoole_http2_client_coro_last_error(code) };
+        swoole_rs_corebase::log::set_last_error(code);
         self.props().long(c"errCode", i64::from(code));
         self.props().bytes(c"errMsg", message);
     }
 
     /// `io_error`: the socket's errCode and errMsg.
-    fn io_error(&self, socket: Socket) {
-        let mut message: *const c_char = ptr::null();
-        // SAFETY: a live socket and a writable local.
-        let code = unsafe { native::swoole_http2_client_coro_error(socket, &mut message) };
+    fn io_error(&self, socket: Co) {
+        let (code, message) = (socket.err_code(), socket.err_msg());
         let message = if message.is_null() {
             &b""[..]
         } else {
@@ -342,14 +345,8 @@ impl Client {
     }
 
     fn is_available(&self) -> bool {
-        let socket = self.socket();
-        // SAFETY: a live socket.
-        if socket.is_null() || !unsafe { native::swoole_http2_client_coro_is_connected(socket) } {
-            // SAFETY: Swoole's static message for a known code.
-            let message =
-                unsafe { native::swoole_http2_client_coro_swoole_strerror(NO_CONNECTION) };
-            // SAFETY: as above.
-            let message = unsafe { CStr::from_ptr(message) };
+        if !self.socket().is_some_and(Co::is_connected) {
+            let message = swoole_rs_phpruntime::strerror(NO_CONNECTION);
             self.update_error(NO_CONNECTION, message.to_bytes());
             return false;
         }
@@ -358,54 +355,53 @@ impl Client {
 
     fn connect(&mut self) -> bool {
         self.reap();
-        if !self.socket().is_null() {
+        if self.socket().is_some() {
             self.update_error(libc::EISCONN, strerror(libc::EISCONN).to_bytes());
             return false;
         }
-        let (mut converted, mut socket, mut error) = (ptr::null_mut(), ptr::null_mut(), 0);
-        // SAFETY: the host bytes and writable locals.
-        let object = unsafe {
-            native::swoole_http2_client_coro_create_socket(
-                self.host.as_ptr().cast(),
-                self.host.len(),
-                &mut converted,
-                &mut socket,
-                &mut error,
-            )
-        };
-        if !converted.is_null() {
-            // SAFETY: the new string's reference.
-            self.host = unsafe { ZString::from_raw(converted) }.bytes().to_vec();
-        }
+        // `php_swoole_create_socket(convert_to_type(host))`.
+        let kind = host_type(&self.host);
+        self.host.drain(..kind.erase.min(self.host.len()));
+        let object = swoole_rs_phpclients::create_socket(kind.socket_type);
         if object.is_null() {
             if !swoole_rs_zend::bailout::pending() {
+                let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 self.update_error(error, strerror(error).to_bytes());
             }
             return false;
         }
+        // SAFETY: the new socket object, whose socket lives as long as it.
+        let socket = unsafe { swoole_rs_phpclients::socket_of(object) };
+        // SAFETY: as above; the conn's reference to the object keeps it live
+        // until the close hook clears this handle.
+        let socket = unsafe { Co::of(socket) };
         // SAFETY: the conn takes the new object's reference.
-        self.conn().zsocket = unsafe { Owned::object(object) };
-        self.conn().socket = socket;
-        // SAFETY: a live socket and the client's conn.
-        unsafe { native::swoole_http2_client_coro_setup(socket, self.conn.cast()) };
-        // SAFETY: a live socket.
-        if self.ssl && !unsafe { native::swoole_http2_client_coro_enable_ssl(socket) } {
+        *self.conn.zsocket.borrow_mut() = unsafe { Owned::object(object) };
+        self.conn.socket.set(Some(socket));
+        let conn = Rc::clone(&self.conn);
+        set_close_hook(socket, Box::new(move |_| socket_closed(&conn)));
+        socket.set_zero_copy(true);
+        if self.ssl && !socket.enable_ssl() {
             return self.connect_failed(socket);
         }
+        // HTTP/2 framing on the socket, then the settings.
+        socket.set_http2(true);
+        socket.set_open_length_check(true);
+        socket.with(|record| {
+            let protocol = &mut record.protocol;
+            // SW_HTTP2_FRAME_HEADER_SIZE.
+            protocol.package_length_size = 9;
+            protocol.package_length_offset = 0;
+            protocol.package_body_offset = 0;
+            protocol.get_package_length =
+                swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+        });
         // SAFETY: `$this` declares `setting`.
-        let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") }.as_ptr();
-        // SAFETY: a live socket and property.
-        unsafe { native::swoole_http2_client_coro_protocol(socket, settings) };
-        // SAFETY: a live socket and the host bytes.
-        let connected = unsafe {
-            native::swoole_http2_client_coro_connect(
-                socket,
-                self.host.as_ptr().cast(),
-                self.host.len(),
-                c_int::try_from(self.port).unwrap_or(-1),
-            )
-        };
-        if !connected {
+        apply(socket, unsafe {
+            swoole_rs_zend::property(self.object, c"setting")
+        });
+        let host = self.host.clone();
+        if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
             return self.connect_failed(socket);
         }
         self.stream_id = 1;
@@ -419,26 +415,27 @@ impl Client {
             self.close();
             return false;
         }
-        self.props().own().value(c"socket", self.zsocket());
+        self.props()
+            .own()
+            .value(c"socket", &self.conn.zsocket.borrow());
         self.props().bool(c"connected", true);
         true
     }
 
-    fn connect_failed(&mut self, socket: Socket) -> bool {
+    fn connect_failed(&mut self, socket: Co) -> bool {
         self.io_error(socket);
         self.close();
         false
     }
 
     fn close(&mut self) -> bool {
-        let socket = self.socket();
-        if socket.is_null() {
+        let Some(socket) = self.socket() else {
             self.update_error(libc::EBADF, strerror(libc::EBADF).to_bytes());
             return false;
-        }
+        };
         self.props().own().bool(c"connected", false);
-        // SAFETY: a live socket; its members are not read after a close.
-        if !unsafe { native::swoole_http2_client_coro_close(socket) } {
+        // Its members are not read after a close.
+        if !socket.close() {
             self.io_error(socket);
             return false;
         }
@@ -448,9 +445,10 @@ impl Client {
 
     /// `send`: directly, or queued behind a coroutine writing already.
     fn send(&mut self, data: &[u8]) -> bool {
-        let socket = self.socket();
-        // SAFETY: a live socket.
-        let bound = unsafe { native::swoole_http2_client_coro_write_bound(socket) };
+        let Some(socket) = self.socket() else {
+            return false;
+        };
+        let bound = socket.has_bound(WRITE);
         let (queued, limit) = if bound {
             (self.queue.len(), self.remote.max_concurrent_streams)
         } else {
@@ -459,14 +457,8 @@ impl Client {
         match sw_rs_http2_queue_action(u32::from(bound), queued, limit) {
             0 => {}
             2 => {
-                // SAFETY: a live socket; the message is static.
-                unsafe {
-                    native::swoole_http2_client_coro_set_error(
-                        socket,
-                        QUEUE_FULL,
-                        c"the send queue is full, try again later".as_ptr(),
-                    );
-                }
+                socket.set_err_code(QUEUE_FULL);
+                socket.set_err_msg(c"the send queue is full, try again later".as_ptr());
                 self.io_error(socket);
                 return false;
             }
@@ -491,12 +483,8 @@ impl Client {
         true
     }
 
-    fn send_all(socket: Socket, data: &[u8]) -> bool {
-        // SAFETY: a live socket and the bytes to send.
-        let sent = unsafe {
-            native::swoole_http2_client_coro_send_all(socket, data.as_ptr().cast(), data.len())
-        };
-        sw_rs_http2_send_complete(sent, data.len()) != 0
+    fn send_all(socket: Co, data: &[u8]) -> bool {
+        sw_rs_http2_send_complete(socket.send_all(data), data.len()) != 0
     }
 
     fn send_setting(&mut self) -> bool {
@@ -687,7 +675,7 @@ impl Client {
     }
 
     /// `write_data`: more of a pipeline request's body.
-    fn write_data(&mut self, id: u32, data: *mut zval, end: bool) -> bool {
+    fn write_data(&mut self, id: u32, data: Option<&Value>, end: bool) -> bool {
         let flags = self.streams.get(&id).map(|stream| stream.flags);
         if sw_rs_http2_write_allowed(u32::from(flags.is_some()), flags.unwrap_or(0)) == 0 {
             let message = format!("unable to found active pipeline stream#{id}");
@@ -695,8 +683,7 @@ impl Client {
             return false;
         }
         let flag = if end { FLAG_END_STREAM } else { 0 };
-        // SAFETY: the caller's live argument.
-        let Some(body) = unsafe { Value::from_ptr(data) }.and_then(body_bytes) else {
+        let Some(body) = data.and_then(body_bytes) else {
             return false;
         };
         if !self.send_data(id, body.bytes(), flag) {
@@ -712,12 +699,10 @@ impl Client {
     fn recv(&mut self, call: &Call, timeout: f64, pipeline_read: bool) {
         loop {
             self.reap();
-            if !self.is_available() {
+            let Some(socket) = self.socket().filter(|_| self.is_available()) else {
                 return call.set_bool(false);
-            }
-            let socket = self.socket();
-            // SAFETY: a live socket.
-            if unsafe { native::swoole_http2_client_coro_recv_packet(socket, timeout) } <= 0 {
+            };
+            if recv_packet(socket, timeout) <= 0 {
                 self.io_error(socket);
                 return call.set_bool(false);
             }
@@ -732,9 +717,9 @@ impl Client {
         }
     }
 
-    fn parse_frame(&mut self, call: &Call, socket: Socket, pipeline_read: bool) -> Frame {
-        // SAFETY: a live socket whose read buffer holds one whole frame.
-        let buffer = unsafe { native::swoole_http2_client_coro_read_buffer(socket) }.cast::<u8>();
+    fn parse_frame(&mut self, call: &Call, socket: Co, pipeline_read: bool) -> Frame {
+        // A received packet left the read buffer allocated, holding one whole frame.
+        let buffer = socket.with_buffer(false, |buffer| buffer.as_ptr());
         // SAFETY: the buffer holds at least the frame header.
         let head = unsafe { std::slice::from_raw_parts(buffer, FRAME_HEADER) };
         let facts = sw_rs_http2_decode_frame(head, self.last_stream_id, 1).unwrap_or_default();
@@ -805,8 +790,12 @@ impl Client {
             _ => {}
         }
         if !self.streams.contains_key(&id) {
-            // SAFETY: a notice with the stream id.
-            unsafe { native::swoole_http2_client_coro_log(0, id) };
+            // Upstream's "%d" of the unsigned stream id.
+            #[expect(clippy::cast_possible_wrap, reason = "printf's %d of a uint32_t")]
+            let id = id as i32;
+            swoole_rs_corebase::log::notice(format_args!(
+                "http2 stream#{id} belongs to an unknown type or it never registered"
+            ));
             return Frame::Continue;
         }
         if facts.action == ACTION_HEADERS {
@@ -894,8 +883,10 @@ impl Client {
         }
         if let Some(gzip) = &mut stream.gzip {
             let Some(output) = gzip.decode(payload) else {
-                // SAFETY: a warning.
-                unsafe { native::swoole_http2_client_coro_log(1, id) };
+                swoole_rs_corebase::log::warning(
+                    c"Client::parse_frame",
+                    format_args!("decompress failed"),
+                );
                 return Err(Frame::Fail);
             };
             stream.buffer.extend_from_slice(output);
@@ -1014,15 +1005,14 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        if !self.socket().is_null() {
+        if self.socket().is_some() {
             self.close();
         }
         self.reap();
         self.streams.clear();
-        // SAFETY: the conn the client allocated; the socket is closed or gone.
-        let mut conn = unsafe { Box::from_raw(self.conn) };
         // Emptied first, as the close hook does, in case releasing it runs the hook.
-        drop(std::mem::take(&mut conn.zsocket));
+        let zsocket = self.conn.zsocket.take();
+        drop(zsocket);
     }
 }
 
@@ -1170,14 +1160,11 @@ method_table! {
 }
 
 /// MINIT, as `php_swoole_http2_client_coro_minit` did.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
+pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
     // phphttp2's one MINIT entry also hands its server to phphttp.
     swoole_rs_phphttp::http2::register(&crate::server::HOOKS);
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
-    if let Err(error) = register(&minit, args.shortname) {
+    let minit = &args.minit;
+    if let Err(error) = register(minit, args.shortname) {
         error.defer();
         swoole_rs_zend::bailout::finish();
     }
@@ -1266,8 +1253,13 @@ fn this<'a>(call: &Call) -> &'a mut Data {
 fn client<'a>(call: &Call) -> &'a mut Client {
     let client = this(call).client;
     if client.is_null() {
-        // SAFETY: a fatal error; it does not return.
-        unsafe { native::swoole_http2_client_coro_unconstructed() };
+        // SAFETY: a fatal error; the frames it may longjmp across own nothing.
+        unsafe {
+            swoole_rs_corebase::fatal_error(
+                swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
+                c"must call constructor first",
+            );
+        };
     }
     // SAFETY: a constructed client lives as long as its object.
     let client = unsafe { &mut *client };
@@ -1313,11 +1305,11 @@ fn set(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: `$this` declares `setting`; the settings are a live array.
-    unsafe { swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings) };
-    let socket = client.socket();
-    if !socket.is_null() {
-        // SAFETY: a live socket and array.
-        unsafe { native::swoole_http2_client_coro_apply(socket, settings) };
+    unsafe {
+        swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings.as_ptr());
+    }
+    if let Some(socket) = client.socket() {
+        apply(socket, settings);
     }
     call.set_bool(true);
 }
@@ -1420,7 +1412,7 @@ fn write(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream's uint32_t stream id"
     )]
-    let result = client.write_data(id as u32, call.zval(2), end);
+    let result = client.write_data(id as u32, call.value(2), end);
     call.set_bool(result);
 }
 
@@ -1459,7 +1451,7 @@ fn is_stream_exist(call: &Call) {
         return call.set_bool(false);
     }
     let client = client(call);
-    if client.socket().is_null() {
+    if client.socket().is_none() {
         return call.set_bool(false);
     }
     if id == 0 {

@@ -40,7 +40,7 @@ mod state;
 mod websocket;
 
 pub use cookie::*;
-pub use header::response_rshutdown;
+pub use header::{decimal, response_rshutdown};
 pub use request::*;
 pub use response::*;
 pub use server::*;

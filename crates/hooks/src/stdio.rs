@@ -5,40 +5,48 @@
 //! lends the `io_uring` engine and the hooked sockets' constructors in [`Host`].
 //! The exports keep upstream's names: `swoole_coroutine_api.h` declares them.
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 use libc::{
     DIR, FILE, addrinfo, c_char, c_int, c_uint, c_void, dirent, hostent, mode_t, off_t, size_t,
     ssize_t, stat, statvfs,
 };
 
-/// Runs `job(context)` on the async pool and parks the coroutine until it is done;
-/// false if the pool refused it.
-pub type Offload = unsafe extern "C" fn(unsafe extern "C" fn(*mut c_void), *mut c_void) -> bool;
+/// Runs `job` on the async pool and parks the coroutine until it is done; false if
+/// the pool refused it.
+pub type Offload = fn(&mut (dyn FnMut() + Send)) -> bool;
 
-/// `call()` here without `offload`, else on the pool; `refused` if the pool refuses.
-///
-/// # Safety
-/// `offload` is native's `async`, valid in the current coroutine. `call` runs on a
-/// pool thread while this frame waits, so it may only touch what the caller lent.
-pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T, call: F) -> T {
-    struct Job<F, T> {
-        call: F,
-        result: Option<T>,
-    }
-    unsafe extern "C" fn run<F: FnMut() -> T, T>(job: *mut c_void) {
-        // SAFETY: `offloaded` passes its own `Job<F, T>`, alive until `offload` returns.
-        let job = unsafe { &mut *job.cast::<Job<F, T>>() };
-        job.result = Some((job.call)());
-    }
-    let mut call = call;
+/// `call()` here without `offload`, else on the pool while this frame waits;
+/// `refused` if the pool refuses.
+pub fn on_pool<T: Send>(
+    offload: Option<Offload>,
+    refused: T,
+    mut call: impl FnMut() -> T + Send,
+) -> T {
     let Some(offload) = offload else {
         return call();
     };
-    let mut job = Job { call, result: None };
-    // SAFETY: `run` matches `job`'s type; the caller passes native `async`.
-    unsafe { offload(run::<F, T>, (&raw mut job).cast()) };
-    job.result.unwrap_or(refused)
+    let mut result = None;
+    offload(&mut || result = Some(call()));
+    result.unwrap_or(refused)
+}
+
+/// [`on_pool`] for a `call` or result that isn't `Send`.
+///
+/// # Safety
+/// `call` may run, and make its result, on a pool thread: it only touches what the
+/// caller lent.
+pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T, call: F) -> T {
+    /// A value the caller lets cross to the pool thread.
+    struct Lent<T>(T);
+    // SAFETY: as the caller of `offloaded` promises.
+    unsafe impl<T> Send for Lent<T> {}
+    impl<F: FnMut() -> T, T> Lent<F> {
+        fn run(&mut self) -> Lent<T> {
+            Lent((self.0)())
+        }
+    }
+    let mut call = Lent(call);
+    on_pool(offload, Lent(refused), move || call.run()).0
 }
 
 /// The runtime the hooked functions use.
@@ -98,7 +106,7 @@ pub struct Host {
     pub uring_socket: bool,
 }
 
-static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
+static HOST: OnceLock<&'static Host> = OnceLock::new();
 
 /// [`NATIVE`] once native installs the [`Host`]: [`offload`] reads it here, so a crate
 /// that links hooks without the runtime (the PDO drivers' tests) never links it.
@@ -127,13 +135,12 @@ pub fn swr_v1_hook_install() {
 }
 
 fn set_host(host: &'static Host) {
-    HOST.store(std::ptr::from_ref(host).cast_mut(), Ordering::Release);
+    HOST.get_or_init(|| host);
     RUNTIME.get_or_init(|| &NATIVE);
 }
 
 pub(crate) fn host() -> Option<&'static Host> {
-    // SAFETY: `set_host` stores only a static table.
-    unsafe { HOST.load(Ordering::Acquire).as_ref() }
+    HOST.get().copied()
 }
 
 /// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
@@ -239,15 +246,10 @@ hooked! {
 }
 
 /// Hooked `close` of an fd that is no coroutine socket, on the pool (`offload`).
-///
-/// # Safety
-/// `offload` is native `async` or none.
 #[must_use]
-pub unsafe extern "C" fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
+pub fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
     // SAFETY: closing an fd touches no memory.
-    let call = || unsafe { libc::close(fd) };
-    // SAFETY: the caller passes native `async` or none.
-    unsafe { offloaded(offload, -1, call) }
+    on_pool(offload, -1, || unsafe { libc::close(fd) })
 }
 
 /// Hooked `sleep`: `System::sleep` (fatal outside a coroutine, as upstream).
@@ -344,24 +346,18 @@ pub(crate) mod tests {
     fn in_coroutine() -> bool {
         MODE.get() != Mode::Here
     }
-    unsafe extern "C" fn pool(
-        job: unsafe extern "C" fn(*mut c_void),
-        context: *mut c_void,
-    ) -> bool {
+    fn pool(job: &mut (dyn FnMut() + Send)) -> bool {
         OFFLOADED.set(OFFLOADED.get() + 1);
         match MODE.get() {
             Mode::Refuse => return false,
             // Only the resolver offloads outside a coroutine: run it here.
             Mode::Here => {
-                unsafe { job(context) };
+                job();
                 return true;
             }
             Mode::Pool => {}
         }
-        let context = context as usize;
-        std::thread::spawn(move || unsafe { job(context as *mut c_void) })
-            .join()
-            .unwrap();
+        std::thread::scope(|scope| scope.spawn(job).join().unwrap());
         true
     }
     fn sleep(seconds: f64) -> c_int {

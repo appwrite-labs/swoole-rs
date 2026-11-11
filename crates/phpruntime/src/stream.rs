@@ -18,22 +18,20 @@ use std::{
 };
 use swoole_rs_hooks::address::swr_v1_hooks_parse_address;
 use swoole_rs_zend::{
-    Call, E_WARNING, Message,
+    Array, Call, E_WARNING, Message, OwnedArray,
     bailout::Bailout,
     message, string,
     sys::{
-        IS_ARRAY, IS_NULL, PHP_STREAM_FLAG_AVOID_BLOCKING, add_assoc_bool_ex, add_assoc_long_ex,
+        IS_NULL, PHP_STREAM_FLAG_AVOID_BLOCKING, add_assoc_bool_ex, add_assoc_long_ex,
         add_assoc_string_ex, add_assoc_zval_ex, add_next_index_resource, php_stream,
         php_stream_context, php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param,
         php_stream_xport_param, sockaddr, swr_zend_array_init, swr_zend_efree, swr_zend_is_true,
         swr_zend_stream_buffered, swr_zend_stream_context, swr_zend_stream_context_options,
         swr_zend_stream_default_timeout, swr_zend_stream_expose, swr_zend_stream_option,
         swr_zend_stream_progress, swr_zend_stream_set_option, swr_zend_stream_share_context,
-        swr_zend_stream_timeval, swr_zend_stream_vm_active, swr_zval_try_addref, timeval,
-        zend_array, zend_hash_next_index_insert, zend_hash_str_find, zend_string, zval,
-        zval_ptr_dtor,
+        swr_zend_stream_timeval, swr_zend_stream_vm_active, timeval, zend_hash_next_index_insert,
+        zend_string, zval, zval_ptr_dtor,
     },
-    type_of,
     value::{empty_string, table},
 };
 
@@ -240,14 +238,6 @@ fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Optio
 fn option_true(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> bool {
     // SAFETY: a live option value.
     context_option(stream, wrapper, name).is_some_and(|value| unsafe { swr_zend_is_true(value) })
-}
-
-/// `php_swoole_array_get_value_ex`: the entry, unless missing or null.
-fn find(array: *mut zend_array, key: &str) -> Option<*mut zval> {
-    // SAFETY: a live array; the key is read for the call.
-    let value = unsafe { zend_hash_str_find(array, key.as_ptr().cast(), key.len()) };
-    // SAFETY: a live entry.
-    (!value.is_null() && unsafe { type_of(value) } != IS_NULL).then_some(value)
 }
 
 /// Bytes up to the first NUL, as C reads a string.
@@ -1028,36 +1018,22 @@ const SSL_ALIASES: [(&str, &str); 10] = [
 fn ssl_set_options(socket: &Socket, context: *mut php_stream_context) -> Result<bool, Bailout> {
     // SAFETY: null or a live context.
     let options = unsafe { swr_zend_stream_context_options(context) };
-    if options.is_null() || !socket.ssl_enabled() {
-        return Ok(true);
-    }
-    let Some(ssl) = find(options, "ssl") else {
+    // SAFETY: null or the context's live options, which no PHP code changes
+    // while this runs.
+    let options = unsafe { Array::from_ptr(options) };
+    // `php_swoole_array_get_value_ex`: present and not null.
+    let ssl = options.and_then(|options| options.get(b"ssl")?.array());
+    let Some(ssl) = ssl.filter(|_| socket.ssl_enabled()) else {
         return Ok(true);
     };
-    // SAFETY: a live entry.
-    if unsafe { type_of(ssl) } != IS_ARRAY {
-        return Ok(true);
-    }
-    // SAFETY: an array zval.
-    let ssl = unsafe { table(ssl) };
-    let mut aliases = swoole_rs_zend::UNDEF;
-    // SAFETY: an undefined zval, initialised as an array.
-    unsafe { swr_zend_array_init(&raw mut aliases) };
+    let mut aliases = OwnedArray::default();
     for (name, alias) in SSL_ALIASES {
-        if let Some(value) = find(ssl, name) {
-            // SAFETY: a live value; the alias array takes this reference.
-            unsafe { swr_zval_try_addref(value) };
-            // SAFETY: as above.
-            unsafe {
-                add_assoc_zval_ex(&raw mut aliases, alias.as_ptr().cast(), alias.len(), value);
-            };
+        if let Some(value) = ssl.get(name.as_bytes()) {
+            aliases.insert(alias.as_bytes(), value.copy());
         }
     }
     // SAFETY: a live array.
-    let result = unsafe { socket.set_ssl(&raw mut aliases) };
-    // SAFETY: ours.
-    unsafe { zval_ptr_dtor(&raw mut aliases) };
-    result
+    unsafe { socket.set_ssl(aliases.as_ptr()) }
 }
 
 /// The complete factory: PHP's original transport outside a coroutine, otherwise
