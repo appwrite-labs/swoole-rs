@@ -24,9 +24,8 @@ use swoole_rs_process::{
     process_pool::{PoolRecord, SW_IPC_MAX_SIZE},
     task_file::{self, Packed},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks},
-    workers::entry::finish,
 };
-use swoole_rs_server::view;
+use swoole_rs_server::{task_worker_ops::finish, view};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Owned, Value,
@@ -357,7 +356,7 @@ pub(crate) fn decode(task: Packed<'_>, out: *mut zval) -> Result<bool, Bailout> 
 /// `php_swoole_server_task_finish`: send `data` as the result of `req` (null:
 /// this worker's current task).
 pub(crate) fn finish_task(
-    server: *mut c_void,
+    server: view::Server<'_>,
     data: &Value,
     req: *mut c_void,
 ) -> Result<bool, Bailout> {
@@ -367,8 +366,8 @@ pub(crate) fn finish_task(
         } else {
             0
         };
-        // SAFETY: a live server, the payload's bytes and the task, or null.
-        unsafe { finish(server, payload.as_ptr().cast(), payload.len(), flags, req) }
+        // SAFETY: the task, or null.
+        unsafe { finish(server, payload, flags, req) }
     })?;
     Ok(finished.unwrap_or(false))
 }
@@ -779,7 +778,7 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
     }
     let outcome = outcome.and_then(|()| {
         if !retval.is_null() {
-            finish_task(server.raw(), &retval, task.as_ptr().cast_mut())?;
+            finish_task(server, &retval, task.as_ptr().cast_mut())?;
         }
         Ok(())
     });

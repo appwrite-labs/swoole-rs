@@ -738,10 +738,10 @@ fn reload(call: &Call) {
     let Ok(only_task_workers) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    call.set_bool(unsafe {
-        swoole_rs_process::workers::entry::reload(serv.raw(), !only_task_workers)
-    });
+    call.set_bool(swoole_rs_server::manager_ops::reload(
+        serv,
+        !only_task_workers,
+    ));
 }
 
 /// `microtime()`: the wall clock in seconds.
