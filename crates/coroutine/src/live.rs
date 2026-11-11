@@ -120,80 +120,46 @@ fn state_label(state: i32) -> Option<&'static core::ffi::CStr> {
     }
 }
 
-macro_rules! operation {
-    ($(#[$doc:meta])* fn $name:ident($s:ident: $sty:ty $(, $arg:ident: $ty:ty)*) $(-> $ret:ty)? $body:block) => {
-        $(#[$doc])*
-        /// # Safety
-        /// The scheduler is live and not borrowed elsewhere for the call; other
-        /// pointer arguments are live.
-        pub unsafe extern "C" fn $name($s: $sty $(, $arg: $ty)*) $(-> $ret)? $body
-    };
-}
-
-operation! {
+impl Scheduler {
     /// `Coroutine::get_by_cid`: the facade of live coroutine `cid`, or null.
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_get(s: *const Scheduler, cid: c_long) -> *mut c_void {
-        // SAFETY: the caller lends the scheduler.
-        let s = unsafe { &*s };
-        s.live().and_then(|live| live.get(cid)).map_or(ptr::null_mut(), native)
+    #[must_use]
+    pub fn get(&self, cid: c_long) -> *mut c_void {
+        self.live()
+            .and_then(|live| live.get(cid))
+            .map_or(ptr::null_mut(), native)
     }
-}
 
-operation! {
-    /// `Coroutine::count`.
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_count(s: *const Scheduler) -> usize {
-        // SAFETY: the caller lends the scheduler.
-        unsafe { (*s).count() }
-    }
-}
-
-operation! {
     /// The newest live coroutine older than `before` (`LONG_MAX` starts a walk):
-    /// its id in `*cid` and its facade, or null when none is left.
-    fn swr_v1_coroutine_older(s: *const Scheduler, before: c_long, cid: *mut c_long) -> *mut c_void {
-        // SAFETY: the caller lends the scheduler.
-        let Some((id, co)) = (unsafe { (*s).older(before) }) else {
-            return ptr::null_mut();
-        };
-        // SAFETY: the caller lends `cid`.
-        unsafe { *cid = id };
-        native(co)
+    /// its id and its facade.
+    #[must_use]
+    pub fn older_native(&self, before: c_long) -> Option<(c_long, *mut c_void)> {
+        self.older(before).map(|(cid, co)| (cid, native(co)))
     }
-}
 
-operation! {
     /// `swoole_coroutine_iterator_reset`.
-    fn swr_v1_coroutine_iterator_reset(s: *mut Scheduler) {
-        // SAFETY: the caller lends the scheduler.
-        unsafe { (*s).cursor = c_long::MAX };
+    pub fn iterator_reset(&mut self) {
+        self.cursor = c_long::MAX;
     }
-}
 
-operation! {
     /// `swoole_coroutine_iterator_each`: the walk's next facade, or null at its end.
-    fn swr_v1_coroutine_iterator_each(s: *mut Scheduler) -> *mut c_void {
-        // SAFETY: the caller lends the scheduler.
-        let s = unsafe { &mut *s };
-        let Some((cid, co)) = s.older(s.cursor) else {
-            s.cursor = c_long::MIN;
+    pub fn iterator_each(&mut self) -> *mut c_void {
+        let Some((cid, co)) = self.older(self.cursor) else {
+            self.cursor = c_long::MIN;
             return ptr::null_mut();
         };
-        s.cursor = cid;
+        self.cursor = cid;
         native(co)
     }
-}
 
-operation! {
     /// `Coroutine::print_list`: one `Coroutine\t<cid>\t<state>` line per live
     /// coroutine on `out` (Swoole's stdout stream); aborts on a state outside the
-    /// four. `out` is an open stream.
-    fn swr_v1_coroutine_print_list(s: *const Scheduler, out: *mut libc::FILE) {
-        // SAFETY: the caller lends the scheduler.
-        let s = unsafe { &*s };
+    /// four.
+    ///
+    /// # Safety
+    /// `out` is an open stream.
+    pub unsafe fn print_list(&self, out: *mut libc::FILE) {
         let mut before = c_long::MAX;
-        while let Some((cid, co)) = s.older(before) {
+        while let Some((cid, co)) = self.older(before) {
             before = cid;
             // SAFETY: registered coroutines are live.
             let state = unsafe { (*co).state };
@@ -229,34 +195,33 @@ mod tests {
         let mut c = coroutine(0xc0, STATE_INIT);
         // SAFETY: the scheduler and coroutines live on this frame.
         unsafe {
-            assert_eq!(swr_v1_coroutine_count(sp), 0);
-            assert!(swr_v1_coroutine_get(sp, 1).is_null());
+            assert_eq!((*sp).count(), 0);
+            assert!((*sp).get(1).is_null());
             (*sp).insert(1, &raw mut a);
             (*sp).insert(2, &raw mut b);
             (*sp).insert(3, &raw mut c);
-            assert_eq!(swr_v1_coroutine_count(sp), 3);
-            assert_eq!(swr_v1_coroutine_get(sp, 2) as usize, 0xb0);
-            assert!(swr_v1_coroutine_get(sp, 4).is_null());
+            assert_eq!((*sp).count(), 3);
+            assert_eq!((*sp).get(2) as usize, 0xb0);
+            assert!((*sp).get(4).is_null());
 
-            let mut cid = 0;
-            let first = swr_v1_coroutine_older(sp, c_long::MAX, &raw mut cid);
+            let (cid, first) = (*sp).older_native(c_long::MAX).unwrap();
             assert_eq!((first as usize, cid), (0xc0, 3));
-            let next = swr_v1_coroutine_older(sp, cid, &raw mut cid);
+            let (cid, next) = (*sp).older_native(cid).unwrap();
             assert_eq!((next as usize, cid), (0xb0, 2));
 
             (*sp).remove(2);
-            swr_v1_coroutine_iterator_reset(sp);
-            assert_eq!(swr_v1_coroutine_iterator_each(sp) as usize, 0xc0);
-            assert_eq!(swr_v1_coroutine_iterator_each(sp) as usize, 0xa0);
-            assert!(swr_v1_coroutine_iterator_each(sp).is_null());
-            assert!(swr_v1_coroutine_iterator_each(sp).is_null());
-            assert!(swr_v1_coroutine_older(sp, 1, &raw mut cid).is_null());
+            (*sp).iterator_reset();
+            assert_eq!((*sp).iterator_each() as usize, 0xc0);
+            assert_eq!((*sp).iterator_each() as usize, 0xa0);
+            assert!((*sp).iterator_each().is_null());
+            assert!((*sp).iterator_each().is_null());
+            assert!((*sp).older_native(1).is_none());
 
             (*sp).release_live();
             assert!(!(*sp).live.is_null(), "kept while coroutines are live");
             (*sp).remove(1);
             (*sp).remove(3);
-            assert_eq!(swr_v1_coroutine_count(sp), 0);
+            assert_eq!((*sp).count(), 0);
             (*sp).release_live();
             assert!((*sp).live.is_null());
         }
@@ -274,7 +239,7 @@ mod tests {
         // SAFETY: a fresh temporary stream, read back and closed here.
         let n = unsafe {
             let out = libc::tmpfile();
-            swr_v1_coroutine_print_list(&raw const s, out);
+            s.print_list(out);
             libc::rewind(out);
             let n = libc::fread(text.as_mut_ptr().cast(), 1, text.len(), out);
             libc::fclose(out);

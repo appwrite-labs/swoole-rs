@@ -7,7 +7,6 @@
 //! callback that sets a later key is seen, one it erases is not, and an earlier key it
 //! sets waits for the next walk.
 use crate::reactor_state::ReactorState;
-use crate::reactor_upstream::prepared;
 use std::ffi::{c_int, c_void};
 
 /// An end callback a caller sets (`Reactor::set_end_callback`).
@@ -119,8 +118,10 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
 pub(crate) unsafe fn execute_end(owner: *mut ReactorState, timed_out: bool) {
     // SAFETY: as the caller promises.
     unsafe { (*owner).fields.timed_out = timed_out };
-    // SAFETY: as above; each borrow ends before a callback runs.
-    let fields = unsafe { &raw mut (*owner).fields };
+    // Its fields' address, without a borrow: each borrow ends before a callback runs.
+    let fields = owner
+        .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
+        .cast::<crate::ReactorFields>();
     for slot in 0..END_SLOTS {
         // SAFETY: as above; the copy is read before the callback runs.
         let Some(end) = (unsafe { (*owner).callbacks.end.get(slot).copied().flatten() }) else {
@@ -199,12 +200,7 @@ pub(crate) unsafe fn if_exit(owner: *mut ReactorState) -> bool {
 
 /// The thread's reactor state, if it has a reactor.
 fn current() -> Option<&'static mut ReactorState> {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    if reactor.is_null() {
-        return None;
-    }
-    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
-    let owner = unsafe { prepared(reactor) }.owner;
+    let owner = crate::event_api::current_prepared()?.owner;
     // SAFETY: the live state; each caller's borrow ends before any callback runs.
     unsafe { owner.as_mut() }
 }
@@ -281,8 +277,7 @@ pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c
     unsafe(export_name = "_ZN6swoole7Reactor7if_exitEv")
 )]
 pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { prepared(reactor) }.owner;
+    let owner = reactor.cast::<ReactorState>();
     // SAFETY: the live reactor's state.
     unsafe { if_exit(owner) }
 }
@@ -298,14 +293,12 @@ pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
 )]
 pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
     fn begin(reactor: *mut c_void) {
-        // SAFETY: the waiting reactor.
-        let fields = unsafe { prepared(reactor) }.fields;
+        let fields = crate::ReactorPrepared::of(reactor).fields;
         // SAFETY: its fields; a single read.
         run_task(unsafe { (*fields).future_task });
     }
     fn end(reactor: *mut c_void, timed_out: bool) {
-        // SAFETY: the waiting reactor.
-        let owner = unsafe { prepared(reactor) }.owner;
+        let owner = reactor.cast::<ReactorState>();
         // SAFETY: its state, which no reference holds.
         unsafe { execute_end(owner, timed_out) };
     }
@@ -314,8 +307,7 @@ pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
         begin,
         end,
     };
-    // SAFETY: as the caller promises.
-    let owner = unsafe { prepared(reactor) }.owner;
+    let owner = reactor.cast::<ReactorState>();
     // SAFETY: the live reactor's state, with an open backend.
     if unsafe { crate::wait_loop::wait(owner, &ops) } < 0 {
         -1

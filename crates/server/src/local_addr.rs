@@ -198,9 +198,8 @@ pub unsafe extern "C" fn get_local_addr(
             conn.local_addr_index,
         );
     }
-    let port = serv.port_by_server_fd(conn.server_fd);
-    // SAFETY: the connection's live port.
-    unsafe { view::port(port) }.host().data.cast()
+    serv.port_of_server_fd(conn.server_fd)
+        .map_or(core::ptr::null(), |port| port.host().data.cast())
 }
 
 #[cfg(test)]

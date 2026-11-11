@@ -18,7 +18,10 @@ if (!getenv('SWR_CLIENT')) {
         $child = proc_open(['/bin/sh', '-c', 'ulimit -n 64 && exec "$@"' . ($sanitizer ? ' 2>/dev/null' : ''), 'sh', ...$argv],
                            [], $pipes, null,
                            $sanitizer + getenv() + ['SWR_CLIENT' => $kind]);
-        echo "$kind exit = ", proc_close($child), "\n";
+        // The child shares this stdout: the status prints once it has exited, after
+        // everything it printed.
+        $status = proc_close($child);
+        echo "$kind exit = $status\n";
     }
     exit;
 }

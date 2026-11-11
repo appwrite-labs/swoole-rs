@@ -334,8 +334,7 @@ fn socket_info(msg: &[u8]) -> Json {
 
 /// `std::this_thread::get_id()` as the C++ library prints it.
 fn thread_id() -> String {
-    // SAFETY: no preconditions.
-    let thread = unsafe { libc::pthread_self() };
+    let thread = crate::reactor_ops::pthread_self();
     #[cfg(target_vendor = "apple")]
     return format!("{thread:#x}");
     // musl's pthread_t is a pointer, which libstdc++ prints as one.

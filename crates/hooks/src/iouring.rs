@@ -41,14 +41,14 @@ pub(crate) static HOST: Host = Host {
     current: crate::wait_event::native::current,
     instance,
     suspend,
-    resume,
-    event_running,
+    resume: swoole_rs_coroutine::resume,
+    event_running: swoole_event_is_running,
     submit_failed,
     timeout_full,
 };
 
 /// `Iouring::get_instance()->engine`, creating the instance on first use.
-unsafe extern "C" fn instance() -> *mut Uring {
+fn instance() -> *mut Uring {
     let mut iouring = INSTANCE.get();
     if iouring.is_null() {
         if !swoole_event_is_available() {
@@ -65,29 +65,22 @@ unsafe extern "C" fn instance() -> *mut Uring {
 }
 
 /// `co->yield(&cancel_fn)`, where cancelling cancels `event`'s request.
-unsafe extern "C" fn suspend(co: *mut c_void, event: *mut c_void) {
-    unsafe extern "C-unwind" fn cancel(_co: *mut c_void, event: *mut c_void) -> bool {
-        // SAFETY: the event stays suspended in its operation while its coroutine is.
-        unsafe { uring::cancel(&HOST, event) }
+///
+/// # Safety
+/// As `swoole_rs_coroutine::yield_with_cancel`: `co` is the running coroutine.
+unsafe fn suspend(co: *mut c_void, event: *mut c_void) {
+    extern "C-unwind" fn cancel(_co: *mut c_void, event: *mut c_void) -> bool {
+        uring::cancel(&HOST, event)
     }
     // SAFETY: the current coroutine, suspended in `event`'s operation.
     unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, event) };
 }
 
-unsafe extern "C" fn resume(co: *mut c_void) {
-    // SAFETY: a coroutine suspended in a request.
-    unsafe { swoole_rs_coroutine::resume(co) };
-}
-
-unsafe extern "C" fn event_running() -> bool {
-    swoole_event_is_running()
-}
-
-unsafe extern "C" fn submit_failed() {
+fn submit_failed() {
     log::sys_error(c"Iouring::submit", format_args!("io_uring_submit() failed"));
 }
 
-unsafe extern "C" fn timeout_full(ring_fd: c_int) {
+fn timeout_full(ring_fd: c_int) {
     log::warning(
         c"Iouring::dispatch",
         format_args!("timeout setting failed, the iouring queue[{ring_fd}] is full"),

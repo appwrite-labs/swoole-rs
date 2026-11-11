@@ -89,22 +89,19 @@ thread_local! {
 /// succeeds and the socket leaves the map, -1 when it fails, 1 (errno `ENOTSOCK`)
 /// when `fd` has no socket. `delete` frees each removed socket after the
 /// outermost close on this thread returns, so no close still running uses a
-/// freed one.
-///
-/// # Safety
-/// `close` and `delete` act on live sockets from this map.
-pub unsafe fn close(
+/// freed one: `close` gets the socket while the map holds it, and `delete_socket`
+/// once it is removed and no close still running uses it.
+pub fn close(
     fd: c_int,
-    close: unsafe extern "C" fn(*mut c_void) -> bool,
-    delete_socket: unsafe extern "C" fn(*mut c_void),
+    close: impl FnOnce(*mut c_void) -> bool,
+    mut delete_socket: impl FnMut(*mut c_void),
 ) -> c_int {
     let socket = get(fd);
     if socket.is_null() {
         return 1;
     }
     CLOSING.with_borrow_mut(|(depth, _)| *depth += 1);
-    // SAFETY: the socket is live: nothing deletes it before this close returns.
-    let closed = unsafe { close(socket) };
+    let closed = close(socket);
     let removed = if closed {
         remove(fd)
     } else {
@@ -122,8 +119,7 @@ pub unsafe fn close(
         }
     });
     for socket in doomed {
-        // SAFETY: removed from the map and used by no close still running.
-        unsafe { delete_socket(socket) };
+        delete_socket(socket);
     }
     if closed { 0 } else { -1 }
 }
@@ -170,21 +166,21 @@ mod tests {
         LOG.with_borrow_mut(|log| log.push(event.to_owned()));
     }
 
-    unsafe extern "C" fn delete(socket: *mut c_void) {
+    fn delete(socket: *mut c_void) {
         log(&format!("delete {}", socket as usize));
     }
 
     /// The cancelled reader's close, which succeeds.
-    unsafe extern "C" fn inner_close(_: *mut c_void) -> bool {
+    fn inner_close(_: *mut c_void) -> bool {
         log("inner close");
         true
     }
 
     /// The outer close cancels the reader, which closes the fd from inside it, then
     /// fails with close-wait while still holding the socket.
-    unsafe extern "C" fn outer_close(_: *mut c_void) -> bool {
+    fn outer_close(_: *mut c_void) -> bool {
         log("outer close");
-        assert_eq!(unsafe { close(NESTED, inner_close, delete) }, 0);
+        assert_eq!(close(NESTED, inner_close, delete), 0);
         assert!(!exists(NESTED));
         log("outer returns");
         false
@@ -193,12 +189,12 @@ mod tests {
     #[test]
     fn nested_close_defers_the_delete() {
         assert!(insert(NESTED, 8usize as *mut c_void, true).is_null());
-        assert_eq!(unsafe { close(NESTED, outer_close, delete) }, -1);
+        assert_eq!(close(NESTED, outer_close, delete), -1);
         assert_eq!(
             LOG.with_borrow(Clone::clone),
             ["outer close", "inner close", "outer returns", "delete 8"]
         );
-        assert_eq!(unsafe { close(NESTED, outer_close, delete) }, 1);
+        assert_eq!(close(NESTED, outer_close, delete), 1);
         assert_eq!(errno(), libc::ENOTSOCK);
     }
 }

@@ -108,10 +108,7 @@ impl Context {
     }
     /// The server's `(Server *)` callback `index`, when set.
     fn call_server(&self, index: u32) -> u64 {
-        if let Some(slot) = self.state().callbacks.slot(index) {
-            // SAFETY: the manager and reload callbacks take the server.
-            unsafe { slot.call_server(self.serv) };
-        }
+        self.state().callbacks.call_server(index, self.server());
         0
     }
     /// Runs thread-mode `operation` with `arg` over this context.
@@ -243,11 +240,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CREATE_MESSAGE_BUS => {
-            // SAFETY: the started server's shared counters.
-            let counter = unsafe { view::Server::from_raw(serv) }
-                .counters()
-                .pipe_packet_msg_id
-                .as_ptr();
+            let counter = ctx.server().counters().pipe_packet_msg_id.as_ptr();
             let bus = pool_native::new_bus(counter.cast());
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
@@ -300,12 +293,9 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
     let port = || {
-        let ports = ctx.server().ports();
-        let port = usize::try_from(arg)
-            .ok()
-            .and_then(|i| ports.get(i).copied())?;
-        // SAFETY: one of the server's live ports.
-        Some((port, unsafe { view::port(port) }))
+        let index = usize::try_from(arg).ok()?;
+        let config = ctx.state().tables_ref().port_config(index)?;
+        Some((ctx.server().port_at(index), config))
     };
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
@@ -413,8 +403,7 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
         OP_GET_WORKER => {
             let id = u16::try_from(arg).ok()?;
-            // SAFETY: the live server.
-            ctx.worker = unsafe { view::Server::from_raw(serv) }.worker(id);
+            ctx.worker = ctx.server().worker(id);
             ctx.worker.addr() as u64
         }
         OP_KILL_WORKER => {
