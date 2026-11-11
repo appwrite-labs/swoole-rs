@@ -120,28 +120,17 @@ fn pick(characters: &[u8], byte: u8) -> u8 {
     characters.get(index).copied().unwrap_or_default()
 }
 
-// libc declares getentropy for glibc but not musl, which has had it since 1.1.20.
-#[cfg(target_env = "musl")]
-unsafe extern "C" {
-    fn getentropy(buffer: *mut libc::c_void, length: libc::size_t) -> libc::c_int;
-}
-#[cfg(not(target_env = "musl"))]
-use libc::getentropy;
-
+/// `out` from the system CSPRNG; any part it leaves unfilled comes from the
+/// clock rather than stay a predictable zero token.
 fn fill_random(out: &mut [u8]) {
-    for chunk in out.chunks_mut(256) {
-        // SAFETY: a writable buffer of at most 256 bytes, getentropy's limit.
-        let failed = unsafe { getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0;
-        if failed {
-            // Fall back to the clock rather than leave a predictable zero token.
-            let seed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |time| time.as_nanos());
-            let seed = seed.to_le_bytes();
-            for ((index, byte), seed) in chunk.iter_mut().enumerate().zip(seed.iter().cycle()) {
-                *byte = seed ^ u8::try_from(index & 0xff).unwrap_or(0);
-            }
-        }
+    let filled = swoole_rs_corebase::random_bytes(out);
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos())
+        .to_le_bytes();
+    let rest = out.iter_mut().enumerate().skip(filled);
+    for ((index, byte), seed) in rest.zip(seed.iter().cycle()) {
+        *byte = seed ^ u8::try_from(index & 0xff).unwrap_or(0);
     }
 }
 
