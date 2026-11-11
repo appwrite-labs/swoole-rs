@@ -24,10 +24,8 @@ pub unsafe fn prepared(reactor: *const c_void) -> ReactorPrepared {
 /// `reactor` is a live `Reactor` and `event` an event its handler accepts.
 pub unsafe fn trigger_close_event(reactor: *mut c_void, event: *mut c_void) -> c_int {
     let handlers = ReactorPrepared::of(reactor).handlers;
-    // SAFETY: the live reactor's handler tables.
-    let slot = crate::swr_v1_reactor_handlers_default(unsafe { &*handlers }, 2);
-    // SAFETY: as above.
-    let Some(handler) = (unsafe { *slot }) else {
+    // SAFETY: the live reactor's handler tables; a copy of the error default.
+    let Some(handler) = (unsafe { (*handlers).defaults[1] }) else {
         return -1;
     };
     // SAFETY: as the caller promises, the live reactor on its thread.

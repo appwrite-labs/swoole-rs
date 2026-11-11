@@ -227,7 +227,7 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
             offset: 0,
             str: core::ptr::null_mut(),
         },
-        protocol: socket.with(|record| record.protocol),
+        protocol: socket.protocol(),
         length_check: socket.open_length_check(),
         eof_check: socket.open_eof_check(),
     };
