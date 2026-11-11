@@ -1,5 +1,5 @@
 //! `swoole_module_entry`, which `get_module()` hands Zend (through crates/ffi's
-//! `swr_v1_phpswoole_module`, with the families above this crate), with its
+//! `phpswoole_module`, with the families above this crate), with its
 //! dependencies, and the tail of `SwooleG.fatal_error`.
 use crate::{constants, info, module, optional, table};
 use std::{

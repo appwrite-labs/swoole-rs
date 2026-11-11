@@ -334,7 +334,6 @@ pub(crate) mod native {
         unsafe { swr_v1_timer_add_plain_sec(timeout, false, super::swr_v1_hook_poll_timeout, task) }
     }
 
-    /// A one-shot timer calling `callback(data)` after `timeout` seconds, or null.
     pub(crate) fn timer_del(timer: *mut c_void) {
         // SAFETY: the task's pending timer.
         unsafe { swoole_timer_del(timer.cast()) };

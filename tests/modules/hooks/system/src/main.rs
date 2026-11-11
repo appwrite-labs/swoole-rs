@@ -510,11 +510,16 @@ fn test_getaddrinfo(
     let ip_list = getaddrinfo(host, family, kind, protocol, service, timeout);
     assert!(!ip_list.is_empty());
     for ip in &ip_list {
-        let parsed: std::net::IpAddr = ip.parse().unwrap();
-        assert_eq!(parsed.is_ipv4(), family == AF_INET);
-        if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        assert!(dns::verify_ip(family, ip));
+        let kind = if family == AF_INET {
+            socket::SW_SOCK_TCP
+        } else {
+            socket::SW_SOCK_TCP6
+        };
+        let c = client::Client::new(kind, false).expect("created");
+        if !socket::is_github_ci() {
             println!("{ip}");
-            assert!(std::net::TcpStream::connect((parsed, 443)).is_ok());
+            assert_eq!(c.connect(ip, 443, -1.0, 0), 0);
         }
     }
 }

@@ -25,7 +25,7 @@ Optional PHP dependencies use repeated `--php-extension NAME`. Registered as
 ## Originals
 
 The PHPT gate (merge tier `phpt-*` jobs) runs every pinned Table, Channel and
-`swoole_global` original on upstream and on the all-modules hybrid.
+`swoole_global` original on upstream and on the Cargo build.
 
 ## Unit tests
 

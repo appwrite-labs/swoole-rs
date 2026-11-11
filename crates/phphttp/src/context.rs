@@ -135,7 +135,7 @@ pub(crate) fn alloc() -> *mut Context {
     // (#2129). `black_box` keeps LLVM from folding them back into `calloc`.
     let state = std::hint::black_box(Box::into_raw(Box::<State>::new_uninit()));
     // SAFETY: a fresh, writable `State`; all zeroes is a valid one (null
-    // pointers, `None`s and `IS_UNDEF` zvals, as C++'s value-initialisation
+    // pointers, `None`s and `IS_UNDEF` zvals, as upstream's value-initialisation
     // left it), which `free` drops as a `Box<State>`.
     unsafe { state.write_bytes(0, 1) };
     state.cast()

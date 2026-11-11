@@ -14,7 +14,7 @@ The merge tier's `halfclose` job runs every phase below:
 
 These check the repair's behavior, which upstream lacks.
 `halfclose-pause-originals` runs `client_close_in_writable_event.phpt` against the
-repaired build. The PHPT gate runs it only on the unrepaired hybrid.
+repaired build. The PHPT gate runs it only on the unrepaired Cargo build.
 
 ## PHP server gates
 

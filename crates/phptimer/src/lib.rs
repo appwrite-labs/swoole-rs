@@ -143,7 +143,7 @@ fn add(call: &Call, persistent: bool) {
         .arity(2, u32::MAX)
         .and_then(|()| call.long(1, 0))
         .and_then(|ms| Ok((ms, Callable::parse(call, 2)?)));
-    let Ok((ms, mut callable)) = parsed else {
+    let Ok((ms, callable)) = parsed else {
         call.set_bool(false);
         return;
     };
@@ -164,9 +164,8 @@ fn add(call: &Call, persistent: bool) {
         call.set_bool(false);
         return;
     };
-    callable.keep(persistent.then_some(id));
     // The timer owns it now; its destructor frees it.
-    let _owned = callable.into_raw();
+    let _owned = callable.keep(persistent.then_some(id)).into_raw();
     call.set_long(id);
 }
 

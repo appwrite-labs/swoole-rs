@@ -205,8 +205,6 @@ struct SockAddrIn {
     zero: [u8; 8],
 }
 
-type Warn = extern "C" fn(*const c_char, *const c_char);
-
 /// `swr_v1_reactor_iov_prepared` (crates/reactor/src/iov_owned.rs).
 #[repr(C)]
 struct IovPrepared {
@@ -232,7 +230,7 @@ unsafe extern "C" {
     #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPcm"]
     fn network_peer_certificate(socket: *const NetHead, buf: *mut c_char, n: usize) -> c_int;
 
-    pub(super) safe fn swr_v1_tls_owner_new(warn: Warn) -> TlsPrepared;
+    pub(super) safe fn swr_v1_tls_owner_new() -> TlsPrepared;
     fn swr_v1_tls_owner_set_path(
         owner: *const c_void,
         index: u32,
@@ -260,16 +258,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn wait(status: *mut c_int) -> c_int;
     fn usleep(usec: u32) -> c_int;
-}
-
-pub(super) extern "C" fn tls_warning(function: *const c_char, message: *const c_char) {
-    // SAFETY: owners pass NUL-terminated text.
-    let (function, message) = unsafe { (CStr::from_ptr(function), CStr::from_ptr(message)) };
-    eprintln!(
-        "WARNING {}(): {}",
-        function.to_string_lossy(),
-        message.to_string_lossy()
-    );
 }
 
 /// `microtime()`.
@@ -559,7 +547,7 @@ impl Sock {
         if !self.tls_owner().is_null() {
             return false;
         }
-        let prepared = swr_v1_tls_owner_new(tls_warning);
+        let prepared = swr_v1_tls_owner_new();
         // SAFETY: a fresh owner, whose one reference the socket's extra record takes.
         unsafe { *self.tls_slot() = prepared.owner };
         self.tls.set(Some(prepared));

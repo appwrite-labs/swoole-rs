@@ -119,11 +119,11 @@ pub use swoole_rs_curl as curl;
 #[cfg(feature = "ssh2")]
 pub use swoole_rs_ssh2 as ssh2;
 
-/// `get_module()`'s entry (crates/ext, native/phphelpers/host.c): phpswoole's,
-/// whose phases run the crates above it, which only this one links together.
+/// crates/ext's `get_module()` entry: phpswoole's, whose phases run the crates
+/// above it, which only this one links together.
 #[cfg(feature = "php")]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpswoole_module() -> *mut std::ffi::c_void {
+#[must_use]
+pub fn phpswoole_module() -> *mut std::ffi::c_void {
     swoole_rs_phpswoole::module_entry(&FAMILIES).cast()
 }
 

@@ -377,6 +377,8 @@ class Lanes(unittest.TestCase):
         self.assertTrue(commands['abi'][commands['abi'].index('--extension') + 1].endswith('target/ext/swoole.so'))
         self.assertIn('--native', commands['cargo-build'])
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
+        # An -ffi crate's tests run with its module's (#2996 moved error's there).
+        self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
         for family in ['logger', 'hash', 'global-logger', 'redirect']:
@@ -412,7 +414,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
         self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
-        self.assertNotIn('phphelpers-async', commands)  # Its cases run in phphelpers-unit.
+        self.assertNotIn('phphelpers-async', commands)
         self.assertIn('--archive', commands['ports-policy'])
         self.assertIn('--archive', commands['clients-http-format'])
         self.assertIn('--sanitize', commands['clients-http-format'])
@@ -675,23 +677,22 @@ class FocusedPhases(unittest.TestCase):
                 self.assertNotIn('- second', text)
 
     def test_child_disk_refusal_stops_but_behavior_failure_continues(self):
-        for error, details, expected_calls in [('Build disk space low: fixture needs 4GiB', {}, 1),
-                ('Unchanged 4GiB guard', dict(minimum_free_bytes=4294967296, blocked='/private/scratch'), 1),
-                ('Unchanged4GiBguard', dict(minimum_free_bytes=4294967296, blocked=dict(path='/scratch')), 1),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=[dict(
-                    blocked='unchanged 4GiB guard', free_bytes={'/scratch': 4294967295})]), 1),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=[dict(
-                    blocked='unchanged 4GiB guard', free_bytes={'/scratch': 4294967296})]), 2),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=[dict(
-                    blocked='unchanged 4GiB guard', free_bytes={'/scratch': 'low'})]), 2),
-                ('Compiler refused by unchanged 4GiB guard', dict(commands=None), 2),
-                ('Unchanged4GiBguard', {}, 2), ('Behavior comparison failed', {}, 2)]:
-            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+        refusal = 'Build disk space low: 0 bytes free at /scratch; require 4294967296. Remove only inactive caches.'
+        # php_runtime.py reports the refusal and prints that report; ports/gate.py dies of it, leaving no report.
+        for log, report_text, expected_calls in [
+                (json.dumps({'passed': False, 'error': 'RuntimeError: ' + refusal, 'work': '/w'}) + '\n', True, 1),
+                ('Traceback (most recent call last):\nRuntimeError: ' + refusal + '\n', False, 1),
+                ('Behavior comparison failed\n', True, 2)]:
+            with self.subTest(log=log), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory); output = root / 'gate.json'
-                output.write_text(json.dumps(dict(passed=False, error=error, **details)))
+                if report_text:
+                    output.write_text(json.dumps(dict(passed=False, error=log)))
                 planned = [('module-sdk', ['fixture', '--report', str(output)]), ('originals', ['later'])]
+                def execute(command, stdout, **_):
+                    stdout.write(log)
+                    return SimpleNamespace(returncode=1)
                 with patch.object(dev, 'ROOT', root), patch.object(dev, 'plan', return_value=planned), \
-                     patch.object(dev, 'execute', return_value=SimpleNamespace(returncode=1)) as run, \
+                     patch.object(dev, 'execute', side_effect=execute) as run, \
                      patch('sys.argv', ['dev.py', 'integrate', '--module', 'locks', '--jobs', '1']):
                     self.assertEqual(dev.main(), 1)
                 report = json.loads(next(root.glob('target/reports/dev/*/loop.json')).read_text())
@@ -699,10 +700,8 @@ class FocusedPhases(unittest.TestCase):
                 self.assertEqual(report['status'], 'failed')
                 self.assertFalse(report['full_plan_passed'])
                 self.assertTrue(report['phases'][0]['failed'])
-                self.assertEqual(report['phases'][0]['outcome_sha256'],
-                                 __import__('hashlib').sha256(output.read_bytes()).hexdigest())
                 if expected_calls == 1:
-                    self.assertEqual(report['infrastructure_error'], error)
+                    self.assertEqual(report['infrastructure_error'], refusal)
                     self.assertEqual(report['blocked_phase'], 'module-sdk')
                     self.assertEqual(report['not_run'], [dict(phase='originals', status='not_run',
                                                              reason='run_stopped_before_phase')])

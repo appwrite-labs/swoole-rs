@@ -7,8 +7,10 @@ calls, pretty-name slicing and the Logger (`crates/utilities/src/logger.rs`).
 Upstream's inline string helpers (`swoole::ltrim`, `rtrim`, `substr_len`,
 `starts_with`, `ends_with`, `swoole_strnstr`, `swoole_strnpos`,
 `swoole_str_istarts_with` and the rest) have no caller left in the hybrid, so they
-left `swoole_util.h` and `swoole.h` with their Rust bodies, and
-`core-tests/src/core/string.cpp` has nothing left to test (#2089).
+left `swoole_util.h` and `swoole.h` with their Rust bodies (#2089).
+`core-tests/src/core/string.cpp`'s seven TESTs of them run on the pin only; its
+other 16 test `swoole::String` and run on both engines in the buffer module's
+`string-originals` (tests/modules/buffer/string/test_gate.py).
 
 Use a release archive matching the current utility sources, headers and overlays.
 

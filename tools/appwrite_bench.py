@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Appwrite endpoint load, stock (upstream) against hybrid Swoole.
+"""Appwrite endpoint load, stock (upstream) Swoole against the Cargo build.
 
   appwrite_bench.py run VARIANT TRIAL OUT   load the running stack once, write OUT/VARIANT-TRIAL.json
   appwrite_bench.py report OUT              Markdown medians across trials, per endpoint and variant
