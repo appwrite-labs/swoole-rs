@@ -203,16 +203,10 @@ fn with<T>(
     run(unsafe { &*registry }, word)
 }
 
-/// `word` as an atomic, or -1 with `EINVAL` recorded for null or misaligned.
-/// # Safety
-/// `word` is null, misaligned, or a u32 accessed only atomically while `'a` lasts.
+/// `word`, or -1 with `EINVAL` recorded for null.
 #[cfg(not(target_os = "linux"))]
-pub(crate) unsafe fn atomic<'a>(word: *mut u32) -> Result<&'a AtomicU32, c_int> {
-    if word.is_null() || !word.is_aligned() {
-        return Err(failed(libc::EINVAL));
-    }
-    // SAFETY: per the caller, checked non-null and aligned.
-    Ok(unsafe { AtomicU32::from_ptr(word) })
+pub(crate) fn atomic(word: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
+    word.ok_or_else(|| failed(libc::EINVAL))
 }
 
 /// -1 with a nonzero error recorded as the last error.

@@ -163,12 +163,16 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let timer = timer();
             // SAFETY: this thread's live timer.
             u64::from(
-                !timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer.cast()) }.is_null(),
+                !timer.is_null()
+                    && swr_v1_timer_owner_reactor(unsafe {
+                        &*timer.cast::<swoole_rs_timer::Owner>()
+                    })
+                    .is_null(),
             )
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            unsafe { swr_v1_timer_owner_reinit(timer().cast(), false) };
+            swr_v1_timer_owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
             0
         }
         OP_PORT_ADD => {

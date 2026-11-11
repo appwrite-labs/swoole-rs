@@ -360,8 +360,8 @@ impl Ctx {
                 content_type.as_ptr().cast(),
                 content_type.len(),
                 b"multipart/form-data".len(),
-                &raw mut boundary,
-                &raw mut length,
+                &mut boundary,
+                &mut length,
             )
         };
         // SAFETY: the boundary inside the value.

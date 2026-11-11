@@ -249,7 +249,7 @@ pub extern "C" fn php_swoole_server_rshutdown() {
         return;
     }
     // SAFETY: this thread's current worker.
-    unsafe { worker_record::swr_v1_worker_shutdown(worker) };
+    worker_record::swr_v1_worker_shutdown(unsafe { worker_record::Worker::new(worker) });
     if kind == crate::server::EVENT_WORKER {
         // SAFETY: the running server and its current worker.
         unsafe { entry::clean_worker_connections(serv, worker.cast()) };

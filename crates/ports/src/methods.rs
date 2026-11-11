@@ -325,8 +325,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
         return fail();
     }
     let info = socket.read(|s| s.info);
-    // SAFETY: get_name filled the record's address.
-    config.port = unsafe { swr_v1_clients_address_port(&raw const info) };
+    config.port = swr_v1_clients_address_port(&info);
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
     config.socket = made.cast();
@@ -477,8 +476,7 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         protocol.package_body_offset = 0;
         reader(readable_callback_http)
     } else if config.open_mqtt_protocol {
-        // SAFETY: the port's own protocol, borrowed for the call.
-        unsafe { swoole_rs_protocols_ffi::set_protocol(protocol) };
+        swoole_rs_protocols_ffi::set_protocol(protocol);
         protocol.on_package = callback(Callback::DispatchTask);
         reader(readable_callback_length)
     } else if config.open_redis_protocol {
@@ -838,7 +836,7 @@ mod tests {
         assert_eq!(socket.bound, 1, "bound");
         assert_ne!(config.port, 0, "the kernel's port");
         assert_eq!(
-            unsafe { swr_v1_clients_address_port(&raw const socket.info) },
+            swr_v1_clients_address_port(&socket.info),
             config.port,
             "getsockname's port"
         );
@@ -1233,7 +1231,7 @@ mod tests {
         let context = config.ssl_context;
         assert!(!unsafe { ssl_context_create(at, context, false) });
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
-        let cert_file = unsafe { swoole_rs_tls::swr_v1_tls_owner_view(context) }.strings[4];
+        let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(unsafe { &*context }).strings[4];
         let set = |text: &str| unsafe {
             swoole_rs_corebase::swr_v1_core_string_set(cert_file, text.as_ptr().cast(), text.len())
         };

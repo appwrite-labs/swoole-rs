@@ -88,9 +88,8 @@ impl Reactor {
     pub(crate) fn set_error_handler(self, handler: Handler) {
         // SAFETY: a live reactor.
         let handlers = unsafe { prepared(self.0) }.handlers;
-        // SAFETY: its live handler tables.
-        unsafe {
-            swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
-        }
+        // SAFETY: its live handler tables, which nothing else borrows meanwhile.
+        let handlers = unsafe { &mut *handlers };
+        swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
     }
 }

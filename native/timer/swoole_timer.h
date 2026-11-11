@@ -78,15 +78,15 @@ swoole::Timer *swr_v1_timer_owner_new(bool manually_trigger);
 void swr_v1_timer_owner_free(swoole::Timer *timer);
 swr_v1_timer *swr_v1_timer_owner_queue(const swoole::Timer *timer);
 void *swr_v1_timer_owner_reactor(const swoole::Timer *timer);
-void swr_v1_timer_owner_reinit(swoole::Timer *timer, bool manually_trigger);
+void swr_v1_timer_owner_reinit(const swoole::Timer *timer, bool manually_trigger);
 swoole::TimerNode *swr_v1_timer_owner_add(
-    swoole::Timer *timer, long msec, bool persistent, void *data, swoole::TimerCallback callback);
-bool swr_v1_timer_owner_remove(swoole::Timer *timer, long id);
-void swr_v1_timer_owner_update(swoole::Timer *timer, const swoole::TimerNode *node);
-void swr_v1_timer_owner_delay(swoole::Timer *timer, const swoole::TimerNode *node, long delay_ms);
+    const swoole::Timer *timer, long msec, bool persistent, void *data, swoole::TimerCallback callback);
+bool swr_v1_timer_owner_remove(const swoole::Timer *timer, long id);
+void swr_v1_timer_owner_update(const swoole::Timer *timer, const swoole::TimerNode *node);
+void swr_v1_timer_owner_delay(const swoole::Timer *timer, const swoole::TimerNode *node, long delay_ms);
 // A C++ exception a callback or destructor throws aborts at Rust's frames (panic = "abort").
-void swr_v1_timer_owner_select(swoole::Timer *timer);
-void swr_v1_timer_owner_abandon(swoole::Timer *timer, void (*bailout)());
+void swr_v1_timer_owner_select(const swoole::Timer *timer);
+void swr_v1_timer_owner_abandon(const swoole::Timer *timer, void (*bailout)());
 }
 
 namespace swoole {

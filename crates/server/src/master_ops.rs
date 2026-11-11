@@ -316,17 +316,15 @@ impl Objects<'_> {
 )]
 pub(crate) unsafe fn answer(
     ctx: *mut NativeContext,
-    state: *const ServerState,
+    state: &ServerState,
     op: u32,
     arg: u64,
 ) -> Option<u64> {
-    if ctx.is_null() || state.is_null() {
+    if ctx.is_null() {
         return None;
     }
     // SAFETY: per the caller; nothing else touches the context during the op.
     let ctx = unsafe { &mut *ctx };
-    // SAFETY: per the caller.
-    let state = unsafe { &*state };
     let mut o = Objects { ctx, state };
     let cpus = c_int::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     Some(match op {
@@ -1146,11 +1144,9 @@ pub(crate) unsafe fn answer(
         }
         OP_SPIN_LOCK => {
             let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
-            // SAFETY: the shared counters' aligned lock word, which every holder takes
-            // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
-            unsafe {
-                swoole_rs_utilities::swr_v1_utils_spinlock(o.gs().spinlock.as_ptr(), cpus, 1024);
-            };
+            // The shared counters' lock word, which every holder takes this way
+            // (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
+            swoole_rs_utilities::swr_v1_utils_spinlock(Some(&o.gs().spinlock), cpus, 1024);
             0
         }
         OP_SPIN_UNLOCK => {
@@ -1408,9 +1404,11 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const THREAD_MASTER: u8 = 1;
     let reactor = crate::reactor_handle::Reactor::thread;
     let listener = || o.server().port_socket_at(usize::try_from(arg).ok()?);
+    // The send path's output buffer, which `OP_SC_ENSURE_BUFFER` made before any op reads it.
     let out = || {
         let out = o.sock().map(|sock| sock.read(|s| s.output.out_buffer));
-        out.unwrap_or(core::ptr::null_mut()).cast::<CppBuffer>()
+        // SAFETY: as above, the socket's live buffer.
+        unsafe { &*out.unwrap_or(core::ptr::null_mut()).cast::<CppBuffer>() }
     };
     Some(match op {
         OP_IS_MASTER_THREAD => u64::from(swoole_rs_corebase::thread_kind() == THREAD_MASTER),
@@ -1443,7 +1441,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
             let buffer = socket.read(|s| s.output.out_buffer);
             // SAFETY: null or the socket's live buffer (`Buffer::empty`).
-            u64::from(buffer.is_null() || unsafe { swr_cpp_buffer_empty(buffer.cast()) })
+            u64::from(buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast() }))
         }
         OP_SC_ENSURE_BUFFER => {
             let sock = o.sock()?;
@@ -1455,23 +1453,17 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SC_OUT_FULL => {
             let size = o.sock()?.read(|s| s.output.buffer_size);
-            // SAFETY: the send path's socket, whose buffer it ensured.
-            u64::from(unsafe { swr_cpp_buffer_length(out()) } >= size)
+            u64::from(swr_cpp_buffer_length(out()) >= size)
         }
-        OP_SC_OUT_HIGH => {
-            // SAFETY: as above.
-            u64::from(unsafe { swr_cpp_buffer_length(out()) } >= o.port().buffer_high_watermark)
-        }
+        OP_SC_OUT_HIGH => u64::from(swr_cpp_buffer_length(out()) >= o.port().buffer_high_watermark),
         OP_SC_APPEND => {
-            // SAFETY: as above; the context lends `length` bytes at `data`.
+            // SAFETY: the context lends `length` bytes at `data`.
             unsafe { swr_cpp_buffer_append(out(), o.ctx.data.cast(), o.ctx.length) };
-            // SAFETY: as above.
-            o.conn().send_queued_bytes = unsafe { swr_cpp_buffer_length(out()) };
+            o.conn().send_queued_bytes = swr_cpp_buffer_length(out());
             0
         }
         OP_SC_QUEUE_CLOSE => {
-            // SAFETY: as above.
-            unsafe { swr_cpp_buffer_typed_close(out()) };
+            swr_cpp_buffer_typed_close(out());
             o.conn().close_queued = 1;
             0
         }
@@ -1506,7 +1498,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     };
     let (out, direct_send) = sock.read(|s| (s.output.out_buffer, s.direct_send != 0));
     // SAFETY: null or the socket's live buffer (`Buffer::empty`).
-    let out_empty = out.is_null() || unsafe { swr_cpp_buffer_empty(out.cast()) };
+    let out_empty = out.is_null() || swr_cpp_buffer_empty(unsafe { &*out.cast() });
     let bit = |set: bool, bit| if set { bit } else { 0 };
     send_flags(o)
         | send::FOUND
@@ -1684,12 +1676,16 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let timer = timer();
             // SAFETY: this thread's live timer.
             u64::from(
-                !timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer.cast()) }.is_null(),
+                !timer.is_null()
+                    && swr_v1_timer_owner_reactor(unsafe {
+                        &*timer.cast::<swoole_rs_timer::Owner>()
+                    })
+                    .is_null(),
             )
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            unsafe { swr_v1_timer_owner_reinit(timer().cast(), false) };
+            swr_v1_timer_owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
             0
         }
         OP_ST_TIMER_DEL => {
@@ -1756,10 +1752,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_LC_DAEMON => {
             match process_logger() {
-                // SAFETY: the process logger, live while the process runs.
-                Some(logger) if unsafe { swr_v1_logger_is_opened(logger) } => {
-                    // SAFETY: as above.
-                    unsafe { swr_v1_logger_redirect(logger, true) };
+                Some(logger) if swr_v1_logger_is_opened(logger) => {
+                    swr_v1_logger_redirect(logger, true);
                 }
                 // SAFETY: a NUL-terminated path.
                 _ => unsafe { swoole_redirect_stdout_file(c"/dev/null".as_ptr()) },
@@ -1904,9 +1898,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.ssl = u8::from(ssl);
             conn.info = accepted;
             conn.info.kind = conn.socket_type;
-            let info = &raw const sock;
-            // SAFETY: the address getsockname filled.
-            let port = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(info) };
+            let info = &sock;
+            let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1923,8 +1916,9 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 unsafe { (&raw const sock.addr.inet_v4.sin_addr).cast::<u8>() }
             };
             // SAFETY: the live state and an address of the family.
-            conn.local_addr_index =
-                unsafe { crate::local_addr::swr_v1_server_local_addr_index(o.state, v6, addr) };
+            conn.local_addr_index = unsafe {
+                crate::local_addr::swr_v1_server_local_addr_index(Some(o.state), v6, addr)
+            };
             0
         }
         OP_NOTIFY_CONNECT => u64::from(crate::server_methods::notify(
@@ -2050,7 +2044,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
             let out = socket.read(|s| s.output.out_buffer);
             // SAFETY: its live output buffer.
-            unsafe { swr_cpp_buffer_typed_close(out.cast()) };
+            swr_cpp_buffer_typed_close(unsafe { &*out.cast() });
             // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
             u64::from(
                 !cfg!(feature = "halfclose")
@@ -2633,20 +2627,15 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ST_PIPE_COMMAND_NEW => {
             use core::mem::MaybeUninit;
             use swoole_rs_tls::socket_pair::{drop, unix_socket_new};
-            let pair = Box::into_raw(Box::new(MaybeUninit::<SocketPair>::uninit()));
-            let pair = pair.cast::<SocketPair>();
-            // SAFETY: fresh storage for a pair.
-            unsafe { unix_socket_new(pair, false, libc::SOCK_DGRAM) };
-            // SAFETY: constructed above.
-            let built = unsafe { &*pair };
+            let mut storage = Box::new(MaybeUninit::<SocketPair>::uninit());
+            unix_socket_new(&mut storage, false, libc::SOCK_DGRAM);
+            // SAFETY: the constructor initialised it.
+            let mut built = unsafe { storage.assume_init() };
             if built.master_socket.is_null() || built.worker_socket.is_null() {
-                // SAFETY: the pair just built.
-                unsafe { drop(pair) };
-                // SAFETY: its box.
-                core::mem::drop(unsafe { Box::from_raw(pair.cast::<MaybeUninit<SocketPair>>()) });
+                drop(&mut built);
                 return Some(0);
             }
-            o.config().pipe_command = pair.cast();
+            o.config().pipe_command = Box::into_raw(built).cast();
             1
         }
         _ => return None,
@@ -2772,11 +2761,11 @@ mod tests {
         // SAFETY: a fresh state and a zeroed context.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, state, crate::ops::OP_PORT_COUNT, 0),
+                answer(&raw mut ctx, &*state, crate::ops::OP_PORT_COUNT, 0),
                 None
             );
             assert_eq!(
-                answer(core::ptr::null_mut(), state, OP_SEND_TIMEOUT, 0),
+                answer(core::ptr::null_mut(), &*state, OP_SEND_TIMEOUT, 0),
                 None
             );
             crate::swr_v1_server_state_free(state);
@@ -2813,9 +2802,12 @@ mod tests {
         ctx.server_fd = -1;
         // SAFETY: the context's records are live above; no connection has fd -1.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, state, OP_ST_PIPE_FD, 0), Some(7));
-            assert_eq!(answer(&raw mut ctx, state, OP_ST_PIPE_FD, 1), Some(8));
-            assert_eq!(answer(&raw mut ctx, state, OP_IP_KEY, 0), Some(0x0a00_0001));
+            assert_eq!(answer(&raw mut ctx, &*state, OP_ST_PIPE_FD, 0), Some(7));
+            assert_eq!(answer(&raw mut ctx, &*state, OP_ST_PIPE_FD, 1), Some(8));
+            assert_eq!(
+                answer(&raw mut ctx, &*state, OP_IP_KEY, 0),
+                Some(0x0a00_0001)
+            );
             crate::swr_v1_server_state_free(state);
         }
     }
@@ -2830,19 +2822,19 @@ mod tests {
             config.send_timeout = 2.5;
             config.worker_num = 6;
             assert_eq!(
-                answer(&raw mut ctx, state, OP_SEND_TIMEOUT, 0),
+                answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT, 0),
                 Some(2.5f64.to_bits())
             );
-            answer(&raw mut ctx, state, OP_SEND_TIMEOUT_MIN, 0);
+            answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT_MIN, 0);
             assert_eq!(config.send_timeout, 0.001);
-            answer(&raw mut ctx, state, OP_CLEAR_SEND_YIELD, 0);
+            answer(&raw mut ctx, &*state, OP_CLEAR_SEND_YIELD, 0);
             assert!(!config.send_yield);
-            answer(&raw mut ctx, state, OP_BASE_REACTORS, 0);
+            answer(&raw mut ctx, &*state, OP_BASE_REACTORS, 0);
             assert_eq!(config.reactor_num, 6);
             config.scheduler_warning = true;
-            answer(&raw mut ctx, state, OP_WARNING_RESET, 7 << 1);
+            answer(&raw mut ctx, &*state, OP_WARNING_RESET, 7 << 1);
             assert!(!config.scheduler_warning);
-            assert_eq!(answer(&raw mut ctx, state, OP_WARNING_TIME, 0), Some(7));
+            assert_eq!(answer(&raw mut ctx, &*state, OP_WARNING_TIME, 0), Some(7));
             crate::swr_v1_server_state_free(state);
         }
     }
@@ -2857,8 +2849,8 @@ mod tests {
         ctx.length = 8;
         // SAFETY: the context's host and data are live above.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, state, OP_HOST_SIZE, 0), Some(8));
-            answer(&raw mut ctx, state, OP_SC_ADVANCE, 3);
+            assert_eq!(answer(&raw mut ctx, &*state, OP_HOST_SIZE, 0), Some(8));
+            answer(&raw mut ctx, &*state, OP_SC_ADVANCE, 3);
             crate::swr_v1_server_state_free(state);
         }
         assert_eq!(ctx.length, 5);
@@ -2876,12 +2868,12 @@ mod tests {
         // SAFETY: the context's worker is live above.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 2),
+                answer(&raw mut ctx, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
             assert_eq!(
-                answer(&raw mut ctx, state, OP_ST_W_CONCURRENCY_CAS, 3),
+                answer(&raw mut ctx, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
@@ -2897,7 +2889,7 @@ mod tests {
         ctx.buffer = buffer.as_mut_ptr().cast();
         ctx.data = c"/tmp/a".as_ptr().cast();
         // SAFETY: the context's buffer and name are live above.
-        let name = unsafe { answer(&raw mut ctx, state, OP_SENDFILE_NAME, 0) };
+        let name = unsafe { answer(&raw mut ctx, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
         unsafe { crate::swr_v1_server_state_free(state) };
         assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
@@ -2914,22 +2906,22 @@ mod tests {
             let config = &mut *(*state).config();
             config.worker_num = 3;
             config.gs = (&raw mut gs).cast();
-            assert_eq!(answer(&raw mut ctx, state, OP_SIGNAL_ACTIVE, 0), Some(0));
+            assert_eq!(answer(&raw mut ctx, &*state, OP_SIGNAL_ACTIVE, 0), Some(0));
             for op in [
                 OP_ALLOC_WORKERS,
                 OP_ALLOC_TASK_RESULTS,
                 OP_ALLOC_CONNECTION_NUMS,
                 OP_ALLOC_SESSIONS,
             ] {
-                assert_eq!(answer(&raw mut ctx, state, op, 0), Some(1), "op {op}");
+                assert_eq!(answer(&raw mut ctx, &*state, op, 0), Some(1), "op {op}");
             }
             assert_eq!((*gs.connection_nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
             assert_eq!((*tables.session_list.add(5)).fd, 0, "zeroed");
             config.user_workers = sw_shm_calloc(1, 8);
-            answer(&raw mut ctx, state, OP_FREE_USER_WORKERS, 0);
+            answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());
-            answer(&raw mut ctx, state, OP_FREE_USER_WORKERS, 0);
+            answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             for allocation in [
                 config.workers,
                 config.task_results,
@@ -2970,20 +2962,20 @@ mod tests {
         let socket = (&raw const sock).addr() as u64;
         // SAFETY: the context's records are live above.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(1));
-            answer(&raw mut ctx, state, OP_SC_ENSURE_BUFFER, 0);
+            assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(1));
+            answer(&raw mut ctx, &*state, OP_SC_ENSURE_BUFFER, 0);
             assert!(!sock.output.out_buffer.is_null());
-            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(1));
-            answer(&raw mut ctx, state, OP_SC_APPEND, 0);
+            assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(1));
+            answer(&raw mut ctx, &*state, OP_SC_APPEND, 0);
             assert_eq!(conn.send_queued_bytes, 3);
-            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(0));
-            assert_eq!(answer(&raw mut ctx, state, OP_SC_OUT_FULL, 0), Some(0));
-            assert_eq!(answer(&raw mut ctx, state, OP_SC_OUT_HIGH, 0), Some(1));
-            answer(&raw mut ctx, state, OP_SC_QUEUE_CLOSE, 0);
+            assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(0));
+            assert_eq!(answer(&raw mut ctx, &*state, OP_SC_OUT_FULL, 0), Some(0));
+            assert_eq!(answer(&raw mut ctx, &*state, OP_SC_OUT_HIGH, 0), Some(1));
+            answer(&raw mut ctx, &*state, OP_SC_QUEUE_CLOSE, 0);
             assert_eq!(conn.close_queued, 1);
             let buffer = sock.output.out_buffer.cast::<CppBuffer>();
-            assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(buffer), 2);
-            swoole_rs_buffer::cpp::swr_cpp_buffer_drop(buffer);
+            assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);
+            swoole_rs_buffer::cpp::swr_cpp_buffer_drop(&mut *buffer);
             operator_delete(buffer.cast());
             crate::port_config::swr_v1_port_config_free(config);
             crate::swr_v1_server_state_free(state);

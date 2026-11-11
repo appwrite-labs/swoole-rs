@@ -191,7 +191,7 @@ pub(crate) unsafe fn on_packet(
         swr_v1_tls_dtls_append(session, data, usize::try_from(length).unwrap_or(0))
     });
     // SAFETY: the live session.
-    let fields = unsafe { dtls_fields(session) };
+    let fields = dtls_fields(unsafe { &*session });
     // SAFETY: as above.
     let socket = unsafe { (*fields).socket };
     // SAFETY: the live session over its live socket.
@@ -265,7 +265,7 @@ pub(crate) unsafe fn on_read(port: *mut c_void, sock: Socket<'_>, fd: c_int) -> 
     // SAFETY: the socket's live session, which takes the buffer.
     appended(unsafe { swr_v1_tls_dtls_append_buffer(session, buffer.cast()) });
     // SAFETY: as above.
-    let fields = unsafe { dtls_fields(session) };
+    let fields = dtls_fields(unsafe { &*session });
     // SAFETY: as above.
     let listened = unsafe { (*fields).listened };
     // SAFETY: as above.

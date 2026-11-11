@@ -320,12 +320,6 @@ impl Live<'_> {
         // SAFETY: at most its 512 bytes.
         unsafe { core::slice::from_raw_parts(packet, length) }.to_vec()
     }
-
-    /// The SOCKS5 owner as the head of a `swoole::Socks5Proxy`, for its members.
-    fn socks5_head(&self) -> *mut ProxyState {
-        self.socks5
-            .map_or(null_mut(), |proxy| ptr::from_ref(proxy).cast_mut())
-    }
 }
 
 impl Connecting for Live<'_> {
@@ -491,19 +485,21 @@ impl Connecting for Live<'_> {
     }
 
     fn socks5_negotiate(&mut self) -> Vec<u8> {
-        let mut head = self.socks5_head();
-        // SAFETY: the live SOCKS5 owner behind its head.
-        let length = unsafe { pack_negotiate_request((&raw mut head).cast::<Socks5Proxy>()) };
+        let Some(owner) = self.socks5 else {
+            return Vec::new();
+        };
+        let length = pack_negotiate_request(&Socks5Proxy::new(owner));
         // SAFETY: its scalar fields.
         unsafe { (*self.socks5_fields()).state = SOCKS5_HANDSHAKE };
         self.socks5_packet(length)
     }
 
     fn socks5_step(&mut self, reply: &[u8]) -> c_int {
-        let mut head = self.socks5_head();
-        let proxy = (&raw mut head).cast::<Socks5Proxy>();
-        // SAFETY: the live SOCKS5 owner behind its head, and the reply's bytes.
-        let n = unsafe { handshake_step(proxy, reply.as_ptr(), reply.len()) };
+        let Some(owner) = self.socks5 else {
+            return -1;
+        };
+        // SAFETY: the reply's bytes.
+        let n = unsafe { handshake_step(&Socks5Proxy::new(owner), reply.as_ptr(), reply.len()) };
         if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != n) {
             return -1;
         }

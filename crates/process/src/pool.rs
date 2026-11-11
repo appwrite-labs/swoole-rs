@@ -721,10 +721,8 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_address(
 /// `ProcessPool::dispatch(data)`: the same over a [`crate::stream::Stream`], which, as upstream's,
 /// connects a Unix socket whatever the listener's port, and fails only when that connect does.
 ///
-/// # Safety
-/// `ipc` is null or a live handle.
-pub(crate) unsafe fn swr_v1_process_pool_ipc_send(
-    ipc: *const PoolIpc,
+pub(crate) fn swr_v1_process_pool_ipc_send(
+    ipc: Option<&PoolIpc>,
     data: &[u8],
     blocking: bool,
 ) -> bool {
@@ -734,8 +732,7 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_send(
         socket.write_all(&len.to_be_bytes())?;
         socket.write_all(data)
     }
-    // SAFETY: the caller's live handle, or null.
-    let Some(stream) = (unsafe { ipc.as_ref() }).and_then(|ipc| ipc.stream.as_ref()) else {
+    let Some(stream) = ipc.and_then(|ipc| ipc.stream.as_ref()) else {
         return false;
     };
     let Some(file) = &stream.file else {
@@ -771,39 +768,29 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_send(
 /// (`tests/modules/hooks/system/src/process_pool.rs`) calls this.
 ///
 /// # Safety
-/// `ipc` is null or a live handle; `data` holds `len` bytes.
+/// `data` holds `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_process_pool_ipc_send_sync(
-    ipc: *const PoolIpc,
+    ipc: Option<&PoolIpc>,
     data: *const u8,
     len: u32,
 ) -> bool {
     // SAFETY: the caller's `len` bytes.
     let data = unsafe { std::slice::from_raw_parts(data, len as usize) };
-    // SAFETY: the caller's handle, or null.
-    unsafe { swr_v1_process_pool_ipc_send(ipc, data, true) }
+    swr_v1_process_pool_ipc_send(ipc, data, true)
 }
 
-/// Keep the listener the native side created.
-///
-/// # Safety
-/// `ipc` is a live handle with a stream; `socket` a native socket it now owns.
-pub(crate) unsafe fn swr_v1_process_pool_ipc_set_listener(ipc: *mut PoolIpc, socket: *mut c_void) {
-    // SAFETY: the caller's live handle.
-    if let Some(stream) = (unsafe { &mut *ipc }).stream.as_mut() {
+/// Keep the listener the native side created; `socket` is a native socket it now owns.
+pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *mut c_void) {
+    if let Some(stream) = ipc.stream.as_mut() {
         stream.socket = socket;
     }
 }
 
 /// The stream listener, or null.
-///
-/// # Safety
-/// `ipc` is a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_listener(ipc: *const PoolIpc) -> *mut c_void {
-    // SAFETY: the caller's live handle.
-    unsafe { &*ipc }
-        .stream
+pub extern "C" fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
+    ipc.stream
         .as_ref()
         .map_or(ptr::null_mut(), |stream| stream.socket)
 }
@@ -830,14 +817,9 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_address_of(
 }
 
 /// The connection being served (`stream_info_->last_connection`), or null.
-///
-/// # Safety
-/// `ipc` is a live handle.
 #[must_use]
-pub unsafe fn pool_ipc_connection(ipc: *const PoolIpc) -> *mut c_void {
-    // SAFETY: the caller's live handle.
-    unsafe { &*ipc }
-        .stream
+pub fn pool_ipc_connection(ipc: &PoolIpc) -> *mut c_void {
+    ipc.stream
         .as_ref()
         .map_or(ptr::null_mut(), |stream| stream.connection)
 }
@@ -868,21 +850,13 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_respond(
 }
 
 /// Allocate a worker's receive buffers for its event loop: the packet buffer.
-///
-/// # Safety
-/// `ipc` is a live handle.
-pub unsafe fn pool_ipc_prepare(ipc: *mut PoolIpc, max_packet_size: u32) -> *mut c_char {
-    // SAFETY: the caller's live handle.
-    unsafe { &mut *ipc }.prepare(max_packet_size).cast()
+pub fn pool_ipc_prepare(ipc: &mut PoolIpc, max_packet_size: u32) -> *mut c_char {
+    ipc.prepare(max_packet_size).cast()
 }
 
 /// The packet buffer `_prepare` allocated.
-///
-/// # Safety
-/// `ipc` is a live handle.
-pub unsafe fn pool_ipc_packet(ipc: *mut PoolIpc) -> *mut c_char {
-    // SAFETY: the caller's live handle.
-    unsafe { &mut *ipc }.packet.as_mut_ptr().cast()
+pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> *mut c_char {
+    ipc.packet.as_mut_ptr().cast()
 }
 
 /// `SW_IPC_UNIXSOCK`/`_MSGQUEUE`/`_SOCKET`, as `ProcessPool::ipc_mode`.
@@ -1107,7 +1081,7 @@ mod tests {
         // SAFETY: a live handle.
         unsafe {
             assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 1));
-            pool_ipc_prepare(ipc, 16);
+            pool_ipc_prepare(&mut *ipc, 16);
             assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 1));
             (*ipc).stream.as_mut().unwrap().connection = ptr::dangling_mut();
             assert!(!swr_v1_process_pool_ipc_respond(ipc, ptr::null(), 1));
@@ -1130,7 +1104,7 @@ mod tests {
         unsafe {
             assert!(!swr_v1_process_pool_ipc_address(ipc, c"/tmp/x".as_ptr(), 1));
             assert!(swr_v1_process_pool_ipc_address_of(ipc, &raw mut port).is_null());
-            assert!(swr_v1_process_pool_ipc_listener(ipc).is_null());
+            assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
             pool_ipc_free(ipc, noop);
         }
         assert_eq!(port, 7);

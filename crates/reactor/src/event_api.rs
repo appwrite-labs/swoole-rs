@@ -212,7 +212,7 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
         return std::ptr::null_mut();
     };
     // SAFETY: the live reactor's registry.
-    unsafe { crate::swr_v1_reactor_registry_get(registry, fd) }
+    crate::swr_v1_reactor_registry_get(unsafe { registry.as_ref() }, fd)
 }
 
 /// The thread's `Reactor`'s prepared views, or `None` without one.

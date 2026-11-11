@@ -7,6 +7,7 @@
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
 use std::ffi::{c_int, c_void};
+use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
@@ -187,10 +188,8 @@ unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
     if let Some(pool) = threads.pool {
         pool.release();
     }
-    // SAFETY: the live pipe, closed and destroyed once.
-    unsafe { close(&raw mut threads.pipe, 0) };
-    // SAFETY: as above.
-    unsafe { drop(&raw mut threads.pipe) };
+    close(&mut threads.pipe, 0);
+    drop(&mut threads.pipe);
 }
 
 /// The reactor's exit condition: in-flight events keep it running.
@@ -215,23 +214,17 @@ fn create() -> *mut AsyncThreads {
         log::set_last_error(WRONG_OPERATION);
         return ptr::null_mut();
     }
+    let mut pipe = MaybeUninit::uninit();
+    unix_socket_new(&mut pipe, false, libc::SOCK_STREAM);
     let mut threads = Box::new(AsyncThreads {
         task_num: 0,
-        pipe: SocketPair {
-            blocking: false,
-            timeout: 0.0,
-            socks: [0; 2],
-            master_socket: ptr::null_mut(),
-            worker_socket: ptr::null_mut(),
-        },
+        // SAFETY: the constructor initialised it.
+        pipe: unsafe { pipe.assume_init() },
         pool: None,
     });
-    // SAFETY: writable storage for the pair.
-    unsafe { unix_socket_new(&raw mut threads.pipe, false, libc::SOCK_STREAM) };
     let pipe = &threads.pipe;
     if pipe.master_socket.is_null() || pipe.worker_socket.is_null() {
-        // SAFETY: the pair's constructor ran; whatever it opened is freed once.
-        unsafe { drop(&raw mut threads.pipe) };
+        drop(&mut threads.pipe);
         log::set_last_error(SYSTEM_CALL_FAIL);
         return ptr::null_mut();
     }
@@ -278,18 +271,17 @@ pub extern "C" fn swr_v1_async_threads_ensure() -> *mut AsyncThreads {
 /// `request` on the pool and returns it, or null without a reactor or a pipe.
 ///
 /// # Safety
-/// `request` is a live event whose handler may run on a pool thread.
+/// `request`'s handler may run on a pool thread.
 #[unsafe(export_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE")]
 #[must_use]
-pub unsafe extern "C" fn dispatch(request: *const AsyncEvent) -> *mut AsyncEvent {
+pub unsafe extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
     let threads = swr_v1_async_threads_ensure();
     if threads.is_null() {
         return ptr::null_mut();
     }
     // SAFETY: the thread's live handle.
     let threads = unsafe { &mut *threads };
-    // SAFETY: as the caller promises.
-    let event = copy(unsafe { &*request });
+    let event = copy(request);
     // SAFETY: the fresh copy, not yet shared.
     let fields = unsafe { &mut *event };
     fields.task_id = threads.pool.map_or(0, Pool::task_id);

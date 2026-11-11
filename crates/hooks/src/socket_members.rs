@@ -209,7 +209,7 @@ unsafe fn remaining(vector: *const c_void) -> usize {
     // SAFETY: as the caller promises.
     let owner = unsafe { *vector.cast::<*const ReactorIov>() };
     // SAFETY: the vector's live owner.
-    let count = unsafe { swr_v1_reactor_iov_view(owner) }.remain_count;
+    let count = swr_v1_reactor_iov_view(unsafe { &*owner }).remain_count;
     usize::try_from(count).unwrap_or(0)
 }
 
@@ -394,8 +394,7 @@ impl Co {
             wait: accept_wait,
             call: accept_call,
         };
-        // SAFETY: the table and its state are live for the call.
-        if !unsafe { swr_v1_hook_accept(&raw const ops) } {
+        if !swr_v1_hook_accept(&ops) {
             return None;
         }
         // SAFETY: the connection the listening socket accepted.

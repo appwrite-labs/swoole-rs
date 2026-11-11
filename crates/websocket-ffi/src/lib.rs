@@ -52,9 +52,12 @@ pub unsafe extern "C" fn swr_v1_ws_mask(data: *mut u8, length: usize, key: *cons
 pub unsafe extern "C" fn swr_v1_ws_decode(
     data: *mut u8,
     length: usize,
-    output: *mut DecodedFrame,
+    output: Option<&mut DecodedFrame>,
 ) -> i64 {
-    if output.is_null() || length > isize::MAX as usize || (data.is_null() && length != 0) {
+    let Some(output) = output else {
+        return -1;
+    };
+    if length > isize::MAX as usize || (data.is_null() && length != 0) {
         return -1;
     }
     let data = if length == 0 {
@@ -64,8 +67,7 @@ pub unsafe extern "C" fn swr_v1_ws_decode(
         unsafe { core::slice::from_raw_parts_mut(data, length) }
     };
     let (total, frame) = decode_in_place(data);
-    // SAFETY: The caller supplies a disjoint, aligned output.
-    unsafe { output.write(frame) };
+    *output = frame;
     total
 }
 
@@ -151,28 +153,19 @@ pub unsafe extern "C" fn swr_v1_ws_encode_close(
 }
 
 /// [`decide_frame`] over C pointers.
-///
-/// # Safety
-/// Inputs are valid, aligned readable values; output is aligned, exclusive and
-/// writable, disjoint from inputs. All are borrowed for this call only.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ws_decide(
-    frame: *const DecodedFrame,
+pub extern "C" fn swr_v1_ws_decide(
+    frame: Option<&DecodedFrame>,
     wire_length: usize,
-    context: *const Context,
-    output: *mut Decision,
+    context: Option<&Context>,
+    output: Option<&mut Decision>,
 ) -> i32 {
-    // SAFETY: null or, per the caller, valid and aligned.
-    let frame = unsafe { frame.as_ref() };
-    // SAFETY: as above.
-    let context = unsafe { context.as_ref() };
     let (Some(frame), Some(context)) = (frame, context) else {
         return -1;
     };
-    match decide_frame(frame, wire_length, context) {
-        Some(decision) if !output.is_null() => {
-            // SAFETY: non-null; the caller lends an aligned, exclusive output.
-            unsafe { output.write(decision) };
+    match (decide_frame(frame, wire_length, context), output) {
+        (Some(decision), Some(output)) => {
+            *output = decision;
             0
         }
         _ => -1,
