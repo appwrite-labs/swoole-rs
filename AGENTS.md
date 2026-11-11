@@ -167,7 +167,10 @@ touches `native/`, the build tools, `crates/phpstubs/`, `.github/` or `.devconta
 is skipped, which counts as passing, otherwise. `gates` runs the modules a PR
 touches and those depending on a touched crate. `phpt` runs the touched
 modules' PHPT families on the Cargo build in parallel shards, gated on upstream's results from
-main's latest merge-tier run (`ci.py phpt-baseline`). Breakage they miss is caught by
+main's latest merge-tier run (`ci.py phpt-baseline`). `callgrind` (`callgrind.yml`, the merge
+tier's job) counts instructions against `benchmarks/callgrind_limits` when a PR touches
+`crates/`, `native/` or `benchmarks/`: a PR that slows a workload past its limit fails here,
+where it costs nobody else a queue rebuild. Breakage they miss is caught by
 the merge queue. Keep them cached and audit
 them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 

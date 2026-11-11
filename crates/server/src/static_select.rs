@@ -695,6 +695,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
     fn former_static_gate_response_branches() {
         let mut cases = 0;
         for status in [OK, NOT_FOUND, PARTIAL, UNSATISFIABLE] {
@@ -740,6 +741,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
     fn former_static_gate_range_extremes() {
         for length in [0, 1, usize::MAX] {
             for offset in [0, 17, i64::MAX] {
@@ -759,6 +761,7 @@ mod tests {
     /// Sends may fail or change the request: keep-alive is read again after the
     /// body and HEAD again after the header, as upstream reads them.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
     fn former_static_gate_sends_change_the_request() {
         for toggle_keep_on_send in 0..7 {
             for toggle_method_on_send in 0..4 {

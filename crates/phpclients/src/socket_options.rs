@@ -547,7 +547,7 @@ fn get_option(call: &Call) {
             Err(Stop) => {}
         };
     } else if level == i64::from(libc::IPPROTO_IPV6) {
-        match multicast::get_ipv6(socket, level_int, name_int, call.return_value()) {
+        match multicast::get_ipv6(call, socket, level_int, name_int) {
             Ok(0) | Err(Stop) => return,
             Ok(-1) => return call.set_bool(false),
             Ok(_) => {}

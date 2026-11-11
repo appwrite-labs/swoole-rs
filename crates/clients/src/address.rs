@@ -289,6 +289,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn fills_each_family() {
         let (error, address, length) = assign(TCP, c"127.0.0.1", 8080, None);
         assert_eq!(
