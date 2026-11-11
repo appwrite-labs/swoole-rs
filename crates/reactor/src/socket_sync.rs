@@ -22,10 +22,9 @@ pub const SYNC_SENDFILE: c_int = 3;
 /// What a blocking call needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait SyncEffects {
     /// The socket's descriptor (asked for each wait, as upstream's `wait_event`
-    /// reads it), `dont_restart`, and the signal dispatch a wait runs.
+    /// reads it) and `dont_restart`.
     fn fd(&self) -> c_int;
     fn dont_restart(&self) -> bool;
-    fn dispatch(&self) -> Option<unsafe extern "C" fn()>;
     /// `set_nonblock` when blocking and `ssl_clear_error` when TLS.
     fn prepare(&self);
     /// `what_event_want(event)` as poll bits.
@@ -116,13 +115,7 @@ pub unsafe fn swr_v1_socket_sync(
             }
         }
         let events = hooks.events(event);
-        let waited = crate::fd_wait(
-            hooks.fd(),
-            events,
-            timeout_ms,
-            hooks.dont_restart(),
-            hooks.dispatch(),
-        );
+        let waited = crate::fd_wait(hooks.fd(), events, timeout_ms, hooks.dont_restart());
         let failed = match waited.status {
             1 => Some((POLL_TIMEOUT, libc::EAGAIN)),
             2 => Some((waited.error, waited.error)),
@@ -169,9 +162,6 @@ mod tests {
         }
         fn dont_restart(&self) -> bool {
             false
-        }
-        fn dispatch(&self) -> Option<unsafe extern "C" fn()> {
-            None
         }
         fn prepare(&self) {}
         fn events(&self, _: c_int) -> i16 {
@@ -328,9 +318,6 @@ mod tests {
             }
             fn dont_restart(&self) -> bool {
                 self.0.dont_restart()
-            }
-            fn dispatch(&self) -> Option<unsafe extern "C" fn()> {
-                self.0.dispatch()
             }
             fn prepare(&self) {}
             fn events(&self, _: c_int) -> i16 {
