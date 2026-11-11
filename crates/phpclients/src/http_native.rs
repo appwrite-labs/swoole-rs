@@ -23,10 +23,11 @@ use swoole_rs_zend::{
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
 /// the message it is assembling. Framing is crates/phphttp's, which depends
 /// on this crate, so it registers the state's constructor at MINIT
-/// ([`register_websocket`]).
+/// ([`register_websocket`]). Methods take `&self`: a `recv` yields, and other
+/// coroutines use the client meanwhile.
 pub trait WebSocket {
     /// `WebSocket::apply_setting(settings, vht, false)`.
-    fn apply(&mut self, settings: &Array);
+    fn apply(&self, settings: &Array);
     /// Whether the client offers `permessage-deflate`.
     fn compression(&self) -> bool;
     /// Pack a frame of `data` and send it on `socket`: 0, 1 if packing failed
@@ -42,7 +43,7 @@ pub trait WebSocket {
     ) -> c_int;
     /// `websocket::recv_frame` on `socket` into the call's return slot; a
     /// bailout it defers is the handler's to raise.
-    fn recv(&mut self, socket: Co, call: &Call, timeout: f64);
+    fn recv(&self, socket: Co, call: &Call, timeout: f64);
 }
 
 static WEBSOCKET: OnceLock<fn() -> Box<dyn WebSocket>> = OnceLock::new();
