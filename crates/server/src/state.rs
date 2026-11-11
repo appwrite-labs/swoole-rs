@@ -404,13 +404,18 @@ pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
     Box::into_raw(Box::new(ServerState::with(config, tables)))
 }
 
-/// Frees a state from `swr_v1_server_state_new`.
 /// # Safety
-/// `state` came from `swr_v1_server_state_new` and is not used again.
-#[cfg(test)]
-pub(crate) unsafe fn free_state(state: *mut ServerState) {
-    drop(unsafe { Box::from_raw(state) });
+/// `state` is null or came from `swr_v1_server_state_new` and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
+    if !state.is_null() {
+        // SAFETY: the caller transfers the box back.
+        drop(unsafe { Box::from_raw(state) });
+    }
 }
+
+#[cfg(test)]
+pub(crate) use swr_v1_server_state_free as free_state;
 
 /// A lock of one of the state's lists, which a panic can't leave inconsistent.
 fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {

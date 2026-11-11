@@ -162,6 +162,7 @@ typedef struct swr_v1_server_tables {
 void *swr_v1_server_session(const swr_v1_server_state *state, long id);
 void *swr_v1_server_connection(const swr_v1_server_state *state, long key, uint32_t kind);
 swr_v1_server_state *swr_v1_server_state_new(void);
+void swr_v1_server_state_free(swr_v1_server_state *state);
 /* `new Server(mode)` and `delete serv`: crates/server/src/server_object.rs allocates and frees the
    record a swoole::Server views. */
 SWR_SERVER_NATIVE(Server) *swr_v1_server_new(int mode);
