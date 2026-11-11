@@ -253,9 +253,9 @@ impl Objects<'_> {
     }
     /// The settings of `serv->ports[index]`, if there is one.
     fn port_at(&self, index: u64) -> Option<&mut PortConfig> {
-        let &port = self.tables().ports().get(usize::try_from(index).ok()?)?;
+        let port = self.tables().ports().get(usize::try_from(index).ok()?)?;
         // SAFETY: one of the server's live ports.
-        Some(unsafe { crate::port_config::of(port) })
+        Some(unsafe { port.config_mut() })
     }
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
@@ -476,10 +476,9 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     let at = core::mem::offset_of!(libc::sockaddr_in, sin_addr);
                     (&raw const info.addr.inet_v4).cast::<u8>().wrapping_add(at)
                 };
-                // SAFETY: the live state and an address of the family.
-                let index = unsafe {
-                    crate::local_addr::swr_v1_server_local_addr_index(Some(state), v6, addr)
-                };
+                // SAFETY: the address of the family, in the socket's live record.
+                let addr = unsafe { core::slice::from_raw_parts(addr, if v6 { 16 } else { 4 }) };
+                let index = crate::local_addr::index(state, v6, addr);
                 (sock.fd, !sock.ssl.is_null(), port, index)
             });
             conn.fd = fd;
@@ -1612,7 +1611,10 @@ fn verify(o: &mut Objects<'_>) -> u64 {
         return 0;
     };
     o.ctx.reactor = swoole_rs_corebase::thread_reactor();
-    o.ctx.port = o.server().port_by_server_fd(conn.server_fd);
+    o.ctx.port = o
+        .server()
+        .port_by_server_fd(conn.server_fd)
+        .map_or(core::ptr::null_mut(), crate::view::Port::raw);
     o.ctx.sock = conn.socket;
     let config = o.config();
     debug_assert!(
@@ -1890,8 +1892,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STORE_LISTEN => {
             let index = usize::try_from(arg).unwrap_or(usize::MAX);
-            let &ls = o.tables().ports().get(index)?;
-            let port = o.state.tables_ref().port_config(index)?;
+            let &listen = o.tables().ports().get(index)?;
+            let (ls, port) = (listen.raw(), listen.config());
             let socket = o.server().port_socket_at(index)?;
             let fd = socket.fd();
             let at = isize::try_from(fd).unwrap_or(isize::MAX);
@@ -2066,8 +2068,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_CLOSE => {
-            let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-            (methods().close)(port);
+            let port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
+            (methods().close)(port.raw());
             0
         }
         OP_DISPATCH_FUNC => {

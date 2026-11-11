@@ -131,9 +131,8 @@ impl Context {
     }
     /// The server's worker registry.
     fn registry(&self) -> &mut swoole_rs_corebase::worker_registry::WorkerRegistry {
-        let registry = self.config().worker_registry.cast();
         // SAFETY: the server's live registry, which only the manager writes.
-        unsafe { &mut *registry }
+        unsafe { self.server().registry_mut() }
     }
     fn slot(&self, index: u32) -> Option<&CallbackSlot> {
         self.state().callbacks.slot(index)

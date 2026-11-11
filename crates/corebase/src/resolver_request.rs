@@ -2,7 +2,7 @@
 //! counted: its native request holds one reference and each pool copy of an
 //! `AsyncEvent` carrying it another. Records contain no callbacks.
 use crate::resolver::{DIAGNOSTIC_FAILED, gethostbyname, ntop, resolve_addresses};
-use crate::{StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
+use crate::{StringSlot, swr_v1_core_string_set};
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -44,13 +44,7 @@ fn zero_address() -> libc::sockaddr_in6 {
 /// The slot's bytes. The record's slots change only in `host` and under native
 /// code's own synchronization, never while this copies.
 fn copy(slot: &StringSlot) -> Vec<u8> {
-    // SAFETY: a live slot, not changing while it is read (above).
-    let view = unsafe { swr_v1_core_string_view(slot) };
-    if view.length == 0 {
-        return Vec::new();
-    }
-    // SAFETY: the slot holds `length` bytes at `data` until it changes.
-    unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
+    slot.bytes().to_vec()
 }
 
 /// `bytes` as `std::string::c_str()` reads them: up to the first NUL.
@@ -120,7 +114,7 @@ impl ResolverRequest {
     ) -> PreparedResolver {
         let mut record = Self::boxed(family, socktype, protocol);
         let [name_slot, service_slot, _] = &mut record.strings;
-        if !name_slot.assign(name) || !service_slot.assign(service) {
+        if name_slot.set(name) != 0 || service_slot.set(service) != 0 {
             return PreparedResolver {
                 owner: ptr::null_mut(),
                 fields: ptr::null_mut(),

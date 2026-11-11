@@ -15,6 +15,22 @@ enum Bytes {
     Inline { data: [u8; 24], length: usize },
     Heap(Vec<u8>),
 }
+impl Bytes {
+    /// A terminated copy of `value`, none when the allocation fails.
+    fn copy(value: &[u8]) -> Option<Self> {
+        let length = value.len();
+        if length < 24 {
+            let mut data = [0u8; 24];
+            data.get_mut(..length)?.copy_from_slice(value);
+            return Some(Self::Inline { data, length });
+        }
+        let mut data = Vec::new();
+        data.try_reserve_exact(length.checked_add(1)?).ok()?;
+        data.extend_from_slice(value);
+        data.push(0);
+        Some(Self::Heap(data))
+    }
+}
 pub struct StringSlot {
     bytes: UnsafeCell<Bytes>,
 }
@@ -44,48 +60,38 @@ impl StringSlot {
     pub fn empty() -> Arc<Self> {
         Arc::new(Self::default())
     }
+    /// Sets the bytes: 0, or -2 when the allocation fails.
+    pub fn set(&mut self, value: &[u8]) -> i32 {
+        Bytes::copy(value).map_or(-2, |bytes| {
+            *self.bytes.get_mut() = bytes;
+            0
+        })
+    }
+    /// The bytes, embedded NULs included; a NUL follows them.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        self.with_nul().split_last().map_or(&[], |(_, bytes)| bytes)
+    }
+    /// The bytes and their terminating NUL, which C views read as a C string.
+    fn with_nul(&self) -> &[u8] {
+        // SAFETY: a write through a shared slot is `swr_v1_core_string_set`, whose
+        // caller holds the slot exclusively, so none overlaps this borrow.
+        match unsafe { &*self.bytes.get() } {
+            Bytes::Inline { data, length } => data.get(..=*length).unwrap_or_default(),
+            Bytes::Heap(data) => data,
+        }
+    }
 }
 /// # Safety
 /// slot is live; its bytes cannot change while the returned view is used.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_string_view(slot: *const StringSlot) -> CoreStringView {
     // SAFETY: the caller lends a live synchronized slot.
-    let slot = unsafe { &*slot };
-    // SAFETY: the slot's bytes are not concurrently mutated.
-    let bytes = unsafe { &*slot.bytes.get() };
-    match bytes {
-        Bytes::Inline { data, length } => CoreStringView {
-            data: data.as_ptr().cast(),
-            length: *length,
-        },
-        Bytes::Heap(data) => CoreStringView {
-            data: data.as_ptr().cast(),
-            length: data.len() - 1,
-        },
-    }
-}
-impl Bytes {
-    /// A copy of `bytes` with its own trailing terminator, or none on allocation refusal.
-    fn copied(bytes: &[u8]) -> Option<Self> {
-        let length = bytes.len();
-        if length < 24 {
-            let mut data = [0u8; 24];
-            data.get_mut(..length)?.copy_from_slice(bytes);
-            return Some(Self::Inline { data, length });
-        }
-        let mut data = Vec::new();
-        data.try_reserve_exact(length.checked_add(1)?).ok()?;
-        data.extend_from_slice(bytes);
-        data.push(0);
-        Some(Self::Heap(data))
-    }
-}
-impl StringSlot {
-    /// Replaces the bytes; false, leaving them, on allocation refusal.
-    pub fn assign(&mut self, bytes: &[u8]) -> bool {
-        Bytes::copied(bytes)
-            .map(|bytes| *self.bytes.get_mut() = bytes)
-            .is_some()
+    let bytes = unsafe { &*slot }.with_nul();
+    // The pointer covers the NUL too: native readers stop at it.
+    CoreStringView {
+        data: bytes.as_ptr().cast(),
+        length: bytes.len().saturating_sub(1),
     }
 }
 /// Fallible byte assignment; 0 success, -2 allocation refusal.
@@ -98,13 +104,13 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
     bytes: *const c_char,
     length: usize,
 ) -> i32 {
-    let bytes = if length == 0 {
-        &[]
+    let value = if length == 0 {
+        &[][..]
     } else {
         // SAFETY: the caller lends `length` readable bytes, copied before mutation.
         unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) }
     };
-    let Some(replacement) = Bytes::copied(bytes) else {
+    let Some(replacement) = Bytes::copy(value) else {
         return -2;
     };
     // SAFETY: the slot is live and externally synchronized.
