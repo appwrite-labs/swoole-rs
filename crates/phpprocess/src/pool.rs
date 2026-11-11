@@ -77,7 +77,8 @@ fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
 /// `ProcessPool::create` in a zeroed pool that keeps a copy of `$this`'s zval;
 /// on failure, none, with `errno` set.
 fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: bool) -> Option<Pool> {
-    // SAFETY: every `ProcessPool` field is an integer, a bool or a pointer.
+    // SAFETY: every `ProcessPool` field is an integer, a bool, a pointer or an
+    // `Option` of a function pointer or `ArmedTimer`, which all-zero leaves `None`.
     let pool = Box::into_raw(unsafe { Box::<PoolRecord>::new_zeroed().assume_init() });
     if methods::create(handle(pool), worker_num, key, ipc) < 0 {
         // SAFETY: the allocation above, which nothing else holds.

@@ -11,6 +11,7 @@
     )
 )]
 pub mod affinity;
+pub mod armed_timer;
 pub mod command;
 pub mod methods;
 pub mod os;
