@@ -221,8 +221,8 @@ impl Objects<'_> {
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
     }
     fn reactor(&self) -> &mut swoole_rs_reactor::ReactorFields {
-        // SAFETY: the context's live reactor, which begins with its prepared state.
-        let fields = unsafe { reactor_upstream::prepared(self.ctx.reactor) }.fields;
+        // The context's live reactor, which begins with its prepared state.
+        let fields = swoole_rs_reactor::ReactorPrepared::of(self.ctx.reactor).fields;
         // SAFETY: as above; only this thread touches its reactor.
         unsafe { &mut *fields }
     }

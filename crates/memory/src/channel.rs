@@ -1,5 +1,4 @@
 use std::ffi::{c_int, c_void};
-use std::ptr;
 use swoole_rs_corebase::sys;
 
 /// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see `StoragePlan`), so a
@@ -56,46 +55,27 @@ fn valid(c: &Channel) -> bool {
 }
 // Short channel records should not need a dynamic libc memcpy dispatch. Copy
 // fixed-width endpoints, which may overlap each other but stay inside both
-// disjoint borrowed ranges. No speculative byte access outside the record: a
-// one-byte record at the end of a mapping needs only one readable byte.
+// ranges. No speculative byte access outside the record: a one-byte record at the
+// end of a mapping needs only one readable byte.
 #[inline(always)]
-unsafe fn copy_record(input: *const u8, output: *mut u8, length: usize) {
-    // Callers pass `length` readable input bytes and `length` writable, disjoint output
-    // bytes; every copy below stays inside both.
+fn copy_record(input: &[u8], output: &mut [u8]) {
     #[inline]
-    unsafe fn endpoints<const N: usize>(input: *const u8, output: *mut u8, length: usize) {
-        // SAFETY: as above, with `N <= length`.
-        unsafe { ptr::copy_nonoverlapping(input, output, N) };
-        // SAFETY: as above; the last `N` bytes start at `length - N`.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                input.wrapping_add(length - N),
-                output.wrapping_add(length - N),
-                N,
-            );
-        };
+    fn endpoints<const N: usize>(input: &[u8], output: &mut [u8]) {
+        if let (Some(from), Some(to)) = (input.first_chunk::<N>(), output.first_chunk_mut::<N>()) {
+            *to = *from;
+        }
+        if let (Some(from), Some(to)) = (input.last_chunk::<N>(), output.last_chunk_mut::<N>()) {
+            *to = *from;
+        }
     }
-    if length > 64 {
-        // SAFETY: as above.
-        unsafe { ptr::copy_nonoverlapping(input, output, length) };
-    } else if length >= 32 {
-        // SAFETY: as above.
-        unsafe { endpoints::<32>(input, output, length) };
-    } else if length >= 16 {
-        // SAFETY: as above.
-        unsafe { endpoints::<16>(input, output, length) };
-    } else if length >= 8 {
-        // SAFETY: as above.
-        unsafe { endpoints::<8>(input, output, length) };
-    } else if length >= 4 {
-        // SAFETY: as above.
-        unsafe { endpoints::<4>(input, output, length) };
-    } else if length >= 2 {
-        // SAFETY: as above.
-        unsafe { endpoints::<2>(input, output, length) };
-    } else if length == 1 {
-        // SAFETY: as above.
-        unsafe { ptr::copy_nonoverlapping(input, output, 1) };
+    match input.len() {
+        65.. => output.copy_from_slice(input),
+        32.. => endpoints::<32>(input, output),
+        16.. => endpoints::<16>(input, output),
+        8.. => endpoints::<8>(input, output),
+        4.. => endpoints::<4>(input, output),
+        2.. => endpoints::<2>(input, output),
+        _ => output.copy_from_slice(input),
     }
 }
 pub unsafe fn swr_v1_memory_channel_in(
@@ -132,14 +112,18 @@ pub unsafe fn swr_v1_memory_channel_in(
     let item = c.mem.wrapping_add(offset(c.tail));
     // SAFETY: as above.
     unsafe { item.cast::<i32>().write_unaligned(length) };
-    // SAFETY: as above; `input` lends `length` readable bytes, disjoint from `mem`.
-    unsafe {
-        copy_record(
-            input.cast::<u8>(),
-            item.wrapping_add(4),
-            length.unsigned_abs() as usize,
-        );
+    let length = length.unsigned_abs() as usize;
+    let input = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: `input` lends `length` readable bytes (non-null, checked above),
+        // disjoint from `mem`.
+        unsafe { std::slice::from_raw_parts(input.cast::<u8>(), length) }
     };
+    // SAFETY: as above; the record's bytes follow its header inside `mem`.
+    copy_record(input, unsafe {
+        std::slice::from_raw_parts_mut(item.wrapping_add(4), length)
+    });
     c.tail += signed(packet);
     if c.tail >= signed(c.size) {
         c.tail = 0;
@@ -191,15 +175,16 @@ unsafe fn read_record(c: &Channel, output: *mut c_void, capacity: i32) -> i32 {
     {
         return -1;
     }
-    // SAFETY: `length <= maxlen` record bytes follow the header inside `mem`; `output` has
-    // `capacity >= length` writable, disjoint bytes.
-    unsafe {
-        copy_record(
-            item.wrapping_add(4),
-            output.cast::<u8>(),
-            length.unsigned_abs() as usize,
-        );
-    };
+    let size = length.unsigned_abs() as usize;
+    if size > 0 {
+        // SAFETY: `length <= maxlen` record bytes follow the header inside `mem`.
+        let record = unsafe { std::slice::from_raw_parts(item.wrapping_add(4), size) };
+        // SAFETY: `output` (non-null, checked above) has `capacity >= length` writable
+        // bytes, disjoint from `mem`.
+        copy_record(record, unsafe {
+            std::slice::from_raw_parts_mut(output.cast(), size)
+        });
+    }
     length
 }
 const LOCK: i32 = 2;
@@ -265,16 +250,16 @@ pub unsafe fn swr_v1_memory_channel_init(
     };
     // SAFETY: the caller lends the record exclusively; the queue is its first field.
     unsafe { record.cast::<Channel>().write(queue) };
-    // SAFETY: as above.
-    let notify = unsafe { &raw mut (*record).notify };
+    let notify = record
+        .wrapping_byte_add(std::mem::offset_of!(Record, notify))
+        .cast::<[c_int; 2]>();
     // SAFETY: as above.
     unsafe { notify.write([-1, -1]) };
     // SAFETY: `notify` has room for the two descriptors.
     if flags & NOTIFY != 0 && unsafe { libc::pipe(notify.cast()) } != 0 {
         return 1;
     }
-    // SAFETY: as above.
-    let lock = unsafe { &raw mut (*record).lock };
+    let lock = mutex(record);
     // SAFETY: `lock` is unused mutex storage inside the lent record.
     if flags & LOCK != 0 && unsafe { init_mutex(lock) } != 0 {
         // SAFETY: the record is still exclusively lent.
@@ -282,6 +267,13 @@ pub unsafe fn swr_v1_memory_channel_init(
         return 2;
     }
     0
+}
+
+/// The address of `record`'s mutex, computed without reading it.
+fn mutex(record: *mut Record) -> *mut libc::pthread_mutex_t {
+    record
+        .wrapping_byte_add(std::mem::offset_of!(Record, lock))
+        .cast()
 }
 
 /// A process-shared mutex, like upstream's `Mutex(true)`.
@@ -322,8 +314,7 @@ pub unsafe fn swr_v1_memory_channel_close(record: *mut Record) {
     // SAFETY: a live record.
     let flags = unsafe { (*record).queue.flags };
     if flags & LOCK != 0 {
-        // SAFETY: a live record.
-        let lock = unsafe { &raw mut (*record).lock };
+        let lock = mutex(record);
         // SAFETY: the mutex was initialized and nobody holds it.
         unsafe { libc::pthread_mutex_destroy(lock) };
     }
@@ -337,10 +328,9 @@ pub unsafe fn swr_v1_memory_channel_close(record: *mut Record) {
 /// # Safety
 /// `record` is live with `SW_CHAN_LOCK`; an unlock follows this thread's lock.
 pub unsafe fn swr_v1_memory_channel_lock(record: *mut Record, lock: bool) {
-    // SAFETY: a live record with an initialized mutex.
-    let mutex = unsafe { &raw mut (*record).lock };
+    let mutex = mutex(record);
     if lock {
-        // SAFETY: as above.
+        // SAFETY: a live record with an initialized mutex.
         unsafe { libc::pthread_mutex_lock(mutex) };
     } else {
         // SAFETY: as above; this thread holds it.

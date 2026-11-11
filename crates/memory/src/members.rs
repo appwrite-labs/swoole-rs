@@ -376,17 +376,6 @@ fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
 
 /// Mapping invariant: a shared mapping is `total` bytes, 8-aligned, whose first 8
 /// bytes hold `total`; its payload follows.
-///
-/// The mapping whose payload is `payload`: its base and total.
-///
-/// # Safety
-/// `payload` is a live mapping's payload.
-unsafe fn extent(payload: *mut c_void) -> (*mut c_void, usize) {
-    let base = payload.cast::<usize>().wrapping_sub(1);
-    // SAFETY: as the caller promises, the header precedes the payload.
-    (base.cast(), unsafe { base.read() })
-}
-
 /// A field holding a mapping `map` made (`sw_shm_malloc`'s, or a private one), or
 /// null. Only its constructors fill it, so [`Shm::free`] unmaps exactly what they
 /// mapped, once. Native code reads it as the payload pointer.
@@ -427,6 +416,16 @@ impl Shm {
         )
     }
 
+    /// The mapping's base and total, if there is one.
+    fn extent(&self) -> Option<(*mut c_void, usize)> {
+        if self.0.is_null() {
+            return None;
+        }
+        let base = self.0.cast::<usize>().wrapping_sub(1);
+        // SAFETY: only `map` filled the field, so its header precedes the payload.
+        Some((base.cast(), unsafe { base.read() }))
+    }
+
     /// The payload, or null.
     #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
@@ -444,11 +443,9 @@ impl Shm {
         reason = "upstream's Server::worker_start_callback ignores mprotect's result"
     )]
     pub fn protect(&self, flags: c_int) -> c_int {
-        if self.0.is_null() {
+        let Some((base, total)) = self.extent() else {
             return -1;
-        }
-        // SAFETY: only `map` filled the field, so its header precedes the payload.
-        let (base, total) = unsafe { extent(self.0) };
+        };
         // SAFETY: the mapping its header describes.
         unsafe { libc::mprotect(base, total, flags) }
     }
@@ -461,12 +458,10 @@ impl Shm {
 
     /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the field null.
     pub fn free(&mut self) {
-        let payload = core::mem::replace(&mut self.0, ptr::null_mut());
-        if payload.is_null() {
+        let Some((base, total)) = self.extent() else {
             return;
-        }
-        // SAFETY: only `map` filled the field, so its header precedes the payload.
-        let (base, total) = unsafe { extent(payload) };
+        };
+        self.0 = ptr::null_mut();
         // SAFETY: the mapping its header describes, unmapped once: the field is null now.
         if unsafe { libc::munmap(base, total) } < 0 {
             log::sys_warning(
@@ -670,13 +665,8 @@ pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
 }
 
 /// `Table::create()`: lays the table out in a fresh shared arena.
-///
-/// # Safety
-/// `this` is a made table.
 #[must_use]
-pub unsafe fn swr_table_create(this: *mut Table) -> bool {
-    // SAFETY: as the caller promises.
-    let table = unsafe { &mut *this };
+pub fn swr_table_create(table: &mut Table) -> bool {
     let size = table.arena_size();
     if size == 0 {
         return false;
@@ -734,7 +724,7 @@ impl SharedTable {
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
         // SAFETY: a made table, which `&mut self` borrows alone.
-        unsafe { swr_table_create(self.table.as_ptr()) }
+        swr_table_create(unsafe { self.table.as_mut() })
     }
 
     /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.

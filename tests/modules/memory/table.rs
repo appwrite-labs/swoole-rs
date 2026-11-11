@@ -519,7 +519,7 @@ impl Upstream {
         assert!(this.add_column(b"name", TYPE_STRING, 32));
         assert!(this.add_column(b"score", TYPE_FLOAT, 0));
         assert!(
-            unsafe { crate::members::swr_table_create(table) },
+            crate::members::swr_table_create(unsafe { &mut *table }),
             "create failed"
         );
         Upstream(table)
@@ -624,7 +624,8 @@ fn table_create() {
     let table = Upstream::new(1024);
     let ptr = table.ptr();
     assert!(ptr.memory_size() > ptr.size() * ptr.column_size());
-    assert!(!unsafe { crate::members::swr_table_create(table.0) }); // create again should fail
+    assert!(!crate::members::swr_table_create(unsafe { &mut *table.0 })); // create again should fail
+    let ptr = table.ptr();
     assert!(table.set("php", &row(b"php", 1, 1.245)));
     assert!(table.set("java", &row(b"java", 2, JAVA_SCORE)));
     assert!(table.set("c++", &row(b"c++", 3, 4.888)));

@@ -617,8 +617,8 @@ impl ReactorState {
 
     pub(crate) fn close_backend(&mut self) {
         if self.backend_fd >= 0 {
-            // SAFETY: this state owns the descriptor and invalidates ownership immediately.
-            unsafe { libc::close(self.backend_fd) };
+            // This state owns the descriptor and invalidates ownership immediately.
+            swoole_rs_corebase::sys::close(self.backend_fd);
             self.backend_fd = -1;
         }
         // The wait loop no longer holds pointers to the arrays.

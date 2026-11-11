@@ -103,6 +103,13 @@ pub fn unlink(path: &CStr) -> c_int {
     unsafe { libc::unlink(path.as_ptr()) }
 }
 
+/// `waitpid(2)`, storing the status in `status` when given.
+pub fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int) -> pid_t {
+    let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
+    // SAFETY: `status` is null or one writable int.
+    unsafe { libc::waitpid(pid, status, options) }
+}
+
 /// `getpid(2)`.
 #[must_use]
 pub fn getpid() -> pid_t {

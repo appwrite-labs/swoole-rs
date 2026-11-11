@@ -77,12 +77,9 @@ fn failed(outcome: i32, status: i32) -> WriteResult {
     }
 }
 
-/// # Safety
-/// `buffer` is a live Rust buffer handle.
-unsafe fn length(buffer: *mut Buffer) -> Result<u32, i32> {
+/// The bytes queued in `buffer`, which may be null.
+fn length(buffer: Option<&Buffer>) -> Result<u32, i32> {
     let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises.
-    let buffer = unsafe { buffer.as_ref() };
     match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
         0 => Ok(if count == 0 { 0 } else { length }),
         status => Err(status),
@@ -90,16 +87,11 @@ unsafe fn length(buffer: *mut Buffer) -> Result<u32, i32> {
 }
 
 /// `Buffer::empty`: null or no entries.
-///
-/// # Safety
-/// As for [`length`], or null.
-unsafe fn empty(buffer: *mut Buffer) -> Result<bool, i32> {
-    if buffer.is_null() {
+fn empty(buffer: Option<&Buffer>) -> Result<bool, i32> {
+    if buffer.is_none() {
         return Ok(true);
     }
     let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises.
-    let buffer = unsafe { buffer.as_ref() };
     match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
         0 => Ok(count == 0),
         status => Err(status),
@@ -139,16 +131,16 @@ pub unsafe fn swr_v1_reactor_write(
     if length as u32 > output.buffer_size {
         return failed(1, 0);
     }
-    // SAFETY: `buffer` is the socket's handle or null.
-    let queued = match unsafe { empty(buffer) } {
+    // SAFETY: `buffer` is the socket's handle or null; the borrow ends with the check.
+    let queued = match empty(unsafe { buffer.as_ref() }) {
         Ok(empty) => !empty,
         Err(status) => return failed(4, status),
     };
     let mut buffer = buffer;
     let mut sent = 0isize;
     if queued {
-        // SAFETY: non-empty, so a live handle.
-        let held = match unsafe { self::length(buffer) } {
+        // SAFETY: as above.
+        let held = match self::length(unsafe { buffer.as_ref() }) {
             Ok(held) => held,
             Err(status) => return failed(4, status),
         };
@@ -282,7 +274,7 @@ mod tests {
             )
         };
         let target = if buffer.is_null() { fresh } else { buffer };
-        let held = unsafe { length(target) }.unwrap();
+        let held = length(unsafe { target.as_ref() }).unwrap();
         unsafe { swr_v1_buffer_release(fresh) };
         (
             result,

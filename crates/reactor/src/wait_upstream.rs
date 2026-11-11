@@ -5,7 +5,7 @@
 //! registry, or the `io_uring` engine when one is registered. The process patch deletes
 //! `src/os/wait.cc`.
 use std::ffi::{c_int, c_void};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{log, sys};
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
@@ -182,22 +182,20 @@ pub extern "C" fn system_waitpid_safe(
         #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
         fn system_sleep(seconds: f64) -> c_int;
     }
-    let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
-    // SAFETY: no preconditions.
+    let mut status = status;
     let outside = crate::event_api::swr_v1_event_current().is_null()
         || swoole_rs_coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
-        // SAFETY: null or a writable status.
-        return unsafe { libc::waitpid(pid, status, options) };
+        return sys::waitpid(pid, status, options);
     }
     if let Some(uring) = crate::wait_loop::uring() {
-        // SAFETY: as above.
+        let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
+        // SAFETY: null or a writable status.
         return unsafe { iouring_waitpid(uring, pid, status, options, -1.0) };
     }
     let mut second = LOCK_DEFAULT_SECOND;
     loop {
-        // SAFETY: as above.
-        let result = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
+        let result = sys::waitpid(pid, status.as_deref_mut(), libc::WNOHANG);
         // SAFETY: in a coroutine.
         if result != 0 || unsafe { system_sleep(second) } != OK {
             return result;
@@ -232,15 +230,15 @@ pub extern "C" fn swoole_coroutine_waitpid(
 /// `pid_t swoole_waitpid(pid_t, int *, int)`: `waitpid`, dispatching signals and
 /// running due timers whenever a signal interrupts it. `status` may be null.
 #[unsafe(export_name = "_Z14swoole_waitpidiPii")]
+#[must_use]
 pub extern "C" fn swoole_waitpid(
     pid: libc::pid_t,
     status: Option<&mut c_int>,
     options: c_int,
 ) -> libc::pid_t {
-    let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
+    let mut status = status;
     loop {
-        // SAFETY: null or a writable status.
-        let result = unsafe { libc::waitpid(pid, status, options) };
+        let result = sys::waitpid(pid, status.as_deref_mut(), options);
         if result >= 0 || errno() != libc::EINTR {
             return result;
         }

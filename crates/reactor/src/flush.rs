@@ -29,17 +29,12 @@ pub trait FlushEffects {
 }
 
 /// `Buffer::empty`: null, no entries, or a handle that can't be read.
-///
-/// # Safety
-/// `buffer` is null or a live Rust buffer handle.
-unsafe fn empty(buffer: *mut Buffer) -> bool {
-    if buffer.is_null() {
+fn empty(buffer: Option<&Buffer>) -> bool {
+    let Some(buffer) = buffer else {
         return true;
-    }
+    };
     let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises.
-    let buffer = unsafe { buffer.as_ref() };
-    swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) != 0 || count == 0
+    swr_v1_buffer_stats(Some(buffer), Some(&mut length), Some(&mut count)) != 0 || count == 0
 }
 
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
@@ -53,8 +48,8 @@ pub unsafe fn swr_v1_reactor_flush(
     buffer: *mut Buffer,
     ops: &impl FlushEffects,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    while !unsafe { empty(buffer) } {
+    // SAFETY: as the caller promises; the borrow ends with the check.
+    while !empty(unsafe { buffer.as_ref() }) {
         let result = match ops.front_kind() {
             CLOSE => return ops.close(),
             SENDFILE => ops.handle_sendfile(),
@@ -78,7 +73,7 @@ pub unsafe fn swr_v1_reactor_flush(
         unsafe { (*output).send_timer = std::ptr::null_mut() };
     }
     // SAFETY: as above.
-    if unsafe { empty(buffer) } {
+    if empty(unsafe { buffer.as_ref() }) {
         ops.remove_write_event();
     }
     SW_OK
@@ -94,8 +89,8 @@ pub unsafe fn swr_v1_reactor_drain(
     buffer: *mut Buffer,
     ops: &impl FlushEffects,
 ) {
-    // SAFETY: as the caller promises.
-    while !unsafe { empty(buffer) } {
+    // SAFETY: as the caller promises; the borrow ends with the check.
+    while !empty(unsafe { buffer.as_ref() }) {
         if ops.wait_writable() == SW_ERR {
             break;
         }
