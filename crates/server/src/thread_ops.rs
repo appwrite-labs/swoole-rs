@@ -553,9 +553,9 @@ pub(crate) unsafe fn answer(
             // SAFETY: this thread's reactor, the port and its event.
             let retval = unsafe { on_read(reactor, port, event.cast()) };
             // Upstream reads the socket after the read too.
-            let received = sock
-                .read(|s| s.total_recv_bytes)
-                .wrapping_sub(last_recv_bytes);
+            let (total_recv_bytes, notified) =
+                sock.read(|s| (s.total_recv_bytes, s.close_notified != 0));
+            let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
             if received.cast_signed() > 0 {
                 let received = received as u64;
                 if let Some(gs) = port_config.counters() {
@@ -570,8 +570,6 @@ pub(crate) unsafe fn answer(
             if conn.active != 0 {
                 let max = config().max_queued_bytes;
                 let flag = |set: bool, bit: u64| if set { bit } else { 0 };
-                // An active connection's socket.
-                let notified = sock.read(|s| s.close_notified != 0);
                 result |= crate::conn_io::ACTIVE
                     | flag(notified, crate::conn_io::READ_NOTIFIED)
                     | flag(
