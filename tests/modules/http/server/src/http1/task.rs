@@ -468,7 +468,7 @@ fn task_worker() {
         unsafe {
             (*pool).running = true;
             let main_loop = (*pool).main_loop.unwrap();
-            main_loop(PoolRef::new(pool), Worker::new((*pool).workers));
+            main_loop(PoolRef::new(pool), Worker::new((*pool).workers()));
         }
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
@@ -488,8 +488,8 @@ fn task_worker() {
     assert_eq!(serv.task_count(), 1);
 
     t1.join().unwrap();
-    // SAFETY: the task pool, whose worker loop has ended.
-    unsafe { pool::destroy(serv.task_pool()) };
+    // The task pool, whose worker loop has ended.
+    pool::destroy(serv.view().task_pool_ref());
 
     assert_eq!(serv.task_count(), 2);
     assert_no_failure();

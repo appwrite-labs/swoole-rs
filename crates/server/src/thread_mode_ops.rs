@@ -351,8 +351,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_CREATE_EVENT_WORKERS => u64::from(unsafe { create_event_workers(ctx.server()) }),
         // SAFETY: as above.
         OP_CREATE_USER_WORKERS => u64::from(unsafe { create_user_workers(ctx.server()) }),
-        // SAFETY: the server's live task pool.
-        OP_TASK_START_CHECK => sign(unsafe { start_check(ctx.workers().task_pool) }),
+        OP_TASK_START_CHECK => sign(start_check(ctx.server().task_pool_ref())),
         OP_STORE_LISTEN_SOCKET => {
             server_methods::store_listen_socket(ctx.server());
             0

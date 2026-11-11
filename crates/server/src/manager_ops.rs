@@ -152,7 +152,7 @@ impl Context {
     /// The event pool's reload task, for the ops that run while the manager reloads.
     fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {
         // SAFETY: the reload task the manager started.
-        unsafe { &mut *self.pool().reload_task }
+        unsafe { &mut *self.pool().reload_task() }
     }
 }
 
@@ -232,7 +232,7 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         signed(unsafe { &*worker }.pid())
     };
     Some(match op {
-        OP_HAS_MESSAGE_BOX => u64::from(!pool.message_box.is_null()),
+        OP_HAS_MESSAGE_BOX => u64::from(!pool.message_box().is_null()),
         OP_USER_WORKER_NUM => workers.user_count as u64,
         OP_MODE => u64::from(config.mode_),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
@@ -240,12 +240,12 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_RELOAD_ASYNC => u64::from(config.reload_async),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_EVENT_WORKER_PID => pid(workers.event_workers.wrapping_add(index(arg))),
-        OP_TASK_POOL_WORKER_NUM => u64::from(task_pool.worker_num),
-        OP_TASK_WORKER_PID => pid(task_pool.workers.wrapping_add(index(arg))),
+        OP_TASK_POOL_WORKER_NUM => u64::from(task_pool.worker_num()),
+        OP_TASK_WORKER_PID => pid(task_pool.workers().wrapping_add(index(arg))),
         OP_WORKER_REGISTRY => config.worker_registry as u64,
         OP_RUNNING => u64::from(config.running),
         OP_RELOAD_INIT => u64::from(pool.reload_init),
-        OP_RELOAD_TASK => pool.reload_task as u64,
+        OP_RELOAD_TASK => pool.reload_task() as u64,
         OP_WAIT_STATUS => signed(ctx.wait_status),
         OP_WAIT_ERROR => signed(ctx.wait_error),
         OP_READ_MESSAGE => u64::from(pool.read_message),
@@ -272,7 +272,6 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
-    let (pool, task_pool) = (ctx.workers().event_pool, ctx.workers().task_pool);
     let callback = |index| ctx.state().callbacks.call_server(index, ctx.server());
     let registry = ctx.registry();
     match op {
@@ -282,10 +281,10 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(created));
         }
         OP_CREATE_MESSAGE_BOX => {
-            // SAFETY: the server's live event pool.
-            return Some(signed(unsafe {
-                methods::create_message_box(pool, MESSAGE_BOX_SIZE)
-            }));
+            return Some(signed(methods::create_message_box(
+                ctx.server().event_pool_ref(),
+                MESSAGE_BOX_SIZE,
+            )));
         }
         OP_CREATE_USER_WORKERS => {
             // SAFETY: the context's live server.
@@ -293,8 +292,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(created));
         }
         OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),
-        // SAFETY: the server's live task pool.
-        OP_START_TASK_POOL => return Some(signed(unsafe { methods::start(task_pool) })),
+        OP_START_TASK_POOL => return Some(signed(methods::start(ctx.server().task_pool_ref()))),
         OP_SET_MANAGER_TYPE => swoole_set_worker_type(SW_MANAGER),
         OP_MANAGER_INIT => {
             config.manager_ = core::ptr::without_provenance_mut(index(arg));
@@ -310,8 +308,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_ON_MANAGER_STOP => callback(CB_MANAGER_STOP),
         OP_ON_BEFORE_RELOAD => callback(CB_BEFORE_RELOAD),
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
-        // SAFETY: the server's live event pool.
-        OP_DROP_RELOAD_TASK => unsafe { methods::drop_reload_task(pool) },
+        OP_DROP_RELOAD_TASK => methods::drop_reload_task(ctx.server().event_pool_ref()),
         OP_KILL_TASK_WORKERS => {
             // SAFETY: the context's live server.
             unsafe {
@@ -339,7 +336,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let (workers, count) = if op == OP_RELOAD_ADD_EVENT_WORKERS {
                 (config.workers.as_ptr().cast(), config.worker_num)
             } else {
-                (ctx.task_pool().workers, config.task_worker_num)
+                (ctx.task_pool().workers(), config.task_worker_num)
             };
             // SAFETY: the server's `count` worker records.
             let workers: &[WorkerRecord] =
@@ -387,8 +384,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let reloaded = crate::thread_mode_ops::reload_worker_threads(ctx.server(), arg != 0);
             return Some(u64::from(reloaded));
         }
-        // SAFETY: the server's live event pool.
-        OP_POOL_RELOAD => return Some(u64::from(unsafe { methods::reload(pool) })),
+        OP_POOL_RELOAD => return Some(u64::from(methods::reload(ctx.server().event_pool_ref()))),
         _ => return None,
     }
     Some(0)
@@ -435,8 +431,8 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             } else {
                 ctx.worker
             };
-            // SAFETY: the live task pool and one of its workers.
-            let pid = unsafe { methods::spawn(ctx.workers().task_pool, worker) };
+            // SAFETY: one of the task pool's workers.
+            let pid = unsafe { methods::spawn(ctx.server().task_pool_ref(), worker) };
             if op == OP_SPAWN_TASK_WORKER {
                 return Some(0);
             }

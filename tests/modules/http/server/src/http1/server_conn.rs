@@ -1713,9 +1713,9 @@ fn base_event_worker_pool_cleanup() {
     assert_eq!(server.start(), SW_OK);
     // SAFETY: `server.get_event_worker_pool()`, in the server's shared memory.
     let pool = unsafe { &*server.view().workers().event_pool };
-    assert!(pool.pipes.is_null());
+    assert!(pool.pipes().is_null());
     assert!(pool.registry().is_null());
-    assert!(pool.message_box.is_null());
+    assert!(pool.message_box().is_null());
     server.delete();
 }
 

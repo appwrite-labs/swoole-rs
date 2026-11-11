@@ -47,7 +47,7 @@ pub struct PoolRecord {
     pub use_socket: u8,
     pub max_packet_size: u32,
     pub msgqueue_key: c_int,
-    pub worker_num: u32,
+    pub(crate) worker_num: u32,
     pub max_request: u32,
     pub max_request_grace: u32,
     pub scheduler_warning: u8,
@@ -66,20 +66,79 @@ pub struct PoolRecord {
     pub on_worker_not_found: Option<NotFoundFn>,
     pub main_loop: Option<MainLoopFn>,
     pub round_id: u32,
-    pub workers: *mut WorkerRecord,
-    pub pipes: *mut c_void,
-    /// Null, or the box `create` made: crate-private, so safe code elsewhere can't
-    /// forge it.
+    pub(crate) workers: *mut WorkerRecord,
+    pub(crate) pipes: *mut c_void,
+    // `worker_num` and the pointers from `workers` on are crate-private, like
+    // `registry`: the pool's operations trust them, so safe code elsewhere reads
+    // them through the getters below and writes them only through the `unsafe`
+    // setters.
+    /// Null, or the box `create` made.
     pub(crate) registry: *mut WorkerRegistry,
-    pub queue: *mut c_void,
-    pub ipc: *mut PoolIpc,
-    pub message_box: *mut c_void,
-    pub message_bus: *mut c_void,
-    pub reload_task: *mut ReloadTask,
+    pub(crate) queue: *mut c_void,
+    pub(crate) ipc: *mut PoolIpc,
+    pub(crate) message_box: *mut c_void,
+    pub(crate) message_bus: *mut c_void,
+    pub(crate) reload_task: *mut ReloadTask,
     pub ptr: *mut c_void,
 }
 
 impl PoolRecord {
+    /// The pool's worker count: how many records `workers` holds.
+    #[must_use]
+    pub fn worker_num(&self) -> u32 {
+        self.worker_num
+    }
+
+    /// The pool's `worker_num` worker records, or null before `create`.
+    #[must_use]
+    pub fn workers(&self) -> *mut WorkerRecord {
+        self.workers
+    }
+
+    /// The native pipes `create` made for a unix-socket pool, or null.
+    #[must_use]
+    pub fn pipes(&self) -> *mut c_void {
+        self.pipes
+    }
+
+    /// The `SysV` message queue of a message-queue pool, or null.
+    #[must_use]
+    pub fn queue(&self) -> *mut c_void {
+        self.queue
+    }
+
+    /// The pool's IPC state, or null before `create`.
+    #[must_use]
+    pub fn ipc(&self) -> *mut PoolIpc {
+        self.ipc
+    }
+
+    /// The pool's message box (a shared-memory channel), or null.
+    #[must_use]
+    pub fn message_box(&self) -> *mut c_void {
+        self.message_box
+    }
+
+    /// The pool's message bus, or null.
+    #[must_use]
+    pub fn message_bus(&self) -> *mut c_void {
+        self.message_bus
+    }
+
+    /// The reload in progress, or null.
+    #[must_use]
+    pub fn reload_task(&self) -> *mut ReloadTask {
+        self.reload_task
+    }
+
+    /// Sets `workers`.
+    ///
+    /// # Safety
+    /// `workers` holds the pool's `worker_num` records, live as long as the pool.
+    pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
+        self.workers = workers;
+    }
+
     /// The registry `create` made, or null.
     #[must_use]
     pub fn registry(&self) -> *mut WorkerRegistry {
@@ -98,6 +157,12 @@ impl PoolRecord {
 /// A live pool, as the pool passes one to its callbacks. Like [`Worker`], it reads
 /// and writes through the pointer and makes no lasting reference to the record,
 /// which the pool's own code and signal handlers write while a callback runs.
+///
+/// Any record is a pool the operations over this handle can run on: a zeroed one,
+/// or one `create` made. The fields they trust (`worker_num` and the pointers from
+/// `workers` on) are crate-private, written only by this crate's operations and the
+/// `unsafe` setters, so safe code can't forge them, and the operations check each
+/// pointer for null before using it.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct PoolRef<'a> {
@@ -614,6 +679,7 @@ setters!(
     worker_num / set_worker_num: u32,
     max_request / set_max_request: u32,
     max_request_grace / set_max_request_grace: u32,
+    workers / set_workers: *mut WorkerRecord,
     pipes / set_pipes: *mut c_void,
     registry / set_registry: *mut WorkerRegistry,
     queue / set_queue: *mut c_void,
@@ -679,11 +745,14 @@ impl<H: PoolHost> Pool<H> {
             self.op(LOG_NO_SYSVMSG, 0);
             return SW_ERR;
         }
-        self.set_worker_num(worker_num);
-        if self.op(OP_ALLOC_WORKERS, 0) == 0 {
+        // The count goes with the records, so `worker_num` never counts past `workers`.
+        let workers = pointer::<WorkerRecord>(self.op(OP_ALLOC_WORKERS, worker_num.into()));
+        if workers.is_null() {
             self.op(LOG_ALLOC, 0);
             return SW_ERR;
         }
+        self.set_workers(workers);
+        self.set_worker_num(worker_num);
         if self.create_message_box(SW_MESSAGE_BOX_SIZE) < 0 {
             return SW_ERR;
         }
@@ -697,9 +766,12 @@ impl<H: PoolHost> Pool<H> {
                 self.set_queue(Box::into_raw(queue).cast());
             }
             IPC_UNIXSOCK => {
-                self.op(OP_NEW_PIPES, 0);
+                let pipes = pointer(self.op(OP_NEW_PIPES, 0));
+                self.set_pipes(pipes);
                 for index in 0..worker_num {
                     if self.on(self.worker(index), OP_NEW_PIPE, 0) == 0 {
+                        // The failed pipe freed the list.
+                        self.set_pipes(ptr::null_mut());
                         return SW_ERR;
                     }
                 }
@@ -721,11 +793,12 @@ impl<H: PoolHost> Pool<H> {
 
     /// `ProcessPool::create_message_box`.
     fn create_message_box(&mut self, size: u64) -> i64 {
-        if self.op(OP_NEW_MESSAGE_BOX, size) == 0 {
-            SW_ERR
-        } else {
-            SW_OK
+        let message_box = pointer::<c_void>(self.op(OP_NEW_MESSAGE_BOX, size));
+        if message_box.is_null() {
+            return SW_ERR;
         }
+        self.set_message_box(message_box);
+        SW_OK
     }
 
     /// `ProcessPool::create_message_bus`.
@@ -738,10 +811,12 @@ impl<H: PoolHost> Pool<H> {
             self.op(LOG_BUS_EXISTS, 0);
             return SW_ERR;
         }
-        if self.op(OP_NEW_MESSAGE_BUS, 0) == 0 {
+        let bus = pointer::<c_void>(self.op(OP_NEW_MESSAGE_BUS, 0));
+        if bus.is_null() {
             self.op(LOG_ALLOC, 1);
             return SW_ERR;
         }
+        self.set_message_bus(bus);
         #[cfg(target_os = "linux")]
         let size = {
             // The largest unix dgram the pipes carry.
@@ -787,8 +862,9 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::start_check`.
     fn start_check(&mut self) -> i64 {
         if self.ipc_mode() == IPC_SOCKET
-            // SAFETY: the pool's IPC state.
-            && swr_v1_process_pool_ipc_listener(unsafe { &*self.ipc() }).is_null()
+            // SAFETY: null, or the pool's IPC state.
+            && unsafe { self.ipc().as_ref() }
+                .is_none_or(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
         {
             self.op(LOG_MUST_LISTEN, 0);
             return SW_ERR;
@@ -996,9 +1072,14 @@ impl<H: PoolHost> Pool<H> {
                 self.op(LOG_NEEDS_UNIXSOCK, 1);
                 return SW_ERR;
             }
-            if self.message_bus().is_null() {
-                self.create_message_bus();
+            // The loop reads the bus: without one (it couldn't be made) there's no loop.
+            if self.message_bus().is_null() && self.create_message_bus() < 0 {
+                return SW_ERR;
             }
+        }
+        if self.ipc().is_null() {
+            // A pool `create` never made.
+            return SW_ERR;
         }
         let ipc_mode = if self.use_msgqueue() != 0 {
             IPC_MSGQUEUE
@@ -1031,8 +1112,11 @@ impl<H: PoolHost> Pool<H> {
         if self.ipc_mode() == IPC_UNIXSOCK && self.on_message().is_some() {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
-                // SAFETY: the pool's IPC state.
-                pool_ipc_prepare(unsafe { &mut *self.ipc() }, self.max_packet_size());
+                let size = self.max_packet_size();
+                // SAFETY: null, or the pool's IPC state, which nothing else borrows meanwhile.
+                if let Some(ipc) = unsafe { self.ipc().as_mut() } {
+                    pool_ipc_prepare(ipc, size);
+                }
                 self.op(OP_PIPE_HANDLER, 0);
             } else {
                 self.op(OP_PIPE_HANDLER, 1);
@@ -1283,8 +1367,11 @@ impl<H: PoolHost> Reap for Pool<H> {
             return RELOAD_NONE;
         }
         self.set_reload_init(false);
-        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
-        unsafe { &mut *Pool::reload_task(self) }.add_workers(self.worker_records());
+        let task = Pool::reload_task(self);
+        // SAFETY: null, or the reload `reload` started, live until `drop_reload_task`.
+        if let Some(task) = unsafe { task.as_mut() } {
+            task.add_workers(self.worker_records());
+        }
         RELOAD_KILL_ONE
     }
 
@@ -1328,18 +1415,15 @@ fn raise_or(result: Result<i64, Bailed>) -> i64 {
 }
 
 /// `ProcessPool::create(worker_num, key, mode)`.
-///
-/// # Safety
-/// `pool` a zeroed or reset `ProcessPool`.
-pub unsafe fn swr_v1_process_pool_create(
+pub fn swr_v1_process_pool_create(
     native: &dyn PoolNative,
-    pool: *mut PoolRecord,
+    pool: PoolRef<'_>,
     worker_num: u32,
     key: c_int,
     mode: u8,
 ) -> i64 {
-    // SAFETY: as the caller guarantees.
-    unsafe { with(native, pool, |p| p.create(worker_num, key, mode)) }
+    // SAFETY: a live pool.
+    unsafe { with(native, pool.raw(), |p| p.create(worker_num, key, mode)) }
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
@@ -1568,8 +1652,11 @@ mod tests {
             Self { record, workers }
         }
 
-        fn pool(&mut self, script: Script) -> Pool<Script> {
+        fn pool(&mut self, mut script: Script) -> Pool<Script> {
             self.record.workers = self.workers.as_mut_ptr();
+            // `create` takes the workers `OP_ALLOC_WORKERS` answers.
+            let workers = self.workers.as_mut_ptr().expose_provenance().cast_signed() as i64;
+            script.answers.entry(OP_ALLOC_WORKERS).or_insert(workers);
             self.record.worker_num = u32::try_from(self.workers.len()).unwrap();
             Pool {
                 h: script,

@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use std::ffi::CString;
 use std::sync::Arc;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
-use swoole_rs_process::process_pool::PoolRecord;
+use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_reactor::Socket;
@@ -343,6 +343,20 @@ impl<'a> Server<'a> {
         let gs = self.config().gs.as_ptr().cast::<u8>();
         gs.wrapping_add(core::mem::offset_of!(crate::shared::ServerShared, pools))
             .cast()
+    }
+
+    /// The server's task pool, to run pool operations on.
+    #[must_use]
+    pub fn task_pool_ref(self) -> PoolRef<'a> {
+        // SAFETY: the pools live in the server's shared counters for its life.
+        unsafe { PoolRef::new(self.task_pool()) }
+    }
+
+    /// The server's event pool, right after its task pool.
+    #[must_use]
+    pub fn event_pool_ref(self) -> PoolRef<'a> {
+        // SAFETY: as `task_pool_ref`.
+        unsafe { PoolRef::new(self.task_pool().wrapping_add(1)) }
     }
 
     /// The server's worker registry, which `ServerState` boxed for the server's life.
