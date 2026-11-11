@@ -774,15 +774,13 @@ impl Client {
                 return Frame::Continue;
             }
             ACTION_PING_REPLY => {
-                let mut frame = frame_header(TYPE_PING, PING_PAYLOAD, FLAG_ACK, id).to_vec();
-                // Upstream copies the 8 bytes after the payload's own 9 (its
-                // pointer was already past the header).
-                // SAFETY: the read buffer is at least a frame header plus
-                // `length` bytes; upstream reads the same span.
-                let echo = unsafe {
-                    std::slice::from_raw_parts(buffer.wrapping_add(FRAME_HEADER * 2), PING_PAYLOAD)
+                // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
+                // other length is a FRAME_SIZE_ERROR.
+                let Ok(echo) = <[u8; PING_PAYLOAD]>::try_from(payload) else {
+                    return Frame::Fail;
                 };
-                frame.extend_from_slice(echo);
+                let mut frame = frame_header(TYPE_PING, PING_PAYLOAD, FLAG_ACK, id).to_vec();
+                frame.extend_from_slice(&echo);
                 return if self.send(&frame) {
                     Frame::Continue
                 } else {

@@ -7,21 +7,20 @@ PHPTs (see [corpus](../corpus/README.md)). `EXT` is a path to a built
 
 | Check | Command |
 | --- | --- |
-| Buffer backpressure/lifecycle | `python3 tests/modules/buffer/lifecycle.py --engine upstream=EXT --engine hybrid=EXT`, or corpus project `11-buffer-lifecycle` |
+| Buffer backpressure/lifecycle | `python3 tests/modules/buffer/lifecycle.py --engine upstream=EXT --engine cargo=EXT`, or corpus project `11-buffer-lifecycle` |
 | Native buffer benchmark | `python3 tests/modules/buffer/benchmark.py --archive target/ext/sdk/lib/libswoole_rs_ffi.a --iterations 50000 --repeat 5 --output target/reports/buffer-benchmark.json` (`--peek-front` reads each front before pop; `--previous-archive` adds an older build to the same trial series) |
 | Original upstream PHPTs | `python3 corpus/upstream/run.py --engine NAME=EXT --require-all` |
 | HTTP/1 framing ambiguities (smuggling corpus) | `python3 -m pytest tests/modules/http/test_smuggling.py --engine upstream=EXT --engine cargo=EXT` |
 | PHP-API differential fuzzing | `python3 tests/differential/fuzz.py --engine upstream=EXT --engine cargo=EXT --seed S --programs N --cases tests/differential/cases --keep DIR` |
-| WebSocket raw transport | `python3 -m pytest tests/modules/websocket/test_close.py --engine upstream=EXT --engine hybrid=EXT` |
-| WebSocket invalid-frame policy | `python3 -m pytest tests/modules/websocket/test_invalid.py --engine upstream=EXT --engine hybrid=EXT` |
-| Autobahn RFC suite | `python3 tests/modules/websocket/autobahn.py --engine upstream=EXT --engine hybrid=EXT` |
-| Timer kernel / adapter / fork / bailout | `python3 -m pytest tests/modules/timer --sanitize --manifest MANIFEST --engine upstream=EXT --engine timer=EXT` |
+| WebSocket raw transport | `python3 -m pytest tests/modules/websocket/test_close.py --engine upstream=EXT --engine cargo=EXT` |
+| WebSocket invalid-frame policy | `python3 -m pytest tests/modules/websocket/test_invalid.py --engine upstream=EXT --engine cargo=EXT` |
+| Autobahn RFC suite | `python3 tests/modules/websocket/autobahn.py --engine upstream=EXT --engine cargo=EXT` |
+| Timer fork / bailout | `python3 -m pytest tests/modules/timer --engine upstream=EXT --engine cargo=EXT` |
 | Pinned Hyperf skeleton | `python3 corpus/thirdparty/hyperf.py --prepare`, then corpus project `12-hyperf-skeleton` ([scope](../corpus/thirdparty/README.md)) |
 
 Tests run in isolated process groups on ephemeral ports. Fixed-port PHPTs and
 the Hyperf app run serially. Application tests do not fetch dependencies;
-`--prepare` does that explicitly. C++ ASan/UBSan (`--sanitize`) instruments the
-native callers, not Rust or PHP.
+`--prepare` does that explicitly.
 
 ## Autobahn
 

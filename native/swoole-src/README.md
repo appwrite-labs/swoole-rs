@@ -3,7 +3,7 @@
 Files from swoole-src v6.2.5 (76c657d), at the paths they have there. crates/ext's build.rs
 compiles these; it reads nothing from the pin.
 
-Some carry the patch set's changes: `php_swoole.h`, the curl hooks, `proc_open`, `plain_wrapper`
+Some carry changes the deleted patch set made: `php_swoole.h`, the curl hooks, `proc_open`, `plain_wrapper`
 and the pdo_sqlite driver and statement. The rest are byte-for-byte copies of code swoole-src
 bundles from elsewhere and that has no Rust replacement:
 

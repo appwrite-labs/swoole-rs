@@ -368,13 +368,13 @@ mod tests {
         unsafe { libc::pthread_sigmask(how, &raw const set, ptr::null_mut()) };
     }
 
-    /// The child takes a while to drop the parent's handlers, as on a busy machine,
-    /// and the reset unblocks SIGUSR1, as signalfd's does.
+    /// The reset unblocks SIGUSR1, as signalfd's does.
     extern "C" fn signal_clear() {
         signal(libc::SIGTERM, libc::SIG_DFL);
         change(libc::SIG_UNBLOCK, libc::SIGUSR1);
     }
 
+    /// The child takes a while to reopen the logger, as on a busy machine.
     fn host() {
         native::set_native_host(native::NativeHost {
             init: || {},

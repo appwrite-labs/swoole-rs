@@ -40,8 +40,9 @@ impl Call {
     /// # Panics
     /// The handler has no `$this`.
     pub fn throw_constructed_twice(&self) {
-        let object = self.this();
-        assert!(!object.is_null(), "a constructor's $this");
+        let object = self.this_object();
+        assert!(object.is_some(), "a constructor's $this");
+        let Some(object) = object else { return };
         // SAFETY: `$this` of the executing handler is live.
         let name = unsafe { class_name(object) };
         let message = [

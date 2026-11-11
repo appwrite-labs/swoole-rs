@@ -92,15 +92,16 @@ impl Minit {
 
     /// [`Class::register_static`] of `name` with `methods`.
     /// # Panics
-    /// `methods` is not `PHP_FE_END`-terminated.
+    /// `class` is a [`CustomClass`](crate::CustomClass)'s, or `methods` is not
+    /// `PHP_FE_END`-terminated.
     pub fn register_static(
         &self,
         class: &Class,
         name: &CStr,
         methods: &'static [zend_function_entry],
     ) {
-        // SAFETY: MINIT, with a static, terminated table.
-        unsafe { class.register_static(name, terminated(methods)) };
+        // SAFETY: MINIT, with a plain class and a static, terminated table.
+        unsafe { plain(class).register_static(name, terminated(methods)) };
     }
 
     /// `SW_FUNCTION_ALIAS` of each `(method, alias)` of `class`, registered with
@@ -124,7 +125,8 @@ impl Minit {
     /// adjust the entry and a copy of the standard handlers (Swoole's
     /// `SW_INIT_CLASS_ENTRY` followed by its `SW_SET_CLASS_*` macros).
     /// # Panics
-    /// `methods` is neither empty nor `PHP_FE_END`-terminated.
+    /// `class` is a [`CustomClass`](crate::CustomClass)'s, or `methods` is
+    /// neither empty nor `PHP_FE_END`-terminated.
     pub fn register(
         &self,
         class: &Class,
@@ -132,13 +134,14 @@ impl Minit {
         methods: &'static [zend_function_entry],
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        // SAFETY: MINIT, with a static, terminated table or none.
+        let class = plain(class);
+        // SAFETY: MINIT, with a plain class and a static, terminated table or none.
         unsafe { class.register_child(name, table(methods), ptr::null_mut(), configure) };
     }
 
     /// [`Self::register`], extending `parent`.
     /// # Panics
-    /// `methods` is neither empty nor `PHP_FE_END`-terminated.
+    /// As [`Self::register`].
     pub fn register_child(
         &self,
         class: &Class,
@@ -147,7 +150,9 @@ impl Minit {
         parent: Parent,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        // SAFETY: MINIT, with a static, terminated table or none, and a registered parent.
+        let class = plain(class);
+        // SAFETY: MINIT, with a plain class, a static, terminated table or none,
+        // and a registered parent.
         unsafe { class.register_child(name, table(methods), parent.0, configure) };
     }
 
@@ -298,6 +303,17 @@ fn persistent() -> c_int {
     c_int::try_from(CONST_PERSISTENT).unwrap_or(c_int::MAX)
 }
 
+/// `class`, checking it is no [`CustomClass`](crate::CustomClass)'s: registered
+/// here, its objects would get `T`'s handlers ([`crate::new_object`]) without
+/// the layout and free handler [`Minit::register_object`] gives them.
+fn plain(class: &Class) -> &Class {
+    assert!(
+        !class.custom,
+        "a CustomClass registers through register_object"
+    );
+    class
+}
+
 /// `class`'s entry, checking it is registered.
 fn registered(class: &Class) -> *mut zend_class_entry {
     let entry = class.entry();
@@ -337,4 +353,21 @@ macro_rules! minit {
             $crate::bailout::raise($body(&minit));
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plain_class_registers_through_register() {
+        let class = Class::new();
+        assert!(ptr::eq(plain(&class), &raw const class));
+    }
+
+    #[test]
+    #[should_panic(expected = "a CustomClass registers through register_object")]
+    fn a_custom_class_registers_only_through_register_object() {
+        let _ = plain(&crate::CustomClass::<u64>::new());
+    }
 }

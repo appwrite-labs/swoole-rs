@@ -78,6 +78,9 @@ jobs:
       - name: File callgrind ratchet
         if: hashFiles('cg-previous/callgrind.json') != ''
         run: |
+          # main's limits now, not the job's checkout: a ratchet PR that merged meanwhile
+          # closed its issue, and the old limits would file it again (#3016).
+          git fetch --depth=1 origin main && git checkout FETCH_HEAD -- benchmarks/callgrind_limits
           lowered=$(python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits --ratchet cg/callgrind.json cg-previous/callgrind.json)
           [ -n "$lowered" ] || exit 0
           title='callgrind: lower the limits the last two merge runs beat'

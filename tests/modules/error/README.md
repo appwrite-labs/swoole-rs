@@ -34,8 +34,8 @@ enter Rust.
 ## Correctness
 
 ```sh
-cargo test -p swoole-rs-error
-cargo clippy -p swoole-rs-error --all-targets -- -D warnings
+cargo test -p swoole-rs-error -p swoole-rs-error-ffi
+cargo clippy -p swoole-rs-error -p swoole-rs-error-ffi --all-targets -- -D warnings
 python3 tests/modules/error/differential.py --source PINNED_REFERENCE --archive HYBRID_ARCHIVE --sanitize --output REPORT
 python3 tests/modules/error/differential.py --source PINNED_REFERENCE --archive HYBRID_ARCHIVE --allocator-faults --sanitize --output REPORT
 python3 tests/modules/error/php.py --source PINNED_REFERENCE --engine upstream=CONTROL --engine hybrid=CANDIDATE --output REPORT
