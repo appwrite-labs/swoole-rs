@@ -1459,7 +1459,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STOP_SINGLE_WORKER => {
             o.event_pool().running = false;
-            let worker = crate::worker_methods::current_worker();
+            let worker = swoole_rs_process::worker_globals::current_worker();
             // SAFETY: as above; base mode's single worker, which this process runs.
             unsafe { entry::stop_async_worker(serv, worker.cast()) };
             0
@@ -2643,12 +2643,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             })
         }
         OP_ST_PIPE_COMMAND_NEW => {
-            use core::mem::MaybeUninit;
-            use swoole_rs_tls::socket_pair::{drop, unix_socket_new};
-            let mut storage = Box::new(MaybeUninit::<SocketPair>::uninit());
-            unix_socket_new(&mut storage, false, libc::SOCK_DGRAM);
-            // SAFETY: the constructor initialised it.
-            let mut built = unsafe { storage.assume_init() };
+            use swoole_rs_tls::socket_pair::{drop, unix_socket};
+            let mut built = Box::new(unix_socket(false, libc::SOCK_DGRAM));
             if built.master_socket.is_null() || built.worker_socket.is_null() {
                 drop(&mut built);
                 return Some(0);

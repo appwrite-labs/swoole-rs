@@ -13,7 +13,7 @@ use crate::{
 use std::{
     cell::{Cell, RefCell},
     ffi::{c_long, c_void},
-    mem, ptr,
+    ptr,
     rc::Rc,
 };
 use swoole_rs_zend::{
@@ -23,7 +23,7 @@ use swoole_rs_zend::{
     sys::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
-        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
+        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_class_entry,
         zend_exception_set_previous, zend_fetch_debug_backtrace, zend_objects_new,
         zend_throw_exception_object, zval,
     },
@@ -650,25 +650,9 @@ fn list(call: &Call) {
     }
     let ids = ids.into_owned();
     drop(cids);
-    let iterator = classes::iterator();
-    // SAFETY: the return slot, with Swoole's registered iterator class.
-    let object = unsafe { init_object(call.return_value(), iterator) };
-    let constructor = iterator
-        .wrapping_byte_add(mem::offset_of!(zend_class_entry, constructor))
-        .cast();
-    // SAFETY: ArrayIterator's internal constructor, with one array argument.
-    unsafe {
-        zend_call_method(
-            object,
-            iterator,
-            constructor,
-            c"__construct".as_ptr(),
-            11,
-            ptr::null_mut(),
-            1,
-            ids.as_ptr(),
-            ptr::null_mut(),
-        );
+    match classes::iterator().instantiate(&[&ids]) {
+        Ok(iterator) => call.set_owned(iterator),
+        Err(bailed) => bailed.defer(),
     }
 }
 

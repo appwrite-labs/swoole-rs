@@ -122,15 +122,7 @@ pub(crate) fn sys_error(level: c_int, message: &CStr) -> Result<(), Bailout> {
     swoole_rs_zend::report(level, &full)
 }
 
-/// `strerror(errno)`.
-pub(crate) fn strerror(errno: c_int) -> String {
-    // SAFETY: no preconditions.
-    let text = unsafe { libc::strerror(errno) };
-    // SAFETY: strerror returns a static or thread-local NUL-terminated message.
-    unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned()
-}
+pub(crate) use swoole_rs_corebase::sys::strerror;
 
 /// What the outermost Rust frame must raise once everything it holds is
 /// released: a longjmp may never cross a Rust frame that owns anything.

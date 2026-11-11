@@ -356,8 +356,7 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         }
         OP_IS_MASTER => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
         OP_CURRENT_WORKER => {
-            // SAFETY: this thread's worker globals.
-            let worker = unsafe { (*crate::worker_globals::thread_globals()).worker };
+            let worker = crate::worker_globals::current_worker();
             worker.expose_provenance().cast_signed() as i64
         }
         OP_SIGNAL_DISPATCH => {

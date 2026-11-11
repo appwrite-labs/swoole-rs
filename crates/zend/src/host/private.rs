@@ -82,7 +82,7 @@ unsafe fn array_property(
     unsafe { read(scope, object, name, length, true, &raw mut value) }
 }
 
-/// `sw_zend_read_and_convert_property_array(scope, value, name, length, 0)`:
+/// `sw_zend_read_and_convert_property_array(scope, object, name, length, 0)`:
 /// the object's property, made an array first when it is not one.
 /// # Errors
 /// PHP bailed out; nothing is resumed while a Rust caller owns its state.
@@ -91,63 +91,33 @@ unsafe fn array_property(
 /// storage belongs to the object.
 pub unsafe fn array_property_of(
     scope: *mut zend_class_entry,
-    value: *mut zval,
+    object: *mut zend_object,
     name: &core::ffi::CStr,
 ) -> Result<*mut zval, bailout::Bailout> {
-    // SAFETY: per the caller.
-    let property =
-        unsafe { property(scope, value, name.as_ptr(), name.count_bytes(), false, true) };
+    let (name, length) = (name.as_ptr(), name.count_bytes());
+    let mut temporary = crate::UNDEF;
+    // SAFETY: per the caller; the result is the object's own slot.
+    let mut property = unsafe { read(scope, object, name, length, false, &raw mut temporary) };
+    // SAFETY: a successful property read returns a live zval.
+    if !bailout::pending() && unsafe { type_of(property) } != sys::IS_ARRAY {
+        // SAFETY: Zend's distinguished uninitialized-value address is process/thread global.
+        if property == unsafe { sys::swr_zend_uninitialized_zval() } {
+            // SAFETY: construct and publish the missing array property.
+            property = unsafe { array_property(scope, object, name, length) };
+        } else {
+            // SAFETY: replace the existing value in the object's property slot.
+            unsafe { destroy(property) };
+            if !bailout::pending() {
+                // SAFETY: the old payload has been released and the slot remains writable.
+                bailed(unsafe { sys::swr_zend_try_facade_array_init(property) });
+            }
+        }
+    }
     if bailout::relay_to_c(Ok(())) {
         Err(bailout::Bailout)
     } else {
         Ok(property)
     }
-}
-
-/// The property read, a bailout left pending.
-/// # Safety
-/// As [`array_property_of`].
-unsafe fn property(
-    scope: *mut zend_class_entry,
-    value: *mut zval,
-    name: *const c_char,
-    length: usize,
-    silent: bool,
-    array: bool,
-) -> *mut zval {
-    // SAFETY: the source holds a live object.
-    let object = unsafe { crate::value::obj_of(value) };
-    let mut temporary = crate::UNDEF;
-    // SAFETY: caller guarantees an object-owned declared property result.
-    let mut property = unsafe { read(scope, object, name, length, silent, &raw mut temporary) };
-    if !bailout::pending() {
-        // SAFETY: Zend's distinguished uninitialized-value address is process/thread global.
-        let undefined = unsafe { sys::swr_zend_uninitialized_zval() };
-        if array {
-            // SAFETY: a successful property read returns a live zval.
-            if unsafe { type_of(property) } != sys::IS_ARRAY {
-                if property == undefined {
-                    // SAFETY: construct and publish the missing array property.
-                    property = unsafe { array_property(scope, object, name, length) };
-                } else {
-                    // SAFETY: replace the existing value in the object's property slot.
-                    unsafe { destroy(property) };
-                    if !bailout::pending() {
-                        // SAFETY: the old payload has been released and the slot remains writable.
-                        bailed(unsafe { sys::swr_zend_try_facade_array_init(property) });
-                    }
-                }
-            }
-        } else if property == undefined {
-            // SAFETY: preserve the original null-materialization order before rereading.
-            bailed(unsafe { sys::swr_zend_try_facade_null(scope, object, name, length) });
-            if !bailout::pending() {
-                // SAFETY: Zend now owns an initialized declared property slot.
-                property = unsafe { read(scope, object, name, length, silent, &raw mut temporary) };
-            }
-        }
-    }
-    property
 }
 
 /// # Safety

@@ -15,7 +15,6 @@
 )]
 use core::cell::{Cell, UnsafeCell};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
-use core::mem::MaybeUninit;
 use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
@@ -62,7 +61,7 @@ use swoole_rs_timer::{
     swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
     swr_v1_timer_add_plain,
 };
-use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
+use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
@@ -320,10 +319,7 @@ fn free_pipes(pool: Pool) {
 
 /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`: 0 (and no pipes) when it fails.
 fn new_pipe(pool: Pool, worker: Worker) -> i64 {
-    let mut storage = Box::new(MaybeUninit::<SocketPair>::uninit());
-    unix_socket_new(&mut storage, true, libc::SOCK_DGRAM);
-    // SAFETY: the constructor initialised it.
-    let mut built = unsafe { storage.assume_init() };
+    let mut built = Box::new(unix_socket(true, libc::SOCK_DGRAM));
     let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
@@ -618,7 +614,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             swoole_set_worker_type(SW_WORKER);
             swoole_set_worker_id(record.id());
             swoole_set_worker_pid(record.pid());
-            crate::worker_methods::set_current_worker(worker);
+            swoole_rs_process::worker_globals::set_current_worker(worker);
             0
         }
         OP_EVENT_INIT => {
