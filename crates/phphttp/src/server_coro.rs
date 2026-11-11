@@ -327,15 +327,8 @@ fn http2_begin(socket: Co) {
     let settings = swoole_rs_http2::sw_rs_http2_default_settings();
     let mut frame = [0u8; 45];
     let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
-    // SAFETY: its network socket and the frame's bytes.
-    unsafe {
-        swoole_rs_tls::upstream::socket_send(
-            socket.socket().cast(),
-            frame.as_ptr().cast(),
-            length,
-            0,
-        )
-    };
+    let frame = frame.get(..length).unwrap_or(&frame);
+    socket.with_network(|network| swoole_rs_tls::upstream::send(network, frame, 0));
     socket.set_open_length_check(true);
     let mut protocol = socket.protocol();
     protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
