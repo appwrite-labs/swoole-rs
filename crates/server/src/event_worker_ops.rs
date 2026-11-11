@@ -189,8 +189,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, entry::worker_signal_handler) },
         // SAFETY: the context's live server and worker.
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
-        // SAFETY: the context's live worker.
-        OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
         OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
             SW_WORKER_IDLE
         } else {

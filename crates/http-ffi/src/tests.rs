@@ -15,7 +15,9 @@ fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
             expected.push(0);
             let mut capacity = 0;
             assert_eq!(
-                unsafe { swr_v1_http_url_capacity(input.as_ptr(), input.len(), &raw mut capacity) },
+                unsafe {
+                    swr_v1_http_url_capacity(input.as_ptr(), input.len(), Some(&mut capacity))
+                },
                 0
             );
             assert_eq!(capacity, expected.len());
@@ -28,7 +30,7 @@ fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
                         input.len(),
                         output.as_mut_ptr(),
                         capacity,
-                        &raw mut written,
+                        Some(&mut written),
                     )
                 },
                 0
@@ -51,12 +53,12 @@ fn url_roundtrips_all_bytes_and_handles_malformed_escapes() {
                 input.len(),
                 encoded.as_mut_ptr(),
                 encoded.len(),
-                &raw mut length
+                Some(&mut length)
             ),
             0
         );
         assert_eq!(
-            swr_v1_http_url_decode(encoded.as_mut_ptr(), length, &raw mut length),
+            swr_v1_http_url_decode(encoded.as_mut_ptr(), length, Some(&mut length)),
             0
         );
     }
@@ -65,7 +67,11 @@ fn url_roundtrips_all_bytes_and_handles_malformed_escapes() {
     let mut malformed = b"%+%0%GG%a0+%00!\0".to_vec();
     unsafe {
         assert_eq!(
-            swr_v1_http_url_decode(malformed.as_mut_ptr(), malformed.len() - 1, &raw mut length),
+            swr_v1_http_url_decode(
+                malformed.as_mut_ptr(),
+                malformed.len() - 1,
+                Some(&mut length)
+            ),
             0
         );
     }
@@ -77,18 +83,24 @@ fn errors_are_atomic_and_empty_encoding_has_terminator_storage() {
     let mut length = 7;
     unsafe {
         assert_eq!(
-            swr_v1_http_url_encode(b"!!".as_ptr(), 2, output.as_mut_ptr(), 4, &raw mut length),
+            swr_v1_http_url_encode(b"!!".as_ptr(), 2, output.as_mut_ptr(), 4, Some(&mut length)),
             INVALID
         );
         assert_eq!(output, [99; 4]);
         assert_eq!(length, 0);
         assert_eq!(
-            swr_v1_http_url_capacity(std::ptr::null(), 0, &raw mut length),
+            swr_v1_http_url_capacity(std::ptr::null(), 0, Some(&mut length)),
             0
         );
         assert_eq!(length, 1);
         assert_eq!(
-            swr_v1_http_url_encode(std::ptr::null(), 0, output.as_mut_ptr(), 1, &raw mut length),
+            swr_v1_http_url_encode(
+                std::ptr::null(),
+                0,
+                output.as_mut_ptr(),
+                1,
+                Some(&mut length)
+            ),
             0
         );
         assert_eq!(output[0], 0);
@@ -99,19 +111,16 @@ fn ffi_rejects_overflow_before_access_and_extreme_method_ids_do_not_panic() {
     let mut written = 9;
     unsafe {
         assert_eq!(
-            swr_v1_http_url_capacity(std::ptr::null(), usize::MAX, &raw mut written),
+            swr_v1_http_url_capacity(std::ptr::null(), usize::MAX, Some(&mut written)),
             OVERFLOW
         );
         assert_eq!(written, 0);
         assert_eq!(
-            swr_v1_http_url_decode(std::ptr::null_mut(), usize::MAX, &raw mut written),
+            swr_v1_http_url_decode(std::ptr::null_mut(), usize::MAX, Some(&mut written)),
             OVERFLOW
         );
         assert_eq!(written, 0);
-        assert_eq!(
-            swr_v1_http_url_capacity(std::ptr::null(), 0, std::ptr::null_mut()),
-            INVALID
-        );
+        assert_eq!(swr_v1_http_url_capacity(std::ptr::null(), 0, None), INVALID);
     }
     assert!(swr_v1_http_method_string(i32::MIN).is_null());
     assert!(swr_v1_http_method_string(i32::MAX).is_null());
@@ -127,7 +136,7 @@ fn boundary_preserves_quotes_spaces_and_parameter_rules() {
     ] {
         let mut result = HttpSpan::default();
         let status =
-            unsafe { swr_v1_http_boundary(input.as_ptr(), input.len(), offset, &raw mut result) };
+            unsafe { swr_v1_http_boundary(input.as_ptr(), input.len(), offset, Some(&mut result)) };
         assert_eq!(status, i32::from(expected.is_some()));
         if let Some(expected) = expected {
             assert_eq!(

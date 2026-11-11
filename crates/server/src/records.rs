@@ -201,32 +201,24 @@ impl crate::ServerState {
 }
 
 /// [`ServerState::session`] for the C++ test fixtures.
-///
-/// # Safety
-/// `state` is a live state.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_session(
-    state: *const crate::ServerState,
+pub extern "C" fn swr_v1_server_session(
+    state: &crate::ServerState,
     id: libc::c_long,
 ) -> *mut SessionRecord {
-    // SAFETY: the caller lends a live state.
-    unsafe { &*state }
+    state
         .session(id)
         .map_or(core::ptr::null_mut(), core::ptr::from_mut)
 }
 
 /// [`ServerState::connection_ptr`] for the C++ test fixtures.
-///
-/// # Safety
-/// `state` is a live state.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_connection(
-    state: *const crate::ServerState,
+pub extern "C" fn swr_v1_server_connection(
+    state: &crate::ServerState,
     key: libc::c_long,
     kind: u32,
 ) -> *mut ConnectionRecord {
-    // SAFETY: the caller lends a live state.
-    unsafe { &*state }.connection_ptr(key, kind)
+    state.connection_ptr(key, kind)
 }
 
 #[cfg(test)]
@@ -286,31 +278,31 @@ mod tests {
             tables.connection_list = connections.as_mut_ptr();
             tables.max_connection = 2;
             assert_eq!(
-                swr_v1_server_session(state, 1),
+                swr_v1_server_session(&*state, 1),
                 sessions.as_mut_ptr().add(1)
             );
             let expected = connections.as_mut_ptr().add(2);
-            assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
-            assert!(swr_v1_server_connection(state, 1_048_577, 2).is_null());
-            assert!(swr_v1_server_connection(state, -1, 0).is_null());
-            assert!(swr_v1_server_connection(state, -1, 1).is_null());
-            assert!(swr_v1_server_connection(state, -1, 2).is_null());
-            assert!(swr_v1_server_connection(state, 3, 0).is_null());
+            assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
+            assert!(swr_v1_server_connection(&*state, 1_048_577, 2).is_null());
+            assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
+            assert!(swr_v1_server_connection(&*state, -1, 1).is_null());
+            assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
+            assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
             connections[2].ssl = 1;
-            assert!(swr_v1_server_connection(state, 1, 3).is_null());
-            assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
+            assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
+            assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
             connections[2].ssl_ready = 1;
-            assert_eq!(swr_v1_server_connection(state, 1, 3), expected);
+            assert_eq!(swr_v1_server_connection(&*state, 1, 3), expected);
             connections[2]
                 .closed
                 .store(1, core::sync::atomic::Ordering::Relaxed);
-            assert!(swr_v1_server_connection(state, 2, 4).is_null());
+            assert!(swr_v1_server_connection(&*state, 2, 4).is_null());
             connections[2]
                 .closed
                 .store(0, core::sync::atomic::Ordering::Relaxed);
-            assert_eq!(swr_v1_server_connection(state, 2, 4), expected);
+            assert_eq!(swr_v1_server_connection(&*state, 2, 4), expected);
             (*expected).active = 0;
-            assert!(swr_v1_server_connection(state, 1, 2).is_null());
+            assert!(swr_v1_server_connection(&*state, 1, 2).is_null());
             swr_v1_server_state_free(state);
         }
     }

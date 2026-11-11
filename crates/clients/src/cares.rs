@@ -273,10 +273,14 @@ unsafe extern "C" fn host(
             if address.is_null() {
                 break;
             }
-            // SAFETY: the successful hostent supplies4 or16 initialized address bytes.
-            let text = unsafe {
-                swr_v1_clients_ip_text(if family == libc::AF_INET { 4 } else { 6 }, address.cast())
+            let (version, length) = if family == libc::AF_INET {
+                (4, 4)
+            } else {
+                (6, 16)
             };
+            // SAFETY: the successful hostent supplies 4 or 16 initialized address bytes.
+            let address = unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) };
+            let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
             // SAFETY: copy SDK data into the Rust owner before the callback returns.

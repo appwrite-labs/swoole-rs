@@ -24,12 +24,12 @@ uint32_t swr_v2_utils_log_hex_step(struct SwrLogHex *, size_t, int32_t);
 /* LP64 arithmetic. algorithm: PHP=0, Jenkins=1, Austin=2; signed_char is host char semantics. */
 uint64_t swr_v1_utils_hash(const uint8_t *, size_t, uint32_t algorithm, uint8_t signed_char);
 /* Native-compatible aligned shared u32 atomic, native release store remains outside Rust. */
-void swr_v1_utils_spinlock(uint32_t *, uint32_t cpus, uint32_t backoff_limit);
+void swr_v1_utils_spinlock(const uint32_t *, uint32_t cpus, uint32_t backoff_limit);
 #ifdef __linux__ /* matches the Rust cfg(target_os = "linux") */
 /* Futex wait/wake on a shared aligned native u32 atomic.
  * Caller owns lifetime; no callback or allocation; preserves native errno. */
-int32_t swr_v1_utils_wait(uint32_t *, double timeout);
-int32_t swr_v1_utils_wakeup(uint32_t *, int32_t n);
+int32_t swr_v1_utils_wait(const uint32_t *, double timeout);
+int32_t swr_v1_utils_wakeup(const uint32_t *, int32_t n);
 #endif
 /* Borrowed bytes and independent aligned outputs; returns a substring span, never allocates. */
 int32_t swr_v1_utils_pretty_range(const uint8_t *, size_t, uint8_t strip, size_t *, size_t *);

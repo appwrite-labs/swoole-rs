@@ -150,21 +150,18 @@ unsafe fn iouring_waitpid(
 
 /// `pid_t System::waitpid(pid_t, int *, int, double timeout)`: in a coroutine, yields
 /// until the child exits or `timeout` passes (`ETIMEDOUT`, as errno and last error).
-///
-/// # Safety
-/// `status` is writable.
 #[unsafe(export_name = "_ZN6swoole9coroutine6System7waitpidEiPiid")]
-pub unsafe extern "C" fn system_waitpid(
+pub extern "C" fn system_waitpid(
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: &mut c_int,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
     if let Some(uring) = crate::wait_loop::uring() {
-        // SAFETY: as the caller promises.
+        // SAFETY: a writable status.
         return unsafe { iouring_waitpid(uring, pid, status, options, timeout) };
     }
-    // SAFETY: as the caller promises; the static table.
+    // SAFETY: the static table of native coroutine operations.
     let waited = unsafe {
         swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES)
     };
@@ -176,24 +173,18 @@ pub unsafe extern "C" fn system_waitpid(
 }
 
 /// `pid_t System::wait(int *, double timeout)`: any child.
-///
-/// # Safety
-/// `status` is writable.
 #[unsafe(export_name = "_ZN6swoole9coroutine6System4waitEPid")]
-pub unsafe extern "C" fn system_wait(status: *mut c_int, timeout: f64) -> libc::pid_t {
-    // SAFETY: as the caller promises.
-    unsafe { system_waitpid(-1, status, 0, timeout) }
+pub extern "C" fn system_wait(status: &mut c_int, timeout: f64) -> libc::pid_t {
+    system_waitpid(-1, status, 0, timeout)
 }
 
 /// `pid_t System::waitpid_safe(pid_t, int *, int)`: in a coroutine, polls
 /// `waitpid(WNOHANG)` between coroutine sleeps that back off, without SIGCHLD.
-///
-/// # Safety
-/// `status` is writable.
+/// `status` may be null, as `waitpid`'s.
 #[unsafe(export_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii")]
-pub unsafe extern "C" fn system_waitpid_safe(
+pub extern "C" fn system_waitpid_safe(
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: Option<&mut c_int>,
     options: c_int,
 ) -> libc::pid_t {
     /// `SW_OK`, `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
@@ -205,20 +196,21 @@ pub unsafe extern "C" fn system_waitpid_safe(
         #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
         fn system_sleep(seconds: f64) -> c_int;
     }
+    let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
     // SAFETY: no preconditions.
     let outside = crate::event_api::swr_v1_event_current().is_null()
         || swoole_rs_coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
-        // SAFETY: as the caller promises.
+        // SAFETY: null or a writable status.
         return unsafe { libc::waitpid(pid, status, options) };
     }
     if let Some(uring) = crate::wait_loop::uring() {
-        // SAFETY: as the caller promises.
+        // SAFETY: as above.
         return unsafe { iouring_waitpid(uring, pid, status, options, -1.0) };
     }
     let mut second = LOCK_DEFAULT_SECOND;
     loop {
-        // SAFETY: as the caller promises.
+        // SAFETY: as above.
         let result = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
         // SAFETY: in a coroutine.
         if result != 0 || unsafe { system_sleep(second) } != OK {
@@ -236,42 +228,32 @@ pub extern "C" fn swoole_coroutine_wait_count() -> usize {
 }
 
 /// `pid_t swoole_coroutine_wait(int *)`.
-///
-/// # Safety
-/// `status` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_wait(status: *mut c_int) -> libc::pid_t {
-    // SAFETY: as the caller promises.
-    unsafe { system_wait(status, -1.0) }
+pub extern "C" fn swoole_coroutine_wait(status: &mut c_int) -> libc::pid_t {
+    system_wait(status, -1.0)
 }
 
 /// `pid_t swoole_coroutine_waitpid(pid_t, int *, int)`.
-///
-/// # Safety
-/// `status` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_waitpid(
+pub extern "C" fn swoole_coroutine_waitpid(
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: &mut c_int,
     options: c_int,
 ) -> libc::pid_t {
-    // SAFETY: as the caller promises.
-    unsafe { system_waitpid(pid, status, options, -1.0) }
+    system_waitpid(pid, status, options, -1.0)
 }
 
 /// `pid_t swoole_waitpid(pid_t, int *, int)`: `waitpid`, dispatching signals and
-/// running due timers whenever a signal interrupts it.
-///
-/// # Safety
-/// `status` is writable.
+/// running due timers whenever a signal interrupts it. `status` may be null.
 #[unsafe(export_name = "_Z14swoole_waitpidiPii")]
-pub unsafe extern "C" fn swoole_waitpid(
+pub extern "C" fn swoole_waitpid(
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: Option<&mut c_int>,
     options: c_int,
 ) -> libc::pid_t {
+    let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
     loop {
-        // SAFETY: as the caller promises.
+        // SAFETY: null or a writable status.
         let result = unsafe { libc::waitpid(pid, status, options) };
         if result >= 0 || errno() != libc::EINTR {
             return result;

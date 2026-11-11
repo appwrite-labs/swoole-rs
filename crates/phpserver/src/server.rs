@@ -829,9 +829,9 @@ fn bind(call: &Call) {
         return call.set_bool(false);
     };
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
-    // SAFETY: the connection's aligned lock word, which every holder takes
-    // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
-    unsafe { swoole_rs_utilities::swr_v1_utils_spinlock(conn.lock.as_ptr(), cpus, 1024) };
+    // The connection's lock word, which every holder takes this way (`sw_spinlock`,
+    // with `SW_SPINLOCK_LOOP_N`).
+    swoole_rs_utilities::swr_v1_utils_spinlock(Some(&conn.lock), cpus, 1024);
     let bound = conn.uid == 0;
     if bound {
         conn.uid = uid;
@@ -926,18 +926,15 @@ fn get_client_info(call: &Call) {
         add_bytes(call, c"ssl_client_cert", cert.str, cert.length);
     }
     if let Some(server_socket) = serv.at(conn.server_fd) {
-        // SAFETY: the listening socket's address.
-        let port = unsafe { swr_v1_clients_address_port(&raw const server_socket.info) };
+        let port = swr_v1_clients_address_port(&server_socket.info);
         call.add_assoc_long(c"server_port", i64::from(port));
     }
     call.add_assoc_long(c"server_fd", i64::from(conn.server_fd));
     call.add_assoc_long(c"socket_fd", i64::from(conn.fd));
     call.add_assoc_long(c"socket_type", i64::from(conn.socket_type));
-    // SAFETY: the connection's address.
-    let remote_port = unsafe { swr_v1_clients_address_port(&raw const conn.info) };
+    let remote_port = swr_v1_clients_address_port(&conn.info);
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
-    // SAFETY: as above.
-    let ip = unsafe { swr_v1_clients_address_host(&raw const conn.info) };
+    let ip = swr_v1_clients_address_host(&conn.info);
     // SAFETY: the address text, NUL-terminated.
     let ip = unsafe { CStr::from_ptr(ip) };
     add_bytes(call, c"remote_ip", ip.as_ptr(), ip.count_bytes());

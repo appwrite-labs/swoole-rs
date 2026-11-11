@@ -9,61 +9,47 @@ use swoole_rs_corebase::constants::SW_SPINLOCK_LOOP_N;
 use swoole_rs_corebase::swr_v1_core_cpu_num;
 
 /// `void sw_spinlock(sw_atomic_t *lock)`.
-///
-/// # Safety
-/// `lock` is a live, aligned `sw_atomic_t` accessed only atomically.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z11sw_spinlockPVj")
 )]
-pub unsafe extern "C" fn sw_spinlock(lock: *mut u32) {
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_utils_spinlock(lock, u32::from(swr_v1_core_cpu_num()), SW_SPINLOCK_LOOP_N) };
+pub extern "C" fn sw_spinlock(lock: Option<&AtomicU32>) {
+    swr_v1_utils_spinlock(lock, u32::from(swr_v1_core_cpu_num()), SW_SPINLOCK_LOOP_N);
 }
 
 /// `int sw_atomic_futex_wait(sw_atomic_t *atomic, double timeout)`: 0 once the word's
 /// token is taken, -1 on timeout or error. Without futex, the shared-memory registry
 /// `sw_atomic_wait_init` set up, recording its error as the last error.
-///
-/// # Safety
-/// `atomic` is a live, aligned word accessed only atomically.
+#[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z20sw_atomic_futex_waitPVjd")
 )]
-pub unsafe extern "C" fn sw_atomic_futex_wait(atomic: *mut u32, timeout: f64) -> c_int {
+pub extern "C" fn sw_atomic_futex_wait(atomic: Option<&AtomicU32>, timeout: f64) -> c_int {
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: as the caller promises.
-        unsafe { crate::swr_v1_utils_wait(atomic, timeout) }
+        crate::swr_v1_utils_wait(atomic, timeout)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // SAFETY: as the caller promises.
-        unsafe { crate::wait_registry::atomic(atomic) }
-            .map_or_else(|e| e, |word| futex_wait(word, timeout))
+        crate::wait_registry::atomic(atomic).map_or_else(|e| e, |word| futex_wait(word, timeout))
     }
 }
 
 /// `int sw_atomic_futex_wakeup(sw_atomic_t *atomic, int n)`: the waiters woken.
-///
-/// # Safety
-/// As [`sw_atomic_futex_wait`].
+#[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z22sw_atomic_futex_wakeupPVji")
 )]
-pub unsafe extern "C" fn sw_atomic_futex_wakeup(atomic: *mut u32, n: c_int) -> c_int {
+pub extern "C" fn sw_atomic_futex_wakeup(atomic: Option<&AtomicU32>, n: c_int) -> c_int {
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: as the caller promises.
-        unsafe { crate::swr_v1_utils_wakeup(atomic, n) }
+        crate::swr_v1_utils_wakeup(atomic, n)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // SAFETY: as the caller promises.
-        unsafe { crate::wait_registry::atomic(atomic) }
-            .map_or_else(|e| e, |word| futex_wakeup(word, n))
+        crate::wait_registry::atomic(atomic).map_or_else(|e| e, |word| futex_wakeup(word, n))
     }
 }
 
@@ -144,17 +130,17 @@ mod tests {
 
     #[test]
     fn the_spinlock_takes_a_free_lock() {
-        let mut lock = 0_u32;
-        unsafe { sw_spinlock(&raw mut lock) };
-        assert_eq!(lock, 1);
+        let lock = AtomicU32::new(0);
+        sw_spinlock(Some(&lock));
+        assert_eq!(lock.into_inner(), 1);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn a_wakeup_publishes_the_token_a_wait_takes() {
-        let mut word = 0_u32;
-        assert_eq!(unsafe { sw_atomic_futex_wait(&raw mut word, 0.01) }, -1);
-        assert_eq!(unsafe { sw_atomic_futex_wakeup(&raw mut word, 1) }, 0);
-        assert_eq!(unsafe { sw_atomic_futex_wait(&raw mut word, -1.0) }, 0);
+        let word = AtomicU32::new(0);
+        assert_eq!(sw_atomic_futex_wait(Some(&word), 0.01), -1);
+        assert_eq!(sw_atomic_futex_wakeup(Some(&word), 1), 0);
+        assert_eq!(sw_atomic_futex_wait(Some(&word), -1.0), 0);
     }
 }

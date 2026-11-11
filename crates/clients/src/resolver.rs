@@ -82,7 +82,7 @@ impl Request {
         let mut found = Vec::new();
         loop {
             // SAFETY: the finished request's addresses.
-            let text = unsafe { swr_v1_core_resolver_next(self.get(), &raw mut cursor) };
+            let text = unsafe { swr_v1_core_resolver_next(self.get(), &mut cursor) };
             if !text.valid {
                 return found;
             }

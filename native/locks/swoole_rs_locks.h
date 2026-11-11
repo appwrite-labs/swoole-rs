@@ -25,11 +25,11 @@ uint32_t swr_v1_locks_atomic32(uint32_t *, uint32_t operation, uint32_t value, u
 int64_t swr_v1_locks_atomic64(int64_t *, uint32_t operation, int64_t value, int64_t expected);
 #ifdef __linux__ /* matches the Rust cfg(target_os = "linux") */
 /* Futex wait/wake; non-futex builds use upstream's C++ registry. */
-int32_t swr_v1_locks_wait(uint32_t *, double timeout);
-int32_t swr_v1_locks_wakeup(uint32_t *, int32_t n);
+int32_t swr_v1_locks_wait(const uint32_t *, double timeout);
+int32_t swr_v1_locks_wakeup(const uint32_t *, int32_t n);
 #endif
-int32_t swr_v1_locks_coroutine_try(uint32_t *, uintptr_t held_cookie, int64_t held_cid, uintptr_t current_cookie, int64_t current_cid, uint8_t blocking);
-int32_t swr_v1_locks_coroutine_release(uint32_t *);
+int32_t swr_v1_locks_coroutine_try(const uint32_t *, uintptr_t held_cookie, int64_t held_cid, uintptr_t current_cookie, int64_t current_cid, uint8_t blocking);
+int32_t swr_v1_locks_coroutine_release(const uint32_t *);
 double swr_v1_locks_coroutine_backoff(double second, double initial, double maximum);
 /* PHP Swoole\Atomic, Swoole\Lock, Swoole\Coroutine\Lock and (ZTS)
  * Swoole\Thread\Atomic, Atomic\Long and Lock are Rust (crates/phplocks),

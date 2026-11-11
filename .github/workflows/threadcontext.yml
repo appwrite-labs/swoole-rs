@@ -1,7 +1,7 @@
 name: thread-context
 # Upstream and the Cargo-built swoole.so with --enable-thread-context (each
 # coroutine on its own thread, crates/coroutine/src/thread.rs), then the coroutine
-# PHPT families. Any test that passes on upstream must pass on the Cargo build.
+# and event PHPT families. Any test that passes on upstream must pass on the Cargo build.
 # Called by the merge tier, and by the PR tier when a PR touches the coroutine
 # context or the coroutine state the loop thread shares with coroutine threads.
 on:
@@ -32,6 +32,12 @@ jobs:
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep 'thread context'; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
+      # Every swr_v* this build's config.h declares is exported.
+      - name: ABI export gate
+        timeout-minutes: 5
+        run: >
+          python3 tests/modules/integration/test_bridge.py --startup-only --php-extension sockets
+          --extension target/ext/swoole.so --reference target/phpt/upstream.so
       # On a PR, upstream's report comes from main's latest run of this job while nothing it
       # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
       - if: github.event_name == 'pull_request'
@@ -41,7 +47,7 @@ jobs:
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - run: |
-          families="--module swoole_coroutine --module swoole_channel_coro --module swoole_coroutine_scheduler --module swoole_coroutine_system"
+          families="--module swoole_coroutine --module swoole_channel_coro --module swoole_coroutine_scheduler --module swoole_coroutine_system --module swoole_event"
           mkdir -p target/phpt/threadcontext
           for engine in upstream cargo; do
             [ ! -f target/phpt/threadcontext/$engine.json ] || continue  # the baseline's

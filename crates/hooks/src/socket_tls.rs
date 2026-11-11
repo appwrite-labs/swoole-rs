@@ -5,7 +5,7 @@ use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
 use crate::connect::{TlsOps, ssl_handshake};
 use crate::socket_wait::wait_for;
-use core::ffi::{c_int, c_void};
+use core::ffi::{CStr, c_int, c_void};
 use swoole_rs_corebase::log;
 use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
@@ -58,7 +58,7 @@ impl Co {
             return;
         }
         // SAFETY: the server's live owner.
-        let shared = unsafe { swr_v1_tls_owner_clone(owner) };
+        let shared = swr_v1_tls_owner_clone(unsafe { &*owner });
         // SAFETY: the client's live extra record, which takes the reference.
         unsafe { (*self.extra()).tls = shared };
         if !self.create_session(owner) {
@@ -120,14 +120,19 @@ impl Co {
     /// `SSLContext` and a TLS session.
     #[must_use]
     pub fn ssl_verify(self, allow_self_signed: bool) -> bool {
-        let network = self.socket();
-        // SAFETY: the live network::Socket and its session.
-        let verified = unsafe { socket_ssl_verify(network, allow_self_signed) } && {
-            // SAFETY: the live owner of the socket's context.
-            let name = unsafe { owner_tls_host_name(self.tls_owner()) };
-            // SAFETY: the view's NUL-terminated bytes, live for the call.
-            name.length == 0 || unsafe { socket_ssl_check_host(network, name.data) }
-        };
+        let verified = self
+            .net(|network| socket_ssl_verify(network, allow_self_signed))
+            .unwrap_or(false)
+            && {
+                // SAFETY: the live owner of the socket's context.
+                let name = unsafe { owner_tls_host_name(self.tls_owner()) };
+                name.length == 0 || {
+                    // SAFETY: the view's NUL-terminated bytes, live for the call.
+                    let name = unsafe { CStr::from_ptr(name.data) };
+                    self.net(|network| socket_ssl_check_host(network, name))
+                        .unwrap_or(false)
+                }
+            };
         if !verified {
             set_err(self, SSL_VERIFY_FAILED);
         }

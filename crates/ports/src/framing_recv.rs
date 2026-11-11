@@ -464,7 +464,7 @@ pub const FRAMING: Framing =
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 ///
 /// # Safety
-/// The live protocol, and a packet whose `buf` holds `buf_size` bytes.
+/// A live socket, and a packet whose `buf` holds `buf_size` bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(
@@ -472,14 +472,10 @@ pub const FRAMING: Framing =
     )
 )]
 pub unsafe extern "C" fn default_length_func(
-    protocol: *const Protocol,
+    p: &Protocol,
     socket: *mut SocketRecord,
-    pl: *mut PacketLength,
+    pl: &mut PacketLength,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let p = unsafe { &*protocol };
-    // SAFETY: as the caller promises.
-    let pl = unsafe { &mut *pl };
     let size = if p.get_package_length_size.is_null() {
         p.package_length_size
     } else {

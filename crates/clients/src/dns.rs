@@ -263,8 +263,7 @@ pub fn query(
             AAAA => 6,
             _ => continue,
         };
-        // SAFETY: `data` holds the 4- or 16-byte address.
-        let text = unsafe { swr_v1_clients_ip_text(version, data.as_ptr()) };
+        let text = swr_v1_clients_ip_text(version, data);
         let length = usize::try_from(text.length).unwrap_or(0);
         exchange.push(text.bytes.get(..length).unwrap_or_default());
         found = true;

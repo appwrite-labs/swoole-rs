@@ -113,7 +113,7 @@ pub(crate) unsafe fn recv_packet(
     // SAFETY: the String's head is a RespBuffer; the request slot is the connection's.
     unsafe {
         swr_v1_resp_recv(
-            &raw const io,
+            &io,
             buffer.cast(),
             (&raw mut conn.object).cast(),
             maximum,

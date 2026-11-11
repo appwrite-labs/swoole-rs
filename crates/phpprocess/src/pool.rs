@@ -727,7 +727,7 @@ fn listen(call: &Call) {
         )
     };
     // SAFETY: the pool's IPC state.
-    let socket = unsafe { swr_v1_process_pool_ipc_listener(record(pool).ipc) };
+    let socket = swr_v1_process_pool_ipc_listener(unsafe { &*record(pool).ipc });
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
         socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);

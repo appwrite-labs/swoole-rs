@@ -170,7 +170,7 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
         return ptr::null_mut();
     }
     // SAFETY: the port's live context.
-    let shared = unsafe { swr_v1_tls_owner_clone(context) };
+    let shared = swr_v1_tls_owner_clone(unsafe { &*context });
     state.dtls.insert(sock.fd(), (session, shared));
     session
 }
@@ -181,7 +181,7 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
 /// `context` is a live owner, and nothing else uses its fields while the borrow lasts.
 unsafe fn fields<'a>(context: *const OwnedTlsContext) -> &'a mut OwnedTlsFields {
     // SAFETY: as the caller guarantees.
-    let fields = unsafe { swr_v1_tls_owner_view(context) }.fields;
+    let fields = swr_v1_tls_owner_view(unsafe { &*context }).fields;
     // SAFETY: the owner's fields live as long as the reference.
     unsafe { &mut *fields }
 }
@@ -553,15 +553,13 @@ fn adopt(run: &Run) {
         socket.info
     });
     config.r#type = info.kind;
-    // SAFETY: the socket's address, typed above.
-    let host = unsafe { swr_v1_clients_address_host(&raw const info) };
+    let host = swr_v1_clients_address_host(&info);
     // SAFETY: a NUL-terminated string.
     let length = unsafe { libc::strlen(host) };
     // SAFETY: the port's host slot and `length` readable bytes.
     if unsafe { swr_v1_core_string_set(&raw const *config.host, host, length) } != 0 {
         std::process::abort();
     }
-    // SAFETY: as above.
-    config.port = unsafe { swr_v1_clients_address_port(&raw const info) };
+    config.port = swr_v1_clients_address_port(&info);
     config.listening = true;
 }

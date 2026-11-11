@@ -247,7 +247,7 @@ mod tests {
             park,
             remove,
         };
-        let waited = unsafe { swr_v1_hook_wait_event(7, READ | WRITE, 1.0, &raw const ops) };
+        let waited = unsafe { swr_v1_hook_wait_event(7, READ | WRITE, 1.0, &ops) };
         assert_eq!((waited.result, WOKEN.get()), (READ | WRITE, 1));
     }
 }

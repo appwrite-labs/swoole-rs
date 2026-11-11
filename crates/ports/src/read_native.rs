@@ -149,9 +149,11 @@ fn recv_buffer(c: &Read<'_>) -> *mut CppString {
     if !held.is_null() {
         return held.cast();
     }
-    let allocator = config(c).recv_buffer_allocator.cast();
+    let allocator = config(c)
+        .recv_buffer_allocator
+        .cast::<swoole_rs_buffer::string::Allocator>();
     // SAFETY: the server's allocator, null or live.
-    let made = unsafe { new_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator) };
+    let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
     c.socket.edit(|s| s.recv_buffer = made.cast());
     made
 }

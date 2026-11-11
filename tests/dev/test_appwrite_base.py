@@ -34,6 +34,8 @@ class AppwriteBase(unittest.TestCase):
             self.assertEqual('--configure=--enable-brotli --configure=--enable-cares --configure=--with-openssl-dir=/usr' in out,
                              variant == 'upstream')
             self.assertEqual('build_ext.py' in out, variant == 'cargo')
+            # musl build scripts link statically and can't dlopen bindgen's libclang.
+            self.assertIn('export RUSTFLAGS="-C target-feature=-crt-static"', out)
 
     def test_unknown_shape_is_refused(self):
         with self.assertRaises(ValueError):
