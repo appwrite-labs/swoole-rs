@@ -1,16 +1,12 @@
 //! `ListenPort`'s readable callbacks (raw, length, EOF, Redis and HTTP) as whole
-//! operations, performing each effect on the socket, connection and dispatch
-//! through one `call(context, op, arg)` ([`crate::read_native`]'s in the hybrid). The receive buffer and
-//! the HTTP request are read and written in place through [`Shared`], the head of the
-//! context (layouts pinned by native `static_assert`s), as upstream's reader did; the
+//! operations over a [`Connection`]: the facts and effects of the socket, connection
+//! and dispatch (`crate::read_native`'s `Read` in the server). The receive buffer
+//! and the HTTP request are read and written in place, as upstream's reader did; the
 //! request's own operations are `swoole_rs_http`'s.
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::c_int;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
-
-/// One native fact or effect on the connection in `context`.
-pub type PortsCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
 
 /// Which readable callback runs.
 pub const ON_READ_RAW: u32 = 0;
@@ -19,69 +15,111 @@ pub const ON_READ_EOF: u32 = 2;
 pub const ON_READ_REDIS: u32 = 3;
 pub const ON_READ_HTTP: u32 = 4;
 
-// Socket and connection.
-/// `recv` into the buffer: arg 0 its free tail, 1 the whole buffer. Returns the `ssize_t`.
-pub const OP_RECV: u32 = 0;
-/// `catch_read_error(errno)`, the raw `swReturnCode`.
-pub const OP_CATCH: u32 = 1;
-pub const OP_WARN_RECV: u32 = 2;
-/// `conn->close_errno = errno`.
-pub const OP_CLOSE_ERRNO: u32 = 3;
-/// `reactor->trigger_close_event(event)`.
-pub const OP_CLOSE: u32 = 4;
-/// Sends a canned packet: `SEND_*`.
-pub const OP_SEND: u32 = 5;
-/// `serv->get_recv_buffer(socket)` becomes the current buffer; returns non-null.
-pub const OP_RECV_BUFFER: u32 = 6;
-/// Frees the socket's receive buffer when larger than twice `SW_BUFFER_SIZE_BIG`
-/// (arg 1: and empty). Returns whether it did.
-pub const OP_RELEASE: u32 = 7;
+/// A canned response [`Connection::send`] sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reply {
+    BadRequest,
+    TooLarge,
+    Unavailable,
+    Continue,
+}
+
+/// How [`Connection::receive`] frames what it reads:
 /// `protocol.recv_with_length_protocol`, `recv_with_eof_protocol`, `redis::recv_packet`.
-pub const OP_RECV_LENGTH: u32 = 8;
-pub const OP_RECV_EOF: u32 = 9;
-pub const OP_RECV_REDIS: u32 = 10;
-/// `Server::dispatch_task` of arg bytes from the buffer start.
-pub const OP_DISPATCH_TASK: u32 = 11;
-/// `http_server::dispatch_request` of arg bytes from the buffer start; the
-/// connection's request is read afresh afterwards.
-pub const OP_DISPATCH_REQUEST: u32 = 12;
-/// As `OP_DISPATCH_REQUEST`, flagged `SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`: the
-/// reactor rewrote the body, so its `Swoole-Upload-File` headers are its own.
-pub const OP_DISPATCH_UPLOAD: u32 = 14;
-/// `conn->active && !socket->removed`.
-pub const OP_ACTIVE: u32 = 13;
-/// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
-pub const OP_WEBSOCKET_ACTIVATE: u32 = 17;
-/// `open_http2_protocol`.
-pub const OP_HTTP2_ENABLED: u32 = 18;
-/// Sets `http2_stream` and sends the settings frame.
-pub const OP_HTTP2_START: u32 = 19;
-/// `socket->skip_recv = 1`.
-pub const OP_SKIP_RECV: u32 = 20;
-/// `protocol.package_max_length`, `serv->upload_max_filesize > 0`.
-pub const OP_MAX_LENGTH: u32 = 21;
-pub const OP_UPLOADS: u32 = 22;
-/// The static handler served the request (asked only when it is enabled).
-pub const OP_STATIC: u32 = 23;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Framing {
+    Length,
+    Eof,
+    Redis,
+}
 
-// The current buffer.
-pub const OP_BUF_REDUCE: u32 = 36;
-pub const OP_BUF_EXTEND: u32 = 38;
-/// The buffer holds `\r\n\r\n`.
-pub const OP_BUF_HEADER_END: u32 = 39;
+/// What [`Connection::dispatch`] hands on: `Server::dispatch_task`,
+/// `http_server::dispatch_request`, or a request flagged
+/// `SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED` (the reactor rewrote the body, so its
+/// `Swoole-Upload-File` headers are its own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatch {
+    Task,
+    Request,
+    Upload,
+}
 
-// The connection's HTTP request.
-/// Creates the request when missing, gives it the receive buffer when it has none,
-/// and makes it and its buffer current.
-pub const OP_REQ_INIT: u32 = 50;
-/// `port->destroy_http_request(conn)`; no request is current after it.
-pub const OP_REQ_DESTROY: u32 = 51;
-/// `init_multipart_parser(serv)`, then its buffer becomes current. Returns whether
-/// it succeeded.
-pub const OP_REQ_MULTIPART_INIT: u32 = 63;
+/// An HTTP connection's state at entry: `websocket_status >= STATUS_HANDSHAKE`,
+/// `http_upgrade`, `http2_stream`.
+#[derive(Clone, Copy, Default)]
+pub struct Upgrade {
+    pub websocket: bool,
+    pub upgraded: bool,
+    pub http2_stream: bool,
+}
 
-/// The client a log names: arg 0 `conn->session_id`, 1 `port->host.c_str()`, 2 `port->port`.
-pub const OP_CLIENT: u32 = 89;
+/// The connection a readable event is on: each fact and effect a reader needs, and
+/// its current receive buffer and HTTP request, borrowed until the next call.
+pub(crate) trait Connection {
+    /// `recv` into the buffer, after its contents or (`whole`) over them: the `ssize_t`.
+    fn recv(&mut self, whole: bool) -> i64;
+    /// `catch_read_error(errno)`, the raw `swReturnCode`.
+    fn catch_error(&mut self) -> u64;
+    /// Warns that `recv` failed.
+    fn warn_recv(&mut self);
+    /// `conn->close_errno = errno`.
+    fn close_errno(&mut self);
+    /// `reactor->trigger_close_event(event)`.
+    fn close(&mut self);
+    fn send(&mut self, reply: Reply);
+    /// `serv->get_recv_buffer(socket)` becomes the current buffer; false when there is none.
+    fn use_recv_buffer(&mut self) -> bool;
+    /// Frees the socket's receive buffer when larger than twice `SW_BUFFER_SIZE_BIG`
+    /// (`if_empty`: and empty). Whether it did.
+    fn release(&mut self, if_empty: bool) -> bool;
+    /// One framed receive into the current buffer: negative closes the connection.
+    fn receive(&mut self, framing: Framing) -> i64;
+    /// Hands on `length` bytes from the buffer's start; the connection's request is
+    /// read afresh afterwards. Negative closes the connection.
+    fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64;
+    /// `conn->active && !socket->removed`.
+    fn active(&mut self) -> bool;
+    fn upgrade(&mut self) -> Upgrade;
+    /// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
+    fn activate_websocket(&mut self);
+    /// `open_http2_protocol`.
+    fn http2_enabled(&mut self) -> bool;
+    /// Sets `http2_stream` and sends the settings frame.
+    fn start_http2(&mut self);
+    /// `socket->skip_recv = 1`.
+    fn skip_recv(&mut self);
+    /// `protocol.package_max_length`.
+    fn max_length(&mut self) -> u64;
+    /// `serv->upload_max_filesize > 0`.
+    fn uploads(&mut self) -> bool;
+    /// `enable_static_handler`.
+    fn static_handler(&mut self) -> bool;
+    /// The static handler served the request.
+    fn serve_static(&mut self) -> bool;
+    /// The current buffer.
+    fn buffer(&mut self) -> &mut Buffer;
+    /// `buffer->reduce(offset)`.
+    fn reduce(&mut self, offset: u64);
+    /// `buffer->extend(size)`.
+    fn extend(&mut self, size: u64);
+    /// The buffer holds `\r\n\r\n`.
+    fn header_end(&mut self) -> bool;
+    /// Creates the request when missing, gives it the receive buffer when it has
+    /// none, and makes it and its buffer current.
+    fn init_request(&mut self);
+    /// `port->destroy_http_request(conn)`; no request is current after it.
+    fn destroy_request(&mut self);
+    /// The current request, after [`Connection::init_request`].
+    fn request(&mut self) -> &mut Request;
+    /// `init_multipart_parser(serv)`, then its buffer becomes current. Whether it succeeded.
+    fn init_multipart(&mut self) -> bool;
+    /// `parse_multipart_data(buffer)`: false rejects the request.
+    fn parse_multipart(&mut self) -> bool;
+    /// `destroy_multipart_parser()`, then the request's buffer becomes current.
+    fn finish_multipart(&mut self);
+    /// The client a log names: `conn->session_id`, `port->host`, `port->port`.
+    fn client(&mut self) -> (i64, String, i64);
+}
 
 /// `readable_callback_http`'s logs, in upstream's wording.
 #[derive(Clone, Copy)]
@@ -96,125 +134,42 @@ enum Log {
     TooLarge,
 }
 
-/// Canned responses for `OP_SEND`.
-pub const SEND_BAD_REQUEST: u64 = 0;
-pub const SEND_TOO_LARGE: u64 = 1;
-pub const SEND_UNAVAILABLE: u64 = 2;
-pub const SEND_CONTINUE: u64 = 3;
-
 /// `swReturnCode` values `catch_read_error` returns.
 const SW_CLOSE: u64 = 3;
 const SW_ERROR: u64 = 4;
 const SW_OK: i32 = 0;
 const SW_ERR: i32 = -1;
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
-/// `SW_BUFFER_SIZE_BIG`; native asserts each.
+/// `SW_BUFFER_SIZE_BIG`.
 const HTTP_PRI: u8 = 27;
 const HEADER_MAX_SIZE: u64 = 65536;
 const HTTP2_PREFACE: u64 = 24;
 const BUFFER_SIZE_BIG: u64 = 65536;
 
-/// The head of every read context (`SwrPortsShared`): the current buffer and request,
-/// which native code repoints as its effects change them, and facts fixed for the call.
-#[repr(C)]
-pub struct Shared {
-    pub buffer: *mut Buffer,
-    pub request: *mut Request,
-    /// `websocket_status >= STATUS_HANDSHAKE`, `http_upgrade`, `http2_stream` at entry.
-    pub websocket: u8,
-    pub upgraded: u8,
-    pub http2_stream: u8,
-    /// `enable_static_handler`.
-    pub static_handler: u8,
-}
-
-/// One fact or effect on the connection in the context: a [`PortsCall`] wrapped
-/// in a closure, so each read is monomorphised over it and its hot effects inline.
-pub(crate) trait Call: Fn(*mut c_void, u32, u64) -> u64 {}
-impl<F: Fn(*mut c_void, u32, u64) -> u64> Call for F {}
-
-struct Native<F> {
-    shared: *mut Shared,
-    call: F,
-}
-
-impl<F: Call> Native<F> {
-    fn op(&self, op: u32, arg: u64) -> u64 {
-        (self.call)(self.shared.cast(), op, arg)
-    }
-    fn get(&self, op: u32) -> u64 {
-        self.op(op, 0)
-    }
-    fn is(&self, op: u32) -> bool {
-        self.get(op) != 0
-    }
-    fn signed(&self, op: u32, arg: u64) -> i64 {
-        self.op(op, arg).cast_signed()
-    }
-    /// The context's head, borrowed until the next native call.
-    fn shared(&self) -> &Shared {
-        // SAFETY: the context starts with a live `Shared`, which only native
-        // effects, never spanned by the borrow, repoint.
-        unsafe { &*self.shared }
-    }
-    /// The current buffer, borrowed until the next native call.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "native memory: the borrow never spans a native call"
-    )]
-    fn buffer(&self) -> &mut Buffer {
-        // SAFETY: the current buffer is live and only native effects, which the
-        // borrow never spans, touch it.
-        unsafe { &mut *self.shared().buffer }
-    }
-    /// The current request, borrowed until the next native call.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "native memory: the borrow never spans a native call"
-    )]
-    fn request(&self) -> &mut Request {
-        // SAFETY: after `OP_REQ_INIT` the connection's request is live and only
-        // native effects, which the borrow never spans, touch it.
-        unsafe { &mut *self.shared().request }
-    }
-    /// `buffer->offset = value`.
-    fn set_offset(&self, value: u64) {
-        self.buffer().offset = value.cast_signed();
-    }
-    /// `buffer->clear()`.
-    fn clear(&self) {
-        let buffer = self.buffer();
-        (buffer.length, buffer.offset) = (0, 0);
-    }
-    /// The request's buffer becomes current.
-    fn use_request_buffer(&self) {
-        let buffer = self.request().buffer;
-        // SAFETY: only native effects, which this write never spans, repoint the head.
-        unsafe { (*self.shared).buffer = buffer };
-    }
-}
-
-/// A byte count native code returned: a `size_t` or non-negative `ssize_t`.
-fn size(count: u64) -> usize {
+/// A byte count a receive returned: a non-negative `ssize_t`.
+fn size(count: i64) -> usize {
     usize::try_from(count).unwrap_or(usize::MAX)
 }
 
+/// `buffer->clear()`.
+fn clear(n: &mut impl Connection) {
+    let buffer = n.buffer();
+    (buffer.length, buffer.offset) = (0, 0);
+}
+
+/// `buffer->offset = value`.
+fn set_offset(n: &mut impl Connection, value: u64) {
+    n.buffer().offset = value.cast_signed();
+}
+
 /// `ListenPort::readable_callback_*`: `SW_OK`, or `SW_ERR` when an EOF port has no buffer.
-///
-/// # Safety
-/// `context` starts with a [`Shared`] and `call` acts on the connection in it, live
-/// for the call.
-pub(crate) unsafe fn readable(kind: u32, context: *mut c_void, call: impl Call) -> i32 {
-    let native = Native {
-        shared: context.cast(),
-        call,
-    };
+pub(crate) fn readable(kind: u32, n: &mut impl Connection) -> i32 {
     match kind {
-        ON_READ_RAW => raw(&native),
-        ON_READ_LENGTH => framed(&native, OP_RECV_LENGTH, true),
-        ON_READ_EOF => eof(&native),
-        ON_READ_REDIS => framed(&native, OP_RECV_REDIS, false),
-        ON_READ_HTTP => http(&native),
+        ON_READ_RAW => raw(n),
+        ON_READ_LENGTH => framed(n, Framing::Length, true),
+        ON_READ_EOF => eof(n),
+        ON_READ_REDIS => framed(n, Framing::Redis, false),
+        ON_READ_HTTP => http(n),
         _ => SW_ERR,
     }
 }
@@ -225,62 +180,62 @@ enum Failure {
     Close,
 }
 
-fn read_error(n: &Native<impl Call>) -> Failure {
-    match n.get(OP_CATCH) {
+fn read_error(n: &mut impl Connection) -> Failure {
+    match n.catch_error() {
         SW_ERROR => {
-            n.get(OP_WARN_RECV);
+            n.warn_recv();
             Failure::Wait
         }
         SW_CLOSE => {
-            n.get(OP_CLOSE_ERRNO);
+            n.close_errno();
             Failure::Close
         }
         _ => Failure::Wait,
     }
 }
 
-fn raw(n: &Native<impl Call>) -> i32 {
-    n.get(OP_RECV_BUFFER);
-    let received = n.signed(OP_RECV, 1);
+fn raw(n: &mut impl Connection) -> i32 {
+    n.use_recv_buffer();
+    let received = n.recv(true);
     if received < 0 {
         if let Failure::Close = read_error(n) {
-            n.get(OP_CLOSE);
+            n.close();
         }
         return SW_OK;
     }
     if received == 0 {
-        n.get(OP_CLOSE);
+        n.close();
         return SW_OK;
     }
     let length = received.cast_unsigned();
-    n.set_offset(length);
-    n.buffer().length = size(length);
-    i32::try_from(n.signed(OP_DISPATCH_TASK, length)).unwrap_or(SW_ERR)
+    set_offset(n, length);
+    n.buffer().length = size(received);
+    i32::try_from(n.dispatch(Dispatch::Task, length)).unwrap_or(SW_ERR)
 }
 
 /// Length and Redis framing; length (and EOF) ports free a large drained buffer.
-fn framed(n: &Native<impl Call>, receive: u32, release: bool) -> i32 {
-    n.get(OP_RECV_BUFFER);
-    if n.signed(receive, 0) < 0 {
-        n.get(OP_CLOSE_ERRNO);
-        n.get(OP_CLOSE);
+fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> i32 {
+    n.use_recv_buffer();
+    if n.receive(framing) < 0 {
+        n.close_errno();
+        n.close();
     }
     if release {
-        n.op(OP_RELEASE, 1);
+        n.release(true);
     }
     SW_OK
 }
 
-fn eof(n: &Native<impl Call>) -> i32 {
-    if !n.is(OP_RECV_BUFFER) {
-        n.get(OP_CLOSE);
+fn eof(n: &mut impl Connection) -> i32 {
+    if !n.use_recv_buffer() {
+        n.close();
         return SW_ERR;
     }
-    if n.signed(OP_RECV_EOF, 0) < 0 {
-        n.get(OP_CLOSE_ERRNO);
-        n.get(OP_CLOSE);
+    if n.receive(Framing::Eof) < 0 {
+        n.close_errno();
+        n.close();
     }
-    n.op(OP_RELEASE, 1);
+    n.release(true);
     SW_OK
 }
 
@@ -288,49 +243,47 @@ fn eof(n: &Native<impl Call>) -> i32 {
 enum Step {
     Receive,
     Parse,
-    Reply(u64),
+    Reply(Reply),
     Close,
     Length,
     Done,
 }
 
-fn http(n: &Native<impl Call>) -> i32 {
-    let shared = n.shared();
-    let (websocket, upgraded, http2_stream) =
-        (shared.websocket, shared.upgraded, shared.http2_stream);
-    if websocket != 0 {
-        if upgraded == 0 {
-            n.get(OP_REQ_DESTROY);
-            n.get(OP_WEBSOCKET_ACTIVATE);
+fn http(n: &mut impl Connection) -> i32 {
+    let upgrade = n.upgrade();
+    if upgrade.websocket {
+        if !upgrade.upgraded {
+            n.destroy_request();
+            n.activate_websocket();
         }
-        return framed(n, OP_RECV_LENGTH, true);
+        return framed(n, Framing::Length, true);
     }
-    if http2_stream != 0 {
-        return framed(n, OP_RECV_LENGTH, true);
+    if upgrade.http2_stream {
+        return framed(n, Framing::Length, true);
     }
-    n.get(OP_REQ_INIT);
+    n.init_request();
     let mut step = Step::Receive;
     loop {
         step = match step {
             Step::Receive => receive(n),
             Step::Parse => parse(n),
-            Step::Reply(packet) => {
-                n.op(OP_SEND, packet);
+            Step::Reply(reply) => {
+                n.send(reply);
                 Step::Close
             }
             Step::Close => {
-                n.get(OP_REQ_DESTROY);
-                n.get(OP_CLOSE);
+                n.destroy_request();
+                n.close();
                 return SW_OK;
             }
-            Step::Length => return framed(n, OP_RECV_LENGTH, true),
+            Step::Length => return framed(n, Framing::Length, true),
             Step::Done => return SW_OK,
         }
     }
 }
 
-fn receive(n: &Native<impl Call>) -> Step {
-    let received = n.signed(OP_RECV, 0);
+fn receive(n: &mut impl Connection) -> Step {
+    let received = n.recv(false);
     if received < 0 {
         return match read_error(n) {
             Failure::Wait => Step::Done,
@@ -340,13 +293,13 @@ fn receive(n: &Native<impl Call>) -> Step {
     if received == 0 {
         return Step::Close;
     }
-    n.buffer().length += size(received.cast_unsigned());
+    n.buffer().length += size(received);
     Step::Parse
 }
 
-fn bad(n: &Native<impl Call>, which: Log) -> Step {
+fn bad(n: &mut impl Connection, which: Log) -> Step {
     log(n, which);
-    Step::Reply(SEND_BAD_REQUEST)
+    Step::Reply(Reply::BadRequest)
 }
 
 /// `SW_LOG_TRACE` and `SW_LOG_WARNING`.
@@ -354,22 +307,9 @@ const TRACE: c_int = 1;
 const WARNING: c_int = 4;
 
 /// One of `readable_callback_http`'s `swoole_error_log`s, naming the client.
-fn log(n: &Native<impl Call>, which: Log) {
-    let host = n.op(OP_CLIENT, 1) as *const c_char;
-    let host = if host.is_null() {
-        c""
-    } else {
-        // SAFETY: the port's host, NUL-terminated and unchanged during the call.
-        unsafe { CStr::from_ptr(host) }
-    };
-    let (session, port) = (n.op(OP_CLIENT, 0), n.op(OP_CLIENT, 2));
-    let from = format!(
-        " from session#{} on {}:{}",
-        session.cast_signed(),
-        host.to_string_lossy(),
-        port.cast_signed()
-    );
-    let max = || n.get(OP_MAX_LENGTH);
+fn log(n: &mut impl Connection, which: Log) {
+    let (session, host, port) = n.client();
+    let from = format!(" from session#{session} on {host}:{port}");
     let (level, message) = match which {
         Log::UnknownProtocol => (TRACE, "Bad Request: unknown protocol".to_owned()),
         Log::UnknownMethod => (TRACE, "Bad Request: unknown HTTP method".to_owned()),
@@ -386,24 +326,25 @@ fn log(n: &Native<impl Call>, which: Log) {
             TRACE,
             "Bad Request: protocol error when parse chunked length".to_owned(),
         ),
-        Log::ChunkedTooLarge => (
-            WARNING,
-            format!(
-                "Request Entity Too Large: the chunked request length ({}) has reached the \
-                 package_max_length({})",
-                n.buffer().length,
-                max()
-            ),
-        ),
+        Log::ChunkedTooLarge => {
+            let (length, max) = (n.buffer().length, n.max_length());
+            (
+                WARNING,
+                format!(
+                    "Request Entity Too Large: the chunked request length ({length}) has \
+                     reached the package_max_length({max})"
+                ),
+            )
+        }
         Log::TooLarge => {
             let request = n.request();
             let (header, content) = (request.header_length, request.content_length);
+            let max = n.max_length();
             (
                 WARNING,
                 format!(
                     "Request Entity Too Large: header-length ({header}) + content-length \
-                     ({content}) is greater than the package_max_length({})",
-                    max()
+                     ({content}) is greater than the package_max_length({max})"
                 ),
             )
         }
@@ -416,7 +357,7 @@ fn log(n: &Native<impl Call>, which: Log) {
     );
 }
 
-fn parse(n: &Native<impl Call>) -> Step {
+fn parse(n: &mut impl Connection) -> Step {
     if let Some(step) = head(n) {
         return step;
     }
@@ -435,7 +376,7 @@ fn parse(n: &Native<impl Call>) -> Step {
 }
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
-fn head(n: &Native<impl Call>) -> Option<Step> {
+fn head(n: &mut impl Connection) -> Option<Step> {
     if n.request().method == 0 && n.request().get_protocol() < 0 {
         if !n.request().excepted && (n.buffer().length as u64) < HEADER_MAX_SIZE {
             return Some(Step::Done);
@@ -462,21 +403,22 @@ fn head(n: &Native<impl Call>) -> Option<Step> {
             return Some(bad(n, Log::TransferEncoding));
         }
         // `package_max_length` is a `uint32_t`.
-        n.request().max_length = u32::try_from(n.get(OP_MAX_LENGTH)).unwrap_or(u32::MAX);
+        let max = u32::try_from(n.max_length()).unwrap_or(u32::MAX);
+        n.request().max_length = max;
         if n.request().form.is_some() {
-            if n.is(OP_UPLOADS) && {
+            if n.uploads() && {
                 let request = n.request();
                 u64::from(request.header_length).wrapping_add(request.content_length)
                     > u64::from(request.max_length)
             } {
                 let send_continue = continues(n);
-                if !n.is(OP_REQ_MULTIPART_INIT) {
+                if !n.init_multipart() {
                     // `delete form_data_`: nothing was made for it.
                     n.request().form = None;
-                    return Some(Step::Reply(SEND_BAD_REQUEST));
+                    return Some(Step::Reply(Reply::BadRequest));
                 }
                 if send_continue {
-                    n.op(OP_SEND, SEND_CONTINUE);
+                    n.send(Reply::Continue);
                 }
             } else {
                 // `delete form_data_`: no parser was made for it.
@@ -487,111 +429,106 @@ fn head(n: &Native<impl Call>) -> Option<Step> {
     None
 }
 
-fn preface(n: &Native<impl Call>) -> Step {
-    if !n.is(OP_HTTP2_ENABLED) {
+fn preface(n: &mut impl Connection) -> Step {
+    if !n.http2_enabled() {
         return bad(n, Log::NoHttp2);
     }
-    n.get(OP_HTTP2_START);
+    n.start_http2();
     if n.buffer().length as u64 == HTTP2_PREFACE {
-        n.get(OP_REQ_DESTROY);
-        n.clear();
+        n.destroy_request();
+        clear(n);
         return Step::Done;
     }
-    n.op(OP_BUF_REDUCE, n.buffer().offset.cast_unsigned());
-    n.get(OP_REQ_DESTROY);
-    n.get(OP_SKIP_RECV);
+    let offset = n.buffer().offset.cast_unsigned();
+    n.reduce(offset);
+    n.destroy_request();
+    n.skip_recv();
     Step::Length
 }
 
 /// A multipart upload streamed to disk.
-fn form(n: &Native<impl Call>) -> Option<Step> {
-    if !n.request().multipart_header_parsed && !n.is(OP_BUF_HEADER_END) {
+fn form(n: &mut impl Connection) -> Option<Step> {
+    if !n.request().multipart_header_parsed && !n.header_end() {
         return Some(Step::Done);
     }
-    let (request, buffer) = (n.shared().request, n.shared().buffer);
-    // SAFETY: the connection's live request, with a form, and the current buffer; the
-    // parser's callbacks are the only other users of either during the call.
-    if !unsafe { swoole_rs_http_ffi::parse_multipart_data(request, buffer) } {
-        return Some(Step::Reply(SEND_BAD_REQUEST));
+    if !n.parse_multipart() {
+        return Some(Step::Reply(Reply::BadRequest));
     }
     let request = n.request();
     if request.too_large {
-        return Some(Step::Reply(SEND_TOO_LARGE));
+        return Some(Step::Reply(Reply::TooLarge));
     }
     if request.unavailable {
-        return Some(Step::Reply(SEND_UNAVAILABLE));
+        return Some(Step::Reply(Reply::Unavailable));
     }
     if !request.tried_to_dispatch {
         return Some(Step::Done);
     }
-    // SAFETY: the connection's live request, which nothing else uses during the call.
-    unsafe { swoole_rs_http_ffi::destroy_multipart_parser(n.shared().request) };
-    n.use_request_buffer();
+    n.finish_multipart();
     None
 }
 
 /// The first look at a request: one without a body is served here, pipelined
 /// requests behind it parsed next.
-fn bodyless(n: &Native<impl Call>) -> Option<Step> {
+fn bodyless(n: &mut impl Connection) -> Option<Step> {
     let request = n.request();
     request.tried_to_dispatch = true;
     if request.content_length != 0 || request.chunked {
         return None;
     }
-    let header_length = u64::from(n.request().header_length);
-    n.set_offset(header_length);
-    if !(n.shared().static_handler != 0 && n.is(OP_STATIC))
-        && n.signed(OP_DISPATCH_REQUEST, u64::from(n.request().header_length)) < 0
-    {
-        return Some(Step::Close);
+    let header_length = u64::from(request.header_length);
+    set_offset(n, header_length);
+    if !(n.static_handler() && n.serve_static()) {
+        let header_length = u64::from(n.request().header_length);
+        if n.dispatch(Dispatch::Request, header_length) < 0 {
+            return Some(Step::Close);
+        }
     }
-    if !n.is(OP_ACTIVE) {
+    if !n.active() {
         return Some(Step::Done);
     }
     let header_length = u64::from(n.request().header_length);
     if n.buffer().length as u64 > header_length {
-        n.op(OP_BUF_REDUCE, header_length);
+        n.reduce(header_length);
         n.request().clean();
         return Some(Step::Parse);
     }
-    n.get(OP_REQ_DESTROY);
-    n.clear();
+    n.destroy_request();
+    clear(n);
     Some(Step::Done)
 }
 
 /// Whether the client waits for `100 Continue`: it sent only the head, asking for one.
-fn continues(n: &Native<impl Call>) -> bool {
+fn continues(n: &mut impl Connection) -> bool {
     n.buffer().length as u64 == u64::from(n.request().header_length)
         && n.request().has_expect_header()
 }
 
 /// A request with a body: wait for all of it, then dispatch (an `upload` the
 /// reactor rewrote flagged so); pipelined requests behind it are parsed next.
-fn body(n: &Native<impl Call>, upload: bool) -> Step {
-    let max = n.get(OP_MAX_LENGTH);
+fn body(n: &mut impl Connection, upload: bool) -> Step {
+    let max = n.max_length();
     let request_length;
     if n.request().chunked {
         if n.request().get_chunked_body_length() < 0 {
             if n.request().too_large {
-                return Step::Reply(SEND_TOO_LARGE);
+                return Step::Reply(Reply::TooLarge);
             }
             if n.request().excepted {
                 return bad(n, Log::ChunkedError);
             }
             if n.buffer().length as u64 >= max {
                 log(n, Log::ChunkedTooLarge);
-                return Step::Reply(SEND_TOO_LARGE);
+                return Step::Reply(Reply::TooLarge);
             }
             if continues(n) {
-                n.op(OP_SEND, SEND_CONTINUE);
+                n.send(Reply::Continue);
             }
             let buffer = n.buffer();
             if buffer.length == buffer.size {
                 // The limit check above makes the new size larger.
-                n.op(
-                    OP_BUF_EXTEND,
-                    (buffer.size as u64 + BUFFER_SIZE_BIG).min(max),
-                );
+                let size = (buffer.size as u64 + BUFFER_SIZE_BIG).min(max);
+                n.extend(size);
             }
             return Step::Receive;
         }
@@ -599,40 +536,41 @@ fn body(n: &Native<impl Call>, upload: bool) -> Step {
         request_length = u64::from(request.header_length) + request.content_length;
     } else {
         let request = n.request();
-        let header_length = u64::from(request.header_length);
-        if header_length > max || request.content_length > max - header_length {
+        let (header_length, content_length) =
+            (u64::from(request.header_length), request.content_length);
+        if header_length > max || content_length > max - header_length {
             log(n, Log::TooLarge);
-            return Step::Reply(SEND_TOO_LARGE);
+            return Step::Reply(Reply::TooLarge);
         }
-        request_length = header_length + request.content_length;
+        request_length = header_length + content_length;
         if request_length > n.buffer().size as u64 {
-            n.op(OP_BUF_EXTEND, request_length);
+            n.extend(request_length);
         }
         if (n.buffer().length as u64) < request_length {
             if continues(n) {
-                n.op(OP_SEND, SEND_CONTINUE);
+                n.send(Reply::Continue);
             }
             return Step::Receive;
         }
     }
-    n.set_offset(request_length);
+    set_offset(n, request_length);
     let dispatch = if upload {
-        OP_DISPATCH_UPLOAD
+        Dispatch::Upload
     } else {
-        OP_DISPATCH_REQUEST
+        Dispatch::Request
     };
-    if n.signed(dispatch, request_length) < 0 {
+    if n.dispatch(dispatch, request_length) < 0 {
         return Step::Close;
     }
-    if n.is(OP_ACTIVE) {
+    if n.active() {
         if n.buffer().length as u64 > request_length {
-            n.op(OP_BUF_REDUCE, request_length);
+            n.reduce(request_length);
             n.request().clean();
             return Step::Parse;
         }
-        n.get(OP_REQ_DESTROY);
-        if !n.is(OP_RELEASE) {
-            n.clear();
+        n.destroy_request();
+        if !n.release(false) {
+            clear(n);
         }
     }
     Step::Done
@@ -641,14 +579,31 @@ fn body(n: &Native<impl Call>, upload: bool) -> Step {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use core::ffi::{CStr, c_char, c_void};
     use std::collections::VecDeque;
 
+    /// The effects a [`Fake`] records.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Effect {
+        WarnRecv,
+        CloseErrno,
+        Close,
+        Release,
+        Receive(Framing),
+        ActivateWebsocket,
+        StartHttp2,
+        SkipRecv,
+        Static,
+        Upload,
+    }
+
     /// A scripted connection: chunks to receive (empty: peer closed; none left:
-    /// would block), a receive buffer and the connection's request. It starts with
-    /// the [`Shared`] head, pointing at its own buffer and request.
-    #[repr(C)]
+    /// would block), a receive buffer and the connection's request.
     struct Fake {
-        shared: Shared,
+        /// The current buffer: `buf`, or one the request made.
+        current: *mut Buffer,
+        upgrade: Upgrade,
+        static_handler: bool,
         buf: Buffer,
         req: Request,
         incoming: VecDeque<Vec<u8>>,
@@ -661,8 +616,8 @@ pub(crate) mod tests {
         dispatched: Vec<Vec<u8>>,
         /// Each dispatched request's URL.
         urls: Vec<Vec<u8>>,
-        effects: Vec<u32>,
-        sent: Vec<u64>,
+        effects: Vec<Effect>,
+        sent: Vec<Reply>,
     }
 
     /// The request's native effects (`swoole_rs_http`'s `HttpNative` ops): heap
@@ -748,14 +703,9 @@ pub(crate) mod tests {
 
     fn fake(chunks: &[&[u8]]) -> Fake {
         Fake {
-            shared: Shared {
-                buffer: core::ptr::null_mut(),
-                request: core::ptr::null_mut(),
-                websocket: 0,
-                upgraded: 0,
-                http2_stream: 0,
-                static_handler: 1,
-            },
+            current: core::ptr::null_mut(),
+            upgrade: Upgrade::default(),
+            static_handler: true,
             buf: Buffer {
                 length: 0,
                 size: 64,
@@ -777,109 +727,150 @@ pub(crate) mod tests {
     }
 
     impl Fake {
+        /// Points the current buffer at this fake's own, as native code does when
+        /// its effects change it.
+        fn point(&mut self) {
+            (self.buf.str, self.buf.size) = (self.bytes.as_mut_ptr(), self.bytes.len());
+            self.current = &raw mut self.buf;
+        }
+    }
+
+    impl Connection for Fake {
         /// Into the current buffer; what doesn't fit arrives next.
-        fn receive(&mut self, whole: bool) -> u64 {
+        fn recv(&mut self, whole: bool) -> i64 {
             let Some(mut chunk) = self.incoming.pop_front() else {
-                return u64::MAX;
+                return -1;
             };
-            let buffer = unsafe { &mut *self.shared.buffer };
+            let buffer = unsafe { &mut *self.current };
             let start = if whole { 0 } else { buffer.length };
             let n = chunk.len().min(buffer.size - start);
             unsafe { buffer.str.add(start).copy_from(chunk.as_ptr(), n) };
             if n < chunk.len() {
                 self.incoming.push_front(chunk.split_off(n));
             }
-            n as u64
+            i64::try_from(n).unwrap()
         }
-        fn reduce(&mut self, n: usize) {
+        fn catch_error(&mut self) -> u64 {
+            2
+        }
+        fn warn_recv(&mut self) {
+            self.effects.push(Effect::WarnRecv);
+        }
+        fn close_errno(&mut self) {
+            self.effects.push(Effect::CloseErrno);
+        }
+        fn close(&mut self) {
+            self.effects.push(Effect::Close);
+        }
+        fn send(&mut self, reply: Reply) {
+            self.sent.push(reply);
+        }
+        fn use_recv_buffer(&mut self) -> bool {
+            true
+        }
+        fn release(&mut self, _: bool) -> bool {
+            self.effects.push(Effect::Release);
+            false
+        }
+        fn receive(&mut self, framing: Framing) -> i64 {
+            self.effects.push(Effect::Receive(framing));
+            0
+        }
+        fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
+            if dispatch == Dispatch::Upload {
+                self.effects.push(Effect::Upload);
+            }
+            let at = usize::try_from(length).unwrap();
+            self.dispatched.push(self.bytes[..at].to_vec());
+            let url = self.req.url_offset as usize;
+            self.urls
+                .push(self.bytes[url..url + self.req.url_length as usize].to_vec());
+            0
+        }
+        fn active(&mut self) -> bool {
+            true
+        }
+        fn upgrade(&mut self) -> Upgrade {
+            self.upgrade
+        }
+        fn activate_websocket(&mut self) {
+            self.effects.push(Effect::ActivateWebsocket);
+        }
+        fn http2_enabled(&mut self) -> bool {
+            self.http2
+        }
+        fn start_http2(&mut self) {
+            self.effects.push(Effect::StartHttp2);
+        }
+        fn skip_recv(&mut self) {
+            self.effects.push(Effect::SkipRecv);
+        }
+        fn max_length(&mut self) -> u64 {
+            self.max
+        }
+        fn uploads(&mut self) -> bool {
+            self.uploads > 0
+        }
+        fn static_handler(&mut self) -> bool {
+            self.static_handler
+        }
+        fn serve_static(&mut self) -> bool {
+            self.effects.push(Effect::Static);
+            false
+        }
+        fn buffer(&mut self) -> &mut Buffer {
+            unsafe { &mut *self.current }
+        }
+        fn reduce(&mut self, offset: u64) {
+            let n = usize::try_from(offset).unwrap();
             self.bytes.copy_within(n..self.buf.length, 0);
             self.buf.length -= n;
             self.buf.offset = 0;
         }
-        /// Repoints the shared head at this fake's buffer and request, as native
-        /// code does when its effects change them.
-        fn point(&mut self) {
-            (self.buf.str, self.buf.size) = (self.bytes.as_mut_ptr(), self.bytes.len());
-            self.shared.buffer = &raw mut self.buf;
-            self.shared.request = if self.request {
-                (&raw mut self.req).cast()
-            } else {
-                core::ptr::null_mut()
-            };
+        fn extend(&mut self, size: u64) {
+            self.bytes.resize(usize::try_from(size).unwrap(), 0);
+            self.point();
         }
-        fn call(&mut self, op: u32, arg: u64) -> u64 {
-            let flag = u64::from;
-            let at = usize::try_from(arg).unwrap();
-            match op {
-                OP_RECV => self.receive(arg == 1),
-                OP_CATCH => 2,
-                OP_RECV_BUFFER => 1,
-                OP_DISPATCH_TASK | OP_DISPATCH_REQUEST | OP_DISPATCH_UPLOAD => {
-                    if op == OP_DISPATCH_UPLOAD {
-                        self.effects.push(op);
-                    }
-                    self.dispatched.push(self.bytes[..at].to_vec());
-                    let url = self.req.url_offset as usize;
-                    self.urls
-                        .push(self.bytes[url..url + self.req.url_length as usize].to_vec());
-                    0
-                }
-                OP_ACTIVE => 1,
-                OP_HTTP2_ENABLED => flag(self.http2),
-                OP_MAX_LENGTH => self.max,
-                OP_UPLOADS => flag(self.uploads > 0),
-                OP_BUF_HEADER_END => {
-                    let buffer = unsafe { &*self.shared.buffer };
-                    let bytes = unsafe { core::slice::from_raw_parts(buffer.str, buffer.length) };
-                    flag(bytes.windows(4).any(|w| w == b"\r\n\r\n"))
-                }
-                OP_REQ_MULTIPART_INIT => {
-                    let upload_max = usize::try_from(self.uploads).unwrap();
-                    // The fake's live request, with a form.
-                    let ok = unsafe {
-                        swoole_rs_http_ffi::init_multipart_parser(
-                            &raw mut self.req,
-                            b"/tmp",
-                            upload_max,
-                        )
-                    };
-                    self.shared.buffer = self.req.buffer;
-                    flag(ok)
-                }
-                OP_BUF_REDUCE => {
-                    self.reduce(at);
-                    0
-                }
-                OP_BUF_EXTEND => {
-                    self.bytes.resize(at, 0);
-                    self.point();
-                    0
-                }
-                OP_REQ_INIT => {
-                    self.request = true;
-                    if self.req.buffer.is_null() {
-                        self.req.buffer = &raw mut self.buf;
-                    }
-                    self.point();
-                    self.shared.buffer = self.req.buffer;
-                    0
-                }
-                OP_REQ_DESTROY => {
-                    self.request = false;
-                    self.req = Request::new(request_native);
-                    self.point();
-                    0
-                }
-                OP_SEND => {
-                    self.sent.push(arg);
-                    0
-                }
-                OP_CLIENT => [7, c"127.0.0.1".as_ptr() as u64, 9501][at],
-                _ => {
-                    self.effects.push(op);
-                    0
-                }
+        fn header_end(&mut self) -> bool {
+            let buffer = unsafe { &*self.current };
+            let bytes = unsafe { core::slice::from_raw_parts(buffer.str, buffer.length) };
+            bytes.windows(4).any(|w| w == b"\r\n\r\n")
+        }
+        fn init_request(&mut self) {
+            self.request = true;
+            if self.req.buffer.is_null() {
+                self.req.buffer = &raw mut self.buf;
             }
+            self.point();
+            self.current = self.req.buffer;
+        }
+        fn destroy_request(&mut self) {
+            self.request = false;
+            self.req = Request::new(request_native);
+            self.point();
+        }
+        fn request(&mut self) -> &mut Request {
+            assert!(self.request, "a current request");
+            &mut self.req
+        }
+        fn init_multipart(&mut self) -> bool {
+            let upload_max = usize::try_from(self.uploads).unwrap();
+            // The fake's live request, with a form.
+            let ok = unsafe {
+                swoole_rs_http_ffi::init_multipart_parser(&raw mut self.req, b"/tmp", upload_max)
+            };
+            self.current = self.req.buffer;
+            ok
+        }
+        fn parse_multipart(&mut self) -> bool {
+            unsafe { swoole_rs_http_ffi::parse_multipart_data(&raw mut self.req, self.current) }
+        }
+        fn finish_multipart(&mut self) {
+            unsafe { swoole_rs_http_ffi::destroy_multipart_parser(&raw mut self.req) };
+            self.current = self.req.buffer;
+        }
+        fn client(&mut self) -> (i64, String, i64) {
+            (7, "127.0.0.1".to_owned(), 9501)
         }
     }
 
@@ -922,10 +913,7 @@ pub(crate) mod tests {
     fn run(kind: u32, fake: &mut Fake) -> i32 {
         log::swr_v1_core_set_log_host(record);
         fake.point();
-        let call =
-            |context: *mut c_void, op, arg| unsafe { &mut *context.cast::<Fake>() }.call(op, arg);
-        // SAFETY: `fake` is live for the call and starts with its `Shared`.
-        unsafe { readable(kind, (&raw mut *fake).cast(), call) }
+        readable(kind, fake)
     }
 
     const GET: &[u8] = b"GET / HTTP/1.1\r\n\r\n";
@@ -940,14 +928,14 @@ pub(crate) mod tests {
             "request destroyed, buffer cleared"
         );
         assert!(
-            f.effects.contains(&OP_STATIC),
+            f.effects.contains(&Effect::Static),
             "static handler consulted first"
         );
         let mut f = fake(&[GET]);
-        f.shared.static_handler = 0;
+        f.static_handler = false;
         run(ON_READ_HTTP, &mut f);
         assert!(
-            !f.effects.contains(&OP_STATIC) && f.dispatched.len() == 1,
+            !f.effects.contains(&Effect::Static) && f.dispatched.len() == 1,
             "no static handler: dispatched without asking"
         );
     }
@@ -976,7 +964,7 @@ pub(crate) mod tests {
             "body dispatched with its header"
         );
         assert!(
-            f.effects.contains(&OP_RELEASE),
+            f.effects.contains(&Effect::Release),
             "large buffers released after dispatch"
         );
     }
@@ -1003,20 +991,17 @@ pub(crate) mod tests {
         };
         let f = upload(&part(b""));
         assert_eq!(f.dispatched.len(), 1, "dispatched");
-        assert!(
-            f.effects.contains(&OP_DISPATCH_UPLOAD),
-            "flagged preprocessed"
-        );
+        assert!(f.effects.contains(&Effect::Upload), "flagged preprocessed");
         assert!(f.sent.is_empty(), "no error reply");
 
         let f = upload(&part(b"sWoOlE-uPlOaD-fIlE: /tmp/victim\r\n"));
         assert!(f.dispatched.is_empty(), "not dispatched");
-        assert_eq!(f.sent, [SEND_BAD_REQUEST], "400");
+        assert_eq!(f.sent, [Reply::BadRequest], "400");
 
         let mut f = fake(&[b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd"]);
         run(ON_READ_HTTP, &mut f);
         assert!(
-            f.dispatched.len() == 1 && !f.effects.contains(&OP_DISPATCH_UPLOAD),
+            f.dispatched.len() == 1 && !f.effects.contains(&Effect::Upload),
             "a plain body is not flagged"
         );
     }
@@ -1048,7 +1033,11 @@ pub(crate) mod tests {
         for _ in 0..3 {
             run(ON_READ_HTTP, &mut f);
         }
-        assert_eq!(f.sent, [SEND_CONTINUE], "only while just the head arrived");
+        assert_eq!(
+            f.sent,
+            [Reply::Continue],
+            "only while just the head arrived"
+        );
         assert_eq!(f.dispatched.len(), 1, "then the request");
 
         let head = b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\n\r\n";
@@ -1060,7 +1049,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             f.sent,
-            [SEND_CONTINUE],
+            [Reply::Continue],
             "chunked: once, before the first chunk"
         );
         assert_eq!(f.dispatched.len(), 1, "then the request");
@@ -1070,7 +1059,7 @@ pub(crate) mod tests {
     fn bad_transfer_codings_and_chunks_are_rejected() {
         let mut f = fake(&[b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n"]);
         run(ON_READ_HTTP, &mut f);
-        assert_eq!(f.sent, [SEND_BAD_REQUEST], "400");
+        assert_eq!(f.sent, [Reply::BadRequest], "400");
         assert_eq!(
             logged(),
             [(
@@ -1086,7 +1075,7 @@ pub(crate) mod tests {
         run(ON_READ_HTTP, &mut f);
         assert_eq!(
             f.sent,
-            [SEND_TOO_LARGE],
+            [Reply::TooLarge],
             "a chunk past package_max_length: 413"
         );
         assert!(logged().is_empty(), "without a log");
@@ -1100,7 +1089,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             f.sent,
-            [SEND_TOO_LARGE],
+            [Reply::TooLarge],
             "a size line filling package_max_length: 413"
         );
         assert_eq!(
@@ -1120,8 +1109,8 @@ pub(crate) mod tests {
     fn oversize_unknown_and_closed_requests_close() {
         let mut f = fake(&[b"POST / HTTP/1.1\r\nContent-Length: 2000\r\n\r\n"]);
         run(ON_READ_HTTP, &mut f);
-        assert_eq!(f.sent, [SEND_TOO_LARGE], "413");
-        assert!(f.effects.ends_with(&[OP_CLOSE]), "closed");
+        assert_eq!(f.sent, [Reply::TooLarge], "413");
+        assert!(f.effects.ends_with(&[Effect::Close]), "closed");
         assert_eq!(
             logged(),
             [(
@@ -1136,8 +1125,8 @@ pub(crate) mod tests {
 
         let mut f = fake(&[b"BREW / HTTP/1.1\r\n\r\n"]);
         run(ON_READ_HTTP, &mut f);
-        assert_eq!(f.sent, [SEND_BAD_REQUEST], "400 for an unknown method");
-        assert!(f.effects.ends_with(&[OP_CLOSE]), "closed");
+        assert_eq!(f.sent, [Reply::BadRequest], "400 for an unknown method");
+        assert!(f.effects.ends_with(&[Effect::Close]), "closed");
         assert_eq!(
             logged(),
             [(
@@ -1151,7 +1140,7 @@ pub(crate) mod tests {
         let mut f = fake(&[b""]);
         run(ON_READ_HTTP, &mut f);
         assert!(
-            f.sent.is_empty() && f.effects.ends_with(&[OP_CLOSE]),
+            f.sent.is_empty() && f.effects.ends_with(&[Effect::Close]),
             "peer close"
         );
     }
@@ -1161,20 +1150,23 @@ pub(crate) mod tests {
         let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
         let mut f = fake(&[preface]);
         run(ON_READ_HTTP, &mut f);
-        assert_eq!(f.sent, [SEND_BAD_REQUEST], "refused without http2");
+        assert_eq!(f.sent, [Reply::BadRequest], "refused without http2");
         let mut f = fake(&[preface]);
         f.http2 = true;
         run(ON_READ_HTTP, &mut f);
         assert!(
-            f.effects.contains(&OP_HTTP2_START) && f.buf.length == 0,
+            f.effects.contains(&Effect::StartHttp2) && f.buf.length == 0,
             "preface consumed"
         );
         let mut f = fake(&[&[&preface[..], b"frame"].concat()]);
         f.http2 = true;
         run(ON_READ_HTTP, &mut f);
         assert!(
-            f.effects
-                .ends_with(&[OP_SKIP_RECV, OP_RECV_LENGTH, OP_RELEASE]),
+            f.effects.ends_with(&[
+                Effect::SkipRecv,
+                Effect::Receive(Framing::Length),
+                Effect::Release
+            ]),
             "frames follow"
         );
     }
@@ -1182,17 +1174,25 @@ pub(crate) mod tests {
     #[test]
     fn upgraded_connections_read_frames() {
         let mut f = fake(&[]);
-        f.shared.websocket = 1;
+        f.upgrade.websocket = true;
         run(ON_READ_HTTP, &mut f);
         assert_eq!(
             f.effects,
-            [OP_WEBSOCKET_ACTIVATE, OP_RECV_LENGTH, OP_RELEASE],
+            [
+                Effect::ActivateWebsocket,
+                Effect::Receive(Framing::Length),
+                Effect::Release
+            ],
             "the handshake's request goes, then frames"
         );
         let mut f = fake(&[]);
-        f.shared.http2_stream = 1;
+        f.upgrade.http2_stream = true;
         run(ON_READ_HTTP, &mut f);
-        assert_eq!(f.effects, [OP_RECV_LENGTH, OP_RELEASE], "HTTP/2 frames");
+        assert_eq!(
+            f.effects,
+            [Effect::Receive(Framing::Length), Effect::Release],
+            "HTTP/2 frames"
+        );
     }
 
     #[test]
@@ -1206,11 +1206,15 @@ pub(crate) mod tests {
         );
         let mut f = fake(&[]);
         run(ON_READ_REDIS, &mut f);
-        assert_eq!(f.effects, [OP_RECV_REDIS], "redis keeps its buffer");
+        assert_eq!(
+            f.effects,
+            [Effect::Receive(Framing::Redis)],
+            "redis keeps its buffer"
+        );
         run(ON_READ_EOF, &mut f);
         assert_eq!(
             f.effects[1..],
-            [OP_RECV_EOF, OP_RELEASE],
+            [Effect::Receive(Framing::Eof), Effect::Release],
             "eof releases its buffer"
         );
         assert_eq!(run(99, &mut f), SW_ERR, "unknown kind");

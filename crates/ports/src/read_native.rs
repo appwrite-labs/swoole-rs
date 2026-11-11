@@ -1,7 +1,7 @@
-//! The native effects of `ListenPort`'s readable callbacks ([`crate::read`]), over
-//! the records Rust lays out: the reactor's event and server, the connection, its
-//! socket and receive buffer, the port's protocol and the server's settings.
-//! Logs name the upstream function that wrote them.
+//! The [`Connection`] `ListenPort`'s readable callbacks ([`crate::read`]) run over in
+//! the server: the records Rust lays out for the reactor's event and server, the
+//! connection, its socket and receive buffer, the port's protocol and the server's
+//! settings. Logs name the upstream function that wrote them.
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 
@@ -11,7 +11,8 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_http_ffi::HttpRequest;
+use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
+use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::{prepared, trigger_close_event};
 use swoole_rs_reactor::{Event, Socket, SocketRecord};
 use swoole_rs_server::port_config::{self, PortConfig};
@@ -21,15 +22,7 @@ use swoole_rs_tls::upstream::{socket_recv, socket_send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
 use crate::http_routes::exports::{Frames, RecvData, dispatch_request, dispatch_task};
-use crate::read::{
-    ON_READ_HTTP, OP_ACTIVE, OP_BUF_EXTEND, OP_BUF_HEADER_END, OP_BUF_REDUCE, OP_CATCH, OP_CLIENT,
-    OP_CLOSE, OP_CLOSE_ERRNO, OP_DISPATCH_REQUEST, OP_DISPATCH_TASK, OP_DISPATCH_UPLOAD,
-    OP_HTTP2_ENABLED, OP_HTTP2_START, OP_MAX_LENGTH, OP_RECV, OP_RECV_BUFFER, OP_RECV_EOF,
-    OP_RECV_LENGTH, OP_RECV_REDIS, OP_RELEASE, OP_REQ_DESTROY, OP_REQ_INIT, OP_REQ_MULTIPART_INIT,
-    OP_SEND, OP_SKIP_RECV, OP_STATIC, OP_UPLOADS, OP_WARN_RECV, OP_WEBSOCKET_ACTIVATE,
-    SEND_BAD_REQUEST, SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, readable,
-};
-use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
+use crate::read::{Connection, Dispatch, Framing, ON_READ_HTTP, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
@@ -39,16 +32,18 @@ const STATUS_ACTIVE: u8 = 3;
 /// `SW_HTTP2_SETTING_FRAME_SIZE`: a frame header and six settings.
 const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
-/// One readable event: the context [`readable`] runs over.
-#[repr(C)]
+/// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
-    shared: Shared,
+    /// The current buffer, and the connection's request once made current.
+    buffer: *mut CppString,
+    request: *mut HttpRequest,
     reactor: *mut c_void,
     event: *mut Event,
     socket: Socket<'a>,
     conn: *mut ConnectionRecord,
-    serv: *mut c_void,
-    port: *mut PortConfig,
+    server: view::Server<'a>,
+    /// The port, whose settings nothing writes while it serves.
+    port: &'a PortConfig,
     kind: u32,
     /// A WebSocket connection on a port with `open_websocket_protocol`: its
     /// frames go to [`Frames`], past the port protocol's callbacks.
@@ -78,308 +73,348 @@ pub(crate) unsafe fn on_read(
     let fields = unsafe { prepared(reactor) }.fields;
     // SAFETY: its fields, whose `ptr` is its server.
     let serv = unsafe { (*fields).ptr };
+    // SAFETY: the reactor's live server, whose settings this thread only reads.
+    let server = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.
-    let port = unsafe { port_config::of(port) };
-    let open_websocket = port.open_websocket_protocol;
+    let port: &PortConfig = unsafe { port_config::of(port) };
     let mut read = Read {
-        shared: Shared {
-            buffer: ptr::null_mut(),
-            request: ptr::null_mut(),
-            websocket: 0,
-            upgraded: 0,
-            http2_stream: 0,
-            static_handler: 0,
-        },
+        buffer: ptr::null_mut(),
+        request: ptr::null_mut(),
         reactor,
         event,
         socket,
         conn,
-        serv,
+        server,
         port,
         kind,
         frames: false,
     };
     if kind == ON_READ_HTTP {
-        // SAFETY: the live connection.
-        let c = unsafe { &*conn };
-        read.shared.websocket = u8::from(c.websocket_status >= STATUS_HANDSHAKE);
-        read.frames = read.shared.websocket != 0 && open_websocket;
-        read.shared.upgraded = c.http_upgrade;
-        read.shared.http2_stream = c.http2_stream;
-        read.shared.static_handler = u8::from(config(&read).enable_static_handler);
+        read.frames =
+            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol;
     }
-    // SAFETY: `readable` passes back `read`'s address, live for the call.
-    let effect = |context, op, arg| unsafe { call(context, op, arg) };
-    // SAFETY: `read` starts with its `Shared` and outlives the call.
-    unsafe { readable(kind, (&raw mut read).cast(), effect) }
-}
-
-/// A native status or byte count, as the `u64` [`crate::read`] reads back signed.
-fn status(value: impl Into<i64>) -> u64 {
-    value.into().cast_unsigned()
+    readable(kind, &mut read)
 }
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// The live server; this reactor thread only reads its settings.
-fn server<'a>(c: &'a Read<'_>) -> view::Server<'a> {
-    // SAFETY: the reader's context holds its live server.
-    unsafe { view::Server::from_raw(c.serv) }
-}
-
-fn config<'a>(c: &'a Read<'_>) -> &'a ServerConfig {
-    server(c).config()
-}
-
-/// The current buffer, borrowed until the next native call.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native memory: the borrow spans no native call"
-)]
-fn buffer<'a>(c: &'a Read<'_>) -> &'a mut CppString {
-    // SAFETY: the current buffer is live once a receive buffer or request made it current.
-    unsafe { &mut *c.shared.buffer.cast::<CppString>() }
-}
-
-/// `serv->get_recv_buffer(socket)`.
-fn recv_buffer(c: &Read<'_>) -> *mut CppString {
-    let held = c.socket.read(|s| s.recv_buffer);
-    if !held.is_null() {
-        return held.cast();
+impl Read<'_> {
+    /// The live connection, borrowed until the next call on `self`.
+    fn conn(&mut self) -> &mut ConnectionRecord {
+        // SAFETY: the event's live connection, which only this reactor thread touches;
+        // the borrow of `self` ends it before any native call through `self.conn`.
+        unsafe { &mut *self.conn }
     }
-    let allocator = config(c)
-        .recv_buffer_allocator
-        .cast::<swoole_rs_buffer::string::Allocator>();
-    // SAFETY: the server's allocator, null or live.
-    let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
-    c.socket.edit(|s| s.recv_buffer = made.cast());
-    made
-}
 
-fn send(c: &Read<'_>, packet: &[u8]) -> u64 {
-    let socket = c.socket.as_ptr();
-    // SAFETY: the live socket and `packet`'s bytes.
-    status(unsafe { socket_send(socket, packet.as_ptr().cast(), packet.len(), 0) } as i64)
-}
+    /// The current buffer, borrowed until the next call on `self`.
+    fn string(&mut self) -> &mut CppString {
+        // SAFETY: the current buffer is live once a receive buffer or request made it
+        // current; only calls on `self`, which the borrow excludes, touch it.
+        unsafe { &mut *self.buffer }
+    }
 
-/// One receive of `mode` through the port's protocol, its packages handled by `K`.
-#[inline(always)]
-fn receive<K: Packages>(c: &Read<'_>, mode: u32) -> u64 {
-    // SAFETY: the live port.
-    let protocol = unsafe { &raw const (*c.port).protocol };
-    let (socket, buffer) = (c.socket.as_ptr(), c.shared.buffer.cast());
-    // SAFETY: the port's protocol, the live socket and the current buffer.
-    status(unsafe { framing_recv::receive::<K>(protocol, socket, buffer, mode) })
-}
+    fn config(&self) -> &ServerConfig {
+        self.server.config()
+    }
 
-/// The effects every read makes, inlined into each call site, where `op` is a
-/// constant and the match folds to its one arm.
-///
-/// # Safety
-/// `context` is `on_read`'s live [`Read`].
-#[inline(always)]
-unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
-    // SAFETY: `on_read`'s live context.
-    let c = unsafe { &mut *context.cast::<Read>() };
-    match op {
-        OP_RECV => {
-            let b = buffer(c);
-            let (at, size) = (if arg == 0 { b.len() } else { 0 }, b.size());
-            let start = b.as_mut_ptr().wrapping_add(at);
-            // SAFETY: the live socket and `size - at` writable bytes at `start`.
-            let received = unsafe { socket_recv(c.socket.as_ptr(), start.cast(), size - at, 0) };
-            status(received as i64)
+    /// `serv->get_recv_buffer(socket)`.
+    fn recv_buffer(&self) -> *mut CppString {
+        let held = self.socket.read(|s| s.recv_buffer);
+        if !held.is_null() {
+            return held.cast();
         }
-        OP_RECV_BUFFER => {
-            c.shared.buffer = recv_buffer(c).cast();
-            1
-        }
-        OP_RELEASE => {
-            let held = c.socket.read(|s| s.recv_buffer).cast::<CppString>();
-            let release = !held.is_null() && {
-                // SAFETY: the socket's receive buffer, when set, is live.
-                let held = unsafe { &*held };
-                (arg == 0 || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
-            };
-            if release {
-                // SAFETY: `new String`'s, which nothing uses after.
-                unsafe { delete_string(held) };
-                c.socket.edit(|s| s.recv_buffer = ptr::null_mut());
-            }
-            u64::from(release)
-        }
-        OP_RECV_LENGTH if c.frames => receive::<Frames>(c, MODE_LENGTH),
-        OP_RECV_LENGTH => receive::<Callbacks>(c, MODE_LENGTH),
-        OP_ACTIVE => {
-            // SAFETY: the live connection.
-            let active = unsafe { (*c.conn).active };
-            let removed = c.socket.read(|s| s.removed);
-            u64::from(active != 0 && removed == 0)
-        }
-        // SAFETY: the live port.
-        OP_MAX_LENGTH => u64::from(unsafe { (*c.port).protocol.package_max_length }),
-        OP_REQ_INIT => {
-            // SAFETY: the live connection.
-            let conn = unsafe { &mut *c.conn };
-            if conn.object.is_null() {
-                conn.object = swoole_rs_http_ffi::request_new().cast();
-            }
-            let request = conn.object.cast::<HttpRequest>();
-            // SAFETY: the connection's live request.
-            let r = unsafe { &mut *request };
-            if r.buffer.is_null() {
-                r.buffer = recv_buffer(c).cast();
-            }
-            c.shared.buffer = r.buffer;
-            c.shared.request = request;
-            0
-        }
-        OP_REQ_DESTROY => {
-            // SAFETY: the live connection, whose request is null or Rust's.
-            crate::methods::destroy_http_request(c.conn);
-            c.shared.request = ptr::null_mut();
-            0
-        }
-        _ => rare(c, op, arg),
+        let allocator = self
+            .config()
+            .recv_buffer_allocator
+            .cast::<swoole_rs_buffer::string::Allocator>();
+        // SAFETY: the server's allocator, null or live.
+        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
+        self.socket.edit(|s| s.recv_buffer = made.cast());
+        made
+    }
+
+    fn send_bytes(&self, packet: &[u8]) {
+        // SAFETY: the live socket and `packet`'s bytes.
+        unsafe {
+            socket_send(
+                self.socket.as_ptr(),
+                packet.as_ptr().cast(),
+                packet.len(),
+                0,
+            )
+        };
+    }
+
+    /// One receive of `mode` through the port's protocol, its packages handled by `K`.
+    #[inline(always)]
+    fn framed<K: Packages>(&self, mode: u32) -> i64 {
+        let protocol = &raw const self.port.protocol;
+        // SAFETY: the port's protocol, the live socket and the current buffer.
+        i64::from(unsafe {
+            framing_recv::receive::<K>(protocol, self.socket.as_ptr(), self.buffer, mode)
+        })
     }
 }
 
-/// The effects some reads make.
-fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
-    // SAFETY: the live connection, which only this reactor thread touches; each
-    // borrow ends before the next native call.
-    let conn = || unsafe { &mut *c.conn };
-    // SAFETY: the live port, whose settings nothing writes while it serves.
-    let port = || unsafe { &*c.port };
-    match op {
-        OP_CATCH => {
-            let error = errno();
-            status(c.socket.catch_error(error))
-        }
-        OP_WARN_RECV => {
-            let origin: &CStr = if c.kind == ON_READ_HTTP {
-                c"ListenPort::readable_callback_http"
-            } else {
-                c"ListenPort::readable_callback_raw"
-            };
-            // SAFETY: the live event.
-            let fd = unsafe { (*c.event).fd() };
-            log::sys_warning(origin, format_args!("recv from connection#{fd} failed"));
-            0
-        }
-        OP_CLOSE_ERRNO => {
-            conn().close_errno = u16::try_from(errno()).unwrap_or(u16::MAX);
-            0
-        }
-        OP_CLOSE => {
-            // SAFETY: the live reactor and event.
-            unsafe { trigger_close_event(c.reactor, c.event.cast()) };
-            0
-        }
-        OP_SEND => send(
-            c,
-            match arg {
-                SEND_BAD_REQUEST => SW_HTTP_BAD_REQUEST_PACKET,
-                SEND_TOO_LARGE => SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
-                SEND_UNAVAILABLE => SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
-                _ => SW_HTTP_100_CONTINUE_PACKET,
-            }
-            .as_bytes(),
-        ),
-        OP_RECV_EOF => receive::<Callbacks>(c, MODE_EOF),
-        OP_RECV_REDIS => {
-            // SAFETY: the live port.
-            let protocol = unsafe { &raw const (*c.port).protocol };
-            let (conn, buffer) = (c.conn.cast(), c.shared.buffer.cast());
-            // SAFETY: the port's protocol, the live connection and the current buffer.
-            status(unsafe { crate::resp_recv::recv_packet(protocol, conn, buffer) })
-        }
-        OP_DISPATCH_TASK | OP_DISPATCH_REQUEST | OP_DISPATCH_UPLOAD => dispatch(c, op, arg),
-        OP_WEBSOCKET_ACTIVATE => {
-            let conn = conn();
-            conn.websocket_status = STATUS_ACTIVE;
-            conn.http_upgrade = 1;
-            0
-        }
-        OP_HTTP2_ENABLED => u64::from(port().open_http2_protocol),
-        OP_HTTP2_START => {
-            conn().http2_stream = 1;
-            // `http2::send_setting_frame`: the server's default settings.
-            let settings = swoole_rs_http2::sw_rs_http2_default_settings();
-            let mut frame = [0u8; SETTING_FRAME_SIZE];
-            let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
-            send(c, frame.get(..length).unwrap_or_default());
-            0
-        }
-        OP_SKIP_RECV => {
-            c.socket.edit(|s| s.skip_recv = 1);
-            0
-        }
-        OP_UPLOADS => u64::from(config(c).upload_max_filesize > 0),
-        OP_STATIC => {
-            let request = conn().object.cast();
-            // SAFETY: the live server, the connection's request and the connection.
-            u64::from(unsafe { swr_v1_server_static_select(c.serv, request, c.conn) })
-        }
-        OP_BUF_REDUCE => {
-            buffer(c).reduce(arg.cast_signed());
-            0
-        }
-        OP_BUF_EXTEND => {
-            buffer(c).extend(usize::try_from(arg).unwrap_or(usize::MAX));
-            0
-        }
-        OP_BUF_HEADER_END => {
-            let bytes = buffer(c).view();
-            u64::from(bytes.windows(4).any(|w| w == b"\r\n\r\n"))
-        }
-        OP_REQ_MULTIPART_INIT => {
-            let request = conn().object.cast::<HttpRequest>();
-            let dir = server(c).upload_tmp_dir();
-            let max = config(c).upload_max_filesize;
-            // SAFETY: the connection's live request, with a form.
-            let ok =
-                unsafe { swoole_rs_http_ffi::init_multipart_parser(request, dir.as_bytes(), max) };
-            // SAFETY: as above.
-            c.shared.buffer = unsafe { (*request).buffer };
-            u64::from(ok)
-        }
-        OP_CLIENT => match arg {
-            0 => status(conn().session_id),
-            1 => port().host().data as u64,
-            _ => status(port().port),
-        },
-        _ => std::process::abort(),
+impl Connection for Read<'_> {
+    #[inline]
+    fn recv(&mut self, whole: bool) -> i64 {
+        let b = self.string();
+        let (at, size) = (if whole { 0 } else { b.len() }, b.size());
+        let start = b.as_mut_ptr().wrapping_add(at);
+        // SAFETY: the live socket and `size - at` writable bytes at `start`.
+        let received = unsafe { socket_recv(self.socket.as_ptr(), start.cast(), size - at, 0) };
+        received as i64
     }
-}
 
-/// `Server::dispatch_task` or `http_server::dispatch_request` of `length` bytes
-/// from the buffer's start.
-fn dispatch(c: &mut Read<'_>, op: u32, length: u64) -> u64 {
-    let data = RecvData {
-        info: DataHead {
-            len: u32::try_from(length).unwrap_or(u32::MAX),
-            ext_flags: if op == OP_DISPATCH_UPLOAD {
-                UPLOAD_PREPROCESSED
-            } else {
-                0
+    fn catch_error(&mut self) -> u64 {
+        let error = errno();
+        i64::from(self.socket.catch_error(error)).cast_unsigned()
+    }
+
+    fn warn_recv(&mut self) {
+        let origin: &CStr = if self.kind == ON_READ_HTTP {
+            c"ListenPort::readable_callback_http"
+        } else {
+            c"ListenPort::readable_callback_raw"
+        };
+        // SAFETY: the live event.
+        let fd = unsafe { (*self.event).fd() };
+        log::sys_warning(origin, format_args!("recv from connection#{fd} failed"));
+    }
+
+    fn close_errno(&mut self) {
+        self.conn().close_errno = u16::try_from(errno()).unwrap_or(u16::MAX);
+    }
+
+    fn close(&mut self) {
+        // SAFETY: the live reactor and event.
+        unsafe { trigger_close_event(self.reactor, self.event.cast()) };
+    }
+
+    fn send(&mut self, reply: Reply) {
+        let packet = match reply {
+            Reply::BadRequest => SW_HTTP_BAD_REQUEST_PACKET,
+            Reply::TooLarge => SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
+            Reply::Unavailable => SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+            Reply::Continue => SW_HTTP_100_CONTINUE_PACKET,
+        };
+        self.send_bytes(packet.as_bytes());
+    }
+
+    #[inline]
+    fn use_recv_buffer(&mut self) -> bool {
+        self.buffer = self.recv_buffer();
+        !self.buffer.is_null()
+    }
+
+    #[inline]
+    fn release(&mut self, if_empty: bool) -> bool {
+        let held = self.socket.read(|s| s.recv_buffer).cast::<CppString>();
+        let release = !held.is_null() && {
+            // SAFETY: the socket's receive buffer, when set, is live.
+            let held = unsafe { &*held };
+            (!if_empty || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
+        };
+        if release {
+            // SAFETY: `new String`'s, which nothing uses after.
+            unsafe { delete_string(held) };
+            self.socket.edit(|s| s.recv_buffer = ptr::null_mut());
+        }
+        release
+    }
+
+    #[inline]
+    fn receive(&mut self, framing: Framing) -> i64 {
+        match framing {
+            Framing::Length if self.frames => self.framed::<Frames>(MODE_LENGTH),
+            Framing::Length => self.framed::<Callbacks>(MODE_LENGTH),
+            Framing::Eof => self.framed::<Callbacks>(MODE_EOF),
+            Framing::Redis => {
+                let protocol = &raw const self.port.protocol;
+                // SAFETY: the port's protocol, the live connection and the current buffer.
+                i64::from(unsafe {
+                    crate::resp_recv::recv_packet(protocol, self.conn.cast(), self.buffer)
+                })
+            }
+        }
+    }
+
+    /// `Server::dispatch_task` or `http_server::dispatch_request` of `length` bytes
+    /// from the buffer's start.
+    fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
+        let data = RecvData {
+            info: DataHead {
+                len: u32::try_from(length).unwrap_or(u32::MAX),
+                ext_flags: if dispatch == Dispatch::Upload {
+                    UPLOAD_PREPROCESSED
+                } else {
+                    0
+                },
+                ..DataHead::default()
             },
-            ..DataHead::default()
-        },
-        data: buffer(c).as_mut_ptr(),
-    };
-    // SAFETY: the live port.
-    let proto: *const c_void = unsafe { &raw const (*c.port).protocol }.cast();
-    let rdata: *const c_void = (&raw const data).cast();
-    if op == OP_DISPATCH_TASK {
-        // SAFETY: the port's protocol, the live socket and its data.
-        return status(unsafe { dispatch_task(proto.cast(), c.socket.as_ptr(), rdata.cast()) });
+            data: self.string().as_mut_ptr(),
+        };
+        let proto: *const c_void = (&raw const self.port.protocol).cast();
+        let rdata: *const c_void = (&raw const data).cast();
+        if dispatch == Dispatch::Task {
+            // SAFETY: the port's protocol, the live socket and its data.
+            return i64::from(unsafe {
+                dispatch_task(proto.cast(), self.socket.as_ptr(), rdata.cast())
+            });
+        }
+        let serv = self.server.raw();
+        // SAFETY: as above, on the live server.
+        let result = unsafe { dispatch_request(serv, proto, self.socket.as_ptr(), rdata) };
+        // The connection, which dispatch may have given a new request.
+        self.request = self.conn().object.cast();
+        i64::from(result)
     }
-    // SAFETY: as above, on the live server.
-    let result = unsafe { dispatch_request(c.serv, proto, c.socket.as_ptr(), rdata) };
-    // SAFETY: the connection, which dispatch may have given a new request.
-    c.shared.request = unsafe { (*c.conn).object }.cast();
-    status(result)
+
+    #[inline]
+    fn active(&mut self) -> bool {
+        let active = self.conn().active;
+        let removed = self.socket.read(|s| s.removed);
+        active != 0 && removed == 0
+    }
+
+    fn upgrade(&mut self) -> Upgrade {
+        let c = self.conn();
+        Upgrade {
+            websocket: c.websocket_status >= STATUS_HANDSHAKE,
+            upgraded: c.http_upgrade != 0,
+            http2_stream: c.http2_stream != 0,
+        }
+    }
+
+    fn activate_websocket(&mut self) {
+        let conn = self.conn();
+        conn.websocket_status = STATUS_ACTIVE;
+        conn.http_upgrade = 1;
+    }
+
+    fn http2_enabled(&mut self) -> bool {
+        self.port.open_http2_protocol
+    }
+
+    fn start_http2(&mut self) {
+        self.conn().http2_stream = 1;
+        // `http2::send_setting_frame`: the server's default settings.
+        let settings = swoole_rs_http2::sw_rs_http2_default_settings();
+        let mut frame = [0u8; SETTING_FRAME_SIZE];
+        let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
+        self.send_bytes(frame.get(..length).unwrap_or_default());
+    }
+
+    fn skip_recv(&mut self) {
+        self.socket.edit(|s| s.skip_recv = 1);
+    }
+
+    #[inline]
+    fn max_length(&mut self) -> u64 {
+        u64::from(self.port.protocol.package_max_length)
+    }
+
+    fn uploads(&mut self) -> bool {
+        self.config().upload_max_filesize > 0
+    }
+
+    #[inline]
+    fn static_handler(&mut self) -> bool {
+        self.config().enable_static_handler
+    }
+
+    fn serve_static(&mut self) -> bool {
+        let request = self.conn().object.cast();
+        // SAFETY: the live server, the connection's request and the connection.
+        unsafe { swr_v1_server_static_select(self.server.raw(), request, self.conn) }
+    }
+
+    #[inline]
+    fn buffer(&mut self) -> &mut HttpString {
+        // SAFETY: the current buffer is live once a receive buffer or request made it
+        // current, and starts with `swoole::String`'s head; only calls on `self`, which
+        // the borrow excludes, touch it.
+        unsafe { &mut *self.buffer.cast::<HttpString>() }
+    }
+
+    fn reduce(&mut self, offset: u64) {
+        self.string().reduce(offset.cast_signed());
+    }
+
+    fn extend(&mut self, size: u64) {
+        self.string()
+            .extend(usize::try_from(size).unwrap_or(usize::MAX));
+    }
+
+    fn header_end(&mut self) -> bool {
+        let bytes = self.string().view();
+        bytes.windows(4).any(|w| w == b"\r\n\r\n")
+    }
+
+    #[inline]
+    fn init_request(&mut self) {
+        if self.conn().object.is_null() {
+            self.conn().object = swoole_rs_http_ffi::request_new().cast();
+        }
+        self.request = self.conn().object.cast();
+        if self.request().buffer.is_null() {
+            let buffer = self.recv_buffer();
+            self.request().buffer = buffer.cast();
+        }
+        self.buffer = self.request().buffer.cast();
+    }
+
+    #[inline]
+    fn destroy_request(&mut self) {
+        crate::methods::destroy_http_request(self.conn);
+        self.request = ptr::null_mut();
+    }
+
+    #[inline]
+    fn request(&mut self) -> &mut HttpRequest {
+        // SAFETY: after `init_request` the connection's request is live; only calls on
+        // `self`, which the borrow excludes, touch it.
+        unsafe { &mut *self.request }
+    }
+
+    fn init_multipart(&mut self) -> bool {
+        let dir = self.server.upload_tmp_dir();
+        let max = self.config().upload_max_filesize;
+        // SAFETY: the connection's live request, with a form.
+        let ok =
+            unsafe { swoole_rs_http_ffi::init_multipart_parser(self.request, dir.as_bytes(), max) };
+        self.buffer = self.request().buffer.cast();
+        ok
+    }
+
+    fn parse_multipart(&mut self) -> bool {
+        // SAFETY: the connection's live request, with a form, and the current buffer;
+        // the parser's callbacks are the only other users of either during the call.
+        unsafe { swoole_rs_http_ffi::parse_multipart_data(self.request, self.buffer.cast()) }
+    }
+
+    fn finish_multipart(&mut self) {
+        // SAFETY: the connection's live request, which nothing else uses during the call.
+        unsafe { swoole_rs_http_ffi::destroy_multipart_parser(self.request) };
+        self.buffer = self.request().buffer.cast();
+    }
+
+    fn client(&mut self) -> (i64, String, i64) {
+        let session = self.conn().session_id;
+        let host = self.port.host();
+        let host = if host.data.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: the port's host, `length` bytes unchanged while the port serves.
+            unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) }
+        };
+        (
+            session,
+            String::from_utf8_lossy(host).into_owned(),
+            i64::from(self.port.port),
+        )
+    }
 }
