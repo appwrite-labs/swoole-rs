@@ -1,9 +1,10 @@
 //! The reactor's writable handler and drain (upstream `Reactor::_writable_callback` and
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
 //! `crates/tls`'s `reactor_write.rs` supplies the effects.
+use crate::write::Queue;
 use crate::write::SocketOutput;
 use std::ffi::c_int;
-use swoole_rs_buffer::{Buffer, swr_v1_buffer_stats};
+use swoole_rs_buffer::Buffer;
 
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -29,17 +30,8 @@ pub trait FlushEffects {
 }
 
 /// `Buffer::empty`: null, no entries, or a handle that can't be read.
-///
-/// # Safety
-/// `buffer` is null or a live Rust buffer handle.
-unsafe fn empty(buffer: *mut Buffer) -> bool {
-    if buffer.is_null() {
-        return true;
-    }
-    let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises.
-    let buffer = unsafe { buffer.as_ref() };
-    swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) != 0 || count == 0
+fn empty(queue: Queue) -> bool {
+    queue.empty().unwrap_or(true)
 }
 
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
@@ -54,7 +46,8 @@ pub unsafe fn swr_v1_reactor_flush(
     ops: &impl FlushEffects,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    while !unsafe { empty(buffer) } {
+    let queue = unsafe { Queue::new(buffer) };
+    while !empty(queue) {
         let result = match ops.front_kind() {
             CLOSE => return ops.close(),
             SENDFILE => ops.handle_sendfile(),
@@ -77,8 +70,7 @@ pub unsafe fn swr_v1_reactor_flush(
         // SAFETY: as above.
         unsafe { (*output).send_timer = std::ptr::null_mut() };
     }
-    // SAFETY: as above.
-    if unsafe { empty(buffer) } {
+    if empty(queue) {
         ops.remove_write_event();
     }
     SW_OK
@@ -95,7 +87,8 @@ pub unsafe fn swr_v1_reactor_drain(
     ops: &impl FlushEffects,
 ) {
     // SAFETY: as the caller promises.
-    while !unsafe { empty(buffer) } {
+    let queue = unsafe { Queue::new(buffer) };
+    while !empty(queue) {
         if ops.wait_writable() == SW_ERR {
             break;
         }
