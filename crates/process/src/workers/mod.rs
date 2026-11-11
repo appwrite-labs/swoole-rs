@@ -6,7 +6,6 @@
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
-pub mod entry;
 mod event_worker;
 mod factory;
 mod log;

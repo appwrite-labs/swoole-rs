@@ -6,7 +6,6 @@ use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::destroy as pool_destroy;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ADD_MASTER_TIMER, OP_ALL_WORKER_NUM, OP_CLOSE_CONNECTION, OP_CLOSE_EVENT_SOCKET,
     OP_CLOSE_SESSION, OP_CONN_AT, OP_CONN_CLOSE_FORCE, OP_CONN_CLOSE_QUEUED, OP_CONN_HEALTHY,
@@ -31,7 +30,7 @@ use crate::reactor_ops::sign;
 use crate::view;
 
 mod native;
-pub(crate) use native::enter;
+pub(crate) use native::start_reactor_processes;
 
 /// What an operation runs over.
 struct Context {
@@ -176,8 +175,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SINGLE_WORKER => u64::from(ctx.server().is_single_worker()),
-        // SAFETY: the context's live server.
-        OP_START_MANAGER => sign(unsafe { entry::start_manager_process(serv) }),
+        OP_START_MANAGER => sign(crate::manager_ops::start_manager_process(ctx.server())),
         OP_POOL_DESTROY => {
             // SAFETY: the server's live event worker pool.
             unsafe { pool_destroy(ctx.workers().event_pool.cast()) };

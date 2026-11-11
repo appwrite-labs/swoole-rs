@@ -58,10 +58,9 @@ use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
     OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
     OP_CREATE_FACTORY, OP_DESTROY_FACTORY, OP_DESTROY_WORKER, OP_FREE_USER_WORKERS,
-    OP_HTTP_DEFAULTS, OP_INIT_LOCAL_ADDRS, OP_INIT_TASK_WORKERS, OP_LC_BEFORE_START, OP_LC_CHECK,
-    OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_THREAD, OP_MASTER_REACTOR,
-    OP_MASTER_WORKER, OP_SIGNAL_ACTIVE, OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER,
-    OP_STOP_WORKER_THREADS,
+    OP_HTTP_DEFAULTS, OP_INIT_LOCAL_ADDRS, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_PREPARE_WORKERS,
+    OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER, OP_SIGNAL_ACTIVE,
+    OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
 };
 use crate::ops::{
     OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_ST_PIPE_FD,
@@ -86,7 +85,6 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
     RUN_STOP_WORKER_THREADS,
@@ -1455,15 +1453,16 @@ fn stop_single_worker(serv: crate::view::Server<'_>) {
 /// [`factory_ops`]', which only the hybrid builds: their runners link the C++
 /// event loop and timer, and the server's fault fixture and unit tests link no C++.
 fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    let serv = o.ctx.serv;
     Some(match op {
         OP_LC_CHECK => sign(crate::server_methods::start_check(o.server())),
         OP_LC_PREPARE_WORKERS => {
             crate::worker_methods::workers_start(o.server());
             0
         }
-        // SAFETY: per the caller, for this and each call below.
-        OP_LC_START_BASE => sign(unsafe { entry::start_reactor_processes(serv) }),
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_LC_START_BASE => sign(crate::reactor_process_ops::start_reactor_processes(
+            o.server(),
+        )),
         OP_LC_START_THREAD => {
             let started = thread_mode(o.server(), RUN_START_WORKER_THREADS);
             #[expect(clippy::cast_possible_truncation, reason = "the method's int result")]
@@ -1488,8 +1487,10 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.config().factory_ = factory;
             u64::from(!factory.is_null())
         }
-        // SAFETY: as above.
-        OP_INIT_TASK_WORKERS => u64::from(unsafe { entry::init_task_workers(serv) }),
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_INIT_TASK_WORKERS => {
+            u64::from(crate::task_worker_ops::init_task_workers(o.server()))
+        }
         OP_DESTROY_WORKER => {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
             let worker = o
@@ -1889,7 +1890,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // The master, before it starts any thread.
             sign(swoole_daemon(0, 1))
         }
-        OP_LC_FACTORY_START => u64::from(crate::factory::start(o.state)),
+        OP_LC_FACTORY_START => u64::from(crate::factory::start(o.server())),
         OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
         // SAFETY: the master, starting its reactor threads.
         OP_LC_START_PROCESS => sign(unsafe { crate::reactor_entry::start_reactor_threads(serv) }),
@@ -2050,8 +2051,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SIGNAL_RELOAD => {
-            // SAFETY: the live server, in its master.
-            let _ = unsafe { swoole_rs_process::workers::entry::reload(serv, arg != 0) };
+            _ = crate::manager_ops::reload(o.server(), arg != 0);
             reopen_logger();
             0
         }

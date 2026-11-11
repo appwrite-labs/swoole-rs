@@ -11,7 +11,6 @@ use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     LOG_UNKNOWN_COMMAND, OP_ALL_WORKER_NUM, OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS,
     OP_COMMAND_REPLY, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS,
@@ -33,7 +32,8 @@ use swoole_rs_process::workers::ops::{
 };
 use swoole_rs_process::workers::ops::{
     RUN_CHECK_EXIT_STATUS, RUN_KILL_TASK_WORKERS, RUN_MANAGER_MAIN, RUN_MANAGER_SIGNAL,
-    RUN_READ_WORKER_MESSAGE, RUN_RESTART_WORKER, RUN_SPAWN_EVENT_WORKER, RUN_SPAWN_USER_WORKER,
+    RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER, RUN_SPAWN_EVENT_WORKER,
+    RUN_SPAWN_USER_WORKER, RUN_START_MANAGER,
 };
 
 use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
@@ -351,12 +351,9 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 .kill_all(libc::SIGTERM, methods::reload_warn);
         }
         OP_RESTART_WORKER => {
-            let status = exit_status(arg);
-            // SAFETY: the context's live server and the exited child's status.
-            unsafe { entry::restart_worker_process(serv, (&raw const status).cast()) };
+            _ = restart_worker_process(ctx.server(), &exit_status(arg));
         }
-        // SAFETY: the context's live server.
-        OP_SERVER_RELOAD => _ = unsafe { entry::reload(serv, arg != 0) },
+        OP_SERVER_RELOAD => _ = reload(ctx.server(), arg != 0),
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
                 logger.reopen();
@@ -387,8 +384,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             );
         }
         OP_RELOAD_THREADS => {
-            // SAFETY: the context's live server.
-            let reloaded = unsafe { entry::reload_worker_threads(serv, arg != 0) };
+            let reloaded = crate::thread_mode_ops::reload_worker_threads(ctx.server(), arg != 0);
             return Some(u64::from(reloaded));
         }
         // SAFETY: the server's live event pool.
@@ -522,14 +518,16 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// `pool->onWorkerMessage`: `Server::read_worker_message` over the pool and the
-/// message it popped.
+/// `pool->onWorkerMessage`: `Server::read_worker_message` over the pool's server
+/// and the message it popped.
 ///
 /// # Safety
 /// `msg` is the live `EventData` the pool popped.
 unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_void) {
-    // SAFETY: the live pool, and the message as the caller guarantees.
-    unsafe { entry::read_worker_message(pool.raw().cast(), msg) }
+    // The event worker pool's `ptr` is its server.
+    let mut ctx = Context::of(pool.ptr());
+    ctx.task = msg.cast_const().cast();
+    run_over(&mut ctx, RUN_READ_WORKER_MESSAGE, 0);
 }
 
 /// `Manager_signal_handler`: the manager's signals over `SwooleG.server`.
@@ -548,36 +546,28 @@ fn run_over(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
     swoole_rs_process::workers::run_over(ctx, operation, arg)
 }
 
-/// The manager's `Server` methods (crates/process's entry.rs) over `object`, the
-/// server: `restart_worker_process` of an exit status, `other`; or, for
-/// `read_worker_message`, over `object`, the event worker pool, and its message `other`.
-///
-/// # Safety
-/// The objects are what `operation`'s method took, live for the call.
-pub(crate) unsafe fn enter(
-    operation: u32,
-    object: *mut c_void,
-    other: *mut c_void,
-    _extra: *mut c_void,
-    arg: u64,
-) -> i64 {
-    let mut arg = arg;
-    let mut ctx = if operation == RUN_READ_WORKER_MESSAGE {
-        // SAFETY: as the caller guarantees: the event worker pool's `ptr` is its server.
-        let mut ctx = Context::of(unsafe { (*object.cast::<PoolRecord>()).ptr });
-        ctx.task = other.cast_const().cast();
-        ctx
-    } else {
-        Context::of(object)
-    };
-    if operation == RUN_RESTART_WORKER {
-        // SAFETY: as the caller guarantees.
-        let status = unsafe { &*other.cast::<ExitStatus>() };
-        let (pid, status) = (
-            status.pid().cast_unsigned(),
-            status.status().cast_unsigned(),
-        );
-        arg = u64::from(pid) | u64::from(status) << 32;
-    }
-    run_over(&mut ctx, operation, arg)
+/// `Server::start_manager_process()`.
+#[must_use]
+pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
+    let code = run_over(&mut Context::of(serv.raw()), RUN_START_MANAGER, 0);
+    c_int::try_from(code).unwrap_or(-1)
+}
+
+/// `Server::restart_worker_process(exit_status)`.
+#[must_use]
+pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_int {
+    let (pid, status) = (
+        status.pid().cast_unsigned(),
+        status.status().cast_unsigned(),
+    );
+    let arg = u64::from(pid) | u64::from(status) << 32;
+    let code = run_over(&mut Context::of(serv.raw()), RUN_RESTART_WORKER, arg);
+    c_int::try_from(code).unwrap_or(-1)
+}
+
+/// `Server::reload(reload_all_workers)`.
+#[must_use]
+pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
+    let arg = u64::from(reload_all_workers);
+    run_over(&mut Context::of(serv.raw()), RUN_RELOAD, arg) != 0
 }

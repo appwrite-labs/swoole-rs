@@ -37,7 +37,8 @@ use crate::event_worker_ops::{
 use crate::view;
 
 mod native;
-pub(crate) use native::enter;
+pub use native::finish;
+pub(crate) use native::init_task_workers;
 
 /// The server's task pool, live and owned by the server for `'a`. Native code
 /// passes one as a `ProcessPool *`.
@@ -208,7 +209,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
         if let Some(value) = task(ctx, op) {
             return value;
         }
-        if let Some(value) = finish(ctx, op, arg) {
+        if let Some(value) = finishing(ctx, op, arg) {
             return value;
         }
         if let Some(value) = worker(ctx, op, arg) {
@@ -342,7 +343,7 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
 
 /// `Server::finish`: the result goes back to the worker that sent the task.
 #[inline(always)]
-fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_SOURCE_WORKER => {
             ctx.worker = ctx.server.worker_record(ctx.source());

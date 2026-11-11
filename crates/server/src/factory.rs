@@ -9,10 +9,9 @@ use core::ptr;
 use crate::base_factory::SendData;
 use crate::factory_ops::run;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     EVENT_CLOSE, RUN_PROCESS_DISPATCH, RUN_PROCESS_END, RUN_PROCESS_FACTORY_SHUTDOWN,
-    RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH,
+    RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH, RUN_THREAD_FACTORY_START,
 };
 use swoole_rs_process::workers::thread::ThreadManager;
 
@@ -97,11 +96,10 @@ fn addr(p: *mut c_void) -> u64 {
 }
 
 /// `factory_->start()`.
-pub(crate) fn start(state: &ServerState) -> bool {
-    match of(state) {
+pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
+    match of(serv.state()) {
         (factory, MODE_PROCESS) => process(factory, RUN_PROCESS_FACTORY_START, ptr::null_mut(), 0),
-        // SAFETY: the server's live thread factory.
-        (factory, MODE_THREAD) => unsafe { entry::thread_factory_start(factory) },
+        (_, MODE_THREAD) => crate::thread_mode_ops::run_server(serv, RUN_THREAD_FACTORY_START) != 0,
         _ => true,
     }
 }
