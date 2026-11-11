@@ -85,16 +85,6 @@ pub(crate) fn make(
     Ok(NewSocket(unsafe { Co::new(socket) }))
 }
 
-/// `delete socket`.
-/// # Errors
-/// A close hook bailed out.
-/// # Safety
-/// `socket` is live and owned; it is gone after the call.
-pub(crate) unsafe fn free_socket(socket: Co) -> Result<(), Bailout> {
-    // SAFETY: per the caller.
-    unsafe { co::free(socket.as_ptr()) }
-}
-
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
 /// to an object. Dropped, it leaks.
 #[must_use]
@@ -114,8 +104,8 @@ impl NewSocket {
     /// # Errors
     /// A close hook bailed out.
     pub(crate) fn free(self) -> Result<(), Bailout> {
-        // SAFETY: an owned socket, which nothing else holds.
-        unsafe { free_socket(self.0) }
+        // SAFETY: an owned socket, which nothing else holds; gone after the call.
+        unsafe { co::free(self.0.as_ptr()) }
     }
 }
 
@@ -492,7 +482,7 @@ impl Co {
                 mqtt_set_protocol(protocol);
             } else {
                 protocol.get_package_length =
-                    swoole_rs_ports::framing_recv::default_length_func as *mut c_void;
+                    Some(swoole_rs_ports::framing_recv::default_length_func);
             }
         });
     }
@@ -572,7 +562,7 @@ pub(crate) fn length_callable(socket: Co, value: *mut zval) {
         return;
     }
     let old = socket.0.edit_protocol(|protocol| {
-        protocol.get_package_length = php_swoole_length_func as *mut c_void;
+        protocol.get_package_length = Some(php_swoole_length_func);
         std::mem::replace(&mut protocol.private_data_1, callable)
     });
     // The destructor may reach the socket, so it runs between the edits.

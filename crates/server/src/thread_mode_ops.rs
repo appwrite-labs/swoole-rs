@@ -20,7 +20,7 @@ use swoole_rs_process::workers::ops::{
     OP_SET_MASTER_THREAD_ID, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_THREAD_ENTER,
     OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_THREAD_SUPPORTED,
     OP_WORKER_THREAD_START, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_THREAD_BODY,
-    RUN_THREAD_MAIN, RUN_THREAD_TERMINATE_MANAGER,
+    RUN_THREAD_MAIN, RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER,
 };
 use swoole_rs_process::workers::ops::{
     OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM, OP_CALLOC_CONNECTIONS,
@@ -114,23 +114,13 @@ impl Context {
     }
 }
 
-/// Thread mode's `Server` and `ThreadFactory` methods (crates/process's entry.rs):
-/// over `serv` and a `ThreadFactory` method's own factory, `other`, or else the
-/// server's in thread mode.
-///
-/// # Safety
-/// The objects are what `operation`'s method took, live for the call.
-pub(crate) unsafe fn enter(
-    operation: u32,
-    serv: *mut c_void,
-    other: *mut c_void,
-    _extra: *mut c_void,
-    arg: u64,
-) -> i64 {
-    over(serv, other, operation).run(operation, arg)
+/// `Server::reload_worker_threads(reload_all_workers)`.
+pub(crate) fn reload_worker_threads(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
+    let arg = u64::from(reload_all_workers);
+    over(serv.raw(), null_mut(), RUN_THREAD_RELOAD).run(RUN_THREAD_RELOAD, arg) != 0
 }
 
-/// A thread-mode `Server` method over the live server alone, as [`enter`] runs it.
+/// A thread-mode `Server` method over the live server alone.
 pub(crate) fn run_server(serv: view::Server<'_>, operation: u32) -> i64 {
     over(serv.raw(), null_mut(), operation).run(operation, 0)
 }

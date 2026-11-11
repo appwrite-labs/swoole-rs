@@ -7,12 +7,13 @@ use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{
     ffi::{c_char, c_int, c_void},
-    mem, ptr,
+    mem::{self, ManuallyDrop},
+    ptr,
 };
 use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Minit, Owned, UNDEF, Value, ZString, bailout, method_table,
+    Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
     sys::{
         IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_efree, swr_zend_emalloc,
         swr_zend_runtime_instanceof, swr_zend_try_zval_dtor, swr_zend_zval_release,
@@ -328,21 +329,29 @@ fn trapped(flag: c_int) -> Result<(), bailout::Bailout> {
     }
 }
 
-/// `method(arg)` on `object` into `retval`.
-/// # Safety
-/// `object` is a live object and `arg` null or a live zval.
-unsafe fn call_method(
-    object: *mut zval,
+/// `method(arg)` on the object `object` holds: the result (`IS_UNDEF` if it
+/// threw). Upstream leaves the result of a call that bailed out, so does this.
+fn call_method(
+    object: &Value,
     method: &[u8],
-    retval: &mut zval,
-    arg: *mut zval,
-) -> Result<(), bailout::Bailout> {
-    // SAFETY: per the caller.
-    let object = unsafe { value::obj_of(object) };
-    let args = [arg];
-    let args = if arg.is_null() { &[] } else { &args[..] };
-    // SAFETY: as above; Zend writes `retval`.
-    unsafe { bailout::call_method(object, ptr::null_mut(), method, retval, args) }
+    arg: Option<&Value>,
+) -> Result<ManuallyDrop<Owned>, bailout::Bailout> {
+    let retval = ManuallyDrop::new(Owned::default());
+    let Some(object) = object.object() else {
+        return Ok(retval);
+    };
+    let arg = arg.map(Value::as_ptr);
+    // SAFETY: a live object under its own class, a slot this owns and a live argument.
+    unsafe {
+        bailout::call_method(
+            object,
+            ptr::null_mut(),
+            method,
+            retval.as_ptr(),
+            arg.as_slice(),
+        )
+    }?;
+    Ok(retval)
 }
 
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver`
@@ -363,7 +372,11 @@ unsafe extern "C" fn lookup_php(
     // SAFETY: per the caller.
     let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
     // SAFETY: per the caller.
-    let result = unsafe { resolve(resolver.cast(), name, context) };
+    let resolver = unsafe { Value::from_ptr(resolver.cast()) };
+    // SAFETY: per the caller.
+    let result = resolver.map_or(Ok(None), |resolver| unsafe {
+        resolve(resolver, name, context)
+    });
     let answered = match result {
         Ok(Some(text)) => {
             // SAFETY: per the caller.
@@ -381,11 +394,12 @@ unsafe extern "C" fn lookup_php(
 }
 
 /// The lookup's steps, as upstream's; `None` is an empty result. Upstream
-/// returns early from some steps without releasing `retval`; so does this.
+/// returns early from some steps without releasing a call's result; so does
+/// this ([`call_method`]'s `ManuallyDrop`).
 /// # Safety
 /// As [`lookup_php`].
 unsafe fn resolve(
-    resolver: *mut zval,
+    resolver: &Value,
     name: &[u8],
     context: *mut NameResolverContext,
 ) -> Result<Option<Vec<u8>>, bailout::Bailout> {
@@ -393,12 +407,9 @@ unsafe fn resolve(
     // SAFETY: a live context.
     let mut cluster =
         native::swoole_name_resolver_context_get(unsafe { &*context }, &mut with_port);
-    let mut retval = UNDEF;
-    if !cluster.is_null() {
-        // SAFETY: the kept cluster object.
-        unsafe { call_method(cluster, b"count", &mut retval, ptr::null_mut()) }?;
-        // The call's result (IS_UNDEF if it threw).
-        let count = Value::of(&mut retval).long();
+    // SAFETY: null or the context's cluster, an object zval it keeps until released below.
+    if let Some(kept) = unsafe { Value::from_ptr(cluster) } {
+        let count = call_method(kept, b"count", None)?.long();
         if bailout::pending() {
             return Ok(None);
         }
@@ -411,18 +422,15 @@ unsafe fn resolve(
     }
     if cluster.is_null() {
         let zname = Owned::string(ZString::new(name));
-        retval = UNDEF;
-        // SAFETY: the resolver object and a string argument.
-        unsafe { call_method(resolver, b"lookup", &mut retval, zname.as_ptr()) }?;
-        drop(zname);
-        // The call's result, which `retval` holds.
-        let kind = Value::of(&mut retval).kind();
+        let found = call_method(resolver, b"lookup", Some(&zname))?;
+        let kind = found.kind();
+        let answer = (kind == IS_STRING).then(|| found.bytes().unwrap_or_default().to_vec());
         if kind == IS_OBJECT {
             // SAFETY: Zend's request allocator (`ecalloc`), which the
             // context's destructor frees.
             cluster = unsafe { swr_zend_emalloc(mem::size_of::<zval>()) }.cast::<zval>();
-            // SAFETY: fresh storage; the context takes `retval`'s reference.
-            unsafe { cluster.write(retval) };
+            // SAFETY: fresh storage; the context takes the result's reference.
+            unsafe { cluster.write(ManuallyDrop::into_inner(found).into_zval()) };
         }
         // SAFETY: a live context.
         native::swoole_name_resolver_context_settle(
@@ -432,20 +440,19 @@ unsafe fn resolve(
         );
         match kind {
             IS_OBJECT => {}
-            IS_STRING => {
-                let found = Value::of(&mut retval).bytes();
-                return Ok(Some(found.unwrap_or_default().to_vec()));
-            }
+            IS_STRING => return Ok(answer),
             _ => return Ok(None),
         }
     }
-    retval = UNDEF;
-    // SAFETY: the cluster object.
-    unsafe { call_method(cluster, b"pop", &mut retval, ptr::null_mut()) }?;
-    let Some(node) = Value::of(&mut retval).array() else {
+    // SAFETY: the cluster the context keeps; nothing below releases it.
+    let Some(cluster) = (unsafe { Value::from_ptr(cluster) }) else {
         return Ok(None);
     };
-    let Some(host) = node.find(b"host").and_then(Value::bytes) else {
+    let node = call_method(cluster, b"pop", None)?;
+    let Some(entry) = node.array() else {
+        return Ok(None);
+    };
+    let Some(host) = entry.find(b"host").and_then(Value::bytes) else {
         return Ok(None);
     };
     let mut result = host.to_vec();
@@ -454,13 +461,14 @@ unsafe fn resolve(
     native::swoole_name_resolver_context_get(unsafe { &*context }, &mut with_port);
     if with_port {
         result.push(b':');
-        let Some(port) = node.find(b"port").and_then(Value::applied_long) else {
+        let Some(port) = entry.find(b"port").and_then(Value::applied_long) else {
             return Ok(None);
         };
         result.extend_from_slice(port.to_string().as_bytes());
     }
+    let mut node = ManuallyDrop::into_inner(node).into_zval();
     // SAFETY: our reference to the popped node; releasing it may run PHP.
-    unsafe { bailout::trap(swr_zend_zval_release, (&raw mut retval).cast()) }?;
+    unsafe { bailout::trap(swr_zend_zval_release, (&raw mut node).cast()) }?;
     Ok(Some(result))
 }
 

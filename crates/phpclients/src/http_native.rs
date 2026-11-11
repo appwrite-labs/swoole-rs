@@ -16,9 +16,8 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_websocket_ffi::frame_api::get_package_length;
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
-    Array, Call, Owned, Value, bailout, set_object, string,
-    sys::{zend_object, zval, zval_ptr_dtor},
-    value,
+    Array, Call, Owned, UNDEF, Value, ZString, bailout, set_object,
+    sys::{zend_object, zval_ptr_dtor},
 };
 
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
@@ -215,7 +214,7 @@ impl Co {
             protocol.package_length_size = WEBSOCKET_HEADER_LEN;
             protocol.package_length_offset = 0;
             protocol.package_body_offset = 0;
-            protocol.get_package_length = get_package_length as *mut c_void;
+            protocol.get_package_length = Some(get_package_length);
         });
     }
 
@@ -278,14 +277,12 @@ pub(crate) unsafe fn swoole_http_client_coro_call(
     data: *const c_char,
     length: size_t,
 ) -> c_int {
-    // SAFETY: zero is an undefined zval.
-    let mut args: [zval; 2] = unsafe { std::mem::zeroed() };
+    let mut args = [UNDEF; 2];
     // SAFETY: the client object, borrowed for the call as upstream's `ZVAL_OBJ`.
     unsafe { set_object(&raw mut args[0], client) };
     // SAFETY: the caller's bytes.
     let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
-    // SAFETY: a fresh string the zval owns.
-    unsafe { value::set_str(&raw mut args[1], string::copy(data)) };
+    args[1] = Owned::string(ZString::new(data)).into_zval();
     let result = match crate::native::call(callable, &mut args, std::ptr::null_mut(), false) {
         Ok(true) => 0,
         Ok(false) => 1,
@@ -294,12 +291,6 @@ pub(crate) unsafe fn swoole_http_client_coro_call(
     // SAFETY: the string argument's reference.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
     result
-}
-
-/// `mime_type::get(path)`.
-pub(crate) unsafe fn swoole_http_client_coro_mime(path: *const c_char) -> *const c_char {
-    // SAFETY: the caller's NUL-terminated path.
-    swoole_rs_phpswoole::mime_type(unsafe { CStr::from_ptr(path) }.to_bytes()).as_ptr()
 }
 
 /// Upstream's `decompress_response` warnings.

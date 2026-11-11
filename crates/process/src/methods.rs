@@ -237,31 +237,25 @@ pub unsafe extern "C" fn dispatch_sync(
     })
 }
 
-/// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid.
-///
-/// # Safety
-/// `pool` is created.
+/// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing
+/// before `create`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole11ProcessPool10add_workerEPNS_6WorkerE")
 )]
-pub unsafe extern "C" fn add_worker(pool: &PoolRecord, worker: Worker<'_>) {
-    // SAFETY: a created pool's registry is live.
-    unsafe { (*pool.registry).insert(worker.pid(), worker.raw().cast(), 0) };
+pub extern "C" fn add_worker(pool: &PoolRecord, worker: Worker<'_>) {
+    pool.with_registry(|registry| registry.insert(worker.pid(), worker.raw().cast(), 0));
 }
 
 /// `ProcessPool::del_worker(worker)`: whether the worker's pid was registered.
-///
-/// # Safety
-/// As [`add_worker`].
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole11ProcessPool10del_workerEPKNS_6WorkerE")
 )]
 #[must_use]
-pub unsafe extern "C" fn del_worker(pool: &PoolRecord, worker: Worker<'_>) -> bool {
-    // SAFETY: a created pool's registry is live.
-    unsafe { (*pool.registry).unregister(worker.pid()) }
+pub extern "C" fn del_worker(pool: &PoolRecord, worker: Worker<'_>) -> bool {
+    pool.with_registry(|registry| registry.unregister(worker.pid()))
+        .unwrap_or(false)
 }
 
 /// `ProcessPool::get_worker_by_pid(pid)`: null before `create` or for an unknown pid.
@@ -271,12 +265,8 @@ pub unsafe extern "C" fn del_worker(pool: &PoolRecord, worker: Worker<'_>) -> bo
 )]
 #[must_use]
 pub extern "C" fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
-    let registry = pool.registry;
-    if registry.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: a pool's non-null registry is the live one `create` made.
-    unsafe { (*registry).lookup(pid) }.cast()
+    pool.with_registry(|registry| registry.lookup(pid))
+        .map_or(ptr::null_mut(), <*mut c_void>::cast)
 }
 
 /// `ProcessPool::is_worker_running(worker)`.
@@ -401,16 +391,17 @@ pub unsafe fn listen<T>(
         );
         return -1;
     }
-    // SAFETY: a socket pool's IPC state; the caller's string.
-    unsafe { swr_v1_process_pool_ipc_address(pool.ipc, host, port) };
+    // SAFETY: a socket pool's IPC state, which nothing else borrows meanwhile.
+    let ipc = unsafe { &mut *pool.ipc };
+    // SAFETY: the caller's string.
+    swr_v1_process_pool_ipc_address(ipc, unsafe { CStr::from_ptr(host) }, port);
     // SAFETY: as the caller guarantees.
     let socket = unsafe { make(kind, host, port, backlog) };
     if socket.is_null() {
         return -1;
     }
-    // SAFETY: a socket pool's IPC state, which nothing else borrows meanwhile; the pool
-    // now owns the listener.
-    swr_v1_process_pool_ipc_set_listener(unsafe { &mut *pool.ipc }, socket.cast());
+    // The pool now owns the listener.
+    swr_v1_process_pool_ipc_set_listener(ipc, socket.cast());
     0
 }
 
@@ -426,8 +417,15 @@ pub unsafe fn listen<T>(
 pub unsafe extern "C" fn response(pool: *const PoolRecord, data: *const u8, length: u32) -> c_int {
     // SAFETY: the caller lends a live pool.
     let ipc = unsafe { (*pool).ipc };
-    // SAFETY: its IPC state and the caller's bytes.
-    if unsafe { swr_v1_process_pool_ipc_respond(ipc, data, length) } {
+    let data = if data.is_null() {
+        &[]
+    } else {
+        // SAFETY: the caller's `length` bytes.
+        unsafe { std::slice::from_raw_parts(data, length as usize) }
+    };
+    // SAFETY: null, or the pool's IPC state, which nothing else borrows meanwhile.
+    let ipc = unsafe { ipc.as_mut() };
+    if ipc.is_some_and(|ipc| swr_v1_process_pool_ipc_respond(ipc, data)) {
         0
     } else {
         // SW_ERROR_INVALID_PARAMS.

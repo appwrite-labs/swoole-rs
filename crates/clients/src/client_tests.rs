@@ -378,14 +378,13 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 fn a_call_measures_with_the_protocol_and_frees_the_client() {
     unsafe extern "C" fn twice(
         _: *const Protocol,
-        _: *mut SocketRecord,
-        packet: *const PacketLength,
+        _: *mut c_void,
+        packet: &mut PacketLength,
     ) -> isize {
-        // SAFETY: the call's packet.
-        2 * isize::try_from(unsafe { (*packet).buf_size }).unwrap()
+        2 * isize::try_from(packet.buf_size).unwrap()
     }
     let client = client(1, true, false);
-    Handle(client).fields().protocol.get_package_length = (twice as LengthFunc) as *mut c_void;
+    Handle(client).fields().protocol.get_package_length = Some(twice);
     assert_eq!(Handle(client).run(Op::PackageLength(b"abc")), 6);
     free(client);
     assert_eq!(taken(), ["event 2 0", "free"]);
@@ -657,7 +656,10 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert_eq!((*fields).protocol.package_max_length, 2 * 1024 * 1024);
         // Miri gives each use of a fn item its own address, as codegen may.
         if !cfg!(miri) {
-            assert_eq!((*fields).protocol.on_package, on_package as *mut c_void);
+            assert_eq!(
+                (*fields).protocol.on_package.map(|f| f as usize),
+                Some(on_package as swoole_rs_corebase::net_types::OnPackage as usize)
+            );
         }
         // Read first: the handle borrows the whole record, which would end a reference
         // assert_eq! had already taken to the field.
@@ -714,13 +716,25 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     };
     package.info.len = 4;
     assert_eq!(
-        unsafe { on_package(core::ptr::null(), socket, &package) },
+        unsafe {
+            on_package(
+                core::ptr::null(),
+                socket.cast(),
+                (&raw const package).cast(),
+            )
+        },
         OK
     );
     assert_eq!(taken(), ["call 2 4"]);
     sock().output.close_wait = 1;
     assert_eq!(
-        unsafe { on_package(core::ptr::null(), socket, &package) },
+        unsafe {
+            on_package(
+                core::ptr::null(),
+                socket.cast(),
+                (&raw const package).cast(),
+            )
+        },
         ERR
     );
     free(client);

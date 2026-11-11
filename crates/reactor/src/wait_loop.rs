@@ -400,10 +400,8 @@ mod kqueue_signal {
         let signo = c_int::from(signal.signo);
         match signal.handler {
             None => {
-                // SAFETY: a static NUL-terminated buffer.
-                let name = unsafe {
-                    std::ffi::CStr::from_ptr(swoole_rs_process::signal::swoole_signal_to_str(signo))
-                };
+                let name = swoole_rs_process::signal::signal_name(signo);
+                let name = name.as_cstr();
                 log::error_log(
                     LOG_WARNING,
                     UNREGISTERED_SIGNAL,

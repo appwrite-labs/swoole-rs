@@ -1,5 +1,4 @@
 //! Raw zval reads and stores, and the empty string and array.
-use crate::Value;
 use crate::sys::{
     _zval_struct__bindgen_ty_1, HashTable, IS_LONG, zend_empty_array, zend_empty_string, zend_long,
     zend_object, zend_string, zend_value, zval,
@@ -31,26 +30,6 @@ pub unsafe fn str_of(string: *const zval) -> *mut zend_string {
     unsafe { string.cast::<*mut zend_string>().read() }
 }
 
-/// [`Value::long`] of a raw zval.
-/// # Safety
-/// `value` is a live zval.
-#[must_use]
-#[inline]
-pub unsafe fn get_long(value: *const zval) -> zend_long {
-    // SAFETY: per the caller.
-    unsafe { &*value.cast::<Value>() }.long()
-}
-
-/// [`Value::string`] of a raw zval: a new reference the caller owns.
-/// # Safety
-/// `value` is a live zval.
-#[must_use]
-#[inline]
-pub unsafe fn get_string(value: *const zval) -> *mut zend_string {
-    // SAFETY: per the caller.
-    unsafe { &*value.cast::<Value>() }.string().into_raw()
-}
-
 /// `Z_OBJ_P`.
 /// # Safety
 /// `object` is a live object zval.
@@ -59,16 +38,6 @@ pub unsafe fn get_string(value: *const zval) -> *mut zend_string {
 pub unsafe fn obj_of(object: *const zval) -> *mut zend_object {
     // SAFETY: per the caller, an object zval holds `obj`, at offset 0.
     unsafe { object.cast::<*mut zend_object>().read() }
-}
-
-/// `Z_LVAL_P`.
-/// # Safety
-/// `long` is a live int zval.
-#[must_use]
-#[inline]
-pub unsafe fn long_of(long: *const zval) -> zend_long {
-    // SAFETY: per the caller, an int zval holds `lval`, at offset 0.
-    unsafe { long.cast::<zend_long>().read() }
 }
 
 /// `zend_array_count(Z_ARRVAL_P(array))`.

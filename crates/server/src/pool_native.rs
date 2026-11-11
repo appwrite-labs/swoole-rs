@@ -190,8 +190,7 @@ pub(crate) fn read_bus(
         // The receive only ever sets `kernel_nobufs`, so it edits the record only then:
         // in thread mode, other threads read this worker's pipe meanwhile.
         let mut nobufs = false;
-        // SAFETY: a bus whose buffer is set, and its pipe's descriptor.
-        let n = unsafe { bus.receive(sock.fd(), dgram, &mut nobufs, &mut state) };
+        let n = bus.receive(sock.fd(), dgram, &mut nobufs, &mut state);
         if nobufs {
             sock.edit(|sock| sock.kernel_nobufs = true);
         }
