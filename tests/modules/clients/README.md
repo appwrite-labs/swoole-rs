@@ -83,6 +83,11 @@ gives `uploadFiles` and `setting` an object whose `__destruct` writes the
 property again: `addData` and `set` keep an array it writes, and `addData`
 returns false, leaving the value, when it writes anything else.
 
+`php_enable_ssl.py` (`clients-php-enable-ssl`, every lane, Cargo build) calls `enableSSL()`
+on a sync and an Async `Client` made without `SWOOLE_SSL`, against a self-signed local peer
+(its certificate made with `openssl req`): `ssl_verify_peer` alone fails the handshake,
+`ssl_cafile` naming the certificate passes it, and an `ssl_host_name` it doesn't name fails it.
+
 ```sh
 python3 tests/modules/clients/php_http.py --build-manifest BUILD_MANIFEST \
   --engine native=/path/native.so --engine hybrid=/path/selected.so \

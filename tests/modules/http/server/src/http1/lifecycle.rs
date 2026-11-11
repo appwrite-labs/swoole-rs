@@ -736,6 +736,9 @@ fn reload_thread() {
     client_thread(
         move || master_pid(serv),
         move || {
+            // Blocks every signal, so the shutdown's SIGTERM reaches the master's
+            // signalfd rather than killing the process here.
+            swoole_rs_corebase::swoole_thread_init(false);
             lock_wait();
             sleep(0.01);
             expect(reload(serv, true), "serv.reload(true)");
@@ -746,6 +749,7 @@ fn reload_thread() {
             );
             sleep(1.0);
             expect(shutdown(serv), "serv.shutdown()");
+            swoole_rs_corebase::swoole_thread_clean(false);
         },
     );
     serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
@@ -999,8 +1003,7 @@ fn unlock() {
 
 /// `sw_worker()`: this thread's worker, or null.
 fn current_worker() -> *mut WorkerRecord {
-    // SAFETY: this thread's worker globals.
-    unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker }
+    swoole_rs_process::worker_globals::current_worker()
 }
 
 fn kill_worker(serv: Server, worker_id: c_int) -> bool {
