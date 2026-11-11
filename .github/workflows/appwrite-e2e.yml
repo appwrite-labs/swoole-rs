@@ -33,7 +33,7 @@ jobs:
       matrix:
         variant: [cargo, upstream]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: appwrite/appwrite
           ref: ${{ env.APPWRITE_COMMIT }}
@@ -95,7 +95,7 @@ jobs:
       _APP_MAINTENANCE_INACTIVE_INTERVAL: ${{ matrix.service.name == 'Projects' && '30' || '' }}
       SERVICE: ${{ matrix.service.name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: appwrite/appwrite
           ref: ${{ env.APPWRITE_COMMIT }}
@@ -159,7 +159,7 @@ jobs:
       - name: Print stack logs
         if: failure()
         run: docker compose logs --timestamps --tail 2000
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: junit-${{ matrix.variant }}-${{ matrix.service.name }}
@@ -181,10 +181,10 @@ jobs:
       # appwrite_bench.py creates sessions far past the abuse limit.
       _APP_OPTIONS_ABUSE: disabled
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: swoole-rs
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: appwrite/appwrite
           ref: ${{ env.APPWRITE_COMMIT }}
@@ -220,7 +220,7 @@ jobs:
       - name: Report benchmarks
         shell: bash  # pipefail, so failed or non-2xx requests fail the job through tee
         run: python3 swoole-rs/tools/appwrite_bench.py report bench | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: appwrite-bench
@@ -231,8 +231,8 @@ jobs:
     if: always() && contains(fromJSON('["success", "failure"]'), needs.e2e.result)
     runs-on: gcrunner=${{ github.run_id }}/runner=small
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: junit-*
           path: junit

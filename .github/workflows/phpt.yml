@@ -45,7 +45,7 @@ jobs:
         index: ${{ fromJSON(inputs.shards) }}
         engine: ${{ fromJSON(inputs.engines) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The services the run's families reach (corpus/upstream/services.py); no family is every one.
       - name: List services
         id: services
@@ -79,7 +79,7 @@ jobs:
           ${{ steps.extensions.outputs.args }}
           --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
           --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && steps.manifest.outputs.tests != '0'
         with:
           name: phpt-${{ matrix.engine }}-${{ matrix.index }}
@@ -94,8 +94,8 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: phpt-*-*
           merge-multiple: true
@@ -106,7 +106,7 @@ jobs:
       # (#2496). Saving is best effort: on a miss the gate downloads the artifacts as before.
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: phpt-engines
@@ -118,13 +118,13 @@ jobs:
           echo '{"run": "${{ github.run_id }}", "sha": "${{ github.sha }}"}' > baseline-cache/meta.json
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ github.run_id }}
       - if: inputs.baseline != ''
         id: baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ inputs.baseline }}
@@ -152,7 +152,7 @@ jobs:
       # saves it on that baseline's key, so PR gates stop missing until the baseline changes.
       - if: github.ref == 'refs/heads/main' && inputs.baseline != '' && steps.baseline.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ inputs.baseline }}
@@ -212,7 +212,7 @@ jobs:
           rm -f phpt.json
           echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
           exit 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt

@@ -19,7 +19,7 @@ jobs:
     env:
       VARIANT: ${{ inputs.variant }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: install
         uses: ./.github/actions/install
       # Each variant's build flags, the --ri swoole line that shows them, and its families.
@@ -61,7 +61,7 @@ jobs:
       - if: inputs.variant == 'zts'
         run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - if: inputs.variant == 'zts'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/php-zts
           key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
@@ -134,7 +134,7 @@ jobs:
           --runner target/upstream/src/run-tests.php --php "$PHP"
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --output target/phpt/zts/server-exit-companion.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-${{ inputs.variant }}
