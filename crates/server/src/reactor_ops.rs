@@ -1021,9 +1021,10 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_START_MASTER_THREAD => {
-            let (serv, reactor) = (o.ctx.serv.raw(), o.handle()?.ptr());
-            // SAFETY: the context's live server and the master's reactor.
-            sign(unsafe { crate::server_methods::start_master_thread(serv, reactor) })
+            let reactor = o.handle()?;
+            sign(crate::server_methods::start_master_thread(
+                o.ctx.serv, reactor,
+            ))
         }
         OP_EVENT_INIT => {
             let ret = swoole_event_init(0);

@@ -644,9 +644,12 @@ unsafe extern "C-unwind" fn resume_data_receiving(sock: *mut c_void) {
     let Some(socket) = socket(sock) else {
         return;
     };
-    let serv = swoole_rs_corebase::swr_v1_core_server();
-    // SAFETY: the live server, whose socket's timer this is.
-    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+    // SAFETY: the server whose socket's timer this is, live while its reactor runs
+    // the timer; the view ends with it.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
+        return;
+    };
+    let mut ctx = ReactorContext::new(serv, None);
     ctx.conn = socket.read(|s| s.object.cast::<ConnectionRecord>());
     ctx.sock = Some(socket);
     run(RUN_RESUME_RECEIVING, 0, &mut ctx);

@@ -170,8 +170,11 @@ pub(crate) unsafe fn thread_init(
     ))
 }
 
-/// `void Server::init_reactor(Reactor *)`, `reactor` being one of the server's.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+/// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
+)]
 pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     run(
         crate::ops::RUN_INIT_REACTOR,
@@ -180,17 +183,16 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     );
 }
 
-/// `int Server::start_reactor_threads()`, in the master.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
+/// `int Server::start_reactor_threads()`, in the server's master.
+#[must_use]
+pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
     let mut ctx = ReactorContext::new(serv, None);
     int(run(crate::ops::RUN_START_REACTOR_THREADS, 0, &mut ctx))
 }
 
 /// `static void Server::reactor_thread_main_loop(Server *, int)`, on the reactor
 /// thread `reactor_id`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
+pub fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
     let mut ctx = ReactorContext::new(serv, None);
     let id = i64::from(reactor_id).cast_unsigned();
     run(crate::ops::RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
@@ -285,9 +287,8 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     0
 }
 
-/// `void Server::join_reactor_thread()`, in the master.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn join_reactor_thread(serv: view::Server<'_>) {
+/// `void Server::join_reactor_thread()`, in the server's master.
+pub fn join_reactor_thread(serv: view::Server<'_>) {
     let mut ctx = ReactorContext::new(serv, None);
     run(crate::ops::RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }

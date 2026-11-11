@@ -27,7 +27,7 @@ pub trait Handler {
     fn end_part(&self) -> Vec<u8>;
 }
 
-impl<E: Effects> Handler for StaticHandler<E> {
+impl<E: Effects> Handler for StaticHandler<'_, E> {
     fn try_serve(&self) -> bool {
         Self::try_serve(self)
     }

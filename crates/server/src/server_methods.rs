@@ -182,14 +182,19 @@ pub fn destroy(serv: view::Server<'_>) {
     }
 }
 
-/// `Server::start_master_thread(reactor)`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `reactor` the master's reactor.
-pub unsafe fn start_master_thread(serv: *mut c_void, reactor: *mut c_void) -> c_int {
-    let mut ctx = NativeContext::new(serv);
-    ctx.reactor = reactor;
-    // SAFETY: as the caller guarantees.
+/// `Server::start_master_thread(reactor)`, on the master's reactor.
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
+)]
+#[must_use]
+pub(crate) fn start_master_thread(
+    serv: view::Server<'_>,
+    reactor: crate::reactor_handle::Reactor,
+) -> c_int {
+    let mut ctx = NativeContext::new(serv.raw());
+    ctx.reactor = reactor.ptr();
+    // SAFETY: the live server and its master's live reactor, lent for the call.
     c_int::narrow(unsafe { run(RUN_START_MASTER_THREAD, 0, &mut ctx) })
 }
 
@@ -456,12 +461,14 @@ pub(crate) unsafe extern "C-unwind" fn master_timer_tick(serv: *mut c_void) {
 /// `conn` is a live connection of `SwooleG.server`, on this thread's reactor.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
-    let serv = swoole_rs_corebase::swr_v1_core_server();
-    let mut ctx = NativeContext::new(serv);
+    // SAFETY: the connection's server, live for the tick per the caller.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
+        return;
+    };
+    let mut ctx = NativeContext::new(serv.raw());
     // SAFETY: as the caller guarantees.
     let record = unsafe { &*conn.cast::<ConnectionRecord>() };
-    // SAFETY: the live server and the connection's listening fd.
-    ctx.port = unsafe { view::Server::from_raw(serv) }
+    ctx.port = serv
         .port_by_server_fd(record.server_fd)
         .map_or(ptr::null_mut(), view::Port::raw);
     ctx.reactor = swoole_rs_corebase::thread_reactor();

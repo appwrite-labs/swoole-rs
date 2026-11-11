@@ -161,6 +161,8 @@ struct Native<'a, 'c> {
     /// master.cc's context, whose records `master_ops` answers ops from; null
     /// for the other runners.
     master: *mut server_methods::NativeContext,
+    /// The method runner's server; `None` for the other runners.
+    server: Option<view::Server<'a>>,
     /// The reactor-thread context, whose records `reactor_ops` answers ops from;
     /// `None` for the other runners.
     reactor: Option<&'a mut reactor_ops::ReactorContext<'c>>,
@@ -195,8 +197,8 @@ impl Host for Native<'_, '_> {
         }
         // Only the method runner lends master.cc's context; the hot runners skip the call.
         if let (false, Some(state)) = (self.master.is_null(), self.state) {
-            // SAFETY: the method runner lends master.cc's live context with its state.
-            let answer = unsafe { master_ops::answer(self.master, state, op, arg) };
+            // SAFETY: the method runner lends master.cc's live context with its server.
+            let answer = unsafe { master_ops::answer(self.master, self.server, state, op, arg) };
             if let Some(value) = answer {
                 return Ok(value);
             }
@@ -234,6 +236,7 @@ pub(crate) fn run_reactor_with<'s, 'c>(
     operation(&mut Native {
         state: Some(state),
         master: core::ptr::null_mut(),
+        server: None,
         reactor: Some(context),
     })
     .unwrap_or(SW_ERR)
@@ -252,15 +255,13 @@ pub(crate) unsafe fn run_method(
 ) -> i64 {
     // SAFETY: per the caller.
     let serv = unsafe { (*ctx).serv };
-    let state = if serv.is_null() {
-        None
-    } else {
-        // SAFETY: a live server, per the caller.
-        Some(unsafe { view::Server::from_raw(serv) }.state())
-    };
+    // SAFETY: null or a live server, per the caller.
+    let server = (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) });
+    let state = server.map(view::Server::state);
     let mut native = Native {
         state,
         master: ctx,
+        server,
         reactor: None,
     };
     match (operation, state) {
@@ -417,6 +418,7 @@ mod mode_tests {
             // SAFETY: the fresh state, freed below.
             state: Some(unsafe { &*state }),
             master: core::ptr::null_mut(),
+            server: None,
             reactor: None,
         };
         assert_eq!(host.get(OP_MODE), Ok(2));

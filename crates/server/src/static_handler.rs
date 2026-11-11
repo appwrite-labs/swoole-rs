@@ -63,25 +63,25 @@ impl Calendar for Native {}
 impl Effects for Native {}
 
 /// A `StaticHandler` for one request URI on one server.
-pub struct StaticHandler<E: Effects = Native> {
-    server: view::Server<'static>,
+pub struct StaticHandler<'a, E: Effects = Native> {
+    server: view::Server<'a>,
     /// Borrowed for one call at a time; no effect calls back into the handler.
     context: RefCell<HttpStaticContext>,
     effects: E,
 }
 
-impl StaticHandler {
-    /// A handler for `url` on `server`.
+impl<'a> StaticHandler<'a> {
+    /// A handler of `url` over `server`.
     #[must_use]
-    pub fn new(server: view::Server<'static>, url: &[u8]) -> Option<Self> {
+    pub fn new(server: view::Server<'a>, url: &[u8]) -> Option<Self> {
         Self::with_effects(server, url, Native)
     }
 }
 
-impl<E: Effects> StaticHandler<E> {
-    /// A handler for `url` on `server`, over `effects`.
+impl<'a, E: Effects> StaticHandler<'a, E> {
+    /// A handler of `url` over `server`, with `effects`.
     #[must_use]
-    pub fn with_effects(server: view::Server<'static>, url: &[u8], effects: E) -> Option<Self> {
+    pub fn with_effects(server: view::Server<'a>, url: &[u8], effects: E) -> Option<Self> {
         Some(Self {
             context: RefCell::new(HttpStaticContext::new(url, PATH_MAX)?),
             server,

@@ -138,10 +138,9 @@ fn worker_id(arg: u64) -> u16 {
 /// `arg` over `serv` and the worker, send and exit status it reads.
 ///
 /// # Safety
-/// `serv` is a live `Server`, and the worker, send and status `op` reads are live,
-/// for the call.
+/// The worker, send and status `op` reads are live for the call.
 pub(crate) unsafe fn run(
-    serv: *mut c_void,
+    serv: view::Server<'_>,
     op: u32,
     worker: *mut WorkerRecord,
     send: *mut SendData,
@@ -149,8 +148,7 @@ pub(crate) unsafe fn run(
     arg: u64,
 ) -> i64 {
     let mut ctx = Context {
-        // SAFETY: as the caller guarantees.
-        serv: unsafe { view::Server::from_raw(serv) },
+        serv,
         worker,
         send,
         status,
@@ -158,6 +156,13 @@ pub(crate) unsafe fn run(
         fd: 0,
     };
     swoole_rs_process::workers::run_over(&mut ctx, op, arg)
+}
+
+/// [`run`] of an op that reads the server alone.
+pub(crate) fn run_server(serv: view::Server<'_>, op: u32) -> i64 {
+    let null = core::ptr::null_mut();
+    // SAFETY: the op reads no worker, send or status.
+    unsafe { run(serv, op, null, null.cast(), core::ptr::null(), 0) }
 }
 
 /// Each factory op over the objects [`run`]'s caller lent: the ops after
