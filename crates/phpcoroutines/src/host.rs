@@ -265,11 +265,8 @@ pub(crate) fn elapsed(cid: c_long) -> c_long {
 /// `Coroutine::get_execute_time`.
 pub(crate) fn execute_time(cid: c_long) -> c_long {
     let co = running_or(cid);
-    if co.is_null() {
-        return -1;
-    }
-    // SAFETY: a live coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_execute_usec(state(co), now_us()) }
+    // SAFETY: a live coroutine or null.
+    unsafe { state(co).as_ref() }.map_or(-1, |co| co.execute_usec(now_us()))
 }
 
 /// The live coroutines' ids, newest first, up to `cids.len()`; how many.

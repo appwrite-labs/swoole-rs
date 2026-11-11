@@ -48,6 +48,15 @@ pub struct Coroutine {
     pub execute_usec: c_long,
 }
 
+impl Coroutine {
+    /// Its execution time in microseconds up to `now`.
+    #[must_use]
+    pub fn execute_usec(&self, now: c_long) -> c_long {
+        now.wrapping_sub(self.switch_usec)
+            .wrapping_add(self.execute_usec)
+    }
+}
+
 /// A cancelable yield's cancel function: `call(native, data)` marks the
 /// coroutine canceled ([`swr_v1_coroutine_cancel`]) once nothing can fail, then
 /// wakes it and returns whether it did.
@@ -514,14 +523,6 @@ operation! {
     }
 }
 
-operation! {
-    fn swr_v1_coroutine_execute_usec(co: *const Coroutine, now: c_long) -> c_long {
-        // SAFETY: the caller passes a live coroutine.
-        let co = unsafe { &*co };
-        now.wrapping_sub(co.switch_usec).wrapping_add(co.execute_usec)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -827,10 +828,6 @@ pub(crate) mod tests {
         switch_time(Some(&mut a), Some(&mut b), 30);
         assert_eq!((a.execute_usec, b.switch_usec), (20, 30));
         switch_time(None, None, 0);
-        // SAFETY: live on this frame.
-        assert_eq!(
-            unsafe { swr_v1_coroutine_execute_usec(&raw const a, 55) },
-            65
-        );
+        assert_eq!(a.execute_usec(55), 65);
     }
 }
