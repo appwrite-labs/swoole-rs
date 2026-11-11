@@ -153,21 +153,7 @@ impl Stream {
         };
         while sys::poll(std::slice::from_mut(&mut poll), -1) < 0 && errno() == libc::EINTR {}
         let mut error: c_int = 0;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "an int's size fits socklen_t"
-        )]
-        let mut length = size_of::<c_int>() as libc::socklen_t;
-        // SAFETY: an int out-parameter and its length.
-        let got = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                (&raw mut error).cast(),
-                &raw mut length,
-            )
-        };
+        let got = sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error);
         self.err_code = if got < 0 { errno() } else { error };
         if self.err_code != 0 {
             connect_failed(self.err_code);

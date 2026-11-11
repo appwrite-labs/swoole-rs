@@ -137,8 +137,9 @@ fn clamp(value: i64, low: i64, high: i64) -> i64 {
     value.min(high).max(low)
 }
 
-fn record<'a>(cli: Cli) -> &'a mut ClientRecord {
-    cli.record()
+/// Edit the client's public record, between its operations.
+fn edit<R>(cli: Cli, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
+    cli.get().edit_record(edit)
 }
 
 /// `socket_buffer_size` (`socket->set_buffer_size(size)`, then
@@ -170,13 +171,14 @@ fn buffers(cli: Cli, options: &Options) {
 /// `open_length_check = on`, with MQTT's framing when `mqtt` and on, else
 /// the default length function.
 fn length_check(cli: Cli, on: bool, mqtt: bool) {
-    let record = record(cli);
-    record.open_length_check = on;
-    if !mqtt {
-        record.protocol.get_package_length = Some(default_length_func);
-    } else if on {
-        swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
-    }
+    edit(cli, |record| {
+        record.open_length_check = on;
+        if !mqtt {
+            record.protocol.get_package_length = Some(default_length_func);
+        } else if on {
+            swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
+        }
+    });
 }
 
 /// `bind(address, port)`, which logs a failed `SO_REUSEADDR` itself.
@@ -192,19 +194,19 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
     // SAFETY: the caller's live settings.
     let options = unsafe { Options::new(settings) };
     if let Some(on) = options.truthy("open_eof_check") {
-        record(cli).open_eof_check = on;
+        edit(cli, |record| record.open_eof_check = on);
     }
     if let Some(on) = options.truthy("open_eof_split") {
-        record(cli).protocol.split_by_eof = on;
-        if on {
-            record(cli).open_eof_check = true;
-        }
+        edit(cli, |record| {
+            record.protocol.split_by_eof = on;
+            record.open_eof_check |= on;
+        });
     }
     if let Some(eof) = options.string("package_eof") {
         let eof = eof.bytes();
         #[expect(clippy::cast_possible_truncation, reason = "upstream's uint8_t length")]
         let length = eof.len() as u8;
-        record(cli).protocol.package_eof_len = length;
+        edit(cli, |record| record.protocol.package_eof_len = length);
         if length == 0 {
             report(
                 ErrorKind::Fatal,
@@ -221,10 +223,12 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
             return Some(false);
         }
         let length = usize::from(length);
-        let package_eof = &mut record(cli).protocol.package_eof;
-        for (slot, byte) in package_eof.iter_mut().zip(eof).take(length) {
-            *slot = *byte;
-        }
+        edit(cli, |record| {
+            let package_eof = &mut record.protocol.package_eof;
+            for (slot, byte) in package_eof.iter_mut().zip(eof).take(length) {
+                *slot = *byte;
+            }
+        });
     }
     if let Some(on) = options.truthy("open_mqtt_protocol") {
         length_check(cli, on, true);
@@ -234,7 +238,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
     }
     if let Some(kind) = options.string("package_length_type") {
         let kind = kind.bytes().first().copied().unwrap_or(0);
-        record(cli).protocol.package_length_type = kind;
+        edit(cli, |record| record.protocol.package_length_type = kind);
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -242,7 +246,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         )]
         let size =
             swoole_rs_corebase::swoole_type_size(std::ffi::c_char::from_ne_bytes([kind])) as u8;
-        record(cli).protocol.package_length_size = size;
+        edit(cli, |record| record.protocol.package_length_size = size);
         if size == 0 {
             let name = c_text(&[kind]);
             report(
@@ -261,7 +265,8 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         reason = "clamped"
     )]
     if let Some(offset) = options.long("package_length_offset") {
-        record(cli).protocol.package_length_offset = clamp(offset, 0, u16::MAX.into()) as u16;
+        let offset = clamp(offset, 0, u16::MAX.into()) as u16;
+        edit(cli, |record| record.protocol.package_length_offset = offset);
     }
     #[expect(
         clippy::cast_possible_truncation,
@@ -269,7 +274,8 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         reason = "clamped"
     )]
     if let Some(offset) = options.long("package_body_offset") {
-        record(cli).protocol.package_body_offset = clamp(offset, 0, u16::MAX.into()) as u16;
+        let offset = clamp(offset, 0, u16::MAX.into()) as u16;
+        edit(cli, |record| record.protocol.package_body_offset = offset);
     }
     if let Some(function) = options.get("package_length_func") {
         let callable = bailed(native::callable(function.as_ptr()))?;
@@ -289,9 +295,8 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         clippy::cast_sign_loss,
         reason = "clamped"
     )]
-    {
-        record(cli).protocol.package_max_length = clamp(max_length, 0, u32::MAX.into()) as u32;
-    }
+    let max = clamp(max_length, 0, u32::MAX.into()) as u32;
+    edit(cli, |record| record.protocol.package_max_length = max);
     buffers(cli, &options);
     if bailout::pending() {
         return Some(false);
@@ -350,12 +355,14 @@ fn proxies(cli: Cli, options: &Options) -> bool {
 
 /// Install `callable` as the client's length function, returning the previous one.
 fn option_pointer(cli: Cli, callable: *mut c_void) -> *mut c_void {
-    let protocol = &mut record(cli).protocol;
-    protocol.get_package_length = Some(php_swoole_length_func);
-    protocol.package_length_size = 0;
-    protocol.package_length_type = 0;
-    protocol.package_length_offset = IPC_BUFFER_SIZE;
-    std::mem::replace(&mut protocol.private_data_1, callable)
+    edit(cli, |record| {
+        let protocol = &mut record.protocol;
+        protocol.get_package_length = Some(php_swoole_length_func);
+        protocol.package_length_size = 0;
+        protocol.package_length_type = 0;
+        protocol.package_length_offset = IPC_BUFFER_SIZE;
+        std::mem::replace(&mut protocol.private_data_1, callable)
+    })
 }
 
 fn proxy(
