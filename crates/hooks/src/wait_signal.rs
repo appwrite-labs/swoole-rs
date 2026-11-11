@@ -4,6 +4,7 @@
 //! pass their own `SignalOps`.
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 use swoole_rs_reactor::signal_upstream::Handler;
 
@@ -12,29 +13,30 @@ const SIGNO_MAX: i32 = 128;
 /// `SW_ERROR_WRONG_OPERATION`: no event loop to register the handler on.
 const WRONG_OPERATION: i32 = 509;
 
-/// A coroutine waiting for a signal (upstream's `SignalListener`), on its stack.
+/// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {
     co: *mut c_void,
-    signo: i32,
+    signo: Cell<i32>,
     resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
 
-/// Which listener each signal wakes (upstream's `listeners`).
+/// Which listener each signal wakes (upstream's `listeners`). A non-null slot owns
+/// one `Rc<Listener>` reference, put there by [`Published::new`].
 static LISTENERS: [AtomicPtr<Listener>; SIGNO_MAX as usize] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; SIGNO_MAX as usize];
 
 /// The signal table, reactor and coroutine operations a signal wait needs. The wait
-/// passes each only its own coroutine and the records on its own stack.
+/// passes each only its own coroutine and records.
 struct SignalOps {
     /// `Coroutine::get_current_safe()`.
     current: extern "C" fn() -> *mut c_void,
     /// Whether a non-coroutine signal listener exists (`signal_listener_num > 0`).
     busy: fn() -> bool,
-    /// On the loop's thread under thread contexts: with `true`, unless the record says
-    /// so already, records `signo`'s handler in it and installs `swr_v1_hook_signal_wake`;
-    /// with `false`, puts the recorded handler back. False if the change can't reach
-    /// the loop's thread (no reactor).
-    listen: fn(i32, &Cell<Previous>, bool) -> bool,
+    /// On the loop's thread under thread contexts: with `true`, unless `signo`'s record
+    /// says so already, records its handler there and installs `swr_v1_hook_signal_wake`
+    /// (nothing once the wait has dropped the records); with `false`, puts the recorded
+    /// handler back. False if the change can't reach the loop's thread (no reactor).
+    listen: fn(i32, &Rc<Records>, bool) -> bool,
     /// The reactor exit condition and `signal_async_listener_num++` (true), or `--`.
     waiting: fn(bool),
     /// `co->yield_ex(timeout)`: false on timeout or cancellation.
@@ -51,6 +53,9 @@ struct Previous {
     /// Whether the wait's handler is installed.
     registered: bool,
 }
+
+/// Each signal's [`Previous`], owned by one wait.
+type Records = [Cell<Previous>; SIGNO_MAX as usize];
 
 impl Previous {
     const NONE: Self = Self {
@@ -72,10 +77,46 @@ fn listener(signo: i32) -> Option<&'static AtomicPtr<Listener>> {
     LISTENERS.get(usize::try_from(signo).ok()?)
 }
 
-/// `signo`'s table index and listener slot.
-fn slot(signo: i32) -> Option<(usize, &'static AtomicPtr<Listener>)> {
-    let index = usize::try_from(signo).ok()?;
-    Some((index, LISTENERS.get(index)?))
+/// Takes the reference a slot owned.
+fn take(slot: &AtomicPtr<Listener>, expected: Option<*const Listener>) -> Option<Rc<Listener>> {
+    let null = std::ptr::null_mut();
+    let taken = match expected {
+        Some(ours) => slot
+            .compare_exchange(ours.cast_mut(), null, Relaxed, Relaxed)
+            .ok()?,
+        None => slot.swap(null, Relaxed),
+    };
+    // SAFETY: a non-null slot holds a reference from `Rc::into_raw`, which it gives up here.
+    (!taken.is_null()).then(|| unsafe { Rc::from_raw(taken) })
+}
+
+/// A wait's listener published in one signal's slot. Dropping it unpublishes the
+/// listener unless a signal or a later wait took the slot first, so the slot never
+/// outlives the wait.
+struct Published {
+    slot: &'static AtomicPtr<Listener>,
+    listener: *const Listener,
+}
+
+impl Published {
+    fn new(slot: &'static AtomicPtr<Listener>, listener: &Rc<Listener>) -> Self {
+        // A later wait displaces an earlier one, as upstream's overwrite does.
+        drop(take(slot, None));
+        let listener = Rc::into_raw(Rc::clone(listener));
+        slot.store(listener.cast_mut(), Relaxed);
+        Self { slot, listener }
+    }
+}
+
+impl Drop for Published {
+    fn drop(&mut self) {
+        drop(take(self.slot, Some(self.listener)));
+    }
+}
+
+/// `signo`'s record.
+fn record(records: &Records, signo: i32) -> Option<&Cell<Previous>> {
+    records.get(usize::try_from(signo).ok()?)
 }
 
 /// The signal handler: wakes the coroutine listening for `signo`, once.
@@ -83,13 +124,12 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
     let Some(slot) = listener(signo) else {
         return;
     };
-    let waiting = slot.swap(std::ptr::null_mut(), Relaxed);
-    // SAFETY: a registered listener lives on its parked coroutine's stack.
-    let Some(waiting) = (unsafe { waiting.as_mut() }) else {
+    let Some(waiting) = take(slot, None) else {
         return;
     };
-    waiting.signo = signo;
-    // SAFETY: the listener's coroutine, parked in `wait_signal` until this wake.
+    waiting.signo.set(signo);
+    // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
+    // every slot before it returns.
     unsafe { (waiting.resume)(waiting.co) };
 }
 
@@ -118,11 +158,11 @@ pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> c_int {
 /// Waits for any of `signals` for up to `timeout` seconds.
 fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
     let co = (ops.current)();
-    let mut waiting = Listener {
+    let waiting = Rc::new(Listener {
         co,
-        signo: -1,
+        signo: Cell::new(-1),
         resume: ops.resume,
-    };
+    });
     let failed = |last_error| Signalled {
         signo: -1,
         last_error,
@@ -137,53 +177,41 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
     {
         return failed(libc::EINVAL);
     }
-    // Lives on the parked coroutine's stack, where deferred registrations record into it.
-    let previous = [const { Cell::new(Previous::NONE) }; SIGNO_MAX as usize];
+    // Deferred registrations reach these only while the wait holds them.
+    let previous: Rc<Records> = Rc::new([const { Cell::new(Previous::NONE) }; SIGNO_MAX as usize]);
+    let mut published = Vec::new();
     let mut listening = true;
     for signo in signals.clone() {
-        if let Some((index, slot)) = slot(signo) {
-            slot.store(&raw mut waiting, Relaxed);
-            listening = previous
-                .get(index)
-                .is_none_or(|record| (ops.listen)(signo, record, true));
+        if let Some(slot) = listener(signo) {
+            published.push(Published::new(slot, &waiting));
+            listening = (ops.listen)(signo, &previous, true);
             if !listening {
                 break;
-            }
-        }
-    }
-    if !listening {
-        // No handler would ever wake this wait: unpublish it and fail.
-        for signo in signals.clone() {
-            if let Some((_, slot)) = slot(signo) {
-                _ = slot.compare_exchange(&raw mut waiting, std::ptr::null_mut(), Relaxed, Relaxed);
             }
         }
     }
     if listening {
         (ops.waiting)(true);
     }
-    // The handler writes `waiting` while this frame is parked here.
     let woken = listening && (ops.yield_for)(timeout);
+    // However the wait ended, no signal wakes it any more.
+    drop(published);
     for signo in signals {
-        let Some((index, slot)) = slot(signo) else {
-            continue;
-        };
-        let Some(record) = previous.get(index).filter(|record| record.get().registered) else {
+        let Some(record) = record(&previous, signo).filter(|record| record.get().registered) else {
             continue;
         };
         record.set(Previous {
             registered: false,
             ..record.get()
         });
-        (ops.listen)(signo, record, false);
-        slot.store(std::ptr::null_mut(), Relaxed);
+        (ops.listen)(signo, &previous, false);
     }
     if !listening {
         return failed(WRONG_OPERATION);
     }
     (ops.waiting)(false);
     Signalled {
-        signo: if woken { waiting.signo } else { -1 },
+        signo: if woken { waiting.signo.get() } else { -1 },
         last_error: 0,
     }
 }
@@ -206,9 +234,9 @@ static NATIVE: SignalOps = tests::OPS;
 
 #[cfg(not(test))]
 mod native {
-    use super::Previous;
-    use core::cell::Cell;
+    use super::{Previous, Records};
     use core::ffi::c_int;
+    use std::rc::{Rc, Weak};
     use swoole_rs_corebase::{
         swr_v1_core_set_signal_async_listener_num, swr_v1_core_signal_async_listener_num,
         swr_v1_core_signal_listener_num,
@@ -225,29 +253,34 @@ mod native {
         swr_v1_core_signal_listener_num() > 0
     }
 
-    /// A signal change: register `previous` (non-null), or put `handler` back.
+    /// A signal change: register into `records`, or put `handler` back.
     struct Change {
         signo: c_int,
         handler: Handler,
-        previous: *const Cell<Previous>,
+        records: Option<Weak<Records>>,
     }
 
     impl Change {
         /// Records the handler when the registration runs, so a deferred one sees those
-        /// pending.
+        /// pending. A registration that runs after its wait has ended does nothing.
         fn apply(&self) {
-            // SAFETY: a register's record lives on the parked waiter's stack until the
-            // wait unregisters it.
-            let handler = match unsafe { self.previous.as_ref() } {
-                Some(previous) if previous.get().registered => return,
-                Some(previous) => {
+            let handler = match &self.records {
+                None => self.handler,
+                Some(records) => {
+                    let Some(records) = records.upgrade() else {
+                        return;
+                    };
+                    let Some(previous) = super::record(&records, self.signo)
+                        .filter(|previous| !previous.get().registered)
+                    else {
+                        return;
+                    };
                     previous.set(Previous {
                         handler: signal_upstream::get(self.signo),
                         registered: true,
                     });
                     Handler::new(super::swr_v1_hook_signal_wake)
                 }
-                None => self.handler,
             };
             _ = signal_upstream::set(self.signo, handler, false);
         }
@@ -261,11 +294,11 @@ mod native {
         fn dispose(self) {}
     }
 
-    pub(super) fn listen(signo: c_int, previous: &Cell<Previous>, on: bool) -> bool {
+    pub(super) fn listen(signo: c_int, records: &Rc<Records>, on: bool) -> bool {
         let change = Change {
             signo,
-            handler: previous.get().handler,
-            previous: if on { previous } else { core::ptr::null() },
+            handler: super::record(records, signo).map_or(Handler::NONE, |r| r.get().handler),
+            records: on.then(|| Rc::downgrade(records)),
         };
         if !swoole_rs_coroutine::thread_context_active() {
             change.apply();
@@ -300,6 +333,8 @@ mod tests {
 
     thread_local! {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        /// Registrations a deferring `listen` queued for the loop.
+        static QUEUED: RefCell<Vec<(i32, std::rc::Weak<Records>)>> = const { RefCell::new(Vec::new()) };
     }
     /// The tests share the process-wide `LISTENERS`, so they run one at a time.
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -315,7 +350,10 @@ mod tests {
     fn busy() -> bool {
         true
     }
-    fn listen(signo: i32, previous: &Cell<Previous>, on: bool) -> bool {
+    fn listen(signo: i32, records: &Rc<Records>, on: bool) -> bool {
+        let Some(previous) = record(records, signo) else {
+            return true;
+        };
         if !on {
             log(format!("restore {signo} {}", previous.get().handler.raw()));
         } else if !previous.get().registered {
@@ -328,9 +366,18 @@ mod tests {
         true
     }
     /// No loop to defer the registration to.
-    fn unreachable_loop(signo: i32, _: &Cell<Previous>, _: bool) -> bool {
+    fn unreachable_loop(signo: i32, _: &Rc<Records>, _: bool) -> bool {
         log(format!("refused {signo}"));
         false
+    }
+    /// Queues the registration for the loop, as under thread contexts.
+    fn deferred(signo: i32, records: &Rc<Records>, on: bool) -> bool {
+        if on {
+            QUEUED.with_borrow_mut(|queued| queued.push((signo, Rc::downgrade(records))));
+            log(format!("queued {signo}"));
+            return true;
+        }
+        listen(signo, records, on)
     }
     fn waiting(on: bool) {
         log(format!("waiting {on}"));
@@ -435,6 +482,42 @@ mod tests {
             }
         );
         assert_eq!(log, [format!("refused {}", libc::SIGUSR1)]);
+        assert!(LISTENERS.iter().all(|slot| slot.load(Relaxed).is_null()));
+    }
+
+    #[test]
+    fn a_wait_cancelled_before_its_deferred_registration_leaves_no_listener() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        QUEUED.with_borrow_mut(Vec::clear);
+        let ops = SignalOps {
+            listen: deferred,
+            ..ops(idle, timed_out)
+        };
+        let (one, two) = (libc::SIGUSR1, libc::SIGUSR2);
+        let (result, log) = wait(&[one, two], &ops);
+        assert_eq!(result.signo, -1);
+        let expected = [
+            format!("queued {one}"),
+            format!("queued {two}"),
+            "waiting true".into(),
+            "waiting false".into(),
+        ];
+        assert_eq!(log, expected);
+        assert!(LISTENERS.iter().all(|slot| slot.load(Relaxed).is_null()));
+
+        // The loop now runs the queued registrations, then both signals arrive.
+        let queued = QUEUED.with_borrow_mut(std::mem::take);
+        assert_eq!(queued.len(), 2);
+        for (signo, records) in queued {
+            if let Some(records) = records.upgrade() {
+                listen(signo, &records, true);
+            }
+        }
+        swr_v1_hook_signal_wake(one);
+        swr_v1_hook_signal_wake(two);
+        assert_eq!(LOG.with_borrow_mut(std::mem::take), Vec::<String>::new());
         assert!(LISTENERS.iter().all(|slot| slot.load(Relaxed).is_null()));
     }
 }
