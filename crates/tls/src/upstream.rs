@@ -525,7 +525,7 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
             tls_peek,
         )
     };
-    !(peeked == 0 || (peeked < 0 && socket.edit(|record| record.catch_error(errno())) == CLOSE))
+    !(peeked == 0 || (peeked < 0 && socket.catch_error(errno()) == CLOSE))
 }
 
 /// One blocking call: the socket and its I/O's operands. Only [`sync`], whose caller
@@ -626,22 +626,12 @@ impl SyncEffects for Call<'_> {
         }
     }
 
-    /// Edits only on `ENOBUFS`, the one error that sets the flag, so threads waiting
-    /// on one full pipe only read it.
     fn catch_error(&self, error: c_int) -> c_int {
-        if error != libc::ENOBUFS {
-            return swoole_rs_reactor::catch_error(error, &mut false);
-        }
-        self.socket
-            .edit(|record| swoole_rs_reactor::catch_error(error, &mut record.kernel_nobufs))
+        self.socket.catch_error(error)
     }
 
     fn take_nobufs(&self) -> bool {
-        // `has_kernel_nobufs` reads and clears the flag; only a set flag needs the edit.
-        self.socket.read(|record| record.kernel_nobufs)
-            && self
-                .socket
-                .edit(|record| std::mem::replace(&mut record.kernel_nobufs, false))
+        self.socket.take_kernel_nobufs()
     }
 
     fn set_last_error(&self, error: c_int) {
@@ -1144,8 +1134,7 @@ impl OutputEffects for Output<'_> {
     }
 
     fn catch_error(&self, error: c_int) -> c_int {
-        self.0
-            .edit(|record| swoole_rs_reactor::catch_error(error, &mut record.kernel_nobufs))
+        self.0.catch_error(error)
     }
 }
 

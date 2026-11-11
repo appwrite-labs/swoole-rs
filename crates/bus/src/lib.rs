@@ -747,9 +747,7 @@ impl Bus {
             let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
                 return false;
             };
-            socket.edit(|record| {
-                swoole_rs_reactor::catch_pipe_error(error, &mut record.kernel_nobufs)
-            }) == REDUCE_SIZE
+            socket.catch_pipe_error(error) == REDUCE_SIZE
         }
         if let Some((next, context)) = self.next_id {
             // SAFETY: the counter `count_ids` set for this bus.

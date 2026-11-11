@@ -486,7 +486,7 @@ pub(crate) unsafe fn answer(
         }
         OP_RT_CATCH_WAIT => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            u64::from(event_socket(ctx)?.edit(|s| s.catch_error(errno)) == SW_WAIT)
+            u64::from(event_socket(ctx)?.catch_error(errno) == SW_WAIT)
         }
 
         // SAFETY: the live server, this thread's reactor and a live connection.

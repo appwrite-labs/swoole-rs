@@ -1244,11 +1244,11 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
             let id = u16::try_from(id).unwrap_or(u16::MAX);
             let pipe = o.server().worker_pipe(id, false);
-            u64::from(pipe.is_some_and(|pipe| pipe.edit(SocketFields::has_kernel_nobufs)))
+            u64::from(pipe.is_some_and(|pipe| pipe.take_kernel_nobufs()))
         }
         OP_SOCKET_NOBUFS => {
             let socket = o.conn_socket();
-            u64::from(socket.is_some_and(|socket| socket.edit(SocketFields::has_kernel_nobufs)))
+            u64::from(socket.is_some_and(|socket| socket.take_kernel_nobufs()))
         }
         OP_SC_TOUCH_SEND => {
             o.conn().last_send_time = swoole_rs_corebase::microtime();

@@ -295,7 +295,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
     match op {
         OP_RECV => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            match s.edit(|s| s.catch_error(errno)) {
+            match s.catch_error(errno) {
                 ERROR => {
                     if length_mode {
                         log::sys_warning_errno(

@@ -30,7 +30,7 @@ use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{Event, Running};
 use swoole_rs_reactor::{
-    Socket, SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
+    Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
     swr_v1_socket_domain_and_type,
 };
 #[cfg(not(test))]
@@ -2071,7 +2071,7 @@ fn on_read(this: Handle) -> c_int {
     let n = this.recv_once(buf, size);
     if n < 0 {
         let socket = this.socket();
-        return match socket.edit(|socket| catch_error(errno(), &mut socket.kernel_nobufs)) {
+        return match socket.catch_error(errno()) {
             SW_ERROR => {
                 let fd = socket.fd();
                 log::sys_warning(

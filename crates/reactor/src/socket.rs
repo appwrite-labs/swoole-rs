@@ -121,6 +121,37 @@ impl<'a> Socket<'a> {
         self.read(|record| record.fd)
     }
 
+    /// `Socket::catch_error(error)`. It edits only on `ENOBUFS`, the one error that sets
+    /// `kernel_nobufs`, so threads that share a record (a pipe) and hit `EAGAIN` only read it.
+    #[track_caller]
+    pub fn catch_error(self, error: c_int) -> c_int {
+        self.catch(crate::catch_error, error)
+    }
+
+    /// `Socket::catch_write_pipe_error(error)`, editing as [`Self::catch_error`] does.
+    #[track_caller]
+    pub fn catch_pipe_error(self, error: c_int) -> c_int {
+        self.catch(crate::catch_pipe_error, error)
+    }
+
+    #[track_caller]
+    fn catch(self, catch: fn(c_int, &mut bool) -> c_int, error: c_int) -> c_int {
+        if error == libc::ENOBUFS {
+            self.edit(|record| catch(error, &mut record.kernel_nobufs))
+        } else {
+            catch(error, &mut false)
+        }
+    }
+
+    /// `Socket::has_kernel_nobufs`: whether a send hit `ENOBUFS` since the last call,
+    /// which it clears. Only a set flag needs the edit.
+    #[must_use]
+    #[track_caller]
+    pub fn take_kernel_nobufs(self) -> bool {
+        self.read(|record| record.kernel_nobufs)
+            && self.edit(|record| std::mem::take(&mut record.kernel_nobufs))
+    }
+
     /// `Socket::wait_event`: waits outside any borrow, since the wait runs signal handlers that
     /// may reach other sockets.
     #[must_use]
@@ -203,6 +234,23 @@ mod tests {
         assert_eq!(after, [5, 5], "both reads saw the record");
         let socket = unsafe { Socket::from_ptr(std::ptr::with_exposed_provenance_mut(record)) };
         socket.unwrap().edit(|fields| fields.fd = 6);
+    }
+
+    #[test]
+    fn error_catching_edits_only_for_enobufs() {
+        let mut record = SocketRecord::new();
+        let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+        // Inside a read, so an edit would panic: EAGAIN and a clear flag only read.
+        socket.read(|_| {
+            assert_eq!(
+                socket.catch_error(libc::EAGAIN),
+                crate::catch_error(libc::EAGAIN, &mut false)
+            );
+            assert!(!socket.take_kernel_nobufs());
+        });
+        socket.catch_error(libc::ENOBUFS);
+        assert!(socket.take_kernel_nobufs(), "ENOBUFS sets the flag");
+        assert!(!socket.take_kernel_nobufs(), "taking it clears it");
     }
 
     #[test]

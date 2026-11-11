@@ -188,7 +188,7 @@ pub unsafe fn socket_record_recv(
     } else if total < 0 {
         // Nothing since the call has touched errno.
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if socket.edit(|record| record.catch_error(error) == WAIT && record.event_hup != 0) {
+        if socket.catch_error(error) == WAIT && socket.read(|record| record.event_hup != 0) {
             return 0;
         }
     }
