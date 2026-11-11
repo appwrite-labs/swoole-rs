@@ -216,6 +216,7 @@ mod tests {
     /// `swr_v1_server_new` or `create()`, so the test lends the server its shared record, the
     /// two event workers and the session table those would have allocated.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn abort_and_reset() {
         let state = crate::swr_v1_server_state_new();
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];

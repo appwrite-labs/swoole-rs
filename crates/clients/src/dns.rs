@@ -565,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn resolves_through_libc() {
         let mut addr = [0 as c_char; 16];
         assert_eq!(
@@ -597,6 +598,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strtol")]
     fn reads_resolv_conf_and_hosts() {
         let dir = std::env::temp_dir().join(format!("swr-dns-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

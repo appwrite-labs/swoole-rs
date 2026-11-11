@@ -822,25 +822,29 @@ mod tests {
         record: CoSocket,
     }
 
-    struct Object(Box<Native>);
+    /// The object, held raw: the network socket points back at it and the callbacks
+    /// reach it through that pointer, so a box owning it would be an aliasing owner.
+    struct Object(*mut Native);
 
     impl Object {
         fn new() -> Self {
-            let mut storage = Box::new(MaybeUninit::<Native>::uninit());
-            let native = storage.as_mut_ptr();
+            let native = Box::into_raw(Box::new(MaybeUninit::<Native>::uninit())).cast::<Native>();
             unsafe { init(&raw mut (*native).record) };
-            let mut native = unsafe { Box::from_raw(Box::into_raw(storage).cast::<Native>()) };
-            native.record.socket = SocketRecord::with_fd(-1, 6).into_raw();
-            native.record.sock_fd = 100;
-            let object = (&raw mut *native).cast::<c_void>();
-            native.record.socket_mut().object = object;
-            Self(native)
+            let mut object = Self(native);
+            let record = object.record();
+            record.socket = SocketRecord::with_fd(-1, 6).into_raw();
+            record.sock_fd = 100;
+            record.socket_mut().object = native.cast();
+            object
+        }
+        fn record(&mut self) -> &mut CoSocket {
+            unsafe { &mut (*self.0).record }
         }
         fn co(&mut self) -> Co {
-            unsafe { Co::of((&raw mut *self.0).cast()) }
+            unsafe { Co::of(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
-            unsafe { Event::new(-1, 0, 6, self.0.record.socket.cast()) }
+            unsafe { Event::new(-1, 0, 6, self.record().socket.cast()) }
         }
         fn bind(&mut self, event: u32, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
@@ -850,8 +854,9 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(self.0.record.socket);
-                crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut self.0.record);
+                SocketRecord::free(self.record().socket);
+                crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut (*self.0).record);
+                drop(Box::from_raw(self.0));
             }
         }
     }
@@ -868,14 +873,14 @@ mod tests {
     #[test]
     fn the_record_is_the_native_socket() {
         let mut object = Object::new();
-        assert_eq!(object.co().raw(), &raw mut object.0.record);
+        assert_eq!(object.co().raw(), unsafe { &raw mut (*object.0).record });
     }
 
     #[test]
     fn a_readable_event_resumes_the_reader_and_clears_the_error() {
         install();
         let mut object = Object::new();
-        object.0.record.err_code = libc::EAGAIN;
+        object.record().err_code = libc::EAGAIN;
         let mut co: c_long = 3;
         object.bind(READ, &raw mut co);
         let mut event = object.event();
@@ -883,7 +888,7 @@ mod tests {
             readable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
             0
         );
-        assert_eq!(object.0.record.err_code, 0);
+        assert_eq!(object.record().err_code, 0);
         assert_eq!(take(), ["last-error:0", "resume:3"]);
         // Nobody writes: a writable event wakes no one.
         assert_eq!(
@@ -900,7 +905,7 @@ mod tests {
         let (mut reader, mut writer): (c_long, c_long) = (1, 2);
         object.bind(READ, &raw mut reader);
         object.bind(WRITE, &raw mut writer);
-        object.0.record.socket_mut().removed = 0;
+        object.record().socket_mut().removed = 0;
         let mut event = object.event();
         error_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event);
         assert_eq!(
@@ -915,8 +920,8 @@ mod tests {
         let mut object = Object::new();
         let path = c"/nonexistent/swoole-rs-sendfile";
         assert!(!object.co().sendfile(path, 0, 0));
-        assert_eq!(object.0.record.err_code, libc::ENOENT);
-        let message = unsafe { CStr::from_ptr(object.0.record.err_msg) };
+        assert_eq!(object.record().err_code, libc::ENOENT);
+        let message = unsafe { CStr::from_ptr(object.record().err_msg) };
         assert_eq!(
             message.to_str().unwrap(),
             format!(
@@ -943,7 +948,7 @@ mod tests {
         install();
         let mut object = Object::new();
         assert!(object.co().accept(0.0).is_none());
-        assert_eq!(object.0.record.err_code, libc::EBADF);
+        assert_eq!(object.record().err_code, libc::EBADF);
         assert!(!take().iter().any(|entry| entry == "accepted"));
     }
 
@@ -958,24 +963,25 @@ mod tests {
     fn listen_stores_the_backlog_and_reports_a_closed_socket() {
         install();
         let mut object = Object::new();
-        object.0.record.sock_fd = -1;
+        object.record().sock_fd = -1;
         assert!(!object.co().listen(0));
-        assert_eq!(object.0.record.err_code, libc::EBADF);
-        assert_eq!(object.0.record.backlog, 0);
+        assert_eq!(object.record().err_code, libc::EBADF);
+        assert_eq!(object.record().backlog, 0);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no SOCK_DGRAM sockets")]
     fn options_go_to_the_network_sockets_descriptor() {
         let mut object = Object::new();
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        object.0.record.socket_mut().fd = fd;
+        object.record().socket_mut().fd = fd;
         let socket = object.co();
         assert!(socket.set_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1));
         let mut value = 0;
         assert!(socket.get_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &mut value));
         assert_ne!(value, 0);
         unsafe { libc::close(fd) };
-        object.0.record.socket_mut().fd = -1;
+        object.record().socket_mut().fd = -1;
         assert!(!socket.set_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1));
         assert!(!socket.get_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &mut value));
     }

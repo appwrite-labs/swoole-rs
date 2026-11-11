@@ -243,12 +243,20 @@ pub(crate) mod tests {
     /// A table field naming a test's own records, so several states can share them as
     /// processes share a mapping. Nothing frees it: the test owns `items`.
     pub(crate) fn naming<T>(items: &mut [T]) -> Shm {
+        naming_at(items.as_mut_ptr())
+    }
+
+    /// [`naming`] at `items`, for a test that goes on reaching the records itself: it
+    /// does so through `items` (or a `Vec::as_mut_ptr`, which takes no reference), since a
+    /// fresh reference to the whole table would end the state's pointer into it.
+    pub(crate) fn naming_at<T>(items: *mut T) -> Shm {
         // SAFETY: `Shm` is `repr(transparent)` over its payload pointer, and no code under
         // test frees these tables.
-        unsafe { core::mem::transmute::<*mut c_void, Shm>(items.as_mut_ptr().cast()) }
+        unsafe { core::mem::transmute::<*mut c_void, Shm>(items.cast()) }
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "a million-session table takes Miri over 15 minutes")]
     fn retirement_scans_table_edges_without_truncating_worker_identity() {
         let state = swr_v1_server_state_new();
         let mut sessions: Vec<_> = (0..1_048_576)
@@ -294,32 +302,33 @@ pub(crate) mod tests {
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
         connections[2].active = 1;
         connections[2].session_id = 1;
+        let (session_at, connection_at) = (
+            (&raw mut sessions).cast::<SessionRecord>(),
+            (&raw mut connections).cast::<ConnectionRecord>(),
+        );
         unsafe {
             let tables = &mut *(*state).tables();
-            tables.session_list = naming(&mut sessions);
-            tables.connection_list = naming(&mut connections);
+            tables.session_list = naming_at(session_at);
+            tables.connection_list = naming_at(connection_at);
             tables.max_connection = 2;
-            assert_eq!(
-                swr_v1_server_session(&*state, 1),
-                sessions.as_mut_ptr().add(1)
-            );
-            let expected = connections.as_mut_ptr().add(2);
+            assert_eq!(swr_v1_server_session(&*state, 1), session_at.add(1));
+            let expected = connection_at.add(2);
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
             assert!(swr_v1_server_connection(&*state, 1_048_577, 2).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 1).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
             assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
-            connections[2].ssl = 1;
+            (*expected).ssl = 1;
             assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
-            connections[2].ssl_ready = 1;
+            (*expected).ssl_ready = 1;
             assert_eq!(swr_v1_server_connection(&*state, 1, 3), expected);
-            connections[2]
+            (*expected)
                 .closed
                 .store(1, core::sync::atomic::Ordering::Relaxed);
             assert!(swr_v1_server_connection(&*state, 2, 4).is_null());
-            connections[2]
+            (*expected)
                 .closed
                 .store(0, core::sync::atomic::Ordering::Relaxed);
             assert_eq!(swr_v1_server_connection(&*state, 2, 4), expected);

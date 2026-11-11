@@ -236,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sleep")]
     fn thread_sleeps() {
         assert_eq!(swr_v1_hooks_sleep(0, None), SleepOutcome::default());
         assert_eq!(swr_v1_hooks_usleep(1, None), SleepOutcome::default());
@@ -246,9 +247,11 @@ mod tests {
     #[test]
     fn past_targets_warn_and_future_ones_sleep() {
         assert_eq!(swr_v1_hooks_sleep_until(1.0, f64::MAX, None).status, 3);
+        // A minute ahead, so a slow run (Miri) still reaches the call before it; the
+        // coroutine sleep returns at once.
         let soon = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0.0, |now| now.as_secs_f64() + 0.001);
+            .map_or(0.0, |now| now.as_secs_f64() + 60.0);
         assert_eq!(
             swr_v1_hooks_sleep_until(soon, f64::MAX, Some(slept)),
             SleepOutcome::default()
