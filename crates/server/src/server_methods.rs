@@ -1051,4 +1051,74 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+    fn kernel_nobufs_takes_the_sockets_flag_or_in_process_mode_the_reactor_pipes() {
+        use crate::records::ConnectionRecord;
+        use crate::records::tests::naming;
+        use swoole_rs_process::worker_record::WorkerRecord;
+        use swoole_rs_reactor::SocketRecord;
+
+        // SAFETY: plain records, for which zero is valid.
+        let (mut sock, mut pipe): (SocketRecord, SocketRecord) =
+            unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
+        sock.kernel_nobufs = true;
+        pipe.kernel_nobufs = true;
+        // SAFETY: as above.
+        let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
+        connections[3].socket = (&raw mut sock).cast();
+        connections[3].reactor_id = 1;
+        // SAFETY: as above.
+        let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
+        // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
+        workers[3].pipe_worker = (&raw mut pipe).cast();
+        let state = crate::swr_v1_server_state_new();
+        // SAFETY: a fresh state; the records above outlive every read below.
+        let fields = unsafe {
+            let config = (*state).config();
+            (*config).gs = swoole_rs_memory::members::Shm::calloc(
+                1,
+                size_of::<crate::shared::ServerCounters>(),
+            );
+            (*config)
+                .gs
+                .as_ptr()
+                .cast::<crate::shared::ServerCounters>()
+                .write(crate::shared::ServerCounters::default());
+            (*config).workers = naming(&mut workers);
+            (*config).worker_num = 4;
+            (*config).reactor_num = 2;
+            let tables = &mut *(*state).tables();
+            tables.connection_list = naming(&mut connections);
+            tables.max_connection = 4;
+            tables.reactor_pipe_num = 2;
+            [state.cast::<c_void>(), config.cast::<c_void>()]
+        };
+        // SAFETY: laid out as a Server's head, over the live state and config.
+        let serv = unsafe { view::Server::from_raw((&raw const fields).cast_mut().cast()) };
+        let set_mode = |mode: u8| {
+            // SAFETY: the state's config, which no reference holds across this write.
+            unsafe { (*(*state).config()).mode_ = mode };
+        };
+
+        set_mode(1);
+        assert!(!has_kernel_nobufs_error(serv, 2), "no socket");
+        assert!(!has_kernel_nobufs_error(serv, 4), "past the table");
+        assert!(has_kernel_nobufs_error(serv, 3), "the socket's flag");
+        assert!(!has_kernel_nobufs_error(serv, 3), "taken");
+        assert!(pipe.kernel_nobufs, "base mode leaves the pipe");
+
+        sock.kernel_nobufs = true;
+        set_mode(2);
+        assert!(has_kernel_nobufs_error(serv, 3), "the reactor pipe's flag");
+        assert!(!has_kernel_nobufs_error(serv, 3), "taken");
+        assert!(sock.kernel_nobufs, "process mode leaves the socket");
+
+        // SAFETY: allocated above, not used again.
+        unsafe {
+            (*(*state).config()).gs.free();
+            crate::swr_v1_server_state_free(state);
+        }
+    }
 }
