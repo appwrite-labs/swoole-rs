@@ -12,10 +12,12 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 swoole-rs-base64 = { path = "../crates/base64" }
 swoole-rs-clients = { path = "../crates/clients" }
+swoole-rs-deflate = { path = "../crates/deflate" }
 swoole-rs-framing = { path = "../crates/framing" }
 swoole-rs-http = { path = "../crates/http" }
 swoole-rs-http-ffi = { path = "../crates/http-ffi" }
 swoole-rs-http2 = { path = "../crates/http2" }
+swoole-rs-inflate = { path = "../crates/inflate" }
 libc = "=0.2.191"
 swoole-rs-oracle = { path = "../crates/oracle" }
 swoole-rs-protocols = { path = "../crates/protocols" }
@@ -229,6 +231,20 @@ bench = false
 [[bin]]
 name = "http_rewrite"
 path = "fuzz_targets/http_rewrite.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_inflate"
+path = "fuzz_targets/ws_inflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_inflate"
+path = "fuzz_targets/http_inflate.rs"
 test = false
 doc = false
 bench = false

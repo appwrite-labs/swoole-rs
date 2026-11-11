@@ -15,9 +15,10 @@ use swoole_rs_server::view;
 use swoole_rs_zend::{
     Value,
     bailout::{self, Bailout},
+    kind,
     string::bytes,
     sys::{
-        IS_ARRAY_EX, swr_zend_string_persistent, swr_zend_string_release,
+        IS_ARRAY_EX, IS_NULL, swr_zend_string_persistent, swr_zend_string_release,
         swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_array_dup,
         zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval, zval_ptr_dtor,
     },
@@ -161,8 +162,8 @@ fn string_of(slot: &Value) -> &[u8] {
 
 /// `init_arguments()`'s array, copied for the threads.
 fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
-    let mut callable = object.init_arguments();
-    if Value::of(&mut callable).is_null() {
+    let callable = object.init_arguments();
+    if kind(&callable) == IS_NULL {
         return Ok(None);
     }
     let mut result = crate::dispatch::undef();
