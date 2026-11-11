@@ -180,10 +180,8 @@ pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
         return -1;
     }
     let ret = match which {
-        // SAFETY: shutdown(2) has no memory preconditions.
-        CLOSE_READ => unsafe { libc::shutdown(fd, libc::SHUT_RD) },
-        // SAFETY: as above.
-        CLOSE_WRITE => unsafe { libc::shutdown(fd, libc::SHUT_WR) },
+        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD),
+        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR),
         #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
         _ => c_int::from(socket_pair::close(
             // SAFETY: the worker's live pair.

@@ -7,7 +7,7 @@ use libc::{c_char, c_int, c_void, size_t};
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
-use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
+use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
@@ -258,9 +258,7 @@ pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Opt
 
 /// `AsyncFile::write()`: whether all of `data` was written.
 pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool {
-    // SAFETY: a descriptor and the caller's bytes.
-    unsafe { swoole_coroutine_write(fd, data.as_ptr().cast(), data.len()) }.cast_unsigned()
-        == data.len()
+    write(fd, data).cast_unsigned() == data.len()
 }
 
 /// `AsyncFile::close()`. It can yield, so a caller lets go of the descriptor

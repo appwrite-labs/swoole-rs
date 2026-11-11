@@ -81,6 +81,11 @@ holds the connection: `recv()` fails with 5001, and the key's next connect is fr
 It also runs a `Coroutine\Http\Client` whose `write_func` replaces itself and reads
 its client mid-response, while another coroutine calls `set()` and `getDefer()` across
 the `get()` and `download()` yields: every chunk and the downloaded file arrive intact.
+`php_property_array.py` (`clients-php-property-array`, every lane, Cargo build)
+gives `uploadFiles` and `setting` an object whose `__destruct` writes the
+property again: `addData` and `set` keep an array it writes, and `addData`
+returns false, leaving the value, when it writes anything else.
+
 `php_enable_ssl.py` (`clients-php-enable-ssl`, every lane, Cargo build) calls `enableSSL()`
 on a sync and an Async `Client` made without `SWOOLE_SSL`, against a self-signed local peer
 (its certificate made with `openssl req`): `ssl_verify_peer` alone fails the handshake,

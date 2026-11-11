@@ -284,7 +284,7 @@ mod tests {
             *(*state).tables() = ServerTables {
                 connection_list: crate::records::tests::naming(&mut connections),
                 session_list: crate::records::tests::naming(&mut sessions),
-                max_connection: 2,
+                max_connection: 3,
                 ..ServerTables::default()
             };
             count_send(&*state, 1, 4);

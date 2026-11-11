@@ -25,11 +25,10 @@ use swoole_rs_inflate::Inflate;
 use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
-    string,
+    Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
     sys::{
-        ZEND_ACC_PUBLIC, add_assoc_stringl_ex, swr_zend_http_build_query, swr_zend_instanceof,
-        swr_zend_property_merge, zend_class_entry, zend_object, zend_wrong_parameter_class_error,
+        ZEND_ACC_PUBLIC, swr_zend_http_build_query, swr_zend_instanceof, zend_class_entry,
+        zend_object, zend_wrong_parameter_class_error,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -660,10 +659,11 @@ impl Client {
 
     /// `send_request`: the new stream's id, or 0.
     fn send_request(&self, request: Request<'_>) -> u32 {
-        // SAFETY: a live request object, which declares `headers`.
-        let headers = unsafe {
-            z::swr_zend_property_array(REQUEST.entry(), request.0, c"headers".as_ptr(), 7)
-        };
+        // SAFETY: a live request object of the registered class.
+        let props = unsafe { Props::new(REQUEST.entry(), request.0) };
+        // SAFETY: nothing else borrows `headers`, and no PHP code runs, until
+        // the type is added.
+        let headers = unsafe { props.array(c"headers") };
         let property = |name| request.property(name);
         let data = property(c"data");
         let pipeline = property(c"pipeline").truthy();
@@ -672,19 +672,8 @@ impl Client {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
         };
-        if data.array().is_some() {
-            let name = c"content-type";
-            let kind = b"application/x-www-form-urlencoded";
-            // SAFETY: a live array property; Zend copies both.
-            unsafe {
-                add_assoc_stringl_ex(
-                    headers,
-                    name.as_ptr(),
-                    name.count_bytes(),
-                    kind.as_ptr().cast(),
-                    kind.len(),
-                );
-            };
+        if let Some(headers) = headers.filter(|_| data.array().is_some()) {
+            headers.insert_bytes(b"content-type", Some(b"application/x-www-form-urlencoded"));
         }
         let mut frame = self.build_header(request);
         let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
@@ -1001,22 +990,18 @@ impl Client {
         else {
             return;
         };
-        let property = |name: &CStr| {
-            // SAFETY: a live response object, which declares `name`.
-            unsafe {
-                z::swr_zend_property_array(
-                    RESPONSE.entry(),
-                    response,
-                    name.as_ptr(),
-                    name.count_bytes(),
-                )
-            }
-        };
-        let (headers, cookies, set_cookie_headers) = (
+        // SAFETY: a live response object of the registered class.
+        let props = unsafe { Props::new(RESPONSE.entry(), response) };
+        // SAFETY: three properties nothing else borrows; no PHP code runs while
+        // the block is decoded.
+        let property = |name| unsafe { props.array(name) };
+        let (Some(headers), Some(cookies), Some(set_cookie_headers)) = (
             property(c"headers"),
             property(c"cookies"),
             property(c"set_cookie_headers"),
-        );
+        ) else {
+            return;
+        };
         // Nothing in the loop yields or runs user code: the response is this
         // client's alone until a receive returns it. A failure is reported once
         // the codecs' borrow ends.
@@ -1046,23 +1031,9 @@ impl Client {
                             stream.gzip = Some(Inflate::gzip_only());
                         }
                     } else if kind == HEADER_SET_COOKIE {
-                        // SAFETY: a live array property nothing else borrows
-                        // while parsing.
-                        let cookies = unsafe { ArrayMut::from_ptr(cookies) };
-                        // SAFETY: as above.
-                        let headers = unsafe { ArrayMut::from_ptr(set_cookie_headers) };
-                        swoole_rs_phpclients::parse_set_cookies(text, cookies, headers);
+                        swoole_rs_phpclients::parse_set_cookies(text, cookies, set_cookie_headers);
                     }
-                    // SAFETY: a live array property; Zend copies both.
-                    unsafe {
-                        add_assoc_stringl_ex(
-                            headers,
-                            name.as_ptr().cast(),
-                            name.len(),
-                            text.as_ptr().cast(),
-                            text.len(),
-                        );
-                    };
+                    headers.insert_bytes(name, Some(text));
                 }
             }
             let step = sw_rs_http2_inflate_step(flags, input.len(), 1);
@@ -1327,9 +1298,8 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: `$this` declares `setting`; the settings are a live array.
-    unsafe {
-        swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings.as_ptr());
+    if let Some(props) = call.props(Some(&CLIENT)) {
+        props.merge(c"setting", settings);
     }
     if let Some(socket) = client.socket() {
         apply(socket, settings);
