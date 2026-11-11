@@ -10,39 +10,52 @@ use swoole_rs_httpbindings::request_option;
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Key, Value, handlers,
-    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
+    Call, Custom, CustomClass, Key, Object, Value, handlers,
+    sys::{ZEND_ACC_PUBLIC, zend_class_entry},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-pub(crate) static REQUEST: Class = Class::new();
+pub(crate) static REQUEST: CustomClass<Data> = CustomClass::new();
 
 /// The registered class entry.
 pub(crate) fn entry() -> *mut zend_class_entry {
     REQUEST.entry()
 }
 
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of
-    // it; a null context is valid zeroed data.
-    unsafe { Holder::create(&REQUEST, ce) }
+/// A request object's context.
+pub(crate) struct Data(pub(crate) Holder);
+
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &REQUEST
+    }
+
+    fn new() -> Self {
+        Self(Holder::new(None))
+    }
 }
 
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    if let Some(mut ctx) = unsafe { context::context_of(std) } {
+/// The object goes: its uploads are removed and the context, unless the
+/// response still holds it, freed.
+impl Drop for Data {
+    fn drop(&mut self) {
+        let Some(mut ctx) = self.0.get() else { return };
         let state = ctx.state();
         if !state.request.ztmpfiles.ptr.is_null() {
-            // SAFETY: the request object, its properties still live, and the
-            // declared `tmpfiles` slot's offset.
+            let std = Object::std(std::ptr::from_mut(self).cast::<Object<Self>>());
+            // SAFETY: the request object, whose properties outlive its data,
+            // and the declared `tmpfiles` slot's offset.
             unsafe { z::swr_zend_http_uploads_release(std, parse::tmpfiles_offset()) };
         }
         state.request.zobject.ptr = std::ptr::null_mut();
         // SAFETY: the context the object held.
         unsafe { context::free(ctx) };
     }
-    // SAFETY: as above.
-    unsafe { Holder::dtor(std) };
+}
+
+/// The method's `$this` context.
+fn this(call: &Call) -> Option<Ctx> {
+    call.custom::<Data>()?.0.get()
 }
 
 method_table! {
@@ -60,14 +73,7 @@ method_table! {
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
 pub fn request_minit(args: &MinitArgs) {
     let minit = &args.minit;
-    minit.register(
-        &REQUEST,
-        c"Swoole\\Http\\Request",
-        &METHODS.0,
-        |entry, handlers| {
-            context::configure(entry, handlers, create, free);
-        },
-    );
+    minit.register_object::<Data>(c"Swoole\\Http\\Request", &METHODS.0, 0);
     for name in [c"fd", c"streamId"] {
         minit.property_long(&REQUEST, name, 0, ZEND_ACC_PUBLIC);
     }
@@ -86,7 +92,7 @@ pub fn request_minit(args: &MinitArgs) {
 
 /// `http_request_get_and_check_context`.
 fn checked(call: &Call) -> Option<Ctx> {
-    let ctx = context::this(call);
+    let ctx = this(call);
     if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
         call.set_bool(false);
