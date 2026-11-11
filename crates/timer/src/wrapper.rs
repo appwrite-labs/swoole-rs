@@ -161,6 +161,14 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
     .cast()
 }
 
+/// Deletes timer `id` if this thread's timer still holds it, quietly otherwise:
+/// a timer never reuses an id, so one that already fired is left alone.
+pub extern "C-unwind" fn timer_cancel(id: c_long) {
+    if let Some(timer) = current() {
+        timer.remove(id);
+    }
+}
+
 /// The id of a node the timer just added, or none.
 fn id(node: *mut TimerNode) -> Option<c_long> {
     // SAFETY: null or a live node.

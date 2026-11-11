@@ -1,12 +1,13 @@
 //! A pool reload in progress (upstream `swoole::ReloadTask`), owned in Rust behind
 //! an opaque handle: the snapshot of the workers to restart (pid -> worker record)
 //! and the queue that restarts them one at a time. The manager loops
-//! (`ProcessPool::wait`, `Manager::wait`) drive it; the timeout timer stays native
-//! and its node is only stored here.
+//! (`ProcessPool::wait`, `Manager::wait`) drive it; native code arms the timeout
+//! timer, which the task owns and deletes when it goes.
 
 use std::collections::{HashMap, VecDeque};
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 
+use crate::armed_timer::ArmedTimer;
 use crate::worker_record::WorkerRecord;
 
 /// `warn(kind, pid, worker_id)`, called with `errno` still set by the failed `kill`:
@@ -23,7 +24,7 @@ pub const WARN_KILL_ONE_FAILED: c_int = 3;
 pub struct ReloadTask {
     workers: HashMap<c_int, u32>,
     kill_queue: VecDeque<c_int>,
-    timer: Option<std::ptr::NonNull<c_void>>,
+    timer: Option<ArmedTimer>,
     kill: fn(c_int, c_int) -> Result<(), c_int>,
 }
 
@@ -76,17 +77,9 @@ impl ReloadTask {
         }
     }
 
-    /// Store (or, with null, clear) the timeout timer node.
-    pub fn set_timer(&mut self, timer: *mut c_void) {
-        self.timer = std::ptr::NonNull::new(timer);
-    }
-
-    /// Free a reload task and return its timeout timer node (null without one) for
-    /// native to delete.
-    #[must_use]
-    pub fn free(self) -> *mut c_void {
-        self.timer
-            .map_or(std::ptr::null_mut(), std::ptr::NonNull::as_ptr)
+    /// Owns the timeout timer, which is deleted with the task.
+    pub fn set_timer(&mut self, timer: Option<ArmedTimer>) {
+        self.timer = timer;
     }
 
     /// Signal every worker still in the snapshot, then drop the queue.
@@ -240,15 +233,14 @@ pub(crate) mod tests {
             record.place(std::ptr::null_mut(), u32::try_from(index).unwrap(), 0);
         }
         let mut task = ReloadTask::default();
-        let mut node = 0u8;
-        let timer = std::ptr::from_mut(&mut node).cast::<c_void>();
         task.add_workers(&records);
         assert!(!task.completed());
         assert!(task.remove(100));
         assert!(!task.remove(100));
         assert!(task.remove(101));
         assert!(task.completed());
-        task.set_timer(timer);
-        assert_eq!(task.free(), timer);
+        task.set_timer(Some(ArmedTimer::new(9, crate::armed_timer::tests::record)));
+        drop(task);
+        assert_eq!(crate::armed_timer::tests::cancelled(), [9]);
     }
 }

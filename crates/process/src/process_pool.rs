@@ -16,6 +16,7 @@ use crate::worker_record::Worker;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
+use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
 use crate::pool::{
     Bailed, PoolCall, PoolIpc, PoolLoop, pool_ipc_free, pool_ipc_new, pool_ipc_prepare, pool_run,
@@ -81,6 +82,9 @@ pub struct PoolRecord {
     pub(crate) message_bus: *mut c_void,
     pub(crate) reload_task: *mut ReloadTask,
     pub ptr: *mut c_void,
+    /// The `max_wait_time` timer `wait` arms to kill the workers left, which
+    /// `wait` drops once it has reaped the first and `destroy` drops too.
+    pub kill_timer: Option<ArmedTimer>,
 }
 
 impl PoolRecord {
@@ -384,7 +388,6 @@ pub const OP_EXIT_CALLBACK: u32 = 16;
 pub const OP_REOPEN_LOGGER: u32 = 17;
 pub const OP_IS_MASTER: u32 = 18;
 pub const OP_RELOAD_TIMER: u32 = 19;
-pub const OP_TIMER_DEL: u32 = 20;
 pub const OP_DONT_RESTART: u32 = 21;
 pub const OP_TIMER_INIT: u32 = 22;
 pub const OP_TIMER_FREE: u32 = 23;
@@ -701,6 +704,7 @@ setters!(
     message_box / set_message_box: *mut c_void,
     message_bus / set_message_bus: *mut c_void,
     reload_task / set_reload_task: *mut ReloadTask,
+    kill_timer / set_kill_timer: Option<ArmedTimer>,
 );
 
 /// A native op's pointer result.
@@ -1051,19 +1055,14 @@ impl<H: PoolHost> Pool<H> {
         Ok(true)
     }
 
-    /// `ProcessPool::drop_reload_task`: free the reload and delete its timer.
+    /// `ProcessPool::drop_reload_task`: free the reload, and its timer with it.
     fn drop_reload_task(&mut self) {
         let task = self.reload_task();
-        let timer = if task.is_null() {
-            ptr::null_mut()
-        } else {
-            // SAFETY: the pool's reload, boxed by `reload` and freed once.
-            unsafe { *Box::from_raw(task) }.free()
-        };
-        if !timer.is_null() {
-            self.op(OP_TIMER_DEL, timer as u64);
-        }
         self.set_reload_task(ptr::null_mut());
+        if !task.is_null() {
+            // SAFETY: the pool's reload, boxed by `reload` and freed once.
+            drop(unsafe { Box::from_raw(task) });
+        }
     }
 
     /// `ProcessPool::at_worker_enter`.
@@ -1231,6 +1230,7 @@ impl<H: PoolHost> Pool<H> {
                 self.op(LOG_WAITPID_FAILED, u64::from(pid.cast_unsigned()));
             }
         }
+        self.set_kill_timer(None);
         self.set_started(false);
         Ok(SW_OK)
     }
@@ -1310,6 +1310,7 @@ impl<H: PoolHost> Pool<H> {
 
     /// `ProcessPool::destroy`.
     fn destroy(&mut self) {
+        self.set_kill_timer(None);
         if !self.pipes().is_null() {
             self.op(OP_FREE_PIPES, 0);
             self.set_pipes(ptr::null_mut());
@@ -1604,7 +1605,8 @@ mod tests {
         assert_eq!(offset_of!(PoolRecord, round_id), 184);
         assert_eq!(offset_of!(PoolRecord, workers), 192);
         assert_eq!(offset_of!(PoolRecord, ptr), 256);
-        assert_eq!(size_of::<PoolRecord>(), 264);
+        assert_eq!(offset_of!(PoolRecord, kill_timer), 264);
+        assert_eq!(size_of::<PoolRecord>(), 280);
     }
 
     /// A scripted native side over a pool record allocated here.
@@ -1614,11 +1616,20 @@ mod tests {
         log: Vec<(u32, u64)>,
         callbacks: Vec<c_int>,
         bail: Option<c_int>,
+        /// The fixture's record, where `OP_KILL_TIMER` arms the kill timer.
+        record: Option<std::ptr::NonNull<PoolRecord>>,
     }
 
     impl PoolHost for Script {
         fn op(&mut self, _: *mut c_void, op: u32, arg: u64) -> i64 {
             self.log.push((op, arg));
+            if op == OP_KILL_TIMER
+                && let Some(mut record) = self.record
+            {
+                let timer = ArmedTimer::new(KILL_TIMER_ID, crate::armed_timer::tests::record);
+                // SAFETY: the fixture's record, which outlives its pool.
+                unsafe { record.as_mut() }.kill_timer = Some(timer);
+            }
             self.answers.get(&op).copied().unwrap_or(1)
         }
         fn callback(&mut self, cb: c_int, _: *mut c_void) -> Result<isize, Bailed> {
@@ -1670,6 +1681,7 @@ mod tests {
             let workers = self.workers.as_mut_ptr().expose_provenance().cast_signed() as i64;
             script.answers.entry(OP_ALLOC_WORKERS).or_insert(workers);
             self.record.worker_num = u32::try_from(self.workers.len()).unwrap();
+            script.record = Some(std::ptr::NonNull::from(&mut *self.record));
             Pool {
                 h: script,
                 p: &raw mut *self.record,
@@ -1684,6 +1696,31 @@ mod tests {
 
     fn ops(pool: &Pool<Script>) -> Vec<u32> {
         pool.h.log.iter().map(|(op, _)| *op).collect()
+    }
+
+    /// The id of the kill timer the script's `OP_KILL_TIMER` arms.
+    const KILL_TIMER_ID: std::ffi::c_long = 41;
+
+    #[test]
+    fn the_kill_timer_is_deleted_once_wait_returns() {
+        let mut fixture = Fixture::new(0);
+        let mut pool = fixture.pool(Script::default());
+        record(&mut pool).max_wait_time = 3;
+        assert!(matches!(pool.wait(), Ok(SW_OK)));
+        assert!(ops(&pool).contains(&OP_KILL_TIMER));
+        assert!(record(&mut pool).kill_timer.is_none());
+        assert_eq!(crate::armed_timer::tests::cancelled(), [KILL_TIMER_ID]);
+    }
+
+    #[test]
+    fn destroying_the_pool_deletes_an_armed_kill_timer() {
+        let mut fixture = Fixture::new(0);
+        let mut pool = fixture.pool(Script::default());
+        let timer = ArmedTimer::new(KILL_TIMER_ID, crate::armed_timer::tests::record);
+        record(&mut pool).kill_timer = Some(timer);
+        pool.destroy();
+        assert!(record(&mut pool).kill_timer.is_none());
+        assert_eq!(crate::armed_timer::tests::cancelled(), [KILL_TIMER_ID]);
     }
 
     #[test]
