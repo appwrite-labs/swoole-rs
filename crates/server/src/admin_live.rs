@@ -14,7 +14,7 @@ use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{Registry, Socket as Handle, SocketRecord, reactor_upstream};
-use swoole_rs_timer::{TimerStats, swr_v1_timer_owner_queue, swr_v1_timer_stats_get};
+use swoole_rs_timer::{TimerStats, owner_queue, swr_v1_timer_stats_get};
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// `zend_memory_usage(true)`, from the PHP binding.
@@ -154,7 +154,7 @@ fn timer_count() -> u64 {
         return 0;
     }
     // SAFETY: this thread's live timer.
-    let queue = swr_v1_timer_owner_queue(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() });
+    let queue = owner_queue(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() });
     let mut stats = TimerStats::default();
     // SAFETY: the timer's live queue, not borrowed elsewhere during this read.
     let queue = unsafe { queue.as_ref() };

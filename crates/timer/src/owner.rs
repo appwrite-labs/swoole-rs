@@ -125,12 +125,6 @@ unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode
     }
 }
 
-// SAFETY: Swoole's signal API.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z17swoole_signal_setiPFviEb"]
-    fn swoole_signal_set(signo: c_int, handler: extern "C" fn(c_int), safety: bool) -> usize;
-}
-
 /// A queue status that only a broken invariant returns (upstream threw).
 fn check(status: i32) {
     if status != OK {
@@ -241,8 +235,11 @@ impl Owner {
             self.reactor.set(reactor);
             attach(reactor);
         } else if backend != MANUAL {
-            // SAFETY: a plain signal handler.
-            unsafe { swoole_signal_set(libc::SIGALRM, alarm, false) };
+            let alarm = alarm as *const () as usize;
+            // SAFETY: a plain signal handler, which nothing unloads.
+            _ = unsafe {
+                swoole_rs_reactor::signal_upstream::swoole_signal_set(libc::SIGALRM, alarm, false)
+            };
         }
     }
 
@@ -344,6 +341,7 @@ impl Owner {
     }
 
     /// Refreshes a node's deadline from its caller-mutated `exec_msec`.
+    #[cfg(test)]
     fn update(&self, node: &TimerNode) {
         let (status, view) = {
             let mut queue = self.queue.borrow_mut();
@@ -512,85 +510,451 @@ unsafe extern "C-unwind" fn destroyed(reactor: *mut c_void) {
     crate::wrapper::swoole_timer_free();
 }
 
-/// `new Timer(manually_trigger)`.
-#[unsafe(no_mangle)]
-extern "C-unwind" fn swr_v1_timer_owner_new(manually_trigger: bool) -> *mut Owner {
-    Owner::create(manually_trigger)
-}
-
 /// `delete timer`.
 ///
 /// # Safety
-/// `timer` is a live timer, freed once.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C-unwind" fn swr_v1_timer_owner_free(timer: *mut Owner) {
+/// `timer` is a live timer from [`Owner::create`], freed once.
+pub(crate) unsafe fn free(timer: *mut Owner) {
     // SAFETY: as the caller promises.
     unsafe { &*timer }.destroy();
     // SAFETY: Owner::create's allocation, no longer referenced.
     drop(unsafe { Box::from_raw(timer) });
 }
 
-/// The timer's queue, for the C++ view's reads.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_owner_queue(timer: &Owner) -> *mut Queue {
+/// The timer's queue, for `Server::get_timer_stats`.
+#[must_use]
+pub fn owner_queue(timer: &Owner) -> *mut Queue {
     timer.queue.as_ptr()
 }
 
 /// `Timer::get_reactor()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_owner_reactor(timer: &Owner) -> *mut c_void {
+#[must_use]
+pub fn owner_reactor(timer: &Owner) -> *mut c_void {
     timer.reactor.get()
 }
 
 /// `Timer::reinit(manually_trigger)`.
-#[unsafe(no_mangle)]
-pub extern "C-unwind" fn swr_v1_timer_owner_reinit(timer: &Owner, manually_trigger: bool) {
+pub fn owner_reinit(timer: &Owner, manually_trigger: bool) {
     timer.reinit(manually_trigger);
 }
 
-/// `Timer::add`: the new node, or null with a warning.
-#[unsafe(no_mangle)]
-extern "C-unwind" fn swr_v1_timer_owner_add(
-    timer: &Owner,
-    msec: c_long,
-    persistent: bool,
-    data: *mut c_void,
-    callback: Option<Callback>,
-) -> *mut TimerNode {
-    timer.add(msec, persistent, TimerNode::new(callback, data))
-}
+/// `tests/modules/timer/probe.cc`'s scenarios, with `test_adapter.py`'s expected values:
+/// a manual timer whose nodes log their callback (the label) and destructor (the
+/// label in lower case).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
 
-/// `Timer::remove(id)`.
-#[unsafe(no_mangle)]
-extern "C-unwind" fn swr_v1_timer_owner_remove(timer: &Owner, id: c_long) -> bool {
-    timer.remove(id)
-}
+    /// `Owner::init` declares the reactor's `swoole_signal_set` by symbol: naming it
+    /// links its object into the test binary on every linker.
+    #[used]
+    static SIGNAL_SET: unsafe extern "C" fn(c_int, usize, bool) -> usize =
+        swoole_rs_reactor::signal_upstream::swoole_signal_set;
 
-/// `Timer::update(node)`.
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_timer_owner_update(timer: &Owner, node: Option<&TimerNode>) {
-    if let Some(node) = node {
-        timer.update(node);
+    /// The reactor's signal code calls `Socket::free`, which crates/tls defines and
+    /// a manual timer never reaches; crates/tls depends on this one, so the test
+    /// binary links it from here.
+    #[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
+    extern "C" fn socket_free() {
+        unreachable!("a manual timer frees no socket");
     }
-}
 
-/// `Timer::delay(node, delay_ms)`.
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_timer_owner_delay(timer: &Owner, node: Option<&TimerNode>, delay_ms: c_long) {
-    if let Some(node) = node {
-        timer.delay(node, delay_ms);
+    type Call = Box<dyn FnMut(&Owner, *mut TimerNode)>;
+
+    /// A node's closures, its data, as probe.cc's `Hooks`.
+    struct Hooks {
+        call: Call,
+        destructor: Box<dyn FnMut()>,
     }
-}
 
-/// `Timer::select()`.
-#[unsafe(no_mangle)]
-extern "C-unwind" fn swr_v1_timer_owner_select(timer: &Owner) {
-    timer.select();
-}
+    unsafe extern "C-unwind" fn call(timer: *mut c_void, node: *mut TimerNode) {
+        let hooks = unsafe { (*node).data.cast::<Hooks>() };
+        unsafe { ((*hooks).call)(&*timer.cast::<Owner>(), node) };
+    }
 
-/// `Timer::abandon_selection(bailout)`: only after a caught Zend bailout whose
-/// selection will never resume.
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_timer_owner_abandon(timer: &Owner, bailout: Option<Bailout>) {
-    timer.abandon(bailout);
+    unsafe extern "C-unwind" fn destruct(node: *mut TimerNode) {
+        let mut hooks = unsafe { Box::from_raw((*node).data.cast::<Hooks>()) };
+        (hooks.destructor)();
+    }
+
+    #[derive(Default)]
+    struct Log {
+        events: String,
+        destructors: u32,
+    }
+
+    struct Probe {
+        timer: *mut Owner,
+        log: Rc<RefCell<Log>>,
+    }
+
+    impl Probe {
+        fn new() -> Self {
+            Self {
+                timer: Owner::create(true),
+                log: Rc::default(),
+            }
+        }
+        fn timer(&self) -> &'static Owner {
+            unsafe { &*self.timer }
+        }
+        fn events(&self) -> String {
+            self.log.borrow().events.clone()
+        }
+        fn destructors(&self) -> u32 {
+            self.log.borrow().destructors
+        }
+        /// probe.cc's `add`: due now, with a destructor that logs `label`.
+        fn add(&self, label: char, repeat: bool, call_back: Call) -> *mut TimerNode {
+            let log = Rc::clone(&self.log);
+            let hooks = Box::into_raw(Box::new(Hooks {
+                call: call_back,
+                destructor: Box::new(move || {
+                    let mut log = log.borrow_mut();
+                    log.destructors += 1;
+                    log.events.push(label.to_ascii_lowercase());
+                }),
+            }));
+            let node = self
+                .timer()
+                .add(1000, repeat, TimerNode::new(Some(call), hooks.cast()));
+            assert!(!node.is_null(), "add failed");
+            unsafe { (*node).exec_msec = 0 };
+            self.timer().update(unsafe { &*node });
+            unsafe { (*node).destructor = Some(destruct) };
+            node
+        }
+        fn record(&self, label: char) -> Call {
+            let log = Rc::clone(&self.log);
+            Box::new(move |_, _| log.borrow_mut().events.push(label))
+        }
+        /// Replaces a node's destructor, logging as `add`'s does first.
+        fn on_destroy(&self, node: *mut TimerNode, label: char, then: impl FnMut() + 'static) {
+            let log = Rc::clone(&self.log);
+            let mut then = then;
+            let hooks = unsafe { (*node).data.cast::<Hooks>() };
+            unsafe {
+                (*hooks).destructor = Box::new(move || {
+                    {
+                        let mut log = log.borrow_mut();
+                        log.destructors += 1;
+                        log.events.push(label);
+                    }
+                    then();
+                });
+            }
+        }
+        fn present(&self, id: c_long) -> bool {
+            id != 0 && self.timer().get(id).is_some()
+        }
+        fn free(&self) {
+            unsafe { free(self.timer) };
+        }
+    }
+
+    /// The common tail: two selections (the first is the creation-round barrier),
+    /// then `(after_second, events, count_after_second, destructors, a_present,
+    /// b_present)` once the timer is freed.
+    fn finish(
+        probe: &Probe,
+        a: c_long,
+        b: c_long,
+        select_again: bool,
+    ) -> (String, String, usize, u32, bool, bool) {
+        let timer = probe.timer();
+        timer.select();
+        assert_eq!(probe.events(), "", "after_first");
+        timer.select();
+        let count = timer.count();
+        let (a_present, b_present) = (probe.present(a), probe.present(b));
+        let after_second = probe.events();
+        if select_again {
+            timer.select();
+        }
+        probe.free();
+        (
+            after_second,
+            probe.events(),
+            count,
+            probe.destructors(),
+            a_present,
+            b_present,
+        )
+    }
+
+    fn expect(
+        got: &(String, String, usize, u32, bool, bool),
+        second: &str,
+        events: &str,
+        count: usize,
+        destructors: u32,
+        a_present: bool,
+    ) {
+        assert_eq!(
+            *got,
+            (
+                second.into(),
+                events.into(),
+                count,
+                destructors,
+                a_present,
+                false
+            )
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn equal_deadlines() {
+        let p = Probe::new();
+        for label in ['A', 'B', 'C'] {
+            p.add(label, false, p.record(label));
+        }
+        expect(&finish(&p, 0, 0, false), "AaCcBb", "AaCcBb", 0, 3, false);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn self_remove() {
+        let p = Probe::new();
+        let log = Rc::clone(&p.log);
+        p.add(
+            'A',
+            true,
+            Box::new(move |t, n| {
+                let id = unsafe { (*n).id };
+                let mut log = log.borrow_mut();
+                log.events.push('A');
+                log.events.push(if t.remove(id) { 'Y' } else { 'N' });
+                log.events.push(if t.remove(id) { 'Y' } else { 'N' });
+                let viewed = t.token(id) == n && unsafe { (*n).removed };
+                log.events.push(if viewed { 'V' } else { 'X' });
+            }),
+        );
+        expect(&finish(&p, 0, 0, false), "AYNVa", "AYNVa", 0, 1, false);
+    }
+
+    fn remove_other(in_destructor: bool) -> (String, String, usize, u32, bool, bool) {
+        let p = Probe::new();
+        let other = Rc::new(Cell::new(0));
+        let (log, target) = (Rc::clone(&p.log), Rc::clone(&other));
+        let a = p.add(
+            'A',
+            false,
+            Box::new(move |t, _| {
+                log.borrow_mut().events.push('A');
+                if !in_destructor {
+                    t.remove(target.get());
+                }
+            }),
+        );
+        other.set(unsafe { (*p.add('B', false, p.record('B'))).id });
+        p.add('C', false, p.record('C'));
+        if in_destructor {
+            let (timer, target) = (p.timer(), Rc::clone(&other));
+            p.on_destroy(a, 'a', move || {
+                timer.remove(target.get());
+            });
+        }
+        finish(&p, 0, 0, false)
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn remove_other_in_a_callback() {
+        expect(&remove_other(false), "AbaCc", "AbaCc", 0, 3, false);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn destructor_remove_other() {
+        expect(&remove_other(true), "AabCc", "AabCc", 0, 3, false);
+    }
+
+    /// `delay-active-once` and `update-active-repeat`: the active node moves its own
+    /// deadline 100 s out from its callback.
+    fn move_active(repeat: bool) -> (String, String, usize, u32, bool, bool) {
+        let p = Probe::new();
+        let updated = Rc::new(Cell::new(false));
+        let (log, flag) = (Rc::clone(&p.log), Rc::clone(&updated));
+        let a = p.add(
+            'A',
+            repeat,
+            Box::new(move |t, n| {
+                log.borrow_mut().events.push('A');
+                if repeat {
+                    unsafe { (*n).exec_msec = 100_000 };
+                    t.update(unsafe { &*n });
+                } else {
+                    t.delay(unsafe { &*n }, 100_000);
+                }
+                flag.set(true);
+            }),
+        );
+        let b = p.add('B', false, p.record('B'));
+        let (a, b) = unsafe { ((*a).id, (*b).id) };
+        let got = finish(&p, a, b, false);
+        assert!(updated.get(), "the callback updated its node");
+        got
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn update_active_repeat() {
+        expect(&move_active(true), "ABb", "ABba", 1, 2, true);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn delay_active_once() {
+        expect(&move_active(false), "AaBb", "AaBb", 0, 2, false);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn destructor_add() {
+        let p = Probe::new();
+        let a = p.add('A', false, p.record('A'));
+        let probe = Probe {
+            timer: p.timer,
+            log: Rc::clone(&p.log),
+        };
+        p.on_destroy(a, 'a', move || {
+            probe.add('C', false, probe.record('C'));
+        });
+        p.add('B', false, p.record('B'));
+        expect(&finish(&p, 0, 0, true), "AaBb", "AaBbCc", 1, 3, false);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn nested_select_once() {
+        let p = Probe::new();
+        let (log, nested) = (Rc::clone(&p.log), Rc::new(Cell::new(false)));
+        p.add(
+            'A',
+            false,
+            Box::new(move |t, _| {
+                log.borrow_mut().events.push('A');
+                if !nested.replace(true) {
+                    t.select();
+                }
+            }),
+        );
+        expect(&finish(&p, 0, 0, false), "Aa", "Aa", 0, 1, false);
+    }
+
+    /// Waits for `child`; its exit status.
+    fn reap(child: libc::pid_t) -> i32 {
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+        status
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fork")]
+    fn fork_teardown() {
+        let p = Probe::new();
+        let id = unsafe { (*p.add('A', false, p.record('A'))).id };
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork failed");
+        if child == 0 {
+            p.free();
+            unsafe { libc::_exit(if p.destructors() == 1 { 0 } else { 2 }) };
+        }
+        assert_eq!(reap(child), 0, "child_status");
+        let intact = p.present(id) && p.timer().count() == 1 && p.destructors() == 0;
+        p.free();
+        assert!(intact, "parent_intact");
+        assert_eq!(p.destructors(), 1, "parent_destructors");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fork")]
+    fn fork_active_teardown() {
+        let p = Probe::new();
+        let (log, status, intact) = (
+            Rc::clone(&p.log),
+            Rc::new(Cell::new(-1)),
+            Rc::new(Cell::new(false)),
+        );
+        let (child_status, parent_intact) = (Rc::clone(&status), Rc::clone(&intact));
+        let timer = p.timer;
+        p.add(
+            'A',
+            false,
+            Box::new(move |t, node| {
+                let child = unsafe { libc::fork() };
+                assert!(child >= 0, "fork failed");
+                if child == 0 {
+                    let log = Rc::clone(&log);
+                    unsafe { free(timer) };
+                    let log = log.borrow();
+                    let ok = log.destructors == 2 && log.events.len() == 2;
+                    unsafe { libc::_exit(if ok { 0 } else { 2 }) };
+                }
+                child_status.set(reap(child));
+                let id = unsafe { (*node).id };
+                parent_intact
+                    .set(t.token(id) == node && t.count() == 2 && log.borrow().destructors == 0);
+                log.borrow_mut().events.push('A');
+            }),
+        );
+        p.add('B', false, p.record('B'));
+        p.timer().select();
+        p.timer().select();
+        let drained = p.timer().count() == 0 && p.events() == "AaBb" && p.destructors() == 2;
+        p.free();
+        assert_eq!(status.get(), 0, "child_status");
+        assert!(intact.get(), "parent_intact");
+        assert!(drained, "parent_drained");
+        assert_eq!(p.destructors(), 2, "parent_destructors");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the reactor's natives")]
+    fn wrapper_clear() {
+        use crate::wrapper::{publish, swoole_timer_clear, swoole_timer_get, timer as slot_value};
+        let p = Probe::new();
+        let previous = slot_value();
+        publish(p.timer);
+        let inactive_id = unsafe { (*p.add('C', false, p.record('C'))).id };
+        let inactive = swoole_timer_clear(inactive_id) && !swoole_timer_clear(inactive_id);
+        let missing = !swoole_timer_clear(0)
+            && !swoole_timer_clear(-1)
+            && !swoole_timer_clear(inactive_id + 100);
+        let other = Rc::new(Cell::new(0));
+        let seen = Rc::new(Cell::new((false, false, false)));
+        let (log, target, flags) = (Rc::clone(&p.log), Rc::clone(&other), Rc::clone(&seen));
+        p.add(
+            'A',
+            true,
+            Box::new(move |_, node| {
+                log.borrow_mut().events.push('A');
+                let cancelled_other =
+                    swoole_timer_clear(target.get()) && !swoole_timer_clear(target.get());
+                let id = unsafe { (*node).id };
+                let active = swoole_timer_clear(id) && !swoole_timer_clear(id);
+                let active_view = swoole_timer_get(id) == node && unsafe { (*node).removed };
+                flags.set((active, cancelled_other, active_view));
+            }),
+        );
+        other.set(unsafe { (*p.add('B', false, p.record('B'))).id });
+        p.timer().select();
+        p.timer().select();
+        let remaining = p.timer().count();
+        p.free();
+        publish(previous);
+        assert!(inactive, "inactive");
+        assert!(missing, "missing");
+        assert_eq!(
+            seen.get(),
+            (true, true, true),
+            "active, cancelled_other, active_view"
+        );
+        assert_eq!(remaining, 0, "remaining");
+        assert_eq!(p.events(), "cAba", "events");
+        assert_eq!(p.destructors(), 3, "destructors");
+    }
 }

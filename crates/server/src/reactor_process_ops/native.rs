@@ -23,7 +23,7 @@ use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
 use crate::view;
-use swoole_rs_timer::{swr_v1_timer_owner_reactor, swr_v1_timer_owner_reinit};
+use swoole_rs_timer::{owner_reactor, owner_reinit};
 
 /// `SW_IPC_UNIXSOCK`, `SW_WORKER`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const IPC_UNIXSOCK: c_int = 1;
@@ -88,7 +88,7 @@ impl Context {
     }
     pub(super) fn event_socket(&self) -> *mut c_void {
         // SAFETY: the context's live event.
-        unsafe { (*self.event).socket }.cast()
+        unsafe { (*self.event).socket_ptr() }.cast()
     }
 }
 
@@ -164,15 +164,12 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: this thread's live timer.
             u64::from(
                 !timer.is_null()
-                    && swr_v1_timer_owner_reactor(unsafe {
-                        &*timer.cast::<swoole_rs_timer::Owner>()
-                    })
-                    .is_null(),
+                    && owner_reactor(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }).is_null(),
             )
         }
         OP_TIMER_REINIT => {
             // SAFETY: this thread's live timer.
-            swr_v1_timer_owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
+            owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
             0
         }
         OP_PORT_ADD => {
@@ -231,11 +228,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_CLOSE_NOTIFY => {
             // SAFETY: the connection the context selected.
             let conn = unsafe { &*ctx.conn };
-            let mut event = Event {
-                fd: conn.fd,
-                reactor_id: i16::from(conn.reactor_id),
-                fd_type: FD_SESSION,
-                socket: conn.socket.cast(),
+            // SAFETY: the selected connection's live socket, for this call.
+            let mut event = unsafe {
+                Event::new(
+                    conn.fd,
+                    i16::from(conn.reactor_id),
+                    FD_SESSION,
+                    conn.socket.cast(),
+                )
             };
             run(
                 ctx.reactor_handle(),

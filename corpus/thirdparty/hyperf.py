@@ -158,7 +158,7 @@ def run(engine):
                     checks.append(actual)
                 require_equal(request(PORT, '/')[::2], (200, b'{"method":"GET","message":"Hello Hyperf."}'))
                 # Graceful shutdown is part of the test; fallback group cleanup is unconditional.
-                os.kill(proc.pid, signal.SIGTERM)
+                os.kill(engine.pid(proc), signal.SIGTERM)
                 require_equal(proc.wait(timeout=15), 0)
                 deadline = time.monotonic() + 5
                 while not closed() and time.monotonic() < deadline:

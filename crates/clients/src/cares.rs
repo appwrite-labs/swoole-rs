@@ -134,9 +134,8 @@ extern "C" fn writable(_: Running<'_>, event: &mut Event) -> i32 {
     process(event, 1)
 }
 fn process(event: &Event, write: u8) -> i32 {
-    let fd = event.fd;
-    // SAFETY: its socket is a registered c-ares wrapper.
-    let Some(socket) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {
+    let fd = event.fd();
+    let Some(socket) = event.socket() else {
         return -1;
     };
     let data = socket.read(|socket| socket.object);

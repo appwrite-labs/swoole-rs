@@ -42,7 +42,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
       - run: cargo fetch --locked

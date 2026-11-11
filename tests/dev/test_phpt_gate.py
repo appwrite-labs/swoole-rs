@@ -181,10 +181,17 @@ class PhptGate(unittest.TestCase):
                                  'cargo', results), ['flaky-failing'])
         self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'cargo', 'failed')] * 8,
                                  'cargo', results), [])
-        # One failed re-run doesn't settle cargo on a clean upstream; a pass then does (#862),
-        # and three failures spend the budget.
+        # One failed re-run doesn't settle cargo on a clean upstream; a pass then does (#862).
         self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'cargo', 'passed')], 'cargo'), [])
-        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'cargo', 'failed')] * 2, 'cargo'), [])
+        # Until cargo passes one, it gets nine re-runs: a test racy on both engines can fail
+        # three in a row on a busy runner (#2815). Nine failures spend the budget.
+        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'cargo', 'failed')] * 2, 'cargo'),
+                         ['steady-failed'])
+        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'cargo', 'failed')] * 8, 'cargo'), [])
+        # A pass after the third re-run leaves cargo mixed, which earns upstream its extra re-runs.
+        late = rechecked + [row('steady-failed', 'cargo', 'failed')] * 3 + [row('steady-failed', 'cargo', 'passed')]
+        self.assertEqual(pending(['steady-failed'], late, 'cargo'), [])
+        self.assertEqual(pending(['steady-failed'], late, 'upstream-extended'), ['steady-failed'])
         # A first cargo failure that timed out gets one re-run; timing out again is a regression.
         self.assertEqual(recheck(['slow'], rechecked), (['slow'], [], [], []))
         self.assertEqual(pending(['slow'], [row('slow', 'upstream', 'failed')], 'cargo', results), ['slow'])

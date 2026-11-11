@@ -144,7 +144,7 @@ unsafe extern "C" fn park(_: *mut c_void) {
     record("yield".into());
     complete_worker();
 }
-unsafe extern "C" fn park_for(_: *mut c_void, seconds: f64) -> bool {
+unsafe extern "C-unwind" fn park_for(_: *mut c_void, seconds: f64) -> bool {
     record(format!("yield-ex:{}", seconds.to_bits()));
     let ok = knobs().yield_ok;
     if ok {

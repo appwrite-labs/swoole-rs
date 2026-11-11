@@ -59,8 +59,8 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
-    swoole_timer_create, swoole_timer_get_next_msec, swoole_timer_is_available,
-    swoole_timer_select, swr_v1_timer_add_plain, swr_v1_timer_owner_reinit,
+    owner_reinit, swoole_timer_create, swoole_timer_get_next_msec, swoole_timer_is_available,
+    swoole_timer_select, swr_v1_timer_add_plain,
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
@@ -82,12 +82,6 @@ const CHAN_LOCK: c_int = 2;
 const CHAN_SHM: c_int = 8;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
-
-// SAFETY: crates/reactor's, under its upstream symbol.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-}
 
 /// A pool's message bus: the Rust bus, then the allocator its packets and buffer
 /// come from. crates/process and crates/phpprocess read both through `message_bus`.
@@ -434,13 +428,13 @@ extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
     });
     let size = record(pool).max_packet_size as usize;
     // SAFETY: the packet buffer holds `max_packet_size` bytes.
-    let fd = fd(event.socket.cast());
+    let fd = fd(event.socket_ptr().cast());
     // SAFETY: as above.
     let n = unsafe { libc::read(fd, packet.cast(), size) };
     if n < 0 && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",
-            format_args!("failed to read({}) pipe", event.fd),
+            format_args!("failed to read({}) pipe", event.fd()),
         );
     }
     let info = DataHead {
@@ -455,7 +449,7 @@ extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
 extern "C" fn recv_message(reactor: Running<'_>, event: &mut Event) -> c_int {
     let pool = reactor_pool(reactor);
-    if bus_read(pool, event.socket) > 0 {
+    if bus_read(pool, event.socket_ptr()) > 0 {
         bus_deliver(pool);
     }
     0
@@ -580,8 +574,8 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             0
         }
         OP_EVENT_INIT => {
-            // SAFETY: this thread has no event loop yet.
-            if unsafe { swoole_event_init(EVENTLOOP_WAIT_EXIT) } < 0 {
+            // This thread has no event loop yet.
+            if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
                 return Some(-1);
             }
             // SAFETY: the loop just made.
@@ -659,10 +653,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
                 // SAFETY: this thread's timer slot, holding its live timer.
                 let timer = unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() };
                 // SAFETY: as above.
-                swr_v1_timer_owner_reinit(
-                    unsafe { &*timer.cast::<swoole_rs_timer::Owner>() },
-                    true,
-                );
+                owner_reinit(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }, true);
             } else {
                 // This thread has no timer.
                 swoole_timer_create(true);

@@ -7,7 +7,7 @@ publish = false
 [features]
 default = []
 # Publish original C++ method symbols only for the activated reactor overlay.
-upstream-symbols = []
+upstream-symbols = ["swoole-rs-coroutine/upstream-symbols"]
 
 [dependencies]
 swoole-rs-buffer = { path = "../buffer" }

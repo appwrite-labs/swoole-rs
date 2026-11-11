@@ -32,19 +32,10 @@ pub(crate) type Co = *mut c_void;
 unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    // crates/reactor.
-    // crates/coroutine, crates/reactor,
-    // crates/process and crates/hooks.
-    #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
-    fn coroutine_cancel(co: Co) -> bool;
-    #[link_name = "_ZN6swoole9Coroutine8activateEv"]
-    fn coroutine_activate();
-    #[link_name = "_ZN6swoole9Coroutine10deactivateEv"]
-    fn coroutine_deactivate();
+    // crates/hooks.
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_Z30swoole_signal_get_listener_numv"]
-    fn swoole_signal_get_listener_num() -> u32;
+
     // crates/phpevents, crates/phpclients and PHP.
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
@@ -324,8 +315,9 @@ pub(crate) fn stats(stats: &mut Stats) {
             &mut stats.aio_queue_size,
         );
     };
-    // SAFETY: crates/reactor counts this thread's listeners.
-    stats.signal_listener_num = i64::from(unsafe { swoole_signal_get_listener_num() });
+    // crates/reactor counts this thread's listeners.
+    stats.signal_listener_num =
+        i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
     let s = sched();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);
@@ -503,7 +495,7 @@ pub unsafe fn park(slot: &std::cell::Cell<Co>) {
 
 pub(crate) fn cancel(co: Co) -> bool {
     // SAFETY: a live coroutine.
-    unsafe { coroutine_cancel(co) }
+    unsafe { swoole_rs_coroutine::cancel(co.cast()) }
 }
 
 /// `co->is_canceled()` of a live coroutine.
@@ -596,8 +588,8 @@ pub(crate) fn attach(
     on_close: unsafe extern "C" fn(*mut c_void),
 ) {
     reactor_push(true, deactivate_on_free, std::ptr::null_mut());
-    // SAFETY: the core's activation, on a running loop.
-    unsafe { coroutine_activate() };
+    // The core's activation, on a running loop.
+    swoole_rs_coroutine::activate();
     set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
 }
 
@@ -623,8 +615,8 @@ unsafe extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
 }
 
 pub(crate) fn deactivate() {
-    // SAFETY: the core is active.
-    unsafe { coroutine_deactivate() };
+    // The core is active.
+    swoole_rs_coroutine::deactivate();
 }
 
 /// The runtime hooks (when `flags`) and the unsafe functions disabled.

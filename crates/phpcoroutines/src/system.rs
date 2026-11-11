@@ -12,6 +12,7 @@ use swoole_rs_buffer::string;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
+use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit,
     bailout::Bailout,
@@ -28,15 +29,7 @@ unsafe extern "C" {
     fn system_sleep(seconds: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
     fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System4waitEPid"]
-    fn system_wait(status: *mut c_int, timeout: f64) -> libc::pid_t;
-    #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
-    fn system_waitpid(
-        pid: libc::pid_t,
-        status: *mut c_int,
-        options: c_int,
-        timeout: f64,
-    ) -> libc::pid_t;
+
     fn swr_v1_system_gethostbyname(
         host: *const c_char,
         length: usize,
@@ -437,11 +430,9 @@ fn wait_for(call: &Call, pid: c_long, timeout: f64) {
     host::current_safe();
     let mut status = 0;
     let pid = c_long::from(if pid < 0 {
-        // SAFETY: waits in the running coroutine.
-        unsafe { system_wait(&raw mut status, timeout) }
+        system_wait(&mut status, timeout)
     } else {
-        // SAFETY: as above.
-        unsafe { system_waitpid(int(pid), &raw mut status, 0, timeout) }
+        system_waitpid(int(pid), &mut status, 0, timeout)
     });
     if pid <= 0 {
         call.set_bool(false);

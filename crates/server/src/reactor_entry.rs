@@ -99,7 +99,7 @@ fn context(reactor: Running<'_>, event: &mut Event) -> ReactorContext {
 
 /// [`context`] with the event's socket.
 fn event_context(reactor: Running<'_>, event: &mut Event) -> ReactorContext {
-    let sock = event.socket.cast();
+    let sock = event.socket_ptr().cast();
     let mut ctx = context(reactor, event);
     ctx.sock = sock;
     ctx
@@ -141,7 +141,7 @@ pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_in
 
 /// `ReactorThread_onRead`: a connection is readable.
 pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let fd = c_long::from(event.fd);
+    let fd = c_long::from(event.fd());
     let mut ctx = event_context(reactor, event);
     // SAFETY: a server reactor's live server.
     ctx.conn = unsafe { view::Server::from_raw(ctx.serv) }

@@ -62,9 +62,8 @@ unsafe fn iov_owner(vector: *mut c_void) -> crate::uring_socket::IoVector {
 }
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
-fn event_socket<'a>(event: &Event) -> Option<(Co, Socket<'a>)> {
-    // SAFETY: the reactor's event names a live network::Socket.
-    let source = unsafe { Socket::from_ptr(event.socket.cast::<SocketRecord>()) }?;
+fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
+    let source = event.socket()?;
     let object = source.read(|record| record.object);
     // SAFETY: a coroutine socket's network::Socket's object is that socket.
     Some((unsafe { Co::of(object) }, source))
@@ -933,12 +932,7 @@ mod tests {
             unsafe { Co::of((&raw mut *self.0).cast()) }
         }
         fn event(&mut self) -> Event {
-            Event {
-                fd: -1,
-                reactor_id: 0,
-                fd_type: 6,
-                socket: self.0.record.socket.cast(),
-            }
+            unsafe { Event::new(-1, 0, 6, self.0.record.socket.cast()) }
         }
         fn bind(&mut self, event: u32, co: *mut c_long) {
             unsafe { (*self.0.record.state).bind(event, co.cast()) };

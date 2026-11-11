@@ -208,8 +208,7 @@ impl Objects<'_> {
         self.sock().map(|sock| sock.read(read)).unwrap_or_default()
     }
     fn event_socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: the ops reading it run on a live event over a live socket.
-        unsafe { Socket::from_ptr(self.event().socket.cast()) }
+        self.event().socket()
     }
     fn event(&self) -> &Event {
         // SAFETY: the ops reading it run on a live event.
@@ -292,7 +291,7 @@ fn read_facts(o: &mut Objects<'_>) -> u64 {
     if conn.server_fd == 0 {
         return 0;
     }
-    o.ctx.port = o.port_by_fd(o.event().fd);
+    o.ctx.port = o.port_by_fd(o.event().fd());
     let process = o.mode() == crate::MODE_PROCESS;
     o.read_sock(|sock| {
         let ssl = !sock.ssl.is_null();
@@ -310,7 +309,7 @@ fn read_facts(o: &mut Objects<'_>) -> u64 {
 
 /// `ReactorThread_onWrite`'s facts; sets the context's port and connection.
 fn write_facts(o: &mut Objects<'_>) -> u64 {
-    let fd = o.event().fd;
+    let fd = o.event().fd();
     o.ctx.port = o.port_by_fd(fd);
     if o.mode() == crate::MODE_PROCESS {
         debug_assert_eq!(
@@ -340,7 +339,7 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
 /// a clean FIN leaves the write side usable (native/halfclose/prequeue.md). Sets
 /// the context's connection.
 fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
-    let fd = o.event().fd;
+    let fd = o.event().fd();
     o.ctx.conn = o.connection(c_long::from(fd), 0);
     // SAFETY: a table slot.
     let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
@@ -469,7 +468,7 @@ pub(crate) unsafe fn answer(
     let mut o = Objects { ctx, state };
     Some(match op {
         LOG_RECVFROM => {
-            let m = format_args!("recvfrom({}) failed", o.event().fd);
+            let m = format_args!("recvfrom({}) failed", o.event().fd());
             log::sys_warning(c"ReactorThread_onPacketReceived", m);
             0
         }
@@ -507,7 +506,7 @@ pub(crate) unsafe fn answer(
             0
         }
         LOG_RT_SET_WRITE => {
-            let m = format_args!("reactor->set({}) failed", o.event().fd);
+            let m = format_args!("reactor->set({}) failed", o.event().fd());
             log::sys_warning(c"ReactorThread_onPipeWrite", m);
             0
         }
@@ -788,7 +787,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CONN_UNREAD => interest(conn_socket(), 4),
         OP_RD_UNREAD => interest(o.ctx.sock, 4),
-        OP_RT_REMOVE_WRITE => interest(o.event().socket.cast(), 5),
+        OP_RT_REMOVE_WRITE => interest(o.event().socket_ptr().cast(), 5),
         OP_WR_READ_ONLY => {
             change(o.ctx.sock, 1, SW_EVENT_READ);
             0
@@ -969,16 +968,9 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
     };
+    use swoole_rs_reactor::event_api::swoole_event_wait;
+    use swoole_rs_reactor::{swoole_event_free, swoole_event_init};
     use swoole_rs_timer::swoole_timer_delay;
-    // SAFETY: native/reactor's, under their upstream symbols.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z17swoole_event_initi"]
-        fn swoole_event_init(flags: c_int) -> c_int;
-        #[link_name = "_Z17swoole_event_waitv"]
-        fn swoole_event_wait() -> c_int;
-        #[link_name = "_Z17swoole_event_freev"]
-        fn swoole_event_free() -> c_int;
-    }
     Some(match op {
         OP_DTLS_ACCEPT => {
             let (serv, reactor) = (o.ctx.serv, o.ctx.reactor);
@@ -992,7 +984,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_RD_DTLS => {
             // SAFETY: the context's live DTLS port and its session socket.
-            u64::from(unsafe { crate::dtls::on_read(o.ctx.port, o.sock()?, o.event().fd) })
+            u64::from(unsafe { crate::dtls::on_read(o.ctx.port, o.sock()?, o.event().fd()) })
         }
         OP_CC_DTLS_FREE => {
             // SAFETY: the closing socket's live port; nothing uses its session after.
@@ -1051,16 +1043,13 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             sign(unsafe { crate::server_methods::start_master_thread(serv, reactor) })
         }
         OP_EVENT_INIT => {
-            // SAFETY: this thread's event loop.
-            let ret = unsafe { swoole_event_init(0) };
+            let ret = swoole_event_init(0);
             o.ctx.reactor = swoole_rs_corebase::thread_reactor();
             sign(ret)
         }
-        // SAFETY: this thread's event loop.
-        OP_EVENT_WAIT => sign(unsafe { swoole_event_wait() }),
+        OP_EVENT_WAIT => sign(swoole_event_wait()),
         OP_EVENT_FREE => {
-            // SAFETY: as above.
-            unsafe { swoole_event_free() };
+            swoole_event_free();
             0
         }
         OP_CC_FINISH => {

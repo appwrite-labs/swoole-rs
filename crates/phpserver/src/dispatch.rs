@@ -628,9 +628,8 @@ fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> *mut 
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
 
-fn worker_id(worker: *mut WorkerRecord) -> i64 {
-    // SAFETY: the event's live worker.
-    i64::from(unsafe { Worker::new(worker).id() })
+fn worker_id(worker: &WorkerRecord) -> i64 {
+    i64::from(worker.id())
 }
 
 macro_rules! lifecycle_slots {
@@ -651,28 +650,27 @@ lifecycle_slots! {
     on_after_reload => ON_AFTER_RELOAD;
 }
 
-extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
+extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
     relay(on_lifecycle(server, ON_WORKER_START, worker_id(worker)));
 }
 
-extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
+extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
     if swoole_rs_process::methods::worker_is_running() {
         relay(on_lifecycle(server, ON_WORKER_STOP, worker_id(worker)));
     }
 }
 
-extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
+extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
     relay(on_lifecycle(server, ON_WORKER_EXIT, worker_id(worker)));
 }
 
 extern "C" fn on_worker_error_slot(
     _: Ctx,
     server: view::Server<'_>,
-    worker: *mut WorkerRecord,
-    exit: *const ExitStatus,
+    worker: &WorkerRecord,
+    exit: &ExitStatus,
 ) {
-    // SAFETY: the reaped worker's status, live for the call.
-    let ExitStatus { pid, status } = unsafe { exit.read() };
+    let &ExitStatus { pid, status } = exit;
     let (code, signal) = (libc::WEXITSTATUS(status), libc::WTERMSIG(status));
     let id = worker_id(worker);
     let error = |n: c_int| i64::from(n);
@@ -854,8 +852,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: *mut c_v
     SW_OK
 }
 
-extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
-    let info = head(info);
+extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {
     let cb = port_callback(server, info.server_fd, ON_CONNECT);
     if !cb.is_null() {
         let reactor_id = i64::from(info.reactor_id);
@@ -889,13 +886,13 @@ fn send_wake(session_id: i64, cancel: bool) {
 /// # Safety
 /// `server` is the running server and `info` the closed session's.
 pub unsafe fn php_swoole_server_on_close(server: view::Server<'_>, info: *mut DataHead) {
-    close(server, info);
+    // SAFETY: per the caller.
+    close(server, unsafe { &*info });
 }
 
 /// `php_swoole_server_onClose`: wake the session's senders, then `onClose`
 /// (`onDisconnect` for a WebSocket port's connection that never opened).
-fn close(server: view::Server<'_>, info: *mut DataHead) {
-    let info = head(info);
+fn close(server: view::Server<'_>, info: &DataHead) {
     let session_id = info.fd;
     let config = server.config();
     if config.enable_coroutine && config.send_yield {
@@ -929,20 +926,19 @@ fn close(server: view::Server<'_>, info: *mut DataHead) {
     }
 }
 
-extern "C" fn on_close(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
+extern "C" fn on_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
     close(server, info);
 }
 
-extern "C" fn on_http_close(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
+extern "C" fn on_http_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
     let Some(families) = swoole_rs_phpswoole::families() else {
         return;
     };
     // SAFETY: the Server's own event.
-    unsafe { (families.http.on_close)(server.raw(), info.cast()) };
+    unsafe { (families.http.on_close)(server.raw(), ptr::from_ref(info).cast_mut().cast()) };
 }
 
-extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
-    let info = head(info);
+extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: &DataHead) {
     relay(on_buffer(
         server,
         true,
@@ -951,8 +947,7 @@ extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: *mut DataHe
     ));
 }
 
-extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: *mut DataHead) {
-    let info = head(info);
+extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead) {
     if server.config().send_yield {
         send_wake(info.fd, false);
     }
@@ -965,9 +960,11 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: *mut DataH
 }
 
 /// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
-/// the worker `addProcess` added.
+/// the worker `addProcess` added. The worker stays a raw pointer: starting the
+/// process writes its pid and pipe, so no reference to the record may live here.
 extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
-    let id = worker_id(worker);
+    // SAFETY: the event's live worker.
+    let id = i64::from(unsafe { Worker::new(worker).id() });
     let config = server.config();
     let server_object = crate::lifecycle::ServerObject::running();
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {

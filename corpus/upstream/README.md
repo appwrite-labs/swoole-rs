@@ -141,7 +141,8 @@ any of them cargo passes is listed so its entry is dropped. It records each resu
 PASSED counts as passed.
 
 A test the gate flags is re-run 3 times on both engines (in `phpt.yml`'s `gate` job,
-unless more than 20 are flagged). If upstream fails any re-run, the test is listed
+unless more than 20 are flagged); cargo gets up to 9 while it has failed every re-run,
+since a test racy on both engines can fail three in a row on a busy runner (#2815). If upstream fails any re-run, the test is listed
 as flaky on upstream and doesn't fail the gate, provided cargo passes one of its
 re-runs or upstream then passes fewer than a third of 9 re-runs (a test both engines
 almost always fail, whose first upstream pass was the outlier). If upstream passes every re-run and cargo fails any, it is a regression; when

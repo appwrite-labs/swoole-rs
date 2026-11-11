@@ -48,7 +48,8 @@ Every other HTTP workload reuses one kept-alive connection. `connect` (#2651) is
 client waits for the server's close, so accepting the connection, setting up its
 session and tearing it down count in every request. Its record started 5% above an
 arm64 Linux run (0.99), but the x86 merge tier measures about 1.085, so it was reset to
-1.09 (#2748 tracks the per-connection cost).
+1.09. Most of that was ~29 op dispatches a connection through `master_ops::answer`;
+#2748 answers them inline (8% fewer instructions on arm64), and the ratchet lowers the record.
 
 Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
 each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`

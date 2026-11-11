@@ -286,7 +286,7 @@ pub trait FdHandler {
 }
 
 extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
-    H::handle(event.fd)
+    H::handle(event.fd())
 }
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.

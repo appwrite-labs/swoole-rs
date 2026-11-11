@@ -308,26 +308,19 @@ pub(crate) extern "C" fn accept_connection(
         .ptr;
     let mut ctx = NativeContext::new(serv);
     ctx.reactor = reactor.as_ptr();
-    ctx.server_fd = event.fd;
-    // SAFETY: the event's live listening socket, whose object is its port.
-    let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(event.socket.cast()) };
+    ctx.server_fd = event.fd();
+    let listener = event.socket();
     ctx.port = listener.map_or(core::ptr::null_mut(), |s| s.read(|s| s.object));
     ctx.event = ptr::from_mut(event).cast();
     // SAFETY: the server reactor's live server, and its event.
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
 }
 
-unsafe extern "C" {
-    /// native/error/error.cc's `swoole_get_last_error_msg()`.
-    #[link_name = "_Z25swoole_get_last_error_msgv"]
-    fn swoole_get_last_error_msg() -> *const c_char;
-}
-
 /// `Server::get_startup_error_message()`.
 #[must_use]
 pub fn get_startup_error_message() -> *const c_char {
-    // SAFETY: the calling thread's error text, always terminated.
-    let message = unsafe { swoole_get_last_error_msg() };
+    // The calling thread's error text, always terminated.
+    let message = swoole_rs_error::swoole_get_last_error_msg();
     // SAFETY: as above.
     unsafe { crate::swr_v1_server_startup_error(message, log::swr_v1_core_last_error()) }
 }

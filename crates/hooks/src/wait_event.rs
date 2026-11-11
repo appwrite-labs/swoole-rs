@@ -172,11 +172,7 @@ pub(crate) mod native {
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del};
 
-    // SAFETY: crates/coroutine's.
-    unsafe extern "C" {
-        #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-        pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
-    }
+    pub(crate) use swoole_rs_coroutine::yield_ex as coroutine_yield_ex;
 
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;

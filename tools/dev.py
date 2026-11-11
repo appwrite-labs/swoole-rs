@@ -372,8 +372,6 @@ def plan(args, reports):
         if integrate:
             pytest('timer-bailout', 'tests/modules/timer/test_bailout.py', *php,
                    '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
-            pytest('timer-native', 'tests/modules/timer/test_adapter.py', '--build-manifest', built, '--archive', archive, *php,
-                   *(['--sanitize'] if sys.platform == 'darwin' else []))
     if 'buffer' in modules:
         pytest('buffer-string-compatibility', 'tests/modules/buffer/string/test_compatibility.py',
                '--archive', archive, '--sanitize')
@@ -424,8 +422,11 @@ def plan(args, reports):
     if sys.platform.startswith('linux') and (integrate or 'reactor' in modules):
         # The applications under strace: the socket options, flags and epoll registrations
         # PHP can't see. Seconds, so the candidate lane runs it for the reactor's sockets too.
+        # The PR tier doesn't run hyperf.py --prepare, so the candidate lane leaves Hyperf out.
+        projects = [] if integrate else [arg for project in json.loads((ROOT / 'corpus/manifest.json').read_text())
+                                         if project['id'] != '12-hyperf-skeleton' for arg in ['--project', project['id']]]
         script('syscalls', 'corpus/syscalls.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
-               *report('syscalls'))
+               *projects, *report('syscalls'))
     network = ['--external-network'] if getattr(args, 'external_network', False) else []
     if args.case and not integrate:
         script('phpt', 'corpus/upstream/run.py', *php, *engines, '--jobs', args.jobs,

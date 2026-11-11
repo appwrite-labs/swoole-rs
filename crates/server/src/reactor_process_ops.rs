@@ -4,6 +4,7 @@
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 
+use swoole_rs_process::methods::destroy as pool_destroy;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -54,12 +55,6 @@ impl Context {
 const TASK_IPC_UNIXSOCK: u8 = 1;
 const EVENT_CLOSE: c_int = 4;
 const SSL_READY: u32 = 1;
-
-// SAFETY: crates/process's body, under its upstream symbol.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole11ProcessPool7destroyEv"]
-    fn pool_destroy(pool: *mut c_void);
-}
 
 /// Answers each reactor-process op over the context.
 impl swoole_rs_process::workers::Answer for Context {
@@ -296,7 +291,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_EVENT_CONN_ACTIVE => {
             // SAFETY: the context's live event.
-            let fd = unsafe { (*ctx.event).fd };
+            let fd = unsafe { (*ctx.event).fd() };
             let conn = server.at(fd);
             let active = conn.as_ref().is_some_and(|c| c.active != 0);
             ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);

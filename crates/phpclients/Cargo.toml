@@ -8,7 +8,7 @@ description = "PHP client classes (Swoole\\Coroutine\\Socket, Swoole\\Coroutine\
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-reactor", "dep:libc", "dep:swoole-rs-error", "dep:swoole-rs-clients", "dep:swoole-rs-tls", "dep:swoole-rs-corebase", "dep:swoole-rs-inflate", "dep:swoole-rs-base64", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-buffer", "dep:swoole-rs-http", "dep:swoole-rs-http-ffi", "dep:swoole-rs-protocols-ffi"]
+php = ["dep:swoole-rs-reactor", "dep:libc", "dep:swoole-rs-error", "dep:swoole-rs-clients", "dep:swoole-rs-tls", "dep:swoole-rs-corebase", "dep:swoole-rs-inflate", "dep:swoole-rs-base64", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-buffer", "dep:swoole-rs-http", "dep:swoole-rs-http-ffi", "dep:swoole-rs-protocols-ffi", "dep:swoole-rs-ports", "dep:swoole-rs-server", "dep:swoole-rs-websocket-ffi"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -27,6 +27,9 @@ swoole-rs-buffer = { path = "../buffer", optional = true }
 swoole-rs-http = { path = "../http", optional = true }
 swoole-rs-http-ffi = { path = "../http-ffi", optional = true }
 swoole-rs-protocols-ffi = { path = "../protocols-ffi", optional = true }
+swoole-rs-ports = { path = "../ports", optional = true }
+swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-websocket-ffi = { path = "../websocket-ffi", optional = true }
 
 [lints]
 workspace = true

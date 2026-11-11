@@ -34,24 +34,28 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/upstream target/upstream-builds target/thirdparty
+      - name: Clear cached builds
+        run: rm -rf target/ext target/upstream target/upstream-builds target/thirdparty
       # Restored only: the pinned reference is rebuilt against the debug PHP below, never saved.
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       # Saved here, restored by the shards and the gate. Keyed on this file too: it holds the options.
       - uses: actions/cache@v4
         with:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
       # The extensions the distribution's packages add for the merge tier, which don't load here.
-      - run: >
+      - name: Build debug PHP
+        run: >
           .devcontainer/php.sh target/php-debug --enable-debug --with-mysqli --with-pdo-mysql --with-pgsql
           --with-pdo-pgsql --with-sqlite3 --with-pdo-sqlite --enable-bcmath --with-gmp
-      - run: cargo fetch --locked
+      - name: Fetch crates
+        run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched. The hooks as phpt-build has them.
-      - run: |
+      - name: Build upstream and cargo engines
+        run: |
           php=$PWD/target/php-debug/bin
           hooks=(--php-sockets --configure=--enable-swoole-pgsql --configure=--enable-mysqlnd "--configure=--with-swoole-odbc=unixODBC,/usr" --configure=--with-swoole-firebird
             --configure=--enable-swoole-sqlite "--configure=--with-swoole-oracle=instantclient,/usr/local/instantclient" --configure=--enable-swoole-curl --configure=--with-swoole-ssh2)
@@ -69,6 +73,7 @@ jobs:
           path: target/phpt/
 
   phpt:
+    name: PHPT ${{ matrix.engine }} ${{ matrix.index }}/6
     needs: build
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
@@ -79,7 +84,8 @@ jobs:
         engine: [upstream, cargo]
     steps:
       - uses: actions/checkout@v4
-      - id: services
+      - name: List services
+        id: services
         run: echo "names=$(python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
       # The services, the tests and their support files, and the engines from the build job.
       - uses: ./.github/actions/phpt-env
@@ -91,9 +97,11 @@ jobs:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
           fail-on-cache-miss: true
-      - run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
+      - name: Plan shard
+        run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
       # Exit 1 means some tests failed, which the gate judges; anything else fails the shard.
-      - run: >
+      - name: Run PHPTs
+        run: >
           python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 --external-network
           --php "$PWD/target/php-debug/bin/php" --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
           --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
@@ -116,12 +124,14 @@ jobs:
           merge-multiple: true
           path: shards
       # The merge tier's re-runs, unless more than 20 are flagged: a broad breakage.
-      - id: flagged
+      - name: Flag regressions
+        id: flagged
         run: |
           python3 corpus/upstream/gate.py shards/*.json --print-regressions > flagged.txt
           count=$(grep -c . flagged.txt || true)
           echo "rerun=$([ "$count" -gt 0 ] && [ "$count" -le 20 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - if: steps.flagged.outputs.rerun == 'true'
+      - name: List rerun services
+        if: steps.flagged.outputs.rerun == 'true'
         id: services
         run: echo "names=$(cut -d/ -f2 flagged.txt | sort -u | xargs python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
       - if: steps.flagged.outputs.rerun == 'true'
@@ -135,12 +145,14 @@ jobs:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
           fail-on-cache-miss: true
-      - if: steps.flagged.outputs.rerun == 'true'
+      - name: Rerun regressions
+        if: steps.flagged.outputs.rerun == 'true'
         run: |
           python3 corpus/upstream/inventory.py --output target/phpt/all.json
           corpus/upstream/recheck.sh shards target/phpt recheck --manifest target/phpt/all.json \
             --timeout 30 --external-network --php "$PWD/target/php-debug/bin/php"
-      - run: |
+      - name: Gate against upstream
+        run: |
           set -- shards/*.json
           if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-debug.json | tee -a "$GITHUB_STEP_SUMMARY"
@@ -152,5 +164,6 @@ jobs:
             phpt-debug.json
             flagged.txt
             recheck/
-      - if: needs.phpt.result != 'success'
+      - name: Check every shard reported
+        if: needs.phpt.result != 'success'
         run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1
