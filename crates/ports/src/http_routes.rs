@@ -232,7 +232,13 @@ pub mod exports {
                 // SAFETY: the decision appends only to a live fragment.
                 let buffer = unsafe { &mut *fragment };
                 // SAFETY: the payload's bytes.
-                unsafe { buffer.append(dispatch.data, decision.length) };
+                unsafe {
+                    swoole_rs_buffer::string::swr_string_append(
+                        buffer,
+                        dispatch.data,
+                        decision.length,
+                    );
+                }
                 if decision.action == Action::Finish {
                     #[expect(
                         clippy::cast_possible_truncation,

@@ -8,7 +8,9 @@
 //! without `--enable-trace-log`.
 use core::ffi::{c_int, c_void};
 use core::ptr;
-use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string, new_string};
+use swoole_rs_buffer::string::{
+    CppString, delete_string, new_sized_string, new_string, swr_string_append,
+};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
 use swoole_rs_http::{
@@ -119,7 +121,7 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
             // SAFETY: a live `swoole::String`.
             let string = unsafe { &mut *a.cast::<CppString>() };
             // SAFETY: `n` readable bytes at `b`.
-            unsafe { string.append(b, length) };
+            unsafe { swr_string_append(string, b, length) };
         }
         // SAFETY: a writable, NUL-terminated `XXXXXX` template.
         TMPFILE => return i64::from(unsafe { swoole_tmpfile(a.cast()) }).cast_unsigned(),
