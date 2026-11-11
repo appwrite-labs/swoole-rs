@@ -635,15 +635,6 @@ pub mod co {
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;
 
-    /// The socket's record.
-    /// # Safety
-    /// `socket` is live.
-    #[must_use]
-    pub unsafe fn record<'a>(socket: Socket) -> &'a mut CoSocket {
-        // SAFETY: per the caller; the socket is its record.
-        unsafe { &mut *socket.cast::<CoSocket>() }
-    }
-
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
     /// # Safety
     /// `hook` may be called with `arg` until then.

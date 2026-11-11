@@ -1146,7 +1146,7 @@ fn recv(call: &Call) {
         return call.set_bool(false);
     };
     let (eof_check, length_check, framing) = {
-        let record = conn.cli.record();
+        let record = conn.cli.get().record();
         (
             record.open_eof_check,
             record.open_length_check,
