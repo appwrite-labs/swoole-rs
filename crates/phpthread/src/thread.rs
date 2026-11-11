@@ -242,21 +242,18 @@ fn warn(message: &Message) {
 /// `setAffinity`/`getAffinity` (`HAVE_CPU_AFFINITY`: Linux here).
 pub mod thread_affinity {
     use super::{Call, message, warn};
-    use swoole_rs_phpprocess::CpuSet;
+    use swoole_rs_ossupport::CpuSet;
+    use swoole_rs_phpprocess::{cpu_set_from_array, cpu_set_to_array};
 
     pub(super) fn set(call: &Call) {
         let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
             return;
         };
-        let Some(set) = CpuSet::from_array(array) else {
+        let Some(set) = cpu_set_from_array(array) else {
             call.set_bool(false);
             return;
         };
-        // SAFETY: a valid cpu set.
-        if unsafe {
-            libc::pthread_setaffinity_np(super::me(), size_of::<libc::cpu_set_t>(), set.as_ptr())
-        } != 0
-        {
+        if set.set_thread() != 0 {
             warn(&message!("pthread_setaffinity_np() failed"));
             call.set_bool(false);
             return;
@@ -266,20 +263,12 @@ pub mod thread_affinity {
 
     pub(super) fn get(call: &Call) {
         let mut set = CpuSet::empty();
-        // SAFETY: `set` is writable.
-        if unsafe {
-            libc::pthread_getaffinity_np(
-                super::me(),
-                size_of::<libc::cpu_set_t>(),
-                set.as_mut_ptr(),
-            )
-        } < 0
-        {
+        if set.get_thread() < 0 {
             warn(&message!("pthread_getaffinity_np() failed"));
             call.set_bool(false);
             return;
         }
-        call.set_owned(set.to_array());
+        call.set_owned(cpu_set_to_array(&set));
     }
 
     super::handlers! {

@@ -7,7 +7,7 @@ use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
-    E_ERROR,
+    E_ERROR, Owned, Value,
     bailout::{self, Bailout},
     sys::{swr_zval_stringl, zval, zval_ptr_dtor},
 };
@@ -400,15 +400,13 @@ impl Socket {
     /// `php_swoole_socket_set_ssl(socket, settings)`.
     /// # Errors
     /// A warning's error handler bailed out.
-    /// # Safety
-    /// `settings` is a live array.
-    pub(crate) unsafe fn set_ssl(&self, settings: *mut zval) -> Result<bool, Bailout> {
-        let socket = self.raw();
+    pub(crate) fn set_ssl(&self, settings: &Value) -> Result<bool, Bailout> {
+        let (socket, settings) = (self.raw(), settings.as_ptr());
         let mut applied = false;
         let apply = || {
             if let Some(families) = swoole_rs_phpswoole::families() {
-                // SAFETY: a live socket and, per the caller, settings array;
-                // crates/phpclients' settings apply the SSL ones (2).
+                // SAFETY: a live socket and settings value, which crates/phpclients
+                // ignores unless it is an array; its settings apply the SSL ones (2).
                 applied = unsafe { (families.socket_settings)(socket, settings, 2) };
             }
         };
@@ -419,12 +417,12 @@ impl Socket {
     }
 }
 
-/// `openssl_x509_read(pem)` into `retval`, which the caller then owns.
+/// `openssl_x509_read(pem)`.
 /// # Errors
 /// The call bailed out.
-/// # Safety
-/// `retval` is writable.
-pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bailout> {
+pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
+    let certificate = Owned::default();
+    let retval = certificate.as_ptr();
     let read = || {
         // SAFETY: zero is an undefined zval, which the next line fills.
         let mut string: zval = unsafe { std::mem::zeroed() };
@@ -445,8 +443,10 @@ pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bail
         // SAFETY: the string this body made.
         unsafe { zval_ptr_dtor(&raw mut string) };
     };
-    // SAFETY: the body holds the borrowed bytes, a plain zval and the caller's slot.
-    unsafe { bailout::trap_with(read) }
+    // SAFETY: the body holds the borrowed bytes, a plain zval and the slot of
+    // `certificate`, which lives outside it.
+    unsafe { bailout::trap_with(read) }?;
+    Ok(certificate)
 }
 
 /// How a warning is raised.

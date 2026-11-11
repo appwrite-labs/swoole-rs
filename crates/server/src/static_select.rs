@@ -179,15 +179,10 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         exchange.send(SEND_DATA, &body);
         return true;
     }
-    // Upstream reads both as one call's arguments: GCC (Linux) evaluates them
-    // right to left, clang left to right.
-    let (range, if_range) = if cfg!(target_os = "linux") {
-        let if_range = exchange.header(b"If-Range");
-        (exchange.header(b"Range"), if_range)
-    } else {
-        (exchange.header(b"Range"), exchange.header(b"If-Range"))
-    };
-    handler.parse_range(c_text(&range), c_text(&if_range));
+    // Upstream reads both as one call's arguments, in an order C++ leaves to the
+    // compiler; this reads them in source order.
+    let range = exchange.header(b"Range");
+    handler.parse_range(c_text(&range), c_text(&exchange.header(b"If-Range")));
     let tasks = handler.tasks();
     let status = handler.status();
     let message = swoole_rs_http::status_message(status);
@@ -370,6 +365,7 @@ mod tests {
     use core::cell::{Cell, RefCell};
     use std::ffi::{c_char, c_void};
     use swoole_rs_http::HttpStaticTask;
+    use swoole_rs_oracle::http_static_context::swr_oracle_static_arguments_left_to_right;
     use swoole_rs_oracle::http_static_select::{Scenario, Task, Text, swr_oracle_static_select};
 
     const OK: i32 = 200;
@@ -660,6 +656,15 @@ mod tests {
         let mut lines: Vec<Vec<u8>> = Vec::new();
         let result =
             unsafe { swr_oracle_static_select(&raw const scenario, line, (&raw mut lines).cast()) };
+        // parse_range's two header reads in source order, whichever order the
+        // shim's compiler gave them (GCC on x86 goes right to left).
+        if unsafe { swr_oracle_static_arguments_left_to_right() } == 0 {
+            for i in 1..lines.len() {
+                if lines[i - 1] == b"R:If-Range" && lines[i] == b"R:Range" {
+                    lines.swap(i - 1, i);
+                }
+            }
+        }
         (result, lines)
     }
 

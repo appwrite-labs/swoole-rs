@@ -23,6 +23,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::{self, strerror};
 use swoole_rs_reactor::{
     CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketFields, SocketRecord,
     swr_v1_reactor_iov_view, type_is,
@@ -201,16 +202,13 @@ unsafe fn remaining(vector: *const c_void) -> usize {
     usize::try_from(count).unwrap_or(0)
 }
 
-use swoole_rs_corebase::sys::strerror;
-
 /// A descriptor `Socket::sendfile` opened, closed when it goes.
 struct OpenFile(c_int);
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
         if self.0 != -1 {
-            // SAFETY: the descriptor this owns.
-            unsafe { libc::close(self.0) };
+            sys::close(self.0);
         }
     }
 }
@@ -562,7 +560,7 @@ impl Co {
     }
 
     /// `Socket::recv(buf, n)`.
-    pub fn recv(self, buf: &mut [u8]) -> isize {
+    pub fn recv(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::recv(&ops, buf);
@@ -707,8 +705,7 @@ impl Co {
         if !available(self, WRITE) {
             return false;
         }
-        // SAFETY: a NUL-terminated path.
-        let file = OpenFile(unsafe { libc::open(filename.as_ptr(), libc::O_RDONLY) });
+        let file = OpenFile(sys::open(filename, libc::O_RDONLY, 0));
         let name = filename.to_string_lossy();
         if file.0 == -1 {
             let error = errno();
@@ -716,14 +713,11 @@ impl Co {
             return false;
         }
         let end = if length == 0 {
-            // SAFETY: a stat record is plain data.
-            let mut stat: libc::stat = unsafe { core::mem::zeroed() };
-            // SAFETY: the open descriptor, into the local record.
-            if unsafe { libc::fstat(file.0, &raw mut stat) } != 0 {
+            let Some(stat) = sys::fstat(file.0) else {
                 let error = errno();
                 self.set_err_text(error, &format!("fstat({name}) failed, {}", strerror(error)));
                 return false;
-            }
+            };
             usize::try_from(stat.st_size).unwrap_or(0)
         } else {
             length.wrapping_add(usize::try_from(offset).unwrap_or(0))
@@ -861,7 +855,7 @@ impl Co {
 
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`.
     /// The socket is open.
-    pub fn peek(self, buf: &mut [u8]) -> isize {
+    pub fn peek(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
         // SAFETY: the open socket's network::Socket, into the caller's buffer.
         let result = unsafe { socket_peek(self.socket(), buf.as_mut_ptr().cast(), buf.len(), 0) };
         check(self, result);

@@ -1,5 +1,5 @@
 //! `System::exec(command, get_error_stream, buffer, status)`: run `command` under
-//! `/bin/sh -c` and read its output into `buffer` through a coroutine socket over the
+//! `/bin/sh -c` and read its output through a coroutine socket over the
 //! pipe, as upstream does, then reap the child.
 use core::ffi::{CStr, c_char, c_int};
 use swoole_rs_buffer::string::CppString;
@@ -9,15 +9,18 @@ use swoole_rs_reactor::wait_upstream::system_waitpid_safe;
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
 const OUT_OF_COROUTINE: c_int = 10001;
 
-/// Reads `command`'s output onto `buffer`, doubling it whenever it fills, until the
-/// pipe's end, a read error, the socket's read timeout or a cancel. True when the
-/// child was reaped. The socket's readable event resumes this coroutine at once, as
-/// upstream's does, so the reap runs before the same loop pass dispatches the child's
-/// SIGCHLD. A deferred resume let the SIGCHLD handler that a coroutine `waitPid`
-/// installs reap the child first, and exec then failed.
+/// The most one read takes from the pipe: a Linux pipe's default capacity.
+const CHUNK: usize = 1 << 16;
+
+/// Reads `command`'s output until the pipe's end, a read error, the socket's read
+/// timeout or a cancel; the output once the child was reaped. The socket's readable
+/// event resumes this coroutine at once, as upstream's does, so the reap runs before
+/// the same loop pass dispatches the child's SIGCHLD. A deferred resume let the
+/// SIGCHLD handler that a coroutine `waitPid` installs reap the child first, and exec
+/// then failed.
 ///
 /// Outside a coroutine it raises upstream's fatal error, which does not return.
-pub fn exec(command: &CStr, errors: bool, buffer: &mut CppString, status: &mut c_int) -> bool {
+pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>> {
     if swoole_rs_coroutine::current().is_null() {
         // SAFETY: Swoole's fatal error hook; this frame owns nothing.
         unsafe {
@@ -36,22 +39,23 @@ pub fn exec(command: &CStr, errors: bool, buffer: &mut CppString, status: &mut c
             c"exec",
             format_args!("Unable to execute '{}'", command.to_string_lossy()),
         );
-        return false;
+        return None;
     }
     // `SocketImpl socket(fd, SW_SOCK_UNIX_STREAM)`, which takes the pipe.
     let socket = crate::co_socket::make(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0, false);
+    let mut output = Vec::new();
+    let mut chunk = vec![0; CHUNK];
     loop {
-        let read = socket.read(buffer.spare());
-        if read <= 0 {
+        let read = socket.read(&mut chunk);
+        let Some(filled) = usize::try_from(read).ok().filter(|&n| n > 0) else {
             break;
-        }
-        // SAFETY: the read filled the `read` spare bytes after the content.
-        unsafe { buffer.grow(read.unsigned_abs()) };
+        };
+        output.extend_from_slice(chunk.get(..filled).unwrap_or_default());
     }
     socket.close();
     // SAFETY: the socket `make` made, which nothing uses afterwards.
     unsafe { crate::co_socket::swr_v1_hook_co_socket_free(socket.this()) };
-    system_waitpid_safe(pid, Some(status), 0) == pid
+    (system_waitpid_safe(pid, Some(status), 0) == pid).then_some(output)
 }
 
 /// `std::shared_ptr<T>`'s layout in libc++ and libstdc++: the object, then the
@@ -87,5 +91,7 @@ pub unsafe extern "C" fn system_exec(
     let command = unsafe { CStr::from_ptr(command) };
     // SAFETY: the shared_ptr names a live String.
     let string = unsafe { &mut *buffer.object };
-    exec(command, errors, string, status)
+    exec(command, errors, status)
+        .map(|output| string.append(&output))
+        .is_some()
 }

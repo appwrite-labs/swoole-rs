@@ -58,8 +58,9 @@ pub fn swr_v1_hooks_sleep(seconds: i64, coroutine_sleep: Option<CoroutineSleep>)
             clippy::cast_possible_truncation,
             reason = "upstream's (unsigned int) num"
         )]
-        // SAFETY: sleep(3) has no preconditions.
-        None => i64::from(unsafe { libc::sleep(seconds.cast_unsigned() as u32) }),
+        None => i64::from(swoole_rs_corebase::sys::sleep(
+            seconds.cast_unsigned() as u32
+        )),
     };
     SleepOutcome {
         value,
@@ -86,8 +87,7 @@ pub fn swr_v1_hooks_usleep(
             reason = "upstream's (unsigned int) num"
         )]
         None => {
-            // SAFETY: usleep(3) has no preconditions.
-            unsafe { libc::usleep(microseconds.cast_unsigned() as u32) };
+            swoole_rs_corebase::sys::usleep(microseconds.cast_unsigned() as u32);
         }
     }
     SleepOutcome::default()
@@ -125,8 +125,7 @@ pub fn swr_v1_hooks_nanosleep(
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: both timespecs are locals; nanosleep reads one and writes the other.
-    if unsafe { libc::nanosleep(&raw const request, &raw mut remaining) } == 0 {
+    if swoole_rs_corebase::sys::nanosleep(&request, &mut remaining) == 0 {
         return SleepOutcome::default();
     }
     match std::io::Error::last_os_error().raw_os_error() {
