@@ -55,8 +55,7 @@ pub(crate) fn co_socket_cast(object: &Value) -> Option<(c_int, c_int)> {
     if class.is_null() || !unsafe { swr_zend_instanceof(ce, class) } {
         return None;
     }
-    // SAFETY: a live Coroutine\Socket zval.
-    let socket = unsafe { swoole_rs_phpclients::get_socket(object.as_ptr()) };
+    let socket = swoole_rs_phpclients::get_socket(object);
     if socket.is_null() {
         return Some((-1, 0));
     }
