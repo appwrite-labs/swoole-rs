@@ -602,7 +602,7 @@ impl Co {
     /// `Socket::readv(io_vector)` or `writev`, or with `all` `readv_all` or
     /// `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &IoVector, write: bool, all: bool) -> isize {
+    pub fn vector(self, vector: &mut IoVector, write: bool, all: bool) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::swr_v1_hook_uring_vector(&ops, vector, write, all);
