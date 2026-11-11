@@ -672,6 +672,13 @@ mod tests {
             let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
             assert!(set_text(owner, Text::KeyFile, manifest.as_bytes()));
             assert_eq!(has_files(&*owner), (false, true));
+            // access(2) reads the path up to its first NUL, and the slot keeps every byte.
+            let cut = [manifest.as_bytes(), b"\0tail"].concat();
+            assert!(set_text(owner, Text::KeyFile, &cut));
+            assert_eq!(text(5), cut);
+            let missing = [b"/nonexistent/key.pem\0", manifest.as_bytes()].concat();
+            assert!(!set_text(owner, Text::KeyFile, &missing));
+            assert_eq!(text(5), cut, "a refused path leaves the slot as it was");
             set_value(owner, Value::Protocols(1 << 3));
             set_value(owner, Value::VerifyDepth(7));
             set_value(owner, Value::VerifyPeer(true));
