@@ -641,7 +641,7 @@ mod tests {
         config.open_tcp_keepalive = true;
         config.tcp_user_timeout = 5;
         assert_eq!(listen(at), 0, "listened");
-        let fd = unsafe { view::port_fd(at) };
+        let fd = unsafe { view::Port::from_raw(at) }.map_or(-1, view::Port::fd);
         assert!(config.listening, "published");
         assert_eq!(
             unsafe { (*config.socket.cast::<SocketRecord>()).fields.listened },

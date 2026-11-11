@@ -311,9 +311,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_COUNT => ctx.ports().len() as u64,
         OP_PORT_DEL => {
             let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
-            // SAFETY: one of the server's live ports.
-            let sock = unsafe { view::port_socket(port) }?;
-            ctx.reactor().del(sock);
+            port.with_socket(|sock| ctx.reactor().del(sock))?;
             0
         }
         OP_ARM_EXIT => {
@@ -365,7 +363,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 impl Context {
     /// `serv->ports`.
-    fn ports(&self) -> &[*mut c_void] {
+    fn ports(&self) -> &[view::Port<'_>] {
         self.server().ports()
     }
 }

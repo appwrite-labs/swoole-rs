@@ -202,21 +202,14 @@ fn close(server: view::Server<'_>, fd: zend_long, reset: bool) -> bool {
 /// the session is gone (`get_port_by_session_id`).
 fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
     let conn = server.by_session(fd)?;
-    let port = server.port_by_fd(conn.fd);
-    // SAFETY: a live port.
-    (!port.is_null()).then(|| unsafe { view::port(port) }.websocket_frames)
+    server.port_of_fd(conn.fd).map(|port| port.websocket_frames)
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
-fn port_protocol<'a>(server: view::Server<'_>, server_fd: c_int) -> &'a [u8] {
-    let port = server.port_by_server_fd(server_fd);
-    if port.is_null() {
-        return &[];
-    }
-    // SAFETY: a live port, whose settings outlive the handshake.
-    unsafe { view::port(port) }
-        .websocket_protocol
-        .as_deref()
+fn port_protocol(server: view::Server<'_>, server_fd: c_int) -> &[u8] {
+    server
+        .port_of_server_fd(server_fd)
+        .and_then(|port| port.websocket_protocol.as_deref())
         .map_or(&[], Vec::as_slice)
 }
 
