@@ -1039,21 +1039,21 @@ impl Drop for Owned {
 impl Value {
     /// `zval_ptr_dtor`. An object, or an array or reference that may hold one, can
     /// run PHP code there (`__destruct` on the last reference, or the cycle
-    /// collector a possible root starts), so it is released inside `zend_try` and
-    /// a bailout is deferred; anything else runs none.
+    /// collector a possible root starts), and so can a resource (a user stream's
+    /// `stream_close`), so these are released inside `zend_try` and a bailout is
+    /// deferred. A string runs none, and types below it are scalars, never counted.
     /// # Safety
     /// The caller gives the value up.
     #[inline]
     pub(crate) unsafe fn release(&self) {
-        if matches!(self.kind(), IS_OBJECT | IS_ARRAY | IS_REFERENCE) {
+        if self.kind() == IS_STRING {
             // SAFETY: a live value, as the caller promises.
+            unsafe { zval_ptr_dtor(self.as_ptr()) };
+        } else if self.kind() > IS_STRING {
+            // SAFETY: as above.
             bailout::defer(bailout::trapped(unsafe {
                 swr_zend_try_ptr_dtor(self.as_ptr())
             }));
-        } else if self.kind() >= IS_STRING {
-            // Types below `IS_STRING` are scalars, never counted.
-            // SAFETY: as above.
-            unsafe { zval_ptr_dtor(self.as_ptr()) };
         }
     }
 }
