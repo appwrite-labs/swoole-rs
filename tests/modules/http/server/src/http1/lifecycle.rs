@@ -1234,6 +1234,17 @@ fn kill_worker_2() {
     );
 }
 
+/// `TEST(server, kill_worker_3)`.
+fn kill_worker_3() {
+    test_kill_worker(
+        MODE_THREAD,
+        Options {
+            reload_async: true,
+            ..OPTIONS
+        },
+    );
+}
+
 /// `TEST(server, kill_worker_4)`.
 fn kill_worker_4() {
     test_kill_worker(
@@ -1249,6 +1260,17 @@ fn kill_worker_4() {
 fn kill_worker_5() {
     test_kill_worker(
         MODE_PROCESS,
+        Options {
+            reload_async: false,
+            ..OPTIONS
+        },
+    );
+}
+
+/// `TEST(server, kill_worker_6)`.
+fn kill_worker_6() {
+    test_kill_worker(
+        MODE_THREAD,
         Options {
             reload_async: false,
             ..OPTIONS
@@ -1762,9 +1784,9 @@ unsafe extern "C" fn clean_worker_start(_: *mut c_void, serv: *mut c_void, _: *m
 
 unsafe extern "C" fn ignore_worker(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {}
 
-/// `TEST(server, clean_worker_1)`: `test_clean_worker(Server::MODE_BASE)`.
-fn clean_worker_1() {
-    let serv = Server::new(MODE_BASE);
+/// `test_clean_worker(mode)`.
+fn test_clean_worker(mode: c_int) {
+    let serv = Server::new(mode);
     serv.config().worker_num = 2;
 
     counter_init();
@@ -1798,6 +1820,16 @@ fn clean_worker_1() {
     serv.delete();
 }
 
+/// `TEST(server, clean_worker_1)`.
+fn clean_worker_1() {
+    test_clean_worker(MODE_BASE);
+}
+
+/// `TEST(server, clean_worker_2)`.
+fn clean_worker_2() {
+    test_clean_worker(MODE_THREAD);
+}
+
 pub const CASES: &[(&str, fn())] = &[
     ("base", base),
     ("process", process),
@@ -1816,12 +1848,15 @@ pub const CASES: &[(&str, fn())] = &[
     ("reload_thread_3", reload_thread_3),
     ("kill_worker_1", kill_worker_1),
     ("kill_worker_2", kill_worker_2),
+    ("kill_worker_3", kill_worker_3),
     ("kill_worker_4", kill_worker_4),
     ("kill_worker_5", kill_worker_5),
+    ("kill_worker_6", kill_worker_6),
     ("worker_exit", worker_exit),
     ("shutdown_event", shutdown_event),
     ("kill_self", kill_self),
     ("clean_worker_1", clean_worker_1),
+    ("clean_worker_2", clean_worker_2),
     ("reload_all_from_worker_error", reload_all_from_worker_error),
     (
         "reload_tasks_from_worker_error",
