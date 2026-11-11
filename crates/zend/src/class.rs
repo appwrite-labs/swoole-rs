@@ -19,6 +19,9 @@ pub struct Class {
     entry: AtomicPtr<zend_class_entry>,
     /// Leaked at the first registration: a handler's object check is one load.
     handlers: AtomicPtr<zend_object_handlers>,
+    /// A [`CustomClass`](crate::CustomClass)'s, whose objects only
+    /// [`Minit::register_object`](crate::Minit::register_object)'s handlers lay out.
+    pub(crate) custom: bool,
 }
 
 impl Default for Class {
@@ -30,9 +33,15 @@ impl Default for Class {
 impl Class {
     #[must_use]
     pub const fn new() -> Self {
+        Self::of(false)
+    }
+
+    /// A class, a [`CustomClass`](crate::CustomClass)'s when `custom`.
+    pub(crate) const fn of(custom: bool) -> Self {
         Self {
             entry: AtomicPtr::new(ptr::null_mut()),
             handlers: AtomicPtr::new(ptr::null_mut()),
+            custom,
         }
     }
 

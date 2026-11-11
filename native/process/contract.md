@@ -34,7 +34,7 @@ operation's context and answers its ops. Decisions it keeps from upstream:
   Native sizes the buffer first (upstream did so after a successful open), then
   logs the open/pread warnings and builds the packet.
 - The signal table (upstream `src/os/signal.cc`; facades in
-  `crates/reactor/src/signal_upstream.rs`) is `swr_v1_signals` (`crates/process/src/signal.rs`),
+  `crates/reactor/src/signal_upstream.rs`) is `SIGNALS` (`crates/process/src/signal.rs`),
   which the kqueue path shares (a slot is the kqueue event's udata);
   `native/process/swoole_signal.h` keeps the signal functions C++ still calls. Rust registers handlers through sigaction, runs the deferred and
   immediate async handlers (atomic stores; the immediate one calls

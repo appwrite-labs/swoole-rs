@@ -1327,6 +1327,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "libc's strncasecmp is a foreign call")]
+    fn form_bodies_follow_upstreams_methods() {
+        // request_header takes llhttp's method numbers.
+        for method in 0..=u8::MAX {
+            let action = request_header(
+                b"Content-Type",
+                b"multipart/form-data",
+                method,
+                false,
+                false,
+            );
+            let form = matches!(
+                llhttp::method_name(method),
+                "POST" | "PUT" | "DELETE" | "PATCH" | "QUERY"
+            );
+            assert_eq!(action == RequestHeader::Multipart, form, "{method}");
+        }
+    }
+
+    #[test]
     fn keys_are_upstreams_known_strings() {
         assert_eq!(KEY_NAMES[Key::RequestMethod as usize], b"request_method");
         assert_eq!(KEY_NAMES[Key::Http11 as usize], b"HTTP/1.1");

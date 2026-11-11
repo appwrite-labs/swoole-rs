@@ -15,7 +15,6 @@ use super::socket::{
     SW_SOCK_TCP6, SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM, TEST_HOST, TEST_HTTP_EXPECT,
     TEST_HTTPS_EXPECT, TEST_PORT, TEST_REQUEST_BAIDU, TLS_HOST_NAME, TlsPrepared, contains,
     get_random_port, http_get_request, is_github_ci, swr_v1_core_string_set, swr_v1_tls_owner_new,
-    tls_warning,
 };
 use super::{
     _exit, AF_INET, CppString, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR,
@@ -533,7 +532,7 @@ impl<'a> Client<'a> {
     /// `set_tls_host_name(name)`: a fresh `SSLContext`'s view with the name set, assigned
     /// to the client's (whose other values are still a fresh one's).
     fn set_tls_host_name(&self, name: &str) {
-        let prepared: TlsPrepared = swr_v1_tls_owner_new(tls_warning);
+        let prepared: TlsPrepared = swr_v1_tls_owner_new();
         // SAFETY: the fresh owner's live fields and slot, then the client's live owner.
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
@@ -959,8 +958,8 @@ fn sleep() {
 }
 
 fn sleep_2() {
-    // __LINE__ + TEST_PORT
-    let port = 384 + TEST_PORT;
+    // __LINE__ + TEST_PORT, upstream's line.
+    let port = 385 + TEST_PORT;
     let server_pid = tcp_server(TEST_HOST, port, |_| {
         // SAFETY: usleep(3).
         unsafe { usleep(10000) };

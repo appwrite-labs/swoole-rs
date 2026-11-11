@@ -66,8 +66,6 @@ job fails if one rises more than 2% (noise) above its record.
 - Speed work keeps or grows Rust's share. The default fix moves the whole
   operation, decision and effect, into Rust (#366). Handing code back to
   upstream is only for glue in which Rust decided nothing, and the PR says so.
-- Within 5% of upstream is the target for Phase 6, when Rust owns the event
-  loop and the HTTP path end to end.
 
 ### Data layout
 
@@ -98,17 +96,13 @@ A use that must stay (output order PHP can see, a cold path) keeps the `expect`.
 `crates/ext` builds Rust and `native/`, whose `swoole-src/` owns the bundled
 `thirdparty/` C that has no Rust replacement; the build reads nothing from the pin.
 
-Phases 1 to 3 and 5 are done: green baseline ([#20](https://github.com/appwrite-labs/swoole-rs/issues/20)),
+Phases 1 to 5 are done: green baseline ([#20](https://github.com/appwrite-labs/swoole-rs/issues/20)),
 wider oracle ([#58](https://github.com/appwrite-labs/swoole-rs/issues/58)), graduate and
-delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)) and the Zend surface
-([#754](https://github.com/appwrite-labs/swoole-rs/issues/754)). Open:
-
-- **Phase 4, deepen thin modules** ([#439](https://github.com/appwrite-labs/swoole-rs/issues/439)).
-  Process, hooks, coroutine, reactor and clients move from Rust policy over
-  C++ mechanisms to Rust mechanisms.
-- **Phase 6, speed** ([#366](https://github.com/appwrite-labs/swoole-rs/issues/366)). The
-  Cargo build is within 5% of upstream on every callgrind workload;
-  `benchmarks/callgrind_limits` records where it stands.
+delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)), deepen thin modules
+([#439](https://github.com/appwrite-labs/swoole-rs/issues/439)) and the Zend surface
+([#754](https://github.com/appwrite-labs/swoole-rs/issues/754)). Speed is
+[#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894): at or below upstream on every
+callgrind workload; `benchmarks/callgrind_limits` records where it stands.
 
 ### Upstream files still in the build
 

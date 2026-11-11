@@ -90,14 +90,6 @@ pub struct BusRead {
     pub event: u8,
 }
 
-/// Writes `count` iovecs to `socket`; never bails out.
-type BusSend =
-    unsafe extern "C" fn(socket: *mut c_void, iov: *const libc::iovec, count: usize) -> isize;
-/// The next message id (`MessageBus`'s `id_generator_`).
-type BusNextId = unsafe extern "C" fn(context: *mut c_void) -> u64;
-/// Whether the failed write's errno asks for smaller chunks (`SW_REDUCE_SIZE`).
-type BusReduce = unsafe extern "C" fn(socket: *mut c_void) -> bool;
-
 struct Packet {
     data: *mut u8,
     length: usize,
@@ -141,8 +133,8 @@ pub struct Bus {
     packets: HashMap<u64, Packet, BuildHasherDefault<IdHasher>>,
     /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes.
     pipe_sockets: Vec<*mut SocketRecord>,
-    /// `id_generator_`: what numbers each written message.
-    next_id: Option<(BusNextId, *mut c_void)>,
+    /// `id_generator_`: the counter that numbers each written message.
+    next_id: Option<&'static AtomicU64>,
 }
 
 impl Drop for Bus {
@@ -194,12 +186,8 @@ fn errno() -> c_int {
 }
 
 /// `Socket::catch_read_error(errno) == SW_WAIT`.
-///
-/// # Safety
-/// `nobufs` is writable.
-unsafe fn waits(nobufs: *mut bool) -> bool {
-    // SAFETY: the caller lends a writable bool.
-    unsafe { swoole_rs_reactor::catch_error(errno(), &mut *nobufs) == WAIT }
+fn waits(nobufs: &mut bool) -> bool {
+    swoole_rs_reactor::catch_error(errno(), nobufs) == WAIT
 }
 
 impl Bus {
@@ -315,13 +303,13 @@ impl Bus {
     /// (or allocate, see `state.event`), -1 an error.
     ///
     /// # Safety
-    /// The buffer is set; `nobufs` is writable.
+    /// The buffer is set.
     unsafe fn read(
         &mut self,
         fd: c_int,
         dgram: bool,
         state: &mut BusRead,
-        nobufs: *mut bool,
+        nobufs: &mut bool,
     ) -> isize {
         state.event = 0;
         loop {
@@ -336,8 +324,7 @@ impl Bus {
                     unsafe { libc::recv(fd, self.buffer.cast(), HEAD, libc::MSG_PEEK) }
                 };
                 if n < 0 {
-                    // SAFETY: the caller lends `nobufs`.
-                    return if unsafe { waits(nobufs) } { 0 } else { -1 };
+                    return if waits(nobufs) { 0 } else { -1 };
                 }
                 if n == 0 {
                     state.event = BUS_CLOSED;
@@ -403,8 +390,7 @@ impl Bus {
                     state.event = BUS_READV_CLOSED;
                     return -1;
                 }
-                // SAFETY: the caller lends `nobufs`.
-                if n < 0 && unsafe { waits(nobufs) } {
+                if n < 0 && waits(nobufs) {
                     return 0;
                 }
                 if n > 0 {
@@ -443,16 +429,17 @@ impl Bus {
     /// `MessageBus::write`: one direct write, or chunks of at most the buffer's
     /// payload, halved down to `SW_IPC_MSG_MIN` while the pipe asks for less.
     ///
+    /// `send` writes the iovecs to the pipe and never bails out; `reduce` says
+    /// whether the failed write's errno asks for smaller chunks (`SW_REDUCE_SIZE`).
+    ///
     /// # Safety
-    /// `head` is writable; `data` covers `head.len` bytes or is null; `send` and
-    /// `reduce` are valid for `socket`.
+    /// `data` covers `head.len` bytes or is null.
     unsafe fn write(
         &self,
-        socket: *mut c_void,
         head: &mut BusHead,
         data: *const u8,
-        send: BusSend,
-        reduce: BusReduce,
+        mut send: impl FnMut(&[libc::iovec]) -> isize,
+        mut reduce: impl FnMut() -> bool,
     ) -> bool {
         let maximum = u32::try_from(self.buffer_size - HEAD).unwrap_or(u32::MAX);
         let Some(mut writer) = BusWriter::new(
@@ -485,16 +472,14 @@ impl Bus {
                 },
             ];
             let count = if chunk.mode == EMPTY { 1 } else { 2 };
-            // SAFETY: the caller's send for `socket`, over the header and its payload.
-            let sent = unsafe { send(socket, iov.as_ptr(), count) };
+            let sent = send(iov.get(..count).unwrap_or_default());
             // Chunks accept any nonnegative write; direct writes need every byte.
             let success = if chunk.mode == CHUNKS {
                 sent >= 0
             } else {
                 sent.cast_unsigned() == HEAD + chunk.length as usize
             };
-            // SAFETY: the caller's classifier for `socket`, right after its send.
-            let smaller = !success && chunk.mode != EMPTY && unsafe { reduce(socket) };
+            let smaller = !success && chunk.mode != EMPTY && reduce();
             if writer.complete(success, smaller) < 0 {
                 return false;
             }
@@ -703,13 +688,7 @@ impl Bus {
     /// `MessageBus::count_ids`: numbers each message written from `counter`, an
     /// atomic `sw_atomic_long_t` that buses in other processes may share.
     pub fn count_ids(&mut self, counter: &'static AtomicU64) {
-        /// # Safety
-        /// `counter` is the `&'static AtomicU64` `count_ids` was given.
-        unsafe extern "C" fn next(counter: *mut c_void) -> u64 {
-            // SAFETY: the caller's contract.
-            unsafe { &*counter.cast::<AtomicU64>() }.fetch_add(1, Ordering::SeqCst)
-        }
-        self.next_id = Some((next, ptr::from_ref(counter).cast_mut().cast()));
+        self.next_id = Some(counter);
     }
 
     /// `MessageBus::write`: numbers the message, then writes it through the event
@@ -723,40 +702,33 @@ impl Bus {
         head: &mut BusHead,
         data: *const u8,
     ) -> bool {
-        /// # Safety
-        /// `socket` is a live record and `iov` denotes `count` readable iovecs.
-        unsafe extern "C" fn send(
-            socket: *mut c_void,
-            iov: *const libc::iovec,
-            count: usize,
-        ) -> isize {
-            use swoole_rs_reactor::event_api;
+        use swoole_rs_reactor::event_api;
+        // `write` passes iovecs over `head` and the caller's bytes.
+        let send = |iov: &[libc::iovec]| {
             if event_api::swoole_event_is_available() {
-                // SAFETY: the write's live record and iovecs, on the thread's live loop.
-                unsafe { event_api::swoole_event_writev(socket.cast(), iov, count) }
+                // SAFETY: the caller's live record and the write's iovecs, on the
+                // thread's live loop.
+                unsafe { event_api::swoole_event_writev(socket.cast(), iov.as_ptr(), iov.len()) }
             } else {
-                // SAFETY: the write's live record and iovecs.
-                unsafe { writev_sync(socket.cast(), iov, count) }
+                // SAFETY: the caller's live record and the write's iovecs.
+                unsafe { writev_sync(socket, iov.as_ptr(), iov.len()) }
             }
-        }
-        /// # Safety
-        /// `socket` is a live record.
-        unsafe extern "C" fn reduce(socket: *mut c_void) -> bool {
+        };
+        let reduce = || {
             let error = errno();
-            // SAFETY: the write's live record.
-            let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+            // SAFETY: the caller's live record.
+            let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
                 return false;
             };
             socket.edit(|record| {
                 swoole_rs_reactor::catch_pipe_error(error, &mut record.kernel_nobufs)
             }) == REDUCE_SIZE
-        }
-        if let Some((next, context)) = self.next_id {
-            // SAFETY: the counter `count_ids` set for this bus.
-            head.msg_id = unsafe { next(context) };
+        };
+        if let Some(counter) = self.next_id {
+            head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
         }
         // SAFETY: the caller's contract.
-        unsafe { self.write(socket.cast(), head, data, send, reduce) }
+        unsafe { self.write(head, data, send, reduce) }
     }
 
     /// `MessageBus::init_pipe_socket`: this bus's own nonblocking record of the pipe
@@ -815,13 +787,22 @@ mod tests {
     }
 
     #[test]
-    fn count_ids_takes_each_id_from_the_shared_counter() {
+    fn send_numbers_each_message_from_the_shared_counter() {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let mut bus = Bus::create(64);
-        bus.count_ids(&COUNTER);
-        let (next, context) = bus.next_id.unwrap();
-        assert_eq!(unsafe { next(context) }, 1);
-        assert_eq!(unsafe { next(context) }, 2);
+        let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
+        pipe.bus.count_ids(&COUNTER);
+        let mut socket = SocketRecord::with_fd(pipe.fds[0], /* SW_FD_PIPE */ 3);
+        for (expected, payload) in [(1, b"one".as_slice()), (2, b"two".as_slice())] {
+            let mut head = BusHead {
+                msg_id: 99,
+                len: u32::try_from(payload.len()).unwrap(),
+                fd: 7,
+                ..BusHead::default()
+            };
+            assert!(unsafe { pipe.bus.send(&raw mut socket, &mut head, payload.as_ptr()) });
+            assert_eq!(head.msg_id, expected);
+            assert_eq!(pipe.read(false).as_deref(), Some(payload));
+        }
         assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
     }
     struct Static(Allocator);
@@ -832,14 +813,6 @@ mod tests {
         realloc: ptr::null(),
         free,
     });
-
-    unsafe extern "C" fn send(socket: *mut c_void, iov: *const libc::iovec, count: usize) -> isize {
-        let fd = RawFd::try_from(socket as usize).unwrap();
-        unsafe { libc::writev(fd, iov, c_int::try_from(count).unwrap()) }
-    }
-    unsafe extern "C" fn never(_: *mut c_void) -> bool {
-        false
-    }
 
     struct Pipe {
         bus: Bus,
@@ -887,8 +860,11 @@ mod tests {
             } else {
                 payload.as_ptr()
             };
-            let socket = self.fds[0].cast_unsigned() as usize as *mut c_void;
-            unsafe { self.bus.write(socket, &mut head, data, send, never) }
+            let fd = self.fds[0];
+            let send = |iov: &[libc::iovec]| unsafe {
+                libc::writev(fd, iov.as_ptr(), c_int::try_from(iov.len()).unwrap())
+            };
+            unsafe { self.bus.write(&mut head, data, send, || false) }
         }
         /// Reads until a packet completes, allocating like the native facade.
         fn read(&mut self, dgram: bool) -> Option<Vec<u8>> {
@@ -903,10 +879,7 @@ mod tests {
             };
             let mut nobufs = false;
             loop {
-                let n = unsafe {
-                    self.bus
-                        .read(self.fds[1], dgram, &mut state, &raw mut nobufs)
-                };
+                let n = unsafe { self.bus.read(self.fds[1], dgram, &mut state, &mut nobufs) };
                 if state.event == BUS_ALLOCATE {
                     let data = unsafe { libc::realloc(state.data, state.size) };
                     let allocator = (&raw const ALLOCATOR.0).cast();
@@ -985,10 +958,7 @@ mod tests {
         };
         let mut nobufs = false;
         assert_eq!(
-            unsafe {
-                pipe.bus
-                    .read(pipe.fds[1], false, &mut state, &raw mut nobufs)
-            },
+            unsafe { pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) },
             0
         );
         assert_eq!((state.event, state.size), (BUS_ALLOCATE, 5000));
@@ -996,12 +966,7 @@ mod tests {
         let allocator = (&raw const ALLOCATOR.0).cast();
         unsafe { pipe.bus.adopt(data, state.size, allocator) };
         assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
-        assert!(
-            unsafe {
-                pipe.bus
-                    .read(pipe.fds[1], false, &mut state, &raw mut nobufs)
-            } > 0
-        );
+        assert!(unsafe { pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) } > 0);
         assert_eq!(pipe.bus.packet().length, 5000);
         let moved = pipe.bus.move_packet();
         assert_eq!(moved.cast::<c_void>(), data);
@@ -1087,7 +1052,7 @@ mod tests {
     }
 
     /// `swr_v1_bus_write`'s classifier: `catch_pipe_error(errno) == SW_REDUCE_SIZE`.
-    unsafe extern "C" fn pipe_reduce(_: *mut c_void) -> bool {
+    fn pipe_reduce() -> bool {
         let mut nobufs = false;
         let code = swoole_rs_reactor::catch_pipe_error(errno(), &mut nobufs);
         code == REDUCE_SIZE
@@ -1107,7 +1072,7 @@ mod tests {
         };
         let mut nobufs = false;
         loop {
-            let n = unsafe { bus.read(fd, dgram, &mut state, &raw mut nobufs) };
+            let n = unsafe { bus.read(fd, dgram, &mut state, &mut nobufs) };
             if state.event != BUS_ALLOCATE {
                 return n;
             }
@@ -1128,13 +1093,9 @@ mod tests {
     /// the failure's for `pipe_reduce`) every packet the reader can read now. Upstream's
     /// reactor interleaves its writes and reads; reading only whole writes keeps a
     /// partly written stream chunk from being read as a whole one.
-    unsafe extern "C" fn loopback_send(
-        context: *mut c_void,
-        iov: *const libc::iovec,
-        count: usize,
-    ) -> isize {
-        let pipe = unsafe { &mut *context.cast::<Loopback>() };
-        let sent = unsafe { libc::writev(pipe.fds[0], iov, c_int::try_from(count).unwrap()) };
+    fn loopback_send(pipe: &mut Loopback, iov: &[libc::iovec]) -> isize {
+        let count = c_int::try_from(iov.len()).unwrap();
+        let sent = unsafe { libc::writev(pipe.fds[0], iov.as_ptr(), count) };
         if sent < 0 {
             return sent;
         }
@@ -1204,7 +1165,6 @@ mod tests {
             mb_packet(2341, 3),
         ];
         let writer = Bus::new(65536);
-        let context = (&raw mut pipe).cast::<c_void>();
         let mut msg_id = 0;
         let mut write = |fd: i64, data: *const u8, len: usize| {
             let mut head = BusHead {
@@ -1214,7 +1174,8 @@ mod tests {
                 ..BusHead::default()
             };
             msg_id += 1;
-            unsafe { writer.write(context, &mut head, data, loopback_send, pipe_reduce) }
+            let send = |iov: &[libc::iovec]| loopback_send(&mut pipe, iov);
+            unsafe { writer.write(&mut head, data, send, pipe_reduce) }
         };
         for (fd, packet) in (1..).zip(&sent) {
             assert!(write(fd, packet.as_ptr(), packet.len()));

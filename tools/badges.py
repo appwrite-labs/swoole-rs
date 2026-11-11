@@ -45,9 +45,8 @@ def endpoint(label, message, color='blue'):
 
 def speed(result, limits, commit):
     """(speed.json endpoint, speed.md table) from benchmarks/callgrind.py's --output and the limits.
-    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream.
-    A result from before the Cargo build replaced the hybrid (#2414) has a `hybrid` row instead."""
-    measured = {name: row.get('cargo', row.get('hybrid')) for name, row in result['instructions_per_request'].items()}
+    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream."""
+    measured = {name: row['cargo'] for name, row in result['instructions_per_request'].items()}
     ratios = {name: measured[name] / row['upstream'] for name, row in result['instructions_per_request'].items()}
     mean = 1.0
     for ratio in ratios.values():

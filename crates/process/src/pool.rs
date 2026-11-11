@@ -21,7 +21,8 @@
 use crate::worker_record::Worker as Record;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use swoole_rs_corebase::sys::set_errno;
 
 use crate::worker_record::WorkerRecord;
@@ -169,8 +170,8 @@ struct Stream {
 type Trap = unsafe extern "C" fn(body: Step, arg: *mut c_void) -> c_int;
 type Raise = unsafe extern "C" fn();
 
-static TRAP: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-static RAISE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+/// The extension's trap and raise, which [`set_bailout`] installs.
+static BAILOUT: OnceLock<(Trap, Raise)> = OnceLock::new();
 
 /// The hook bailed out.
 pub struct Bailed;
@@ -188,14 +189,11 @@ fn invoke(step: Step, call: &mut PoolCall) {
 
 /// Run `step` over `call`, inside the trap when one is installed.
 pub(crate) fn run(step: Step, call: &mut PoolCall) -> Result<(), Bailed> {
-    let trap = TRAP.load(Ordering::Acquire);
-    if trap.is_null() {
+    let Some(&(trap, _)) = BAILOUT.get() else {
         invoke(step, call);
         return Ok(());
-    }
+    };
     let arg = ptr::from_mut(call).cast::<c_void>();
-    // SAFETY: TRAP only ever holds a `Trap`.
-    let trap = unsafe { std::mem::transmute::<*mut c_void, Trap>(trap) };
     // SAFETY: the trap runs the native hook inside `zend_try`; no Rust frame is
     // between its `setjmp` and the hook.
     if unsafe { trap(step, arg) } == 0 {
@@ -637,19 +635,15 @@ impl PoolIpc {
 ///
 /// # Safety
 /// `trap` runs its body inside `zend_try` and returns 1 when it bailed out;
-/// `raise` calls `zend_bailout()`.
+/// `raise` calls `zend_bailout()`. The first pair installed stays.
 pub unsafe fn set_bailout(trap: Trap, raise: Raise) {
-    TRAP.store(trap as *mut c_void, Ordering::Release);
-    RAISE.store(raise as *mut c_void, Ordering::Release);
+    _ = BAILOUT.set((trap, raise));
 }
 
 /// Raise the bailout a loop returned [`BAILED`] for. Holds nothing: the
 /// `longjmp` crosses only this frame.
 pub fn raise_bailout() {
-    let raise = RAISE.load(Ordering::Acquire);
-    if !raise.is_null() {
-        // SAFETY: RAISE only ever holds a `Raise`.
-        let raise = unsafe { std::mem::transmute::<*mut c_void, Raise>(raise) };
+    if let Some(&(_, raise)) = BAILOUT.get() {
         // SAFETY: Zend's bailout, from a frame that owns nothing.
         unsafe { raise() };
     }

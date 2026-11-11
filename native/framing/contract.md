@@ -3,7 +3,7 @@
 `src/protocol/base.cc`, `src/protocol/mime_type.cc` and `include/swoole_protocol.h`
 have left the build. `swoole_protocol.h` here keeps the SendData, RecvData,
 PacketLength and Protocol layouts and the functions C++ or the compiled core-tests call.
-`crates/framing` forbids `unsafe_code` and exports nothing to C; the hybrid reaches
+`crates/framing` forbids `unsafe_code` and exports nothing to C; C and C++ reach
 it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
 
 ## Packet framing
@@ -16,13 +16,13 @@ it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
   extend/reduce/clear/split, `SSL_pending`, logs) goes through its generic
   `Effects::effect`, which refreshes the socket's removed/recv_wait/ssl flags after it.
 - `crates/ports/src/framing_recv.rs` is those effects over the real socket, String and
-  callbacks. It defines `default_length_func` under its upstream symbol (the hybrid
-  archive's `upstream-symbols`), and `swoole_unpack`, `swoole_hton64`, `swoole_ntoh64`,
+  callbacks. It defines `default_length_func` under its upstream symbol (crates/ports'
+  `upstream-symbols` feature), and `swoole_unpack`, `swoole_hton64`, `swoole_ntoh64`,
   `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` as plain Rust: `swoole_init` registers them for
-  crates/clients (`FRAMING`), which ports depends on. Every protocol callback in the hybrid
+  crates/clients (`FRAMING`), which ports depends on. Every protocol callback in swoole.so
   is Rust or PHP, so no C++ exception reaches it.
 - `swr_v1_framing_recv` (`crates/oracle/shim/swoole_rs_framing.h`) is `recv` for the
-  oracle's native candidate from `0001-base.patch`, which the `framing_stream` fuzz
+  oracle's native candidate (`crates/oracle/candidate/src/protocol/base.cc`), which the `framing_stream` fuzz
   target runs; `fuzz/src/framing_native.rs` defines it. One `call(context, op, arg)`
   per effect, and `THROWN` stops all further effects.
 - Kept from upstream: callback removal/failure order, recursive entry, captured

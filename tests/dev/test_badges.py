@@ -30,12 +30,6 @@ class Badges(unittest.TestCase):
         self.assertIn('| timer | 80 | 100 | 0.8000× |  | ✅ |', table)
         self.assertIn('`abcdef0`', table)
 
-    def test_speed_reads_a_result_from_before_the_cargo_build_by_its_hybrid_row(self):
-        result = {'instructions_per_request': {'plaintext': {'hybrid': 90.0, 'upstream': 100.0}}}
-        badge, table = badges.speed(result, {}, 'abcdef0123')
-        self.assertEqual(badge['message'], '1/1 faster · slowest plaintext 0.90×')
-        self.assertIn('| plaintext | 90 | 100 | 0.9000× |', table)
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -164,7 +164,7 @@ pub struct CustomClass<T>(Class, PhantomData<fn() -> T>);
 impl<T> CustomClass<T> {
     #[must_use]
     pub const fn new() -> Self {
-        Self(Class::new(), PhantomData)
+        Self(Class::of(true), PhantomData)
     }
 }
 

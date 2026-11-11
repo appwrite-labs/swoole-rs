@@ -17,7 +17,7 @@ use openssl_sys as _;
 #[cfg(feature = "php")]
 #[unsafe(no_mangle)]
 pub extern "C" fn get_module() -> *mut std::ffi::c_void {
-    swr_v1_phpswoole_module().cast()
+    phpswoole_module().cast()
 }
 
 /// The whole-thread escape-scope ABI (`native/corebase/swoole_rs_zend_guard.h`) for

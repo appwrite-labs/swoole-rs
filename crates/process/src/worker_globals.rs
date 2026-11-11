@@ -110,19 +110,15 @@ pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
 
 /// Grace randomization calls the existing native wrapper so its assertion and
 /// warning/errno behavior stay identical; all request-limit decisions and storage are Rust's.
-///
-/// # Safety
-/// `random` implements the existing `swoole_system_random(int,int)` contract,
-/// without exceptions or a PHP bailout.
-pub unsafe fn worker_global_max_requests(
+/// `random` is `swoole_system_random(int,int)` or a stand-in.
+pub fn worker_global_max_requests(
     max_request: u32,
     grace: u32,
-    random: unsafe extern "C" fn(c_int, c_int) -> c_int,
+    random: extern "C" fn(c_int, c_int) -> c_int,
 ) {
     let mut limit = max_request;
     if max_request > 0 && grace > 0 {
-        // SAFETY: the caller lends the original random primitive and its unchanged narrowed bounds.
-        let extra = unsafe { random(1, c_int::from_ne_bytes(grace.to_ne_bytes())) };
+        let extra = random(1, c_int::from_ne_bytes(grace.to_ne_bytes()));
         limit = limit.wrapping_add(extra.cast_unsigned());
     }
     swr_v1_worker_global_set(5, i64::from(limit));
@@ -168,7 +164,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     static RANDOM_CALLS: AtomicUsize = AtomicUsize::new(0);
-    unsafe extern "C" fn maximum(_: c_int, max: c_int) -> c_int {
+    extern "C" fn maximum(_: c_int, max: c_int) -> c_int {
         RANDOM_CALLS.fetch_add(1, Relaxed);
         max
     }
@@ -229,15 +225,13 @@ mod tests {
     #[test]
     fn request_grace_keeps_native_unsigned_wrap_and_zero_short_circuit() {
         RANDOM_CALLS.store(0, Relaxed);
-        unsafe {
-            worker_global_max_requests(0, 10, maximum);
-            assert_eq!(swr_v1_worker_global_get(5), 0);
-            worker_global_max_requests(10, 0, maximum);
-            assert_eq!(swr_v1_worker_global_get(5), 10);
-            assert_eq!(RANDOM_CALLS.load(Relaxed), 0);
-            worker_global_max_requests(u32::MAX - 2, 10, maximum);
-            assert_eq!(swr_v1_worker_global_get(5), 7);
-            assert_eq!(RANDOM_CALLS.load(Relaxed), 1);
-        }
+        worker_global_max_requests(0, 10, maximum);
+        assert_eq!(swr_v1_worker_global_get(5), 0);
+        worker_global_max_requests(10, 0, maximum);
+        assert_eq!(swr_v1_worker_global_get(5), 10);
+        assert_eq!(RANDOM_CALLS.load(Relaxed), 0);
+        worker_global_max_requests(u32::MAX - 2, 10, maximum);
+        assert_eq!(swr_v1_worker_global_get(5), 7);
+        assert_eq!(RANDOM_CALLS.load(Relaxed), 1);
     }
 }
