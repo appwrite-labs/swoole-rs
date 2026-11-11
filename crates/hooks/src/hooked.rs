@@ -255,8 +255,11 @@ pub unsafe extern "C" fn swoole_coroutine_poll_fake(
         );
         return -1;
     }
-    // SAFETY: one pollfd, as the caller promises.
-    let fd = unsafe { &mut *fds };
+    // SAFETY: null or one pollfd, as the caller promises.
+    let Some(fd) = (unsafe { fds.as_mut() }) else {
+        set_errno(libc::EFAULT);
+        return -1;
+    };
     let socket = hooked(fd.fd).map(|(_, socket)| socket);
     match fd_poll_fake(fd, timeout, socket) {
         2 => sys::poll(core::slice::from_mut(fd), timeout),
@@ -276,6 +279,9 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
 ) -> c_int {
     let fds: &mut [pollfd] = if nfds == 0 {
         &mut []
+    } else if fds.is_null() {
+        set_errno(libc::EFAULT);
+        return -1;
     } else {
         // SAFETY: `nfds` pollfds, as the caller promises.
         unsafe { core::slice::from_raw_parts_mut(fds, usize::try_from(nfds).unwrap_or(0)) }
