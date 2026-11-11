@@ -520,9 +520,9 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_PORT_LISTEN | OP_PORT_READ => {
-            let &port = state.tables_ref().ports().get(usize::try_from(arg).ok()?)?;
+            let port = state.tables_ref().ports().get(usize::try_from(arg).ok()?)?;
             if op == OP_PORT_LISTEN {
-                return Some(sign((crate::port_config::methods().listen)(port)));
+                return Some(sign((crate::port_config::methods().listen)(port.raw())));
             }
             add_read(server.port_socket_at(usize::try_from(arg).unwrap_or(usize::MAX)));
             0

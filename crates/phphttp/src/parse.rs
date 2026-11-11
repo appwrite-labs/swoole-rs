@@ -15,7 +15,6 @@ use swoole_rs_httpbindings::{
     RequestHeader, body_prefix, compression, request_header, request_key, request_url,
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
-use swoole_rs_server::view;
 use swoole_rs_zend::sys::{
     swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
     swr_zend_http_property_offset, swr_zend_http_treat_data, swr_zend_http_upload,
@@ -520,9 +519,10 @@ fn websocket_connection(state: &State) -> bool {
     let Some(conn) = server.by_session(state.fd) else {
         return false;
     };
-    let port = server.port_by_server_fd(conn.server_fd);
-    // SAFETY: the connection's live port.
-    if !port.is_null() && unsafe { view::port_websocket(port) } {
+    if server
+        .port_of_server_fd(conn.server_fd)
+        .is_some_and(|port| port.open_websocket_protocol)
+    {
         conn.websocket_status = STATUS_CONNECTION;
     }
     true

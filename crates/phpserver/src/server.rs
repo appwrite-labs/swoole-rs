@@ -848,8 +848,7 @@ fn get_socket(call: &Call) {
         clippy::cast_possible_truncation,
         reason = "get_port((int) port), as upstream"
     )]
-    let ls = serv.port_number(port as c_int);
-    match (!ls.is_null()).then_some(ls) {
+    match serv.port_number(port as c_int) {
         Some(ls) => crate::port::socket(ls, call),
         None => call.set_bool(false),
     }
@@ -911,9 +910,10 @@ fn get_client_info(call: &Call) {
     if conn.worker_id > 0 || dispatch_mode == DISPATCH_CO_CONN_LB {
         call.add_assoc_long(c"worker_id", i64::from(conn.worker_id));
     }
-    let port = serv.port_by_fd(conn.fd);
-    // SAFETY: the connection's live port.
-    if !port.is_null() && unsafe { view::port_websocket(port) } {
+    if serv
+        .port_of_fd(conn.fd)
+        .is_some_and(|port| port.open_websocket_protocol)
+    {
         call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status));
     }
     let cert = conn.ssl_client_cert.cast::<NativeString>();
@@ -1147,9 +1147,9 @@ fn valid(call: &Call) {
         if session_id <= 0 {
             continue;
         }
-        if !iterator.port.is_null() {
-            // SAFETY: the iterator's live port.
-            let port_fd = unsafe { view::port_fd(iterator.port) };
+        // SAFETY: null, or the iterator's live port.
+        if let Some(port) = unsafe { view::Port::from_raw(iterator.port) } {
+            let port_fd = port.fd();
             if port_fd < 0 || server_fd != port_fd {
                 continue;
             }
@@ -1176,12 +1176,10 @@ fn key(call: &Call) {
 
 fn count(call: &Call) {
     let iterator = iterator(call);
-    let num = if iterator.port.is_null() {
-        // SAFETY: a live server.
-        iterator.server().connection_num()
-    } else {
-        // SAFETY: a live server and one of its ports.
-        unsafe { iterator.server().port_connection_num(iterator.port) }
+    // SAFETY: null, or one of the live server's ports.
+    let num = match unsafe { view::Port::from_raw(iterator.port) } {
+        None => iterator.server().connection_num(),
+        Some(port) => iterator.server().port_connection_num(port),
     };
     call.set_long(i64::try_from(num).unwrap_or(i64::MAX));
 }

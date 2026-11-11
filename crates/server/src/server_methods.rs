@@ -271,7 +271,9 @@ pub unsafe extern "C-unwind" fn connection_incoming(
     let record = unsafe { &*conn };
     let mut ctx = NativeContext::new(serv.raw());
     ctx.reactor = reactor;
-    ctx.port = serv.port_by_server_fd(record.server_fd);
+    ctx.port = serv
+        .port_by_server_fd(record.server_fd)
+        .map_or(ptr::null_mut(), view::Port::raw);
     ctx.sock = record.socket;
     ctx.conn = conn.cast();
     // SAFETY: as the caller guarantees.
@@ -359,24 +361,24 @@ pub unsafe extern "C" fn schedule_worker(serv: *mut c_void, fd: c_int, data: *mu
     c_int::narrow(unsafe { run(RUN_SCHEDULE_WORKER, i64::from(fd).cast_unsigned(), &mut ctx) })
 }
 
-/// `Server::add_port(type, host, port)`: the new port, or null.
+/// `Server::add_port(type, host, port)`: the new port, or `None`.
 #[must_use]
-pub fn add_port(
-    serv: view::Server<'_>,
+pub fn add_port<'a>(
+    serv: view::Server<'a>,
     socket_type: c_int,
     host: &CStr,
     port: c_int,
-) -> *mut c_void {
+) -> Option<view::Port<'a>> {
     let mut ctx = NativeContext::new(serv.raw());
     ctx.socket_type = socket_type;
     ctx.host = host.as_ptr();
     ctx.number = port;
     // SAFETY: the live server and the host, which lives for the call.
-    if unsafe { run(RUN_ADD_PORT, 0, &mut ctx) } != 0 {
-        ctx.port
-    } else {
-        ptr::null_mut()
+    if unsafe { run(RUN_ADD_PORT, 0, &mut ctx) } == 0 {
+        return None;
     }
+    // SAFETY: the port the server just added, which it keeps for its life.
+    unsafe { view::Port::from_raw(ctx.port) }
 }
 
 /// `Server::abort_connection(reactor, port, socket)`.
@@ -508,7 +510,9 @@ pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let record = unsafe { &*conn.cast::<ConnectionRecord>() };
     // SAFETY: the live server and the connection's listening fd.
-    ctx.port = unsafe { view::Server::from_raw(serv) }.port_by_server_fd(record.server_fd);
+    ctx.port = unsafe { view::Server::from_raw(serv) }
+        .port_by_server_fd(record.server_fd)
+        .map_or(ptr::null_mut(), view::Port::raw);
     ctx.reactor = swoole_rs_corebase::thread_reactor();
     ctx.sock = record.socket;
     ctx.conn = conn;
@@ -902,8 +906,8 @@ mod tests {
                 "fd sign-extends like (uint64_t)(int64_t) fd"
             );
             assert_eq!(
-                add_port(server(), 1, c"h", 9).addr(),
-                0x50,
+                add_port(server(), 1, c"h", 9).map(|port| port.raw().addr()),
+                Some(0x50),
                 "nonzero yields the port"
             );
             let (op, _, s, _, _, _, number, host) = last();

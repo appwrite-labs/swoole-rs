@@ -260,9 +260,9 @@ impl Objects<'_> {
     }
     /// The settings of `serv->ports[index]`, if there is one.
     fn port_at(&self, index: u64) -> Option<&mut PortConfig> {
-        let &port = self.tables().ports().get(usize::try_from(index).ok()?)?;
+        let port = self.tables().ports().get(usize::try_from(index).ok()?)?;
         // SAFETY: one of the server's live ports.
-        Some(unsafe { port_config(port) })
+        Some(unsafe { port.config_mut() })
     }
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
@@ -1606,7 +1606,10 @@ fn verify(o: &mut Objects<'_>) -> u64 {
         return 0;
     };
     o.ctx.reactor = swoole_rs_corebase::thread_reactor();
-    o.ctx.port = o.server().port_by_server_fd(conn.server_fd);
+    o.ctx.port = o
+        .server()
+        .port_by_server_fd(conn.server_fd)
+        .map_or(core::ptr::null_mut(), crate::view::Port::raw);
     o.ctx.sock = conn.socket;
     let config = o.config();
     debug_assert!(
@@ -1884,9 +1887,10 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STORE_LISTEN => {
             let index = usize::try_from(arg).unwrap_or(usize::MAX);
-            let &ls = o.tables().ports().get(index)?;
+            let ls = *o.tables().ports().get(index)?;
             // SAFETY: one of the server's live ports.
-            let port = unsafe { port_config(ls) };
+            let port = unsafe { ls.config_mut() };
+            let ls = ls.raw();
             let socket = o.server().port_socket_at(index)?;
             let fd = socket.fd();
             let at = isize::try_from(fd).unwrap_or(isize::MAX);
@@ -2058,8 +2062,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_CLOSE => {
-            let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-            (methods().close)(port);
+            let port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
+            (methods().close)(port.raw());
             0
         }
         OP_DISPATCH_FUNC => {

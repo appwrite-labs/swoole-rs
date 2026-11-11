@@ -82,15 +82,17 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// # Safety
 /// `serv` is a live server, `port` one of its live DTLS ports.
 unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *mut DtlsSession {
+    // SAFETY: as the caller guarantees.
+    let Some(listen) = (unsafe { crate::view::Port::from_raw(port) }) else {
+        return ptr::null_mut();
+    };
     let (kind, number, host) = {
-        // SAFETY: as the caller guarantees; the borrow ends here.
-        let config = unsafe { port_config::of(port) };
+        let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
         let host = CString::new(config.host_bytes()).unwrap_or_default();
         (config.r#type, config.port, host)
     };
-    // SAFETY: as the caller guarantees.
-    let server_fd = unsafe { crate::view::port_fd(port) };
+    let server_fd = listen.fd();
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
     // SAFETY: null, or the socket just made, which only this thread uses.
     let Some(socket) = (unsafe { Socket::from_ptr(sock) }) else {

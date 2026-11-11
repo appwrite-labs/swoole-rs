@@ -70,8 +70,8 @@ impl<'a> Server<'a> {
     }
 
     /// `serv->ports`, in listen order.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) fn ports(self) -> &'a [*mut c_void] {
+    #[must_use]
+    pub fn ports(self) -> &'a [Port<'a>] {
         self.state().tables_ref().ports()
     }
 
@@ -314,13 +314,9 @@ impl<'a> Server<'a> {
     }
 
     /// `ListenPort::get_connection_num()` of one of the server's ports.
-    ///
-    /// # Safety
-    /// `port` is a live `ListenPort`.
     #[must_use]
-    pub unsafe fn port_connection_num(self, port: *mut c_void) -> usize {
-        // SAFETY: per the caller.
-        self.port_connections(unsafe { self::port(port) })
+    pub fn port_connection_num(self, port: Port<'_>) -> usize {
+        self.port_connections(port.config())
     }
 
     /// `ListenPort::get_connection_num()` of the port whose settings are `config`.
@@ -413,9 +409,7 @@ impl<'a> Server<'a> {
     /// The listening socket of `serv->ports[index]`, or `None` past the last.
     #[must_use]
     pub(crate) fn port_socket_at(self, index: usize) -> Option<Socket<'a>> {
-        let port = self.port_at(index);
-        // SAFETY: null or one of the server's live ports.
-        (!port.is_null()).then(|| unsafe { port_socket(port) })?
+        self.port_at(index)?.socket()
     }
 
     /// `Server::task_notify_pipe(worker_id)`, or null.
@@ -431,36 +425,33 @@ impl<'a> Server<'a> {
             .unwrap_or(core::ptr::null_mut())
     }
 
-    /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on, or
-    /// null.
+    /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on.
     #[must_use]
-    pub fn port_by_fd(self, fd: c_int) -> *mut c_void {
-        let server_fd = self.connection_field(c_long::from(fd), 0, |conn| conn.server_fd);
-        server_fd.map_or(core::ptr::null_mut(), |server_fd| {
-            self.port_by_server_fd(server_fd)
-        })
+    pub fn port_by_fd(self, fd: c_int) -> Option<Port<'a>> {
+        let server_fd = self.connection_field(c_long::from(fd), 0, |conn| conn.server_fd)?;
+        self.port_by_server_fd(server_fd)
     }
 
     /// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
-    /// `server_fd`, or null.
+    /// `server_fd`.
     #[must_use]
-    pub fn port_by_server_fd(self, server_fd: c_int) -> *mut c_void {
+    pub fn port_by_server_fd(self, server_fd: c_int) -> Option<Port<'a>> {
         // A listening socket's record holds its port.
-        self.connection_field(c_long::from(server_fd), 0, |conn| conn.object)
-            .unwrap_or(core::ptr::null_mut())
+        let port = self.connection_field(c_long::from(server_fd), 0, |conn| conn.object)?;
+        // SAFETY: null, or one of the server's ports, which live as long as it.
+        unsafe { Port::from_raw(port) }
     }
 
     /// The settings of the `ListenPort` listening on `server_fd`, if there is one.
-    pub(crate) fn port_of_server_fd(self, server_fd: c_int) -> Option<&'a PortConfig> {
-        let port = self.port_by_server_fd(server_fd);
-        // SAFETY: null, or one of the server's ports, which live as long as it.
-        (!port.is_null()).then(|| unsafe { self::port(port) })
+    #[must_use]
+    pub fn port_of_server_fd(self, server_fd: c_int) -> Option<&'a PortConfig> {
+        self.port_by_server_fd(server_fd).map(Port::config)
     }
 
     /// The settings of the `ListenPort` connection `fd` arrived on, if there is one.
-    pub(crate) fn port_of_fd(self, fd: c_int) -> Option<&'a PortConfig> {
-        let server_fd = self.connection_field(c_long::from(fd), 0, |conn| conn.server_fd)?;
-        self.port_of_server_fd(server_fd)
+    #[must_use]
+    pub fn port_of_fd(self, fd: c_int) -> Option<&'a PortConfig> {
+        self.port_by_fd(fd).map(Port::config)
     }
 
     /// `Server::is_healthy_connection(now, conn)`: protected, never received, or
@@ -481,62 +472,91 @@ impl<'a> Server<'a> {
         idle == 0 || conn.last_recv_time > now - f64::from(idle)
     }
 
-    /// `serv->ports[index]`: the `ListenPort`s in listen order, null past the last
+    /// `serv->ports[index]`: the `ListenPort`s in listen order, `None` past the last
     /// (index 0 is `Server::get_primary_port()`).
     #[must_use]
-    pub fn port_at(self, index: usize) -> *mut c_void {
-        let ports = self.state().tables_ref().ports();
-        ports.get(index).copied().unwrap_or(core::ptr::null_mut())
+    pub fn port_at(self, index: usize) -> Option<Port<'a>> {
+        self.ports().get(index).copied()
     }
 
-    /// `Server::get_port(port)`: the first port listening on `port` (any at 0),
-    /// or null.
+    /// `Server::get_port(port)`: the first port listening on `port` (any at 0).
     #[must_use]
-    pub fn port_number(self, port: c_int) -> *mut c_void {
+    pub fn port_number(self, port: c_int) -> Option<Port<'a>> {
         self.find_port(|config| port == 0 || config.port == port)
     }
 
-    /// The first of `serv->ports` whose settings `wanted` accepts, or null.
-    pub fn find_port(self, wanted: impl Fn(&PortConfig) -> bool) -> *mut c_void {
-        self.state()
-            .tables_ref()
-            .ports()
+    /// The first of `serv->ports` whose settings `wanted` accepts.
+    pub fn find_port(self, wanted: impl Fn(&PortConfig) -> bool) -> Option<Port<'a>> {
+        self.ports()
             .iter()
-            .enumerate()
-            .find(|&(index, _)| (self.state().tables_ref().port_config(index)).is_some_and(&wanted))
-            .map_or(core::ptr::null_mut(), |(_, &ls)| ls)
+            .copied()
+            .find(|port| wanted(port.config()))
     }
 }
 
-/// A `ListenPort`'s settings.
-///
-/// # Safety
-/// `port` is a live `ListenPort`.
-pub unsafe fn port<'a>(port: *mut c_void) -> &'a PortConfig {
-    // SAFETY: the head of a live port, per the module comment.
-    let config = unsafe { *port.cast::<*const PortConfig>() };
-    // SAFETY: its settings live as long as it.
-    unsafe { &*config }
+/// A live `ListenPort`, borrowed for `'a`: a box of the pointer to its settings
+/// (`server_object::port_new`). [`Port::from_raw`] is the one unsafe step; the
+/// reads it then allows are safe, as [`Server`]'s are.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Port<'a> {
+    raw: core::ptr::NonNull<c_void>,
+    live: PhantomData<&'a PortConfig>,
 }
 
-/// `ListenPort::get_fd()`.
-///
-/// # Safety
-/// As [`port`].
-pub unsafe fn port_fd(port: *mut c_void) -> c_int {
-    // SAFETY: per the caller.
-    unsafe { port_socket(port) }.map_or(-1, Socket::fd)
-}
+impl<'a> Port<'a> {
+    /// The port at `port`, or `None` for null.
+    ///
+    /// # Safety
+    /// `port` is null or a live `ListenPort` for `'a`, and the port's own
+    /// synchronization keeps writers of its settings ([`Port::config_mut`]) apart
+    /// from the references the safe readers return.
+    #[must_use]
+    pub unsafe fn from_raw(port: *mut c_void) -> Option<Self> {
+        core::ptr::NonNull::new(port).map(|raw| Self {
+            raw,
+            live: PhantomData,
+        })
+    }
 
-/// A `ListenPort`'s listening socket, or `None` before it has one.
-///
-/// # Safety
-/// As [`port`].
-pub(crate) unsafe fn port_socket<'a>(port: *mut c_void) -> Option<Socket<'a>> {
-    // SAFETY: per the caller.
-    let socket = unsafe { self::port(port) }.socket;
-    // SAFETY: null, or the live port's listening socket, which it owns.
-    unsafe { Socket::from_ptr(socket.cast()) }
+    /// The `ListenPort *` itself, for the native-shaped calls that still take it.
+    #[must_use]
+    pub fn raw(self) -> *mut c_void {
+        self.raw.as_ptr()
+    }
+
+    /// The port's settings.
+    #[must_use]
+    pub fn config(self) -> &'a PortConfig {
+        // SAFETY: the head of a live port, per the module comment and `from_raw`'s caller.
+        let config = unsafe { *self.raw.as_ptr().cast::<*const PortConfig>() };
+        // SAFETY: its settings live as long as it, with writers kept apart (`from_raw`).
+        unsafe { &*config }
+    }
+
+    /// The port's settings, to write.
+    ///
+    /// # Safety
+    /// No other reference to the settings is live meanwhile, and no other thread
+    /// reads the fields written.
+    #[must_use]
+    pub unsafe fn config_mut(self) -> &'a mut PortConfig {
+        // SAFETY: per the caller.
+        unsafe { crate::port_config::of(self.raw()) }
+    }
+
+    /// The port's listening socket, or `None` before it has one.
+    #[must_use]
+    pub fn socket(self) -> Option<Socket<'a>> {
+        // SAFETY: null, or the live port's listening socket, which it owns.
+        unsafe { Socket::from_ptr(self.config().socket.cast()) }
+    }
+
+    /// `ListenPort::get_fd()`.
+    #[must_use]
+    pub fn fd(self) -> c_int {
+        self.socket().map_or(-1, Socket::fd)
+    }
 }
 
 /// A `network::Socket`'s fd and `swSocketType`.
@@ -547,15 +567,6 @@ pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
     // SAFETY: per the caller.
     let socket = unsafe { Socket::from_ptr(socket.cast()) };
     socket.map_or((-1, 0), |socket| socket.read(|s| (s.fd, s.socket_type)))
-}
-
-/// Whether one of the server's ports speaks WebSocket.
-///
-/// # Safety
-/// `port` is a live `ListenPort`.
-pub unsafe fn port_websocket(port: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    unsafe { self::port(port) }.open_websocket_protocol
 }
 
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.

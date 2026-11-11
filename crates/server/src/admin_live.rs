@@ -363,10 +363,11 @@ impl Facts for Live<'_> {
 
     fn ports(&mut self) -> Vec<Port> {
         let serv = self.serv;
-        let tables = self.tables;
-        (0..tables.ports().len())
-            .filter_map(|index| tables.port_config(index))
-            .map(|config| {
+        self.tables
+            .ports()
+            .iter()
+            .map(|port| {
+                let config = port.config();
                 let host = config.host_bytes();
                 let protocols = (crate::port_config::methods().get_protocols)(config);
                 let connections = serv.port_connections(config);
