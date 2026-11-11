@@ -29,6 +29,22 @@ jobs:
           mode: ${{ github.event.schedule == '0 6 * * *' && 'prune' || 'batch' }}
           sanitizer: address
           minimize-crashes: true
+      # Each upload commits to cflite and a PR run's full clone fetches every commit, so pruned
+      # corpus files would stay in its history: keep the branch one commit, its latest tree.
+      # Only this job writes cflite, a data branch nothing merges from.
+      - name: Keep cflite one commit
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          REPO: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git init -q "$RUNNER_TEMP/cflite" && cd "$RUNNER_TEMP/cflite"
+          git fetch -q --depth=1 "$REPO" cflite || exit 0
+          commit=$(git commit-tree 'FETCH_HEAD^{tree}' -m 'ClusterFuzzLite corpus')
+          git push -q --force "$REPO" "$commit:refs/heads/cflite"
       - if: failure() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
