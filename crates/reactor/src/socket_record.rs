@@ -302,8 +302,8 @@ impl SocketFields {
         if self.is_local() && self.bound != 0 && self.get_name() == 0 {
             // SAFETY: the Unix arm of the address getsockname(2) just wrote.
             let path = unsafe { self.info.addr.un.sun_path };
-            #[expect(clippy::cast_sign_loss, reason = "the path's bytes, as C reads them")]
-            let path = path.map(|byte| byte as u8);
+            // The path's bytes, whatever `c_char`'s signedness on this target.
+            let path = path.map(|byte| byte.to_ne_bytes()[0]);
             if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path)
                 && !path.is_empty()
             {
