@@ -15,13 +15,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # Started first and in the background, so the images pull and the databases open while
-    # the packages install. The `up --wait` below waits for this one to exit first.
-    - if: inputs.services != 'job' && inputs.services != ''
-      shell: bash
-      run: |
-        nohup docker compose -f corpus/upstream/services.yml up -d ${{ inputs.services }} > "$RUNNER_TEMP/services.log" 2>&1 &
-        echo $! > "$RUNNER_TEMP/services.pid"
     - uses: ./.github/actions/install
       with:
         # nghttp2-client and -server: the HTTP/2 tests' skip_if_no_nghttp and nghttpd checks.
@@ -29,6 +22,14 @@ runs:
         php: ${{ inputs.php }}
     # The engines link the Instant Client (--with-swoole-oracle).
     - uses: ./.github/actions/instantclient
+    # Started in the background after the packages, so the images pull and the databases open
+    # during the rest of the setup without slowing dpkg. The `up --wait` below waits for this
+    # one to exit first.
+    - if: inputs.services != 'job' && inputs.services != ''
+      shell: bash
+      run: |
+        nohup docker compose -f corpus/upstream/services.yml up -d ${{ inputs.services }} > "$RUNNER_TEMP/services.log" 2>&1 &
+        echo $! > "$RUNNER_TEMP/services.pid"
     - shell: bash
       run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle golang-h2demo tinyproxy socks5 ftp' | sudo tee -a /etc/hosts
     # curl_multi_segfault.phpt's server, the ftp service above.
