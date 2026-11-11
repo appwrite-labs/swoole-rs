@@ -83,6 +83,8 @@ and `recv()` (each returns false with errCode `SWOOLE_ERROR_CO_HAS_BEEN_BOUND`: 
 response being parsed holds the client's parser), replaces itself and reads
 its client mid-response, while another coroutine calls `set()` and `getDefer()` across
 the `get()` and `download()` yields: every chunk and the downloaded file arrive intact.
+Last, a second coroutine calls `recv()` on an upgraded client while the first waits
+on a frame: it raises the bound-socket error, and both frames reach the first reader.
 `php_property_array.py` (`clients-php-property-array`, every lane, Cargo build)
 gives `uploadFiles` and `setting` an object whose `__destruct` writes the
 property again: `addData` and `set` keep an array it writes, and `addData`

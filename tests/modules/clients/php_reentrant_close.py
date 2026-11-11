@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A persistent Client closed from its package_length_func during recv(): not pooled, key reconnects fresh.
-A Coroutine\\Http\\Client reentered from write_func (a request or recv there fails) and from another coroutine while a request yields."""
+A Coroutine\\Http\\Client reentered from write_func (a request or recv there fails) and from another coroutine while a request yields.
+An upgraded client's recv() from a second coroutine while the first waits on a frame."""
 import argparse
 import json
 from pathlib import Path
@@ -13,7 +14,8 @@ EXPECTED=dict(outer=dict(received=False,errCode=5001,connected=False),fresh=dict
               peer=dict(accepts=2,eof=True),
               http=dict(get=dict(ok=True,status=200,first=['a'],second=[['b',0,False],['c',0,False]],
                                  nested=dict(get=[False,True],post=[False,True],recv=[False,True])),
-                        download=dict(ok=True,status=200,body='abc'),used_while_yielded=True),warnings=[])
+                        download=dict(ok=True,status=200,body='abc'),used_while_yielded=True),
+              websocket=dict(second=dict(bound=True),frames=['one','two']),warnings=[])
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

@@ -904,12 +904,16 @@ impl Client {
         false
     }
 
-    /// The response parser, held for a whole request and receive. A request or
-    /// `recv()` while another holds it (from `write_func`, which runs inside the
-    /// parse, or from another coroutine) gets none and fails.
+    /// The response parser, held for a whole request or `recv()`, HTTP or
+    /// WebSocket. While another holds it, a coroutine reading or writing the
+    /// socket raises the bound-socket error; otherwise (`write_func`, which runs
+    /// inside the parse) the caller gets none and fails.
     fn receiver(&self) -> Option<RefMut<'_, Parser>> {
         let parser = self.parser.try_borrow_mut().ok();
         if parser.is_none() {
+            if let Some(socket) = self.co() {
+                socket.check_bound(EVENT_RDWR);
+            }
             set_error_properties(self.props(), CO_HAS_BEEN_BOUND, strerror(CO_HAS_BEEN_BOUND));
         }
         parser
@@ -2030,13 +2034,14 @@ fn recv(call: &Call) -> bool {
         return false;
     };
     let _hold = client.hold();
+    let Some(mut parser) = client.receiver() else {
+        return finish(client, call, false);
+    };
     if client.websocket.get() {
         client.recv_websocket_frame(call, timeout);
         return false;
     }
-    let result = client
-        .receiver()
-        .is_some_and(|mut parser| client.recv_response(&mut parser, timeout));
+    let result = client.recv_response(&mut parser, timeout);
     finish(client, call, result)
 }
 
