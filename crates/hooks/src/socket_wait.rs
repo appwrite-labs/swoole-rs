@@ -242,7 +242,8 @@ pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_reactor::Socket<'_
         let co = socket.with_state(|state| state.co(event));
         if !co.is_null() {
             set_err(socket, 0);
-            (NATIVE.resume)(co);
+            // SAFETY: the coroutine bound for `event`, parked in its wait on `socket`.
+            unsafe { (NATIVE.resume)(co) };
         }
     }
 }

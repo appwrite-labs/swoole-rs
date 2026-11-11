@@ -106,8 +106,7 @@ pub fn socket_cast(value: &Value) -> c_int {
         let (fd, message, code) = if fd == -1 {
             (-2, c"invalid socket fd", libc::EBADF)
         } else {
-            // SAFETY: a descriptor the socket owns.
-            let dup = unsafe { libc::dup(fd) };
+            let dup = swoole_rs_corebase::sys::dup(fd);
             if dup != -1 {
                 return dup;
             }

@@ -37,9 +37,7 @@ impl File {
     fn read(&self, offset: i64, buf: &mut [u8], pooled: bool) -> Option<usize> {
         let fd = self.0;
         let mut result = -1;
-        let mut read = || {
-            result = swoole_rs_corebase::sys::pread(fd, buf, offset);
-        };
+        let mut read = || result = swoole_rs_corebase::sys::pread(fd, buf, offset);
         if pooled {
             if !async_job(&mut read) {
                 return None;
@@ -53,7 +51,6 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        // The descriptor `open` made, closed once.
         swoole_rs_corebase::sys::close(self.0);
     }
 }

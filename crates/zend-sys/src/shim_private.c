@@ -32,12 +32,21 @@ int swr_zend_try_facade_user_call(zval *name, uint32_t argc, zval *argv, zval *r
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
+/* A non-null `then` runs in the same zend_try once the coroutine runs or waits and no
+ * exception is pending, and *ran says so: the caller's work after the call costs no
+ * second setjmp (#3260). No bailout is pending there: a coroutine raises its own. */
 int swr_zend_try_facade_coroutine(long (*create)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
                                   zend_fcall_info_cache *cache, uint32_t argc, zval *argv, zval *callable,
-                                  long *result) {
+                                  long *result, swr_zend_then then, void *arg, bool *ran) {
     volatile int bailed = 0;
     uint8_t raised = 0; /* read only when nothing jumped */
-    SWR_ZEND_TRY { *result = create(cache, argc, argv, callable, &raised); }
+    SWR_ZEND_TRY {
+        *result = create(cache, argc, argv, callable, &raised);
+        if (then && !raised && *result >= 0 && !EG(exception)) {
+            *ran = true;
+            then(arg);
+        }
+    }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed || raised;
 }

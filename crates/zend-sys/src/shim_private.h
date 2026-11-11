@@ -12,8 +12,11 @@ void swr_zend_facade_object_release(void *);
 zend_object *swr_zend_facade_exception(void);
 void swr_zend_facade_exception_error(void *);
 int swr_zend_try_facade_user_call(zval *, uint32_t, zval *, zval *, int *);
+/* Work after a coroutine call, inside its zend_try (zend::host::Then). */
+typedef void (*swr_zend_then)(void *);
 int swr_zend_try_facade_coroutine(long (*)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
-                                  zend_fcall_info_cache *, uint32_t, zval *, zval *, long *);
+                                  zend_fcall_info_cache *, uint32_t, zval *, zval *, long *,
+                                  swr_zend_then, void *, bool *);
 int swr_zend_try_facade_palloc(size_t, void **);
 void swr_zend_facade_pfree(void *);
 int swr_zend_try_facade_pstring(const char *, size_t, zend_string **);

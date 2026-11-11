@@ -129,7 +129,8 @@ fn select(call: &Call) {
     )]
     let wait = (timeout * 1000.0) as c_int;
     let ready = loop {
-        let ready = swoole_rs_corebase::sys::poll(fds.get_mut(..count).unwrap_or_default(), wait);
+        let polled = fds.get_mut(..count).unwrap_or_default();
+        let ready = swoole_rs_corebase::sys::poll(polled, wait);
         if !(ready < 0 && errno() == libc::EINTR) {
             break ready;
         }
