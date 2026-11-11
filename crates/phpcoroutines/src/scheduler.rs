@@ -11,7 +11,8 @@ use std::{
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
-    Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, Parsed, Value,
+    Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, Parsed,
+    Value,
     bailout::{self, Bailout},
     kind, message,
     sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL, zval},

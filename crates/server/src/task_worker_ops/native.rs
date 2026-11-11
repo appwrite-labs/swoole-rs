@@ -107,11 +107,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// `TaskWorker_onTask`: the pool's task callback.
-extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: &mut DataHead) -> c_int {
-    run_task(task_pool(pool), worker, task)
+extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+    run_task(task_pool(pool), worker, task.as_ptr().cast())
 }
 
-/// The task pool its callbacks are passed.
+/// The task pool its callbacks are passed: [`TaskFn`]'s contract makes it the
+/// server's.
+///
+/// [`TaskFn`]: swoole_rs_process::process_pool::TaskFn
 fn task_pool(pool: PoolRef<'_>) -> TaskPool<'_> {
     TaskPool {
         raw: pool.raw(),

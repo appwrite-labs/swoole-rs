@@ -156,12 +156,6 @@ fn construct(call: &Call) {
     }
 }
 
-/// `pthread_self()`.
-fn me() -> libc::pthread_t {
-    // SAFETY: no preconditions.
-    unsafe { libc::pthread_self() }
-}
-
 /// An empty `sched_param`.
 fn sched_param() -> libc::sched_param {
     // SAFETY: an all-zero sched_param is valid.
@@ -204,7 +198,7 @@ fn get_arguments(call: &Call) {
 }
 
 fn get_id(call: &Call) {
-    let id = me();
+    let id = swoole_rs_ossupport::pthread_self();
     #[expect(
         clippy::cast_possible_wrap,
         reason = "upstream's (zend_long) pthread_t"
@@ -292,7 +286,7 @@ fn set_priority(call: &Call) {
         reason = "upstream's int conversions"
     )]
     let mut sched_policy = policy as c_int;
-    let me = me();
+    let me = swoole_rs_ossupport::pthread_self();
     if policy == -1 {
         // SAFETY: writable locals.
         unsafe { libc::pthread_getschedparam(me, &raw mut sched_policy, &raw mut param) };
@@ -317,7 +311,14 @@ fn get_priority(call: &Call) {
     let mut param = sched_param();
     let mut policy: c_int = 0;
     // SAFETY: writable locals.
-    if unsafe { libc::pthread_getschedparam(me(), &raw mut policy, &raw mut param) } != 0 {
+    if unsafe {
+        libc::pthread_getschedparam(
+            swoole_rs_ossupport::pthread_self(),
+            &raw mut policy,
+            &raw mut param,
+        )
+    } != 0
+    {
         warn(&message!("pthread_getschedparam() failed"));
         call.set_bool(false);
         return;

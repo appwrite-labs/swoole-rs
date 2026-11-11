@@ -846,8 +846,7 @@ fn shutdown(call: &Call) {
     if let Some(connections) = server.clients.array() {
         connections.for_each(|key, connection| {
             let ArrayKey::Index(index) = key else { return };
-            // SAFETY: a socket object in the server's array.
-            let socket = unsafe { get_socket(connection.as_ptr()) };
+            let socket = get_socket(connection);
             // SAFETY: the object's live socket.
             let socket = unsafe { Co::of(socket) };
             let waiting_now =
@@ -917,8 +916,10 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     };
-    // SAFETY: a coroutine socket object.
-    let socket = unsafe { get_socket(zconn) };
+    let socket = call
+        .value(1)
+        .map(Value::dereferenced)
+        .map_or(ptr::null_mut(), get_socket);
     // SAFETY: the object's live socket, which the server's array keeps.
     let socket = unsafe { Co::of(socket) };
     // The request allocator first.
@@ -1102,7 +1103,8 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         released?;
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
-        if !running || !keep_alive || unsafe { is_socket_closed(conn.zconn) } {
+        let zconn = unsafe { Value::from_ptr(conn.zconn) };
+        if !running || !keep_alive || zconn.is_none_or(is_socket_closed) {
             break;
         }
         header_completed = false;
