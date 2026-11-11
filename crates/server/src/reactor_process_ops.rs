@@ -119,8 +119,8 @@ pub fn release_abandoned_server() -> Option<*mut c_void> {
     if !server.ran_its_single_worker_here() {
         return None;
     }
-    // SAFETY: the live event pool only this process uses; destroy frees each part once.
-    unsafe { pool_destroy(server.workers().event_pool.cast()) };
+    // The live event pool only this process uses; destroy frees each part once.
+    pool_destroy(server.event_pool_ref());
     crate::master_ops::release_abandoned_base(server);
     Some(serv)
 }
@@ -177,8 +177,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_SINGLE_WORKER => u64::from(ctx.server().is_single_worker()),
         OP_START_MANAGER => sign(crate::manager_ops::start_manager_process(ctx.server())),
         OP_POOL_DESTROY => {
-            // SAFETY: the server's live event worker pool.
-            unsafe { pool_destroy(ctx.workers().event_pool.cast()) };
+            pool_destroy(ctx.server().event_pool_ref());
             0
         }
         OP_ALL_WORKER_NUM => {
@@ -196,7 +195,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode == TASK_IPC_UNIXSOCK),
         OP_TASK_POOL_WORKER_NUM => {
             // SAFETY: the server's live task pool.
-            u64::from(unsafe { (*ctx.workers().task_pool).worker_num })
+            u64::from(unsafe { (*ctx.workers().task_pool).worker_num() })
         }
         OP_INIT_REACTOR => {
             // SAFETY: the context's live server and the running reactor.

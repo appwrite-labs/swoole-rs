@@ -823,7 +823,7 @@ fn restart_worker_process() {
     // SAFETY: the created server's event pool, which follows its task pool, and its
     // event workers; then the task worker, and the task pool it joins.
     unsafe {
-        (*pool.add(1)).workers = serv.config().workers.cast();
+        (*pool.add(1)).set_workers(serv.config().workers.cast());
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }

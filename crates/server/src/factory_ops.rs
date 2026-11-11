@@ -482,7 +482,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         let pool = unsafe { &*ctx.task_pool() };
         let index = usize::try_from(arg).unwrap_or(usize::MAX);
         // SAFETY: a task worker of it; arg is below task_worker_num.
-        unsafe { Worker::new(pool.workers.wrapping_add(index)).pid() }
+        unsafe { Worker::new(pool.workers().wrapping_add(index)).pid() }
     };
     let waitpid = |pid| signed(swoole_waitpid(pid, None, 0));
     Some(match op {
@@ -508,7 +508,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_HAS_MESSAGE_BOX => {
             // SAFETY: the server's live event pool.
-            u64::from(!unsafe { (*ctx.workers().event_pool).message_box }.is_null())
+            u64::from(!unsafe { (*ctx.workers().event_pool).message_box() }.is_null())
         }
         OP_INIT_IPC_MAX_SIZE => {
             // SAFETY: the live server.
@@ -535,8 +535,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_KILL_TASK_POOL => {
-            // SAFETY: the server's live task pool.
-            unsafe { kill_all_workers(ctx.task_pool(), libc::SIGTERM) };
+            kill_all_workers(ctx.server().task_pool_ref(), libc::SIGTERM);
             0
         }
         OP_WAIT_TASK_WORKER => waitpid(task_worker_pid()),

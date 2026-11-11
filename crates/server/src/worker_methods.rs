@@ -105,9 +105,7 @@ pub unsafe fn init_ipc_max_size(serv: view::Server<'_>) {
 pub unsafe fn destroy_task_workers(serv: view::Server<'_>) {
     // SAFETY: the server is shutting down on this thread, with no other reference to the field.
     unsafe { serv.config_mut() }.task_results.free();
-    let pool = serv.task_pool();
-    // SAFETY: the server's live task pool.
-    unsafe { swoole_rs_process::methods::destroy(pool) };
+    swoole_rs_process::methods::destroy(serv.task_pool_ref());
 }
 
 /// `Lock::MUTEX`: the kind of a worker's lock.

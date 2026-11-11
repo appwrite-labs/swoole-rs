@@ -11,8 +11,8 @@ use crate::pool::{
     swr_v1_process_pool_ipc_set_listener, swr_v1_process_worker_send,
 };
 use crate::process_pool::{
-    PoolNative, PoolRecord, RAISE, RUN_CREATE_MESSAGE_BOX, RUN_CREATE_MESSAGE_BUS, RUN_DESTROY,
-    RUN_DETACH, RUN_DROP_RELOAD_TASK, RUN_KILL_ALL, RUN_PUSH_MESSAGE, RUN_RELOAD,
+    PoolNative, PoolRecord, PoolRef, RAISE, RUN_CREATE_MESSAGE_BOX, RUN_CREATE_MESSAGE_BUS,
+    RUN_DESTROY, RUN_DETACH, RUN_DROP_RELOAD_TASK, RUN_KILL_ALL, RUN_PUSH_MESSAGE, RUN_RELOAD,
     RUN_REOPEN_LOGGER, RUN_SET_MAX_REQUEST, RUN_SET_PROTOCOL, RUN_SET_START_ID, RUN_SET_TYPE,
     RUN_SHUTDOWN, RUN_SIGNAL, RUN_SPAWN, RUN_START, RUN_START_CHECK, RUN_STOP, RUN_WAIT,
     pool_run_op, swr_v1_process_pool_create, swr_v1_process_pool_dispatch_event,
@@ -97,70 +97,100 @@ impl Narrow for c_int {
 /// frames are gone. This frame holds nothing, so the `longjmp` may cross it.
 ///
 /// # Safety
-/// `pool` is a live `ProcessPool` and `worker` null or one of its workers.
-unsafe fn run<R: Narrow>(pool: *mut PoolRecord, worker: *mut WorkerRecord, op: u32, arg: u64) -> R {
-    // SAFETY: as the caller guarantees; the side is native's.
-    let result = unsafe { pool_run_op(native(), pool, worker, op, arg) };
+/// `worker` is null or one of the pool's workers.
+unsafe fn run_on<R: Narrow>(pool: PoolRef<'_>, worker: *mut WorkerRecord, op: u32, arg: u64) -> R {
+    // SAFETY: a live pool, and the caller's worker; the side is native's.
+    let result = unsafe { pool_run_op(native(), pool.raw(), worker, op, arg) };
     if result == RAISE {
         raise_bailout();
     }
     R::narrow(result)
 }
 
-/// Each `ProcessPool` method that is one `RUN_*` operation: its name, parameters, return
-/// type, and the operation's worker and argument.
+/// [`run_on`] the pool itself.
+fn run<R: Narrow>(pool: PoolRef<'_>, op: u32, arg: u64) -> R {
+    // SAFETY: no worker.
+    unsafe { run_on(pool, ptr::null_mut(), op, arg) }
+}
+
+/// Each `ProcessPool` method that is one `RUN_*` operation on the pool alone: its
+/// name, parameters, return type, and the operation's argument.
 macro_rules! run_methods {
-    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
+    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($arg:expr);)*) => {$(
         #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
-        ///
-        /// # Safety
-        /// `pool` is a live `ProcessPool`; a `worker` is one of its workers.
-        pub unsafe fn $name(pool: *mut PoolRecord, $($p: $t),*) -> $r {
-            // SAFETY: as the caller guarantees.
-            unsafe { run(pool, $worker, $op, $arg) }
+        pub fn $name(pool: PoolRef<'_>, $($p: $t),*) -> $r {
+            run(pool, $op, $arg)
         }
     )*};
 }
 
 run_methods! {
-    fn create_message_box(size: usize) -> c_int = RUN_CREATE_MESSAGE_BOX(ptr::null_mut(), size as u64);
-    fn create_message_bus() -> c_int = RUN_CREATE_MESSAGE_BUS(ptr::null_mut(), 0);
-    fn set_protocol(protocol: c_int) -> () = RUN_SET_PROTOCOL(ptr::null_mut(), i64::from(protocol).cast_unsigned());
-    fn start_check() -> c_int = RUN_START_CHECK(ptr::null_mut(), 0);
-    fn start() -> c_int = RUN_START(ptr::null_mut(), 0);
-    fn push_event(event: *const c_void) -> c_int = RUN_PUSH_MESSAGE(ptr::null_mut(), event.addr() as u64);
-    fn drop_reload_task() -> () = RUN_DROP_RELOAD_TASK(ptr::null_mut(), 0);
-    fn reload() -> bool = RUN_RELOAD(ptr::null_mut(), 0);
-    fn stop(worker: *mut WorkerRecord) -> () = RUN_STOP(worker, 0);
-    fn reopen_logger() -> () = RUN_REOPEN_LOGGER(ptr::null_mut(), 0);
-    fn signal(signo: c_int, worker: *mut WorkerRecord) -> () = RUN_SIGNAL(worker, i64::from(signo).cast_unsigned());
-    fn kill_all_workers(signo: c_int) -> () = RUN_KILL_ALL(ptr::null_mut(), i64::from(signo).cast_unsigned());
-    fn shutdown() -> bool = RUN_SHUTDOWN(ptr::null_mut(), 0);
-    fn spawn(worker: *mut WorkerRecord) -> c_int = RUN_SPAWN(worker, 0);
-    fn set_max_request(max: u32, grace: u32) -> () = RUN_SET_MAX_REQUEST(ptr::null_mut(), u64::from(max) | (u64::from(grace) << 32));
-    fn set_type(kind: c_int) -> () = RUN_SET_TYPE(ptr::null_mut(), u64::from(kind.cast_unsigned() & 0xff));
-    fn set_start_id(id: c_int) -> () = RUN_SET_START_ID(ptr::null_mut(), u64::from(id.cast_unsigned() & 0xffff));
-    fn detach() -> bool = RUN_DETACH(ptr::null_mut(), 0);
-    fn wait() -> c_int = RUN_WAIT(ptr::null_mut(), 0);
-    fn destroy() -> () = RUN_DESTROY(ptr::null_mut(), 0);
+    fn create_message_box(size: usize) -> c_int = RUN_CREATE_MESSAGE_BOX(size as u64);
+    fn create_message_bus() -> c_int = RUN_CREATE_MESSAGE_BUS(0);
+    fn set_protocol(protocol: c_int) -> () = RUN_SET_PROTOCOL(i64::from(protocol).cast_unsigned());
+    fn start_check() -> c_int = RUN_START_CHECK(0);
+    fn start() -> c_int = RUN_START(0);
+    fn drop_reload_task() -> () = RUN_DROP_RELOAD_TASK(0);
+    fn reload() -> bool = RUN_RELOAD(0);
+    fn reopen_logger() -> () = RUN_REOPEN_LOGGER(0);
+    fn kill_all_workers(signo: c_int) -> () = RUN_KILL_ALL(i64::from(signo).cast_unsigned());
+    fn shutdown() -> bool = RUN_SHUTDOWN(0);
+    fn set_max_request(max: u32, grace: u32) -> () = RUN_SET_MAX_REQUEST(u64::from(max) | (u64::from(grace) << 32));
+    fn set_type(kind: c_int) -> () = RUN_SET_TYPE(u64::from(kind.cast_unsigned() & 0xff));
+    fn set_start_id(id: c_int) -> () = RUN_SET_START_ID(u64::from(id.cast_unsigned() & 0xffff));
+    fn detach() -> bool = RUN_DETACH(0);
+    fn wait() -> c_int = RUN_WAIT(0);
+    fn destroy() -> () = RUN_DESTROY(0);
+}
+
+/// `ProcessPool::push_message(event)`: the `EventData` at `event`.
+///
+/// # Safety
+/// `event` is an `EventData`.
+#[must_use]
+pub unsafe fn push_event(pool: PoolRef<'_>, event: *const c_void) -> c_int {
+    // SAFETY: no worker; the caller's event.
+    unsafe { run_on(pool, ptr::null_mut(), RUN_PUSH_MESSAGE, event.addr() as u64) }
+}
+
+/// `ProcessPool::stop(worker)`.
+///
+/// # Safety
+/// `worker` is one of the pool's workers.
+pub unsafe fn stop(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+    // SAFETY: as the caller guarantees.
+    unsafe { run_on(pool, worker, RUN_STOP, 0) }
+}
+
+/// `ProcessPool::signal(signo, worker)`.
+///
+/// # Safety
+/// `worker` is null or one of the pool's workers.
+pub unsafe fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
+    // SAFETY: as the caller guarantees.
+    unsafe { run_on(pool, worker, RUN_SIGNAL, i64::from(signo).cast_unsigned()) }
+}
+
+/// `ProcessPool::spawn(worker)`.
+///
+/// # Safety
+/// `worker` is one of the pool's workers.
+pub unsafe fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) -> c_int {
+    // SAFETY: as the caller guarantees.
+    unsafe { run_on(pool, worker, RUN_SPAWN, 0) }
 }
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.
-///
-/// # Safety
-/// `pool` is a zeroed or reset `ProcessPool`.
-pub unsafe fn create(pool: *mut PoolRecord, worker_num: u32, key: c_int, mode: c_int) -> c_int {
-    // SAFETY: as the caller guarantees; the side is native's.
-    let result = unsafe {
-        swr_v1_process_pool_create(
-            native(),
-            pool,
-            worker_num,
-            key,
-            u8::try_from(mode.cast_unsigned() & 0xff).unwrap_or_default(),
-        )
-    };
-    c_int::narrow(result)
+#[must_use]
+pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> c_int {
+    let mode = u8::try_from(mode.cast_unsigned() & 0xff).unwrap_or_default();
+    c_int::narrow(swr_v1_process_pool_create(
+        native(),
+        pool,
+        worker_num,
+        key,
+        mode,
+    ))
 }
 
 /// `ProcessPool::push_message(type, data, length)`.

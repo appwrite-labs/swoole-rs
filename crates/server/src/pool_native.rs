@@ -126,7 +126,7 @@ fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
 /// The pool's IPC state, borrowed for one step.
 fn ipc<'a>(pool: Pool) -> &'a mut swoole_rs_process::pool::PoolIpc {
     // SAFETY: a live pool's IPC state lives as long as the pool.
-    unsafe { &mut *record(pool).ipc }
+    unsafe { &mut *record(pool).ipc() }
 }
 
 /// The pool's stream listener socket, or null.
@@ -166,7 +166,7 @@ fn exit_status(exited: u64) -> ExitStatus {
 
 fn bus_of(pool: Pool) -> crate::objects::Bus {
     // SAFETY: the pool's bus, which `OP_NEW_MESSAGE_BUS` made.
-    unsafe { crate::objects::Bus::of(record(pool).message_bus) }
+    unsafe { crate::objects::Bus::of(record(pool).message_bus()) }
 }
 
 /// `MessageBus::read(sock)`.
@@ -241,15 +241,15 @@ fn bus_deliver(pool: Pool) {
     bus.pop();
 }
 
-fn new_message_bus(pool: Pool) -> i64 {
+/// The pool's new bus, which the pool keeps; null when its counter can't be allocated.
+fn new_message_bus() -> *mut c_void {
     let msg_id = mem_pool::alloc(8).cast::<i64>();
     if msg_id.is_null() {
-        return 0;
+        return ptr::null_mut();
     }
     // SAFETY: a fresh, aligned counter.
     unsafe { msg_id.write(1) };
-    record(pool).message_bus = new_bus(msg_id.cast());
-    1
+    new_bus(msg_id.cast())
 }
 
 /// `new MessageBus()` numbering its messages from `counter`, which outlives it;
@@ -271,7 +271,7 @@ fn bus_buffer(pool: Pool, size: u64) -> i64 {
 
 fn free_message_bus(pool: Pool) {
     // SAFETY: `new_message_bus`'s bus, freed once.
-    unsafe { free_bus(record(pool).message_bus) };
+    unsafe { free_bus(record(pool).message_bus()) };
 }
 
 /// `delete bus`.
@@ -291,7 +291,7 @@ pub(crate) unsafe fn free_bus(bus: *mut c_void) {
 type Pipes = Vec<*mut SocketPair>;
 
 fn free_pipes(pool: Pool) {
-    let pipes = record(pool).pipes.cast::<Pipes>();
+    let pipes = record(pool).pipes().cast::<Pipes>();
     if pipes.is_null() {
         return;
     }
@@ -308,13 +308,13 @@ fn new_pipe(pool: Pool, worker: Worker) -> i64 {
     let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
+        // The pool forgets the list when this fails.
         free_pipes(pool);
-        record(pool).pipes = ptr::null_mut();
         return 0;
     }
     let pair = Box::into_raw(built);
     // SAFETY: `OP_NEW_PIPES` made the list.
-    unsafe { &mut *record(pool).pipes.cast::<Pipes>() }.push(pair);
+    unsafe { &mut *record(pool).pipes().cast::<Pipes>() }.push(pair);
     let worker = worker_of(worker);
     worker.pipe_master = master.cast();
     worker.pipe_worker = end.cast();
@@ -367,12 +367,12 @@ fn box_push(pool: Pool, message: *const u8) -> i64 {
     let message = unsafe { std::slice::from_raw_parts(message, length) };
     // SAFETY: the box `new_message_box` made, live while the pool is; its SW_CHAN_LOCK
     // mutex serializes the processes that push to and pop from it.
-    let channel = unsafe { &*record(pool).message_box.cast::<ChannelRecord>() };
+    let channel = unsafe { &*record(pool).message_box().cast::<ChannelRecord>() };
     i64::from(channel.push(message))
 }
 
 pub(crate) fn free_message_box(pool: Pool) {
-    let channel = record(pool).message_box.cast::<ChannelRecord>();
+    let channel = record(pool).message_box().cast::<ChannelRecord>();
     // SAFETY: the box `new_message_box` made, with no other user.
     unsafe { swr_v1_memory_channel_close(channel) };
     // SAFETY: `new_message_box`'s mapping, which the pool's `message_box` only names.
@@ -389,8 +389,7 @@ unsafe extern "C-unwind" fn reload_timeout(task: *mut c_void) {
 }
 
 unsafe extern "C-unwind" fn kill_timeout(pool: *mut c_void) {
-    // SAFETY: the live pool the timer was set for.
-    unsafe { kill_all_workers(pool.cast(), libc::SIGKILL) };
+    kill_all_workers(pool_ref(pool.cast()), libc::SIGKILL);
 }
 
 thread_local! {
@@ -513,24 +512,23 @@ fn loop_ops(op: u32, arg: u64) -> Option<i64> {
     })
 }
 
+/// An object's address as an op's result, which the pool stores (null fails).
+fn address<T>(object: *mut T) -> i64 {
+    object.expose_provenance() as i64
+}
+
 /// `pool_call`'s lifecycle effects: the pool's objects.
 fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
     Some(match op {
         // The message queue is Rust's on every platform (crates/ossupport).
         OP_HAVE_MSGQUEUE => 1,
         OP_ALLOC_WORKERS => {
-            let size = record(pool).worker_num as usize * size_of::<WorkerRecord>();
-            record(pool).workers = mem_pool::alloc(size as u32).cast();
-            i64::from(!record(pool).workers.is_null())
+            // `arg` workers, which the pool counts once they're allocated.
+            let size = arg as usize * size_of::<WorkerRecord>();
+            address(mem_pool::alloc(size as u32))
         }
-        OP_NEW_MESSAGE_BOX => {
-            record(pool).message_box = new_message_box(arg as usize);
-            i64::from(!record(pool).message_box.is_null())
-        }
-        OP_NEW_PIPES => {
-            record(pool).pipes = Box::into_raw(Box::new(Pipes::new())).cast();
-            0
-        }
+        OP_NEW_MESSAGE_BOX => address(new_message_box(arg as usize)),
+        OP_NEW_PIPES => address(Box::into_raw(Box::new(Pipes::new()))),
         OP_NEW_PIPE => new_pipe(pool, worker),
         OP_MAIN_LOOP => {
             record(pool).main_loop = Some(match arg {
@@ -541,7 +539,7 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             });
             0
         }
-        OP_NEW_MESSAGE_BUS => new_message_bus(pool),
+        OP_NEW_MESSAGE_BUS => address(new_message_bus()),
         OP_SNDBUF => {
             let mut size: c_int = 0;
             let fd = fd(worker_of(worker).pipe_master);
@@ -652,7 +650,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
                 .for_each(swoole_rs_utilities::Logger::reopen);
         }
         OP_RELOAD_TIMER => {
-            let task = record(pool).reload_task;
+            let task = record(pool).reload_task();
             // SAFETY: `reload_timeout` takes the pool's reload task, which
             // deletes the timer before it goes.
             let timer = unsafe {
@@ -830,10 +828,14 @@ impl PoolNative for Native {
 
     fn queue_pop(&self, c: &mut PoolCall) {
         io(c, |c| {
+            let queue = record(c.pool().cast()).queue();
+            if queue.is_null() {
+                return -1;
+            }
             // SAFETY: the pool's queue and the call's buffer.
             unsafe {
                 swoole_rs_ossupport::swr_v1_os_msg_queue_pop(
-                    record(c.pool().cast()).queue.cast(),
+                    queue.cast(),
                     c.data().cast(),
                     c.length(),
                 )
@@ -843,10 +845,14 @@ impl PoolNative for Native {
 
     fn queue_push(&self, c: &mut PoolCall) {
         io(c, |c| {
+            let queue = record(c.pool().cast()).queue();
+            if queue.is_null() {
+                return 0;
+            }
             // SAFETY: the pool's queue and the call's message.
             let pushed = unsafe {
                 swoole_rs_ossupport::swr_v1_os_msg_queue_push(
-                    record(c.pool().cast()).queue.cast(),
+                    queue.cast(),
                     c.data().cast(),
                     c.length(),
                 )
@@ -972,10 +978,11 @@ impl PoolNative for Native {
         match kind {
             WARN_MSGRCV => {
                 let queue = record(pool)
-                    .queue
+                    .queue()
                     .cast::<swoole_rs_ossupport::QueueRecord>();
-                // SAFETY: the pool's live queue.
-                let queue = unsafe { &*queue }.id();
+                // SAFETY: null, or the pool's live queue.
+                let queue =
+                    unsafe { queue.as_ref() }.map_or(0, swoole_rs_ossupport::QueueRecord::id);
                 log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
             }
             WARN_ACCEPT => {

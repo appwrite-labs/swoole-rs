@@ -78,8 +78,7 @@ fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
 fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: bool) -> Option<Pool> {
     // SAFETY: every `ProcessPool` field is an integer, a bool or a pointer.
     let pool = Box::into_raw(unsafe { Box::<PoolRecord>::new_zeroed().assume_init() });
-    // SAFETY: a zeroed pool.
-    if unsafe { methods::create(pool, worker_num, key, ipc) } < 0 {
+    if methods::create(handle(pool), worker_num, key, ipc) < 0 {
         // SAFETY: the allocation above, which nothing else holds.
         drop(unsafe { Box::from_raw(pool) });
         return None;
@@ -93,8 +92,7 @@ fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: boo
 fn pool_free(pool: Pool) {
     // SAFETY: the zval copy `pool_new` made.
     drop(unsafe { Box::from_raw(record(pool).ptr.cast::<zval>()) });
-    // SAFETY: a created pool.
-    unsafe { methods::destroy(pool) };
+    methods::destroy(handle(pool));
     // SAFETY: the allocation `pool_new` made.
     drop(unsafe { Box::from_raw(pool) });
 }
@@ -126,7 +124,7 @@ fn message_data(pool: Pool, message: &RecvData) -> Owned {
         let packet = unsafe { ZBuf::from_raw(string::from_val(data), length) };
         // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
         // string is now the caller's.
-        unsafe { swoole_rs_server::bus_move_packet(record(pool).message_bus) };
+        unsafe { swoole_rs_server::bus_move_packet(record(pool).message_bus()) };
         packet.into_zstring()
     } else {
         // SAFETY: `length` bytes at `data`.
@@ -215,6 +213,11 @@ fn checked(object: Option<&PoolObject>) -> Pool {
 
 fn view<'a>(pool: Pool) -> &'a PoolRecord {
     record(pool)
+}
+
+/// A pool this module created, to run pool operations on.
+fn handle<'a>(pool: Pool) -> PoolRef<'a> {
+    record(pool).into()
 }
 
 method_table! {
@@ -338,7 +341,13 @@ unsafe extern "C" fn on_signal(signo: c_int) {
 /// `ProcessPool::signal` in this process's worker (or null).
 fn signal(pool: Pool, signo: c_int) {
     // SAFETY: the running pool and this process's worker (or null).
-    unsafe { methods::signal(pool, signo, CURRENT_WORKER.load(Ordering::Acquire).cast()) };
+    unsafe {
+        methods::signal(
+            handle(pool),
+            signo,
+            CURRENT_WORKER.load(Ordering::Acquire).cast(),
+        );
+    }
 }
 
 /// The object a pool callback belongs to, and its data.
@@ -722,7 +731,7 @@ fn listen(call: &Call) {
         )
     };
     // SAFETY: the pool's IPC state.
-    let socket = swr_v1_process_pool_ipc_listener(unsafe { &*record(pool).ipc });
+    let socket = swr_v1_process_pool_ipc_listener(unsafe { &*record(pool).ipc() });
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
         socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
@@ -857,13 +866,11 @@ fn start(call: &Call) {
     if this.enable_coroutine.get() && this.on_worker_exit.is_set() {
         record.on_worker_exit = Some(on_worker_exit);
     }
-    // SAFETY: a created pool; runs the master loop until the pool stops.
-    if unsafe { methods::start(pool) } < 0 {
+    if methods::start(handle(pool)) < 0 {
         call.set_bool(false);
         return;
     }
-    // SAFETY: as above.
-    unsafe { methods::wait(pool) };
+    methods::wait(handle(pool));
     CURRENT.store(ptr::null_mut(), Ordering::Release);
     for (signo, old) in signals.iter().zip(previous) {
         if *signo != 0 {
@@ -877,19 +884,16 @@ fn start(call: &Call) {
 /// a stream.
 fn protocol(pool: Pool, message_bus: bool) -> bool {
     if !message_bus {
-        // SAFETY: a created pool.
-        unsafe { methods::set_protocol(pool, PROTOCOL_STREAM) };
+        methods::set_protocol(handle(pool), PROTOCOL_STREAM);
         return true;
     }
-    // SAFETY: as above.
-    if record(pool).message_bus.is_null() && unsafe { methods::create_message_bus(pool) } != 0 {
+    if record(pool).message_bus().is_null() && methods::create_message_bus(handle(pool)) != 0 {
         return false;
     }
-    let bus = record(pool).message_bus.cast::<BusHead>();
+    let bus = record(pool).message_bus().cast::<BusHead>();
     // SAFETY: the pool's message bus, whose allocator its next buffer uses.
     unsafe { (*bus).allocator = swoole_rs_phpswoole::sw_zend_string_allocator() };
-    // SAFETY: a created pool.
-    unsafe { methods::set_protocol(pool, PROTOCOL_MESSAGE) };
+    methods::set_protocol(handle(pool), PROTOCOL_MESSAGE);
     true
 }
 
@@ -899,8 +903,7 @@ fn detach(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the running pool.
-    call.set_bool(unsafe { methods::detach(pool) });
+    call.set_bool(methods::detach(handle(pool)));
 }
 
 fn get_process(call: &Call) {
@@ -914,7 +917,7 @@ fn get_process(call: &Call) {
         return;
     };
     let view = view(pool);
-    if id >= i64::from(view.worker_num) {
+    if id >= i64::from(view.worker_num()) {
         notice(E_WARNING, &message!("invalid worker_id[{id}]"));
         call.set_bool(false);
         return;
@@ -967,7 +970,7 @@ fn get_process(call: &Call) {
                     reason = "a checked worker id"
                 )]
                 // SAFETY: the running pool's worker `id`.
-                let pid = unsafe { Worker::new(view.workers.wrapping_add(id as usize)).pid() };
+                let pid = unsafe { Worker::new(view.workers().wrapping_add(id as usize)).pid() };
                 if worker_pid(worker) != pid {
                     crate::worker::record(worker).set_pid(pid);
                     if let Some(props) = found.props(Some(class)) {
@@ -1002,8 +1005,7 @@ fn shutdown(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the running pool.
-    call.set_bool(unsafe { methods::shutdown(pool) });
+    call.set_bool(methods::shutdown(handle(pool)));
 }
 
 handlers! {

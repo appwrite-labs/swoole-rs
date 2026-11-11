@@ -239,7 +239,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_SET_SYSVMSG => ctx.pool().edit(|pool| pool.schedule_by_sysvmsg = true),
         OP_CREATE_TASK_WORKER => {
             let id = usize::try_from(arg).ok()?;
-            let worker = ctx.pool().edit(|pool| pool.workers.wrapping_add(id));
+            let worker = ctx.pool().edit(|pool| pool.workers().wrapping_add(id));
             // SAFETY: the live server and its task worker `arg`, one of `task_worker_num`.
             unsafe { crate::worker_methods::create_worker(ctx.server, worker) };
         }
@@ -385,7 +385,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // Only a stream pool has IPC state: an event worker's pool has none.
             ctx.socket = if pool.use_socket != 0 {
                 // SAFETY: the stream pool's live IPC state.
-                swoole_rs_process::pool::pool_ipc_connection(unsafe { &*pool.ipc }).cast()
+                swoole_rs_process::pool::pool_ipc_connection(unsafe { &*pool.ipc() }).cast()
             } else {
                 core::ptr::null_mut()
             };
