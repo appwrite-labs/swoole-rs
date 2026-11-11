@@ -992,11 +992,7 @@ impl Connection<'_> {
     }
 
     fn data(&self, from: usize, to: usize) -> &[u8] {
-        let buffer = self.buffer();
-        // SAFETY: `from..to` lies within the buffer's `length` bytes.
-        let start = unsafe { buffer.str.add(from) };
-        // SAFETY: as above.
-        unsafe { std::slice::from_raw_parts(start, to - from) }
+        self.buffer().view().get(from..to).unwrap_or_default()
     }
 
     fn package_max_length(&self) -> usize {
@@ -1092,13 +1088,15 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         if matches!(step, Step::Recv) {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
-            let free = buffer.str.wrapping_add(buffer.length).cast();
+            let (length, size) = (buffer.len(), buffer.size());
+            let free = buffer.as_mut_ptr().wrapping_add(length).cast();
             // SAFETY: a live socket and its buffer's free space.
-            let received = unsafe { co::recv(conn.socket, free, buffer.size - buffer.length) };
+            let received = unsafe { co::recv(conn.socket, free, size - length) };
             if received <= 0 {
                 break;
             }
-            buffer.length += received.cast_unsigned();
+            // SAFETY: the receive wrote `received` bytes into the free space.
+            unsafe { buffer.set_len(length + received.cast_unsigned()) };
         }
         step = Step::Recv;
         if context.is_null() {
@@ -1106,9 +1104,9 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         }
         let max = conn.package_max_length();
         if !header_completed {
-            let length = conn.buffer().length;
+            let length = conn.buffer().len();
             let Some(pos) = find_crlf2(conn.data(crlf_offset, length)) else {
-                if length == conn.buffer().size {
+                if length == conn.buffer().size() {
                     send::state(context).response.status = ENTITY_TOO_LARGE;
                     break;
                 }
@@ -1123,18 +1121,19 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 send::state(context).response.status = ENTITY_TOO_LARGE;
                 break;
             }
-            if parse(context, conn.buffer().str, header_length) != header_length {
+            if parse(context, conn.buffer().as_mut_ptr(), header_length) != header_length {
                 send::state(context).response.status = BAD_REQUEST;
                 break;
             }
-            conn.buffer().offset += i64::try_from(header_length).unwrap_or(i64::MAX);
+            let buffer = conn.buffer();
+            buffer.set_offset(buffer.offset() + i64::try_from(header_length).unwrap_or(i64::MAX));
             let content_length = send::state(context).parser.content_length;
             if content_length > (max - header_length) as u64 {
                 send::state(context).response.status = ENTITY_TOO_LARGE;
                 break;
             }
             total = header_length + usize::try_from(content_length).unwrap_or(usize::MAX);
-            if total > conn.buffer().size {
+            if total > conn.buffer().size() {
                 conn.buffer().extend(total);
             }
             // Once per request, so the interim response is not repeated.
@@ -1147,18 +1146,23 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         }
         if send::state(context).completed == 0 {
             let chunked = send::state(context).recv_chunked != 0;
-            if !chunked && conn.buffer().length < total {
+            if !chunked && conn.buffer().len() < total {
                 continue;
             }
-            let offset = usize::try_from(conn.buffer().offset).unwrap_or(0);
-            let mut length = conn.buffer().length - offset;
+            let offset = usize::try_from(conn.buffer().offset()).unwrap_or(0);
+            let mut length = conn.buffer().len() - offset;
             if chunked {
                 // Body callbacks never see bytes the request limit rejects.
                 length = length.min(max - offset);
             }
-            // SAFETY: `offset + length` lies within the buffer.
-            let parsed = parse(context, unsafe { conn.buffer().str.add(offset) }, length);
-            conn.buffer().offset += i64::try_from(parsed).unwrap_or(i64::MAX);
+            // `offset + length` lies within the buffer.
+            let parsed = parse(
+                context,
+                conn.buffer().as_mut_ptr().wrapping_add(offset),
+                length,
+            );
+            let buffer = conn.buffer();
+            buffer.set_offset(buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX));
             let error = send::state(context).parser.error;
             if error != HPE_OK && error != HPE_PAUSED_H2_UPGRADE {
                 send::state(context).response.status = BAD_REQUEST;
@@ -1166,26 +1170,27 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             }
             if chunked {
                 if send::state(context).completed == 0 {
-                    if conn.buffer().length >= max {
+                    if conn.buffer().len() >= max {
                         send::state(context).response.status = ENTITY_TOO_LARGE;
                         break;
                     }
-                    if conn.buffer().length == conn.buffer().size {
-                        let size = (conn.buffer().size + BUFFER_SIZE_BIG).min(max);
+                    if conn.buffer().len() == conn.buffer().size() {
+                        let size = (conn.buffer().size() + BUFFER_SIZE_BIG).min(max);
                         conn.buffer().extend(size);
                     }
                     continue;
                 }
                 // llhttp pauses at the end of this request, before pipelined bytes.
-                total = usize::try_from(conn.buffer().offset).unwrap_or(0);
+                total = usize::try_from(conn.buffer().offset()).unwrap_or(0);
             }
         }
         add_peer(context, peer);
         if send::state(context).parser.error == HPE_PAUSED_H2_UPGRADE
-            && conn.buffer().length >= HTTP2_PRI.len()
+            && conn.buffer().len() >= HTTP2_PRI.len()
             && conn.data(0, HTTP2_PRI.len()) == HTTP2_PRI
         {
-            conn.buffer().offset = i64::try_from(HTTP2_PRI.len()).unwrap_or(0);
+            conn.buffer()
+                .set_offset(i64::try_from(HTTP2_PRI.len()).unwrap_or(0));
             http2(conn, context);
             context = ptr::null_mut();
             break;
@@ -1209,7 +1214,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             break;
         }
         header_completed = false;
-        if conn.buffer().length > 0 {
+        if conn.buffer().len() > 0 {
             step = Step::Parse;
         }
     }
@@ -1248,7 +1253,7 @@ fn http2(conn: &Connection, context: *mut Context) {
         loop {
             // SAFETY: a live socket; the frame stays in its read buffer.
             let retval = unsafe { co::recv_packet(conn.socket, 0.0) };
-            let frame = conn.buffer().str.cast::<u8>();
+            let frame = conn.buffer().as_mut_ptr();
             // SAFETY: a whole frame.
             if retval <= 0 || unsafe { (server.session_receive)(fd, frame) } == SW_ERR {
                 break;

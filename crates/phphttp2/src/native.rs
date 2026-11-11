@@ -147,7 +147,7 @@ pub(crate) unsafe fn swoole_http2_client_coro_read_buffer(socket: Socket) -> *co
         .read_buffer
         .cast::<swoole_rs_buffer::string::CppString>();
     // SAFETY: as above.
-    unsafe { (*buffer).str }.cast()
+    unsafe { (*buffer).as_ptr() }.cast()
 }
 
 /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.

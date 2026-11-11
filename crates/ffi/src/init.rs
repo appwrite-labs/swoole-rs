@@ -5,7 +5,6 @@
 //! runs (`swoole_rs_corebase::native`). src/fatal.c holds what stays C.
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int, c_void};
-use std::ptr;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::native::{self, LOGGER_NEW, NativeHost};
@@ -33,7 +32,7 @@ extern "C-unwind" fn swoole_init() {
             BUFFER.with(|buffer| {
                 buffer
                     .borrow_mut()
-                    .alloc(SW_STACK_BUFFER_SIZE as usize, ptr::null());
+                    .alloc(SW_STACK_BUFFER_SIZE as usize, None);
                 buffer.as_ptr().cast()
             })
         },

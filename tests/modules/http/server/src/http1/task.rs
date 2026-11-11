@@ -838,7 +838,7 @@ fn task_worker4() {
 /// `Server::task_unpack(task, &buffer, &packet)` into a 32 KiB `String`: the bytes.
 fn unpack(task: *mut c_void) -> Option<Vec<u8>> {
     let mut buffer = CppString::EMPTY;
-    buffer.alloc(32 * 1024, ptr::null());
+    buffer.alloc(32 * 1024, None);
     // SAFETY: a live task and a live String.
     let unpacked = unsafe { task_file::unpack(task, ptr::from_mut(&mut buffer).cast()) };
     let bytes = unpacked.map(|(data, length, _)| {

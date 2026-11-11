@@ -63,7 +63,7 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
             ..DataHead::default()
         },
         // SAFETY: the live String.
-        data: unsafe { (*c.buffer).str },
+        data: unsafe { (*c.buffer).as_mut_ptr() },
     };
     // SAFETY: the live protocol.
     let on_package = unsafe { (*c.protocol).on_package };
@@ -150,15 +150,15 @@ mod tests {
         let mut protocol: Protocol = unsafe { core::mem::zeroed() };
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;
-        buffer.alloc(65536, core::ptr::null());
-        let buffer_size = buffer.size;
+        buffer.alloc(65536, None);
+        let buffer_size = buffer.size();
 
         assert_eq!(
             unsafe { recv_packet(&raw const protocol, (&raw mut conn).cast(), &raw mut buffer) },
             SW_ERR
         );
-        assert_eq!(buffer.length, 1);
-        assert_eq!(buffer.size, buffer_size);
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer.size(), buffer_size);
 
         unsafe { libc::free(conn.object) };
         buffer.dispose();

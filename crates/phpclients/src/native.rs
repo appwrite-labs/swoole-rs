@@ -344,8 +344,7 @@ impl Co {
             && clear_empty
             && let Some(buffer) = self.read_buffer()
         {
-            buffer.length = 0;
-            buffer.offset = 0;
+            buffer.clear();
         }
         retval
     }
@@ -365,7 +364,7 @@ impl Co {
     pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
         let init_size = self.record().buffer_init_size;
         let packet = match self.read_buffer() {
-            Some(buffer) if buffer.offset != 0 => buffer.pop(init_size),
+            Some(buffer) if buffer.offset() != 0 => buffer.pop(init_size),
             _ => ptr::null_mut(),
         };
         if packet.is_null() {

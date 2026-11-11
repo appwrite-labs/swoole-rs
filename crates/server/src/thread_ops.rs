@@ -157,7 +157,7 @@ pub(crate) unsafe fn answer(
             ctx.conn = conn;
             let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
             // SAFETY: this thread's live buffer.
-            ctx.pkt = unsafe { (*buffer).str }.cast();
+            ctx.pkt = unsafe { (*buffer).as_mut_ptr() }.cast();
             ctx.task = SendData {
                 info: DataHead {
                     server_fd: u16::try_from(fd).unwrap_or(u16::MAX),
@@ -176,7 +176,7 @@ pub(crate) unsafe fn answer(
         OP_RECVFROM => {
             let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
             // SAFETY: this thread's live buffer.
-            let room = unsafe { (*buffer).size } - size_of::<DgramPacket>();
+            let room = unsafe { (*buffer).size() } - size_of::<DgramPacket>();
             let fd = socket(ctx.sock.cast())?.fd();
             let pkt = packet(ctx);
             let data = (&raw mut *pkt).wrapping_add(1).cast();
@@ -527,7 +527,7 @@ pub(crate) unsafe fn answer(
             let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
             // SAFETY: this thread's live buffer.
             let buffer = unsafe { &mut *buffer };
-            buffer.extend(buffer.size.wrapping_mul(2));
+            buffer.extend(buffer.size().wrapping_mul(2));
             0
         }
         OP_RD_PORT_READ => {

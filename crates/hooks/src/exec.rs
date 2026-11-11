@@ -48,21 +48,12 @@ pub unsafe fn exec(
     // `SocketImpl socket(fd, SW_SOCK_UNIX_STREAM)`, which takes the pipe.
     let socket = crate::co_socket::make(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0, false);
     loop {
-        // SAFETY: the buffer has `size - length` writable bytes past its length.
-        let spare = unsafe {
-            core::slice::from_raw_parts_mut(
-                buffer.str.wrapping_add(buffer.length).cast::<u8>(),
-                buffer.size - buffer.length,
-            )
-        };
-        let read = socket.read(spare);
+        let read = socket.read(buffer.spare());
         if read <= 0 {
             break;
         }
-        buffer.length += read.unsigned_abs();
-        if buffer.length == buffer.size {
-            buffer.extend(buffer.size.wrapping_mul(2));
-        }
+        // SAFETY: the read filled the `read` spare bytes after the content.
+        unsafe { buffer.grow(read.unsigned_abs()) };
     }
     socket.close();
     // SAFETY: the socket `make` made, which nothing uses afterwards.

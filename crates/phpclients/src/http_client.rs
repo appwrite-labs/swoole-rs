@@ -925,7 +925,7 @@ impl Client {
             }
             received = socket.recv_input();
             let input = socket.input();
-            let (buffer, mut length, size) = (input.str, input.length, input.size);
+            let (buffer, mut length, size) = (input.as_mut_ptr(), input.len(), input.size());
             if received <= 0 {
                 if received == 0 {
                     socket.set_err(libc::ECONNRESET);
@@ -939,11 +939,10 @@ impl Client {
             let mut count = received.unsigned_abs();
             if !header_completed {
                 length += count;
-                input.length = length;
-                input.offset = 0;
-                // SAFETY: the buffer's first `length` bytes are received data.
-                let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length) };
-                let unparsed = data.get(header_offset..).unwrap_or_default();
+                // SAFETY: the receive just wrote `count` bytes after the content.
+                unsafe { input.set_len(length) };
+                input.set_offset(0);
+                let unparsed = input.view().get(header_offset..).unwrap_or_default();
                 if request::header_end(unparsed).is_none() {
                     if length == size {
                         socket.set_err(INVALID_PROTOCOL);
@@ -955,7 +954,7 @@ impl Client {
                 header_completed = true;
                 header_offset = 0;
                 count = length;
-                input.length = 0;
+                input.clear();
             }
             total += count;
             // SAFETY: the buffer's first `count` bytes are this response's data.
@@ -983,8 +982,9 @@ impl Client {
                     #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
                     let parsed = parsed as i64;
                     let input = socket.input();
-                    input.length = count;
-                    input.offset = parsed;
+                    // SAFETY: the buffer's first `count` bytes are this response's data.
+                    unsafe { input.set_len(count) };
+                    input.set_offset(parsed);
                     input.reduce(parsed);
                 }
                 success = true;
@@ -2094,8 +2094,7 @@ fn get_header_out(call: &Call) {
     let Some(buffer) = buffer else {
         return call.set_bool(false);
     };
-    // SAFETY: the buffer's `length` bytes.
-    let data = unsafe { std::slice::from_raw_parts(buffer.str.cast::<u8>(), buffer.length) };
+    let data = buffer.view();
     match request::header_end(data) {
         Some(end) if end > 0 => call.set_bytes(data.get(..end).unwrap_or(data)),
         _ => call.set_bool(false),

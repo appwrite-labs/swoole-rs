@@ -323,10 +323,10 @@ impl EventData {
             });
         }
         let pkg = PacketTask::read(&self.data);
-        if buffer.size < pkg.length {
+        if buffer.size() < pkg.length {
             buffer.extend(pkg.length);
         }
-        let str = buffer.str;
+        let str = buffer.as_mut_ptr();
         let target: &mut [u8] = if pkg.length == 0 {
             &mut []
         } else {
@@ -354,7 +354,8 @@ impl EventData {
             }
             return None;
         }
-        buffer.length = pkg.length;
+        // SAFETY: the read filled the buffer's first `pkg.length` bytes.
+        unsafe { buffer.set_len(pkg.length) };
         Some(PacketPtr {
             length: pkg.length,
             data: str.cast(),
@@ -572,7 +573,7 @@ mod tests {
             let packet = unsafe { &mut *event }.unpack(&mut string).unwrap();
             assert_eq!(packet.length, 5);
             assert_eq!(packet.data, unsafe { (*event).data.as_mut_ptr() }.cast());
-            assert!(string.str.is_null());
+            assert!(string.as_ptr().is_null());
         }
 
         #[test]
@@ -596,10 +597,10 @@ mod tests {
             let mut string = empty_string();
             let packet = unsafe { &mut *event }.unpack(&mut string).unwrap();
             assert_eq!(
-                (string.length, string.size, packet.length),
+                (string.len(), string.size(), packet.length),
                 (9000, 9000, 9000)
             );
-            assert_eq!(packet.data, string.str.cast());
+            assert_eq!(packet.data, string.as_mut_ptr().cast());
             let read = unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), 9000) };
             assert_eq!(read, data.as_slice());
             assert!(!std::path::Path::new(&path).exists());

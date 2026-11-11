@@ -31,13 +31,21 @@ pub static STD_ALLOCATOR: Allocator = Allocator {
 };
 
 /// `swoole::String` (`string.cc` asserts the same layout).
+///
+/// Its fields are private, so safe code keeps what the safe methods trust: `str`
+/// is null with `length` and `size` 0, or the live allocation of `size` bytes
+/// that `allocator` (then set) made, whose first `length` are initialized.
+/// `offset` holds anything (a cursor, or a caller's flags), so a
+/// method that indexes by it bounds it first. C++ writes the fields directly: a
+/// `&CppString` made from a C++ pointer is that pointer's `unsafe` promise.
 #[repr(C)]
 pub struct CppString {
-    pub length: usize,
-    pub size: usize,
-    pub offset: i64,
-    pub str: *mut u8,
-    pub allocator: *const Allocator,
+    length: usize,
+    size: usize,
+    offset: i64,
+    str: *mut u8,
+    /// A nullable `const Allocator *`, which lives for the process.
+    allocator: Option<&'static Allocator>,
 }
 
 const _: () = assert!(
@@ -123,13 +131,6 @@ fn checked(pointer: *mut c_void) -> *mut u8 {
     pointer.cast()
 }
 
-/// # Safety
-/// `allocator` is live.
-unsafe fn allocator<'a>(allocator: *const Allocator) -> &'a Allocator {
-    // SAFETY: as the caller promises.
-    unsafe { &*allocator }
-}
-
 /// The C++ side of `String::split`: calls the handler it lends.
 pub type SplitCall = unsafe extern "C" fn(*const c_void, *const c_char, usize) -> bool;
 
@@ -139,43 +140,102 @@ impl CppString {
         size: 0,
         offset: 0,
         str: ptr::null_mut(),
-        allocator: ptr::null(),
+        allocator: None,
     };
 
-    /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is null.
-    pub fn alloc(&mut self, size: usize, with: *const Allocator) {
-        let with = if with.is_null() {
-            &raw const STD_ALLOCATOR
-        } else {
-            with
-        };
+    /// The content's length.
+    #[must_use]
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.length
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// The allocation's size.
+    #[must_use]
+    #[inline]
+    pub const fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The cursor (or flags) upstream keeps beside the content.
+    #[must_use]
+    #[inline]
+    pub const fn offset(&self) -> i64 {
+        self.offset
+    }
+
+    #[inline]
+    pub const fn set_offset(&mut self, offset: i64) {
+        self.offset = offset;
+    }
+
+    /// The buffer (null without one), for C to read `len()` bytes from.
+    #[must_use]
+    #[inline]
+    pub const fn as_ptr(&self) -> *const u8 {
+        self.str
+    }
+
+    /// The buffer (null without one), for C to write up to `size()` bytes to.
+    #[must_use]
+    #[inline]
+    pub const fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.str
+    }
+
+    /// `length = 0; offset = 0`: forget the content, keep the buffer.
+    #[inline]
+    pub const fn clear(&mut self) {
+        self.length = 0;
+        self.offset = 0;
+    }
+
+    /// Count the buffer's first `length` bytes as the content.
+    ///
+    /// # Safety
+    /// `length <= size()`, and those bytes are initialized.
+    #[inline]
+    pub const unsafe fn set_len(&mut self, length: usize) {
+        self.length = length;
+    }
+
+    /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is `None`.
+    pub fn alloc(&mut self, size: usize, with: Option<&'static Allocator>) {
+        let with = with.unwrap_or(&STD_ALLOCATOR);
         let size = aligned(size);
         self.length = 0;
         self.size = size;
         self.offset = 0;
-        // SAFETY: `with` is null (replaced above) or a live allocator, as every String's is.
-        let malloc = unsafe { allocator(with) }.malloc;
         // SAFETY: an allocator's malloc.
-        self.str = checked(unsafe { malloc(size) });
-        self.allocator = with;
+        self.str = checked(unsafe { (with.malloc)(size) });
+        self.allocator = Some(with);
     }
 
-    /// The destructor's body.
+    /// The destructor's body, which leaves the String empty.
     pub fn dispose(&mut self) {
-        if !self.allocator.is_null() && !self.str.is_null() {
-            // SAFETY: a String's allocator is live.
-            let free = unsafe { allocator(self.allocator) }.free;
-            // SAFETY: `str` is this allocator's live allocation.
-            unsafe { free(self.str.cast()) };
+        let data = self.release();
+        if let Some(with) = self.allocator
+            && !data.is_null()
+        {
+            // SAFETY: `data` was this allocator's live allocation.
+            unsafe { (with.free)(data.cast()) };
         }
     }
 
     /// `String::copy`.
     pub fn copy_from(&mut self, source: &Self) {
         self.alloc(source.size, source.allocator);
-        // SAFETY: the new allocation holds `source.size >= source.length` bytes.
-        unsafe { ptr::copy_nonoverlapping(source.str, self.str, source.length) };
-        self.length = source.length;
+        // The new allocation holds `source.size >= source.length` bytes.
+        if let Some(to) = self.spare().get_mut(..source.length) {
+            to.copy_from_slice(source.view());
+            self.length = source.length;
+        }
         self.offset = source.offset;
     }
 
@@ -199,16 +259,15 @@ impl CppString {
         unsafe { bytes(self.str, self.length) }
     }
 
+    /// `String::reserve`, never below the content's length.
     pub fn reserve(&mut self, new_size: usize) {
-        if self.size == 0 {
-            self.alloc(new_size, ptr::null());
+        let Some(with) = self.allocator.filter(|_| self.size != 0) else {
+            self.alloc(new_size, None);
             return;
-        }
-        let new_size = aligned(new_size);
-        // SAFETY: a String with a buffer has a live allocator.
-        let realloc = unsafe { allocator(self.allocator) }.realloc;
+        };
+        let new_size = aligned(new_size.max(self.length));
         // SAFETY: `str` is this allocator's live allocation.
-        self.str = checked(unsafe { realloc(self.str.cast(), new_size) });
+        self.str = checked(unsafe { (with.realloc)(self.str.cast(), new_size) });
         self.size = new_size;
     }
 
@@ -231,17 +290,28 @@ impl CppString {
         self.length = new_size;
     }
 
-    /// `String::write(off_t, const char *, size_t)`.
+    /// `String::write(off_t, const char *, size_t)`. Where upstream's offset
+    /// leaves the buffer, a negative one writes at 0 and one past the content
+    /// zeroes the gap.
     ///
     /// # Safety
     /// `data` is readable for `length` bytes.
     pub unsafe fn write(&mut self, offset: i64, data: *const u8, length: usize) {
-        let new_length = unsigned(offset).wrapping_add(length);
+        let offset = unsigned(offset.max(0));
+        let Some(new_length) = offset.checked_add(length) else {
+            std::process::abort();
+        };
         if new_length > self.size {
-            self.reserve(page_aligned(new_length.wrapping_mul(2)));
+            self.reserve(page_aligned(new_length.saturating_mul(2)).max(new_length));
+        }
+        if offset > self.length {
+            // SAFETY: the gap lies inside the buffer, which holds `new_length` bytes.
+            unsafe {
+                ptr::write_bytes(self.str.wrapping_add(self.length), 0, offset - self.length);
+            }
         }
         // SAFETY: the buffer holds `new_length` bytes; `data` is readable.
-        unsafe { ptr::copy(data, self.str.wrapping_add(unsigned(offset)), length) };
+        unsafe { ptr::copy(data, self.str.wrapping_add(offset), length) };
         if new_length > self.length {
             self.length = new_length;
         }
@@ -251,8 +321,9 @@ impl CppString {
         if self.length == self.size {
             self.extend(self.length.wrapping_add(1));
         }
-        // SAFETY: `length < size`.
-        unsafe { self.str.wrapping_add(self.length).write(0) };
+        if let Some(end) = self.spare().first_mut() {
+            *end = 0;
+        }
     }
 
     /// The first `delimiter` at or after `start`.
@@ -279,7 +350,8 @@ impl CppString {
     /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`.
     ///
     /// # Safety
-    /// `delimiter` holds `delimiter_length > 0` bytes; `call` is safe with `handler`.
+    /// `delimiter` holds `delimiter_length > 0` bytes; `call` is safe with `handler`;
+    /// `0 <= offset() <= len()`.
     pub unsafe fn split(
         &mut self,
         delimiter: *const u8,
@@ -311,7 +383,10 @@ impl CppString {
     }
 
     /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
-    pub fn grow(&mut self, increment: usize) {
+    ///
+    /// # Safety
+    /// As [`Self::set_len`] of `len() + increment`.
+    pub unsafe fn grow(&mut self, increment: usize) {
         self.length = self.length.wrapping_add(increment);
         if self.length == self.size {
             self.reserve(self.size.wrapping_mul(2));
@@ -351,9 +426,10 @@ impl CppString {
             }
             // SAFETY: `data` holds one byte.
             let byte = unsafe { *data };
-            // SAFETY: the buffer holds `length + count` bytes.
-            unsafe { ptr::write_bytes(self.str.wrapping_add(self.length), byte, count) };
-            self.length = self.length.wrapping_add(count);
+            if let Some(to) = self.spare().get_mut(..count) {
+                to.fill(byte);
+                self.length += count;
+            }
         } else {
             for _ in 0..count {
                 // SAFETY: as the caller promises.
@@ -397,14 +473,14 @@ impl CppString {
             "String::pop's offset is inside"
         );
         let value = self.str;
-        let length = self.length.wrapping_sub(unsigned(self.offset));
+        let offset = unsigned(self.offset).min(self.length);
+        let length = self.length - offset;
         let size = aligned(if length == 0 {
             init_size
         } else {
             length.max(init_size)
         });
-        // SAFETY: a String that pops has a live allocator.
-        let malloc = unsafe { allocator(self.allocator) }.malloc;
+        let malloc = self.allocator.unwrap_or(&STD_ALLOCATOR).malloc;
         // SAFETY: an allocator's malloc.
         let new_value: *mut u8 = unsafe { malloc(size) }.cast();
         if new_value.is_null() {
@@ -414,7 +490,7 @@ impl CppString {
         self.size = size;
         self.length = length;
         if length > 0 {
-            let from = value.wrapping_add(unsigned(self.offset));
+            let from = value.wrapping_add(offset);
             // SAFETY: the old buffer holds `length` bytes from `offset`; the new one `size >= length`.
             unsafe { ptr::copy_nonoverlapping(from, new_value, length) };
         }
@@ -430,12 +506,13 @@ impl CppString {
         if offset == 0 {
             return;
         }
-        self.length = self.length.wrapping_sub(unsigned(offset));
+        let offset = unsigned(offset).min(self.length);
+        self.length -= offset;
         self.offset = 0;
         if self.length == 0 {
             return;
         }
-        let from = self.str.wrapping_add(unsigned(offset));
+        let from = self.str.wrapping_add(offset);
         // SAFETY: both ranges lie inside `str`.
         unsafe { ptr::copy(from, self.str, self.length) };
     }
@@ -480,13 +557,13 @@ impl CppString {
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
     /// `String(size_t, const Allocator *)`.
-    pub extern "C" fn swr_string_new(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&Allocator>) -> *mut CppString {
+    pub extern "C" fn swr_string_new(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&'static Allocator>) -> *mut CppString {
         let string = this.write(CppString::EMPTY);
-        string.alloc(size, with.map_or(ptr::null(), ptr::from_ref));
+        string.alloc(size, with);
         string
     }
     "_ZN6swoole6StringC2EmPKNS_9AllocatorE", "_ZN6swoole6StringC2EmPKNS_9AllocatorE" =>
-    pub extern "C" fn swr_string_new_base(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&Allocator>) -> *mut CppString {
+    pub extern "C" fn swr_string_new_base(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&'static Allocator>) -> *mut CppString {
         swr_string_new(this, size, with)
     }
     "_ZN6swoole6StringC1EPKcm", "_ZN6swoole6StringC1EPKcm" =>
@@ -495,12 +572,15 @@ upstream! {
     /// `data` holds `length` bytes.
     pub unsafe extern "C" fn swr_string_from(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
         let string = this.write(CppString::EMPTY);
-        string.alloc(length.wrapping_add(1), ptr::null());
-        // SAFETY: the allocation holds `length + 1` bytes; `data` is readable.
-        unsafe { ptr::copy_nonoverlapping(data, string.str, length) };
-        // SAFETY: as above.
-        unsafe { string.str.wrapping_add(length).write(0) };
-        string.length = length;
+        string.alloc(length.wrapping_add(1), None);
+        // SAFETY: as the caller promises.
+        let data = unsafe { bytes(data, length) };
+        // The allocation holds `length + 1` bytes.
+        if let Some((end, to)) = string.spare().get_mut(..=length).and_then(<[u8]>::split_last_mut) {
+            to.copy_from_slice(data);
+            *end = 0;
+            string.length = length;
+        }
         string
     }
     "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
@@ -603,8 +683,11 @@ upstream! {
         this.view() == unsafe { bytes(data, length) }
     }
     "_ZN6swoole6String4growEm", "_ZN6swoole6String4growEm" =>
-    pub extern "C" fn swr_string_grow(this: &mut CppString, increment: usize) {
-        this.grow(increment);
+    /// # Safety
+    /// As `CppString::grow`.
+    pub unsafe extern "C" fn swr_string_grow(this: &mut CppString, increment: usize) {
+        // SAFETY: as the caller promises.
+        unsafe { this.grow(increment) };
     }
     "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
     /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a
@@ -613,7 +696,7 @@ upstream! {
     pub extern "C" fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
         let mut result = CppString::EMPTY;
         if offset.wrapping_add(length) <= this.length {
-            result.alloc(length, ptr::null());
+            result.alloc(length, None);
             // SAFETY: the range lies inside `str`.
             unsafe { result.append(this.str.wrapping_add(offset), length) };
         }
@@ -765,7 +848,7 @@ pub unsafe fn new_string(data: *const u8, length: usize) -> *mut CppString {
 
 /// `new String(size, with)`: operator new's storage, so C++ `delete` frees it.
 #[must_use]
-pub fn new_sized_string(size: usize, with: Option<&Allocator>) -> *mut CppString {
+pub fn new_sized_string(size: usize, with: Option<&'static Allocator>) -> *mut CppString {
     swr_string_new(new_storage(), size, with)
 }
 
@@ -830,6 +913,18 @@ mod tests {
         );
         assert_eq!((chunks.len(), s.offset), (2, 7));
         s.dispose();
+    }
+
+    /// A write's offset stays inside the buffer, and a disposed String is empty.
+    #[test]
+    fn write_offsets_stay_inside_the_buffer() {
+        let mut s = new(b"abc");
+        unsafe { s.write(5, b"z".as_ptr(), 1) };
+        assert_eq!(s.view(), b"abc\0\0z");
+        unsafe { s.write(-1, b"A".as_ptr(), 1) };
+        assert_eq!(s.view(), b"Abc\0\0z");
+        s.dispose();
+        assert!(s.as_ptr().is_null() && s.size() == 0 && s.is_empty());
     }
 
     #[test]
