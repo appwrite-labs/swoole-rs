@@ -105,19 +105,25 @@ fn pipe(ctx: &Context, op: u32) -> Option<u64> {
 
 /// MSHUTDOWN after `exit()` or a fatal error in a single base-mode worker's callback:
 /// the bailout left its loop before `start_reactor_processes` destroyed the event
-/// worker pool. That worker is the process that made the pool, with no manager or
-/// other worker to share it, so this destroys it. Any other server is left alone.
-pub fn destroy_abandoned_pool() {
+/// worker pool and `Server::start` the server. That worker is the process that made
+/// both, with no manager or other worker to share them, so this frees the pool and
+/// what `destroy` would, without the shutdown callbacks upstream never runs on that
+/// path, and returns the server for its owner to delete. Any other server is left alone.
+#[must_use]
+pub fn release_abandoned_server() -> Option<*mut c_void> {
     let serv = swoole_rs_corebase::swr_v1_core_server();
     if serv.is_null() {
-        return;
+        return None;
     }
     // SAFETY: `SwooleG.server`, live while set.
     let server = unsafe { view::Server::from_raw(serv) };
-    if server.ran_its_single_worker_here() {
-        // SAFETY: the live event pool only this process uses; destroy frees each part once.
-        unsafe { pool_destroy(server.workers().event_pool.cast()) };
+    if !server.ran_its_single_worker_here() {
+        return None;
     }
+    // SAFETY: the live event pool only this process uses; destroy frees each part once.
+    unsafe { pool_destroy(server.workers().event_pool.cast()) };
+    crate::master_ops::release_abandoned_base(server);
+    Some(serv)
 }
 
 /// `Socket::is_stream(type)`.
