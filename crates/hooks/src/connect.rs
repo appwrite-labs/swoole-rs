@@ -305,20 +305,14 @@ impl Live<'_> {
         unsafe { bytes(view) }
     }
 
-    /// The SOCKS5 proxy's scalar fields, and its packet's first `length` bytes.
-    fn socks5_fields(&self) -> *mut ProxyFields {
-        self.socks5.map_or(null_mut(), |proxy| proxy.fields.get())
-    }
-
+    /// The SOCKS5 proxy's packet's first `length` bytes.
     fn socks5_packet(&self, length: isize) -> Vec<u8> {
         let length = usize::try_from(length).unwrap_or(0).min(512);
-        let Some(proxy) = self.socks5 else {
-            return Vec::new();
-        };
-        // SAFETY: the live SOCKS5 owner's packet buffer.
-        let packet = unsafe { proxy.buffer() };
-        // SAFETY: at most its 512 bytes.
-        unsafe { core::slice::from_raw_parts(packet, length) }.to_vec()
+        self.socks5
+            .and_then(ProxyState::packet)
+            .map_or_else(Vec::new, |packet| {
+                packet.get(..length).unwrap_or_default().to_vec()
+            })
     }
 }
 
@@ -344,9 +338,8 @@ impl Connecting for Live<'_> {
     }
 
     fn http_handshake(&self) -> bool {
-        // SAFETY: the live HTTP owner's scalar fields, copied.
         self.http
-            .is_some_and(|http| unsafe { *http.fields.get() }.dont_handshake == 0)
+            .is_some_and(|http| http.fields.get().dont_handshake == 0)
     }
 
     fn ssl(&self) -> bool {
@@ -384,17 +377,15 @@ impl Connecting for Live<'_> {
         if which == HOST_PROXY
             && let Some(proxy) = self.socks5.or(self.http)
         {
-            // SAFETY: the live owner, lent exclusively for the call. A failed copy
-            // (allocation) leaves the previous target.
-            unsafe { proxy.set_string(3, &host) };
-            // SAFETY: as above.
-            let fields = unsafe { &mut *proxy.fields.get() };
-            fields.target_port = port;
+            // A failed copy (allocation) leaves the previous target.
+            proxy.set_string(3, &host);
+            let fields = proxy.fields.get();
+            proxy.fields.set(ProxyFields {
+                target_port: port,
+                ..fields
+            });
             port = fields.port;
-            // SAFETY: the owner's host.
-            let view = unsafe { proxy.string(0) };
-            // SAFETY: its bytes, copied at once.
-            host = unsafe { bytes(view) };
+            host = proxy.string(0);
         }
         if which == HOST_TLS {
             self.set_slot(SSL_HOST_NAME, &host);
@@ -489,8 +480,10 @@ impl Connecting for Live<'_> {
             return Vec::new();
         };
         let length = pack_negotiate_request(&Socks5Proxy::new(owner));
-        // SAFETY: its scalar fields.
-        unsafe { (*self.socks5_fields()).state = SOCKS5_HANDSHAKE };
+        owner.fields.update(|fields| ProxyFields {
+            state: SOCKS5_HANDSHAKE,
+            ..fields
+        });
         self.socks5_packet(length)
     }
 
@@ -503,8 +496,7 @@ impl Connecting for Live<'_> {
         if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != n) {
             return -1;
         }
-        // SAFETY: the owner's scalar fields.
-        c_int::from(unsafe { (*self.socks5_fields()).state } == SOCKS5_READY)
+        c_int::from(owner.fields.get().state == SOCKS5_READY)
     }
 
     fn http_request(&mut self) -> Vec<u8> {
@@ -520,10 +512,7 @@ impl Connecting for Live<'_> {
             name = unsafe { bytes(view) };
         }
         if name.is_empty() {
-            // SAFETY: the live HTTP owner's target host.
-            let view = unsafe { http.string(3) };
-            // SAFETY: its bytes, copied at once.
-            name = unsafe { bytes(view) };
+            name = http.string(3);
         }
         self.socket.with_buffer(true, |write| {
             let (at, size) = (write.as_mut_ptr(), write.size());

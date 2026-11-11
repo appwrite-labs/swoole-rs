@@ -2,7 +2,7 @@
 //! The native context carries the server and, per operation, the reactor, port,
 //! socket and connection an op acts on.
 
-// Operations `swr_v1_server_run` runs.
+// Operations the runner (`crate::run`) matches.
 /// `Server::accept_connection`: context reactor and event.
 pub const RUN_ACCEPT: u32 = 0;
 /// `Server::add_connection`: context port and socket, arg the server fd. 1 when the

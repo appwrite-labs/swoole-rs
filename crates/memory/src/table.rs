@@ -907,8 +907,11 @@ impl Table {
 
     fn alloc_row(&self) -> Option<Live> {
         self.mutex.lock();
-        // SAFETY: a created table's pool, under its mutex.
-        let row = unsafe { fixed::alloc(self.pool) }.cast::<Row>();
+        // Under the table's mutex.
+        let row = self
+            .pool()
+            .map_or(ptr::null_mut(), fixed::alloc)
+            .cast::<Row>();
         self.mutex.unlock();
         (!row.is_null()).then_some(Live(row))
     }
@@ -917,8 +920,10 @@ impl Table {
     fn free_row(&self, row: Live) {
         self.mutex.lock();
         row.zero(offset_of!(Row, lock_pid));
-        // SAFETY: a row this pool allocated, under its mutex.
-        unsafe { fixed::free(self.pool, row.0.cast()) };
+        // A row this pool allocated, under the table's mutex.
+        if let Some(pool) = self.pool() {
+            fixed::free(pool, row.0.cast());
+        }
         self.mutex.unlock();
     }
 

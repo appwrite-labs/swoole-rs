@@ -1,11 +1,16 @@
-use std::ffi::{c_int, c_void};
-use std::ptr;
+use std::cell::UnsafeCell;
+use std::ffi::c_int;
+use std::mem::MaybeUninit;
 use swoole_rs_corebase::sys;
 
-/// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see `StoragePlan`), so a
-/// 4-byte length header plus up to `maxlen` record bytes starting at any cursor below
-/// `size` stays inside it. `valid` checks every cursor and bound this relies on.
+/// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see
+/// `swr_v1_memory_channel_bytes`) outside the header, which only the holder of the
+/// queue's `&mut` touches, so a 4-byte length header plus up to `maxlen` record bytes
+/// starting at any cursor below `size` stays inside it. `valid` checks every cursor
+/// and bound this relies on. Only `swr_v1_memory_channel_init` (and this module's
+/// tests, over their own buffers) make one.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Channel {
     head: i64,
     tail: i64,
@@ -54,61 +59,58 @@ fn valid(c: &Channel) -> bool {
         & (c.num >= 0)
         & (c.maxlen >= 0) & (c.maxlen.unsigned_abs() as usize <= c.size)
 }
-// Short channel records should not need a dynamic libc memcpy dispatch. Copy
-// fixed-width endpoints, which may overlap each other but stay inside both
-// disjoint borrowed ranges. No speculative byte access outside the record: a
-// one-byte record at the end of a mapping needs only one readable byte.
-#[inline(always)]
-unsafe fn copy_record(input: *const u8, output: *mut u8, length: usize) {
-    // Callers pass `length` readable input bytes and `length` writable, disjoint output
-    // bytes; every copy below stays inside both.
-    #[inline]
-    unsafe fn endpoints<const N: usize>(input: *const u8, output: *mut u8, length: usize) {
-        // SAFETY: as above, with `N <= length`.
-        unsafe { ptr::copy_nonoverlapping(input, output, N) };
-        // SAFETY: as above; the last `N` bytes start at `length - N`.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                input.wrapping_add(length - N),
-                output.wrapping_add(length - N),
-                N,
-            );
-        };
-    }
-    if length > 64 {
-        // SAFETY: as above.
-        unsafe { ptr::copy_nonoverlapping(input, output, length) };
-    } else if length >= 32 {
-        // SAFETY: as above.
-        unsafe { endpoints::<32>(input, output, length) };
-    } else if length >= 16 {
-        // SAFETY: as above.
-        unsafe { endpoints::<16>(input, output, length) };
-    } else if length >= 8 {
-        // SAFETY: as above.
-        unsafe { endpoints::<8>(input, output, length) };
-    } else if length >= 4 {
-        // SAFETY: as above.
-        unsafe { endpoints::<4>(input, output, length) };
-    } else if length >= 2 {
-        // SAFETY: as above.
-        unsafe { endpoints::<2>(input, output, length) };
-    } else if length == 1 {
-        // SAFETY: as above.
-        unsafe { ptr::copy_nonoverlapping(input, output, 1) };
+
+impl Channel {
+    /// The queue's storage, once `valid` vouches for its bounds.
+    fn storage(&mut self) -> Option<&mut [u8]> {
+        if !valid(self) {
+            return None;
+        }
+        let length = self.size + self.maxlen.unsigned_abs() as usize + 4;
+        // SAFETY: `mem` covers `length` bytes outside the header that only this `&mut`
+        // reaches (the layout invariant); `valid` bounds `length` by `isize::MAX`.
+        Some(unsafe { std::slice::from_raw_parts_mut(self.mem, length) })
     }
 }
-pub unsafe fn swr_v1_memory_channel_in(
-    channel: *mut Channel,
-    input: *const c_void,
-    length: i32,
-) -> i32 {
-    if channel.is_null() || length < 0 || length > 0 && input.is_null() {
-        return -1;
+
+// Short channel records should not need a dynamic libc memcpy dispatch. Copy
+// fixed-width endpoints, which may overlap each other but stay inside both
+// ranges. No speculative byte access outside the record: a one-byte record at the
+// end of a mapping needs only one readable byte.
+#[inline(always)]
+fn copy_record(input: &[u8], output: &mut [u8]) {
+    #[inline]
+    fn endpoints<const N: usize>(input: &[u8], output: &mut [u8]) {
+        if let (Some(to), Some(from)) = (output.first_chunk_mut::<N>(), input.first_chunk::<N>()) {
+            *to = *from;
+        }
+        if let (Some(to), Some(from)) = (output.last_chunk_mut::<N>(), input.last_chunk::<N>()) {
+            *to = *from;
+        }
     }
-    // SAFETY: `channel` is non-null (checked above), aligned and exclusive per the caller contract.
-    let c = unsafe { &mut *channel };
-    if !valid(c) || length > c.maxlen || c.num == i32::MAX {
+    match input.len() {
+        65.. => output.copy_from_slice(input),
+        32.. => endpoints::<32>(input, output),
+        16.. => endpoints::<16>(input, output),
+        8.. => endpoints::<8>(input, output),
+        4.. => endpoints::<4>(input, output),
+        2.. => endpoints::<2>(input, output),
+        1 => endpoints::<1>(input, output),
+        0 => {}
+    }
+}
+
+/// `Channel::in`: appends `input` as one record; -1 when the queue is invalid, full or
+/// the record longer than `maxlen`.
+pub fn swr_v1_memory_channel_in(channel: &mut Channel, input: &[u8]) -> i32 {
+    let mut c = *channel;
+    let Ok(length) = i32::try_from(input.len()) else {
+        return -1;
+    };
+    let Some(mem) = channel.storage() else {
+        return -1;
+    };
+    if length > c.maxlen || c.num == i32::MAX {
         return -1;
     }
     let Some(used) = (c.num.unsigned_abs() as usize)
@@ -120,26 +122,24 @@ pub unsafe fn swr_v1_memory_channel_in(
     if c.head == c.tail && c.tail_tag != c.head_tag || used == c.size {
         return -1;
     }
-    let packet = length.unsigned_abs() as usize + 4;
+    let packet = input.len() + 4;
     if c.tail < c.head && (c.head - c.tail) < signed(packet) {
         return -1;
     }
-    let Some(bytes) = c.bytes.checked_add(length.unsigned_abs() as usize) else {
+    let Some(bytes) = c.bytes.checked_add(input.len()) else {
         return -1;
     };
     // `tail < size` and `length <= maxlen` (validated), so the header and record fit in
-    // `mem` (see `Channel`); the room check above keeps them clear of unread records.
-    let item = c.mem.wrapping_add(offset(c.tail));
-    // SAFETY: as above.
-    unsafe { item.cast::<i32>().write_unaligned(length) };
-    // SAFETY: as above; `input` lends `length` readable bytes, disjoint from `mem`.
-    unsafe {
-        copy_record(
-            input.cast::<u8>(),
-            item.wrapping_add(4),
-            length.unsigned_abs() as usize,
-        );
+    // `mem`; the room check above keeps them clear of unread records.
+    let start = offset(c.tail);
+    let Some((header, record)) = mem
+        .get_mut(start..start + packet)
+        .and_then(|item| item.split_first_chunk_mut::<4>())
+    else {
+        return -1;
     };
+    *header = length.to_ne_bytes();
+    copy_record(input, record);
     c.tail += signed(packet);
     if c.tail >= signed(c.size) {
         c.tail = 0;
@@ -147,73 +147,70 @@ pub unsafe fn swr_v1_memory_channel_in(
     }
     c.num += 1;
     c.bytes = bytes;
+    *channel = c;
     0
 }
-pub unsafe fn swr_v1_memory_channel_out(
-    channel: *mut Channel,
-    output: *mut c_void,
-    capacity: i32,
-    consume: u32,
-) -> i32 {
-    if channel.is_null() || capacity < 0 || consume > 1 {
+
+/// `Channel::out`: copies the front record into `output` and, when `consume`, removes
+/// it; its length, or -1 when the queue is invalid or empty or `output` too short.
+pub fn swr_v1_memory_channel_out(channel: &mut Channel, output: &mut [u8], consume: bool) -> i32 {
+    let mut c = *channel;
+    let capacity = i32::try_from(output.len()).unwrap_or(i32::MAX);
+    let Some(mem) = channel.storage() else {
+        return -1;
+    };
+    if c.num == 0 {
         return -1;
     }
-    // SAFETY: `channel` is non-null (checked above), aligned and initialized.
-    let state = unsafe { &*channel };
-    // SAFETY: `output` lends `capacity` writable bytes, disjoint from the channel memory.
-    let length = unsafe { read_record(state, output, capacity) };
-    if length >= 0 && consume != 0 {
-        // SAFETY: `channel` is non-null (checked above), aligned and exclusive per the caller contract.
-        let c = unsafe { &mut *channel };
+    // `head < size` (validated), so the 4-byte header is inside `mem`; `num > 0` means
+    // a record header was written there.
+    let start = offset(c.head);
+    let Some((header, rest)) = mem
+        .get(start..)
+        .and_then(|item| item.split_first_chunk::<4>())
+    else {
+        return -1;
+    };
+    let length = i32::from_ne_bytes(*header);
+    if length < 0
+        || length > c.maxlen
+        || length > capacity
+        || length.unsigned_abs() as usize > c.bytes
+    {
+        return -1;
+    }
+    let size = length.unsigned_abs() as usize;
+    let (Some(record), Some(output)) = (rest.get(..size), output.get_mut(..size)) else {
+        return -1;
+    };
+    copy_record(record, output);
+    if consume {
         c.head += i64::from(length) + 4;
         if c.head >= signed(c.size) {
             c.head = 0;
             c.head_tag = 1 - c.head_tag;
         }
         c.num -= 1;
-        c.bytes -= length.unsigned_abs() as usize;
+        c.bytes -= size;
+        *channel = c;
     }
-    length
-}
-unsafe fn read_record(c: &Channel, output: *mut c_void, capacity: i32) -> i32 {
-    if capacity < 0 || !valid(c) || c.num == 0 {
-        return -1;
-    }
-    // `head < size` (validated), so the 4-byte header is inside `mem` (see `Channel`).
-    let item = c.mem.wrapping_add(offset(c.head));
-    // SAFETY: as above; `num > 0` means a record header was written there.
-    let length = unsafe { item.cast::<i32>().read_unaligned() };
-    if length < 0
-        || length > c.maxlen
-        || length > capacity
-        || length.unsigned_abs() as usize > c.bytes
-        || length > 0 && output.is_null()
-    {
-        return -1;
-    }
-    // SAFETY: `length <= maxlen` record bytes follow the header inside `mem`; `output` has
-    // `capacity >= length` writable, disjoint bytes.
-    unsafe {
-        copy_record(
-            item.wrapping_add(4),
-            output.cast::<u8>(),
-            length.unsigned_abs() as usize,
-        );
-    };
     length
 }
 const LOCK: i32 = 2;
 const NOTIFY: i32 = 4;
 
-/// `swoole::Channel`: the queue state, then its process-shared mutex and its
-/// notification pipe (read end first). Native allocates `swr_v1_memory_channel_bytes`
-/// bytes for it (heap or shared mapping) and frees them after `close`; the queue
-/// storage follows the record.
+/// `swoole::Channel`: the queue state, its process-shared mutex and its notification
+/// pipe (read end first). Native allocates `swr_v1_memory_channel_bytes` bytes for it
+/// (heap or shared mapping) and frees them after `close`; the queue storage follows
+/// the record. Not `Sync`: threads (and processes) that share one serialize the queue
+/// with its `SW_CHAN_LOCK` mutex, which [`Record::push`] and [`Record::pop`] take.
 #[repr(C)]
 pub struct Record {
-    queue: Channel,
-    lock: libc::pthread_mutex_t,
+    queue: UnsafeCell<Channel>,
+    /// Initialized when `flags` has `SW_CHAN_LOCK`.
+    lock: UnsafeCell<MaybeUninit<libc::pthread_mutex_t>>,
     notify: [c_int; 2],
+    flags: i32,
 }
 
 /// Bytes `Channel::make` allocates for a channel of `size` bytes and `maxlen`-byte
@@ -263,30 +260,30 @@ pub unsafe fn swr_v1_memory_channel_init(
         maxlen: length,
         mem: record.wrapping_add(1).cast(),
     };
-    // SAFETY: the caller lends the record exclusively; the queue is its first field.
-    unsafe { record.cast::<Channel>().write(queue) };
-    // SAFETY: as above.
-    let notify = unsafe { &raw mut (*record).notify };
-    // SAFETY: as above.
-    unsafe { notify.write([-1, -1]) };
+    let fresh = Record {
+        queue: UnsafeCell::new(queue),
+        lock: UnsafeCell::new(MaybeUninit::uninit()),
+        notify: [-1, -1],
+        flags,
+    };
+    // SAFETY: the caller lends the record exclusively, aligned and long enough.
+    unsafe { record.write(fresh) };
+    // SAFETY: as above; written just now.
+    let record = unsafe { &mut *record };
     // SAFETY: `notify` has room for the two descriptors.
-    if flags & NOTIFY != 0 && unsafe { libc::pipe(notify.cast()) } != 0 {
+    if flags & NOTIFY != 0 && unsafe { libc::pipe(record.notify.as_mut_ptr()) } != 0 {
         return 1;
     }
-    // SAFETY: as above.
-    let lock = unsafe { &raw mut (*record).lock };
-    // SAFETY: `lock` is unused mutex storage inside the lent record.
-    if flags & LOCK != 0 && unsafe { init_mutex(lock) } != 0 {
-        // SAFETY: the record is still exclusively lent.
-        unsafe { close_pipe(record) };
+    if flags & LOCK != 0 && init_mutex(record.lock.get_mut()) != 0 {
+        record.close_pipe();
         return 2;
     }
     0
 }
 
-/// A process-shared mutex, like upstream's `Mutex(true)`.
-unsafe fn init_mutex(lock: *mut libc::pthread_mutex_t) -> c_int {
-    let mut attr = std::mem::MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
+/// A process-shared mutex, like upstream's `Mutex(true)`, in fresh storage.
+fn init_mutex(lock: &mut MaybeUninit<libc::pthread_mutex_t>) -> c_int {
+    let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
     // SAFETY: `attr` is writable attribute storage.
     let mut result = unsafe { libc::pthread_mutexattr_init(attr.as_mut_ptr()) };
     if result != 0 {
@@ -297,106 +294,127 @@ unsafe fn init_mutex(lock: *mut libc::pthread_mutex_t) -> c_int {
         libc::pthread_mutexattr_setpshared(attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED)
     };
     if result == 0 {
-        // SAFETY: `lock` is writable, unused mutex storage; `attr` is initialized.
-        result = unsafe { libc::pthread_mutex_init(lock, attr.as_ptr()) };
+        // SAFETY: `lock` is exclusively borrowed storage that holds no mutex yet (its
+        // type says so: nothing reads it as one before this succeeds); `attr` is initialized.
+        result = unsafe { libc::pthread_mutex_init(lock.as_mut_ptr(), attr.as_ptr()) };
     }
     // SAFETY: `attr` is initialized.
     unsafe { libc::pthread_mutexattr_destroy(attr.as_mut_ptr()) };
     result
 }
 
-unsafe fn close_pipe(record: *mut Record) {
-    // SAFETY: the caller's record is live.
-    for fd in unsafe { (*record).notify } {
-        if fd >= 0 {
-            // The record owns this descriptor.
-            sys::close(fd);
-        }
-    }
-}
-
 /// `Channel::destroy` before native frees the memory: the mutex and the pipe.
 /// # Safety
-/// `record` came from `swr_v1_memory_channel_init` and has no other user.
+/// `record` came from `swr_v1_memory_channel_init` and has no other user, now or later.
 pub unsafe fn swr_v1_memory_channel_close(record: *mut Record) {
-    // SAFETY: a live record.
-    let flags = unsafe { (*record).queue.flags };
-    if flags & LOCK != 0 {
-        // SAFETY: a live record.
-        let lock = unsafe { &raw mut (*record).lock };
-        // SAFETY: the mutex was initialized and nobody holds it.
-        unsafe { libc::pthread_mutex_destroy(lock) };
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *record };
+    if record.flags & LOCK != 0 {
+        // SAFETY: the mutex `init` made, which nobody holds or uses again.
+        unsafe { libc::pthread_mutex_destroy(record.lock.get_mut().as_mut_ptr()) };
     }
-    if flags & NOTIFY != 0 {
-        // SAFETY: as above.
-        unsafe { close_pipe(record) };
+    if record.flags & NOTIFY != 0 {
+        record.close_pipe();
     }
 }
 
-/// Lock (`true`) or unlock the channel's mutex.
-/// # Safety
-/// `record` is live with `SW_CHAN_LOCK`; an unlock follows this thread's lock.
-pub unsafe fn swr_v1_memory_channel_lock(record: *mut Record, lock: bool) {
-    // SAFETY: a live record with an initialized mutex.
-    let mutex = unsafe { &raw mut (*record).lock };
-    if lock {
-        // SAFETY: as above.
-        unsafe { libc::pthread_mutex_lock(mutex) };
-    } else {
-        // SAFETY: as above; this thread holds it.
-        unsafe { libc::pthread_mutex_unlock(mutex) };
-    }
-}
+/// The record's mutex, held from [`Record::hold`] until dropped.
+struct Held<'a>(Option<&'a Record>);
 
-/// `Channel::notify` (`true`: write one 8-byte token) or `Channel::wait` (read one,
-/// blocking): 0 done, -1 failed with errno intact.
-/// # Safety
-/// `record` is live with `SW_CHAN_NOTIFY`.
-#[must_use]
-pub unsafe fn swr_v1_memory_channel_signal(record: *const Record, notify: bool) -> i32 {
-    // SAFETY: a live record.
-    let [read, write] = unsafe { (*record).notify };
-    let mut value = u64::from(notify).to_ne_bytes();
-    let length = value.len();
-    loop {
-        let done = if notify {
-            sys::write(write, &value)
-        } else {
-            sys::read(read, &mut value)
-        };
-        if done < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if let Some(record) = self.0 {
+            // SAFETY: the mutex this thread locked in `hold`.
+            unsafe { libc::pthread_mutex_unlock(record.lock.get().cast()) };
         }
-        let complete = if notify {
-            done.cast_unsigned() == length
-        } else {
-            done > 0
-        };
-        return if complete { 0 } else { -1 };
     }
 }
 
-/// `Channel::print`, through C stdio like upstream (which labels the tags swapped).
-/// # Safety
-/// `record` is live.
-pub unsafe fn swr_v1_memory_channel_print(record: *const Record) {
-    // SAFETY: a live record.
-    let c = unsafe { &(*record).queue };
-    // SAFETY: the format's conversions match the arguments.
-    unsafe {
-        libc::printf(
-            c"Channel\n{\n    off_t head = %ld;\n    off_t tail = %ld;\n    size_t size = %ld;\n    char head_tag = %d;\n    char tail_tag = %d;\n    int num = %d;\n    size_t bytes = %ld;\n    int flag = %d;\n    int maxlen = %d;\n\n}\n".as_ptr(),
-            c.head,
-            c.tail,
-            c.size,
-            c_int::from(c.tail_tag),
-            c_int::from(c.head_tag),
-            c.num,
-            c.bytes,
-            c.flags,
-            c.maxlen,
-        )
-    };
+impl Record {
+    fn close_pipe(&mut self) {
+        for fd in std::mem::replace(&mut self.notify, [-1, -1]) {
+            if fd >= 0 {
+                // The record owns this descriptor.
+                sys::close(fd);
+            }
+        }
+    }
+
+    /// The record's mutex, with `SW_CHAN_LOCK`; nothing otherwise.
+    fn hold(&self) -> Held<'_> {
+        if self.flags & LOCK == 0 {
+            return Held(None);
+        }
+        // SAFETY: a record made with `SW_CHAN_LOCK` holds the mutex `init` made, which
+        // lives until `close`, after the record's last use.
+        unsafe { libc::pthread_mutex_lock(self.lock.get().cast()) };
+        Held(Some(self))
+    }
+
+    /// `f` over the queue, under the record's mutex.
+    fn queue<R>(&self, f: impl FnOnce(&mut Channel) -> R) -> R {
+        let _held = self.hold();
+        // SAFETY: the mutex (or, without `SW_CHAN_LOCK`, the one thread a `Record` is
+        // confined to) serializes the queue; the borrow ends with `f`.
+        f(unsafe { &mut *self.queue.get() })
+    }
+
+    /// `Channel::push(data, length)`: 0, or -1 when it doesn't fit.
+    pub fn push(&self, data: &[u8]) -> i32 {
+        self.queue(|queue| swr_v1_memory_channel_in(queue, data))
+    }
+
+    /// `Channel::pop` (`consume`) or `Channel::peek` into `output`: the record's
+    /// length, or -1 when the queue is empty or `output` too short.
+    pub fn pop(&self, output: &mut [u8], consume: bool) -> i32 {
+        self.queue(|queue| swr_v1_memory_channel_out(queue, output, consume))
+    }
+
+    /// `Channel::notify` (`true`: write one 8-byte token) or `Channel::wait` (read one,
+    /// blocking): 0 done, -1 failed with errno intact.
+    #[must_use]
+    pub fn signal(&self, notify: bool) -> i32 {
+        let [read, write] = self.notify;
+        let mut value = u64::from(notify).to_ne_bytes();
+        let length = value.len();
+        loop {
+            let done = if notify {
+                sys::write(write, &value)
+            } else {
+                sys::read(read, &mut value)
+            };
+            if done < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+                continue;
+            }
+            let complete = if notify {
+                done.cast_unsigned() == length
+            } else {
+                done > 0
+            };
+            return if complete { 0 } else { -1 };
+        }
+    }
+
+    /// `Channel::print`, through C stdio like upstream (which labels the tags swapped).
+    pub fn print(&self) {
+        let c = self.queue(|queue| *queue);
+        // SAFETY: the format's conversions match the arguments.
+        unsafe {
+            libc::printf(
+                c"Channel\n{\n    off_t head = %ld;\n    off_t tail = %ld;\n    size_t size = %ld;\n    char head_tag = %d;\n    char tail_tag = %d;\n    int num = %d;\n    size_t bytes = %ld;\n    int flag = %d;\n    int maxlen = %d;\n\n}\n".as_ptr(),
+                c.head,
+                c.tail,
+                c.size,
+                c_int::from(c.tail_tag),
+                c_int::from(c.head_tag),
+                c.num,
+                c.bytes,
+                c.flags,
+                c.maxlen,
+            )
+        };
+    }
 }
 
 /// Only the initialized scalar fields read by public `Channel::full` cross ABI.

@@ -1,6 +1,6 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
-use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t};
+use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
 use std::{ffi::CStr, ptr::NonNull};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
@@ -18,72 +18,28 @@ unsafe extern "C" {
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
 }
 
-/// `make`'s and `close`'s arguments and results, for [`trap`].
-struct SocketCall {
-    socket: *mut c_void,
+/// `new SocketImpl(...)` inside `zend_try`, since the constructor's warnings can
+/// run a PHP error handler: the socket is in `made`, which owns it before a
+/// handler can bail out. By `domain`, `kind` and `protocol` with `family`, else
+/// by the `swSocketType` `kind`; over `fd` unless it is negative.
+fn make_trapped(
     fd: c_int,
     domain: c_int,
     kind: c_int,
     protocol: c_int,
     family: bool,
-    result: bool,
+    made: &mut *mut c_void,
+) -> Result<(), Bailout> {
+    let make = || {
+        let (socket, result) =
+            swoole_rs_hooks::co_socket::make_quiet(fd, domain, kind, protocol, family);
+        *made = socket.this();
+        swoole_rs_hooks::co_socket::warn_created(socket, result);
+    };
+    // SAFETY: the body holds copies, a `Copy` handle and the caller's slot.
+    unsafe { bailout::trap_with(make) }
 }
 
-type Body = unsafe extern "C" fn(*mut c_void);
-
-/// [`set_ssl_body`]'s call.
-struct SslCall {
-    socket: *mut c_void,
-    settings: *mut zval,
-    result: bool,
-}
-
-/// [`x509_read`]'s arguments.
-struct X509Call {
-    pem: *const c_char,
-    length: size_t,
-    retval: *mut zval,
-}
-
-/// [`convert_to_fd`]'s argument and result.
-struct FdCall {
-    value: *mut zval,
-    fd: c_int,
-}
-
-/// `body(call)` under `zend_try`.
-/// # Safety
-/// `body` is a native body that takes a `T`.
-unsafe fn trap<T>(body: Body, call: &mut T) -> Result<(), Bailout> {
-    // SAFETY: per the caller; `call` is live for the call.
-    unsafe { bailout::trap(body, (&raw mut *call).cast()) }
-}
-
-/// `call.socket = new SocketImpl(...)` over a [`SocketCall`]: a body for [`trap`],
-/// since the constructor's warnings can run a PHP error handler.
-unsafe extern "C" fn make_body(call: *mut c_void) {
-    // SAFETY: `trap` passes the caller's live `SocketCall`.
-    let call = unsafe { &mut *call.cast::<SocketCall>() };
-    let (made, result) = swoole_rs_hooks::co_socket::make_quiet(
-        call.fd,
-        call.domain,
-        call.kind,
-        call.protocol,
-        call.family,
-    );
-    // The caller owns the socket before a warning's handler can bail out.
-    call.socket = made.this();
-    swoole_rs_hooks::co_socket::warn_created(made, result);
-}
-
-/// `call.result = socket->close()` over a [`SocketCall`]: a body for [`trap`],
-/// since the close may resume coroutines that run PHP.
-unsafe extern "C" fn close_body(call: *mut c_void) {
-    // SAFETY: `trap` passes the caller's live `SocketCall`.
-    let call = unsafe { &mut *call.cast::<SocketCall>() };
-    // SAFETY: the call's live socket.
-    call.result = unsafe { Co::of(call.socket) }.close();
-}
 /// `SW_SOCK_*`.
 pub(crate) mod kind {
     pub(crate) const TCP: i32 = 1;
@@ -200,19 +156,10 @@ impl Socket {
 
     /// The native `make`: `new SocketImpl(kind)` when `fd` is negative.
     fn make(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
-        let mut call = SocketCall {
-            socket: std::ptr::null_mut(),
-            fd,
-            domain,
-            kind,
-            protocol,
-            family: fd >= 0,
-            result: false,
-        };
-        // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
-        let trapped = unsafe { trap(make_body, &mut call) };
+        let mut made = std::ptr::null_mut();
+        let trapped = make_trapped(fd, domain, kind, protocol, fd >= 0, &mut made);
         // Owns, so a bailout frees, the socket `make` wrote before it.
-        let socket = Self::wrap(call.socket, true);
+        let socket = Self::wrap(made, true);
         if trapped.is_err() {
             Bailout.defer();
             return None;
@@ -314,8 +261,7 @@ impl Socket {
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
-        // SAFETY: a live socket.
-        unsafe { co::close_trapped(self.raw()) }
+        co::close_trapped(self.co())
     }
 
     /// `setsockopt(level, name, value)`; `logged` through the coroutine
@@ -457,28 +403,20 @@ impl Socket {
     /// # Safety
     /// `settings` is a live array.
     pub(crate) unsafe fn set_ssl(&self, settings: *mut zval) -> Result<bool, Bailout> {
-        let mut call = SslCall {
-            socket: self.raw(),
-            settings,
-            result: false,
+        let socket = self.raw();
+        let mut applied = false;
+        let apply = || {
+            if let Some(families) = swoole_rs_phpswoole::families() {
+                // SAFETY: a live socket and, per the caller, settings array;
+                // crates/phpclients' settings apply the SSL ones (2).
+                applied = unsafe { (families.socket_settings)(socket, settings, 2) };
+            }
         };
-        // SAFETY: per the caller; `set_ssl_body` takes an `SslCall`.
-        unsafe { trap(set_ssl_body, &mut call) }?;
-        Ok(call.result)
+        // SAFETY: the body holds copies and the result slot; the settings' warnings
+        // can run a PHP error handler.
+        unsafe { bailout::trap_with(apply) }?;
+        Ok(applied)
     }
-}
-
-/// `php_swoole_socket_set_ssl` over an [`SslCall`], a `bailout::trap` body.
-/// The socket is a `SocketImpl`, whose `coroutine::Socket` base is at its address.
-unsafe extern "C" fn set_ssl_body(call: *mut c_void) {
-    // SAFETY: `Socket::set_ssl` passes a live `SslCall`.
-    let call = unsafe { &mut *call.cast::<SslCall>() };
-    let Some(families) = swoole_rs_phpswoole::families() else {
-        return;
-    };
-    // SAFETY: a live socket and settings array, per `Socket::set_ssl`; crates/phpclients'
-    // settings apply the SSL ones (2).
-    call.result = unsafe { (families.socket_settings)(call.socket, call.settings, 2) };
 }
 
 /// `openssl_x509_read(pem)` into `retval`, which the caller then owns.
@@ -487,37 +425,28 @@ unsafe extern "C" fn set_ssl_body(call: *mut c_void) {
 /// # Safety
 /// `retval` is writable.
 pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bailout> {
-    let mut call = X509Call {
-        pem: pem.as_ptr().cast(),
-        length: pem.len(),
-        retval,
+    let read = || {
+        // SAFETY: zero is an undefined zval, which the next line fills.
+        let mut string: zval = unsafe { std::mem::zeroed() };
+        // SAFETY: the caller's bytes, copied into a new string.
+        unsafe { swr_zval_stringl(&raw mut string, pem.as_ptr().cast(), pem.len()) };
+        let name = c"openssl_x509_read";
+        // SAFETY: one live argument and the caller's writable result.
+        unsafe {
+            swoole_rs_zend::host::named_call_into(
+                name.as_ptr(),
+                name.count_bytes(),
+                1,
+                &raw mut string,
+                retval,
+            );
+        }
+        bailout::finish();
+        // SAFETY: the string this body made.
+        unsafe { zval_ptr_dtor(&raw mut string) };
     };
-    // SAFETY: per the caller; `pem` holds its bytes; the body takes an `X509Call`.
-    unsafe { trap(x509_read_body, &mut call) }
-}
-
-/// `openssl_x509_read(pem)` over an [`X509Call`], a `bailout::trap` body.
-unsafe extern "C" fn x509_read_body(call: *mut c_void) {
-    // SAFETY: `x509_read` passes a live `X509Call`.
-    let call = unsafe { &mut *call.cast::<X509Call>() };
-    // SAFETY: zero is an undefined zval, which the next line fills.
-    let mut pem: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: the caller's bytes, copied into a new string.
-    unsafe { swr_zval_stringl(&raw mut pem, call.pem, call.length) };
-    let name = c"openssl_x509_read";
-    // SAFETY: one live argument and the caller's writable result.
-    unsafe {
-        swoole_rs_zend::host::named_call_into(
-            name.as_ptr(),
-            name.count_bytes(),
-            1,
-            &raw mut pem,
-            call.retval,
-        );
-    }
-    swoole_rs_zend::bailout::finish();
-    // SAFETY: the string this body made.
-    unsafe { zval_ptr_dtor(&raw mut pem) };
+    // SAFETY: the body holds the borrowed bytes, a plain zval and the caller's slot.
+    unsafe { bailout::trap_with(read) }
 }
 
 /// How a warning is raised.
@@ -565,13 +494,8 @@ pub fn strerror(code: i32) -> &'static CStr {
 /// # Errors
 /// The fatal error bailed out.
 pub fn coroutine_check() -> Result<(), Bailout> {
-    // SAFETY: called while PHP runs; the body ignores its argument.
-    unsafe { bailout::trap(coroutine_check_body, std::ptr::null_mut()) }
-}
-
-/// [`coroutine_check`]'s `bailout::trap` body.
-extern "C" fn coroutine_check_body(_: *mut c_void) {
-    swoole_rs_phpswoole::coroutine_check();
+    // SAFETY: called while PHP runs; the body holds nothing.
+    unsafe { bailout::trap_with(swoole_rs_phpswoole::coroutine_check) }
 }
 
 /// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.
@@ -580,18 +504,12 @@ extern "C" fn coroutine_check_body(_: *mut c_void) {
 /// # Safety
 /// `value` is a live zval.
 pub unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
-    let mut call = FdCall { value, fd: -1 };
-    // SAFETY: per the caller; the body takes an `FdCall`.
-    unsafe { trap(convert_to_fd_body, &mut call) }?;
-    Ok(call.fd)
-}
-
-/// `php_swoole_convert_to_fd` over an [`FdCall`], a `bailout::trap` body.
-unsafe extern "C" fn convert_to_fd_body(call: *mut c_void) {
-    // SAFETY: `convert_to_fd` passes a live `FdCall`.
-    let call = unsafe { &mut *call.cast::<FdCall>() };
+    let mut fd = -1;
     // SAFETY: the caller's live zval.
-    call.fd = unsafe { php_swoole_convert_to_fd(call.value) };
+    let convert = || fd = unsafe { php_swoole_convert_to_fd(value) };
+    // SAFETY: the body holds a copy and the result slot.
+    unsafe { bailout::trap_with(convert) }?;
+    Ok(fd)
 }
 
 /// `System::socket_poll` of `(fd, events)` rows merged by fd, in the order
@@ -601,29 +519,18 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
     swoole_rs_hooks::poll::socket_poll_rows(rows, timeout)
 }
 
-/// What the client classes (crates/phpclients and crates/phphttp2) need of a
-/// `SocketImpl *` beyond the record.
+/// What the client classes (crates/phpclients, crates/phphttp and crates/phphttp2)
+/// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
     pub use super::Io;
-    use super::{SocketCall, close_body, make_body, trap};
     use libc::{c_char, c_int, c_void, iovec};
-    pub use swoole_rs_hooks::co_socket::CoSocket;
-    use swoole_rs_hooks::{
-        TimeoutScope,
-        co_socket::{Co, swr_v1_hook_co_socket_free},
-    };
+    pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
+    pub use swoole_rs_hooks::packet::recv_packet;
+    use swoole_rs_hooks::{TimeoutScope, co_socket::swr_v1_hook_co_socket_free};
     use swoole_rs_reactor::{
         swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare, swr_v1_reactor_iov_view,
     };
-    use swoole_rs_zend::bailout::Bailout;
-
-    /// The live socket's handle.
-    /// # Safety
-    /// `socket` is live.
-    unsafe fn handle(socket: Socket) -> Co {
-        // SAFETY: per the caller.
-        unsafe { Co::of(socket) }
-    }
+    use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
     /// else by the `swSocketType` `kind`; over `fd` unless it is negative.
@@ -636,22 +543,13 @@ pub mod co {
         protocol: c_int,
         family: bool,
     ) -> Result<Socket, Bailout> {
-        let mut call = SocketCall {
-            socket: std::ptr::null_mut(),
-            fd,
-            domain,
-            kind,
-            protocol,
-            family,
-            result: false,
-        };
-        // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
-        if unsafe { trap(make_body, &mut call) }.is_err() {
+        let mut made = std::ptr::null_mut();
+        if super::make_trapped(fd, domain, kind, protocol, family, &mut made).is_err() {
             // Frees the socket `make` wrote before the bailout, if any.
-            drop(super::Socket::wrap(call.socket, true));
+            drop(super::Socket::wrap(made, true));
             return Err(Bailout);
         }
-        Ok(call.socket)
+        Ok(made)
     }
 
     /// `delete socket`.
@@ -667,21 +565,12 @@ pub mod co {
     /// `close()` inside `zend_try`.
     /// # Errors
     /// A close hook bailed out.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn close_trapped(socket: Socket) -> Result<bool, Bailout> {
-        let mut call = SocketCall {
-            socket,
-            fd: -1,
-            domain: 0,
-            kind: 0,
-            protocol: 0,
-            family: false,
-            result: false,
-        };
-        // SAFETY: per the caller; `close` takes a `SocketCall`.
-        unsafe { trap(close_body, &mut call) }?;
-        Ok(call.result)
+    pub fn close_trapped(socket: Co) -> Result<bool, Bailout> {
+        let mut closed = false;
+        // SAFETY: the body holds a `Copy` handle and the result slot; the close may
+        // resume coroutines that run PHP.
+        unsafe { bailout::trap_with(|| closed = socket.close()) }?;
+        Ok(closed)
     }
 
     /// A timeout of `kind` set for the guard's life (`TimeoutSetter`).
@@ -704,12 +593,21 @@ pub mod co {
         }
     }
 
+    /// One table transfer of `length` bytes at `buf`.
+    /// # Safety
+    /// `buf` holds `length` bytes, writable to receive.
+    pub unsafe fn io(socket: Co, op: Io, buf: *mut c_char, length: usize) -> isize {
+        // SAFETY: per the caller.
+        unsafe { super::io(socket, op, buf, length) }
+    }
+
     /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
     /// `count` vectors, with the vector index and byte offset where it stopped.
     /// # Safety
-    /// `socket` is live and the vectors are valid for the operation.
+    /// The vectors are valid for the operation.
+    #[must_use]
     pub unsafe fn vector(
-        socket: Socket,
+        socket: Co,
         op: c_int,
         vectors: *const iovec,
         count: c_int,
@@ -729,8 +627,6 @@ pub mod co {
             2 => Co::writev,
             _ => Co::writev_all,
         };
-        // SAFETY: per the caller.
-        let socket = unsafe { handle(socket) };
         // SAFETY: per the caller, over the live vector.
         let result = unsafe { member(socket, vector) };
         // SAFETY: the live owner.
@@ -740,58 +636,12 @@ pub mod co {
         (result, state.index, state.offset_bytes)
     }
 
-    /// `sendfile(file, offset, length)`.
-    /// # Safety
-    /// `socket` is live and `file` NUL-terminated.
-    pub unsafe fn sendfile(socket: Socket, file: *const c_char, offset: i64, length: i64) -> bool {
-        // size_t's conversion of the length, as upstream's call.
-        let length = usize::try_from(length.cast_unsigned()).unwrap_or(usize::MAX);
-        // SAFETY: per the caller.
-        let file = unsafe { std::ffi::CStr::from_ptr(file) };
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.sendfile(file, offset, length)
-    }
-
-    /// `bind(std::string(host, length), port)`.
-    /// # Safety
-    /// `socket` is live and `host` holds `length` bytes.
-    pub unsafe fn bind(socket: Socket, host: *const c_char, length: usize, port: c_int) -> bool {
-        // SAFETY: per the caller.
-        let host = unsafe { super::bytes(host, length) };
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.bind(host, port)
-    }
-
-    /// `listen(backlog)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn listen(socket: Socket, backlog: c_int) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.listen(backlog)
-    }
-
-    /// `ssl_handshake()`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn ssl_handshake(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.ssl_handshake()
-    }
-
-    /// `getsockname()`, into the network socket's address.
-    /// # Safety
-    /// `socket` is live and open.
-    pub unsafe fn getsockname(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.getsockname()
-    }
-
-    /// `cancel(event)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn cancel(socket: Socket, event: u32) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.cancel(event)
+    /// `set_err(code, message)`, copying the message.
+    pub fn set_error(socket: Co, code: c_int, message: &[u8]) {
+        if socket.set_error(code, message) != 0 {
+            // std::bad_alloc, which upstream leaves uncaught.
+            std::process::abort();
+        }
     }
 
     /// `SW_EVENT_READ`.
@@ -811,112 +661,14 @@ pub mod co {
         unsafe { &mut *socket.cast::<CoSocket>() }
     }
 
-    /// `close()`; the socket may be gone after it returns true.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn close(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.close()
-    }
-
-    /// `is_connected()`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn is_connected(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.is_connected()
-    }
-
-    /// `has_bound(event)`.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn has_bound(socket: Socket, event: u32) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.has_bound(event)
-    }
-
-    /// `recv_packet(timeout)`.
-    /// # Safety
-    /// `socket` is live, in a coroutine.
-    pub unsafe fn recv_packet(socket: Socket, timeout: f64) -> isize {
-        // SAFETY: per the caller.
-        swoole_rs_hooks::packet::recv_packet(unsafe { handle(socket) }, timeout)
-    }
-
-    /// `send_all(data, length)`.
-    /// # Safety
-    /// `socket` is live and `data` holds `length` readable bytes.
-    pub unsafe fn send_all(socket: Socket, data: *const c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let data = unsafe { super::bytes(data, length) };
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.send_all(data)
-    }
-
-    /// `send(data, length)`.
-    /// # Safety
-    /// `socket` is live and `data` holds `length` readable bytes.
-    pub unsafe fn send(socket: Socket, data: *const c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let data = unsafe { super::bytes(data, length) };
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.send(data)
-    }
-
-    /// `recv(data, length)`.
-    /// # Safety
-    /// `socket` is live and `data` holds `length` writable bytes.
-    pub unsafe fn recv(socket: Socket, data: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        let data = unsafe { super::bytes_mut(data, length) };
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.recv(data)
-    }
-
-    /// `connect(std::string(host, length), port, flags)`.
-    /// # Safety
-    /// `socket` is live and `host` holds `length` readable bytes.
-    pub unsafe fn connect(
-        socket: Socket,
-        host: *const c_char,
-        length: usize,
-        port: c_int,
-        flags: c_int,
-    ) -> bool {
-        let _ = flags;
-        // SAFETY: per the caller; copied before any effect.
-        let host = unsafe { super::bytes(host, length) }.to_vec();
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.connect_host(&host, port)
-    }
-
-    /// `enable_ssl_encrypt()`: false when TLS was already on.
-    /// # Safety
-    /// `socket` is live.
-    pub unsafe fn enable_ssl(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        unsafe { handle(socket) }.enable_ssl()
-    }
-
-    /// `ssl_is_enable()`.
-    /// # Safety
-    /// `socket` is live.
-    #[must_use]
-    pub unsafe fn ssl_enabled(socket: Socket) -> bool {
-        // SAFETY: per the caller.
-        !unsafe { handle(socket) }.tls_owner().is_null()
-    }
-
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
     /// # Safety
-    /// `socket` is live and `hook` may be called with `arg` until then.
+    /// `hook` may be called with `arg` until then.
     pub unsafe fn close_hook(
-        socket: Socket,
+        socket: Co,
         hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
         arg: *mut c_void,
     ) {
-        // SAFETY: per the caller.
-        let socket = unsafe { handle(socket) };
         swoole_rs_hooks::socket_extra::set_close_hook(
             socket,
             // SAFETY: per the caller, `hook` takes `arg` and the socket until it goes,

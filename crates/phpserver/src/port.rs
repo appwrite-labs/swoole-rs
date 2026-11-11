@@ -100,8 +100,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 /// # Safety
 /// `serv` is a live server and `port` one of its ports.
 pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned, *mut zend_object) {
-    // SAFETY: the registered class.
-    let zport = unsafe { Owned::new_object(PORT.entry()) };
+    let zport = PORT.create_object();
     let object = zport.object().unwrap_or(ptr::null_mut());
     // SAFETY: the object just created, one of ours.
     let data = unsafe { Port::data(object) };
@@ -354,12 +353,8 @@ pub(crate) fn merge_setting(
     object: *mut zend_object,
     settings: *mut zval,
 ) -> Result<*mut zval, bailout::Bailout> {
-    let mut zobject = crate::dispatch::undef();
-    // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
-    unsafe { swoole_rs_zend::set_object(&raw mut zobject, object) };
     // SAFETY: the object and its class, which declares `setting`.
-    let setting =
-        unsafe { swoole_rs_zend::host::array_property_of(scope, &raw mut zobject, c"setting") }?;
+    let setting = unsafe { swoole_rs_zend::host::array_property_of(scope, object, c"setting") }?;
     // SAFETY: the property, now an array, and the settings array.
     bailout::trapped(unsafe { z::swr_zend_try_array_merge(setting, settings) })?;
     Ok(setting)

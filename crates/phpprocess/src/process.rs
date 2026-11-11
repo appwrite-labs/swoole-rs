@@ -8,6 +8,7 @@ use crate::{
     worker::{self, WorkerView},
 };
 use std::{
+    cell::Cell,
     ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicU32, Ordering},
@@ -15,16 +16,14 @@ use std::{
 use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, Props, Value, bailout, handlers, message,
-    object_of, set_object,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Props, Value, bailout, handlers,
+    message, set_object,
     string::ZBuf,
     sys::{
-        _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        swr_zend_object_addref, swr_zend_object_release, zend_class_entry,
-        zend_get_executed_filename, zend_object, zend_object_handlers, zend_read_property,
-        zend_string, zval,
+        _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zend_object_addref,
+        swr_zend_object_release, zend_class_entry, zend_get_executed_filename, zend_object,
+        zend_read_property, zend_string, zval,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -40,23 +39,50 @@ const PIPE_CLOSE_WRITE: i64 = 4;
 const MSGMAX: usize = 65536;
 const MSGMAX_LONG: i64 = 65536;
 
-static PROCESS: Class = Class::new();
+static PROCESS: CustomClass<Process> = CustomClass::new();
 
 /// `round_process_id`: the id of the next process made outside a server worker.
 static ROUND_ID: AtomicU32 = AtomicU32::new(0);
 
-/// `struct ProcessObject { Worker *worker; zend_object *zsocket; PipeType
-/// pipe_type; bool enable_coroutine; bool blocking; zend_object std; }`.
-#[repr(C)]
+/// `struct ProcessObject`: the worker it owns (null before its constructor
+/// ran), its exported socket, pipe type and flags.
+#[derive(Default)]
 struct Process {
-    worker: *mut c_void,
-    socket: *mut zend_object,
-    pipe_type: c_int,
-    enable_coroutine: bool,
-    blocking: bool,
+    worker: Cell<*mut c_void>,
+    socket: Cell<*mut zend_object>,
+    pipe_type: Cell<c_int>,
+    enable_coroutine: Cell<bool>,
+    blocking: Cell<bool>,
 }
 
-type ProcessObject = Object<Process>;
+impl Custom for Process {
+    fn class() -> &'static CustomClass<Self> {
+        &PROCESS
+    }
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        let worker = self.worker.get();
+        if !worker.is_null() {
+            let queue = queue_of(worker);
+            if !queue.is_null() {
+                // SAFETY: the object owns its worker and the worker its boxed queue.
+                drop(unsafe { Box::from_raw(queue) });
+            }
+            // SAFETY: as above.
+            unsafe { worker::free(worker) };
+        }
+        let socket = self.socket.get();
+        if !socket.is_null() {
+            // SAFETY: the object holds one reference to its exported socket.
+            unsafe { swr_zend_object_release(socket) };
+        }
+    }
+}
 
 /// A `SysV` message, `struct { long type; char data[SW_MSGMAX]; }`, on the heap.
 struct QueueMessage(Vec<c_long>);
@@ -89,42 +115,37 @@ pub fn process_class() -> &'static Class {
     &PROCESS
 }
 
-/// The data of a Process object.
-/// # Safety
-/// `object` is a live Process (or subclass) object.
-unsafe fn data<'a>(object: *mut zend_object) -> &'a mut Process {
-    // SAFETY: per the caller.
-    unsafe { ProcessObject::data(object) }
-}
-
-fn this<'a>(call: &Call) -> &'a mut Process {
-    // SAFETY: Process methods are non-static, so `$this` is a Process object.
-    unsafe { data(call.this()) }
+/// `$this`, which every instance method runs on.
+fn this(call: &Call) -> Option<&Process> {
+    call.custom()
 }
 
 /// `php_swoole_process_get_and_check_worker`: fatal without a constructed worker.
-fn checked(process: &Process) -> *mut c_void {
-    if process.worker.is_null() {
+fn checked(process: Option<&Process>) -> *mut c_void {
+    let worker = process.map_or(ptr::null_mut(), |process| process.worker.get());
+    if worker.is_null() {
         host::unconstructed();
     }
-    process.worker
+    worker
 }
 
 /// The worker of a Process object (null before its constructor ran).
-pub(crate) fn worker_of(object: *mut zend_object) -> *mut c_void {
-    // SAFETY: callers pass a live Process object.
-    unsafe { data(object) }.worker
+pub(crate) fn worker_of(object: &Value) -> *mut c_void {
+    object
+        .custom::<Process>()
+        .map_or(ptr::null_mut(), |process| process.worker.get())
 }
 
 /// `php_swoole_process_set_worker` on a Process object.
 pub(crate) fn set_worker_of(
-    object: *mut zend_object,
+    object: &Value,
     worker: *mut c_void,
     enable_coroutine: bool,
     pipe_type: c_int,
 ) {
-    // SAFETY: callers pass a live Process object.
-    set_worker(unsafe { data(object) }, worker, enable_coroutine, pipe_type);
+    if let Some(process) = object.custom() {
+        set_worker(process, worker, enable_coroutine, pipe_type);
+    }
 }
 
 /// A live worker's pid.
@@ -143,32 +164,6 @@ fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
 
 fn view(worker: *mut c_void) -> WorkerView {
     worker::view(worker)
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass; zeroed
-    // data is a Process without a worker.
-    unsafe { ProcessObject::create(&PROCESS, ce) }
-}
-
-unsafe extern "C" fn free(object: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    let process = unsafe { data(object) };
-    if !process.worker.is_null() {
-        let queue = queue_of(process.worker);
-        if !queue.is_null() {
-            // SAFETY: the object owns its worker and the worker its boxed queue.
-            drop(unsafe { Box::from_raw(queue) });
-        }
-        // SAFETY: as above.
-        unsafe { worker::free(process.worker) };
-    }
-    if !process.socket.is_null() {
-        // SAFETY: the object holds one reference to its exported socket.
-        unsafe { swr_zend_object_release(process.socket) };
-    }
-    // SAFETY: as above.
-    unsafe { ProcessObject::dtor(object) };
 }
 
 // `swoole_set_process_name()` (php_swoole.cc), which `Process::name()` aliases.
@@ -216,7 +211,7 @@ method_table! {
 pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
     // SAFETY: Zend's MINIT of this module, on this thread.
     let minit = unsafe { Minit::new(module) };
-    minit.register(&PROCESS, c"Swoole\\Process", &METHODS.0, configure);
+    minit.register_object::<Process>(c"Swoole\\Process", &METHODS.0, 0);
     for (name, value) in [
         (c"IPC_NOWAIT", IPC_NOWAIT),
         (c"PIPE_MASTER", 1),
@@ -240,14 +235,6 @@ pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
     }
     minit.long_constant(c"SWOOLE_MSGQUEUE_ORIENT", MSGQUEUE_ORIENT);
     minit.long_constant(c"SWOOLE_MSGQUEUE_BALANCE", MSGQUEUE_BALANCE);
-}
-
-/// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    ProcessObject::install(entry, handlers, create, free);
 }
 
 /// The 31 signal constants and friends upstream registers without pcntl, in its order.
@@ -308,26 +295,19 @@ fn signal_constants() -> Vec<(&'static CStr, i64)> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void {
     // SAFETY: per the caller.
-    let object = unsafe { object_of(object) };
-    // SAFETY: as above.
-    let process = unsafe { data(object) };
+    let process = unsafe { Value::from_ptr(object) }.and_then(Value::custom);
     if check {
         checked(process)
     } else {
-        process.worker
+        process.map_or(ptr::null_mut(), |process| process.worker.get())
     }
 }
 
-fn set_worker(
-    process: &mut Process,
-    worker: *mut c_void,
-    enable_coroutine: bool,
-    pipe_type: c_int,
-) {
-    process.worker = worker;
-    process.pipe_type = pipe_type;
-    process.enable_coroutine = enable_coroutine;
-    process.blocking = true;
+fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pipe_type: c_int) {
+    process.worker.set(worker);
+    process.pipe_type.set(pipe_type);
+    process.enable_coroutine.set(enable_coroutine);
+    process.blocking.set(true);
 }
 
 /// `php_swoole_process_start`: in the child, run the callback, then bail out
@@ -338,9 +318,14 @@ fn set_worker(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int {
     // SAFETY: per the caller.
-    let Some(this) = (unsafe { Value::from_ptr(object) }) else {
-        return -1;
-    };
+    match unsafe { Value::from_ptr(object) } {
+        Some(this) => start_child(worker, this),
+        None => -1,
+    }
+}
+
+/// [`swr_v1_phpprocess_start`] on `$this`.
+fn start_child(worker: *mut c_void, this: &Value) -> c_int {
     let Some(std) = this.object() else {
         return -1;
     };
@@ -372,8 +357,9 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
             props.long(c"pipe", i64::from(worker.pipe));
         }
     }
-    // SAFETY: a Process object.
-    let coroutine = unsafe { data(std) }.enable_coroutine;
+    let coroutine = this
+        .custom::<Process>()
+        .is_some_and(|process| process.enable_coroutine.get());
     if swoole_rs_zend::bailout::pending() || (coroutine && host::reactor_init() < 0) {
         drop(callable);
         swoole_rs_zend::bailout::finish();
@@ -402,8 +388,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
 }
 
 fn construct(call: &Call) {
-    let process = this(call);
-    let Some(object) = call.this_value() else {
+    let Some((process, object)) = this(call).zip(call.this_value()) else {
         return;
     };
     let name = object.value_name().to_string_lossy();
@@ -411,7 +396,7 @@ fn construct(call: &Call) {
         call.throw_error(message!("{text}").as_cstr());
         call.set_bool(false);
     };
-    if !process.worker.is_null() {
+    if !process.worker.get().is_null() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
@@ -429,7 +414,7 @@ fn construct(call: &Call) {
     // Upstream makes the worker before parsing, so a failed parse leaves it set.
     // A new worker the object owns from here.
     let worker = worker::new();
-    process.worker = worker;
+    process.worker.set(worker);
     let parsed = call.arity(1, 4).and_then(|()| {
         call.func(1)?;
         Ok((
@@ -442,8 +427,7 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the worker made above.
-    if !unsafe { host::worker_share(worker) } {
+    if !host::worker_share(worker::record(worker)) {
         if redirect {
             worker::redirect(worker);
             pipe_type = PIPE_TYPE_STREAM;
@@ -700,9 +684,10 @@ fn start(call: &Call) {
             call.set_long(i64::from(pid));
         }
         std::cmp::Ordering::Equal => {
-            // SAFETY: the child: `$this` and its worker.
-            let started = unsafe { swr_v1_phpprocess_start(worker, call.this_zval()) };
-            call.set_bool(started >= 0);
+            let started = call
+                .this_value()
+                .is_some_and(|this| start_child(worker, this) >= 0);
+            call.set_bool(started);
         }
     }
 }
@@ -727,7 +712,7 @@ fn read(call: &Call) {
     let size = size as usize;
     // Zend's allocator; it bails out when it cannot allocate.
     let mut buffer = ZBuf::with_capacity(size);
-    let read = worker::pipe_read(worker, &mut buffer, process.blocking);
+    let read = worker::pipe_read(worker, &mut buffer, blocking(process));
     let Ok(length) = usize::try_from(read) else {
         call.set_bool(false);
         return;
@@ -735,6 +720,11 @@ fn read(call: &Call) {
     // SAFETY: the read wrote `length <= size` bytes.
     unsafe { buffer.set_len(length) };
     call.set_zstring(buffer.into_zstring());
+}
+
+/// The object's `blocking` flag.
+fn blocking(process: Option<&Process>) -> bool {
+    process.is_some_and(|process| process.blocking.get())
 }
 
 fn string_data(string: *mut zend_string) -> *mut c_char {
@@ -760,7 +750,7 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let written = worker::pipe_write(worker, data, process.blocking);
+    let written = worker::pipe_write(worker, data, blocking(process));
     if written < 0 {
         sys(E_WARNING, &message!("write() failed"));
         call.set_bool(false);
@@ -770,29 +760,33 @@ fn write(call: &Call) {
 }
 
 fn export_socket(call: &Call) {
-    let process = this(call);
-    let pipe = if process.worker.is_null() {
+    let Some(process) = this(call) else {
+        return;
+    };
+    let worker = process.worker.get();
+    let pipe = if worker.is_null() {
         -1
     } else {
-        view(process.worker).pipe
+        view(worker).pipe
     };
     if pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot export stream"));
         call.set_bool(false);
         return;
     }
-    if process.socket.is_null() {
-        let stream = i64::from(process.pipe_type) == PIPE_TYPE_STREAM;
-        process.socket = host::dup_socket(pipe, stream);
-        if process.socket.is_null() {
+    if process.socket.get().is_null() {
+        let stream = i64::from(process.pipe_type.get()) == PIPE_TYPE_STREAM;
+        process.socket.set(host::dup_socket(pipe, stream));
+        if process.socket.get().is_null() {
             call.set_bool(false);
             return;
         }
     }
+    let socket = process.socket.get();
     // SAFETY: the object keeps its reference; the return value takes a new one.
-    unsafe { swr_zend_object_addref(process.socket) };
+    unsafe { swr_zend_object_addref(socket) };
     // SAFETY: as above.
-    unsafe { set_object(call.return_value(), process.socket) };
+    unsafe { set_object(call.return_value(), socket) };
 }
 
 fn push(call: &Call) {
@@ -995,10 +989,11 @@ fn set(call: &Call) {
     };
     let process = this(call);
     checked(process);
-    if let Some(value) = options.find(b"enable_coroutine")
+    if let Some(process) = process
+        && let Some(value) = options.find(b"enable_coroutine")
         && value.kind() != IS_NULL
     {
-        process.enable_coroutine = value.truthy();
+        process.enable_coroutine.set(value.truthy());
     }
 }
 
@@ -1021,14 +1016,17 @@ fn set_blocking(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let process = this(call);
-    if process.worker.is_null() || view(process.worker).pipe < 0 {
+    let Some(process) = this(call) else {
+        return;
+    };
+    let worker = process.worker.get();
+    if worker.is_null() || view(worker).pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot setBlocking the pipe"));
         call.set_bool(false);
         return;
     }
-    process.blocking = blocking;
-    call.set_bool(worker::pipe_blocking(process.worker, blocking));
+    process.blocking.set(blocking);
+    call.set_bool(worker::pipe_blocking(worker, blocking));
 }
 
 /// `SW_CHECK_PRIORITY_WHO`: a null `$who` means this process for
@@ -1144,14 +1142,5 @@ mod tests {
         assert_eq!(names.first(), Some(&c"SIGHUP"), "starts with SIGHUP");
         assert_eq!(names.last(), Some(&c"PRIO_USER"), "ends with PRIO_USER");
         assert!(names.contains(&c"SIG_IGN"), "SIG_IGN is registered");
-    }
-
-    #[test]
-    fn process_object_matches_upstream_layout() {
-        assert_eq!(
-            ProcessObject::OFFSET,
-            2 * size_of::<*mut c_void>() + size_of::<c_int>() + 2 + 2,
-            "worker, zsocket, pipe_type, two bools, padded to the zend_object"
-        );
     }
 }

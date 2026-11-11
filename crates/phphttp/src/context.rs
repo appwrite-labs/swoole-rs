@@ -16,7 +16,7 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Class, Object, Owned, Value, init_object,
+    Object, Owned, Value, init_object,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset, zend_class_entry,
         zend_object, zend_object_handlers, zend_string, zval, zval_ptr_dtor,
@@ -35,14 +35,6 @@ pub(crate) type Holder = Object<*mut Context>;
 pub(crate) unsafe fn context_of(object: *const zend_object) -> *mut Context {
     // SAFETY: per the caller; only the pointer is copied out.
     unsafe { *Holder::data(object.cast_mut()) }
-}
-
-/// Point an object of either class at `context`.
-/// # Safety
-/// As `context_of`.
-pub(crate) unsafe fn set_context(object: *mut zend_object, context: *mut Context) {
-    // SAFETY: per the caller.
-    unsafe { *Holder::data(object) = context };
 }
 
 /// The method's `$this` context.
@@ -64,14 +56,6 @@ pub(crate) fn configure(
     Holder::install(entry, handlers, create, free);
 }
 
-/// The body of both `create_object` handlers.
-/// # Safety
-/// As `Object::create`.
-pub(crate) unsafe fn create(class: &Class, ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: per the caller; a null context is valid zeroed data.
-    unsafe { Holder::create(class, ce) }
-}
-
 /// `Swoole\Http\Response`'s declared `fd` slot (MINIT).
 static RESPONSE_FD: AtomicU32 = AtomicU32::new(0);
 
@@ -84,15 +68,39 @@ pub(crate) fn response_minit(ce: *mut zend_class_entry) {
     );
 }
 
-/// A new object of `ce` in `slot`, pointing at `ctx`, with its `fd` property
-/// (the slot at `offset`) set.
-fn object(slot: &mut Slot, ce: *mut zend_class_entry, ctx: *mut Context, offset: u32, fd: i64) {
+/// The class of a context's object.
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Request,
+    Response,
+}
+
+/// A new `Swoole\Http\Request` or `Response` in the context's `slot`,
+/// pointing at `ctx`.
+pub(crate) fn new_object(
+    slot: &mut Slot,
+    kind: Kind,
+    ctx: *mut Context,
+) -> Option<*mut zend_object> {
+    let ce = match kind {
+        Kind::Request => crate::request::entry(),
+        Kind::Response => crate::response::entry(),
+    };
     // SAFETY: the context's own zval and a registered class.
     unsafe { init_object(&raw mut slot.value, ce) };
     slot.ptr = &raw mut slot.value;
-    let Some(std) = slot.object() else { return };
-    // SAFETY: one of our objects.
-    unsafe { set_context(std, ctx) };
+    let std = slot.object()?;
+    // SAFETY: one of our objects, laid out as a `Holder`.
+    unsafe { *Holder::data(std) = ctx };
+    Some(std)
+}
+
+/// A new object in `slot`, pointing at `ctx`, with its `fd` property (the
+/// slot at `offset`) set.
+fn object(slot: &mut Slot, kind: Kind, ctx: *mut Context, offset: u32, fd: i64) {
+    let Some(std) = new_object(slot, kind, ctx) else {
+        return;
+    };
     // SAFETY: the declared property's slot, `OBJ_PROP(std, offset)`.
     let property = unsafe { std.byte_add(offset as usize) }.cast::<zval>();
     // SAFETY: a fresh object's property, holding nothing to release.
@@ -107,14 +115,14 @@ pub(crate) fn context_new(fd: i64) -> *mut Context {
     let state = send::state(ctx);
     object(
         &mut state.request.zobject,
-        crate::request::entry(),
+        Kind::Request,
         ctx,
         parse::fd_offset(),
         fd,
     );
     object(
         &mut state.response.zobject,
-        crate::response::entry(),
+        Kind::Response,
         ctx,
         RESPONSE_FD.load(Relaxed),
         fd,
@@ -141,11 +149,8 @@ pub(crate) fn alloc() -> *mut Context {
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
-/// # Safety
-/// `ctx` is a live context.
-pub(crate) unsafe fn init(ctx: *mut Context, server: view::Server<'_>) {
+pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     let config = server.config();
-    let state = send::state(ctx);
     state.parse_cookie = u8::from(config.http_parse_cookie);
     state.parse_body = u8::from(config.http_parse_post);
     state.parse_files = u8::from(config.http_parse_files);
@@ -154,8 +159,7 @@ pub(crate) unsafe fn init(ctx: *mut Context, server: view::Server<'_>) {
         state.compression_level = i8::from_ne_bytes([config.http_compression_level]);
         state.compression_min_length = config.compression_min_length;
     }
-    // SAFETY: per the caller.
-    unsafe { bind_server(ctx, server) };
+    bind_server(state, server);
 }
 
 /// The server a context not bound to a coroutine socket answers through.
@@ -174,10 +178,8 @@ pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and the bytes; true once every
-        // byte is sent.
-        unsafe { co::send_all(target, data.as_ptr().cast(), data.len()) }.cast_unsigned()
-            == data.len()
+        // SAFETY: the context's live socket; true once every byte is sent.
+        unsafe { co::Co::of(target) }.send_all(data).cast_unsigned() == data.len()
     } else {
         server_send(server(state), fd, data)
     }
@@ -209,15 +211,11 @@ pub(crate) fn sendfile(
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and a live, NUL-terminated file name.
-        unsafe {
-            co::sendfile(
-                target,
-                string::val(file).cast(),
-                offset,
-                i64::try_from(length).unwrap_or(i64::MAX),
-            )
-        }
+        // SAFETY: the context's live socket.
+        let socket = unsafe { co::Co::of(target) };
+        // SAFETY: a live, NUL-terminated file name.
+        let file = unsafe { std::ffi::CStr::from_ptr(string::val(file).cast()) };
+        socket.sendfile(file, offset, length)
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
@@ -231,17 +229,14 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket.
-        unsafe { co::close(target) }
+        unsafe { co::Co::of(target) }.close()
     } else {
         server_methods::close(server(state), fd, false)
     }
 }
 
 /// `Context::bind(Server *)`: the context sends through the server.
-/// # Safety
-/// `ctx` is a live context.
-pub(crate) unsafe fn bind_server(ctx: *mut Context, server: view::Server<'_>) {
-    let state = send::state(ctx);
+pub(crate) fn bind_server(state: &mut State, server: view::Server<'_>) {
     state.private_data = server.raw();
     // A server's context holds no socket.
     state.zsocket = Owned::null();
@@ -250,23 +245,17 @@ pub(crate) unsafe fn bind_server(ctx: *mut Context, server: view::Server<'_>) {
 /// `Context::bind(zval *)`: the context holds the socket object and sends
 /// through its coroutine socket.
 /// # Safety
-/// `ctx` is a live context and `socket` a live `Swoole\Coroutine\Socket`.
-pub(crate) unsafe fn bind(ctx: *mut Context, socket: *mut zval) {
-    let state = send::state(ctx);
+/// `socket` is a live `Swoole\Coroutine\Socket`.
+pub(crate) unsafe fn bind(state: &mut State, socket: &Value) {
     // SAFETY: per the caller.
-    state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket) };
-    // SAFETY: per the caller; the context takes a reference.
-    state.zsocket = unsafe { Value::from_ptr(socket) }.map_or_else(Owned::default, Value::copy);
+    state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket.as_ptr()) };
+    // The context takes a reference.
+    state.zsocket = socket.copy();
 }
 
-/// `Context::copy`: an HTTP/2 stream's context takes its connection's
+/// `Context::copy`: an HTTP/2 stream's context takes another context's
 /// settings, transport and hooks.
-/// # Safety
-/// `ctx` and `from` are live contexts.
-pub(crate) unsafe fn copy_settings(ctx: *mut Context, from: *const Context) {
-    // SAFETY: a live context, read only.
-    let from = unsafe { &*from.cast::<State>() };
-    let state = send::state(ctx);
+pub(crate) fn copy_settings(state: &mut State, from: &State) {
     state.parse_cookie = from.parse_cookie;
     state.parse_body = from.parse_body;
     state.parse_files = from.parse_files;
@@ -385,8 +374,7 @@ pub(crate) unsafe fn free(ctx: *mut Context) {
         // SAFETY: the reason `status()` copied into request memory.
         unsafe { swr_zend_efree(state.response.reason.cast()) };
     }
-    // SAFETY: a live context.
-    unsafe { parse::parse_free(ctx) };
+    parse::parse_free(state);
     // SAFETY: `alloc`'s, which nothing references any more; the drop
     // releases the request's data, the socket and any unfinished upload.
     drop(unsafe { Box::from_raw(ctx.cast::<State>()) });

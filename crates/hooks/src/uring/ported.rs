@@ -214,13 +214,13 @@ fn fstat_and_stat() {
         let written = uring::write(&HOST, fd, TEST_STR.as_ptr().cast(), TEST_STR.len(), -1.0);
         assert_eq!(written, TEST_STR.len().cast_signed(), "write");
 
-        assert_eq!(uring::fstat(&HOST, fd, &raw mut statbuf), 0, "fstat");
+        assert_eq!(uring::fstat(&HOST, fd, &mut statbuf), 0, "fstat");
         assert!(statbuf.st_size > 0, "fstat size");
 
         assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
 
         statbuf = mem::zeroed();
-        let result = uring::stat(&HOST, TEST_TMP_FILE.as_ptr(), &raw mut statbuf);
+        let result = uring::stat(&HOST, TEST_TMP_FILE, &mut statbuf);
         assert_eq!(result, 0, "stat");
         assert!(statbuf.st_size > 0, "stat size");
     });
@@ -477,7 +477,7 @@ fn sleep() {
 
 /// `Iouring::wait(stat_loc, timeout)`, which is `waitpid(-1, stat_loc, 0, timeout)`.
 fn wait(status: &mut c_int, timeout: f64) -> libc::pid_t {
-    unsafe { uring::waitpid(&HOST, -1, status, 0, timeout) }
+    uring::waitpid(&HOST, -1, Some(status), 0, timeout)
 }
 
 #[test]
@@ -518,12 +518,12 @@ fn waitpid() {
     with_engine(|| unsafe {
         let mut status = 0;
         assert_eq!(
-            uring::waitpid(&HOST, pid, &raw mut status, libc::WNOHANG, -1.0),
+            uring::waitpid(&HOST, pid, Some(&mut status), libc::WNOHANG, -1.0),
             0,
             "WNOHANG"
         );
         assert_eq!(
-            uring::waitpid(&HOST, pid, &raw mut status, 0, 0.1),
+            uring::waitpid(&HOST, pid, Some(&mut status), 0, 0.1),
             -1,
             "timed out"
         );
@@ -532,10 +532,29 @@ fn waitpid() {
         libc::kill(pid, libc::SIGKILL);
         let _slept = uring::sleep(&HOST, 0.3);
         assert_eq!(
-            uring::waitpid(&HOST, pid, &raw mut status, 0, 0.1),
+            uring::waitpid(&HOST, pid, Some(&mut status), 0, 0.1),
             pid,
             "reaped"
         );
+    });
+}
+
+/// Not an upstream TEST: `waitpid` with no status word (C's null `stat_loc`), on the
+/// `WNOHANG` path and on the ring's blocking path, which must not write through it.
+#[test]
+fn waitpid_without_status() {
+    let _serial = serial();
+    let pid = spawn_exec(2000);
+
+    with_engine(|| unsafe {
+        assert_eq!(
+            uring::waitpid(&HOST, pid, None, libc::WNOHANG, -1.0),
+            0,
+            "WNOHANG"
+        );
+
+        libc::kill(pid, libc::SIGKILL);
+        assert_eq!(uring::waitpid(&HOST, pid, None, 0, 1.0), pid, "reaped");
     });
 }
 
@@ -560,7 +579,7 @@ fn poll() {
         fds[0] = mem::zeroed();
         fds[0].fd = fd0;
         fds[0].events = libc::POLLIN | libc::POLLOUT;
-        assert_eq!(uring::poll(&HOST, fds.as_mut_ptr(), 1000), 1, "writable");
+        assert_eq!(uring::poll(&HOST, &mut fds[0], 1000), 1, "writable");
         assert_ne!(fds[0].revents & libc::POLLOUT, 0, "POLLOUT");
 
         let writer = thread::spawn(move || {
@@ -577,7 +596,7 @@ fn poll() {
         fds[0].fd = fd1;
         fds[0].events = libc::POLLIN;
 
-        assert_eq!(uring::poll(&HOST, fds.as_mut_ptr(), 1000), 1, "readable");
+        assert_eq!(uring::poll(&HOST, &mut fds[0], 1000), 1, "readable");
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "POLLIN");
 
         let result = uring::read(&HOST, fd1, buf.as_mut_ptr().cast(), buf.len(), -1.0);
@@ -590,7 +609,7 @@ fn poll() {
         fds[0] = mem::zeroed();
         fds[0].fd = fd0;
         fds[0].events = libc::POLLIN | libc::POLLOUT;
-        assert_eq!(uring::poll(&HOST, fds.as_mut_ptr(), 1000), 1, "ready");
+        assert_eq!(uring::poll(&HOST, &mut fds[0], 1000), 1, "ready");
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "POLLIN");
         writer.join().unwrap();
     });

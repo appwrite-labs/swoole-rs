@@ -22,7 +22,7 @@ pub use swoole_rs_buffer::string::*;
 
 pub use swoole_rs_timer::*;
 
-pub use swoole_rs_server::{swr_v1_server_run, *};
+pub use swoole_rs_server::*;
 
 pub use swoole_rs_protocols_ffi::*;
 

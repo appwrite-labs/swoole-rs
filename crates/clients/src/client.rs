@@ -515,16 +515,16 @@ impl Handle {
 
     /// The proxy's state, or -1 when there is none.
     fn proxy_state(self, which: Proxy) -> c_int {
-        self.proxy(which).map_or(-1, |proxy| {
-            // SAFETY: a scalar read of the live proxy's fields.
-            c_int::from(unsafe { (*proxy.fields.get()).state })
-        })
+        self.proxy(which)
+            .map_or(-1, |proxy| c_int::from(proxy.fields.get().state))
     }
 
     fn set_proxy_state(self, which: Proxy, state: c_int) {
         if let Some(proxy) = self.proxy(which) {
-            // SAFETY: a scalar write to the live proxy's fields.
-            unsafe { (*proxy.fields.get()).state = u8::try_from(state).unwrap_or_default() };
+            let state = u8::try_from(state).unwrap_or_default();
+            proxy
+                .fields
+                .update(|fields| swoole_rs_corebase::ProxyFields { state, ..fields });
         }
     }
 
@@ -602,8 +602,7 @@ impl Handle {
     fn socks5_buffer(self) -> *const c_char {
         self.proxy(Proxy::Socks5)
             .map_or(core::ptr::null(), |proxy| {
-                // SAFETY: a SOCKS5 owner's packet buffer.
-                unsafe { proxy.buffer() }.cast_const().cast()
+                proxy.buffer().cast_const().cast()
             })
     }
 
@@ -624,12 +623,9 @@ impl Handle {
         };
         let tls = !self.get().tls.get().is_null();
         let host = if tls && !self.tls_host_name().is_empty() {
-            self.tls_host_name().to_bytes()
+            self.tls_host_name().to_bytes().to_vec()
         } else {
-            // SAFETY: the live proxy's target host, unchanged during the call.
-            let target = unsafe { proxy.string(3) };
-            // SAFETY: a slot's view of its bytes.
-            unsafe { core::slice::from_raw_parts(target.data.cast(), target.length) }
+            proxy.string(3)
         };
         let shared = shared_buffer();
         // SAFETY: the live proxy, the host's bytes and the shared buffer's.
@@ -1244,7 +1240,7 @@ pub extern "C" fn swr_v1_clients_proxy_fields(
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
     Handle(core::ptr::from_ref(client).cast_mut())
         .proxy(which)
-        .map_or(core::ptr::null_mut(), |proxy| proxy.fields.get())
+        .map_or(core::ptr::null_mut(), |proxy| proxy.fields.as_ptr())
 }
 
 /// The client's `SSLContext`, which crates/tls configures; null while TLS is off.
@@ -1332,6 +1328,8 @@ fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
 /// server; every call assigns `server_addr`, or waits for DNS.
 fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
     let (mut host, mut port) = (host, port);
+    // The last proxy's host, NUL-terminated, which `host` points into.
+    let mut proxy_host;
     if !this.flag(HOST_PRESET) {
         for which in [Proxy::Socks5, Proxy::Http] {
             let Some(proxy) = this.proxy(which) else {
@@ -1339,13 +1337,15 @@ fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
             };
             // SAFETY: a NUL-terminated host (the caller's or a proxy's).
             let target = unsafe { CStr::from_ptr(host) }.to_bytes();
-            // SAFETY: the live proxy's target slot, which no view borrows.
-            unsafe { proxy.set_string(3, target) };
-            // SAFETY: the live proxy's fields, unborrowed elsewhere.
-            let fields = unsafe { &mut *proxy.fields.get() };
-            fields.target_port = port;
-            // SAFETY: the live proxy's host, NUL-terminated and owned by it.
-            (host, port) = (unsafe { proxy.string(0) }.data, fields.port);
+            proxy.set_string(3, target);
+            let fields = proxy.fields.get();
+            proxy.fields.set(swoole_rs_corebase::ProxyFields {
+                target_port: port,
+                ..fields
+            });
+            proxy_host = proxy.string(0);
+            proxy_host.push(0);
+            (host, port) = (proxy_host.as_ptr().cast(), fields.port);
         }
         // SAFETY: a NUL-terminated host (the caller's or a proxy's).
         let server = unsafe { CStr::from_ptr(host) };

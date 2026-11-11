@@ -33,12 +33,8 @@ pub fn swr_v1_socket_reset_on_close(fd: c_int) -> bool {
 /// `fcntl(fd, command[, argument])`, retried on `EINTR`.
 fn fcntl(fd: c_int, command: c_int, argument: Option<c_int>) -> c_int {
     loop {
-        let result = match argument {
-            // SAFETY: F_SETFL/F_SETFD take an int argument.
-            Some(argument) => unsafe { libc::fcntl(fd, command, argument) },
-            // SAFETY: F_GETFL/F_GETFD take no argument.
-            None => unsafe { libc::fcntl(fd, command) },
-        };
+        // F_GETFL/F_GETFD ignore the argument.
+        let result = swoole_rs_corebase::sys::fcntl(fd, command, argument.unwrap_or(0));
         if result >= 0 || Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return result;
         }

@@ -15,7 +15,7 @@ use crate::ops::{
     RUN_THREAD_SHUTDOWN,
 };
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
-use crate::{unanswered, view};
+use crate::view;
 
 /// `swoole::RecvData`.
 #[repr(C)]
@@ -37,9 +37,8 @@ pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
 pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     // SAFETY: per the caller.
     let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
-    let context = ptr::from_mut(ctx).cast();
     // SAFETY: per the caller.
-    unsafe { crate::run_reactor(op, arg, context, unanswered, state) }
+    unsafe { crate::run_reactor_with(ctx, state, |h| crate::run(h, op, arg)) }
 }
 
 /// `operation` over `ctx` with the `which` facts, outside [`run`]'s match.
@@ -49,7 +48,7 @@ pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
 unsafe fn run_with<'s>(
     which: Facts,
     ctx: &mut ReactorContext,
-    operation: impl FnOnce(&mut crate::Native<'s, crate::ServerCall>, u64) -> crate::Effect<i64>,
+    operation: impl FnOnce(&mut crate::Native<'s>, u64) -> crate::Effect<i64>,
 ) -> c_int {
     // SAFETY: per the caller.
     let state = unsafe { view::Server::from_raw(ctx.serv) }.state();

@@ -22,7 +22,7 @@ fn fixed_pool_preserves_lifo_reuse_at_aligned_and_odd_table_widths() {
             let base = (*pool).memory;
             let mut entries = Vec::new();
             for index in (0..17).rev() {
-                let data = alloc(pool);
+                let data = alloc(&*pool);
                 assert_eq!(
                     data.cast::<u8>(),
                     base.add(index * stride + mem::size_of::<Slice>())
@@ -30,17 +30,17 @@ fn fixed_pool_preserves_lifo_reuse_at_aligned_and_odd_table_widths() {
                 ptr::write_bytes(data, index as u8, width as usize);
                 entries.push(data);
             }
-            assert!(alloc(pool).is_null());
-            assert_eq!((*pool).slice_use, 17);
+            assert!(alloc(&*pool).is_null());
+            assert_eq!((*pool).slice_use.get(), 17);
             for &i in &[3, 10, 0] {
-                assert!(free(pool, entries[i]));
+                assert!(free(&*pool, entries[i]));
             }
-            assert!(!free(pool, entries[0]));
-            assert!(!free(pool, entries[0].cast::<u8>().add(1).cast()));
+            assert!(!free(&*pool, entries[0]));
+            assert!(!free(&*pool, entries[0].cast::<u8>().add(1).cast()));
             for &i in &[0, 10, 3] {
-                assert_eq!(alloc(pool), entries[i]);
+                assert_eq!(alloc(&*pool), entries[i]);
             }
-            assert_eq!((*pool).slice_use, 17);
+            assert_eq!((*pool).slice_use.get(), 17);
         }
     }
 }
@@ -93,7 +93,7 @@ fn fixed_constructs_complete_real_header_and_links_without_touching_payload_or_t
                         (
                             pool.size,
                             pool.slice_num,
-                            pool.slice_use,
+                            pool.slice_use.get(),
                             pool.slice_size,
                             pool.shared,
                             pool.allocated
@@ -102,18 +102,18 @@ fn fixed_constructs_complete_real_header_and_links_without_touching_payload_or_t
                     );
                     let stride = 24 + plan.width as usize;
                     for index in (0..17).rev() {
-                        let data = alloc(arena).cast::<u8>();
+                        let data = alloc(&*arena).cast::<u8>();
                         assert_eq!(data, arena.cast::<u8>().add(48 + index * stride + 24));
                         assert!(
                             std::slice::from_raw_parts(data, plan.width as usize)
                                 .iter()
                                 .all(|&b| b == 0xa5)
                         );
-                        assert!(free(arena, data.cast()));
+                        assert!(free(&*arena, data.cast()));
                         // Reuse consumes the same node; leave it live before the next allocation.
-                        assert_eq!(alloc(arena), data.cast());
+                        assert_eq!(alloc(&*arena), data.cast());
                     }
-                    assert!(alloc(arena).is_null());
+                    assert!(alloc(&*arena).is_null());
                     let end = 48 + 17 * stride;
                     assert!(
                         std::slice::from_raw_parts(
@@ -144,10 +144,10 @@ fn diagnostic_cursor_matches_live_odd_links_and_original_postprint_limit() {
     unsafe {
         for width in [1u32, 8, 31] {
             let (_arena, pool) = pool_in(borrowed(width, 5), false, false);
-            assert!(!alloc(pool).is_null());
+            assert!(!alloc(&*pool).is_null());
             for (max, expected) in [(-2, 1), (-1, 1), (0, 2), (1, 3), (3, 5), (99, 5)] {
                 let mut cursor = DebugCursor::default();
-                let mut next = (*pool).head;
+                let mut next = (*pool).head.get();
                 for line in 0..expected {
                     let actual = next.read_unaligned();
                     let record = debug_step(&*pool, &mut cursor, max).unwrap();
@@ -168,7 +168,7 @@ fn diagnostic_cursor_matches_live_odd_links_and_original_postprint_limit() {
                 assert!(debug_step(&*pool, &mut cursor, max).is_none());
             }
             // The original diagnostic explicitly marks self-links and bounds them.
-            let head = (*pool).head;
+            let head = (*pool).head.get();
             let original = head.read_unaligned();
             head.write_unaligned(Slice {
                 next: head,
@@ -207,16 +207,16 @@ fn normal_queue_changes_publish_only_mutable_header_fields() {
             let expected = (original.memory, original.size, count, 16, 0, 1);
             let mut live = Vec::new();
             for _ in 0..count {
-                let value = alloc(pool);
+                let value = alloc(&*pool);
                 assert!(!value.is_null());
                 live.push(value);
                 assert_eq!(fixed(pool.read()), expected);
-                assert_eq!(pool.read().slice_use, live.len() as u32);
+                assert_eq!(pool.read().slice_use.get(), live.len() as u32);
             }
             for (index, value) in live.iter().enumerate() {
-                assert!(free(pool, *value));
+                assert!(free(&*pool, *value));
                 assert_eq!(fixed(pool.read()), expected);
-                assert_eq!(pool.read().slice_use, count - index as u32 - 1);
+                assert_eq!(pool.read().slice_use.get(), count - index as u32 - 1);
             }
         }
     }
@@ -255,12 +255,12 @@ fn initialized_fixed_headers_keep_native_zero_padding_through_normal_operations(
                     }
                 };
                 verify();
-                let first = alloc(pool);
-                let second = alloc(pool);
+                let first = alloc(&*pool);
+                let second = alloc(&*pool);
                 assert!(!first.is_null() && !second.is_null());
                 verify();
-                assert!(free(pool, second));
-                assert!(free(pool, first));
+                assert!(free(&*pool, second));
+                assert!(free(&*pool, first));
                 verify();
             }
         }
