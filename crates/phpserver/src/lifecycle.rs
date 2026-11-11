@@ -1244,7 +1244,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     }
     if crate::server::THREAD.load(Ordering::Relaxed)
         && fact(serv, fact::THREAD_MODE)
-        && let Err(bailout) = crate::thread::copy_setting(serv, settings)
+        && let Err(bailout) = crate::thread::copy_setting(settings)
     {
         bailout.defer();
         return Err(Stop);

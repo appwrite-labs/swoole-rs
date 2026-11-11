@@ -361,6 +361,40 @@ fn hooks_async() {
     fs::write(out("hooks_async.inc"), parts.join("\n") + "\n").unwrap();
 }
 
+/// The hashes from the pinned misc.cc, and from log.cc `get_pretty_name` (as `pretty`)
+/// and the level clamp, rotation format, level label, line and microsecond formatting
+/// out of `set_level`, `gen_real_file` and `put` wrapped as functions, with base.cc's
+/// `sw_snprintf` and `swoole_log.h`'s enums, each copied unchanged for `shim/utilities.cc`.
+fn utilities() {
+    let misc = fs::read_to_string("upstream/src/core/misc.cc").expect("vendored misc.cc");
+    let log = fs::read_to_string("upstream/src/core/log.cc").expect("vendored log.cc");
+    let base = fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc");
+    let header =
+        fs::read_to_string("upstream/include/swoole_log.h").expect("vendored swoole_log.h");
+    let after = |anchor: &str| &log[log.find(anchor).expect(anchor)..];
+    let text = [
+        misc[misc.find("uint64_t swoole_hash_php").expect("hashes")..].to_string(),
+        slice(&log, "std::string Logger::get_pretty_name", "bool Logger::open")
+            .replace("Logger::get_pretty_name", "pretty"),
+        slice(&header, "enum swLogLevel", "namespace swoole"),
+        "\nint log_level(int level) { int log_level;\n".into(),
+        slice(after("void Logger::set_level"), "    if (level < SW_LOG_DEBUG)", "\n}"),
+        "\nreturn log_level; }\nconst char *log_rotation(int log_rotation) {\n".into(),
+        slice(after("std::string Logger::gen_real_file"), "    const char *fmt;", "    size_t l_data_str"),
+        "\nreturn fmt; }\nconst char *log_label(int level) { const char *level_str;\n".into(),
+        slice(after("void Logger::put"), "    switch (level)", "    auto now ="),
+        "\nreturn level_str; }\n#define sw_unlikely(x) (x)\n".into(),
+        slice(&base, "size_t sw_snprintf(", "size_t sw_vsnprintf("),
+        "\n#undef sw_unlikely\n#define SW_LOG_BUFFER_SIZE capacity\nsize_t log_line(char *log_str, size_t capacity, const char *date_str, int l_data_str, char worker_symbol, int worker_pid, int worker_id, int level, const char *content, int length) { const char *level_str = log_label(level);\n".into(),
+        slice(after("    size_t n = sw_snprintf(log_str,"), "    size_t n", "    lock.lock();"),
+        "\nreturn n; }\n#undef SW_LOG_BUFFER_SIZE\n#define SW_LOG_DATE_STRLEN capacity\nsize_t log_micros(char *date_str, size_t capacity, long long now_us) { long long now_sec = 0; size_t l_data_str = 0;\n".into(),
+        slice(after("        l_data_str += sw_snprintf("), "        l_data_str", "    }"),
+        "\nreturn l_data_str; }\n#undef SW_LOG_DATE_STRLEN\n".into(),
+    ]
+    .concat();
+    fs::write(out("utilities.inc"), text).unwrap();
+}
+
 /// A C++ build that matches the Rust side's sanitizer, so `cargo fuzz`'s `ASan`
 /// also checks the upstream code.
 fn cpp() -> cc::Build {
@@ -478,6 +512,17 @@ fn main() {
     resp_stream();
     clients();
     hooks_async();
+    utilities();
+    // The hashes promote `char`, so each signedness is its own engine.
+    for engine in ["signed", "unsigned"] {
+        cpp()
+            .define("SWR_UTILS_ENGINE", format!("{engine}_char").as_str())
+            .flag(format!("-f{engine}-char"))
+            .flag_if_supported("-Wno-implicit-fallthrough")
+            .include(env::var("OUT_DIR").unwrap())
+            .file("shim/utilities.cc")
+            .compile(&format!("swoole_oracle_utilities_{engine}"));
+    }
     cpp()
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/hooks_async.cc")

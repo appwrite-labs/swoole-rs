@@ -1187,6 +1187,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-error-ffi",
  "swoole-rs-locks",
+ "swoole-rs-oracle",
 ]
 
 [[package]]

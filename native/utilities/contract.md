@@ -25,11 +25,11 @@ upstream's and keep what C++, the compiled core-tests and the utilities gates us
 
 ## Hashing and logging helpers
 
-- `swr_v1_utils_hash(bytes, len, algorithm, signed_char)`: 0 PHP/DJBX33A (64-bit
-  wrapping), 1 Jenkins (original u32/u32/u64 mix and truncated block counter),
-  2 Austin (64-bit state, signed-int promotions). Unknown algorithm or invalid range
-  returns 0. Austin has undefined negative left shifts on high bytes upstream; only
-  ASCII Austin input is defined parity, Rust wraps deterministically otherwise.
+- `swoole_hash_php`/`_jenkins`/`_austin` (`crates/utilities/src/misc.rs`): 64-bit
+  wrapping DJBX33A, Jenkins (original u32/u32/u64 mix and truncated block counter),
+  Austin (64-bit state, signed-int promotions), promoting the host `char`. Austin has
+  undefined negative left shifts on high bytes upstream; only ASCII Austin input is
+  defined parity, Rust wraps deterministically otherwise.
 - `swr_v1_utils_pretty_range`: offset/length for `Logger::get_pretty_name`. Never
   writes input. Invalid outputs/ranges return -1; outputs are zeroed first; no
   bracket returns an empty span. Native builds the `std::string` afterwards.
@@ -50,17 +50,11 @@ upstream's and keep what C++, the compiled core-tests and the utilities gates us
 
 ### Formatting
 
-- `swr_v1_utils_log_level(int)` clamps to 0..6. `log_label`/`log_rotation` return
-  static NUL-terminated strings. Unknown levels map to INFO; unknown rotations
-  (including SINGLE queried directly) map to the daily format.
-- `swr_v1_utils_log_line(out, cap, ...)`: exact `Logger::put` line. Signed precision
-  matches printf: negative reads through NUL, zero is empty. Each input is readable
-  through its first NUL or nonnegative precision; null input only at precision 0.
-  Capacity 0 permits null output and returns the full required length. Positive
-  capacity writes at most cap-1 plus NUL (`sw_snprintf`). Counts above `INT_MAX`
-  return `SIZE_MAX`; native then publishes `EOVERFLOW` and zero bytes. Capacity must
-  be <= `INT_MAX`.
-- `swr_v1_utils_log_micros(out, cap, int64)`: the `<.%lld>` suffix, same output rules.
+The logger's level clamp (0..6), labels (unknown levels are INFO), rotation
+formats (unknown modes, SINGLE included, are daily), `put` line and `<.%lld>`
+microsecond suffix are Rust-only (`crates/utilities/src/lib.rs`), with
+`sw_snprintf`'s truncation: at most capacity-1 bytes plus NUL, the full length at
+capacity 0.
 
 ### Logger (`swr_v1_logger_*`)
 

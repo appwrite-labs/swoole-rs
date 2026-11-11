@@ -12,8 +12,7 @@ use swoole_rs_error::ErrorCode::{
 use swoole_rs_zend::{
     E_ERROR, Owned, Value,
     bailout::{self, Bailout},
-    string::bytes,
-    sys::{swr_zend_instanceof, swr_zend_string_release, zend_class_entry},
+    sys::{swr_zend_instanceof, zend_class_entry},
 };
 
 /// `swoole_exception_ce`.
@@ -26,14 +25,7 @@ pub(crate) fn exception() -> *mut zend_class_entry {
 pub(crate) fn serialize(value: &Value) -> Option<Box<[u8]>> {
     let (serialized, bailed) = swoole_rs_phpswoole::serialize(value);
     bailout::defer(bailed);
-    if serialized.is_null() {
-        return None;
-    }
-    // SAFETY: a live persistent string C++ made.
-    let data = unsafe { bytes(serialized) }.into();
-    // SAFETY: ours to release.
-    unsafe { swr_zend_string_release(serialized) };
-    Some(data)
+    serialized
 }
 
 /// `php_swoole_unserialize`; a bailout is deferred.

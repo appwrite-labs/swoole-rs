@@ -103,9 +103,6 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     state.close_pipes();
     // SAFETY: the state's configuration, which nothing else uses now.
     let config = unsafe { &mut *object.config };
-    // SAFETY: the list settings.rs allocated, or null.
-    unsafe { swoole_rs_corebase::sw_free(config.cpu_affinity_available.cast()) };
-    config.cpu_affinity_available = ptr::null_mut();
     config.gs.free();
     // SAFETY: `swr_v1_server_new`'s bus, freed once.
     unsafe { crate::pool_native::free_bus(state.tables_ref().message_bus) };
