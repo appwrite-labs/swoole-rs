@@ -326,11 +326,21 @@ impl GlobalMemory {
     /// reader still holds it.
     fn delete(&self) {
         let pool = self.pool.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !pool.is_null() && self.users.load(Ordering::SeqCst) == 0 {
+        if pool.is_null() {
+            return;
+        }
+        if self.users.load(Ordering::SeqCst) == 0 {
             // SAFETY: `GlobalImpl::new`'s box, taken out of this memory, freed once. A
             // `with` that counted itself before this load holds it, so none does; one that
             // counts itself after it loads null.
             drop(unsafe { Box::from_raw(pool) });
+        } else {
+            // Still read, or lent out by `pool::words`: every such pool stays reachable,
+            // so a leak check doesn't report it.
+            static KEPT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+            KEPT.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(pool.expose_provenance());
         }
     }
 }
@@ -550,15 +560,21 @@ pub mod pool {
         impl Sealed for std::sync::atomic::AtomicU64 {}
     }
 
-    /// `count` zero words from [`alloc`], as long as PHP runs: `Swoole\Atomic`'s
-    /// and `Swoole\Lock`'s.
+    /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
+    /// and `Swoole\Lock`'s. The pool counts a user that never leaves, so [`delete`]
+    /// keeps the pages these words sit in mapped.
     #[must_use]
     pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
+        POOL.users.fetch_add(1, SeqCst);
         let block = alloc(size).cast::<W>();
-        // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
-        // for each `Word`), which the pool gives no one else.
-        (!block.is_null()).then(|| unsafe { slice::from_raw_parts_mut(block, count) })
+        if block.is_null() {
+            POOL.users.fetch_sub(1, SeqCst);
+            return None;
+        }
+        // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each
+        // `Word`), which the pool gives no one else.
+        Some(unsafe { slice::from_raw_parts_mut(block, count) })
     }
 }
 

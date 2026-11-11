@@ -247,8 +247,6 @@ unsafe extern "C" {
 
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
-    #[link_name = "_ZN6swoole6StringD1Ev"]
-    fn string_drop(this: *mut CppString);
     #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
     static default_length_func: c_void;
     #[link_name = "_Z16swoole_type_sizec"]
@@ -257,12 +255,6 @@ unsafe extern "C" {
     fn swoole_rand(min: c_int, max: c_int) -> c_int;
     #[link_name = "_Z17swoole_random_intv"]
     fn swoole_random_int() -> u64;
-}
-
-#[link(name = "stdc++")]
-unsafe extern "C" {
-    #[link_name = "_ZdlPv"]
-    fn operator_delete(ptr: *mut c_void);
 }
 
 unsafe extern "C" {
@@ -720,11 +712,8 @@ fn delete(conn: ManuallyDrop<Sock>) {
 
 /// `delete string`.
 fn delete_string(string: *mut CppString) {
-    // SAFETY: a String the caller owns, made by operator new.
-    unsafe {
-        string_drop(string);
-        operator_delete(string.cast());
-    }
+    // SAFETY: a String the caller owns, made by `new_sized_string`.
+    unsafe { swoole_rs_buffer::string::delete_string(string.cast()) };
 }
 
 fn socket_pair() -> [c_int; 2] {

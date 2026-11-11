@@ -1,6 +1,6 @@
 # PHP helper and stdext tests
 
-The common PHP helpers are `crates/phphelpers`; stdext (typed
+The common PHP helpers are `crates/zend/src/host`; stdext (typed
 arrays, methods on arrays/strings/streams and the `swoole_*` stdext functions)
 is `crates/phpstdext`, whose `src/stdext.c` keeps the Zend VM, PCRE and JSON
 calls whose bodies are private to PHP (its README says why).

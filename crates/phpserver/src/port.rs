@@ -385,7 +385,7 @@ pub(crate) fn merge_setting(
     unsafe { swoole_rs_zend::set_object(&raw mut zobject, object) };
     // SAFETY: the object and its class, which declares `setting`.
     let setting =
-        unsafe { swoole_rs_phphelpers::array_property_of(scope, &raw mut zobject, c"setting") }?;
+        unsafe { swoole_rs_zend::host::array_property_of(scope, &raw mut zobject, c"setting") }?;
     // SAFETY: the property, now an array, and the settings array.
     bailout::trapped(unsafe { z::swr_zend_try_array_merge(setting, settings) })?;
     Ok(setting)
@@ -404,7 +404,7 @@ fn finish(
         let mut params = [unsafe { settings.read() }];
         // SAFETY: as above.
         unsafe {
-            swoole_rs_phphelpers::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
+            swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
         }?;
     }
     property.zsetting = merge_setting(PORT.entry(), call.this(), settings)?;

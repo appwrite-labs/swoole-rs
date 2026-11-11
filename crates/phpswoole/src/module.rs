@@ -431,7 +431,7 @@ extern "C" fn ready() {
         swoole_rs_reactor::swr_v1_socket_defaults.buffer_size = size as u32;
     }
     swr_phpswoole_pcre_jit_off();
-    swoole_rs_phphelpers::known_init();
+    swoole_rs_zend::host::known_init();
 }
 
 /// `php_swoole_load_library()`, the bundled PHP library (host.c), inside `zend_try`.
@@ -489,7 +489,7 @@ extern "C" fn event_free() {
 /// Zend's MSHUTDOWN.
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let mut steps = vec![
-        Step::Hook(swoole_rs_phphelpers::known_free),
+        Step::Hook(swoole_rs_zend::host::known_free),
         Step::Hook(php_swoole_runtime_mshutdown),
     ];
     steps.extend(optional::mshutdown());

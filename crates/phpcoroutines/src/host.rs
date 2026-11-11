@@ -558,7 +558,7 @@ unsafe extern "C" fn defers(context: *mut c_void) {
         // SAFETY: as above.
         let fcc = unsafe { &raw mut (*task).fcc };
         // SAFETY: as above.
-        if unsafe { swoole_rs_phphelpers::swr_v1_phphelpers_call_anyway(fci, fcc) } != 0 {
+        if unsafe { swoole_rs_zend::host::call_anyway(fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         // SAFETY: the executor's pending exception, if any.
@@ -566,7 +566,7 @@ unsafe extern "C" fn defers(context: *mut c_void) {
             bailout::raise(Err(bailout::Bailout));
         }
         // SAFETY: the callable's cache, then its emalloc'd holder.
-        unsafe { swoole_rs_phphelpers::swr_v1_phphelpers_cache_free(fcc) };
+        unsafe { swoole_rs_zend::host::cache_free(fcc) };
         // SAFETY: as above.
         unsafe { swoole_rs_zend::sys::swr_zend_efree(task.cast()) };
     }
@@ -632,7 +632,7 @@ pub(crate) fn unhook() {
 /// `\Swoole\Coroutine\deadlock_check()`, inside `zend_try`.
 pub(crate) fn deadlock_check() -> Result<(), bailout::Bailout> {
     // SAFETY: the library's global function, with no arguments.
-    unsafe { swoole_rs_phphelpers::named_call(b"\\Swoole\\Coroutine\\deadlock_check", &mut []) }
+    unsafe { swoole_rs_zend::host::named_call(b"\\Swoole\\Coroutine\\deadlock_check", &mut []) }
 }
 
 /// The `SW_GLOBAL_HOOK_ON_CORO_START` (`stop`: `_STOP`) hook, when set.

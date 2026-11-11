@@ -89,7 +89,6 @@ pub use swoole_rs_ports as ports;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpserver::*;
 
-pub use swoole_rs_phphelpers as phphelpers;
 pub use swoole_rs_phpstdext as phpstdext;
 
 pub use swoole_rs_phpcollections as phpcollections;

@@ -86,7 +86,7 @@ fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailou
     unsafe { swoole_rs_zend::set_object(&raw mut zserv, object.raw()) };
     // SAFETY: the Server object and its class, which declares `setting`.
     let setting = unsafe {
-        swoole_rs_phphelpers::array_property_of(object.class(), &raw mut zserv, c"setting")
+        swoole_rs_zend::host::array_property_of(object.class(), &raw mut zserv, c"setting")
     }?;
     // SAFETY: the property's array, replaced below.
     unsafe { zval_ptr_dtor(setting) };

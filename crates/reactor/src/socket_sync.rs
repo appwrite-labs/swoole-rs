@@ -21,7 +21,8 @@ pub const SYNC_SENDFILE: c_int = 3;
 
 /// What a blocking call needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait SyncEffects {
-    /// The socket's descriptor and `dont_restart`, and the signal dispatch a wait runs.
+    /// The socket's descriptor (asked for each wait, as upstream's `wait_event`
+    /// reads it), `dont_restart`, and the signal dispatch a wait runs.
     fn fd(&self) -> c_int;
     fn dont_restart(&self) -> bool;
     fn dispatch(&self) -> Option<unsafe extern "C" fn()>;

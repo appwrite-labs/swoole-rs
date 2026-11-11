@@ -475,8 +475,9 @@ impl CppString {
 }
 
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
-// elsewhere the caller ignores it. Only the complete-object (C1/D1) symbols: nothing
-// derives from String, so no caller names a base-object (C2/D2) one.
+// elsewhere the caller ignores it. Nothing derives from String, so only the
+// complete-object (C1/D1) symbols, and the one base-object constructor a delegating
+// constructor in the header calls.
 // A constructor's `this` is uninitialized storage; every other `this` is a live String.
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
@@ -499,6 +500,16 @@ upstream! {
         unsafe { string.str.wrapping_add(length).write(0) };
         string.length = length;
         string
+    }
+    "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
+    /// The base-object `String(const char *, size_t)`: the header's
+    /// `String(const std::string &)` delegates to it when clang emits no
+    /// constructor aliases (as under `ASan`, `tools/asan.py`'s `string-originals`).
+    /// # Safety
+    /// As `swr_string_from`.
+    pub unsafe extern "C" fn swr_string_from_base(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
+        // SAFETY: as the caller promises.
+        unsafe { swr_string_from(this, data, length) }
     }
     "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
     /// `String(const String &)`.
@@ -715,23 +726,12 @@ pub unsafe extern "C" fn swr_v1_string_split(
     unsafe { string.split(delimiter, delimiter_length, call, handler) }
 }
 
-// SAFETY: the C++ runtime's allocation functions.
-unsafe extern "C" {
-    #[link_name = "_Znwm"]
-    pub(crate) fn operator_new(size: usize) -> *mut c_void;
-    #[link_name = "_ZdlPv"]
-    pub(crate) fn operator_delete(storage: *mut c_void);
-}
-
-/// Fresh `operator new` storage for one String: C++ `delete` frees it.
+/// Fresh boxed storage for one String, which [`delete_string`] frees.
 fn new_storage() -> &'static mut MaybeUninit<CppString> {
-    // SAFETY: `new String`'s storage; a failed operator new aborts at this frame.
-    let storage = unsafe { operator_new(size_of::<CppString>()) };
-    // SAFETY: a fresh, aligned allocation for one String, owned by nothing else.
-    unsafe { &mut *storage.cast::<MaybeUninit<CppString>>() }
+    Box::leak(Box::new_uninit())
 }
 
-/// `new String(data, length)`: operator new's storage, so C++ `delete` frees it.
+/// `new String(data, length)`.
 ///
 /// # Safety
 /// `data` holds `length` readable bytes.
@@ -741,7 +741,7 @@ pub unsafe fn new_string(data: *const u8, length: usize) -> *mut CppString {
     unsafe { swr_string_from(new_storage(), data, length) }
 }
 
-/// `new String(size, with)`: operator new's storage, so C++ `delete` frees it.
+/// `new String(size, with)`.
 #[must_use]
 pub fn new_sized_string(size: usize, with: Option<&Allocator>) -> *mut CppString {
     swr_string_new(new_storage(), size, with)
@@ -750,12 +750,10 @@ pub fn new_sized_string(size: usize, with: Option<&Allocator>) -> *mut CppString
 /// `delete string`.
 ///
 /// # Safety
-/// `string` came from `new String` (C++ or [`new_string`]) and is not used again.
+/// `string` came from [`new_string`] or [`new_sized_string`] and is not used again.
 pub unsafe fn delete_string(string: *mut CppString) {
     // SAFETY: as the caller promises.
-    unsafe { &mut *string }.dispose();
-    // SAFETY: operator new's storage, destroyed above.
-    unsafe { operator_delete(string.cast()) };
+    unsafe { Box::from_raw(string) }.dispose();
 }
 
 #[cfg(test)]
@@ -826,5 +824,15 @@ mod tests {
         unsafe { libc::free(moved.release().cast()) };
         copied.dispose();
         s.dispose();
+    }
+
+    #[test]
+    fn new_and_delete_string() {
+        let s = unsafe { new_string(b"abc".as_ptr(), 3) };
+        assert_eq!(unsafe { &*s }.view(), b"abc");
+        unsafe { delete_string(s) };
+        let s = new_sized_string(16, None);
+        assert_eq!(unsafe { ((*s).length, (*s).size) }, (0, 16));
+        unsafe { delete_string(s) };
     }
 }

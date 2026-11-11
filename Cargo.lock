@@ -496,7 +496,6 @@ dependencies = [
  "swoole-rs-phpcollections",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpevents",
- "swoole-rs-phphelpers",
  "swoole-rs-phphttp",
  "swoole-rs-phphttp2",
  "swoole-rs-phplocks",
@@ -566,6 +565,7 @@ dependencies = [
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
@@ -765,7 +765,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-hooks",
- "swoole-rs-phphelpers",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -782,7 +781,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -790,13 +788,6 @@ dependencies = [
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-tls",
- "swoole-rs-zend",
-]
-
-[[package]]
-name = "swoole-rs-phphelpers"
-version = "0.1.0"
-dependencies = [
  "swoole-rs-zend",
 ]
 
@@ -818,7 +809,6 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpruntime",
  "swoole-rs-phpserver",
  "swoole-rs-phpstubs",
@@ -881,7 +871,6 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-process",
@@ -899,7 +888,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpserver",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -917,7 +905,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-hooks",
- "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
@@ -939,7 +926,6 @@ dependencies = [
  "swoole-rs-locks",
  "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpprocess",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
@@ -986,7 +972,6 @@ dependencies = [
  "swoole-rs-oci",
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
- "swoole-rs-phphelpers",
  "swoole-rs-phpstdext",
  "swoole-rs-phpstubs",
  "swoole-rs-reactor",

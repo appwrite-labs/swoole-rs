@@ -18,7 +18,7 @@ int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *me
                              bool flag, const char *message);
 
 /* Swoole's sw_callable_warning, php_swoole_fatal_error(E_WARNING, "%s", message): a
- * reporter for the calls above and phphelpers' function_call, which run it in a trap. */
+ * reporter for the calls above and swoole_rs_zend::host::function_call, which run it in a trap. */
 void swr_zend_callable_warning(const char *message);
 
 /* zend_parse_arg_*_slow: coercions raise deprecations (null to a scalar,

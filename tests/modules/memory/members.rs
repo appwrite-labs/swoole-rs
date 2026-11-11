@@ -67,6 +67,20 @@ fn a_fixed_pool_refuses_a_pointer_inside_a_slice() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+fn words_stay_mapped_after_the_pool_is_deleted() {
+    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    // Twice: each kept pool stays reachable, so LeakSanitizer reports neither.
+    for _ in 0..2 {
+        pool::init();
+        let words = pool::words::<std::sync::atomic::AtomicU32>(1).expect("a word");
+        words[0].store(7, Ordering::SeqCst);
+        pool::delete();
+        assert_eq!(words[0].load(Ordering::SeqCst), 7, "a 'static word's page");
+    }
+}
+
+#[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();

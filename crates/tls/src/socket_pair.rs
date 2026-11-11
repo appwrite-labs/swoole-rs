@@ -85,18 +85,6 @@ pub extern "C" fn pipe_new(this: &mut MaybeUninit<SocketPair>, blocking: bool) -
     this.as_mut_ptr()
 }
 
-/// The base-object constructor of `Pipe(bool)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole4PipeC2Eb")
-)]
-pub extern "C" fn pipe_new_base(
-    this: &mut MaybeUninit<SocketPair>,
-    blocking: bool,
-) -> *mut SocketPair {
-    pipe_new(this, blocking)
-}
-
 /// `UnixSocket(bool blocking, int protocol)`: also sets both ends' kernel buffers to
 /// `Socket::default_buffer_size`.
 #[cfg_attr(
@@ -118,19 +106,6 @@ pub extern "C" fn unix_socket_new(
         let _ = unix_socket_set_buffer_size(pair, size as usize);
     }
     this.as_mut_ptr()
-}
-
-/// The base-object constructor of `UnixSocket(bool, int)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10UnixSocketC2Ebi")
-)]
-pub extern "C" fn unix_socket_new_base(
-    this: &mut MaybeUninit<SocketPair>,
-    blocking: bool,
-    protocol: c_int,
-) -> *mut SocketPair {
-    unix_socket_new(this, blocking, protocol)
 }
 
 /// The two ends, master first (None once closed).
@@ -307,15 +282,6 @@ pub extern "C-unwind" fn close(pair: &mut SocketPair, which: c_int) -> bool {
 pub extern "C-unwind" fn drop(this: &mut SocketPair) -> *mut SocketPair {
     close(this, 0);
     this
-}
-
-/// The base-object destructor of `SocketPair`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10SocketPairD2Ev")
-)]
-pub extern "C-unwind" fn drop_base(this: &mut SocketPair) -> *mut SocketPair {
-    drop(this)
 }
 
 #[cfg(test)]

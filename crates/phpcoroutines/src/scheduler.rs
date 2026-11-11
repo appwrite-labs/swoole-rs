@@ -3,8 +3,8 @@
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
 use std::{cell::Cell, collections::VecDeque, ffi::c_void, mem, ptr};
-use swoole_rs_phphelpers::callable as kept;
 use swoole_rs_phpstubs::coroutine_scheduler;
+use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
     Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray,
     bailout::{self, Bailout},

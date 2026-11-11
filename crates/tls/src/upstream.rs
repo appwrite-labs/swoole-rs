@@ -532,7 +532,6 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
 struct Call<'a> {
     socket: Socket<'a>,
     io: Io,
-    fd: c_int,
     dont_restart: bool,
     dispatch: Option<unsafe extern "C" fn()>,
 }
@@ -551,8 +550,10 @@ enum Io {
 }
 
 impl SyncEffects for Call<'_> {
+    /// Read on each wait, as upstream's `wait_event` reads `this->fd`: a signal
+    /// handler an earlier wait dispatched may have changed it.
     fn fd(&self) -> c_int {
-        self.fd
+        self.socket.fd()
     }
 
     fn dont_restart(&self) -> bool {
@@ -656,15 +657,14 @@ unsafe fn sync(
     let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
     };
-    let (timeout, fd, dont_restart) = socket.read(|record| {
+    let (timeout, dont_restart) = socket.read(|record| {
         let timeouts = record.timeouts;
         let timeout = if write { timeouts.write } else { timeouts.read };
-        (timeout, record.fd, record.dont_restart != 0)
+        (timeout, record.dont_restart != 0)
     });
     let call = Call {
         socket,
         io,
-        fd,
         dont_restart,
         dispatch: signal_dispatch(),
     };

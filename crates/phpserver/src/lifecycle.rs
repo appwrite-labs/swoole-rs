@@ -1349,7 +1349,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     let mut zserv = [crate::dispatch::zserv()];
     // SAFETY: the server's object zval.
     let called = unsafe {
-        swoole_rs_phphelpers::named_call(br"\Swoole\Server\Helper::onBeforeStart", &mut zserv)
+        swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::onBeforeStart", &mut zserv)
     };
     trapped(called.is_err())
 }

@@ -422,7 +422,7 @@ pub(crate) fn user_func(
         return Ok(());
     }
     // SAFETY: a live callable.
-    let fcc = unsafe { swoole_rs_phphelpers::callable::cache(callable.cast()) };
+    let fcc = unsafe { swoole_rs_zend::host::callable::cache(callable.cast()) };
     // SAFETY: all-zero is an empty call (`function_name` undefined, no object).
     let mut fci: zend_fcall_info = unsafe { std::mem::zeroed() };
     fci.size = size_of::<zend_fcall_info>();
