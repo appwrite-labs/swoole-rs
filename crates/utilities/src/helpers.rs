@@ -8,8 +8,7 @@ use std::ffi::c_long;
 #[must_use]
 pub fn timezone() -> c_long {
     let now = swoole_rs_corebase::time_now();
-    // SAFETY: all-zero is a valid `tm`.
-    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    let mut local: libc::tm = swoole_rs_corebase::sys::zeroed();
     // SAFETY: both pointers are live locals.
     unsafe { libc::localtime_r(&raw const now, &raw mut local) };
     local.tm_gmtoff

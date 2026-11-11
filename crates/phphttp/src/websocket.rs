@@ -414,8 +414,7 @@ thread_local! {
     /// The `rv` a subclass's `__get` returns into, one per property a frame
     /// reads (upstream's is a dead stack slot by the time it is used).
     static RV: [std::cell::UnsafeCell<zval>; 4] = const {
-        // SAFETY: a zval is plain data; all zeroes is IS_UNDEF.
-        [const { std::cell::UnsafeCell::new(unsafe { std::mem::zeroed() }) }; 4]
+        [const { std::cell::UnsafeCell::new(swoole_rs_zend::UNDEF) }; 4]
     };
 }
 

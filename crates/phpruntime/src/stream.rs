@@ -812,8 +812,7 @@ fn accept(
         return Ok(FAILURE);
     };
     // The peer's name, as upstream reports it: from an empty address.
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut peer: sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
     // SAFETY: the address and the output slots Zend asked for.
     unsafe {
@@ -851,8 +850,7 @@ fn recvfrom(
         // SAFETY: Zend lends `length` writable bytes at `buf`.
         return returncode(unsafe { socket.io(Io::Recv, buf, length) });
     }
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut peer: sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
     let mut size = size_of::<sockaddr_storage>() as socklen_t;
     // SAFETY: as above, and the address holds `size` bytes.
@@ -1177,16 +1175,14 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
     };
     #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) casts")]
     let (domain, kind, protocol) = (domain as c_int, kind as c_int, protocol as c_int);
-    let mut pair = [0; 2];
-    // SAFETY: two writable fds.
-    if unsafe { libc::socketpair(domain, kind, protocol, pair.as_mut_ptr()) } != 0 {
+    let Some(pair) = swoole_rs_corebase::sys::socketpair(domain, kind, protocol) else {
         let code = errno();
         let reason = swoole_rs_corebase::sys::strerror(code);
         let message = message!("failed to create sockets: [{code}]: {reason}");
         report(Report::Swoole, E_WARNING, message.as_cstr())?;
         call.set_bool(false);
         return Ok(());
-    }
+    };
     call.set_array();
     check_reactor();
     for fd in pair {

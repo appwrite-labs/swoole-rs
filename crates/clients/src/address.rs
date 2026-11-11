@@ -241,8 +241,7 @@ pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
         // SAFETY: the field holds an IPv6 address and `text` has 46 bytes.
         unsafe { inet_ntop(libc::AF_INET6, ip.cast(), text.as_mut_ptr().cast(), 46) }
     } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
-        // SAFETY: a local socket selects the initialized Unix union member.
-        let path = unsafe { address.addr.un.sun_path };
+        let path = address.addr.unix().sun_path;
         // A byte past the path, so an unterminated one still ends.
         let mut bytes = [0u8; 109];
         for (byte, c) in bytes.iter_mut().zip(path) {
@@ -262,11 +261,9 @@ pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int {
     let port = if inet4(address.kind) {
-        // SAFETY: inet4 selects the initialized IPv4 union member.
-        unsafe { address.addr.inet_v4.sin_port }
+        address.addr.v4().sin_port
     } else if inet6(address.kind) {
-        // SAFETY: inet6 selects the initialized IPv6 union member.
-        unsafe { address.addr.inet_v6.sin6_port }
+        address.addr.v6().sin6_port
     } else {
         return 0;
     };
@@ -320,12 +317,10 @@ pub extern "C" fn swr_v1_clients_address_type(kind: c_int) -> *const c_char {
 pub extern "C" fn swr_v1_clients_address_loopback(address: &SocketAddress) -> bool {
     let loopback = crate::ip::swr_v1_clients_loopback;
     if inet4(address.kind) {
-        // SAFETY: inet4 selects the initialized IPv4 union member.
-        let ip = unsafe { address.addr.inet_v4.sin_addr.s_addr };
+        let ip = address.addr.v4().sin_addr.s_addr;
         loopback(4, &ip.to_ne_bytes()) != 0
     } else if inet6(address.kind) {
-        // SAFETY: inet6 selects the initialized IPv6 union member.
-        let ip = unsafe { address.addr.inet_v6.sin6_addr.s6_addr };
+        let ip = address.addr.v6().sin6_addr.s6_addr;
         loopback(6, &ip) != 0
     } else {
         false
@@ -489,7 +484,7 @@ mod tests {
             kind: UNIX_STREAM,
             ..SocketAddress::default()
         };
-        let path = unsafe { &mut address.addr.un.sun_path };
+        let path = &mut address.addr.unix_mut().sun_path;
         path.fill(c_char::from_ne_bytes(*b"x"));
         let full = vec![b'x'; path.len()];
         assert!(with_host(&address, |host| host.to_bytes() == full));

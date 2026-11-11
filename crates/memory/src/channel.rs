@@ -379,21 +379,19 @@ impl Record {
     /// `Channel::print`, through C stdio like upstream (which labels the tags swapped).
     pub fn print(&self) {
         let c = self.queue(|queue| *queue);
-        // SAFETY: the format's conversions match the arguments.
-        unsafe {
-            libc::printf(
-                c"Channel\n{\n    off_t head = %ld;\n    off_t tail = %ld;\n    size_t size = %ld;\n    char head_tag = %d;\n    char tail_tag = %d;\n    int num = %d;\n    size_t bytes = %ld;\n    int flag = %d;\n    int maxlen = %d;\n\n}\n".as_ptr(),
-                c.head,
-                c.tail,
-                c.size,
-                c_int::from(c.tail_tag),
-                c_int::from(c.head_tag),
-                c.num,
-                c.bytes,
-                c.flags,
-                c.maxlen,
-            )
-        };
+        let text = format!(
+            "Channel\n{{\n    off_t head = {};\n    off_t tail = {};\n    size_t size = {};\n    char head_tag = {};\n    char tail_tag = {};\n    int num = {};\n    size_t bytes = {};\n    int flag = {};\n    int maxlen = {};\n\n}}\n",
+            c.head,
+            c.tail,
+            c.size.cast_signed(),
+            c.tail_tag,
+            c.head_tag,
+            c.num,
+            c.bytes.cast_signed(),
+            c.flags,
+            c.maxlen,
+        );
+        swoole_rs_corebase::sys::print(text.as_bytes());
     }
 }
 

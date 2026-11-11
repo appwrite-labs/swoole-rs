@@ -148,8 +148,7 @@ pub(crate) fn sendfile<H: Host>(h: &mut H, session: i64) -> crate::Effect<bool> 
     }
     let address = usize::try_from(h.get(OP_SENDFILE_NAME)?).unwrap_or(0);
     let name = core::ptr::with_exposed_provenance::<c_char>(address);
-    // SAFETY: a zeroed `stat` is a valid out value.
-    let mut st: libc::stat = unsafe { core::mem::zeroed() };
+    let mut st: libc::stat = swoole_rs_corebase::sys::zeroed();
     // SAFETY: `name` is the NUL-terminated copy native code just made; `st` is valid.
     if unsafe { libc::stat(name, &raw mut st) } < 0 {
         h.get(LOG_STAT)?;

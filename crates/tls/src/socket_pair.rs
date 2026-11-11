@@ -56,18 +56,16 @@ fn open<'a>(
         worker_socket: ptr::null_mut(),
     };
     let pair = this.write(pair);
-    let socks = pair.socks.as_mut_ptr();
-    let result = match unix {
-        // SAFETY: `socks` has room for both descriptors.
-        Some(protocol) => unsafe { libc::socketpair(libc::AF_UNIX, protocol, 0, socks) },
-        // SAFETY: as above.
-        None => unsafe { libc::pipe(socks) },
+    let socks = match unix {
+        Some(protocol) => swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, protocol, 0),
+        None => swoole_rs_corebase::sys::pipe(),
     };
-    if result < 0 {
+    let Some(socks) = socks else {
         let call = if unix.is_some() { "socketpair" } else { "pipe" };
         log::sys_warning(origin, format_args!("{call}() failed"));
         return None;
-    }
+    };
+    pair.socks = socks;
     pair.master_socket = make_socket_fd(pair.socks[1], FD_PIPE);
     pair.worker_socket = make_socket_fd(pair.socks[0], FD_PIPE);
     set_blocking(pair, blocking);

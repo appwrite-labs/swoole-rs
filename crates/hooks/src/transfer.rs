@@ -213,8 +213,7 @@ fn recvfrom_into(
         network.edit(|network| {
             let info = &mut network.info;
             if info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path) {
-                // SAFETY: every member of the storage is plain bytes.
-                unsafe { info.addr.un.sun_path[0] = 0 };
+                info.addr.unix_mut().sun_path[0] = 0;
             }
         });
     }

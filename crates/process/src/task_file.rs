@@ -237,28 +237,26 @@ const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
 impl EventData {
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
     pub fn dump(&self) {
-        let mut buf = [0 as c_char; 1024];
+        let mut buf = [0_u8; 1024];
         // SAFETY: a live header; `buf` is writable for its length.
-        unsafe { datahead_dump(&self.head, buf.as_mut_ptr(), buf.len()) };
-        // SAFETY: `dump` NUL-terminated `buf`.
-        unsafe { libc::printf(c"%s".as_ptr(), buf.as_ptr()) };
+        unsafe { datahead_dump(&self.head, buf.as_mut_ptr().cast(), buf.len()) };
+        let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
+        swoole_rs_corebase::sys::print(text.to_bytes());
         if self.head.ext_flags & TMPFILE != 0 {
             let pkg = PacketTask::read(&self.data);
-            // Upstream prints the payload's length in bytes of the file's name.
+            // Upstream prints the payload's length in bytes of the file's name; a
+            // negative `(int)` precision prints all of it.
+            let name = pkg.path().to_bytes();
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_possible_wrap,
                 reason = "printf's int precision, as upstream's (int) cast"
             )]
             let precision = pkg.length as c_int;
-            // SAFETY: the name is NUL-terminated.
-            unsafe {
-                libc::printf(
-                    c"Task[tmpfile]=%.*s\n".as_ptr(),
-                    precision,
-                    pkg.tmpfile.as_ptr().cast::<c_char>(),
-                )
-            };
+            let shown = usize::try_from(precision).map_or(name.len(), |n| n.min(name.len()));
+            let name = name.get(..shown).unwrap_or(name);
+            let line = [b"Task[tmpfile]=", name, b"\n"].concat();
+            swoole_rs_corebase::sys::print(&line);
         }
     }
 

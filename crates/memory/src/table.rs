@@ -186,8 +186,8 @@ impl Live {
                 break;
             }
             let owner = self.owner().load(Ordering::Relaxed);
-            // SAFETY: signal 0 only checks that `owner` exists.
-            if unsafe { libc::kill(owner, 0) } < 0
+            // Signal 0 only checks that `owner` exists.
+            if swoole_rs_corebase::sys::kill(owner, 0) < 0
                 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
             {
                 word.store(1, Ordering::Relaxed);

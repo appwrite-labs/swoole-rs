@@ -481,16 +481,8 @@ impl CoSocket {
         let mut result = 0;
         if tcp {
             let on: c_int = 1;
-            // SAFETY: an int option of the size given.
-            let set = unsafe {
-                libc::setsockopt(
-                    fd,
-                    libc::IPPROTO_TCP,
-                    libc::TCP_NODELAY,
-                    (&raw const on).cast(),
-                    socklen::<c_int>(),
-                )
-            };
+            let set =
+                swoole_rs_corebase::sys::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, &on);
             if set < 0 {
                 result |= NODELAY_FAILED;
             }
@@ -520,13 +512,8 @@ fn set_nonblock(network: Socket<'_>) -> u32 {
     result.warnings << FD_WARNINGS_SHIFT
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "option and address sizes fit socklen_t"
-)]
-const fn socklen<T>() -> libc::socklen_t {
-    size_of::<T>() as libc::socklen_t
-}
+#[cfg(test)]
+use swoole_rs_corebase::sys::socklen;
 
 /// `domain` and `kind` for `socket_type`, left alone for a type with none.
 fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
@@ -816,16 +803,7 @@ pub extern "C" fn swr_v1_hook_co_socket_created(socket: Co, result: u32) {
 /// `getpeername(sa)`: the peer's address and the record's type into `address`; 0,
 /// or the errno to set.
 pub(crate) fn peer_name(socket: Co, address: &mut SocketAddress) -> c_int {
-    address.len = socklen::<swoole_rs_reactor::AddressStorage>();
-    // SAFETY: the address's own storage and length.
-    let failed = unsafe {
-        libc::getpeername(
-            socket.sock_fd(),
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-        )
-    } != 0;
-    if failed {
+    if address.peer_name(socket.sock_fd()) != 0 {
         return std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     }
     address.kind = socket.kind();

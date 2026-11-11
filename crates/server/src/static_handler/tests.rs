@@ -3,7 +3,7 @@
 //! table and random strings, with libc's calendar recorded, against the pinned
 //! `StaticHandler` over the same script (`swoole_rs_oracle::http_static_context`),
 //! comparing every answer, every effect in order, and errno.
-use super::{Effects, StaticHandler, errno};
+use super::{Effects, StaticHandler};
 use crate::ServerConfig;
 use crate::ops::OP_ST_SET_ROOT;
 use crate::state::{ServerState, native_fact};
@@ -12,6 +12,7 @@ use core::cell::RefCell;
 use core::ffi::{CStr, c_char, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
+use swoole_rs_corebase::sys::set_errno;
 use swoole_rs_http::{BOUNDARY_SIZE, Calendar, HttpStaticObservation, StaticEffects, Tm};
 use swoole_rs_oracle::http_static_context as oracle;
 
@@ -180,7 +181,7 @@ impl StaticEffects for Scripted {
         swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
     }
     fn overflow(&self) {
-        errno::set(libc::EOVERFLOW);
+        set_errno(libc::EOVERFLOW);
     }
 }
 
@@ -471,7 +472,7 @@ impl FileCase<'_> {
             handler.try_serve(),
             "original repeated normal file selection"
         );
-        errno::set(libc::EINTR);
+        set_errno(libc::EINTR);
         handler.parse_range(self.range, self.date);
         if self.repeat != 0 {
             handler.parse_range(self.repeated(), None);
@@ -508,7 +509,7 @@ impl FileCase<'_> {
             handler.try_serve(),
             "selected repeated normal file selection"
         );
-        errno::set(libc::EINTR);
+        set_errno(libc::EINTR);
         handler.parse_range(self.range, self.date);
         if self.repeat != 0 {
             handler.parse_range(self.repeated(), None);
@@ -771,7 +772,7 @@ fn conditional_dates() -> Vec<Vec<u8>> {
 /// One verdict, its errno and its calendar events, from errno `EINTR`.
 fn observed(verdict: impl FnOnce() -> bool) -> (bool, i32, Vec<Vec<u8>>) {
     calendar_events();
-    errno::set(libc::EINTR);
+    set_errno(libc::EINTR);
     let value = verdict();
     let errno = os_errno();
     (value, errno, calendar_events())

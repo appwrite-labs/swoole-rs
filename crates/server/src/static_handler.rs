@@ -56,7 +56,7 @@ impl StaticEffects for Native {
         swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
     }
     fn overflow(&self) {
-        errno::set(libc::EOVERFLOW);
+        swoole_rs_corebase::sys::set_errno(libc::EOVERFLOW);
     }
 }
 impl Calendar for Native {}
@@ -207,19 +207,6 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     #[must_use]
     pub fn content_type(&self) -> Vec<u8> {
         self.context.borrow_mut().content_type(&self.effects)
-    }
-}
-
-mod errno {
-    pub(super) fn set(value: libc::c_int) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        // SAFETY: returns this thread's errno slot, live for the thread.
-        let slot = unsafe { libc::__errno_location() };
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        // SAFETY: returns this thread's errno slot, live for the thread.
-        let slot = unsafe { libc::__error() };
-        // SAFETY: `slot` is this thread's errno.
-        unsafe { slot.write(value) };
     }
 }
 

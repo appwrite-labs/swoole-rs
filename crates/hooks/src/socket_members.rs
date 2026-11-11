@@ -33,8 +33,6 @@ use swoole_rs_tls::upstream::{
 
 /// `SW_EVENT_WRITE`.
 const WRITE: u32 = 1 << 10;
-/// `sizeof(int)`.
-const INT_LENGTH: libc::socklen_t = c_int::BITS / 8;
 
 /// With `io_uring`, a `UringSocket`'s member takes the ring's path
 /// (`crate::uring_socket`, as `ring`) and returns its result.
@@ -163,12 +161,7 @@ pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port
     error == 0
 }
 
-/// setsockopt(2) of `value`'s bytes on `fd`.
-fn setsockopt(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> c_int {
-    let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
-    // SAFETY: the option's bytes and their length.
-    unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) }
-}
+use swoole_rs_corebase::sys::setsockopt_bytes as setsockopt;
 
 /// A descriptor `Socket::sendfile` opened, closed when it goes.
 struct OpenFile(c_int);
@@ -264,11 +257,7 @@ impl Co {
     /// warning on failure.
     pub fn get_int_option(self, level: c_int, name: c_int, value: &mut c_int) -> bool {
         let fd = self.net(|record| record.fd).unwrap_or(-1);
-        let mut length = INT_LENGTH;
-        // SAFETY: an int and its length.
-        if unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) }
-            < 0
-        {
+        if swoole_rs_corebase::sys::getsockopt(fd, level, name, value).is_none() {
             log::sys_warning(
                 c"Socket::get_option",
                 format_args!("getsockopt({}, {level}, {name}) failed", self.sock_fd()),

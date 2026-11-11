@@ -178,7 +178,6 @@ fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
 /// The effects on the worker, the server and the process.
 #[inline(always)]
 fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
-    let worker = ctx.worker;
     match op {
         OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
         OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker().into()),

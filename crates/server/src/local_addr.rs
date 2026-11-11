@@ -78,36 +78,20 @@ fn ntop(v6: bool, bytes: &[u8]) -> CString {
 
 /// Reads the interfaces that are up. `None` when `getifaddrs` fails, with `errno` set.
 fn read() -> Option<LocalAddrs> {
-    let mut list: *mut libc::ifaddrs = core::ptr::null_mut();
-    // SAFETY: `list` is a valid out pointer.
-    if unsafe { libc::getifaddrs(&raw mut list) } != 0 {
-        return None;
-    }
+    let list = swoole_rs_corebase::sys::Interfaces::new()?;
     let mut addrs = LocalAddrs {
         entries: Vec::new(),
     };
-    let mut cursor = list;
-    while !cursor.is_null() {
-        // SAFETY: `cursor` is a node of the list `getifaddrs` returned.
-        let ifa = unsafe { &*cursor };
-        cursor = ifa.ifa_next;
-        if ifa.ifa_addr.is_null() || ifa.ifa_flags & libc::IFF_UP.cast_unsigned() == 0 {
+    for entry in list.iter() {
+        if entry.flags() & libc::IFF_UP.cast_unsigned() == 0 {
             continue;
         }
-        // SAFETY: a non-null `ifa_addr` points at a socket address.
-        let family = c_int::from(unsafe { (*ifa.ifa_addr).sa_family });
-        if family == libc::AF_INET {
-            // SAFETY: an `AF_INET` address is a `sockaddr_in`.
-            let sin = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_in>() };
-            addrs.push(false, &sin.sin_addr.s_addr.to_ne_bytes());
-        } else if family == libc::AF_INET6 {
-            // SAFETY: an `AF_INET6` address is a `sockaddr_in6`.
-            let sin6 = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_in6>() };
-            addrs.push(true, &sin6.sin6_addr.s6_addr);
+        match entry.ip() {
+            Some(std::net::IpAddr::V4(ip)) => addrs.push(false, &ip.octets()),
+            Some(std::net::IpAddr::V6(ip)) => addrs.push(true, &ip.octets()),
+            None => {}
         }
     }
-    // SAFETY: `list` came from `getifaddrs` and is freed once.
-    unsafe { libc::freeifaddrs(list) };
     Some(addrs)
 }
 

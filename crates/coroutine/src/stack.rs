@@ -52,8 +52,7 @@ pub fn swr_v1_context_stack_alloc(size: usize, flags: u32) -> *mut c_void {
         unsafe { mark(stack.cast(), size) };
     }
     if flags & STACK_PROTECT != 0 {
-        // SAFETY: sysconf has no preconditions.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page = swoole_rs_corebase::sys::sysconf(libc::_SC_PAGESIZE);
         // SAFETY: the mapping starts at `stack`; protecting its first page only
         // removes access to memory nothing references yet.
         unsafe {

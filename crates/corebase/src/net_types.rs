@@ -23,8 +23,104 @@ pub struct SocketAddress {
 impl Default for SocketAddress {
     /// The empty address, `network::Address{}`.
     fn default() -> Self {
-        // SAFETY: plain integers and C address structs, for which all-zero bytes are valid.
-        unsafe { core::mem::zeroed() }
+        crate::sys::zeroed()
+    }
+}
+
+impl AddressStorage {
+    /// The family, which every member starts with.
+    #[must_use]
+    pub const fn family(&self) -> libc::sa_family_t {
+        // SAFETY: every member is plain bytes, so any of them reads whatever was stored.
+        unsafe { self.ss.sa_family }
+    }
+
+    /// The storage as an IPv4 address.
+    #[must_use]
+    pub const fn v4(&self) -> &libc::sockaddr_in {
+        // SAFETY: as for `family`.
+        unsafe { &self.inet_v4 }
+    }
+
+    /// The storage as an IPv6 address.
+    #[must_use]
+    pub const fn v6(&self) -> &libc::sockaddr_in6 {
+        // SAFETY: as for `family`.
+        unsafe { &self.inet_v6 }
+    }
+
+    /// The storage as a Unix address.
+    #[must_use]
+    pub const fn unix(&self) -> &libc::sockaddr_un {
+        // SAFETY: as for `family`.
+        unsafe { &self.un }
+    }
+
+    /// The storage as a Unix address, to fill.
+    pub const fn unix_mut(&mut self) -> &mut libc::sockaddr_un {
+        // SAFETY: as for `family`, and any bytes written are a value of every member.
+        unsafe { &mut self.un }
+    }
+}
+
+impl SocketAddress {
+    /// The storage's size, the most a call reads or writes of it.
+    pub const CAPACITY: libc::socklen_t = crate::sys::socklen::<AddressStorage>();
+
+    fn storage(&self) -> (*const libc::sockaddr, libc::socklen_t) {
+        ((&raw const self.addr).cast(), self.len.min(Self::CAPACITY))
+    }
+
+    /// `connect(2)` of `fd` to this address.
+    #[must_use]
+    pub fn connect(&self, fd: c_int) -> c_int {
+        let (storage, length) = self.storage();
+        // SAFETY: the storage holds the `length` readable bytes given.
+        unsafe { libc::connect(fd, storage, length) }
+    }
+
+    /// `bind(2)` of `fd` to this address.
+    #[must_use]
+    pub fn bind(&self, fd: c_int) -> c_int {
+        let (storage, length) = self.storage();
+        // SAFETY: the storage holds the `length` readable bytes given.
+        unsafe { libc::bind(fd, storage, length) }
+    }
+
+    /// `sendto(2)` of `data` to this address.
+    #[must_use]
+    pub fn sendto(&self, fd: c_int, data: &[u8], flags: c_int) -> isize {
+        let (storage, length) = self.storage();
+        // SAFETY: `data` is readable for its length, the storage for `length` bytes.
+        unsafe { libc::sendto(fd, data.as_ptr().cast(), data.len(), flags, storage, length) }
+    }
+
+    /// `recvfrom(2)` into `buffer`, the sender's address and its length into this one.
+    pub fn recvfrom(
+        &mut self,
+        fd: c_int,
+        buffer: &mut [impl crate::sys::ReadSlot],
+        flags: c_int,
+    ) -> isize {
+        self.len = Self::CAPACITY;
+        let (data, size) = (buffer.as_mut_ptr().cast(), buffer.len());
+        let storage = (&raw mut self.addr).cast();
+        // SAFETY: `buffer` is writable for its length, the storage for the `len` given.
+        unsafe { libc::recvfrom(fd, data, size, flags, storage, &raw mut self.len) }
+    }
+
+    /// `getsockname(2)` of `fd` into this address and its length.
+    pub fn local_name(&mut self, fd: c_int) -> c_int {
+        self.len = Self::CAPACITY;
+        // SAFETY: the storage is writable for the `len` given.
+        unsafe { libc::getsockname(fd, (&raw mut self.addr).cast(), &raw mut self.len) }
+    }
+
+    /// `getpeername(2)` of `fd` into this address and its length.
+    pub fn peer_name(&mut self, fd: c_int) -> c_int {
+        self.len = Self::CAPACITY;
+        // SAFETY: the storage is writable for the `len` given.
+        unsafe { libc::getpeername(fd, (&raw mut self.addr).cast(), &raw mut self.len) }
     }
 }
 

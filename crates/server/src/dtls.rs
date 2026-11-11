@@ -42,9 +42,7 @@ pub(crate) struct DgramPacket {
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
-    let size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
-    // SAFETY: `value` is a live c_int of `size` bytes.
-    unsafe { libc::setsockopt(fd, level, option, (&raw const value).cast(), size) };
+    swoole_rs_corebase::sys::setsockopt(fd, level, option, &value);
 }
 
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.
@@ -120,9 +118,7 @@ unsafe fn accept(
         if kind == SOCK_UDP6 {
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
         }
-        let peer = (&raw const sa.addr).cast::<libc::sockaddr>();
-        // SAFETY: the peer's address of its length.
-        if unsafe { libc::connect(fd, peer, sa.len) } < 0 {
+        if sa.connect(fd) < 0 {
             let (host, port) = swoole_rs_tls::upstream::peer(sa);
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
             break 'setup;

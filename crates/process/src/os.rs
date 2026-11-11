@@ -14,6 +14,5 @@ pub fn getpid() -> libc::pid_t {
     reason = "upstream ignores kill's result where it only sends a signal"
 )]
 pub fn kill(pid: libc::pid_t, signo: c_int) -> c_int {
-    // SAFETY: kill(2) takes plain integers.
-    unsafe { libc::kill(pid, signo) }
+    swoole_rs_corebase::sys::kill(pid, signo)
 }

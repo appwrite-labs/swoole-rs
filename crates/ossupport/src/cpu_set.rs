@@ -13,8 +13,7 @@ impl CpuSet {
     /// No CPU.
     #[must_use]
     pub fn empty() -> Self {
-        // SAFETY: a plain bitset, for which zero is the empty set.
-        Self(unsafe { std::mem::zeroed() })
+        Self(swoole_rs_corebase::sys::zeroed())
     }
 
     /// `CPU_SET`; a `cpu` from `SIZE` on is outside the set and ignored.

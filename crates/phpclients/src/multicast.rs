@@ -11,11 +11,12 @@ use crate::{
 use libc::{c_char, c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
 use std::{
     ffi::CStr,
-    mem::{MaybeUninit, size_of},
+    mem::size_of,
     net::{Ipv4Addr, Ipv6Addr},
     ptr,
     str::FromStr,
 };
+use swoole_rs_corebase::sys::{setsockopt, zeroed};
 use swoole_rs_zend::{
     Array, Call, Value, bailout, report,
     sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array},
@@ -76,26 +77,6 @@ impl Sock {
     }
 }
 
-/// libc's plain socket structs: integers, byte arrays and nullable pointers, so all-zero
-/// bytes are a valid value. Private, so no other type can be zeroed through it.
-trait CStruct: Copy {}
-
-impl CStruct for in6_addr {}
-impl CStruct for sockaddr_in {}
-impl CStruct for sockaddr_in6 {}
-impl CStruct for libc::addrinfo {}
-impl CStruct for libc::sockaddr_storage {}
-impl CStruct for libc::group_req {}
-impl CStruct for libc::group_source_req {}
-impl CStruct for libc::ifreq {}
-impl CStruct for libc::in6_pktinfo {}
-
-/// A C struct, all zero (as upstream's `= {0}` and `memset`).
-fn zeroed<T: CStruct>() -> T {
-    // SAFETY: every `CStruct` is valid all zero.
-    unsafe { MaybeUninit::<T>::zeroed().assume_init() }
-}
-
 /// `php_error_docref(NULL, E_WARNING, "%s", message)`.
 fn warn(message: &[u8]) -> Result<(), Stop> {
     let message = text(message);
@@ -141,14 +122,13 @@ fn socklen<T>() -> socklen_t {
     socklen_t::try_from(size_of::<T>()).unwrap_or(0)
 }
 
-/// `setsockopt(fd, level, name, value, sizeof value)`.
-fn setsockopt<T>(fd: c_int, level: c_int, name: c_int, value: &T) -> c_int {
-    // SAFETY: `value` is readable for its size.
-    unsafe { libc::setsockopt(fd, level, name, ptr::from_ref(value).cast(), socklen::<T>()) }
-}
-
 /// `dosockopt:`: set it, or report the socket error.
-fn apply<T>(s: Sock, level: c_int, name: c_int, value: &T) -> Result<c_int, Stop> {
+fn apply<T: swoole_rs_corebase::sys::Pod>(
+    s: Sock,
+    level: c_int,
+    name: c_int,
+    value: &T,
+) -> Result<c_int, Stop> {
     if setsockopt(s.fd, level, name, value) != 0 {
         socket_error(s.socket, "unable to set socket option", errno())?;
         return Ok(FAILURE);
@@ -162,16 +142,10 @@ fn parse<T: FromStr>(text: &CStr) -> Option<T> {
     text.to_str().ok()?.parse().ok()
 }
 
-/// `if_nametoindex(name)`: 0 when no interface has the name.
-fn if_index(name: &CStr) -> c_uint {
-    // SAFETY: a NUL-terminated name.
-    unsafe { libc::if_nametoindex(name.as_ptr()) }
-}
-
 /// `php_string_to_if_index`.
 fn index_by_name(name: &[u8]) -> Result<Option<c_uint>, Stop> {
     let name = text(name);
-    let index = if_index(&name);
+    let index = swoole_rs_corebase::sys::if_nametoindex(&name);
     if index == 0 {
         let message = [
             b"no interface with name \"",
@@ -308,7 +282,7 @@ fn inet46(s: Sock, host: &[u8]) -> Result<Option<libc::sockaddr_storage>, Stop> 
 }
 
 /// A socket address of `domain` in a zeroed `sockaddr_storage`.
-fn stored<T: CStruct>(address: T, domain: c_int) -> libc::sockaddr_storage {
+fn stored<T: swoole_rs_corebase::sys::Pod>(address: T, domain: c_int) -> libc::sockaddr_storage {
     const {
         assert!(
             size_of::<T>() <= size_of::<libc::sockaddr_storage>(),
@@ -518,36 +492,21 @@ pub(crate) fn interface_index(address: in_addr) -> Result<Option<c_uint>, Stop> 
     if address.s_addr == libc::INADDR_ANY {
         return Ok(Some(0));
     }
-    let mut list = ptr::null_mut();
-    // SAFETY: a writable list.
-    if unsafe { libc::getifaddrs(&raw mut list) } == -1 {
+    let Some(list) = swoole_rs_corebase::sys::Interfaces::new() else {
         warn(format!("Failed obtaining interfaces list: error {}", errno()).as_bytes())?;
         return Ok(None);
-    }
-    let mut found = None;
-    let mut cursor = list;
-    while !cursor.is_null() {
-        // SAFETY: a live entry of the list.
-        let entry = unsafe { &*cursor };
-        cursor = entry.ifa_next;
-        if entry.ifa_addr.is_null() {
-            continue;
-        }
-        // SAFETY: a live address.
-        if c_int::from(unsafe { (*entry.ifa_addr).sa_family }) != libc::AF_INET {
-            continue;
-        }
-        // SAFETY: an AF_INET address is a sockaddr_in.
-        let held = unsafe { entry.ifa_addr.cast::<sockaddr_in>().read_unaligned() }.sin_addr;
-        if held.s_addr == address.s_addr {
-            // SAFETY: the entry's NUL-terminated name.
-            let index = unsafe { libc::if_nametoindex(entry.ifa_name) };
-            found = Some((index != 0).then_some(index).ok_or_else(errno));
-            break;
-        }
-    }
-    // SAFETY: the list, no longer read.
-    unsafe { libc::freeifaddrs(list) };
+    };
+    let found = list
+        .iter()
+        .find(|entry| {
+            matches!(entry.ip(), Some(std::net::IpAddr::V4(held))
+                if u32::from_ne_bytes(held.octets()) == address.s_addr)
+        })
+        .map(|entry| {
+            let index = swoole_rs_corebase::sys::if_nametoindex(entry.name());
+            (index != 0).then_some(index).ok_or_else(errno)
+        });
+    drop(list);
     match found {
         Some(Ok(index)) => Ok(Some(index)),
         Some(Err(error)) => {
@@ -688,7 +647,7 @@ fn pktinfo(s: Sock, value: &Value) -> Result<Option<libc::in6_pktinfo>, Stop> {
         info.ipi6_ifindex = index;
     } else {
         let name = text(&string(ifindex)?);
-        let index = if_index(&name);
+        let index = swoole_rs_corebase::sys::if_nametoindex(&name);
         if index == 0 {
             let message = [
                 b"no interface with name \"",

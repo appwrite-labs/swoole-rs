@@ -194,8 +194,7 @@ macro_rules! hooked {
 /// As for `fsync`.
 unsafe fn datasync(fd: c_int) -> c_int {
     #[cfg(target_vendor = "apple")]
-    // SAFETY: as for fsync.
-    return unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
+    return swoole_rs_corebase::sys::fcntl(fd, libc::F_FULLFSYNC, 0);
     #[cfg(not(target_vendor = "apple"))]
     // SAFETY: as above.
     return unsafe { libc::fdatasync(fd) };

@@ -59,16 +59,7 @@ pub fn fd_wait(fd: c_int, events: i16, timeout_ms: c_int, dont_restart: bool) ->
 /// `Socket::clean`: discard everything already received, without blocking.
 pub fn fd_clean(fd: c_int) {
     let mut buffer = [0_u8; 2048];
-    // SAFETY: `buffer` is a local of the length passed.
-    while unsafe {
-        libc::recv(
-            fd,
-            buffer.as_mut_ptr().cast::<c_void>(),
-            buffer.len(),
-            libc::MSG_DONTWAIT,
-        )
-    } > 0
-    {}
+    while swoole_rs_corebase::sys::recv(fd, &mut buffer, libc::MSG_DONTWAIT) > 0 {}
 }
 
 /// `Socket::recvfrom`: recvfrom(2), retried on `EINTR` up to
@@ -126,10 +117,8 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
 /// is `EINPROGRESS` (wait for writability), 2 any other error.
 #[must_use]
 pub fn fd_connect(fd: c_int, address: &SocketAddress) -> SocketIoResult {
-    let storage = std::ptr::from_ref(address).cast::<libc::sockaddr>();
     loop {
-        // SAFETY: the borrowed address, whose storage holds `len` bytes of sockaddr.
-        if unsafe { libc::connect(fd, storage, address.len) } == 0 {
+        if address.connect(fd) == 0 {
             return READY;
         }
         match errno() {

@@ -339,8 +339,7 @@ pub(crate) fn import(port: *mut c_void, fd: c_int) -> bool {
         log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
         return false;
     }
-    // SAFETY: every member of the address union starts with the family.
-    let family = c_int::from(unsafe { socket.info.addr.ss.sa_family });
+    let family = c_int::from(socket.info.addr.family());
     let kind = swr_v1_socket_type(family, so_type);
     socket.socket_type = kind;
     socket.info.kind = kind;
