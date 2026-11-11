@@ -96,8 +96,8 @@ Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `pyt
 python3 tools/dev.py docker -- integrate --module utilities --phase utilities-logger-originals
 ```
 
-Runs any `dev.py` command in the dev image for this host's architecture, with no
-manual setup:
+Runs any `dev.py` command in the dev image for this host's architecture (x86_64 under
+`DOCKER_DEFAULT_PLATFORM=linux/amd64`, emulated on an arm64 host), with no manual setup:
 
 - builds the image the first time (tagged `swoole-rs-dev:<arch>-<.devcontainer hash>`,
   so arm64 and amd64 never mix and a changed `.devcontainer/` gets a new image)
