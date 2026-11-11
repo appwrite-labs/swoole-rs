@@ -291,7 +291,7 @@ pub fn http_url_decode(bytes: &[u8]) {
     let (want, status) = unsafe {
         (
             upstream_http::url_decode(theirs.as_mut_ptr(), bytes.len()),
-            swr_v1_http_url_decode(ours.as_mut_ptr(), bytes.len(), &mut written),
+            swr_v1_http_url_decode(ours.as_mut_ptr(), bytes.len(), Some(&mut written)),
         )
     };
     assert_eq!((status, written), (0, want), "length for {bytes:?}");
@@ -306,7 +306,7 @@ pub fn http_url_encode(bytes: &[u8]) {
     let want =
         unsafe { upstream_http::url_encode(bytes.as_ptr(), bytes.len(), theirs.as_mut_ptr()) };
     assert_eq!(
-        unsafe { swr_v1_http_url_capacity(bytes.as_ptr(), bytes.len(), &mut capacity) },
+        unsafe { swr_v1_http_url_capacity(bytes.as_ptr(), bytes.len(), Some(&mut capacity)) },
         0
     );
     let mut ours = vec![0xa5; capacity];
@@ -316,7 +316,7 @@ pub fn http_url_encode(bytes: &[u8]) {
             bytes.len(),
             ours.as_mut_ptr(),
             capacity,
-            &mut written,
+            Some(&mut written),
         )
     };
     assert_eq!(
@@ -348,7 +348,12 @@ pub fn http_cookies(bytes: &[u8]) {
         let mut cookie = HttpCookie::default();
         // SAFETY: the buffer is writable and NUL-terminated; cursor and cookie are locals.
         let status = unsafe {
-            swr_v1_http_cookie_next(buffer.as_mut_ptr(), buffer.len(), &mut cursor, &mut cookie)
+            swr_v1_http_cookie_next(
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                Some(&mut cursor),
+                Some(&mut cookie),
+            )
         };
         assert!(status >= 0, "status {status} for {bytes:?}");
         if status == 0 {

@@ -178,7 +178,7 @@ pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: us
     feature = "upstream-symbols",
     unsafe(export_name = "_Z14swoole_hex2decPKcPm")
 )]
-pub unsafe extern "C" fn swoole_hex2dec(hex: *const c_char, parsed: *mut usize) -> c_ulong {
+pub unsafe extern "C" fn swoole_hex2dec(hex: *const c_char, parsed: &mut usize) -> c_ulong {
     // SAFETY: the caller upholds swr_v1_corebase_hex_mode's contract.
     unsafe { crate::swr_v1_corebase_hex_mode(hex, parsed, u8::from(c_char::MIN != 0)) }
 }
@@ -258,25 +258,19 @@ pub struct DataHead {
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s
 /// result: at most `size - 1` bytes written, always NUL-terminated.
 /// # Safety
-/// `head` is a live `DataHead` and `buffer` is writable for `size` bytes.
+/// `buffer` is writable for `size` bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole8DataHead4dumpEPcm")
 )]
-pub unsafe extern "C" fn datahead_dump(
-    head: *const DataHead,
-    buffer: *mut c_char,
-    size: usize,
-) -> usize {
-    // SAFETY: the caller lends a live `DataHead`.
-    let h = unsafe { &*head };
+pub unsafe extern "C" fn datahead_dump(h: &DataHead, buffer: *mut c_char, size: usize) -> usize {
     // SAFETY: the format's conversions match the promoted arguments one for one.
     let written = unsafe {
         snprintf(
             buffer,
             size,
             c"DataHead[%p]\n{\n    long fd = %ld;\n    uint64_t msg_id = %llu;\n    uint32_t len = %d;\n    int16_t reactor_id = %d;\n    uint8_t type = %d;\n    uint8_t flags = %d;\n    uint16_t server_fd = %d;\n    uint16_t ext_flags = %d;\n    double time = %f;\n}\n".as_ptr(),
-            head,
+            ptr::from_ref(h),
             h.fd,
             h.msg_id,
             h.len,
@@ -679,7 +673,7 @@ mod tests {
             time: 1.5,
         };
         let mut buffer = [0 as c_char; 512];
-        let n = unsafe { datahead_dump(&raw const head, buffer.as_mut_ptr(), 512) };
+        let n = unsafe { datahead_dump(&head, buffer.as_mut_ptr(), 512) };
         let text = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap();
         assert_eq!(text.len(), n);
         let body = &text[text.find(']').unwrap() + 1..];
@@ -688,7 +682,7 @@ mod tests {
             "\n{\n    long fd = -7;\n    uint64_t msg_id = 18446744073709551615;\n    uint32_t len = 12;\n    int16_t reactor_id = -1;\n    uint8_t type = 3;\n    uint8_t flags = 255;\n    uint16_t server_fd = 9;\n    uint16_t ext_flags = 65535;\n    double time = 1.500000;\n}\n"
         );
         let mut short = [0x55 as c_char; 8];
-        let n = unsafe { datahead_dump(&raw const head, short.as_mut_ptr(), 8) };
+        let n = unsafe { datahead_dump(&head, short.as_mut_ptr(), 8) };
         assert_eq!((n, short[7]), (7, 0));
     }
 
@@ -710,7 +704,7 @@ mod tests {
             time: 0.0,
         };
         let mut buffer = [0 as c_char; 128];
-        let n = unsafe { datahead_dump(&raw const head, buffer.as_mut_ptr(), buffer.len()) };
+        let n = unsafe { datahead_dump(&head, buffer.as_mut_ptr(), buffer.len()) };
         let text = String::from_utf8_lossy(unsafe {
             std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), n)
         });

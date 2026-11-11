@@ -9,7 +9,7 @@ use crate::socket_extra::SocketExtra;
 use core::ffi::{c_char, c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::ptr;
-use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
+use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -191,9 +191,9 @@ impl Co {
             return slot.cast();
         }
         // SAFETY: `new`'s contract: a live record, whose allocator is null or live.
-        let allocator = unsafe { (*self.0).buffer_allocator }.cast();
+        let allocator = unsafe { (*self.0).buffer_allocator }.cast::<Allocator>();
         // SAFETY: as above.
-        let made = unsafe { new_sized_string(BUFFER_SIZE_BIG, allocator) }.cast();
+        let made = new_sized_string(BUFFER_SIZE_BIG, unsafe { allocator.as_ref() }).cast();
         if write {
             self.set_write_buffer(made);
         } else {
@@ -421,8 +421,7 @@ const fn socklen<T>() -> libc::socklen_t {
 
 /// `domain` and `kind` for `socket_type`, left alone for a type with none.
 fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
-    // SAFETY: two live ints.
-    unsafe { swoole_rs_reactor::swr_v1_socket_domain_and_type(socket_type, domain, kind) };
+    swoole_rs_reactor::swr_v1_socket_domain_and_type(socket_type, domain, kind);
 }
 
 /// A socket record's defaults (not open, no buffers, nothing bound), which every

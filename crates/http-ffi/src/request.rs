@@ -109,8 +109,7 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
     let file = a.cast::<libc::FILE>();
     match op {
         STRING_NEW if b.is_null() => {
-            // SAFETY: a null allocator is the default one.
-            return unsafe { new_sized_string(length, ptr::null()) as u64 };
+            return new_sized_string(length, None) as u64;
         }
         // SAFETY: `b` holds `n` bytes.
         STRING_NEW => return unsafe { new_string(b, length) as u64 },

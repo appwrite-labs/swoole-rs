@@ -49,9 +49,12 @@ unsafe fn bytes<'a>(data: *const u8, length: usize) -> Result<&'a [u8], i32> {
 /// Required encoded capacity, INCLUDING the trailing NUL. No allocation occurs.
 /// # Safety
 /// Input is readable and output is aligned/writable/disjoint.
-pub unsafe fn swr_v1_http_url_capacity(data: *const u8, length: usize, output: *mut usize) -> i32 {
-    // SAFETY: `output` is null or aligned and writable.
-    let Some(output) = (unsafe { output.as_mut() }) else {
+pub unsafe fn swr_v1_http_url_capacity(
+    data: *const u8,
+    length: usize,
+    output: Option<&mut usize>,
+) -> i32 {
+    let Some(output) = output else {
         return INVALID;
     };
     *output = 0;
@@ -73,10 +76,9 @@ pub unsafe fn swr_v1_http_url_encode(
     length: usize,
     output: *mut u8,
     capacity: usize,
-    written: *mut usize,
+    written: Option<&mut usize>,
 ) -> i32 {
-    // SAFETY: `written` is null or aligned and writable.
-    let Some(written) = (unsafe { written.as_mut() }) else {
+    let Some(written) = written else {
         return INVALID;
     };
     *written = 0;
@@ -105,9 +107,12 @@ pub unsafe fn swr_v1_http_url_encode(
 /// Decode in place, preserving malformed escapes and decoding '+' as space.
 /// # Safety
 /// Data is writable for length+1 initialized input bytes; written is disjoint.
-pub unsafe fn swr_v1_http_url_decode(data: *mut u8, length: usize, written: *mut usize) -> i32 {
-    // SAFETY: `written` is null or aligned and writable.
-    let Some(written) = (unsafe { written.as_mut() }) else {
+pub unsafe fn swr_v1_http_url_decode(
+    data: *mut u8,
+    length: usize,
+    written: Option<&mut usize>,
+) -> i32 {
+    let Some(written) = written else {
         return INVALID;
     };
     *written = 0;
@@ -134,10 +139,9 @@ pub unsafe extern "C" fn swr_v1_http_boundary(
     data: *const u8,
     length: usize,
     offset: usize,
-    output: *mut HttpSpan,
+    output: Option<&mut HttpSpan>,
 ) -> i32 {
-    // SAFETY: `output` is null or aligned and writable.
-    let Some(output) = (unsafe { output.as_mut() }) else {
+    let Some(output) = output else {
         return INVALID;
     };
     *output = HttpSpan::default();
@@ -262,15 +266,10 @@ pub unsafe extern "C" fn swr_v1_http_multipart_filename(data: *mut u8, capacity:
 pub unsafe fn swr_v1_http_cookie_next(
     data: *mut u8,
     capacity: usize,
-    cursor: *mut usize,
-    output: *mut HttpCookie,
+    cursor: Option<&mut usize>,
+    output: Option<&mut HttpCookie>,
 ) -> i32 {
-    // SAFETY: `output` is null or aligned and writable.
-    let Some(output) = (unsafe { output.as_mut() }) else {
-        return INVALID;
-    };
-    // SAFETY: `cursor` is null or aligned and disjoint from `data`.
-    let Some(cursor) = (unsafe { cursor.as_mut() }) else {
+    let (Some(cursor), Some(output)) = (cursor, output) else {
         return INVALID;
     };
     *output = HttpCookie::default();
@@ -299,10 +298,9 @@ pub unsafe extern "C" fn swr_v1_http_static_location(
     url_length: usize,
     location: *const u8,
     location_length: usize,
-    state: *mut HttpStaticPath,
+    state: Option<&mut HttpStaticPath>,
 ) -> i32 {
-    // SAFETY: `state` is null or aligned and exclusive per the caller contract.
-    let Some(state) = (unsafe { state.as_mut() }) else {
+    let Some(state) = state else {
         return INVALID;
     };
     // SAFETY: the caller lends `url_length` initialized URL bytes.
@@ -352,18 +350,16 @@ pub unsafe extern "C" fn swr_v2_http_context_drop(owner: *mut HttpStaticContext)
 /// writable bytes disjoint from the context.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v2_http_context_text(
-    owner: *const HttpStaticContext,
+    owner: Option<&HttpStaticContext>,
     kind: u32,
     output: *mut u8,
     capacity: usize,
-    written: *mut usize,
+    written: Option<&mut usize>,
 ) -> i32 {
-    // SAFETY: `owner` is null or live.
-    let Some(text) = (unsafe { owner.as_ref() }).and_then(|owner| owner.text(kind)) else {
+    let Some(text) = owner.and_then(|owner| owner.text(kind)) else {
         return INVALID;
     };
-    // SAFETY: `written` is null or aligned and writable.
-    let Some(written) = (unsafe { written.as_mut() }) else {
+    let Some(written) = written else {
         return INVALID;
     };
     if capacity != 0 {

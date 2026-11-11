@@ -190,8 +190,9 @@ pub unsafe fn handle_send_owned(
         detached: swoole_rs_buffer::TypedDetached::default(),
     };
     let mut front = swoole_rs_buffer::TypedFront::default();
-    // SAFETY: a live typed queue and disjoint local observation, with no retained borrow.
-    output.status = unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(buffer, &raw mut front) };
+    // SAFETY: a live typed queue, with no retained borrow.
+    let queue = unsafe { buffer.as_ref() };
+    output.status = swoole_rs_buffer::swr_v1_buffer_typed_front(queue, Some(&mut front));
     if output.status != 0 {
         return output;
     }
@@ -203,24 +204,26 @@ pub unsafe fn handle_send_owned(
     };
     output.result = handle_send(hooks, data, front.offset);
     if output.result.set_offset {
-        // SAFETY: the observed front identity is committed only after the effect returned.
-        output.status = unsafe {
-            swoole_rs_buffer::swr_v1_buffer_typed_consume(
-                buffer,
-                front.generation,
-                front.offset,
-                output.result.offset.wrapping_sub(front.offset),
-            )
-        };
+        // SAFETY: the live, exclusive queue; the observed front identity is committed only
+        // after the effect returned.
+        let queue = unsafe { buffer.as_mut() };
+        output.status = swoole_rs_buffer::swr_v1_buffer_typed_consume(
+            queue,
+            front.generation,
+            front.offset,
+            output.result.offset.wrapping_sub(front.offset),
+        );
         if output.status != 0 {
             return output;
         }
     }
     socket.edit(|record| output.result.publish(&mut record.output));
     if output.result.pop {
-        // SAFETY: detach transfers custody to the caller without invoking a disposer.
+        // SAFETY: the live, exclusive queue; detach transfers custody to the caller without
+        // invoking a disposer.
+        let queue = unsafe { buffer.as_mut() };
         output.status =
-            unsafe { swoole_rs_buffer::swr_v1_buffer_typed_pop(buffer, &raw mut output.detached) };
+            swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut output.detached));
     }
     output
 }
@@ -318,7 +321,7 @@ mod tests {
         }
     }
 
-    fn hooks(socket: *mut c_void, nobufs: &mut bool) -> OutputHooks {
+    fn hooks(socket: *mut c_void, nobufs: *mut bool) -> OutputHooks {
         OutputHooks {
             socket,
             kernel_nobufs: nobufs,
@@ -346,14 +349,15 @@ mod tests {
             let socket = crate::SocketRecord::with_fd(-1, 6).into_raw();
             let mut queue = std::ptr::null_mut();
             assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_create(64, &raw mut queue),
+                swoole_rs_buffer::swr_v1_buffer_typed_create(64, Some(&mut queue)),
                 0
             );
             assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_append(queue, b"hello".as_ptr(), 5),
+                swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"hello".as_ptr(), 5),
                 0
             );
-            let hooks = hooks(socket.cast(), &mut (*socket).kernel_nobufs);
+            // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
+            let hooks = hooks(socket.cast(), &raw mut (*socket).kernel_nobufs);
             let handle = crate::Socket::from_ptr(socket).unwrap();
             reset(2, 0, false);
             let sent = handle_send_owned(handle, queue, &hooks);
@@ -364,7 +368,7 @@ mod tests {
             assert_eq!((*socket).output.send_wait, 1);
             let mut front = swoole_rs_buffer::TypedFront::default();
             assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front),
+                swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
                 0
             );
             assert_eq!(front.offset, 2);
@@ -379,7 +383,7 @@ mod tests {
                 (0, -1, 1)
             );
             assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front),
+                swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
                 0
             );
             assert_eq!(front.offset, 2);
@@ -388,7 +392,7 @@ mod tests {
             assert_eq!((completed.status, completed.result.pop), (0, true));
             assert!(completed.detached.token.is_null() && completed.detached.dispose.is_none());
             assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front),
+                swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
                 1
             );
             assert_eq!(swoole_rs_buffer::swr_v1_buffer_release(queue), 0);
@@ -398,7 +402,7 @@ mod tests {
     #[test]
     fn handle_send_rules() {
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let data = [0_u8; 10];
         let run = |each, errno, length: u32, offset| {
             reset(each, errno, false);
@@ -459,7 +463,7 @@ mod tests {
     #[test]
     fn handle_sendfile_rules() {
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let mut corked: i8 = 0;
         reset(0, 0, true);
         // 100,000 bytes from 0 corks once; a partial send keeps the request.
@@ -519,7 +523,7 @@ mod tests {
     fn ordinary_data_positive_matrix() {
         let data = b"abcdef\0ghijklmnop";
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let mut cases = 0;
         for remaining in [1_u32, 7, 13] {
             for sent in 1..=remaining {
@@ -590,7 +594,7 @@ mod tests {
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"0123456789012345678901234567890").unwrap();
         let mut nobufs = false;
-        let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
+        let hooks = hooks(std::ptr::null_mut(), &raw mut nobufs);
         let mut cases = 0;
         for existing in [false, true] {
             for length in [0_usize, 1, 7, 19] {

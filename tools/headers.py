@@ -30,6 +30,8 @@ SCALARS = {
     'long': 'isize', 'ssize_t': 'isize', 'intptr_t': 'isize', 'ptrdiff_t': 'isize',
     'unsigned long': 'usize', 'size_t': 'usize', 'uintptr_t': 'usize', 'socklen_t': 'u32',
     'pid_t': 'i32', 'uid_t': 'u32', 'gid_t': 'u32', 'mode_t': 'mode',
+    # cbindgen's spelling of Rust's `AtomicU32`, which has `u32`'s layout.
+    'AtomicU32': 'u32',
 }
 
 

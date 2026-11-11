@@ -17,20 +17,24 @@ const AUTH_FAILED: c_int = 7003;
 const SERVER_ERROR: c_int = 7004;
 const HANDSHAKE_FAILED: c_int = 7005;
 
-/// `swoole::Socks5Proxy`'s head: `ProxyOwner::prepared_.owner`.
+/// `swoole::Socks5Proxy`'s head: `ProxyOwner::prepared_.owner`, which
+/// `swr_v1_core_proxy_new` made and the proxy frees last.
 #[repr(C)]
-pub struct Socks5Proxy {
-    owner: *mut ProxyState,
+pub struct Socks5Proxy<'a> {
+    owner: &'a ProxyState,
+}
+
+impl<'a> Socks5Proxy<'a> {
+    /// The head of a proxy over `owner`.
+    #[must_use]
+    pub const fn new(owner: &'a ProxyState) -> Self {
+        Self { owner }
+    }
 }
 
 /// The proxy's owner.
-/// # Safety
-/// `proxy` is a live `Socks5Proxy`; its owner outlives the borrow.
-unsafe fn owner<'a>(proxy: *const Socks5Proxy) -> &'a ProxyState {
-    // SAFETY: the caller lends a live proxy.
-    let owner = unsafe { (*proxy).owner };
-    // SAFETY: a live proxy holds its live owner.
-    unsafe { &*owner }
+const fn owner<'a>(proxy: &Socks5Proxy<'a>) -> &'a ProxyState {
+    proxy.owner
 }
 
 struct Packet {
@@ -39,12 +43,10 @@ struct Packet {
     last_error: i32,
 }
 
-/// Packs negotiate (0), authentication (1) or connect (2) into the owner's buffer.
-/// # Safety
-/// `proxy` is a live `Socks5Proxy`, exclusively lent for packet and state writes.
-unsafe fn packet(proxy: *const Socks5Proxy, action: u32) -> Packet {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { owner(proxy) };
+/// Packs negotiate (0), authentication (1) or connect (2) into the owner's buffer;
+/// the proxy's single thread writes its packet and state only through this call.
+fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
+    let owner = owner(proxy);
     // SAFETY: a scalar snapshot before accessing its distinct packet storage.
     let fields = unsafe { *owner.fields.get() };
     // SAFETY: SOCKS owners contain an exclusive512-byte packet allocation.
@@ -146,32 +148,26 @@ unsafe fn packet(proxy: *const Socks5Proxy, action: u32) -> Packet {
 }
 
 /// `ssize_t Socks5Proxy::pack_negotiate_request()`.
-/// # Safety
-/// As [`packet`].
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv")]
-pub unsafe extern "C" fn pack_negotiate_request(proxy: *mut Socks5Proxy) -> isize {
-    // SAFETY: as the caller promises.
-    let size = unsafe { packet(proxy, 0) }.size;
+#[must_use]
+pub extern "C" fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
+    let size = packet(proxy, 0).size;
     isize::try_from(size).unwrap_or(-1)
 }
 
 /// `ssize_t Socks5Proxy::pack_auth_request()`.
-/// # Safety
-/// As [`packet`].
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy17pack_auth_requestEv")]
-pub unsafe extern "C" fn pack_auth_request(proxy: *mut Socks5Proxy) -> isize {
-    // SAFETY: as the caller promises.
-    let size = unsafe { packet(proxy, 1) }.size;
+#[must_use]
+pub extern "C" fn pack_auth_request(proxy: &Socks5Proxy<'_>) -> isize {
+    let size = packet(proxy, 1).size;
     isize::try_from(size).unwrap_or(-1)
 }
 
 /// `ssize_t Socks5Proxy::pack_connect_request()`, with upstream's notices.
-/// # Safety
-/// As [`packet`].
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy20pack_connect_requestEv")]
-pub unsafe extern "C" fn pack_connect_request(proxy: *mut Socks5Proxy) -> isize {
-    // SAFETY: as the caller promises.
-    let result = unsafe { packet(proxy, 2) };
+#[must_use]
+pub extern "C" fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
+    let result = packet(proxy, 2);
     if result.last_error != 0 {
         log::set_last_error(result.last_error);
     }
@@ -199,10 +195,11 @@ pub unsafe extern "C" fn pack_connect_request(proxy: *mut Socks5Proxy) -> isize 
 /// `handshake` did, and packs the request that answers it. Returns its size, 0 when
 /// none is due, -1 on failure.
 /// # Safety
-/// As [`packet`]; `data` lends `length` readable bytes.
+/// `data` lends `length` readable bytes.
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm")]
+#[must_use]
 pub unsafe extern "C" fn handshake_step(
-    proxy: *mut Socks5Proxy,
+    proxy: &Socks5Proxy<'_>,
     data: *const u8,
     length: usize,
 ) -> isize {
@@ -210,8 +207,7 @@ pub unsafe extern "C" fn handshake_step(
     let Some(reply) = (unsafe { crate::input(data, length) }) else {
         return -1;
     };
-    // SAFETY: as the caller promises.
-    let owner = unsafe { owner(proxy) };
+    let owner = owner(proxy);
     // SAFETY: a scalar snapshot; nothing else writes the fields during this call.
     let fields = unsafe { *owner.fields.get() };
     let decision = socks_transition(fields.state, fields.method, reply);
@@ -250,10 +246,8 @@ pub unsafe extern "C" fn handshake_step(
     // SAFETY: the state advances before packing, as in upstream's member order.
     unsafe { (*owner.fields.get()).state = decision.state };
     match decision.action {
-        // SAFETY: as the caller promises.
-        1 => unsafe { pack_auth_request(proxy) },
-        // SAFETY: as the caller promises.
-        2 => unsafe { pack_connect_request(proxy) },
+        1 => pack_auth_request(proxy),
+        2 => pack_connect_request(proxy),
         _ => 0,
     }
 }
@@ -333,10 +327,8 @@ mod tests {
         let configured =
             unsafe { swr_v1_core_proxy_configure(prepared.owner, texts.as_ptr(), 1080, false, 1) };
         assert_eq!(configured.status, 0);
-        let mut proxy = Socks5Proxy {
-            owner: prepared.owner,
-        };
-        let p = &raw mut proxy;
+        let proxy = Socks5Proxy::new(unsafe { &*prepared.owner });
+        let p = &proxy;
         let set_target_host = |host: &[u8]| unsafe {
             assert_eq!(
                 swr_v1_core_string_set(prepared.strings[3], host.as_ptr().cast(), host.len()),
@@ -348,7 +340,7 @@ mod tests {
         set_target_host(&target_host);
         unsafe { (*prepared.fields).target_port = 80 };
 
-        assert_eq!(unsafe { pack_connect_request(p) }, 262);
+        assert_eq!(pack_connect_request(p), 262);
         let buf = unsafe { std::slice::from_raw_parts(prepared.buffer, 512) };
         assert_eq!(buf[3], 0x03);
         assert_eq!(buf[4], u8::MAX);
@@ -357,7 +349,7 @@ mod tests {
         assert_eq!(u16::from_be_bytes([port[0], port[1]]), 80);
 
         set_target_host(&[b'a'; 256]);
-        assert_eq!(unsafe { pack_connect_request(p) }, -1);
+        assert_eq!(pack_connect_request(p), -1);
         assert_eq!(log::last_error(), HANDSHAKE_FAILED);
         unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(prepared.owner) };
     }
@@ -365,9 +357,7 @@ mod tests {
     #[test]
     fn handshake_steps_through_auth_and_connect() {
         let prepared = swr_v1_core_proxy_new(true);
-        let proxy = Socks5Proxy {
-            owner: prepared.owner,
-        };
+        let proxy = Socks5Proxy::new(unsafe { &*prepared.owner });
         let text = |s: &'static str| CoreStringView {
             data: s.as_ptr().cast(),
             length: s.len(),
@@ -378,9 +368,8 @@ mod tests {
         assert_eq!(configured.status, 0);
         assert_eq!(admit(4, 4), 2);
         assert_eq!(admit(251, 0), 0);
-        let p = &raw const proxy;
-        let p = p.cast_mut();
-        assert_eq!(unsafe { pack_negotiate_request(p) }, 3);
+        let p = &proxy;
+        assert_eq!(pack_negotiate_request(p), 3);
         assert_eq!(unsafe { (*prepared.fields).method }, 2);
         unsafe { (*prepared.fields).state = 1 };
         let buffer = |n: isize| unsafe {

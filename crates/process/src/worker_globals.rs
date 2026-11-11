@@ -202,7 +202,7 @@ mod tests {
         unsafe {
             Worker::new(&raw mut worker).set_id(11);
             Worker::new(&raw mut worker).set_pid(1234);
-            swr_v1_worker_init(&raw mut worker);
+            swr_v1_worker_init(Worker::new(&raw mut worker));
             assert_eq!(Worker::new(&raw const worker).status(), 2);
             assert_eq!(swr_v1_worker_global_get(3), 1);
             assert_eq!(swr_v1_worker_global_get(4), 0);
@@ -216,7 +216,7 @@ mod tests {
             assert_ne!(copy, &raw mut worker);
             assert_eq!(Worker::new(copy).id(), 11);
             assert_eq!(Worker::new(copy).pid(), 1234);
-            swr_v1_worker_shutdown(&raw mut worker);
+            swr_v1_worker_shutdown(Worker::new(&raw mut worker));
             assert_eq!(Worker::new(&raw const worker).status(), 3);
             assert_eq!(swr_v1_worker_global_get(4), 1);
             worker_global_stopped();

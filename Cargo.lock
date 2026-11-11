@@ -520,6 +520,7 @@ dependencies = [
  "swoole-rs-utilities",
  "swoole-rs-websocket",
  "swoole-rs-websocket-ffi",
+ "swoole-rs-zend",
 ]
 
 [[package]]
@@ -770,8 +771,8 @@ dependencies = [
 name = "swoole-rs-phpevents"
 version = "0.1.0"
 dependencies = [
- "libc",
  "swoole-rs-corebase",
+ "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
  "swoole-rs-phpprocess",
@@ -780,7 +781,6 @@ dependencies = [
  "swoole-rs-phptimer",
  "swoole-rs-process",
  "swoole-rs-reactor",
- "swoole-rs-server",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]

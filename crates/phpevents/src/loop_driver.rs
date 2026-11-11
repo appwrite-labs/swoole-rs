@@ -27,9 +27,9 @@ pub(super) fn init() -> Result<i32, Bailout> {
     Ok(0)
 }
 
-pub(super) fn check() -> Result<(), Bailout> {
+pub(super) fn check(php: swoole_rs_zend::Php<'_>) -> Result<(), Bailout> {
     ensure()?;
-    native::install_handlers();
+    super::install_handlers(php);
     Ok(())
 }
 
@@ -44,29 +44,28 @@ pub(super) fn ensure() -> Result<i32, Bailout> {
 }
 
 pub(super) fn wait() -> Result<(), Bailout> {
-    if native::fatal_error() || !has_reactor() {
+    if swoole_rs_zend::last_fatal_error() || !has_reactor() {
         return Ok(());
     }
-    if native::in_coroutine() {
+    if swoole_rs_phpcoroutines::in_coroutine() {
         native::fatal(E_ERROR, c"Unable to call Event::wait() in coroutine")?;
         return Ok(());
     }
     if !native::if_exit()? && !native::bailed() {
-        // SAFETY: this SDK-only leaf edits executor flags without running PHP.
-        let shutdown = unsafe { z::swr_zend_event_pause_shutdown() };
+        let shutdown = swoole_rs_zend::pause_shutdown();
         wait_once()?;
-        // SAFETY: restore the exact prior shutdown bit after a normally completed wait.
-        unsafe { z::swr_zend_event_restore_shutdown(shutdown) };
+        // The exact prior shutdown bit, after a normally completed wait.
+        swoole_rs_zend::restore_shutdown(shutdown);
     }
-    let released = super::release_cycle_tasks();
+    super::release_cycle_tasks();
     let freed = native::free();
-    released.and(freed)
+    freed.and(swoole_rs_zend::bailout::outcome(()))
 }
 
 pub(super) fn exit() -> Result<(), Bailout> {
     if has_reactor() {
         native::clear_timers()?;
-        native::set_running(false);
+        swoole_rs_reactor::event_api::swoole_event_set_running(false);
     }
     Ok(())
 }
@@ -75,15 +74,15 @@ pub(super) fn dispatch() -> Result<bool, Bailout> {
     if !has_reactor() {
         return Ok(false);
     }
-    native::set_once(true);
+    swoole_rs_reactor::event_api::swoole_event_set_once(true);
     wait_once()?;
-    native::set_once(false);
+    swoole_rs_reactor::event_api::swoole_event_set_once(false);
     Ok(true)
 }
 
 pub(super) fn shutdown() -> Result<(), Bailout> {
     // Do not enter the loop after a fatal error.
-    if !native::fatal_error() && has_reactor() {
+    if !swoole_rs_zend::last_fatal_error() && has_reactor() {
         if !native::bailed() {
             native::fatal(
                 z::E_DEPRECATED.cast_signed(),

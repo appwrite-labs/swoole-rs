@@ -79,6 +79,12 @@ impl Call {
         Self { frame, value }
     }
 
+    /// This thread runs PHP for as long as the call lasts.
+    #[must_use]
+    pub fn php(&self) -> crate::local::Php<'_> {
+        crate::local::Php(std::marker::PhantomData)
+    }
+
     /// `ZEND_NUM_ARGS()`.
     #[must_use]
     #[inline]

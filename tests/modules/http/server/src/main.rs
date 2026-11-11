@@ -517,12 +517,12 @@ fn upgrade(cli: &mut TcpStream, port: c_int) -> bool {
 /// cpp-httplib's `Client::Push`: a text frame's header from `encode`, then the
 /// payload, masked with the header's key when `mask`.
 fn push(cli: &mut TcpStream, data: &[u8], mask: bool) -> bool {
-    let mut buf = [0 as c_char; 32];
+    let mut buf = [0u8; 32];
     let mut buffer = CppString {
         length: 0,
         size: buf.len(),
         offset: 0,
-        str: buf.as_mut_ptr(),
+        str: buf.as_mut_ptr().cast(),
         allocator: std::ptr::null(),
     };
     let mut flags = FLAG_FIN | FLAG_ENCODE_HEADER_ONLY;
@@ -539,8 +539,8 @@ fn push(cli: &mut TcpStream, data: &[u8], mask: bool) -> bool {
             flags,
         )
     };
-    let header: Vec<u8> = buf[..buffer.length].iter().map(|&b| b as u8).collect();
-    if cli.write_all(&header).is_err() {
+    let header = &buf[..buffer.length];
+    if cli.write_all(header).is_err() {
         return false;
     }
     if mask {

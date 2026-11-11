@@ -108,19 +108,15 @@ pub struct ProxyCopyResult {
 /// destination is exclusive and source stable; both owners have the same kind.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_proxy_assign(
-    destination: *mut ProxyState,
-    source: *const ProxyState,
+    destination: &ProxyState,
+    source: &ProxyState,
 ) -> ProxyCopyResult {
-    if ptr::eq(destination.cast_const(), source) {
+    if ptr::eq(destination, source) {
         return ProxyCopyResult {
             status: 0,
             index: 0,
         };
     }
-    // SAFETY: both owners are live for this operation.
-    let destination = unsafe { &*destination };
-    // SAFETY: the source is unchanged during value assignment.
-    let source = unsafe { &*source };
     // SAFETY: a leaf scalar snapshot before the string assignments.
     let fields = unsafe { *source.fields.get() };
     // SAFETY: private packet presence identifies the two proxy value layouts.
@@ -258,7 +254,7 @@ mod tests {
                     std::ptr::write_bytes(source.buffer, 0x5a, 512);
                 }
                 assert_eq!(
-                    swr_v1_core_proxy_assign(destination.owner, source.owner).status,
+                    swr_v1_core_proxy_assign(&*destination.owner, &*source.owner).status,
                     0
                 );
                 assert_eq!((*destination.fields).port, 1234);

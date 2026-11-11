@@ -1,16 +1,14 @@
 //! File response range validation.
 /// Preserve all defined signed native range comparisons. Rejected subtraction
 /// overflow has no defined native reference result; never perform it in Rust.
-/// # Safety
-/// `resolved` is initialized writable caller storage for this call only.
-pub unsafe fn swr_v1_httpbindings_file_range(
+#[must_use]
+pub fn swr_v1_httpbindings_file_range(
     size: i64,
     offset: i64,
     length: i64,
-    resolved: *mut i64,
+    resolved: Option<&mut i64>,
 ) -> i32 {
-    // SAFETY: `resolved` is null or aligned, writable and exclusively lent for this call.
-    let Some(resolved) = (unsafe { resolved.as_mut() }) else {
+    let Some(resolved) = resolved else {
         return -1;
     };
     if size < offset {
@@ -33,13 +31,10 @@ mod tests {
     fn invalid_ranges_and_cursors_do_not_publish_a_result() {
         let mut value = 91;
         assert_eq!(
-            unsafe { swr_v1_httpbindings_file_range(i64::MAX, i64::MIN, 0, &raw mut value) },
+            swr_v1_httpbindings_file_range(i64::MAX, i64::MIN, 0, Some(&mut value)),
             3
         );
         assert_eq!(value, 91);
-        assert_eq!(
-            unsafe { swr_v1_httpbindings_file_range(0, 0, 0, std::ptr::null_mut()) },
-            -1
-        );
+        assert_eq!(swr_v1_httpbindings_file_range(0, 0, 0, None), -1);
     }
 }

@@ -33,13 +33,37 @@ for kind, error in [('flaky', 'HTTP 502: Bad Gateway'), ('limited', 'API rate li
             save()
             sys.stderr.write(error + '\\n')
             sys.exit(1)
-deleted = [branch for branch in data.get('deleted', []) if call.startswith('api repos/{owner}/{repo}/commits/' + branch)]
-if deleted:
-    sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
-    sys.exit(1)
-elif args[:2] == ['api', '--paginate']:
-    for issue in data.get('open_pulls' if '/pulls?' in args[2] else 'issues', []):
-        print(json.dumps(issue))
+rev = next((arg[4:] for arg in args if arg.startswith('rev=')), None)
+query = args[-1]
+if args[:3] == ['api', '-i', 'graphql'] and 'object(expression' in query:
+    # A commit by name; a branch auto-merge deleted is no object.
+    found = None
+    if rev not in data.get('deleted', []) and 'checkSuites' not in query:
+        found = {'oid': 'c' * 40}
+    elif 'checkSuites' in query:
+        # Its runs: the next of data['runs'][rev] (id 7), and main's completed runs (history) on it,
+        # each under both workflows, with data['jobs'][run id] and their data['annotations'].
+        queue = data['runs'].get(rev, [])
+        conclusion = queue.pop(0) if len(queue) > 1 else (queue[0] if queue else None)
+        save()
+        runs = ([(7, conclusion, 'u')] if conclusion is not None else []) + [
+            (row['databaseId'], row['conclusion'], row['url']) for row in data.get('history', [])
+            if row.get('headSha', 'h' * 40) == rev and 'databaseId' in row]
+        def job(index, name, conclusion):
+            return {'name': name, 'databaseId': index + 100, 'status': 'COMPLETED' if conclusion else 'IN_PROGRESS',
+                    'conclusion': conclusion.upper() or None, 'startedAt': '2026-10-25T21:00:00Z',
+                    'completedAt': '2026-10-25T21:00:31Z' if conclusion else None,
+                    'annotations': {'nodes': data.get('annotations', {}).get(str(index + 100), [])}}
+        found = {'checkSuites': {'nodes': [
+            {'status': 'IN_PROGRESS' if conclusion == 'running' else 'COMPLETED',
+             'conclusion': None if conclusion == 'running' else conclusion.upper(),
+             'workflowRun': {'databaseId': run, 'url': url, 'workflow': {'resourcePath': '/o/r/actions/workflows/' + workflow}},
+             'checkRuns': {'nodes': [job(index, *row) for index, row in
+                                     enumerate(data.get('jobs', {}).get(str(run), [['rust', 'success']]))]}}
+            for run, conclusion, url in runs for workflow in ('merge.yml', 'pr.yml')]}}
+    print('HTTP/2.0 200 OK')
+    print()
+    print(json.dumps({'data': {'repository': {'object': found}}}))
 elif args[0] == 'api' and args[1].endswith('/pulls'):
     print(json.dumps(data.get('commit_pulls', [])))
 elif args[0] == 'api' and '/pulls?' in args[1]:
@@ -57,19 +81,15 @@ elif args[0] == 'api' and args[1].startswith('search/issues?q='):
     print(json.dumps(data['search'].get(term, [])))
 elif args[0] == 'api' and '/annotations' in args[1]:
     print(json.dumps(data.get('annotations', {}).get(args[1].split('/')[-2], [])))
-elif args[0] == 'api' and '/check-runs' in args[1]:
-    for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
-        print(json.dumps(check))
-elif args[:2] == ['api', 'graphql']:
-    print(json.dumps(data.get('queue', [])))
-elif args[0] == 'api' and '-X' in args:
-    pass
-elif args[:3] == ['api', '-i', 'user']:
+elif args[:3] == ['api', '-i', 'graphql']:
     print('HTTP/2.0 200 OK')
     if 'scopes' in data:
         print('X-Oauth-Scopes: ' + data['scopes'])
     print()
-    print('{}')
+    kind, key = ('issues', 'issues') if 'issues(' in args[-1] else ('pullRequests', 'queue')
+    print(json.dumps({'data': {'repository': {kind: {'nodes': data.get(key, [])}}}}))
+elif args[0] == 'api' and '-X' in args:
+    pass
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
 elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
@@ -78,7 +98,7 @@ elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
 elif args[0] == 'api':
     print('c' * 40)
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
-    print(json.dumps(data.get('history', [])))
+    print(json.dumps([{'headSha': 'h' * 40, **row} for row in data.get('history', [])]))
 elif args[:2] == ['run', 'download'] and '-n' in args:
     report = Path(args[args.index('-D') + 1]) / data['report']
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +152,7 @@ class Ci(unittest.TestCase):
     def test_wait_defaults_to_the_merge_tier_on_main(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['running', 'success']})
         self.assertEqual((code, result['workflow'], result['state']), (0, 'merge.yml', 'passed'))
-        self.assertIn('api repos/{owner}/{repo}/commits/main -q .sha', self.gh_calls)
+        self.assertTrue(any(' -f rev=main ' in call for call in self.gh_calls))
         self.assertIn('rust: success in 31s', stderr)
 
     def test_wait_follows_the_run_that_replaced_its_commit(self):
@@ -227,19 +247,17 @@ class Ci(unittest.TestCase):
 
     def test_next_orders_claimable_issues_by_priority_then_age(self):
         def issue(number, created, *labels, blocked_by=0, **extra):
-            return {'number': number, 'title': extra.pop('title', f't{number}'), 'created_at': created,
-                    'labels': [{'name': name} for name in ('status:ready', *labels)],
-                    'issue_dependencies_summary': {'blocked_by': blocked_by}, **extra}
+            return {'number': number, 'title': extra.pop('title', f't{number}'), 'createdAt': created,
+                    'labels': {'nodes': [{'name': name} for name in ('status:ready', *labels)]},
+                    'issueDependenciesSummary': {'blockedBy': blocked_by}, **extra}
         issues = [issue(1, '2026-10-01T00:00:00Z', 'p2'), issue(2, '2026-10-05T00:00:00Z', 'p1'),
                   issue(3, '2026-10-02T00:00:00Z', 'p1'), issue(4, '2026-10-09T00:00:00Z', 'p0'),
                   issue(5, '2026-09-01T00:00:00Z'), issue(6, '2026-09-01T00:00:00Z', 'p0', blocked_by=1),
-                  issue(7, '2026-09-01T00:00:00Z', 'p0', 'needs:decision'),
-                  issue(8, '2026-09-01T00:00:00Z', 'p0', pull_request={})]
+                  issue(7, '2026-09-01T00:00:00Z', 'p0', 'needs:decision')]
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=issues)
         self.assertEqual((code, [row['number'] for row in result]), (0, [4, 3, 2, 1, 5]))
-        # REST, not `gh issue list`: GraphQL is unavailable in some agent sessions.
-        self.assertIn('api --paginate repos/{owner}/{repo}/issues?state=open&labels=status:ready&per_page=100 '
-                      '--jq .[]', self.gh_calls)
+        # One GraphQL query, which also carries the token's scopes: no REST call (#2508).
+        self.assertEqual([call.split(' -F')[0] for call in self.gh_calls if call.startswith(('api', 'run'))], ['api -i graphql'])
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=[])
         self.assertEqual((code, result), (2, []))
         # A classic token without workflow scope can't do the issues whose title says they need it.
@@ -253,36 +271,41 @@ class Ci(unittest.TestCase):
             self.assertEqual('hiding 2 issues that need a workflow-scoped token: #1, #2' in err, expected == [3])
 
     def test_stuck_lists_auto_merge_prs_that_conflict_or_failed_a_required_check(self):
-        def pull(number, created, auto=True):
-            return {'number': number, 'title': f't{number}', 'created_at': created,
-                    'auto_merge': {'merge_method': 'squash'} if auto else None, 'head': {'sha': f'sha{number}'}}
-        open_pulls = [pull(1, '2026-11-03T00:00:00Z'), pull(2, '2026-11-01T00:00:00Z'), pull(3, '2026-11-02T00:00:00Z'),
-                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z'),
-                      pull(6, '2026-11-04T00:00:00Z'), pull(7, '2026-11-05T00:00:00Z')]
-        pulls = {str(n): [{'mergeable_state': state}] for n, state in
-                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked'), (6, 'blocked'), (7, 'blocked')]}
-        checks = {'sha1': [], 'sha2': [{'name': 'required', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'failure'}],
-                  'sha3': [{'name': 'required', 'conclusion': 'success'}, {'name': 'asan / asan', 'conclusion': 'failure'}],
-                  'sha5': [{'name': 'required', 'conclusion': None}], 'sha6': [{'name': 'gates', 'conclusion': 'success'}]}
-        # 6's PR-tier run finished without creating `required` (GitHub abandoned its jobs); 7's is still starting.
-        runs = {'sha6': ['failure'], 'sha7': ['running']}
-        code, result, _ = self.ci('stuck', runs=runs, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
-        # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
+        def suite(status, workflow='PR', required=()):
+            return {'status': status, 'workflowRun': {'workflow': {'name': workflow}} if workflow else None,
+                    'checkRuns': {'nodes': [{'conclusion': conclusion} for conclusion in required]}}
+        def pull(number, created, mergeable, suites, auto=True):
+            return {'number': number, 'title': f't{number}', 'createdAt': created, 'isDraft': False,
+                    'isInMergeQueue': False, 'mergeable': mergeable, 'autoMergeRequest': {'enabledAt': 'x'} if auto else None,
+                    'timelineItems': {'nodes': []}, 'commits': {'nodes': [{'commit': {'checkSuites': {'nodes': suites}}}]}}
+        queue = [pull(1, '2026-11-03T00:00:00Z', 'CONFLICTING', []),
+                 pull(2, '2026-11-01T00:00:00Z', 'MERGEABLE', [suite('COMPLETED', required=['FAILURE'])]),
+                 # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
+                 pull(3, '2026-11-02T00:00:00Z', 'MERGEABLE', [suite('COMPLETED', required=['SUCCESS']),
+                                                               suite('COMPLETED', 'Sanitizers')]),
+                 pull(4, '2026-10-01T00:00:00Z', 'CONFLICTING', [], auto=False),
+                 pull(5, '2026-10-02T00:00:00Z', 'MERGEABLE', [suite('IN_PROGRESS', required=[None])]),
+                 # 6's PR-tier run finished without creating `required` (GitHub abandoned its jobs); 7's is still starting.
+                 pull(6, '2026-11-04T00:00:00Z', 'MERGEABLE', [suite('COMPLETED'), suite('QUEUED', None)]),
+                 pull(7, '2026-11-05T00:00:00Z', 'UNKNOWN', [suite('QUEUED')])]
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue)
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
-        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
+        self.assertEqual([call.split(' -F')[0] for call in self.gh_calls if call.startswith(('api', 'run'))], ['api -i graphql'])
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[])
         self.assertEqual((code, result), (2, []))
 
     def test_stuck_lists_prs_the_merge_queue_dropped_with_their_group_run(self):
         def pull(number, created, events, queued=False, auto=None):
             return {'number': number, 'title': f't{number}', 'createdAt': created, 'isDraft': False, 'isInMergeQueue': queued,
-                    'autoMergeRequest': auto, 'timelineItems': {'nodes': events}}
+                    'mergeable': 'MERGEABLE', 'autoMergeRequest': auto, 'timelineItems': {'nodes': events},
+                    'commits': {'nodes': []}}
         removed = [{'__typename': 'RemovedFromMergeQueueEvent', 'reason': 'failed status checks'}]
         queue = [pull(8, '2026-10-15T00:00:00Z', removed), pull(9, '2026-10-16T00:00:00Z', [{'__typename': 'AddedToMergeQueueEvent'}], queued=True),
                  pull(10, '2026-10-17T00:00:00Z', []), pull(11, '2026-10-18T00:00:00Z', removed, auto={'enabledAt': 'x'}),
                  pull(12, '2026-10-19T00:00:00Z', [{'__typename': 'RemovedFromMergeQueueEvent', 'reason': None}])]
         history = [{'headBranch': 'gh-readonly-queue/main/pr-8-abc', 'url': 'u8'}, {'headBranch': 'main', 'url': 'm'}]
-        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[], queue=queue, history=history)
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue, history=history)
         # 9 is queued, 10 never was, and 11 was queued again: its auto-merge waits on a new PR-tier run.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(8, ['left the merge queue: failed status checks', 'u8']),
@@ -374,19 +397,19 @@ class Ci(unittest.TestCase):
             self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
-        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
+        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'api -i graphql': 3})
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertEqual(stderr.count('HTTP 502: Bad Gateway; retrying'), 3)
 
     def test_an_exhausted_rate_limit_is_waited_out_within_the_deadline_and_named_beyond_it(self):
-        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, limited={'run list': 1}, reset_in=0)
+        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, limited={'api -i graphql': 1}, reset_in=0)
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertIn('API rate limit exceeded; waiting until', stderr)
         # `next` has no deadline: it stops at once and says when the limit resets.
         code, _, stderr = self.ci('next', runs={}, flags=(), limited={'api': 1})
         self.assertEqual(code, 1)
         self.assertRegex(stderr, r'API rate limit exceeded .*; it resets at \d\d:\d\d:\d\d')
-        self.assertIn('api rate_limit --jq .resources.core.reset', self.gh_calls)
+        self.assertIn('api rate_limit --jq .resources.graphql.reset', self.gh_calls)
 
     def test_a_search_call_waits_on_the_search_limit(self):
         sys.path.insert(0, str(ROOT))
@@ -453,8 +476,9 @@ class Ci(unittest.TestCase):
                                   jobs={'7': [['hybrid', 'failure'], ['cares', '']]}, annotations=annotations)
         self.assertEqual((code, result['state']), (2, 'running'))
         self.assertEqual(result['annotations'], {'hybrid': ['PHPT regression: tests/a.phpt (cargo: failed)']})
-        self.assertEqual([call for call in self.gh_calls if '/annotations' in call],
-                         ['api repos/{owner}/{repo}/check-runs/100/annotations?per_page=100'])
+        # They come with the run's jobs, in its one GraphQL query: no call per job.
+        self.assertEqual([call.split(' -F')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
+                         ['api -i graphql', 'api -i graphql'])
 
 
 if __name__ == '__main__':

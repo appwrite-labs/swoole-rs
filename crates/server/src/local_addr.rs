@@ -154,15 +154,14 @@ fn table(state: &ServerState) -> Option<&LocalAddrs> {
 /// The number of the local address `addr` (`in_addr`, or `in6_addr` when `v6`), 0 when unknown.
 ///
 /// # Safety
-/// `state` is null or a live `Server::state_`; `addr` points at an address of the family.
+/// `addr` points at an address of the family.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_local_addr_index(
-    state: *const ServerState,
+    state: Option<&ServerState>,
     v6: bool,
     addr: *const u8,
 ) -> u16 {
-    // SAFETY: per the caller.
-    let Some(addrs) = unsafe { state.as_ref() }.and_then(table) else {
+    let Some(addrs) = state.and_then(table) else {
         return 0;
     };
     // SAFETY: the caller passes an address of the family.
@@ -233,7 +232,7 @@ mod tests {
         let loopback = [127u8, 0, 0, 1];
         // SAFETY: live state and a 4-byte address.
         let index =
-            unsafe { swr_v1_server_local_addr_index(&raw const state, false, loopback.as_ptr()) };
+            unsafe { swr_v1_server_local_addr_index(Some(&state), false, loopback.as_ptr()) };
         assert_ne!(index, 0, "lo is up");
         // SAFETY: live state; the text lives with it.
         let found = unsafe { CStr::from_ptr(text(&state, false, index)) };
@@ -243,8 +242,7 @@ mod tests {
         assert_eq!(missing, c"::1", "unknown v6 index");
         assert!(init(&state), "a second read replaces the first");
         // SAFETY: a null state has no table.
-        let none =
-            unsafe { swr_v1_server_local_addr_index(core::ptr::null(), false, loopback.as_ptr()) };
+        let none = unsafe { swr_v1_server_local_addr_index(None, false, loopback.as_ptr()) };
         assert_eq!(none, 0, "no table");
     }
 }

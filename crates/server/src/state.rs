@@ -12,13 +12,13 @@ use crate::ops::{
     OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
     OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
 };
-use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
+use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::send::send_to_connection;
 use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::{c_char, c_int};
-use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::StringSlot;
@@ -63,6 +63,8 @@ pub struct ServerState {
         expect(dead_code, reason = "only the hybrid makes pipes")
     )]
     worker_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    /// A worker thread asked to shut down: the thread manager respawns no worker.
+    pub(crate) stopping: AtomicBool,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -105,6 +107,7 @@ impl ServerState {
             local_addrs: AtomicPtr::new(core::ptr::null_mut()),
             task_pipes: std::sync::Mutex::new(Vec::new()),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
+            stopping: AtomicBool::new(false),
         }
     }
 
@@ -115,17 +118,16 @@ impl ServerState {
         &self,
         worker: &mut swoole_rs_process::worker_record::WorkerRecord,
     ) -> bool {
-        let pipe = Box::into_raw(Box::new(core::mem::MaybeUninit::<SocketPair>::uninit())).cast();
-        // SAFETY: fresh storage for a pair.
-        unsafe { swoole_rs_tls::socket_pair::unix_socket_new(pipe, true, libc::SOCK_DGRAM) };
-        // SAFETY: the pair just built.
-        let pair = unsafe { &*pipe };
+        let mut storage = Box::new(core::mem::MaybeUninit::<SocketPair>::uninit());
+        swoole_rs_tls::socket_pair::unix_socket_new(&mut storage, true, libc::SOCK_DGRAM);
+        // SAFETY: the constructor initialised it.
+        let mut pair = unsafe { storage.assume_init() };
         let (master, end) = (pair.master_socket, pair.worker_socket);
         if master.is_null() || end.is_null() {
-            // SAFETY: the pair just built, which nothing else has seen.
-            unsafe { free_pipe(pipe) };
+            swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
         }
+        let pipe = Box::into_raw(pair);
         lock(&self.worker_pipes).push(AtomicPtr::new(pipe));
         worker.pipe_master = master.cast();
         worker.pipe_worker = end.cast();
@@ -137,17 +139,16 @@ impl ServerState {
     /// `task_notify_pipes.emplace_back(new Pipe(true))`: false, closing it, when
     /// the pipe isn't ready.
     pub(crate) fn push_task_pipe(&self) -> bool {
-        let pipe = Box::into_raw(Box::new(core::mem::MaybeUninit::<SocketPair>::uninit())).cast();
-        // SAFETY: fresh storage for a pair.
-        unsafe { swoole_rs_tls::socket_pair::pipe_new(pipe, true) };
-        // SAFETY: the pair just built.
-        let pair = unsafe { &*pipe };
+        let mut storage = Box::new(core::mem::MaybeUninit::<SocketPair>::uninit());
+        swoole_rs_tls::socket_pair::pipe_new(&mut storage, true);
+        // SAFETY: the constructor initialised it.
+        let mut pair = unsafe { storage.assume_init() };
         let ready = !pair.master_socket.is_null() && !pair.worker_socket.is_null();
         if !ready {
-            // SAFETY: the pair just built, which nothing else has seen.
-            unsafe { free_pipe(pipe) };
+            swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
         }
+        let pipe = Box::into_raw(pair);
         self.task_pipes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -346,22 +347,6 @@ impl ServerState {
     }
 }
 
-/// `upload_tmp_dir`'s bytes and their `length`, valid until `set()` replaces
-/// them.
-///
-/// # Safety
-/// `state` is live and `length` writable.
-pub unsafe fn swr_v1_server_upload_tmp_dir(
-    state: *const ServerState,
-    length: *mut usize,
-) -> *const u8 {
-    // SAFETY: per the caller.
-    let dir = unsafe { &*state }.upload_tmp_dir();
-    // SAFETY: per the caller.
-    unsafe { *length = dir.len() };
-    dir.as_ptr()
-}
-
 /// `Server`'s text member `index` (`SWR_SERVER_TEXT_*`), or null past the last;
 /// the slot lives as long as `state`.
 #[unsafe(no_mangle)]
@@ -385,6 +370,7 @@ fn c_path(text: &[u8]) -> CString {
 #[inline(always)]
 pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
     match op {
+        OP_SET_STOPPING => state.stopping.store(true, Ordering::Release),
         OP_LOCK => state.lock(),
         OP_UNLOCK => state.unlock(),
         OP_ST_SET_ROOT => {
@@ -459,10 +445,8 @@ fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// `pipe` is a pair `push_task_pipe` or `push_worker_pipe` boxed, not used again.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 unsafe fn free_pipe(pipe: *mut SocketPair) {
-    // SAFETY: as the caller promises.
-    unsafe { swoole_rs_tls::socket_pair::drop(pipe) };
     // SAFETY: as the caller promises; the box `push_task_pipe` made.
-    drop(unsafe { Box::from_raw(pipe) });
+    swoole_rs_tls::socket_pair::drop(&mut *unsafe { Box::from_raw(pipe) });
 }
 
 impl Drop for ServerState {

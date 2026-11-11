@@ -11,12 +11,12 @@ use crate::signal::SIGNALS;
 /// failed, for native to warn with `errno`.
 ///
 /// # Safety
-/// `kq` is the reactor's kqueue; `failed` is writable.
+/// `kq` is the reactor's kqueue.
 pub unsafe fn signal_kqueue_set(
     kq: c_int,
     signo: c_int,
     handler: usize,
-    failed: *mut bool,
+    failed: &mut bool,
 ) -> usize {
     let Some(slot) = usize::try_from(signo)
         .ok()
@@ -64,8 +64,7 @@ pub unsafe fn signal_kqueue_set(
             std::ptr::null(),
         )
     };
-    // SAFETY: the caller's flag.
-    unsafe { *failed = n < 0 && handler != 0 };
+    *failed = n < 0 && handler != 0;
     origin
 }
 
@@ -81,14 +80,7 @@ pub unsafe fn signal_kqueue_clear(kq: c_int, available: bool) {
             slot.handler.store(0, Relaxed);
             let mut failed = false;
             // SAFETY: as the caller guarantees.
-            unsafe {
-                signal_kqueue_set(
-                    kq,
-                    c_int::from(slot.signo.load(Relaxed)),
-                    0,
-                    &raw mut failed,
-                )
-            };
+            unsafe { signal_kqueue_set(kq, c_int::from(slot.signo.load(Relaxed)), 0, &mut failed) };
         }
     }
     crate::signal::signal_reset();
@@ -106,7 +98,7 @@ mod tests {
         assert!(kq >= 0);
         let mut failed = true;
         // SAFETY: a live kqueue and a local flag.
-        let origin = unsafe { signal_kqueue_set(kq, libc::SIGUSR2, 0x1234, &raw mut failed) };
+        let origin = unsafe { signal_kqueue_set(kq, libc::SIGUSR2, 0x1234, &mut failed) };
         assert_eq!((origin, failed), (0, false));
         let slot = &SIGNALS[libc::SIGUSR2 as usize];
         assert_eq!(slot.handler.load(Relaxed), 0x1234);

@@ -36,7 +36,7 @@ pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
 /// `ctx.serv` is a live `Server` and the context's other objects are what `op` reads.
 pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     // SAFETY: per the caller.
-    let state = unsafe { view::Server::from_raw(ctx.serv) }.state_ptr();
+    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
     let context = ptr::from_mut(ctx).cast();
     // SAFETY: per the caller.
     unsafe { crate::run_reactor(op, arg, context, unanswered, state) }
@@ -46,10 +46,10 @@ pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
 ///
 /// # Safety
 /// As [`run`].
-unsafe fn run_with(
+unsafe fn run_with<'s>(
     which: Facts,
     ctx: &mut ReactorContext,
-    operation: impl FnOnce(&mut crate::Native<crate::ServerCall>, u64) -> crate::Effect<i64>,
+    operation: impl FnOnce(&mut crate::Native<'s, crate::ServerCall>, u64) -> crate::Effect<i64>,
 ) -> c_int {
     // SAFETY: per the caller.
     let state = unsafe { state(ctx.serv) };

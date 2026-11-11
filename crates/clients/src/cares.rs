@@ -160,7 +160,7 @@ unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
 fn install() {
     let read = EventType::SW_EVENT_READ as i32;
     let write = EventType::SW_EVENT_WRITE as i32;
-    // SAFETY: the thread's live reactor.
+    // SAFETY: the handlers need only the live event of a registered c-ares wrapper.
     unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
     // SAFETY: as above.
     unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
@@ -273,10 +273,14 @@ unsafe extern "C" fn host(
             if address.is_null() {
                 break;
             }
-            // SAFETY: the successful hostent supplies4 or16 initialized address bytes.
-            let text = unsafe {
-                swr_v1_clients_ip_text(if family == libc::AF_INET { 4 } else { 6 }, address.cast())
+            let (version, length) = if family == libc::AF_INET {
+                (4, 4)
+            } else {
+                (6, 16)
             };
+            // SAFETY: the successful hostent supplies 4 or 16 initialized address bytes.
+            let address = unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) };
+            let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
             // SAFETY: copy SDK data into the Rust owner before the callback returns.
@@ -330,8 +334,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     let (server, port) = crate::dns::server();
     let (server, port) = (server.as_ptr().cast::<c_char>(), port as u16);
     let domain = domain.as_ptr();
-    // SAFETY: the thread's live reactor; the probe invokes no user code.
-    if !unsafe { event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) } {
+    if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
         install();

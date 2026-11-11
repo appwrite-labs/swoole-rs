@@ -19,10 +19,12 @@ pub mod bailout;
 mod call;
 mod callable;
 mod class;
+mod descriptor;
 mod error;
 mod frame;
 mod function;
 mod helpers;
+pub mod local;
 mod minit;
 mod object;
 pub mod registration;
@@ -30,15 +32,17 @@ pub mod string;
 pub mod value;
 mod zval;
 
-pub use access::{key_ptr, set_key, string_of, value_of};
+pub use access::{key_ptr, set_key, string_of};
 pub use call::{Call, Invalid, type_of};
 pub use callable::{Callable, Callback, Holder};
 pub use class::{Class, class_name, unset_property_deny};
+pub use descriptor::{contain, last_fatal_error, pause_shutdown, restore_shutdown};
 pub use error::{E_ERROR, E_WARNING, Message, report, throw_exception, zend_error};
 pub use function::create_object_deny;
 pub use helpers::{
-    EMPTY_FCC, EMPTY_FCI, each_value, long_zval, module_loaded, property, update_property,
+    EMPTY_FCC, EMPTY_FCI, each_value, long_zval, module_loaded, property, time, update_property,
 };
+pub use local::Php;
 pub use minit::{Minit, Parent};
 pub use object::{Custom, CustomClass, Object, Props, init_object, new_object, set_object};
 pub use swoole_rs_zend_sys as sys;
