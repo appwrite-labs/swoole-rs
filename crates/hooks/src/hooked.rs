@@ -51,22 +51,14 @@ fn hooked(fd: c_int) -> Option<(&'static Host, Co)> {
         set_errno(libc::EWOULDBLOCK);
         return None;
     };
-    mapped(fd).map(|socket| (host, socket))
-}
-
-/// `fd`'s socket in the map.
-fn mapped(fd: c_int) -> Option<Co> {
-    let socket = socket_map::get(fd);
-    // SAFETY: the map holds live native sockets.
-    (!socket.is_null()).then(|| unsafe { Co::of(socket) })
+    socket_map::get(fd).map(|socket| (host, socket))
 }
 
 /// Map `fd` to `socket`, deleting the socket the map lets go.
 fn keep(fd: c_int, socket: Co, replace: bool) {
-    let released = socket_map::insert(fd, socket.this(), replace);
-    if !released.is_null() {
+    if let Some(released) = socket_map::insert(fd, socket, replace) {
         // SAFETY: the map no longer holds it.
-        unsafe { (SOCKETS.free)(released) };
+        unsafe { (SOCKETS.free)(released.this()) };
     }
 }
 
@@ -319,17 +311,14 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return -1;
     }
-    let socket = socket_map::remove(fd);
-    if socket.is_null() {
+    let Some(unwrapped) = socket_map::remove(fd) else {
         return -1;
-    }
-    // SAFETY: the removed live socket.
-    let unwrapped = unsafe { Co::of(socket) };
+    };
     // `move_fd`, so its deletion leaves the fd open.
     unwrapped.set_sock_fd(-1);
     unwrapped.net(|record| record.fd = -1);
     // SAFETY: the map let go of it.
-    unsafe { (SOCKETS.free)(socket) };
+    unsafe { (SOCKETS.free)(unwrapped.this()) };
     0
 }
 
@@ -386,10 +375,9 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     }
     let result = socket_map::close(
         fd,
-        // SAFETY: the map's live socket.
-        |socket| unsafe { Co::of(socket) }.close(),
+        Co::close,
         // SAFETY: a socket removed from the map, which nothing uses any more.
-        |socket| unsafe { (SOCKETS.free)(socket) },
+        |socket| unsafe { (SOCKETS.free)(socket.this()) },
     );
     if result <= 0 {
         return result;
@@ -417,7 +405,7 @@ pub unsafe extern "C" fn swoole_coroutine_read(
         // SAFETY: as the caller promises.
         return unsafe { libc::read(fd, buf, count) };
     }
-    if let Some(socket) = mapped(fd) {
+    if let Some(socket) = socket_map::get(fd) {
         // SAFETY: the caller's buffer.
         return socket.read(unsafe { bytes_mut(buf, count) });
     }
@@ -449,7 +437,7 @@ pub unsafe extern "C" fn swoole_coroutine_write(
         // SAFETY: as the caller promises.
         return unsafe { libc::write(fd, buf, count) };
     }
-    if let Some(socket) = mapped(fd) {
+    if let Some(socket) = socket_map::get(fd) {
         // SAFETY: the caller's buffer.
         return socket.write(unsafe { bytes(buf, count) });
     }
@@ -507,7 +495,7 @@ fn blocking(fd: c_int, write: bool) -> SocketRecord {
 /// Upstream's `swoole_coroutine_get_socket_object`: `fd`'s socket, or null.
 #[must_use]
 pub fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut c_void {
-    socket_map::get(fd)
+    socket_map::get(fd).map_or(core::ptr::null_mut(), Co::this)
 }
 
 /// Upstream's `swoole_coroutine_get_socket_object_ex`: as
@@ -575,7 +563,7 @@ pub(crate) mod tests {
     pub(crate) const OPS: SocketOps = SocketOps { open, wrap, free };
 
     fn err_code(fd: c_int) -> c_int {
-        mapped(fd).unwrap().err_code()
+        socket_map::get(fd).unwrap().err_code()
     }
 
     /// Run `body` on a coroutine socket wrapping one end of a socketpair and the
@@ -663,7 +651,7 @@ pub(crate) mod tests {
             assert_eq!(err_code(fd), libc::EINVAL);
 
             // wait_event polls with the timeout in every direction, then restores it.
-            let socket = mapped(fd).unwrap().socket();
+            let socket = socket_map::get(fd).unwrap().socket();
             let read = (*socket).fields.timeouts.read;
             TIMER_OK.set(false);
             take();

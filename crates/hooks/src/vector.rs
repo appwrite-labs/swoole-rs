@@ -1,10 +1,81 @@
-//! `Socket::readv_all` and `Socket::writev_all` of the coroutine socket: transfer a
-//! whole `IOVector`, waiting for the socket while it would block. The members
-//! themselves are in `socket_members.rs`; they pass the `network::Socket` call and
-//! the vector's remaining count.
+//! The coroutine socket's `network::IOVector` ([`IoVector`]), and its
+//! `Socket::readv_all` and `Socket::writev_all`: transfer a whole vector, waiting
+//! for the socket while it would block. The member itself, [`Co::vector`], is in
+//! `socket_members.rs`; it passes the `network::Socket` call and the vector's
+//! remaining count.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
+use core::ffi::{c_int, c_void};
+use core::ptr::NonNull;
+use swoole_rs_reactor::{
+    ReactorIov, swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare, swr_v1_reactor_iov_view,
+};
+
+/// A `network::IOVector` over the caller's iovecs, destroyed on drop. Its owner is
+/// its only member, so a pointer to it is the `IOVector *` the `network::Socket`
+/// calls read (they read only the first member).
+#[repr(C)]
+pub struct IoVector(NonNull<ReactorIov>);
+
+impl IoVector {
+    /// A vector over a copy of the `count` iovecs at `vectors`; none when the copy
+    /// fails, where `IOVector`'s constructor throws.
+    ///
+    /// # Safety
+    /// `vectors` holds `count` iovecs, and their buffers stay valid while the
+    /// vector lives: readable for a write over it, writable for a read.
+    pub unsafe fn new(vectors: *const libc::iovec, count: c_int) -> Option<Self> {
+        // SAFETY: as the caller promises.
+        let prepared = unsafe { swr_v1_reactor_iov_prepare(vectors, count) };
+        NonNull::new(prepared.owner)
+            .filter(|_| prepared.status == 0)
+            .map(Self)
+    }
+
+    fn owner(&self) -> &ReactorIov {
+        // SAFETY: the owner `new` made, live until drop.
+        unsafe { self.0.as_ref() }
+    }
+
+    /// The iovec index and byte offset where the transfers stopped.
+    #[must_use]
+    pub fn stopped(&self) -> (c_int, usize) {
+        let state = swr_v1_reactor_iov_view(self.owner());
+        (state.index, state.offset_bytes)
+    }
+
+    /// The iovecs left to transfer.
+    pub(crate) fn remaining(&self) -> usize {
+        usize::try_from(swr_v1_reactor_iov_view(self.owner()).remain_count).unwrap_or(0)
+    }
+
+    /// The current iovec and how many remain.
+    #[cfg(feature = "iouring")]
+    pub(crate) fn current(&self) -> (*const libc::iovec, c_int) {
+        let view = swr_v1_reactor_iov_view(self.owner());
+        (view.iterator, view.remain_count)
+    }
+
+    /// Advance past a transfer's `result`.
+    #[cfg(feature = "iouring")]
+    pub(crate) fn update(&self, result: isize) {
+        // SAFETY: the live owner; no reference to it is held across the call.
+        unsafe { swoole_rs_reactor::swr_v1_reactor_iov_advance(self.0.as_ptr(), result) };
+    }
+
+    /// The `IOVector *` the `network::Socket` calls take.
+    pub(crate) fn as_ptr(&self) -> *const c_void {
+        core::ptr::from_ref(self).cast()
+    }
+}
+
+impl Drop for IoVector {
+    fn drop(&mut self) {
+        // SAFETY: the owner `new` made, released once.
+        unsafe { swr_v1_reactor_iov_destroy(self.0.as_ptr()) };
+    }
+}
 
 /// Retries the transfer once the socket is ready; true to keep waiting. Installed
 /// only for the wait that lends it ([`wait_barrier`]), which erases its lifetime.

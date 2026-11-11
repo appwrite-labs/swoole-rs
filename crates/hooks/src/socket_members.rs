@@ -18,14 +18,13 @@ use crate::socket_wait::{error_event, ready, wait_for};
 use crate::transfer::{ALL, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
-use crate::vector::vector_all;
+use crate::vector::{IoVector, vector_all};
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketFields, SocketRecord,
-    swr_v1_reactor_iov_view, type_is,
+    CLASS_DGRAM, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord, type_is,
 };
 use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
@@ -49,16 +48,6 @@ macro_rules! uring {
             return unsafe { $body };
         }
     };
-}
-
-/// The owner of the live `network::IOVector` at `vector`.
-///
-/// # Safety
-/// `vector` is a live `IOVector`, whose first member is its owner.
-#[cfg(feature = "iouring")]
-unsafe fn iov_owner(vector: *mut c_void) -> crate::uring_socket::IoVector {
-    // SAFETY: as the caller promises.
-    crate::uring_socket::IoVector(unsafe { *vector.cast::<*mut ReactorIov>() })
 }
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
@@ -187,18 +176,6 @@ pub(crate) unsafe extern "C" fn put_host(out: *mut c_void, data: *const c_char, 
     let data = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), length) };
     // SAFETY: `out` is the caller's Vec, live for the call.
     unsafe { &mut *out.cast::<Vec<u8>>() }.extend_from_slice(data);
-}
-
-/// The remaining count of the live `IOVector` at `vector`.
-///
-/// # Safety
-/// `vector` is a live `IOVector`, whose first member is its owner.
-unsafe fn remaining(vector: *const c_void) -> usize {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { *vector.cast::<*const ReactorIov>() };
-    // SAFETY: the vector's live owner.
-    let count = swr_v1_reactor_iov_view(unsafe { &*owner }).remain_count;
-    usize::try_from(count).unwrap_or(0)
 }
 
 use swoole_rs_corebase::sys::strerror;
@@ -624,72 +601,26 @@ impl Co {
         self.transfer_out(0, buf, call)
     }
 
-    /// `Socket::readv(io_vector)`.
-    ///
-    /// # Safety
-    /// `vector` is a live `IOVector`.
-    pub unsafe fn readv(self, vector: *mut c_void) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_vector(
-            ops,
-            &iov_owner(vector),
-            false,
-            false
-        ));
-        let call = call!(|s, _, _| socket_readv(s, vector));
-        // SAFETY: as the caller promises.
-        unsafe { self.transfer(READ, 0, null_mut(), 0, call) }
-    }
-
-    /// `Socket::writev(io_vector)`.
-    ///
-    /// # Safety
-    /// As [`Co::readv`].
-    pub unsafe fn writev(self, vector: *mut c_void) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_vector(
-            ops,
-            &iov_owner(vector),
-            true,
-            false
-        ));
-        let call = call!(|s, _, _| socket_writev(s, vector));
-        // SAFETY: as the caller promises.
-        unsafe { self.transfer(WRITE, 0, null_mut(), 0, call) }
-    }
-
-    /// `Socket::readv_all(io_vector)`.
-    ///
-    /// # Safety
-    /// As [`Co::readv`].
-    pub unsafe fn readv_all(self, vector: *mut c_void) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_vector(
-            ops,
-            &iov_owner(vector),
-            false,
-            true
-        ));
-        // SAFETY: the socket's current network::Socket, over the live vector.
-        let call = || unsafe { socket_readv(self.socket(), vector) };
-        // SAFETY: as the caller promises.
-        let left = || unsafe { remaining(vector) };
-        vector_all(self, READ, call, left)
-    }
-
-    /// `Socket::writev_all(io_vector)`.
-    ///
-    /// # Safety
-    /// As [`Co::readv`].
-    pub unsafe fn writev_all(self, vector: *mut c_void) -> isize {
-        uring!(self, |ops| ring::swr_v1_hook_uring_vector(
-            ops,
-            &iov_owner(vector),
-            true,
-            true
-        ));
-        // SAFETY: the socket's current network::Socket, over the live vector.
-        let call = || unsafe { socket_writev(self.socket(), vector) };
-        // SAFETY: as the caller promises.
-        let left = || unsafe { remaining(vector) };
-        vector_all(self, WRITE, call, left)
+    /// `Socket::readv(io_vector)` or `writev`, or with `all` `readv_all` or
+    /// `writev_all`.
+    #[must_use]
+    pub fn vector(self, vector: &IoVector, write: bool, all: bool) -> isize {
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::swr_v1_hook_uring_vector(&ops, vector, write, all);
+        }
+        let event = if write { WRITE } else { READ };
+        let io: unsafe extern "C" fn(*mut SocketRecord, *const c_void) -> isize =
+            if write { socket_writev } else { socket_readv };
+        let at = vector.as_ptr();
+        if all {
+            // SAFETY: the socket's current network::Socket, over the live vector.
+            let call = || unsafe { io(self.socket(), at) };
+            return vector_all(self, event, call, || vector.remaining());
+        }
+        let call = call!(|s, _, _| io(s, at));
+        // SAFETY: no buffer; `call` transfers over the live vector.
+        unsafe { self.transfer(event, 0, null_mut(), 0, call) }
     }
 
     /// `set_err(error, message)` with owned text. A failed copy (allocation) leaves
