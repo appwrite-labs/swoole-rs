@@ -8,7 +8,7 @@ use std::{
     borrow::Cow,
     collections::HashSet,
     ffi::{CStr, CString, c_int},
-    ptr::NonNull,
+    ptr::{self, NonNull},
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
@@ -18,9 +18,10 @@ use swoole_rs_zend::string;
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
+    host::Then,
     sys::{
-        swr_zend_efree, swr_zend_http_property_offset, swr_zend_zval_release, zend_class_entry,
-        zend_object, zend_string, zval,
+        swr_zend_efree, swr_zend_http_property_offset, swr_zend_http_release_objects,
+        zend_class_entry, zend_object, zend_string, zval,
     },
     value::set_long,
 };
@@ -362,21 +363,72 @@ pub(crate) fn available(mut ctx: Ctx) -> bool {
 }
 
 /// The context's own references to its request and response objects,
-/// released once it is handled. Their free handlers clear the slots, and the
-/// second frees the context, so each pointer is read before its release.
-/// A property's `__destruct` can run PHP code, so each is released inside
-/// `zend_try`; both are, so the context is freed, and a bailout is deferred.
+/// released once it is handled (`swr_zend_http_release`, which the C body
+/// `swr_zend_http_release_objects` releases). A property's `__destruct` can
+/// run PHP code, so both are released inside one `zend_try`: the handler's,
+/// when its coroutine call lends it ([`Release::then`]), or
+/// [`Release::finish`]'s. The response is released even after the request's
+/// bailout, so the context is freed, and the bailout is deferred first, so the
+/// response's free hooks call no PHP code.
+#[repr(C)]
+pub(crate) struct Release {
+    request: *mut zval,
+    response: *mut zval,
+    /// How many of the two releases have begun.
+    begun: u8,
+}
+
+impl Release {
+    /// Both slots are read now: the request's free handler frees the context
+    /// only once the response's has cleared its slot.
+    pub(crate) fn new(mut ctx: Ctx) -> Self {
+        let state = ctx.state();
+        Self {
+            request: state.request.zobject.ptr,
+            response: state.response.zobject.ptr,
+            begun: 0,
+        }
+    }
+
+    /// Whether a release has begun.
+    pub(crate) const fn begun(&self) -> bool {
+        self.begun != 0
+    }
+
+    /// The releases, as a coroutine call's [`Then`], for as long as `self`
+    /// is not moved.
+    pub(crate) fn then(&mut self) -> Then {
+        (
+            Some(swr_zend_http_release_objects),
+            ptr::from_mut(self).cast(),
+        )
+    }
+
+    /// What has not been released, inside `zend_try`, with a bailout of the
+    /// handler's trap already deferred.
+    /// # Errors
+    /// A destructor bailed out, or a bailout is pending.
+    pub(crate) fn finish(mut self) -> Result<(), Bailout> {
+        // Twice at most: a bailout in the request's release leaves the response's.
+        while self.begun < 2 {
+            // SAFETY: the C body over this record's live objects; the shim's
+            // setjmp sits between this frame and their destructors.
+            bailout::defer(unsafe {
+                bailout::trap(
+                    swr_zend_http_release_objects,
+                    ptr::from_mut(&mut self).cast(),
+                )
+            });
+        }
+        bailout::outcome(())
+    }
+}
+
+/// [`Release`] outside a handler call.
 /// # Errors
 /// A destructor bailed out, or a bailout is pending.
-pub(crate) fn release_objects(mut ctx: Ctx) -> Result<(), Bailout> {
-    let request = ctx.state().request.zobject.ptr;
-    // SAFETY: the context's live request object, released once; the shim's
-    // setjmp sits between this frame and its destructors.
-    bailout::defer(unsafe { bailout::trap(swr_zend_zval_release, request.cast()) });
-    let response = ctx.state().response.zobject.ptr;
-    // SAFETY: as above, for the response.
-    bailout::defer(unsafe { bailout::trap(swr_zend_zval_release, response.cast()) });
-    bailout::outcome(())
+pub(crate) fn release_objects(ctx: Ctx) -> Result<(), Bailout> {
+    Release::new(ctx).finish()
 }
 
 /// `Context::free`: release the context once neither object nor an HTTP/2
