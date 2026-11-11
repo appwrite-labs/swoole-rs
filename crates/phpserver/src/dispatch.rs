@@ -961,9 +961,11 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 }
 
 /// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
-/// the worker `addProcess` added.
-extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
-    let id = worker_id(worker);
+/// the worker `addProcess` added. The worker stays a raw pointer: starting the
+/// process writes its pid and pipe, so no reference to the record may live here.
+extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
+    // SAFETY: the event's live worker.
+    let id = i64::from(unsafe { Worker::new(worker).id() });
     let config = server.config();
     let server_object = crate::lifecycle::ServerObject::running();
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
@@ -988,7 +990,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: &Wo
     props.long(c"manager_pid", i64::from(gs.manager_pid));
     // SAFETY: the worker and its process object; this frame owns nothing that
     // needs a drop, as the process exits through a bailout.
-    unsafe { swr_v1_phpprocess_start(ptr::from_ref(worker).cast_mut().cast(), process) };
+    unsafe { swr_v1_phpprocess_start(worker.cast(), process) };
 }
 
 /// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
