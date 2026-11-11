@@ -146,7 +146,7 @@ since a test racy on both engines can fail three in a row on a busy runner (#281
 as flaky on upstream and doesn't fail the gate, provided cargo passes one of its
 re-runs or upstream then passes fewer than a third of 9 re-runs (a test both engines
 almost always fail, whose first upstream pass was the outlier). If upstream passes every re-run and cargo fails any, it is a regression; when
-cargo both passed and failed, upstream first gets up to 24 re-runs in all, and an upstream
+cargo both passed and failed, upstream first gets up to 48 re-runs in all, and an upstream
 failure among them makes the test flaky on both engines instead.
 If both pass every re-run, it is listed as passed on re-run and doesn't fail the gate.
 Cargo never gets retried to green: it must pass every re-run.
