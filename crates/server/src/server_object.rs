@@ -1,7 +1,7 @@
 //! The `Server` and `ListenPort` objects, which Rust allocates and frees and C++
 //! only views (`native/include/swoole_rs_server_view.h`, `native/include/swoole_rs_port_state.h`).
-//! A `Server *` is a [`ServerObject`]; a `ListenPort *` is a box of the pointer to
-//! the port's settings. The Rust ports of core-tests' server cases
+//! A `Server *` is a [`ServerObject`]; a `ListenPort *` is the box of the port's
+//! settings. The Rust ports of core-tests' server cases
 //! (tests/modules/http/server/src/http1.rs) make and delete theirs here too.
 use core::ffi::{c_int, c_void};
 use core::ptr;
@@ -119,7 +119,7 @@ pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
     let buffer_size = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.buffer_size };
     let mut config = PortConfig::boxed(c_int::try_from(buffer_size).unwrap_or(c_int::MAX));
     config.protocol.private_data_2 = serv;
-    Box::into_raw(Box::new(Box::into_raw(config))).cast()
+    Box::into_raw(config).cast()
 }
 
 /// `delete port`: its TLS state, its settings, and the record of a socket
@@ -128,10 +128,9 @@ pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
 /// # Safety
 /// `port` came from [`port_new`] and is not used again.
 pub(crate) unsafe fn port_delete(port: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    let config = *unsafe { Box::from_raw(port.cast::<*mut PortConfig>()) };
-    // SAFETY: the port's settings, `PortConfig::boxed`'s, which nothing else uses now.
-    let mut config = unsafe { Box::from_raw(config) };
+    // SAFETY: as the caller guarantees: the port is its settings' box, which nothing
+    // else uses now.
+    let mut config = unsafe { Box::from_raw(port.cast::<PortConfig>()) };
     (crate::port_config::methods().tls_free)(&mut config);
     // SAFETY: the record of a port `destroy` never closed (a server never started),
     // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
