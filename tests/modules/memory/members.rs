@@ -27,6 +27,21 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+fn a_freed_shm_field_is_null_and_freeing_it_again_unmaps_nothing() {
+    let mut field = Shm::calloc(2, 8);
+    assert!(!field.is_null());
+    field.free();
+    assert!(field.is_null());
+    // A second free, like a shutdown after a failed startup freed the field,
+    // reads no header from the unmapped payload.
+    field.free();
+    assert!(field.is_null());
+    assert!(Shm::NULL.is_null());
+    assert!(Shm::calloc(usize::MAX, 2).is_null());
+}
+
+#[test]
 fn a_fixed_pool_hands_out_each_slice_once() {
     assert_eq!(FixedPool::new(1, 16, false).err(), Some(INVALID));
     let mut pool = FixedPool::new(4, 16, false).unwrap();
