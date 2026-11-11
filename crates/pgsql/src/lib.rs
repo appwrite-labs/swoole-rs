@@ -197,8 +197,7 @@ fn socket_poll(conn: Conn, event: c_int) -> c_int {
             reason = "upstream's (int) of the milliseconds"
         )]
         let timeout = (POLL_TIMEOUT * 1000.0) as c_int;
-        // SAFETY: one live pollfd.
-        let result = unsafe { libc::poll(&raw mut poll, 1, timeout) };
+        let result = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut poll), timeout);
         let interrupted =
             result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
         return if interrupted { 0 } else { result };

@@ -61,8 +61,7 @@ fn set_flags(fd: c_int, get: c_int, set: c_int, flag: c_int, on: bool) -> io::Re
 
 /// A non-blocking connect; `EINPROGRESS` is success.
 fn connect<T>(family: c_int, address: &T) -> io::Result<OwnedFd> {
-    // SAFETY: plain socket(2).
-    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+    let fd = swoole_rs_corebase::sys::socket(family, libc::SOCK_STREAM, 0);
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }

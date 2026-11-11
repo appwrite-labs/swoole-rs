@@ -218,11 +218,8 @@ struct Client {
     hpack: RefCell<Option<(Decoder, Encoder)>>,
 }
 
-fn strerror<'a>(code: c_int) -> &'a CStr {
-    // SAFETY: a pure query; the text stays valid until the next call.
-    let text = unsafe { libc::strerror(code) };
-    // SAFETY: strerror returns a NUL-terminated string.
-    unsafe { CStr::from_ptr(text) }
+fn strerror(code: c_int) -> String {
+    swoole_rs_corebase::sys::strerror(code)
 }
 
 fn ce() -> *mut zend_class_entry {
@@ -399,7 +396,7 @@ impl Client {
     fn connect(&self) -> bool {
         self.reap();
         if self.socket().is_some() {
-            self.update_error(libc::EISCONN, strerror(libc::EISCONN).to_bytes());
+            self.update_error(libc::EISCONN, strerror(libc::EISCONN).as_bytes());
             return false;
         }
         // `php_swoole_create_socket(convert_to_type(host))`.
@@ -413,7 +410,7 @@ impl Client {
         if object.is_null() {
             if !swoole_rs_zend::bailout::pending() {
                 let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                self.update_error(error, strerror(error).to_bytes());
+                self.update_error(error, strerror(error).as_bytes());
             }
             return false;
         }
@@ -476,7 +473,7 @@ impl Client {
 
     fn close(&self) -> bool {
         let Some(socket) = self.socket() else {
-            self.update_error(libc::EBADF, strerror(libc::EBADF).to_bytes());
+            self.update_error(libc::EBADF, strerror(libc::EBADF).as_bytes());
             return false;
         };
         self.props().own().bool(c"connected", false);
