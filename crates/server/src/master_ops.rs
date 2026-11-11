@@ -208,11 +208,11 @@ impl Objects<'_> {
     }
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
-        unsafe { Socket::from_ptr(self.ctx.sock.cast()) }
+        unsafe { self.ctx.sockets.socket(self.ctx.sock.cast()) }
     }
     fn conn_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: a live connection's socket, which the ops reading it have.
-        unsafe { Socket::from_ptr(self.conn().socket.cast()) }
+        unsafe { self.ctx.sockets.socket(self.conn().socket.cast()) }
     }
     /// `edit` over the context's socket, or the default without one.
     fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketRecord) -> R) -> R {
@@ -237,7 +237,7 @@ impl Objects<'_> {
         // SAFETY: the accepting event.
         let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
         // SAFETY: its live listening socket.
-        let listener = unsafe { Socket::from_ptr(listener.cast()) };
+        let listener = unsafe { self.ctx.sockets.socket(listener.cast()) };
         let socket = listener.map_or(core::ptr::null_mut(), |l| l.edit(SocketRecord::accept));
         self.ctx.sock = socket.cast();
         !socket.is_null()
@@ -253,7 +253,7 @@ impl Objects<'_> {
     /// The context port's listening socket.
     fn port_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live port, which owns its socket.
-        unsafe { Socket::from_ptr(self.port().socket.cast()) }
+        unsafe { self.ctx.sockets.socket(self.port().socket.cast()) }
     }
     fn port(&self) -> &mut PortConfig {
         // SAFETY: the ops reading it run with a live port in the context.
@@ -479,12 +479,13 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let port = port as u16;
             conn.local_port = port;
             let v6 = sock.kind != SW_SOCK_TCP;
+            // The address field by offset: raw borrows of the union's fields are safe.
             let addr = if v6 {
-                // SAFETY: an inet6 address's field.
-                unsafe { (&raw const sock.addr.inet_v6.sin6_addr).cast::<u8>() }
+                let at = core::mem::offset_of!(libc::sockaddr_in6, sin6_addr);
+                (&raw const sock.addr.inet_v6).cast::<u8>().wrapping_add(at)
             } else {
-                // SAFETY: an inet4 address's field.
-                unsafe { (&raw const sock.addr.inet_v4.sin_addr).cast::<u8>() }
+                let at = core::mem::offset_of!(libc::sockaddr_in, sin_addr);
+                (&raw const sock.addr.inet_v4).cast::<u8>().wrapping_add(at)
             };
             // SAFETY: the live state and an address of the family.
             conn.local_addr_index = unsafe {
@@ -494,7 +495,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_OUT_EMPTY => {
             // SAFETY: native code passes a live socket.
-            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
+            let socket = unsafe { o.ctx.sockets.socket(arg as *mut SocketRecord) }?;
             let buffer = socket.read(|s| s.output.out_buffer);
             // SAFETY: null or the socket's live buffer (`Buffer::empty`).
             u64::from(buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast() }))
@@ -517,7 +518,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_QUEUE_CLOSE => {
             // SAFETY: a live session socket of this thread's reactor.
-            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
+            let socket = unsafe { o.ctx.sockets.socket(arg as *mut SocketRecord) }?;
             let out = socket.read(|s| s.output.out_buffer);
             // SAFETY: its live output buffer.
             swr_cpp_buffer_typed_close(unsafe { &*out.cast() });
@@ -1711,7 +1712,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 pair.worker_socket
             };
             // SAFETY: a ready pair's live end.
-            sign(unsafe { Socket::from_ptr(end) }?.fd())
+            sign(unsafe { o.ctx.sockets.socket(end) }?.fd())
         }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
@@ -2769,8 +2770,7 @@ mod tests {
     use super::*;
 
     fn context() -> NativeContext {
-        // SAFETY: every NativeContext field is a pointer or integer; zero is valid.
-        unsafe { core::mem::zeroed() }
+        NativeContext::new(core::ptr::null_mut())
     }
 
     #[test]

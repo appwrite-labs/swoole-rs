@@ -44,6 +44,8 @@ pub struct NativeContext {
     pub(crate) host: *const c_char,
     pub(crate) number: c_int,
     pub(crate) object: *mut c_void,
+    /// This thread's socket borrow guard, so the ops' handles share one lookup.
+    pub(crate) sockets: swoole_rs_reactor::SocketGuard,
 }
 
 impl NativeContext {
@@ -67,6 +69,7 @@ impl NativeContext {
             host: ptr::null(),
             number: 0,
             object: ptr::null_mut(),
+            sockets: swoole_rs_reactor::SocketGuard::current(),
         }
     }
 }
