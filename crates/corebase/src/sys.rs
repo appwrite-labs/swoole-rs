@@ -21,6 +21,93 @@ mod sealed {
     pub trait Sealed {}
     impl Sealed for u8 {}
     impl Sealed for std::mem::MaybeUninit<u8> {}
+
+    /// Only the types `Pod` documents.
+    pub trait Plain {}
+}
+
+/// C plain data: integers, byte arrays, raw pointers, and structs and unions of
+/// them. Any bytes are a value of one, all-zero included, so a caller may zero it
+/// or hand it to the kernel to fill. Sealed: only the types listed here.
+pub trait Pod: sealed::Plain + Copy {}
+impl<T: sealed::Plain + Copy> Pod for T {}
+
+macro_rules! plain {
+    ($($(#[$cfg:meta])? $type:ty),* $(,)?) => {
+        $($(#[$cfg])? impl sealed::Plain for $type {})*
+    };
+}
+plain!(
+    u8,
+    i32,
+    u32,
+    i64,
+    u64,
+    usize,
+    libc::addrinfo,
+    libc::group_req,
+    libc::group_source_req,
+    libc::hostent,
+    libc::ifreq,
+    libc::in_addr,
+    libc::in6_addr,
+    libc::in6_pktinfo,
+    libc::ip_mreq,
+    libc::ipv6_mreq,
+    libc::itimerval,
+    libc::linger,
+    libc::sched_param,
+    libc::sigaction,
+    libc::siginfo_t,
+    // Apple's sigset_t is a u32.
+    #[cfg(not(target_vendor = "apple"))]
+    libc::sigset_t,
+    libc::sockaddr,
+    libc::sockaddr_in,
+    libc::sockaddr_in6,
+    libc::sockaddr_storage,
+    libc::sockaddr_un,
+    libc::stat,
+    libc::statvfs,
+    libc::timeval,
+    libc::tm,
+    libc::utsname,
+    crate::net_types::AddressStorage,
+    crate::net_types::SocketAddress,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::cpu_set_t,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::ifconf,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::signalfd_siginfo,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::statx,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::tcp_info,
+    #[cfg(target_vendor = "apple")]
+    libc::tcp_connection_info,
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    libc::kevent,
+);
+impl<T: sealed::Plain, const N: usize> sealed::Plain for [T; N] {}
+
+/// An all-zero `T`, as C's `= {}`.
+#[must_use]
+pub const fn zeroed<T: Pod>() -> T {
+    // SAFETY: zero bytes are a value of every `Pod`.
+    unsafe { std::mem::zeroed() }
+}
+
+/// `size_of::<T>()` as a `socklen_t`.
+#[must_use]
+pub const fn socklen<T>() -> libc::socklen_t {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "an option or address struct is far smaller than 4 GiB"
+    )]
+    {
+        size_of::<T>() as libc::socklen_t
+    }
 }
 
 /// This thread's errno.
@@ -104,6 +191,54 @@ pub fn getsockopt_int(fd: c_int, level: c_int, name: c_int, value: &mut c_int) -
     unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) }
 }
 
+/// `getsockopt(2)` into `value`: the length the kernel stored, or `None` with
+/// errno set.
+pub fn getsockopt<T: Pod>(
+    fd: c_int,
+    level: c_int,
+    name: c_int,
+    value: &mut T,
+) -> Option<libc::socklen_t> {
+    let mut length = socklen::<T>();
+    // SAFETY: `value` holds the `length` writable bytes given, and any bytes are a `T`.
+    let status =
+        unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) };
+    (status == 0).then_some(length)
+}
+
+/// `setsockopt(2)` of `value`.
+pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> c_int {
+    // SAFETY: `value` holds the readable bytes whose count is given.
+    unsafe { libc::setsockopt(fd, level, name, (&raw const *value).cast(), socklen::<T>()) }
+}
+
+/// `setsockopt(2)` of an option given as bytes.
+pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> c_int {
+    let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
+    // SAFETY: `value` is readable for its length, which `length` does not exceed.
+    unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) }
+}
+
+/// `socketpair(2)`: both ends, or `None` with errno set.
+#[must_use]
+pub fn socketpair(domain: c_int, kind: c_int, protocol: c_int) -> Option<[c_int; 2]> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for two descriptors.
+    (unsafe { libc::socketpair(domain, kind, protocol, fds.as_mut_ptr()) } == 0).then_some(fds)
+}
+
+/// `recv(2)` into `buf`.
+pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int) -> isize {
+    // SAFETY: `buf` is writable for its length.
+    unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), flags) }
+}
+
+/// `send(2)` of `buf`.
+pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> isize {
+    // SAFETY: `buf` is readable for its length.
+    unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), flags) }
+}
+
 /// `dup(2)`.
 #[must_use]
 pub fn dup(fd: c_int) -> c_int {
@@ -148,13 +283,9 @@ pub fn pipe() -> Option<[c_int; 2]> {
 /// `fstat(2)`: the descriptor's status, or `None` with errno set.
 #[must_use]
 pub fn fstat(fd: c_int) -> Option<libc::stat> {
-    let mut stat = MaybeUninit::<libc::stat>::uninit();
+    let mut stat = zeroed::<libc::stat>();
     // SAFETY: `stat` is writable storage for one stat.
-    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    // SAFETY: fstat succeeded, so it filled `stat`.
-    Some(unsafe { stat.assume_init() })
+    (unsafe { libc::fstat(fd, &raw mut stat) } == 0).then_some(stat)
 }
 
 /// `sleep(3)`: the seconds left when a signal cut it short.
@@ -185,6 +316,53 @@ pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
 pub fn unlink(path: &CStr) -> c_int {
     // SAFETY: `path` is NUL-terminated.
     unsafe { libc::unlink(path.as_ptr()) }
+}
+
+/// `access(2)`.
+#[must_use]
+pub fn access(path: &CStr, mode: c_int) -> c_int {
+    // SAFETY: `path` is NUL-terminated.
+    unsafe { libc::access(path.as_ptr(), mode) }
+}
+
+/// `chdir(2)`.
+#[must_use]
+pub fn chdir(path: &CStr) -> c_int {
+    // SAFETY: `path` is NUL-terminated.
+    unsafe { libc::chdir(path.as_ptr()) }
+}
+
+/// `stat(2)`: the path's status, or `None` with errno set.
+#[must_use]
+pub fn stat(path: &CStr) -> Option<libc::stat> {
+    let mut stat = zeroed::<libc::stat>();
+    // SAFETY: `path` is NUL-terminated and `stat` is writable storage for one stat.
+    (unsafe { libc::stat(path.as_ptr(), &raw mut stat) } == 0).then_some(stat)
+}
+
+/// `sysconf(3)`.
+#[must_use]
+pub fn sysconf(name: c_int) -> libc::c_long {
+    // SAFETY: sysconf(3) has no memory preconditions.
+    unsafe { libc::sysconf(name) }
+}
+
+/// `kill(2)`.
+pub fn kill(pid: pid_t, signo: c_int) -> c_int {
+    // SAFETY: kill(2) has no memory preconditions; the signal is the caller's intent.
+    unsafe { libc::kill(pid, signo) }
+}
+
+/// `setitimer(2)`, discarding the previous timer.
+pub fn setitimer(which: c_int, value: &libc::itimerval) -> c_int {
+    // SAFETY: `value` is a live itimerval, and a null old value is allowed.
+    unsafe { libc::setitimer(which as _, value, std::ptr::null_mut()) }
+}
+
+/// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
+pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
+    // SAFETY: `out` is writable for its length, `format` is NUL-terminated and `tm` is live.
+    unsafe { libc::strftime(out.as_mut_ptr().cast(), out.len(), format.as_ptr(), tm) }
 }
 
 /// `waitpid(2)`, storing the status in `status` when given.

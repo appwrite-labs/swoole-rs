@@ -53,8 +53,7 @@ pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
     let family = flags & !LOOKUP_RANDOM;
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: hostent is plain data.
-        let mut entry: libc::hostent = unsafe { std::mem::zeroed() };
+        let mut entry: libc::hostent = crate::sys::zeroed();
         let mut buffer = vec![0 as c_char; 256];
         let mut result = std::ptr::null_mut();
         let mut error = 0;
@@ -124,8 +123,7 @@ pub(crate) fn resolve_addresses(
     results: &mut [libc::sockaddr_in6],
     mut unknown: impl FnMut(c_int) -> bool,
 ) -> Resolved {
-    // SAFETY: addrinfo is plain data.
-    let mut request: libc::addrinfo = unsafe { std::mem::zeroed() };
+    let mut request: libc::addrinfo = crate::sys::zeroed();
     (request.ai_family, request.ai_socktype, request.ai_protocol) = hints;
     let service = service.map_or(std::ptr::null(), CStr::as_ptr);
     let mut list = std::ptr::null_mut();

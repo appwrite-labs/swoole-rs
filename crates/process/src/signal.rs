@@ -122,10 +122,8 @@ pub(crate) fn install(
     restart: bool,
     mask: bool,
 ) -> Option<libc::sigaction> {
-    // SAFETY: sigaction is plain data; all zeroes is an empty action.
-    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+    let mut action: libc::sigaction = swoole_rs_corebase::sys::zeroed();
+    let mut previous: libc::sigaction = swoole_rs_corebase::sys::zeroed();
     action.sa_sigaction = func;
     let fill: unsafe extern "C" fn(*mut libc::sigset_t) -> c_int = if mask {
         libc::sigfillset

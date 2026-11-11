@@ -812,8 +812,7 @@ fn accept(
         return Ok(FAILURE);
     };
     // The peer's name, as upstream reports it: from an empty address.
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut peer: sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
     // SAFETY: the address and the output slots Zend asked for.
     unsafe {
@@ -851,8 +850,7 @@ fn recvfrom(
         // SAFETY: Zend lends `length` writable bytes at `buf`.
         return returncode(unsafe { socket.io(Io::Recv, buf, length) });
     }
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut peer: sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
     let mut size = size_of::<sockaddr_storage>() as socklen_t;
     // SAFETY: as above, and the address holds `size` bytes.

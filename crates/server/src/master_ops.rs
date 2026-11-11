@@ -126,8 +126,7 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
 fn host_maxsize() -> usize {
-    // SAFETY: a plain C struct, for which zero is valid.
-    let addr: libc::sockaddr_un = unsafe { core::mem::zeroed() };
+    let addr: libc::sockaddr_un = swoole_rs_corebase::sys::zeroed();
     size_of_val(&addr.sun_path)
 }
 

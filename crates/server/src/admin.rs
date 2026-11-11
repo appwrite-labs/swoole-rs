@@ -431,8 +431,7 @@ const TCP_INFO_SUPPORTED: bool = false;
 /// `getsockopt(TCP_INFO)` on `fd`, as `get_socket_info` reports it.
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 fn tcp_info_of(fd: i32) -> Option<Vec<(&'static str, Json)>> {
-    // SAFETY: an all-zero `tcp_info` is a valid out value.
-    let mut info: TcpInfo = unsafe { core::mem::zeroed() };
+    let mut info: TcpInfo = swoole_rs_corebase::sys::zeroed();
     let mut len = libc::socklen_t::try_from(size_of::<TcpInfo>()).unwrap_or(0);
     // SAFETY: `info` has `len` writable bytes.
     let read = unsafe {

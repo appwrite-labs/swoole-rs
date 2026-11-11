@@ -11,11 +11,12 @@ use crate::{
 use libc::{c_char, c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
 use std::{
     ffi::CStr,
-    mem::{MaybeUninit, size_of},
+    mem::size_of,
     net::{Ipv4Addr, Ipv6Addr},
     ptr,
     str::FromStr,
 };
+use swoole_rs_corebase::sys::zeroed;
 use swoole_rs_zend::{
     Array, Call, Value, bailout, report,
     sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array},
@@ -74,26 +75,6 @@ impl Sock {
             kind,
         }
     }
-}
-
-/// libc's plain socket structs: integers, byte arrays and nullable pointers, so all-zero
-/// bytes are a valid value. Private, so no other type can be zeroed through it.
-trait CStruct: Copy {}
-
-impl CStruct for in6_addr {}
-impl CStruct for sockaddr_in {}
-impl CStruct for sockaddr_in6 {}
-impl CStruct for libc::addrinfo {}
-impl CStruct for libc::sockaddr_storage {}
-impl CStruct for libc::group_req {}
-impl CStruct for libc::group_source_req {}
-impl CStruct for libc::ifreq {}
-impl CStruct for libc::in6_pktinfo {}
-
-/// A C struct, all zero (as upstream's `= {0}` and `memset`).
-fn zeroed<T: CStruct>() -> T {
-    // SAFETY: every `CStruct` is valid all zero.
-    unsafe { MaybeUninit::<T>::zeroed().assume_init() }
 }
 
 /// `php_error_docref(NULL, E_WARNING, "%s", message)`.
@@ -308,7 +289,7 @@ fn inet46(s: Sock, host: &[u8]) -> Result<Option<libc::sockaddr_storage>, Stop> 
 }
 
 /// A socket address of `domain` in a zeroed `sockaddr_storage`.
-fn stored<T: CStruct>(address: T, domain: c_int) -> libc::sockaddr_storage {
+fn stored<T: swoole_rs_corebase::sys::Pod>(address: T, domain: c_int) -> libc::sockaddr_storage {
     const {
         assert!(
             size_of::<T>() <= size_of::<libc::sockaddr_storage>(),

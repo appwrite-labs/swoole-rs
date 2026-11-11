@@ -143,8 +143,7 @@ mod kqueue {
         fflags: u32,
         socket: *mut c_void,
     ) -> bool {
-        // SAFETY: an all-zero kevent is valid; the fields are set below.
-        let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+        let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
         // Upstream's `EV_SET` converts the int fd to `uintptr_t` the same way.
         #[expect(clippy::cast_sign_loss, reason = "as upstream's EV_SET")]
         let ident = fd as isize as usize;

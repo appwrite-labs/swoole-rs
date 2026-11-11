@@ -37,8 +37,7 @@ pub struct PreparedResolver {
 }
 
 fn zero_address() -> libc::sockaddr_in6 {
-    // SAFETY: sockaddr_in6 is a POD address, whose zero state is valid.
-    unsafe { std::mem::zeroed() }
+    crate::sys::zeroed()
 }
 
 /// The slot's bytes. The record's slots change only in `host` and under native

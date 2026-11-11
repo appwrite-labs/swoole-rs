@@ -158,8 +158,7 @@ fn construct(call: &Call) {
 
 /// An empty `sched_param`.
 fn sched_param() -> libc::sched_param {
-    // SAFETY: an all-zero sched_param is valid.
-    unsafe { std::mem::zeroed() }
+    swoole_rs_corebase::sys::zeroed()
 }
 
 /// `body` on `$this`, which the instance methods run on.

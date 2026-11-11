@@ -216,8 +216,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     }
     let host = config.host_bytes();
     let mut address = SocketAddress {
-        // SAFETY: the sockaddr union is plain data.
-        addr: unsafe { std::mem::zeroed() },
+        addr: swoole_rs_corebase::sys::zeroed(),
         len: 0,
         kind,
     };

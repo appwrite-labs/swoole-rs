@@ -65,8 +65,7 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                 prefix.copy_from_slice(&[5, 1, 0]);
             }
             let host = owner.string(3);
-            // SAFETY: every member of this POD sockaddr union admits zero bytes.
-            let mut address: AddressStorage = unsafe { std::mem::zeroed() };
+            let mut address: AddressStorage = swoole_rs_corebase::sys::zeroed();
             let mut length = 0;
             let (inet4, inet6);
             let (kind, address): (u8, &[u8]) = if fields.dns_tunnel != 0 {

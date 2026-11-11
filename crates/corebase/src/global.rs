@@ -274,8 +274,7 @@ fn bug_report_lines(banner: &CStr, compiler: &CStr, ssl: &CStr) {
     let mut message = b"\n".to_vec();
     message.extend(banner.to_bytes());
     message.push(b'\n');
-    // SAFETY: utsname is plain bytes, valid zeroed.
-    let mut host: libc::utsname = unsafe { std::mem::zeroed() };
+    let mut host: libc::utsname = crate::sys::zeroed();
     // SAFETY: `host` is a live, writable utsname.
     if unsafe { libc::uname(&raw mut host) } != -1 {
         message.extend_from_slice(b"OS:");

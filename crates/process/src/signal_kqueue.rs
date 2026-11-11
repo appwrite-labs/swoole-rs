@@ -25,8 +25,7 @@ pub unsafe fn signal_kqueue_set(
         return 0;
     };
     let mut origin = 0;
-    // SAFETY: an all-zero kevent is a valid value.
-    let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+    let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
     event.ident = signo.cast_unsigned() as _;
     event.filter = libc::EVFILT_SIGNAL;
     if handler == 0 {

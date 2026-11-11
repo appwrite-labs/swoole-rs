@@ -23,8 +23,7 @@ pub struct SocketAddress {
 impl Default for SocketAddress {
     /// The empty address, `network::Address{}`.
     fn default() -> Self {
-        // SAFETY: plain integers and C address structs, for which all-zero bytes are valid.
-        unsafe { core::mem::zeroed() }
+        crate::sys::zeroed()
     }
 }
 

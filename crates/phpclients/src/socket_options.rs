@@ -589,8 +589,7 @@ fn get_option(call: &Call) {
     }
     #[cfg(target_os = "linux")]
     if name_int == libc::TCP_INFO {
-        // SAFETY: an all-zero `tcp_info` is a valid out value.
-        let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+        let mut info: libc::tcp_info = swoole_rs_corebase::sys::zeroed();
         if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_none() {
             return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
         }
@@ -794,8 +793,7 @@ fn domain(fd: c_int) -> Option<c_int> {
             return Some(domain);
         }
     }
-    // SAFETY: an all-zero sockaddr_storage is valid.
-    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut address: libc::sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     let mut length = socklen_t::try_from(size_of::<libc::sockaddr_storage>()).unwrap_or(0);
     // SAFETY: `address` is writable for `length` bytes.
     let status = unsafe { libc::getsockname(fd, (&raw mut address).cast(), &raw mut length) };

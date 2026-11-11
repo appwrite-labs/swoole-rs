@@ -755,8 +755,7 @@ fn statx_to_stat(statx: &libc::statx, stat: &mut libc::stat) {
 }
 
 fn statx(host: &Host, dfd: c_int, path: &CStr, flags: c_int, stat: &mut libc::stat) -> c_int {
-    // SAFETY: an all-zero statx is valid.
-    let mut buf: libc::statx = unsafe { mem::zeroed() };
+    let mut buf: libc::statx = swoole_rs_corebase::sys::zeroed();
     let mask = libc::STATX_BASIC_STATS | libc::STATX_BTIME;
     // SAFETY: `buf` and `path` outlive the request.
     let ret = request(host, -1.0, |sqe| unsafe {
@@ -791,8 +790,7 @@ pub fn waitpid(
         // SAFETY: null or the caller's status word.
         return unsafe { libc::waitpid(pid, stat_loc, options) };
     }
-    // SAFETY: an all-zero siginfo_t is valid.
-    let mut info: libc::siginfo_t = unsafe { mem::zeroed() };
+    let mut info: libc::siginfo_t = swoole_rs_corebase::sys::zeroed();
     let (idtype, id) = if pid > 0 {
         (libc::P_PID, pid.cast_unsigned())
     } else {

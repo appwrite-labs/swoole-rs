@@ -133,29 +133,10 @@ fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
     array.insert_bytes(name, Some(text.as_bytes()));
 }
 
-/// A libc struct of plain data, for which all-zero is valid; implemented only here.
-#[cfg(target_os = "linux")]
-trait Plain {}
-
-#[cfg(target_os = "linux")]
-impl Plain for libc::ifreq {}
-
-#[cfg(target_os = "linux")]
-impl<const N: usize> Plain for [libc::ifreq; N] {}
-
-#[cfg(target_os = "linux")]
-impl Plain for libc::ifconf {}
-
-/// An all-zero `T`, as C's `{0}` initialiser makes one.
-#[cfg(target_os = "linux")]
-fn zeroed<T: Plain>() -> T {
-    // SAFETY: `Plain` types are plain data, valid all-zero.
-    unsafe { std::mem::zeroed() }
-}
-
 #[cfg(target_os = "linux")]
 fn local_mac(call: &Call) {
     use std::mem::{size_of, size_of_val};
+    use swoole_rs_corebase::sys::zeroed;
     // The requests as `ioctl` takes them (an int on musl).
     const SIOCGIFCONF: libc::Ioctl = 0x8912;
     const SIOCGIFFLAGS: libc::Ioctl = 0x8913;
