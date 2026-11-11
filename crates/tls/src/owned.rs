@@ -207,15 +207,18 @@ extern "C" fn passphrase_view(owner: *const c_void) -> TlsStr {
     unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[PASSPHRASE])) }
         .into()
 }
-extern "C" fn slot_password(
+/// # Safety
+/// `slot` is the owner's live passphrase slot (the binding's userdata) and `buffer`
+/// holds `capacity` writable bytes, as OpenSSL's password callback lends them.
+unsafe extern "C" fn slot_password(
     buffer: *mut c_char,
     capacity: c_int,
     _verify: c_int,
     slot: *mut c_void,
 ) -> c_int {
-    // SAFETY: the shared context owns this stable slot for its borrowed OpenSSL lifetime.
+    // SAFETY: per the caller.
     let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot.cast()) };
-    // SAFETY: OpenSSL lends the output buffer and the live slot lends its exact bytes.
+    // SAFETY: per the caller.
     unsafe { copy_password(buffer, capacity, view.into()) }
 }
 /// # Safety
@@ -667,7 +670,7 @@ mod tests {
     unsafe fn password_binding_matches(
         ctx: *mut SSL_CTX,
         data: *mut c_void,
-        callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
+        callback: crate::context::PasswordCallback,
     ) -> bool {
         let actual = unsafe { SSL_CTX_get_default_passwd_cb(ctx) };
         let userdata = unsafe { SSL_CTX_get_default_passwd_cb_userdata(ctx) };

@@ -299,8 +299,7 @@ impl Worker<'_> {
     /// `Worker::init()`: starts the current worker's clock, request count and
     /// running state.
     pub fn init(self) {
-        // SAFETY: time's null output argument requests the current timestamp.
-        self.set_start_time(unsafe { libc::time(core::ptr::null_mut()) });
+        self.set_start_time(swoole_rs_corebase::time_now());
         self.set_request_count(0);
         self.set_status(2);
         crate::worker_globals::swr_v1_worker_global_set(3, 1);

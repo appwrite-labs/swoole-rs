@@ -49,10 +49,7 @@ unsafe extern "C" {
         out: *mut c_uchar,
         out_len: *mut c_uint,
     ) -> *mut c_uchar;
-    fn SSL_CTX_set_default_passwd_cb(
-        ctx: *mut SSL_CTX,
-        callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
-    );
+    fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, callback: PasswordCallback);
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
 }
 
@@ -142,11 +139,16 @@ pub struct TlsConfig {
     pub passphrase_of: PassphraseOf,
 }
 
+/// OpenSSL's `pem_password_cb`: the buffer and its capacity, whether to verify, and
+/// the userdata it was installed with.
+pub(crate) type PasswordCallback =
+    unsafe extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int;
+
 /// One upstream method: its log name and the configuration it reads.
 #[derive(Clone, Copy)]
 pub(crate) struct PasswordBinding {
     pub userdata: *mut c_void,
-    pub callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
+    pub callback: PasswordCallback,
 }
 
 struct Method<'a> {
