@@ -73,7 +73,7 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// with everything it made undone, when a step fails.
 ///
 /// # Safety
-/// `serv` is a live server, `port` one of its live DTLS ports.
+/// `port` is one of `serv`'s live DTLS ports.
 unsafe fn accept(
     serv: crate::view::Server<'_>,
     port: *mut c_void,
@@ -165,7 +165,7 @@ fn appended(status: c_int) {
 /// incoming on its reactor thread. `SW_ERR` when no session could be made.
 ///
 /// # Safety
-/// `serv` and `reactor` are live, `port` is the DTLS port the packet arrived on and
+/// `reactor` is live, `port` is the DTLS port of `serv` the packet arrived on and
 /// `pkt` the received packet.
 pub(crate) unsafe fn on_packet(
     serv: crate::view::Server<'_>,
@@ -201,13 +201,15 @@ pub(crate) unsafe fn on_packet(
     };
     // A session socket's object is its live connection.
     let conn = record.read(|s| s.object.cast::<ConnectionRecord>());
+    // SAFETY: as above; nothing else borrows it during the call.
+    let Some(conn) = (unsafe { conn.as_mut() }) else {
+        return -1;
+    };
     let failed = if single_thread {
-        // SAFETY: the live server, reactor and connection.
+        // SAFETY: the live reactor and connection of the server.
         let incoming = unsafe { crate::server_methods::connection_incoming(serv, reactor, conn) };
         incoming < 0
     } else {
-        // SAFETY: as above.
-        let conn = unsafe { &*conn };
         let (session_id, reactor_id) = (conn.session_id, conn.reactor_id);
         let ev = DataHead {
             kind: u8::try_from(EVENT_INCOMING).unwrap_or_default(),
@@ -224,12 +226,9 @@ pub(crate) unsafe fn on_packet(
     0
 }
 
-/// `ReactorThread_onRead` on a DTLS port: the next datagram goes to the socket's
-/// session; whether a pending handshake failed.
-///
-/// # Safety
-/// `port` is the live DTLS port, `sock` its session socket on `fd`.
-pub(crate) unsafe fn on_read(port: *mut c_void, sock: Socket<'_>, fd: c_int) -> bool {
+/// `ReactorThread_onRead` on a DTLS port, whose settings are `port`: the next datagram
+/// on `sock` goes to the session on `fd`; whether a pending handshake failed.
+pub(crate) fn on_read(port: &mut port_config::PortConfig, sock: Socket<'_>, fd: c_int) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
     // SAFETY: a `dtls::Buffer` header and its payload; the session frees it.
     let buffer = unsafe { libc::malloc(2 + size) }.cast::<u16>();
@@ -246,21 +245,11 @@ pub(crate) unsafe fn on_read(port: *mut c_void, sock: Socket<'_>, fd: c_int) -> 
     unsafe {
         *buffer = read as u16;
     }
-    // SAFETY: the port's live record.
-    let session = (port_config::methods().dtls_session)(unsafe { port_config::of(port) }, fd);
+    let session = (port_config::methods().dtls_session)(port, fd);
     // SAFETY: the socket's live session.
     let session = unsafe { &*session };
     // SAFETY: the session takes the buffer.
     appended(unsafe { swr_v1_tls_dtls_append_buffer(session, buffer.cast()) });
     // SAFETY: the session's live socket.
     !session.listened() && !unsafe { swr_v1_tls_dtls_session_listen(session) }
-}
-
-/// `Server::close_connection`'s `delete` of the socket's DTLS session.
-///
-/// # Safety
-/// `port` is the live DTLS port; nothing uses the session afterwards.
-pub(crate) unsafe fn free(port: *mut c_void, fd: c_int) {
-    // SAFETY: the port's live record, as the caller guarantees.
-    (port_config::methods().dtls_free)(unsafe { port_config::of(port) }, fd);
 }

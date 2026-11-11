@@ -450,8 +450,8 @@ pub(crate) fn answer(
                 info,
                 data: packet.data,
             };
-            // SAFETY: the live server and a send over the packet.
-            unsafe { methods::send_to_connection(serv, (&raw const send).cast()) };
+            // SAFETY: a send over the bus's packet.
+            unsafe { methods::send_to_connection(server, &send) };
             0
         }
         OP_ON_FINISH | OP_ON_PIPE_MESSAGE => {
@@ -485,7 +485,7 @@ pub(crate) fn answer(
         }
 
         // SAFETY: the live server, this thread's reactor and a live connection.
-        OP_INCOMING => sign(unsafe { methods::connection_incoming(server, reactor, conn) }),
+        OP_INCOMING => sign(unsafe { methods::connection_incoming(server, reactor, conn_ref()?) }),
         // SAFETY: this thread's reactor and the connection's live socket.
         OP_CLOSE => sign(unsafe { entry::close_connection(reactor, conn_ref()?.socket.cast()) }),
         OP_CONN_HEALTHY => u64::from(server.healthy(f64::from_bits(arg), conn_ref()?)),

@@ -189,10 +189,11 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode == TASK_IPC_UNIXSOCK),
-        OP_TASK_POOL_WORKER_NUM => {
-            // SAFETY: the server's live task pool.
-            u64::from(unsafe { (*ctx.workers().task_pool).worker_num() })
-        }
+        OP_TASK_POOL_WORKER_NUM => u64::from(
+            crate::shared::ServerShared::of(ctx.server())
+                .task_pool()
+                .worker_num(),
+        ),
         OP_INIT_REACTOR => {
             crate::reactor_entry::init_reactor(serv, ctx.reactor_handle());
             0

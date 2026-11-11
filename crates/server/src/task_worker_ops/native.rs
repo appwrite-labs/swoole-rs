@@ -65,7 +65,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let (length, message) = ctx.packet;
             let state = ctx.state();
             let sock = crate::commands::reply_socket(state, ctx.server)?;
-            let bus = crate::master_ops::server_message_bus(state);
+            let bus = state.message_bus();
             // `serv->get_task_id(task)`: the task's fd.
             let (fd, id) = (ctx.task().fd, ctx.worker().id());
             let id = u16::try_from(id).unwrap_or(u16::MAX);

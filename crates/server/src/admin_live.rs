@@ -130,14 +130,12 @@ impl Live<'_> {
 
     /// `serv->get_event_worker_pool()` or `get_task_worker_pool()`.
     fn pool(&self, task: bool) -> &swoole_rs_process::process_pool::PoolRecord {
-        let workers = self.serv.workers();
-        let pool = if task {
-            workers.task_pool
+        let shared = crate::shared::ServerShared::of(self.serv);
+        if task {
+            shared.task_pool()
         } else {
-            workers.event_pool
-        };
-        // SAFETY: as above.
-        unsafe { &*pool }
+            shared.event_pool()
+        }
     }
 
     fn connection_record(&self, index: u64) -> &ConnectionRecord {

@@ -962,14 +962,17 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             })
         }
         OP_RD_DTLS => {
-            // SAFETY: the context's live DTLS port and its session socket.
-            u64::from(unsafe {
-                crate::dtls::on_read(o.ctx.port?.raw(), o.sock()?, o.event()?.fd())
-            })
+            let (sock, fd) = (o.sock()?, o.event()?.fd());
+            // SAFETY: the context's live DTLS port; nothing else borrows its settings.
+            let port = unsafe { o.ctx.port?.config_mut() };
+            u64::from(crate::dtls::on_read(port, sock, fd))
         }
         OP_CC_DTLS_FREE => {
-            // SAFETY: the closing socket's live port; nothing uses its session after.
-            unsafe { crate::dtls::free(o.ctx.port?.raw(), o.sock()?.fd()) };
+            // `Server::close_connection`'s `delete` of the socket's DTLS session.
+            let fd = o.sock()?.fd();
+            // SAFETY: the closing socket's live port; nothing else borrows its settings.
+            let port = unsafe { o.ctx.port?.config_mut() };
+            (crate::port_config::methods().dtls_free)(port, fd);
             0
         }
         OP_WR_TIMER_DELAY => {

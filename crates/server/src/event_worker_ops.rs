@@ -138,11 +138,11 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(id.is_some_and(|id| !ctx.server().worker(id).is_null()))
         }
         OP_IS_EVENT_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
-        OP_POOL_RUNNING => {
-            let pool = ctx.server().workers().event_pool;
-            // SAFETY: its live event worker pool.
-            u64::from(unsafe { (*pool).running })
-        }
+        OP_POOL_RUNNING => u64::from(
+            crate::shared::ServerShared::of(ctx.server())
+                .event_pool()
+                .running,
+        ),
         OP_MINFD => i64::from(ctx.counters().min_fd).cast_unsigned(),
         OP_MAXFD => i64::from(ctx.counters().max_fd).cast_unsigned(),
         OP_HAS_REACTOR => u64::from(!swoole_rs_corebase::thread_reactor().is_null()),
