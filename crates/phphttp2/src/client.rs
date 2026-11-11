@@ -27,8 +27,8 @@ use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
     sys::{
-        ZEND_ACC_PUBLIC, swr_zend_http_build_query, swr_zend_instanceof, zend_class_entry,
-        zend_object, zend_wrong_parameter_class_error,
+        ZEND_ACC_PUBLIC, swr_zend_instanceof, zend_class_entry, zend_object,
+        zend_wrong_parameter_class_error,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};

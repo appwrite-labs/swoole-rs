@@ -301,7 +301,7 @@ impl Value {
     pub fn http_build_query(&self) -> Option<ZString> {
         // SAFETY: a live zval; Zend returns null or a new string.
         let query = unsafe { swr_zend_http_build_query(self.as_ptr()) };
-        (!query.is_null()).then_some(ZString(query))
+        (!query.is_null()).then(|| ZString(query))
     }
 
     /// `serialize($value)`: None when it produced nothing.
@@ -312,7 +312,7 @@ impl Value {
         // SAFETY: a live zval; the shim traps a bailout and returns null or a new string.
         let serialized = unsafe { swr_zend_serialize(self.as_ptr(), &raw mut bailed) };
         bailout::trapped(bailed.into())?;
-        Ok((!serialized.is_null()).then_some(ZString(serialized)))
+        Ok((!serialized.is_null()).then(|| ZString(serialized)))
     }
 
     /// `json_encode($value)`: None when the encoder failed.
@@ -322,7 +322,7 @@ impl Value {
         let mut encoded = ptr::null_mut();
         // SAFETY: a live zval; the shim traps a bailout and writes null or a new string.
         bailout::trapped(unsafe { swr_zend_try_json_encode(self.as_ptr(), &raw mut encoded) })?;
-        Ok((!encoded.is_null()).then_some(ZString(encoded)))
+        Ok((!encoded.is_null()).then(|| ZString(encoded)))
     }
 
     /// `Z_STRVAL_P`/`Z_STRLEN_P` of a string.

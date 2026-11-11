@@ -23,8 +23,8 @@ use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, message, report,
     sys::{
-        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_try_json_encode,
-        swr_zval_stringl, zend_class_entry, zend_object, zend_object_std_dtor, zval,
+        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zval_stringl, zend_class_entry,
+        zend_object, zend_object_std_dtor, zval,
     },
 };
 
