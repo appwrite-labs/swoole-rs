@@ -1,7 +1,7 @@
 //! The `ProcessPool` and `Worker` methods (once `src/os/process_pool.cc`) that are
 //! whole Rust operations, defined under their upstream (Itanium) symbols when
 //! the hybrid links this crate (`upstream-symbols`). Each runs over crates/server's
-//! [`PoolNative`] table as its C++ forward did.
+//! [`PoolNative`] side as its C++ forward did.
 
 use crate::worker_record::Worker;
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -25,22 +25,21 @@ use crate::worker_globals::{
 };
 use crate::worker_record::WorkerRecord;
 
-/// crates/server's table, which every method below lends its export
-/// (`crates/server/src/pool_native.rs`); null in tests, which drive the exports
-/// with their own hosts.
-fn native() -> *const PoolNative {
+/// crates/server's side, which every method below lends its export
+/// (`crates/server/src/pool_native.rs`); tests drive the exports with their own
+/// hosts and never reach it.
+fn native() -> &'static dyn PoolNative {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     {
         // SAFETY: crates/server's, in the same archive; declared, since crates/server
         // depends on this crate.
-        unsafe extern "C" {
-            fn swr_v1_process_pool_native() -> *const PoolNative;
+        unsafe extern "Rust" {
+            safe fn swr_v1_process_pool_native() -> &'static dyn PoolNative;
         }
-        // SAFETY: no preconditions.
-        unsafe { swr_v1_process_pool_native() }
+        swr_v1_process_pool_native()
     }
     #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-    ptr::null()
+    std::process::abort()
 }
 
 /// A method's C++ return type, from the `i64` an export returns.
@@ -101,7 +100,7 @@ impl Narrow for c_int {
 /// # Safety
 /// `pool` is a live `ProcessPool` and `worker` null or one of its workers.
 unsafe fn run<R: Narrow>(pool: *mut PoolRecord, worker: *mut WorkerRecord, op: u32, arg: u64) -> R {
-    // SAFETY: as the caller guarantees; the table is native's.
+    // SAFETY: as the caller guarantees; the side is native's.
     let result = unsafe { pool_run_op(native(), pool, worker, op, arg) };
     if result == RAISE {
         raise_bailout();
@@ -172,7 +171,7 @@ pub unsafe extern "C" fn create(
     key: c_int,
     mode: c_int,
 ) -> c_int {
-    // SAFETY: as the caller guarantees; the table is native's.
+    // SAFETY: as the caller guarantees; the side is native's.
     let result = unsafe {
         swr_v1_process_pool_create(
             native(),
@@ -199,7 +198,7 @@ pub unsafe extern "C" fn push_message(
     data: *const u8,
     length: usize,
 ) -> c_int {
-    // SAFETY: as the caller guarantees; the table is native's.
+    // SAFETY: as the caller guarantees; the side is native's.
     c_int::narrow(unsafe { swr_v1_process_pool_push(native(), pool, kind, data, length) })
 }
 
@@ -213,7 +212,7 @@ pub unsafe fn dispatch(
     worker_id: *mut c_int,
     blocking: bool,
 ) -> c_int {
-    // SAFETY: as the caller guarantees; the table is native's.
+    // SAFETY: as the caller guarantees; the side is native's.
     c_int::narrow(unsafe {
         swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, blocking)
     })
@@ -232,7 +231,7 @@ pub unsafe extern "C" fn dispatch_sync(
     event: *mut u8,
     worker_id: *mut c_int,
 ) -> c_int {
-    // SAFETY: as the caller guarantees; the table is native's.
+    // SAFETY: as the caller guarantees; the side is native's.
     c_int::narrow(unsafe {
         swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, true)
     })
@@ -315,10 +314,8 @@ pub unsafe extern "C" fn send_pipe_message(
     };
     // SAFETY: the worker's pool is live.
     let queue = unsafe { (*pool.cast::<PoolRecord>()).use_msgqueue } != 0;
-    // SAFETY: the registered table's hooks are native's for the process.
-    let hooks = unsafe { (*native()).hooks };
     // SAFETY: as the caller guarantees.
-    unsafe { swr_v1_process_worker_send(hooks, pool, pipe, queue, id, data, length, flags) }
+    unsafe { swr_v1_process_worker_send(native(), pool, pipe, queue, id, data, length, flags) }
 }
 
 /// `make_server_socket(type, host, port, backlog)`: a native socket, or null.
@@ -793,7 +790,7 @@ pub(crate) mod tests {
         }
     }
 
-    unsafe extern "C" fn keep(_: *mut c_void) {}
+    fn keep(_: *mut c_void) {}
 
     #[test]
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {

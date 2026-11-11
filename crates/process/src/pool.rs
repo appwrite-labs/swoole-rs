@@ -3,7 +3,7 @@
 //! buffer) and the three worker loops over it (`SW_PROTOCOL_TASK`, `_STREAM` and
 //! `_MESSAGE`), plus the master's side: picking an idle worker and sending it a
 //! message. Rust owns the state, each loop's receive, framing, error policy and
-//! reply. Native code lends its objects through [`PoolHooks`]: the queue's
+//! reply. Native code lends its objects through [`PoolNative`]: the queue's
 //! `msgrcv`/`msgsnd`, the sockets' blocking calls (which wait and dispatch
 //! signals), the message bus, the timers and the callbacks into the user's code.
 //!
@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use swoole_rs_corebase::sys::set_errno;
 
+use crate::process_pool::PoolNative;
 use crate::worker_record::WorkerRecord;
 
 /// A loop's result: it ended, or PHP bailed out inside a hook.
@@ -55,7 +56,7 @@ const MTYPE: usize = size_of::<c_long>();
 const PIPE_MASTER: c_int = 1;
 const PIPE_NONBLOCK: c_int = 2;
 
-/// Warnings native code formats (`PoolHooks::warn`); `errno` is the failed
+/// Warnings native code formats (`PoolNative::warn`); `errno` is the failed
 /// call's where the message is a system warning.
 pub const WARN_MSGRCV: c_int = 1;
 pub const WARN_ACCEPT: c_int = 2;
@@ -75,19 +76,20 @@ fn read<T: Copy>(buf: *const u8, at: usize) -> T {
     unsafe { buf.wrapping_add(at).cast::<T>().read_unaligned() }
 }
 
-/// One hook's arguments and results.
-#[repr(C)]
+/// One hook's arguments and results. Only this crate makes and fills one, over
+/// objects live for the hook: its pool and worker (null when none), its socket
+/// (null or a live native socket) and `data`, which holds `length` bytes.
 pub struct PoolCall {
-    pub pool: *mut c_void,
-    pub worker: *mut c_void,
-    pub socket: *mut c_void,
-    pub data: *mut c_void,
-    pub length: usize,
-    pub flags: c_int,
+    pub(crate) pool: *mut c_void,
+    pub(crate) worker: *mut c_void,
+    pub(crate) socket: *mut c_void,
+    pub(crate) data: *mut c_void,
+    pub(crate) length: usize,
+    pub(crate) flags: c_int,
     /// The call's return value.
-    pub result: isize,
+    pub(crate) result: isize,
     /// `errno` right after the call.
-    pub error: c_int,
+    pub(crate) error: c_int,
 }
 
 impl PoolCall {
@@ -103,51 +105,62 @@ impl PoolCall {
             error: 0,
         }
     }
+
+    /// The live pool.
+    #[must_use]
+    pub fn pool(&self) -> *mut c_void {
+        self.pool
+    }
+
+    /// The live worker, or null.
+    #[must_use]
+    pub fn worker(&self) -> *mut c_void {
+        self.worker
+    }
+
+    /// The live native socket the hook works on, or null.
+    #[must_use]
+    pub fn socket(&self) -> *mut c_void {
+        self.socket
+    }
+
+    /// The buffer of [`PoolCall::length`] bytes the hook reads or fills.
+    #[must_use]
+    pub fn data(&self) -> *mut c_void {
+        self.data
+    }
+
+    #[must_use]
+    pub fn length(&self) -> usize {
+        self.length
+    }
+
+    #[must_use]
+    pub fn flags(&self) -> c_int {
+        self.flags
+    }
+
+    /// The hook's return value.
+    pub fn set_result(&mut self, result: isize) {
+        self.result = result;
+    }
+
+    /// `errno` right after the hook's call.
+    pub fn set_error(&mut self, error: c_int) {
+        self.error = error;
+    }
+
+    /// The connection `accept` made: null, or a live native socket the pool now owns.
+    ///
+    /// # Safety
+    /// `socket` is null or a live native socket, which the pool frees once.
+    pub unsafe fn set_socket(&mut self, socket: *mut c_void) {
+        self.socket = socket;
+    }
 }
 
-/// A hook over a [`PoolCall`]; it may run inside the bailout trap.
+/// What the bailout trap runs: a body over its [`PoolCall`].
 pub type Step = unsafe extern "C" fn(call: *mut c_void);
-
-/// The native pool's objects, one function per operation.
-#[repr(C)]
-pub struct PoolHooks {
-    /// `ProcessPool::is_worker_running(worker)`.
-    pub running: unsafe extern "C" fn(pool: *mut c_void, worker: *mut c_void) -> bool,
-    /// Run the expired timers and dispatch the pending signals.
-    pub end: Step,
-    /// `queue->pop(data, length)`.
-    pub queue_pop: Step,
-    /// `queue->push(data, length)`: 1 when pushed.
-    pub queue_push: Step,
-    /// The stream listener's `accept()`: the connection in `socket`.
-    pub accept: Step,
-    /// `socket->recv_sync(data, length, flags)`.
-    pub recv: Step,
-    /// `socket->send_sync(data, length)`.
-    pub send: Step,
-    /// `socket->free()`.
-    pub close: unsafe extern "C" fn(socket: *mut c_void),
-    /// The worker's pipe, with the next timer as its read timeout: `read_sync`.
-    pub pipe_read: Step,
-    /// `pipe_worker->wait_event(next timer, SW_EVENT_READ)`.
-    pub pipe_wait: Step,
-    /// `message_bus->read(pipe_worker)`.
-    pub bus_read: Step,
-    /// `onMessage` with the bus's packet, then `message_bus->pop()`.
-    pub bus_deliver: Step,
-    /// `onTask(pool, worker, data)`.
-    pub task: Step,
-    /// `onMessage` with `length` bytes at `data`.
-    pub message: Step,
-    /// `worker->shutdown()`.
-    pub shutdown: unsafe extern "C" fn(worker: *mut c_void),
-    /// `socket` (a worker's pipe): `swoole_event_write` when the event loop is
-    /// available and `flags` asks for it, else `send_sync`.
-    pub pipe_write: Step,
-    /// Report a `WARN_*` or `TRACE_*` with its numbers.
-    pub warn:
-        unsafe extern "C" fn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a: i64, b: i64),
-}
 
 /// The pool's IPC state. Native creates one per pool and frees it in `destroy`.
 #[derive(Default)]
@@ -181,26 +194,12 @@ fn fatal(error: c_int) -> bool {
     !matches!(error, 0 | libc::EAGAIN | libc::EINTR | libc::ETIMEDOUT)
 }
 
-/// Run native hook `step` over `call`.
-fn invoke(step: Step, call: &mut PoolCall) {
-    // SAFETY: a native hook over its call.
-    unsafe { step(ptr::from_mut(call).cast()) };
-}
+/// A [`PoolNative`] hook over its call.
+type Hook = fn(&dyn PoolNative, &mut PoolCall);
 
-/// Run `step` over `call`, inside the trap when one is installed.
-pub(crate) fn run(step: Step, call: &mut PoolCall) -> Result<(), Bailed> {
-    let Some(&(trap, _)) = BAILOUT.get() else {
-        invoke(step, call);
-        return Ok(());
-    };
-    let arg = ptr::from_mut(call).cast::<c_void>();
-    // SAFETY: the trap runs the native hook inside `zend_try`; no Rust frame is
-    // between its `setjmp` and the hook.
-    if unsafe { trap(step, arg) } == 0 {
-        Ok(())
-    } else {
-        Err(Bailed)
-    }
+/// Run `hook` over `call`, inside the trap when one is installed.
+pub(crate) fn run(native: &dyn PoolNative, hook: Hook, call: &mut PoolCall) -> Result<(), Bailed> {
+    trapped(|| hook(native, call))
 }
 
 /// A body [`trapped`] runs, and what it returned.
@@ -217,21 +216,28 @@ unsafe extern "C" fn step<F: FnOnce() -> R, R>(call: *mut c_void) {
     body.result = body.body.take().map(|body| body());
 }
 
-/// Runs `body` inside the bailout trap.
+/// Runs `body` inside the bailout trap, when one is installed.
 pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
+    let Some(&(trap, _)) = BAILOUT.get() else {
+        return Ok(body());
+    };
     let mut body = Body {
         body: Some(body),
         result: None,
     };
     let mut call = PoolCall::new(ptr::null_mut(), ptr::null_mut());
     call.data = (&raw mut body).cast();
-    run(step::<F, R>, &mut call)?;
+    // SAFETY: the trap runs `step` inside `zend_try`; no Rust frame is between its
+    // `setjmp` and `step`, whose body owns nothing a bailout skips.
+    if unsafe { trap(step::<F, R>, (&raw mut call).cast()) } != 0 {
+        return Err(Bailed);
+    }
     body.result.ok_or(Bailed)
 }
 
 /// One worker's loop over its pool.
 struct Worker<'a> {
-    hooks: &'a PoolHooks,
+    native: &'a dyn PoolNative,
     /// Borrowed per use: the worker's callbacks reach the same handle, as
     /// `swr_v1_process_pool_ipc_respond` does.
     ipc: *mut PoolIpc,
@@ -250,23 +256,21 @@ impl Worker<'_> {
     }
 
     fn running(&self) -> bool {
-        // SAFETY: the host's pool and worker.
-        unsafe { (self.hooks.running)(self.pool, self.worker) }
+        self.native.running(&self.call())
     }
 
     fn warn(&self, kind: c_int, error: c_int, a: i64, b: i64) {
         set_errno(error);
-        // SAFETY: as above.
-        unsafe { (self.hooks.warn)(self.pool, self.worker, kind, a, b) };
+        self.native.warn(&self.call(), kind, a, b);
     }
 
     fn end(&self) -> Result<(), Bailed> {
-        run(self.hooks.end, &mut self.call())
+        run(self.native, |native, _| native.end(), &mut self.call())
     }
 
     fn io(
         &self,
-        step: Step,
+        hook: Hook,
         socket: *mut c_void,
         data: *mut u8,
         length: usize,
@@ -277,19 +281,20 @@ impl Worker<'_> {
         call.data = data.cast();
         call.length = length;
         call.flags = flags;
-        run(step, &mut call)?;
+        run(self.native, hook, &mut call)?;
         Ok(call)
     }
 
     fn close(&self, socket: *mut c_void) {
-        // SAFETY: a connection the listener accepted, closed once.
-        unsafe { (self.hooks.close)(socket) };
+        let mut call = self.call();
+        call.socket = socket;
+        self.native.close(&call);
     }
 
     /// Accept a connection: the connection, or the accept's `errno`.
     fn accept(&self) -> Result<Result<*mut c_void, c_int>, Bailed> {
         let mut call = self.call();
-        run(self.hooks.accept, &mut call)?;
+        run(self.native, |native, call| native.accept(call), &mut call)?;
         Ok(if call.socket.is_null() {
             Err(call.error)
         } else {
@@ -300,14 +305,20 @@ impl Worker<'_> {
     /// `socket->recv_sync(data, length, MSG_WAITALL)`.
     fn recv_all(&self, socket: *mut c_void, data: *mut u8, length: usize) -> Result<isize, Bailed> {
         Ok(self
-            .io(self.hooks.recv, socket, data, length, libc::MSG_WAITALL)?
+            .io(
+                |native, call| native.recv(call),
+                socket,
+                data,
+                length,
+                libc::MSG_WAITALL,
+            )?
             .result)
     }
 
     fn send(&self, socket: *mut c_void, data: &[u8]) -> Result<isize, Bailed> {
         Ok(self
             .io(
-                self.hooks.send,
+                |native, call| native.send(call),
                 socket,
                 data.as_ptr().cast_mut(),
                 data.len(),
@@ -383,8 +394,13 @@ impl Worker<'_> {
             let n = match mode {
                 Mode::Queue => {
                     // The received mtype stays in `out` for the next receive, as upstream.
-                    let call =
-                        self.io(self.hooks.queue_pop, ptr::null_mut(), base, event_size, 0)?;
+                    let call = self.io(
+                        |native, call| native.queue_pop(call),
+                        ptr::null_mut(),
+                        base,
+                        event_size,
+                        0,
+                    )?;
                     if call.result < 0 && fatal(call.error) {
                         self.warn(WARN_MSGRCV, call.error, 0, 0);
                         break;
@@ -413,8 +429,13 @@ impl Worker<'_> {
                     n
                 }
                 Mode::Pipe => {
-                    let call =
-                        self.io(self.hooks.pipe_read, ptr::null_mut(), buf, event_size, 0)?;
+                    let call = self.io(
+                        |native, call| native.pipe_read(call),
+                        ptr::null_mut(),
+                        buf,
+                        event_size,
+                        0,
+                    )?;
                     if call.result < 0 && fatal(call.error) {
                         self.warn(WARN_READ, call.error, 0, 0);
                         break;
@@ -437,12 +458,12 @@ impl Worker<'_> {
                     call.data = buf.cast();
                     call.length = event_size;
                     trapped(|| {
-                        invoke(self.hooks.task, &mut call);
+                        self.native.task(&mut call);
                         if call.result < 0 {
                             self.warn(WARN_TASK_FAILED, 0, read::<i64>(buf, 0), 0);
                         }
                         if alone {
-                            invoke(self.hooks.end, &mut call);
+                            self.native.end();
                         }
                     })?;
                     if alone {
@@ -468,7 +489,13 @@ impl Worker<'_> {
         while self.running() {
             let (data, n) = match mode {
                 Mode::Queue => {
-                    let call = self.io(self.hooks.queue_pop, ptr::null_mut(), packet, MSGMAX, 0)?;
+                    let call = self.io(
+                        |native, call| native.queue_pop(call),
+                        ptr::null_mut(),
+                        packet,
+                        MSGMAX,
+                        0,
+                    )?;
                     if call.result < 0 && fatal(call.error) {
                         self.warn(WARN_MSGRCV, call.error, 0, 0);
                         break;
@@ -506,7 +533,7 @@ impl Worker<'_> {
                 }
                 Mode::Pipe => {
                     let call = self.io(
-                        self.hooks.pipe_read,
+                        |native, call| native.pipe_read(call),
                         ptr::null_mut(),
                         packet,
                         max_packet_size as usize,
@@ -525,7 +552,13 @@ impl Worker<'_> {
                     reason = "upstream stores the length in the u32 info.len"
                 )]
                 let length = n as u32 as usize;
-                self.io(self.hooks.message, ptr::null_mut(), data, length, 0)?;
+                self.io(
+                    |native, call| native.message(call),
+                    ptr::null_mut(),
+                    data,
+                    length,
+                    0,
+                )?;
                 if let Some(stream) = self.connection() {
                     let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
                     let response = stream
@@ -563,8 +596,7 @@ impl Worker<'_> {
                 Received::Continue | Received::Ready => self.end()?,
                 Received::Error(error) => {
                     self.warn(WARN_PIPE, error, 0, 0);
-                    // SAFETY: the host's worker.
-                    unsafe { (self.hooks.shutdown)(self.worker) };
+                    self.native.shutdown(&self.call());
                 }
             }
         }
@@ -581,7 +613,11 @@ impl Worker<'_> {
         };
         loop {
             let mut call = self.call();
-            run(self.hooks.pipe_wait, &mut call)?;
+            run(
+                self.native,
+                |native, call| native.pipe_wait(call),
+                &mut call,
+            )?;
             if call.result < 0 {
                 return Ok(if fatal(call.error) {
                     Received::Error(call.error)
@@ -590,12 +626,16 @@ impl Worker<'_> {
                 });
             }
             let mut call = self.call();
-            run(self.hooks.bus_read, &mut call)?;
+            run(self.native, |native, call| native.bus_read(call), &mut call)?;
             match call.result {
                 n if n < 0 => return Ok(interrupted(call.error)),
                 0 => {}
                 _ => {
-                    run(self.hooks.bus_deliver, &mut self.call())?;
+                    run(
+                        self.native,
+                        |native, call| native.bus_deliver(call),
+                        &mut self.call(),
+                    )?;
                     return Ok(Received::Ready);
                 }
             }
@@ -669,8 +709,8 @@ pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
 /// file, unlinked as upstream does (a TCP host is unlinked too, harmlessly).
 ///
 /// # Safety
-/// `ipc` is null or a live handle, not used afterwards; `close` frees a native socket.
-pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: unsafe extern "C" fn(*mut c_void)) {
+/// `ipc` is null or a live handle, not used afterwards.
+pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: impl FnOnce(*mut c_void)) {
     if ipc.is_null() {
         return;
     }
@@ -683,8 +723,8 @@ pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: unsafe extern "C" fn(*mut 
             // SAFETY: a NUL-terminated path.
             unsafe { libc::unlink(file.as_ptr()) };
         }
-        // SAFETY: the listener, freed once.
-        unsafe { close(stream.socket) };
+        // The listener, freed once.
+        close(stream.socket);
     }
 }
 
@@ -866,9 +906,7 @@ fn mode(ipc_mode: u8) -> Mode {
 }
 
 /// What a worker loop needs to know about its pool.
-#[repr(C)]
 pub struct PoolLoop {
-    pub hooks: *const PoolHooks,
     pub ipc: *mut PoolIpc,
     pub pool: *mut c_void,
     pub worker: *mut c_void,
@@ -886,14 +924,11 @@ pub struct PoolLoop {
 /// `at_worker_exit`: [`DONE`], or [`BAILED`] to raise at once.
 ///
 /// # Safety
-/// `pool_loop` describes a live pool, worker and hooks for this call.
+/// `pool_loop` describes a live pool, worker and IPC state for this call.
 #[must_use]
-pub unsafe fn pool_run(pool_loop: *const PoolLoop, protocol: c_int) -> c_int {
-    // SAFETY: the caller's description.
-    let pool_loop = unsafe { &*pool_loop };
+pub unsafe fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop, protocol: c_int) -> c_int {
     let mut worker = Worker {
-        // SAFETY: the caller's hooks and state, for this call.
-        hooks: unsafe { &*pool_loop.hooks },
+        native,
         ipc: pool_loop.ipc,
         pool: pool_loop.pool,
         worker: pool_loop.worker,
@@ -943,10 +978,14 @@ pub unsafe fn pool_schedule(
 /// when it has one, else the master's or the worker's end of the pipe.
 ///
 /// # Safety
-/// `hooks` and the pool are live; `pipe` is the chosen pipe end (unused with a
-/// queue); `data` holds `length` bytes, at most `sizeof(EventData)` with a queue.
-pub unsafe extern "C" fn swr_v1_process_worker_send(
-    hooks: *const PoolHooks,
+/// The pool is live; `pipe` is the chosen pipe end (unused with a queue); `data`
+/// holds `length` bytes, at most `sizeof(EventData)` with a queue.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the flat list of the former C export; `send_pipe_message` and `pool_dispatch` call it"
+)]
+pub unsafe fn swr_v1_process_worker_send(
+    native: &dyn PoolNative,
     pool: *mut c_void,
     pipe: *mut c_void,
     queue: bool,
@@ -955,8 +994,6 @@ pub unsafe extern "C" fn swr_v1_process_worker_send(
     length: usize,
     flags: c_int,
 ) -> isize {
-    // SAFETY: the caller's hooks.
-    let hooks = unsafe { &*hooks };
     let mut call = PoolCall::new(pool, ptr::null_mut());
     if queue {
         let mut message = vec![0u64; (MTYPE + length).div_ceil(8)];
@@ -966,12 +1003,11 @@ pub unsafe extern "C" fn swr_v1_process_worker_send(
         let base = message.as_mut_ptr().cast::<u8>();
         // SAFETY: the caller's bytes fit after `mtype`.
         unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };
-        // SAFETY: the host's pool.
-        unsafe { (hooks.warn)(pool, ptr::null_mut(), TRACE_PUSH, length as i64, 0) };
+        native.warn(&call, TRACE_PUSH, length as i64, 0);
         call.data = base.cast();
         call.length = length;
-        // SAFETY: the native queue's push, which cannot reach PHP.
-        unsafe { (hooks.queue_push)(ptr::from_mut(&mut call).cast()) };
+        // The native queue's push, which cannot reach PHP.
+        native.queue_push(&mut call);
         return if call.result != 0 {
             length.cast_signed()
         } else {
@@ -982,8 +1018,8 @@ pub unsafe extern "C" fn swr_v1_process_worker_send(
     call.data = data.cast_mut().cast();
     call.length = length;
     call.flags = flags & PIPE_NONBLOCK;
-    // SAFETY: the native pipe write, which cannot reach PHP.
-    unsafe { (hooks.pipe_write)(ptr::from_mut(&mut call).cast()) };
+    // The native pipe write, which cannot reach PHP.
+    native.pipe_write(&mut call);
     set_errno(call.error);
     call.result
 }
@@ -1000,7 +1036,7 @@ pub unsafe extern "C" fn swr_v1_process_worker_send(
     reason = "the flat list of the former C export; `Pool::dispatch` is the one caller"
 )]
 pub unsafe fn pool_dispatch(
-    hooks: *const PoolHooks,
+    native: &dyn PoolNative,
     pool: *mut c_void,
     workers: *mut WorkerRecord,
     count: u32,
@@ -1034,21 +1070,11 @@ pub unsafe fn pool_dispatch(
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
     // SAFETY: as the caller guarantees.
     let sent = unsafe {
-        swr_v1_process_worker_send(hooks, pool, pipe, queue, id, event, size as usize, flags)
+        swr_v1_process_worker_send(native, pool, pipe, queue, id, event, size as usize, flags)
     };
     if sent < 0 {
-        // SAFETY: the caller's hooks.
-        let warn = unsafe { (*hooks).warn };
-        // SAFETY: the host's pool.
-        unsafe {
-            warn(
-                pool,
-                ptr::null_mut(),
-                WARN_SEND,
-                i64::from(size),
-                i64::from(*target),
-            );
-        }
+        let call = PoolCall::new(pool, ptr::null_mut());
+        native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
         return false;
     }
     true
@@ -1057,8 +1083,6 @@ pub unsafe fn pool_dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    unsafe extern "C" fn noop(_: *mut c_void) {}
 
     #[test]
     fn fatal_errors_end_the_loop() {
@@ -1086,7 +1110,7 @@ mod tests {
                 Some(&b"ab"[..])
             );
             (*ipc).stream.as_mut().unwrap().connection = ptr::null_mut();
-            pool_ipc_free(ipc, noop);
+            pool_ipc_free(ipc, |_| {});
         }
     }
 
@@ -1099,7 +1123,7 @@ mod tests {
             assert!(!swr_v1_process_pool_ipc_address(ipc, c"/tmp/x".as_ptr(), 1));
             assert!(swr_v1_process_pool_ipc_address_of(ipc, &raw mut port).is_null());
             assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
-            pool_ipc_free(ipc, noop);
+            pool_ipc_free(ipc, |_| {});
         }
         assert_eq!(port, 7);
     }
@@ -1178,11 +1202,6 @@ mod tests {
         SCRIPT.with(|script| f(&mut script.borrow_mut()))
     }
 
-    fn call(arg: *mut c_void) -> &'static mut PoolCall {
-        // SAFETY: the loop's call.
-        unsafe { &mut *arg.cast::<PoolCall>() }
-    }
-
     fn fill(call: &mut PoolCall, bytes: &[u8]) {
         // SAFETY: the loop's buffer of `length` bytes.
         unsafe {
@@ -1200,106 +1219,97 @@ mod tests {
         unsafe { std::slice::from_raw_parts(call.data.cast::<u8>(), call.length) }.to_vec()
     }
 
-    unsafe extern "C" fn running(_: *mut c_void, _: *mut c_void) -> bool {
-        with(|s| {
-            s.rounds = s.rounds.saturating_sub(1);
-            s.rounds > 0
-        })
-    }
-    unsafe extern "C" fn end(_: *mut c_void) {
-        with(|s| s.ends += 1);
-    }
-    unsafe extern "C" fn accept(arg: *mut c_void) {
-        let next = with(|s| s.accepts.pop());
-        let c = call(arg);
-        c.socket = next.map_or(ptr::null_mut(), |id| id as *mut c_void);
-        c.error = libc::EAGAIN;
-    }
-    unsafe extern "C" fn recv(arg: *mut c_void) {
-        let next = with(|s| s.recvs.remove(0));
-        fill(call(arg), &next);
-    }
-    unsafe extern "C" fn send(arg: *mut c_void) {
-        let c = call(arg);
-        let bytes = bytes_of(c);
-        c.result = bytes.len() as isize;
-        with(|s| s.sent.push(bytes));
-    }
-    unsafe extern "C" fn close(socket: *mut c_void) {
-        with(|s| s.closed.push(socket as usize));
-    }
-    unsafe extern "C" fn pipe_read(arg: *mut c_void) {
-        let (bytes, error) = with(|s| s.reads.remove(0));
-        let c = call(arg);
-        if error == 0 {
-            fill(c, &bytes);
-        } else {
-            c.result = -1;
+    /// The scripted hooks, over the thread's [`Script`].
+    struct Scripted;
+
+    impl PoolNative for Scripted {
+        fn call(&self, _: &PoolCall, _: u32, _: u64) -> i64 {
+            0
+        }
+        fn callback(&self, _: &mut PoolCall) {}
+        fn event_size(&self) -> usize {
+            128
+        }
+        fn running(&self, _: &PoolCall) -> bool {
+            with(|s| {
+                s.rounds = s.rounds.saturating_sub(1);
+                s.rounds > 0
+            })
+        }
+        fn end(&self) {
+            with(|s| s.ends += 1);
+        }
+        fn queue_pop(&self, _: &mut PoolCall) {}
+        fn queue_push(&self, _: &mut PoolCall) {}
+        fn accept(&self, c: &mut PoolCall) {
+            let next = with(|s| s.accepts.pop());
+            c.socket = next.map_or(ptr::null_mut(), |id| id as *mut c_void);
+            c.error = libc::EAGAIN;
+        }
+        fn recv(&self, c: &mut PoolCall) {
+            let next = with(|s| s.recvs.remove(0));
+            fill(c, &next);
+        }
+        fn send(&self, c: &mut PoolCall) {
+            let bytes = bytes_of(c);
+            c.result = bytes.len() as isize;
+            with(|s| s.sent.push(bytes));
+        }
+        fn close(&self, c: &PoolCall) {
+            with(|s| s.closed.push(c.socket as usize));
+        }
+        fn pipe_read(&self, c: &mut PoolCall) {
+            let (bytes, error) = with(|s| s.reads.remove(0));
+            if error == 0 {
+                fill(c, &bytes);
+            } else {
+                c.result = -1;
+                c.error = error;
+            }
+        }
+        fn pipe_wait(&self, c: &mut PoolCall) {
+            c.result = 0;
+        }
+        fn bus_read(&self, c: &mut PoolCall) {
+            let (result, error) = with(|s| s.bus.remove(0));
+            c.result = result;
             c.error = error;
         }
-    }
-    unsafe extern "C" fn pipe_wait(arg: *mut c_void) {
-        call(arg).result = 0;
-    }
-    unsafe extern "C" fn bus_read(arg: *mut c_void) {
-        let (result, error) = with(|s| s.bus.remove(0));
-        let c = call(arg);
-        c.result = result;
-        c.error = error;
-    }
-    unsafe extern "C" fn bus_deliver(_: *mut c_void) {
-        with(|s| s.delivered += 1);
-    }
-    unsafe extern "C" fn task(arg: *mut c_void) {
-        call(arg).result = with(|s| {
-            s.tasks += 1;
-            s.task_result
-        });
-    }
-    unsafe extern "C" fn message(arg: *mut c_void) {
-        let bytes = bytes_of(call(arg));
-        let (ipc, respond) = with(|s| {
-            s.messages.push(bytes);
-            (s.ipc as *mut PoolIpc, std::mem::take(&mut s.respond))
-        });
-        if !respond.is_empty() {
-            // SAFETY: the test's handle.
-            let responded = unsafe {
-                swr_v1_process_pool_ipc_respond(
-                    ipc,
-                    respond.as_ptr(),
-                    u32::try_from(respond.len()).unwrap(),
-                )
-            };
-            assert!(responded);
+        fn bus_deliver(&self, _: &mut PoolCall) {
+            with(|s| s.delivered += 1);
+        }
+        fn task(&self, c: &mut PoolCall) {
+            c.result = with(|s| {
+                s.tasks += 1;
+                s.task_result
+            });
+        }
+        fn message(&self, c: &mut PoolCall) {
+            let bytes = bytes_of(c);
+            let (ipc, respond) = with(|s| {
+                s.messages.push(bytes);
+                (s.ipc as *mut PoolIpc, std::mem::take(&mut s.respond))
+            });
+            if !respond.is_empty() {
+                // SAFETY: the test's handle.
+                let responded = unsafe {
+                    swr_v1_process_pool_ipc_respond(
+                        ipc,
+                        respond.as_ptr(),
+                        u32::try_from(respond.len()).unwrap(),
+                    )
+                };
+                assert!(responded);
+            }
+        }
+        fn shutdown(&self, _: &PoolCall) {
+            with(|s| s.shutdowns += 1);
+        }
+        fn pipe_write(&self, _: &mut PoolCall) {}
+        fn warn(&self, _: &PoolCall, kind: c_int, a: i64, b: i64) {
+            with(|s| s.warnings.push((kind, a, b)));
         }
     }
-    unsafe extern "C" fn shutdown(_: *mut c_void) {
-        with(|s| s.shutdowns += 1);
-    }
-    unsafe extern "C" fn warn(_: *mut c_void, _: *mut c_void, kind: c_int, a: i64, b: i64) {
-        with(|s| s.warnings.push((kind, a, b)));
-    }
-
-    static HOOKS: PoolHooks = PoolHooks {
-        running,
-        end,
-        queue_pop: noop,
-        queue_push: noop,
-        accept,
-        recv,
-        send,
-        close,
-        pipe_read,
-        pipe_wait,
-        bus_read,
-        bus_deliver,
-        task,
-        message,
-        shutdown,
-        pipe_write: noop,
-        warn,
-    };
 
     fn run_loop(script: Script, listener: bool, ipc_mode: u8, protocol: c_int) -> Script {
         let ipc = pool_ipc_new(listener);
@@ -1308,7 +1318,6 @@ mod tests {
             s.ipc = ipc as usize;
         });
         let pool_loop = PoolLoop {
-            hooks: &raw const HOOKS,
             ipc,
             pool: ptr::null_mut(),
             worker: ptr::null_mut(),
@@ -1318,10 +1327,10 @@ mod tests {
             max_packet_size: 64,
             event_size: 128,
         };
-        // SAFETY: the scripted hooks and a live handle.
-        assert_eq!(unsafe { pool_run(&raw const pool_loop, protocol) }, DONE);
+        // SAFETY: a live handle; the scripted hooks read no pool or worker.
+        assert_eq!(unsafe { pool_run(&Scripted, &pool_loop, protocol) }, DONE);
         // SAFETY: as above.
-        unsafe { pool_ipc_free(ipc, noop) };
+        unsafe { pool_ipc_free(ipc, |_| {}) };
         with(std::mem::take)
     }
 
