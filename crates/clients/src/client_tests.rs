@@ -180,7 +180,7 @@ pub(super) unsafe extern "C-unwind" fn swoole_event_write(
     }
 }
 /// crates/tls's `Reactor::_writable_callback`.
-pub(super) unsafe fn writable_callback(_: *mut c_void, _: *mut c_void) -> c_int {
+pub(super) unsafe fn writable_callback(_: *mut c_void, _: *mut swoole_rs_reactor::Event) -> c_int {
     log("writable");
     OK
 }
@@ -346,6 +346,19 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
 
 fn free(client: *mut Client) {
     super::free(Handle(client));
+}
+
+/// `Client_onWrite` with a reactor and event the mocks ignore.
+fn writable(client: *mut Client) -> c_int {
+    let mut event = swoole_rs_reactor::Event {
+        fd: 0,
+        reactor_id: 0,
+        fd_type: 0,
+        socket: core::ptr::null_mut(),
+    };
+    // SAFETY: the mocked effects never touch the reactor.
+    let reactor = unsafe { Running::new(core::ptr::null_mut()) };
+    on_write(Handle(client), reactor, &mut event)
 }
 
 fn flag(client: *mut Client, name: u32) -> bool {
@@ -566,7 +579,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     set_proxy(client, false);
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(&*client, true).write(100) };
-    let result = on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
+    let result = writable(client);
     assert_eq!(result, 3);
     assert_eq!(taken(), ["event 1 512", "write 3"]);
     assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_HANDSHAKE);
@@ -578,7 +591,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
 fn writable_after_a_failed_connect_reports_the_error() {
     let client = client(1, true, true);
     mock(|m| m.socket_error = libc::ECONNREFUSED);
-    on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
+    writable(client);
     assert_eq!(log::last_error(), libc::ECONNREFUSED);
     assert_eq!(
         taken(),
@@ -595,11 +608,11 @@ fn tls_connect_waits_for_the_stream_then_connects() {
     let client = client(1, true, true);
     assert_eq!(enable_ssl(Handle(client)), OK);
     taken();
-    on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
+    writable(client);
     assert_eq!(sock().tls.state, SSL_STATE_WAIT_STREAM);
     taken();
     mock(|m| m.ssl_connect_ready = true);
-    on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
+    writable(client);
     assert_eq!(taken(), ["ssl session 2", "ssl connect", "call 1 0"]);
     free(client);
 }

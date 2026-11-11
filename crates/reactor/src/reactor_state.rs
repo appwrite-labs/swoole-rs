@@ -318,11 +318,15 @@ unsafe extern "C-unwind" {
     fn system_init_reactor(reactor: *mut c_void);
 }
 #[cfg(feature = "upstream-symbols")]
-// SAFETY: crates/tls's, under its upstream symbol, and crates/clients's.
+// SAFETY: crates/tls's, under its upstream symbol, and crates/clients's; the writable
+// callback is a reactor handler, sound for any event the reactor lends it.
 unsafe extern "C" {
     fn swr_v1_clients_init_reactor(reactor: *mut c_void);
     #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
-    fn reactor_writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
+    safe fn reactor_writable_callback(
+        reactor: crate::Running<'_>,
+        event: &mut crate::Event,
+    ) -> c_int;
 }
 
 /// `new Reactor(max_event, type)`: the state [`ReactorState::open`] makes and, once

@@ -16,7 +16,7 @@ use swoole_rs_cares_sys as sdk;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{Socket, SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api, socket_upstream};
 
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
@@ -127,17 +127,13 @@ fn reactor_fields() -> *mut swoole_rs_reactor::ReactorFields {
     unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
-unsafe extern "C" fn readable(_reactor: *mut c_void, event: *mut c_void) -> i32 {
-    // SAFETY: the reactor lends its live event.
-    unsafe { process(event, 0) }
+extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
+    process(event, 0)
 }
-unsafe extern "C" fn writable(_reactor: *mut c_void, event: *mut c_void) -> i32 {
-    // SAFETY: the reactor lends its live event.
-    unsafe { process(event, 1) }
+extern "C" fn writable(_: Running<'_>, event: &mut Event) -> i32 {
+    process(event, 1)
 }
-unsafe fn process(event: *mut c_void, write: u8) -> i32 {
-    // SAFETY: the reactor's live event.
-    let event = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
+fn process(event: &Event, write: u8) -> i32 {
     let fd = event.fd;
     // SAFETY: its socket is a registered c-ares wrapper.
     let Some(socket) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {

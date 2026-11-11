@@ -297,23 +297,23 @@ pub(crate) unsafe extern "C-unwind" fn enable_accept(serv: *mut c_void) {
 /// `Server::accept_connection(reactor, event)`: the master reactor's read handler
 /// for listening sockets, over the server the reactor carries.
 ///
-/// # Safety
-/// `reactor` is the server's live reactor and `event` a read event on a listening socket.
-pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let serv = unsafe { crate::reactor_handle::Reactor::of(reactor) }
+/// Registered only on a server's reactor (its `ptr` is the live `Server`) for its
+/// listening sockets.
+pub(crate) extern "C" fn accept_connection(
+    reactor: swoole_rs_reactor::Running<'_>,
+    event: &mut swoole_rs_reactor::Event,
+) -> c_int {
+    let serv = crate::reactor_handle::Reactor::running(reactor)
         .fields()
         .ptr;
     let mut ctx = NativeContext::new(serv);
-    // SAFETY: as the caller guarantees.
-    let event_record = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
-    ctx.reactor = reactor;
-    ctx.event = event;
-    // SAFETY: as the caller guarantees, the event's live listening socket, whose object is its port.
-    let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(event_record.socket.cast()) };
+    ctx.reactor = reactor.as_ptr();
+    ctx.server_fd = event.fd;
+    // SAFETY: the event's live listening socket, whose object is its port.
+    let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(event.socket.cast()) };
     ctx.port = listener.map_or(core::ptr::null_mut(), |s| s.read(|s| s.object));
-    ctx.server_fd = event_record.fd;
-    // SAFETY: as the caller guarantees.
+    ctx.event = ptr::from_mut(event).cast();
+    // SAFETY: the server reactor's live server, and its event.
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
 }
 
