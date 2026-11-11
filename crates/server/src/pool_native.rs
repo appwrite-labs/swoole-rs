@@ -27,7 +27,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_memory::channel::Record as ChannelRecord;
-use swoole_rs_memory::members::{pool as mem_pool, sw_shm_free, sw_shm_malloc};
+use swoole_rs_memory::members::{Shm, pool as mem_pool, sw_shm_free};
 use swoole_rs_memory::{
     swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_in,
     swr_v1_memory_channel_init, swr_v1_memory_channel_lock,
@@ -331,16 +331,21 @@ fn new_message_box(size: usize) -> *mut c_void {
     if total == 0 {
         return ptr::null_mut();
     }
-    let memory = sw_shm_malloc(total);
+    let mut memory = Shm::malloc(total);
     if memory.is_null() {
         log::warning(c"Channel::make", format_args!("alloc({size}) failed"));
         return ptr::null_mut();
     }
     // SAFETY: fresh shared memory of the size the record needs.
     match unsafe {
-        swr_v1_memory_channel_init(memory.cast::<ChannelRecord>(), size, EVENT_SIZE, flags)
+        swr_v1_memory_channel_init(
+            memory.as_ptr().cast::<ChannelRecord>(),
+            size,
+            EVENT_SIZE,
+            flags,
+        )
     } {
-        0 => return memory,
+        0 => return memory.into_raw(),
         1 => {
             log::sys_warning(c"Channel::make", format_args!("pipe() failed"));
             log::warning(c"Channel::make", format_args!("notify_fd init failed"));
@@ -351,7 +356,7 @@ fn new_message_box(size: usize) -> *mut c_void {
         ),
         _ => {}
     }
-    sw_shm_free(memory);
+    memory.free();
     ptr::null_mut()
 }
 
@@ -375,7 +380,8 @@ pub(crate) fn free_message_box(pool: Pool) {
     let channel = record(pool).message_box.cast::<ChannelRecord>();
     // SAFETY: the box `new_message_box` made, with no other user.
     unsafe { swr_v1_memory_channel_close(channel) };
-    sw_shm_free(channel.cast());
+    // SAFETY: `new_message_box`'s mapping, which the pool's `message_box` only names.
+    unsafe { sw_shm_free(channel.cast()) };
 }
 
 // ---------------------------------------------------------------- timers and loop

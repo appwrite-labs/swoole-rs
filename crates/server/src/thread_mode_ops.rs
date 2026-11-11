@@ -7,7 +7,7 @@ use core::ptr::{null, null_mut};
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use swoole_rs_corebase::{sw_calloc, sw_free};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
@@ -343,17 +343,14 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CALLOC_CONNECTIONS => {
+            // Private, as `sw_calloc`'s memory was.
             let tables = ctx.tables();
-            let list = sw_calloc(
-                tables.max_connection as usize,
-                size_of::<ConnectionRecord>(),
-            );
-            tables.connection_list = list.cast();
-            u64::from(!list.is_null())
+            let size = size_of::<ConnectionRecord>();
+            tables.connection_list = Shm::calloc_private(tables.max_connection as usize, size);
+            u64::from(!tables.connection_list.is_null())
         }
         OP_FREE_THREAD_CONNECTIONS => {
-            // SAFETY: the list OP_CALLOC_CONNECTIONS allocated, or null.
-            unsafe { sw_free(ctx.tables().connection_list.cast()) };
+            ctx.tables().connection_list.free();
             0
         }
         // SAFETY: the live server.

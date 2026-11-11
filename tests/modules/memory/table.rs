@@ -504,9 +504,9 @@ fn make(rows: u32, conflict: f32) -> *mut Table {
 fn destroy(table: *mut Table) {
     let arena = unsafe { Table::destroy(table) };
     if !arena.is_null() {
-        crate::members::sw_shm_free(arena.cast());
+        unsafe { crate::members::sw_shm_free(arena.cast()) };
     }
-    crate::members::sw_shm_free(table.cast());
+    unsafe { crate::members::sw_shm_free(table.cast()) };
 }
 
 struct Upstream(*mut Table);
