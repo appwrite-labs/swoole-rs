@@ -7,13 +7,13 @@ use core::ptr::{null, null_mut};
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use crate::factory_ops::run;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
-use swoole_rs_process::workers::factory_methods::run;
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
 use swoole_rs_process::workers::ops::{
     LOG_CALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CREATE_MESSAGE_BUS, OP_DESTROY_MESSAGE_BUS,
@@ -303,11 +303,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
-    let port = || {
-        let index = usize::try_from(arg).ok()?;
-        let config = ctx.state().tables_ref().port_config(index)?;
-        Some((ctx.server().port_at(index), config))
-    };
+    let port = || ctx.server().port_at(usize::try_from(arg).ok()?);
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
             let threads = crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num);
@@ -378,8 +374,8 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_COUNT => ctx.server().ports().len() as u64,
-        OP_PORT_DGRAM => u64::from(matches!(port()?.1.r#type, 2 | 4 | 6)),
-        OP_PORT_LISTEN => sign((methods().listen)(port()?.0)),
+        OP_PORT_DGRAM => u64::from(matches!(port()?.config().r#type, 2 | 4 | 6)),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?.raw())),
         OP_PORT_ADD => {
             let socket = ctx.server().port_socket_at(usize::try_from(arg).ok()?)?;
             Reactor::thread().add(socket, SW_EVENT_READ);

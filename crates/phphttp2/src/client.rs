@@ -176,18 +176,18 @@ struct Response {
 
 impl Response {
     fn new(id: u32) -> Self {
-        // SAFETY: the response class is registered.
-        let zval = unsafe { Owned::new_object(RESPONSE.entry()) };
+        let zval = RESPONSE.create_object();
         let object = zval.object().unwrap_or_else(ptr::null_mut);
         let response = Self { zval, object };
-        response.props().long(c"streamId", i64::from(id));
+        if let Some(props) = response.props() {
+            props.long(c"streamId", i64::from(id));
+        }
         response
     }
 
-    /// Writes under the response class.
-    fn props(&self) -> Props<'_> {
-        // SAFETY: the object `zval` holds, live while borrowed.
-        unsafe { Props::new(RESPONSE.entry(), self.object) }
+    /// Writes under the response class; None if Zend made no object.
+    fn props(&self) -> Option<Props<'_>> {
+        self.zval.props(Some(&RESPONSE))
     }
 }
 
@@ -860,16 +860,17 @@ impl Client {
             return Frame::Continue;
         }
         let end = plan.end != 0;
-        let response = stream.response.props();
-        if facts.kind == TYPE_RST_STREAM {
-            response.own().long(c"statusCode", SERVER_RESET);
-            // A reset deletes its stream above, so upstream's stream_error is 0 here.
-            response.own().long(c"errCode", 0);
+        if let Some(response) = stream.response.props() {
+            if facts.kind == TYPE_RST_STREAM {
+                response.own().long(c"statusCode", SERVER_RESET);
+                // A reset deletes its stream above, so upstream's stream_error is 0 here.
+                response.own().long(c"errCode", 0);
+            }
+            if !stream.buffer.is_empty() {
+                response.bytes(c"data", &stream.buffer);
+            }
         }
-        if !stream.buffer.is_empty() {
-            response.bytes(c"data", &stream.buffer);
-            stream.buffer.clear();
-        }
+        stream.buffer.clear();
         // The return value takes the stream's response; a pipeline stream
         // goes on with a fresh one.
         if end {
@@ -877,7 +878,9 @@ impl Client {
                 call.set_owned(stream.response.zval);
             }
         } else {
-            response.bool(c"pipeline", true);
+            if let Some(response) = stream.response.props() {
+                response.bool(c"pipeline", true);
+            }
             let done = std::mem::replace(&mut stream.response, Response::new(id));
             call.set_owned(done.zval);
         }
@@ -1000,12 +1003,9 @@ impl Client {
                 if name.first() == Some(&b':') {
                     if kind == HEADER_STATUS
                         && let Some(stream) = self.streams.get(&id)
+                        && let Some(props) = stream.response.props()
                     {
-                        stream
-                            .response
-                            .props()
-                            .own()
-                            .long(c"statusCode", atol(text));
+                        props.own().long(c"statusCode", atol(text));
                     }
                 } else {
                     let Some(stream) = self.streams.get_mut(&id) else {

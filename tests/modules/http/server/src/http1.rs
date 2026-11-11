@@ -734,7 +734,7 @@ impl Server {
     fn add_port(self, kind: c_int, host: &str, port: c_int) -> Option<Port> {
         let host = CString::new(host).unwrap();
         let port = server_methods::add_port(self.view(), kind, &host, port);
-        (!port.is_null()).then_some(Port(port))
+        port.map(|port| Port(port.raw()))
     }
 
     /// `ports.front()`.

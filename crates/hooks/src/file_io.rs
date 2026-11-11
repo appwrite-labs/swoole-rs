@@ -29,16 +29,13 @@ fn offset(done: usize) -> u64 {
 
 /// The open file: `flags` as `open(2)` takes them, created 0644.
 fn open(file: &CStr, flags: c_int) -> Option<File> {
-    let mode: libc::c_uint = 0o644;
-    // SAFETY: a C string; the mode is read only with O_CREAT.
-    let fd = unsafe { libc::open(file.as_ptr(), flags, mode) };
+    let fd = swoole_rs_corebase::sys::open(file, flags, 0o644);
     // SAFETY: a new fd, owned by the `File` from here.
     (fd != -1).then(|| unsafe { File::from_raw_fd(fd) })
 }
 
 fn flock(file: &File, operation: c_int) -> bool {
-    // SAFETY: flock has no memory preconditions.
-    unsafe { libc::flock(file.as_raw_fd(), operation) == 0 }
+    swoole_rs_corebase::sys::flock(file.as_raw_fd(), operation) == 0
 }
 
 /// `file_get_size`: the size of a regular file.
