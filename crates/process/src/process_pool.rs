@@ -77,6 +77,18 @@ pub struct PoolRecord {
     pub ptr: *mut c_void,
 }
 
+impl PoolRecord {
+    /// The worker record at `index` (`worker_id - start_id`), if the pool has one.
+    #[must_use]
+    pub fn worker(&self, index: usize) -> Option<Worker<'_>> {
+        if self.workers.is_null() || index >= self.worker_num as usize {
+            return None;
+        }
+        // SAFETY: a pool's `workers` holds its `worker_num` records, live while it is.
+        Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
+    }
+}
+
 /// What every export runs over (`crates/server/src/pool_native.rs`): the pool's
 /// native objects, which this crate can't depend on, and its callbacks. Each takes
 /// a [`PoolCall`] this crate filled over live objects.

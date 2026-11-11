@@ -355,7 +355,7 @@ impl Worker<'_> {
 /// it shares with the pool, nor touch one the message bus owns; without
 /// `onMessage`, a message-queue pool's process pushes and pops the pool's
 /// queue. Returns the copy's pipe fd, or -1 unless the pool talks over unix
-/// sockets.
+/// sockets (and, leaving `copy` alone, when the pool has no worker `id`).
 ///
 /// # Safety
 /// `pool` is a created pool with a worker `id`; `copy` is a writable record.
@@ -369,8 +369,11 @@ pub unsafe fn copy_for_process(
     const MSGQUEUE_BALANCE: u8 = 2;
     // SAFETY: the caller lends a created pool.
     let pool = unsafe { &*pool };
+    let Some(worker) = pool.worker(id) else {
+        return -1;
+    };
     // SAFETY: the pool's worker `id`, copied by value as upstream's `new Worker(...)` does.
-    let mut worker = unsafe { pool.workers.wrapping_add(id).read() };
+    let mut worker = unsafe { worker.raw().read() };
     let mut pipe = -1;
     if pool.ipc_mode == IPC_UNIXSOCK {
         worker.pipe_current = if worker.id == crate::methods::swoole_get_worker_id() {
@@ -433,6 +436,7 @@ mod tests {
         workers[1].pipe_object = core::ptr::dangling_mut();
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers = workers.as_mut_ptr();
+        pool.worker_num = 2;
         pool.ipc_mode = 1;
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // Another process's worker: the master's end of its pipe.

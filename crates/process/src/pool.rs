@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use swoole_rs_corebase::sys::set_errno;
 
-use crate::process_pool::PoolNative;
+use crate::process_pool::{PoolNative, PoolRecord};
 use crate::worker_record::WorkerRecord;
 
 /// A loop's result: it ended, or PHP bailed out inside a hook.
@@ -1029,8 +1029,8 @@ pub unsafe fn swr_v1_process_worker_send(
 /// the event (`blocking`: wait for the pipe). False after reporting a failed send.
 ///
 /// # Safety
-/// As [`swr_v1_process_worker_send`]; `workers` holds `count` live records,
-/// `worker_id` is writable, `event` holds `size` bytes.
+/// As [`swr_v1_process_worker_send`]; `pool` is a live [`PoolRecord`] whose
+/// `count` records are `workers`, `worker_id` is writable, `event` holds `size` bytes.
 #[expect(
     clippy::too_many_arguments,
     reason = "the flat list of the former C export; `Pool::dispatch` is the one caller"
@@ -1062,16 +1062,17 @@ pub unsafe fn pool_dispatch(
     }
     *target += c_int::from(start_id);
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
-    let worker = workers.wrapping_add(index);
-    // SAFETY: the chosen worker's record.
-    let id = unsafe { Record::new(worker).id() };
-    // SAFETY: as above.
-    let pipe = unsafe { Record::new(worker).pipe_master() };
+    // SAFETY: the caller's pool record, borrowed only while it names the worker.
+    let worker = unsafe { &*pool.cast::<PoolRecord>() }
+        .worker(index)
+        .map(|worker| (worker.id(), worker.pipe_master()));
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
-    // SAFETY: as the caller guarantees.
-    let sent = unsafe {
-        swr_v1_process_worker_send(native, pool, pipe, queue, id, event, size as usize, flags)
-    };
+    let sent = worker.map_or(-1, |(id, pipe)| {
+        // SAFETY: as the caller guarantees.
+        unsafe {
+            swr_v1_process_worker_send(native, pool, pipe, queue, id, event, size as usize, flags)
+        }
+    });
     if sent < 0 {
         let call = PoolCall::new(pool, ptr::null_mut());
         native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
