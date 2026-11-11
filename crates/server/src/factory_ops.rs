@@ -209,9 +209,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_INIT_BARRIERS => barriers(true),
         OP_DESTROY_BARRIERS => barriers(false),
-        OP_NEW_PROCESS_FACTORY => {
-            crate::factory::new(serv, core::ptr::null_mut()).expose_provenance() as u64
-        }
+        OP_NEW_PROCESS_FACTORY => crate::factory::new(serv, None).expose_provenance() as u64,
         OP_DESTROY_MESSAGE_BOX => {
             // A shared mapping crates/server's new_message_box made.
             crate::pool_native::free_message_box(ctx.workers().event_pool);

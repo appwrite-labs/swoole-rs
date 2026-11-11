@@ -2410,7 +2410,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_NEW_BASE_FACTORY => {
-            o.ctx.object = crate::factory::new(serv, core::ptr::null_mut());
+            o.ctx.object = crate::factory::new(serv, None);
             0
         }
         OP_FACTORY_NOTIFY => u64::from(crate::factory::notify(o.state, o.ctx.object)),
