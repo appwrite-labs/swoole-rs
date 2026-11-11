@@ -550,11 +550,13 @@ pub mod pool {
         impl Sealed for std::sync::atomic::AtomicU64 {}
     }
 
-    /// `count` zero words from [`alloc`], as long as PHP runs: `Swoole\Atomic`'s
-    /// and `Swoole\Lock`'s.
+    /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
+    /// and `Swoole\Lock`'s. The pool counts a user that never leaves, so [`delete`]
+    /// keeps the pages these words sit in mapped.
     #[must_use]
     pub fn words<W: Word>(count: usize) -> Option<&'static [W]> {
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
+        POOL.users.fetch_add(1, SeqCst);
         let block = alloc(size).cast::<W>();
         // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
         // for each `Word`), which the pool gives no one else.
