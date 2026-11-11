@@ -10,9 +10,9 @@ use crate::{
     native::{Co, swoole_rs_php_error, unconstructed},
     socket::Sock,
 };
-use libc::{c_char, c_int, c_void};
+use libc::{c_int, c_void};
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     ffi::{CStr, CString},
     mem::MaybeUninit,
     ptr,
@@ -24,14 +24,14 @@ use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
+    ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
     sys::{
-        E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_http_build_query,
-        swr_zend_sensitive_parameter, zend_class_entry, zend_object, zend_object_handlers, zval,
+        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_http_build_query, swr_zend_sensitive_parameter,
+        zend_class_entry, zend_object, zval,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -72,17 +72,26 @@ const BODY_SIZE: usize = 65536;
 
 /// Which compression Swoole was built with (1 zlib, 2 brotli, 4 zstd).
 static FEATURES: AtomicU32 = AtomicU32::new(0);
-static CLIENT: Class = Class::new();
+static CLIENT: CustomClass<Data> = CustomClass::new();
 static EXCEPTION: Class = Class::new();
 
-/// `struct HttpClientObject { Client *client; zend_object std; }`: zeroed,
-/// no client.
-#[repr(C)]
+/// `struct HttpClientObject { Client *client; zend_object std; }`: the client
+/// the constructor makes. Methods, and the PHP code they run (`write_func`,
+/// or another coroutine while one yields), share it, so it is only ever
+/// borrowed shared and its mutable state is in cells.
+#[derive(Default)]
 pub(crate) struct Data {
-    client: Option<Box<Client>>,
+    client: OnceCell<Client>,
 }
 
-type ClientObject = Object<Data>;
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &CLIENT
+    }
+    fn new() -> Self {
+        Self::default()
+    }
+}
 
 /// What the socket's close hook changes, shared with the hook apart from the
 /// client so the hook never writes through a live `&mut Client`.
@@ -102,7 +111,9 @@ impl Drop for Conn {
     }
 }
 
-/// Upstream's `swoole::coroutine::http::Client`.
+/// Upstream's `swoole::coroutine::http::Client`. Every method takes `&self`:
+/// a `&mut` would stay live across `write_func` and socket yields, while the
+/// PHP code they run calls the client's methods.
 struct Client {
     object: *mut zend_object,
     conn: Rc<Conn>,
@@ -111,85 +122,90 @@ struct Client {
     port: u16,
     ssl: bool,
     use_default_port: bool,
-    connect_timeout: f64,
-    response_timeout: f64,
-    max_retries: u8,
-    defer: bool,
-    lowercase_header: bool,
-    keep_alive: bool,
-    http_compression: bool,
-    body_decompression: bool,
-    websocket: bool,
-    accept_websocket_compression: bool,
+    connect_timeout: Cell<f64>,
+    response_timeout: Cell<f64>,
+    max_retries: Cell<u8>,
+    defer: Cell<bool>,
+    lowercase_header: Cell<bool>,
+    keep_alive: Cell<bool>,
+    http_compression: Cell<bool>,
+    body_decompression: Cell<bool>,
+    websocket: Cell<bool>,
+    accept_websocket_compression: Cell<bool>,
     ws: Option<Box<dyn WebSocket>>,
-    write_func: Option<Rc<Callable>>,
-    path: Vec<u8>,
-    basic_auth: Vec<u8>,
-    head: bool,
-    resolve: Box<swoole_rs_corebase::NameResolverContext>,
-    parser: Parser,
-    wait_response: bool,
-    header_field: (*const u8, usize),
-    body: Vec<u8>,
-    compress: Compress,
-    compression_error: bool,
-    decoder: Option<Decoder>,
-    chunked: bool,
-    connection_close: bool,
-    completed: bool,
-    event_stream: bool,
-    in_callback: bool,
-    has_upload_files: bool,
-    download_name: Option<ZString>,
-    download_offset: i64,
+    /// Cloned out before each call, so `set()` from the callback can replace it.
+    write_func: RefCell<Option<Rc<Callable>>>,
+    basic_auth: RefCell<Vec<u8>>,
+    head: Cell<bool>,
+    /// The socket writes it through a pointer while it connects.
+    resolve: RefCell<swoole_rs_corebase::NameResolverContext>,
+    /// The last response's status, which `exec` and `upgrade` read.
+    status: Cell<u16>,
+    wait_response: Cell<bool>,
+    body: RefCell<Vec<u8>>,
+    compress: Cell<Compress>,
+    compression_error: Cell<bool>,
+    decoder: RefCell<Option<Decoder>>,
+    connection_close: Cell<bool>,
+    completed: Cell<bool>,
+    event_stream: Cell<bool>,
+    in_callback: Cell<bool>,
+    has_upload_files: Cell<bool>,
+    download_name: RefCell<Option<ZString>>,
+    download_offset: Cell<i64>,
     /// The open download's descriptor.
-    download_file: Option<c_int>,
+    download_file: Cell<Option<c_int>>,
     /// The `write_func` callback bailed out; unwind and re-raise.
-    bailout: bool,
+    bailout: Cell<bool>,
 }
 
-/// The client's llhttp callbacks, through the pointer `recv_response` parses with.
-struct Hooks(*mut Client);
+/// One response's parser and the header name it last saw, with the client
+/// it reports to, shared: the callbacks can run `write_func`.
+struct Hooks<'a> {
+    parser: Parser,
+    client: &'a Client,
+    field: (*const u8, usize),
+}
 
-impl Callbacks for Hooks {
+impl Callbacks for Hooks<'_> {
     fn parser(&mut self) -> &mut Parser {
-        // SAFETY: the client, live while `recv_response` parses.
-        unsafe { &mut (*self.0).parser }
+        &mut self.parser
     }
 
     fn on_header_field(&mut self, data: &[u8]) -> c_int {
-        on_header_field(self.0, data.as_ptr().cast(), data.len())
+        self.field = (data.as_ptr(), data.len());
+        0
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> c_int {
-        on_header_value(self.0, data.as_ptr().cast(), data.len())
+        on_header_value(self, data)
     }
 
     fn on_headers_complete(&mut self) -> c_int {
-        on_headers_complete(self.0)
+        c_int::from(self.client.head.get() || self.parser.status_code == NO_CONTENT)
     }
 
     fn on_body(&mut self, data: &[u8]) -> c_int {
-        on_body(self.0, data.as_ptr().cast(), data.len())
+        on_body(self.client, data)
     }
 
     fn on_message_complete(&mut self) -> c_int {
-        on_message_complete(self.0)
+        on_message_complete(self)
     }
 }
 
-/// `swoole_llhttp_parser_execute`: how many bytes parsed; a pause resumes.
-fn parse(this: *mut Client, data: &[u8]) -> usize {
-    let result = llhttp::execute(&mut Hooks(this), data);
-    if result == llhttp::HPE_OK {
-        return data.len();
+impl Hooks<'_> {
+    /// `swoole_llhttp_parser_execute`: how many bytes parsed; a pause resumes.
+    fn parse(&mut self, data: &[u8]) -> usize {
+        let result = llhttp::execute(self, data);
+        if result == llhttp::HPE_OK {
+            return data.len();
+        }
+        let parsed = self.parser.error_pos();
+        self.parser.resume();
+        self.parser.resume_after_upgrade();
+        parsed
     }
-    // SAFETY: the client, live while `recv_response` parses.
-    let parser = unsafe { &mut (*this).parser };
-    let parsed = parser.error_pos();
-    parser.resume();
-    parser.resume_after_upgrade();
-    parsed
 }
 
 fn features() -> u32 {
@@ -324,7 +340,7 @@ impl Client {
         unsafe { swoole_rs_zend::property(self.object, name) }.long()
     }
 
-    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Box<Self> {
+    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Self {
         let use_default_port = port == 0;
         let port = if use_default_port {
             if ssl { 443 } else { 80 }
@@ -338,7 +354,7 @@ impl Client {
             written: Cell::new(ptr::null_mut()),
         });
         let mut host = host.to_vec();
-        Box::new(Self {
+        Self {
             object,
             conn,
             socket_type: request::socket_type(&mut host),
@@ -351,41 +367,37 @@ impl Client {
             port: port as u16,
             ssl,
             use_default_port,
-            connect_timeout: 0.0,
-            response_timeout: 0.0,
-            max_retries: 0,
-            defer: false,
-            lowercase_header: true,
-            keep_alive: true,
-            http_compression: true,
-            body_decompression: true,
-            websocket: false,
-            accept_websocket_compression: false,
-            // SAFETY: a fresh C++ allocation the client frees.
+            connect_timeout: Cell::new(0.0),
+            response_timeout: Cell::new(0.0),
+            max_retries: Cell::new(0),
+            defer: Cell::new(false),
+            lowercase_header: Cell::new(true),
+            keep_alive: Cell::new(true),
+            http_compression: Cell::new(true),
+            body_decompression: Cell::new(true),
+            websocket: Cell::new(false),
+            accept_websocket_compression: Cell::new(false),
             ws: native::websocket(),
-            write_func: None,
-            path: Vec::new(),
-            basic_auth: Vec::new(),
-            head: false,
-            resolve: Box::default(),
-            parser: Parser::default(),
-            wait_response: false,
-            header_field: (ptr::null(), 0),
-            body: Vec::new(),
-            compress: Compress::None,
-            compression_error: false,
-            decoder: None,
-            chunked: false,
-            connection_close: false,
-            completed: false,
-            event_stream: false,
-            in_callback: false,
-            has_upload_files: false,
-            download_name: None,
-            download_offset: 0,
-            download_file: None,
-            bailout: false,
-        })
+            write_func: RefCell::default(),
+            basic_auth: RefCell::default(),
+            head: Cell::new(false),
+            resolve: RefCell::default(),
+            status: Cell::new(0),
+            wait_response: Cell::new(false),
+            body: RefCell::default(),
+            compress: Cell::new(Compress::None),
+            compression_error: Cell::new(false),
+            decoder: RefCell::default(),
+            connection_close: Cell::new(false),
+            completed: Cell::new(false),
+            event_stream: Cell::new(false),
+            in_callback: Cell::new(false),
+            has_upload_files: Cell::new(false),
+            download_name: RefCell::default(),
+            download_offset: Cell::new(0),
+            download_file: Cell::new(None),
+            bailout: Cell::new(false),
+        }
     }
 
     /// The live socket, read fresh: the close hook may have cleared it.
@@ -420,7 +432,7 @@ impl Client {
         true
     }
 
-    fn apply_setting(&mut self, settings: &Value, check_all: bool) {
+    fn apply_setting(&self, settings: &Value, check_all: bool) {
         let Some(array) = settings.array().filter(|array| array.count() > 0) else {
             return;
         };
@@ -432,13 +444,13 @@ impl Client {
                 let Some(timeout) = found.applied_double() else {
                     return;
                 };
-                self.connect_timeout = timeout;
+                self.connect_timeout.set(timeout);
             }
             if let Some(found) = get(b"timeout") {
                 let Some(timeout) = found.applied_double() else {
                     return;
                 };
-                self.response_timeout = timeout;
+                self.response_timeout.set(timeout);
             }
             if let Some(found) = get(b"max_retries") {
                 let Some(retries) = found.applied_long() else {
@@ -450,24 +462,22 @@ impl Client {
                     clippy::cast_sign_loss,
                     reason = "upstream's (uint8_t) cast"
                 )]
-                {
-                    self.max_retries = retries as u8;
-                }
+                self.max_retries.set(retries as u8);
             }
             if let Some(found) = get(b"defer") {
-                self.defer = truthy(found);
+                self.defer.set(truthy(found));
             }
             if let Some(found) = get(b"lowercase_header") {
-                self.lowercase_header = truthy(found);
+                self.lowercase_header.set(truthy(found));
             }
             if let Some(found) = get(b"keep_alive") {
-                self.keep_alive = truthy(found);
+                self.keep_alive.set(truthy(found));
             }
             if let Some(found) = get(b"http_compression") {
-                self.http_compression = truthy(found);
+                self.http_compression.set(truthy(found));
             }
             if let Some(found) = get(b"body_decompression") {
-                self.body_decompression = truthy(found);
+                self.body_decompression.set(truthy(found));
             }
             if let Some(found) = get(b"write_func") {
                 drop(self.write_func.take());
@@ -479,12 +489,12 @@ impl Client {
                     None
                 });
                 // The old callable's destructor may have set a write_func: this one replaces it.
-                drop(std::mem::replace(&mut self.write_func, created));
+                drop(self.write_func.replace(created));
                 if bailout::pending() {
                     return;
                 }
             }
-            if let Some(ws) = self.ws.as_mut() {
+            if let Some(ws) = &self.ws {
                 ws.apply(array);
             }
         }
@@ -496,20 +506,24 @@ impl Client {
         }
     }
 
-    fn set_basic_auth(&mut self, username: &[u8], password: &[u8]) {
+    fn set_basic_auth(&self, username: &[u8], password: &[u8]) {
         let input = [username, b":", password].concat();
         let mut encoded = vec![0_u8; input.len().div_ceil(3) * 4 + 1];
         let written = swoole_rs_base64::encode(&input, &mut encoded);
         let encoded = encoded.get(..written).unwrap_or(&encoded);
-        self.basic_auth = [b"Basic ".as_slice(), encoded].concat();
+        self.basic_auth
+            .replace([b"Basic ".as_slice(), encoded].concat());
     }
 
-    fn connect(&mut self) -> bool {
+    fn connect(&self) -> bool {
         if self.co().is_some() {
             return true;
         }
-        if self.body.capacity() == 0 {
-            self.body.reserve(BODY_SIZE);
+        {
+            let mut body = self.body.borrow_mut();
+            if body.capacity() == 0 {
+                body.reserve(BODY_SIZE);
+            }
         }
         let zsocket = match native::swoole_http_client_coro_create_socket(self.socket_type) {
             Ok(zsocket) => zsocket,
@@ -524,7 +538,7 @@ impl Client {
             return false;
         };
         let published = zsocket.copy();
-        *self.conn.zsocket.borrow_mut() = zsocket;
+        drop(self.conn.zsocket.replace(zsocket));
         self.conn.socket.set(Some(socket));
         if self.ssl && !socket.enable_ssl() {
             self.set_socket_error(socket, CONNECT_FAILED);
@@ -534,14 +548,15 @@ impl Client {
         // SAFETY: `$this` declares `setting`.
         let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") };
         self.apply_setting(settings, false);
-        self.websocket = false;
-        self.accept_websocket_compression = false;
+        self.websocket.set(false);
+        self.accept_websocket_compression.set(false);
         let conn = Rc::clone(&self.conn);
-        // SAFETY: the client's resolve context outlives its socket.
+        // SAFETY: the client's resolve context outlives its socket, and no
+        // borrow of it is held while the socket writes it.
         unsafe {
             socket.configure_http(
-                self.connect_timeout,
-                (&raw mut *self.resolve).cast(),
+                self.connect_timeout.get(),
+                self.resolve.as_ptr().cast(),
                 Box::new(move |_| socket_closed(&conn, socket)),
             );
         }
@@ -555,7 +570,7 @@ impl Client {
         true
     }
 
-    fn keep_liveness(&mut self) -> bool {
+    fn keep_liveness(&self) -> bool {
         if !self.co().is_some_and(Co::check_liveness) {
             if let Some(socket) = self.co() {
                 socket.check_bound(EVENT_RDWR);
@@ -563,7 +578,7 @@ impl Client {
                 self.close(false);
             }
             let mut attempt = 0;
-            while attempt < u32::from(self.max_retries) + 1 && !bailout::pending() {
+            while attempt < u32::from(self.max_retries.get()) + 1 && !bailout::pending() {
                 if self.connect() {
                     return true;
                 }
@@ -578,9 +593,9 @@ impl Client {
         clippy::too_many_lines,
         reason = "upstream's send_request, in its order"
     )]
-    fn send_request(&mut self) -> bool {
+    fn send_request(&self, path: &[u8]) -> bool {
         let object = self.object;
-        if self.path.is_empty() {
+        if path.is_empty() {
             set_error_properties(self.props(), INVALID_PARAMS, strerror(INVALID_PARAMS));
             return false;
         }
@@ -598,16 +613,20 @@ impl Client {
         };
         socket.check_bound(EVENT_WRITE);
         swoole_rs_corebase::log::set_last_error(0);
-        self.body.clear();
+        self.body.borrow_mut().clear();
 
         // SAFETY: `$this` declares each property, and nothing changes them while sending.
         let method = unsafe { props::not_null(object, c"requestMethod") };
         // SAFETY: as above.
         let headers = unsafe { swoole_rs_zend::property(object, c"requestHeaders") }.array();
+        // The body and files with references of their own: a multipart send yields
+        // between its writes, and `setData()` or `addFile()` may replace or add to
+        // them meanwhile (an add separates the shared array).
         // SAFETY: as above.
-        let body = unsafe { props::not_null(object, c"requestBody") };
+        let body = unsafe { props::not_null(object, c"requestBody") }.map(Value::copy);
         // SAFETY: as above.
-        let files = unsafe { swoole_rs_zend::property(object, c"uploadFiles") }.array();
+        let files = unsafe { swoole_rs_zend::property(object, c"uploadFiles") }.copy();
+        let body = body.as_deref();
         // SAFETY: as above.
         let cookies = unsafe { swoole_rs_zend::property(object, c"cookies") }.array();
         // SAFETY: as above.
@@ -617,8 +636,8 @@ impl Client {
             .and_then(|headers| headers.find(b"Host").or_else(|| headers.find(b"host")))
             .map(Value::string);
         if let Some(download) = download {
-            self.download_name = Some(download.string());
-            self.download_offset = self.get_long(c"downloadOffset");
+            self.download_name.replace(Some(download.string()));
+            self.download_offset.set(self.get_long(c"downloadOffset"));
         }
 
         let mut out = Vec::with_capacity(256);
@@ -628,15 +647,15 @@ impl Client {
             None if body.is_some() => b"POST",
             None => b"GET",
         };
-        self.head = method_name.eq_ignore_ascii_case(b"HEAD");
+        self.head.set(method_name.eq_ignore_ascii_case(b"HEAD"));
         out.extend_from_slice(method_name);
         out.push(b' ');
 
         if socket.proxied() {
             let host = host_header.as_ref().map_or(&self.host[..], ZString::bytes);
-            request::proxy_uri(&mut out, host, &self.path, self.port);
+            request::proxy_uri(&mut out, host, path, self.port);
         } else {
-            out.extend_from_slice(&self.path);
+            out.extend_from_slice(path);
         }
         out.extend_from_slice(b" HTTP/1.1\r\n");
 
@@ -678,7 +697,7 @@ impl Client {
                 if key.eq_ignore_ascii_case(b"Connection") {
                     has_connection = true;
                     if text.bytes().eq_ignore_ascii_case(b"close") {
-                        self.keep_alive = false;
+                        self.keep_alive.set(false);
                     }
                 }
             }
@@ -686,18 +705,21 @@ impl Client {
         if let Some(auth) = socket.proxy_authorization() {
             request::header(&mut out, b"Proxy-Authorization", &auth);
         }
-        if !self.basic_auth.is_empty() {
-            request::header(&mut out, b"Authorization", &self.basic_auth);
+        let auth = self.basic_auth.borrow();
+        if !auth.is_empty() {
+            request::header(&mut out, b"Authorization", &auth);
         }
+        drop(auth);
         if !has_connection {
-            let value: &[u8] = if self.keep_alive {
+            let value: &[u8] = if self.keep_alive.get() {
                 b"keep-alive"
             } else {
                 b"closed"
             };
             request::header(&mut out, b"Connection", value);
         }
-        if let Some(encoding) = compression.filter(|_| self.http_compression && !has_encoding) {
+        if let Some(encoding) = compression.filter(|_| self.http_compression.get() && !has_encoding)
+        {
             request::header(&mut out, b"Accept-Encoding", encoding);
         }
 
@@ -722,8 +744,8 @@ impl Client {
             out.extend_from_slice(b"\r\n");
         }
 
-        let files = files.filter(|files| files.count() > 0);
-        self.has_upload_files = files.is_some();
+        let files = files.array().filter(|files| files.count() > 0);
+        self.has_upload_files.set(files.is_some());
         if let Some(files) = files {
             return self.send_multipart(out, body, files);
         }
@@ -761,12 +783,12 @@ impl Client {
         if !self.send(&out) {
             return self.send_failed();
         }
-        self.wait_response = true;
+        self.wait_response.set(true);
         true
     }
 
     /// `send_request`'s multipart/form-data branch, from the headers so far.
-    fn send_multipart(&mut self, mut out: Vec<u8>, body: Option<&Value>, files: &Array) -> bool {
+    fn send_multipart(&self, mut out: Vec<u8>, body: Option<&Value>, files: &Array) -> bool {
         let boundary = request::boundary();
         request::multipart_type(&mut out, &boundary);
         let fields = body.and_then(Value::array);
@@ -822,7 +844,7 @@ impl Client {
         if !self.send_raw(&request::closing(&boundary)) {
             return self.send_failed();
         }
-        self.wait_response = true;
+        self.wait_response.set(true);
         true
     }
 
@@ -839,7 +861,7 @@ impl Client {
             .is_some_and(|socket| socket.sendfile(path, offset, size))
     }
 
-    fn send_failed(&mut self) -> bool {
+    fn send_failed(&self) -> bool {
         if let Some(socket) = self.co() {
             self.set_socket_error(socket, SEND_FAILED);
         }
@@ -848,25 +870,24 @@ impl Client {
     }
 
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
-    fn exec(&mut self, path: &[u8]) -> bool {
-        self.path = path.to_vec();
+    fn exec(&self, path: &[u8]) -> bool {
         crate::resolver::swoole_name_resolver_context_reset(
-            &mut self.resolve,
+            &mut self.resolve.borrow_mut(),
             self.use_default_port,
         );
         let mut attempt = 0;
-        while attempt < u32::from(self.max_retries) + 1 {
-            if !self.send_request() {
+        while attempt < u32::from(self.max_retries.get()) + 1 {
+            if !self.send_request(path) {
                 return false;
             }
-            if self.defer {
+            if self.defer.get() {
                 return true;
             }
-            if !self.recv_response(0.0) || self.bailout {
+            if !self.recv_response(0.0) || self.bailout.get() {
                 return false;
             }
-            let status = self.parser.status_code;
-            if self.max_retries > 0 && matches!(status, BAD_GATEWAY | SERVICE_UNAVAILABLE) {
+            let status = self.status.get();
+            if self.max_retries.get() > 0 && matches!(status, BAD_GATEWAY | SERVICE_UNAVAILABLE) {
                 self.close(true);
                 attempt += 1;
                 continue;
@@ -876,8 +897,8 @@ impl Client {
         false
     }
 
-    fn recv_response(&mut self, timeout: f64) -> bool {
-        if !self.wait_response {
+    fn recv_response(&self, timeout: f64) -> bool {
+        if !self.wait_response.get() {
             return false;
         }
         let Some(socket) = self.co() else {
@@ -887,10 +908,13 @@ impl Client {
         let mut total = 0_usize;
         let mut header_completed = false;
         let mut header_offset = 0_usize;
-        let this: *mut Self = self;
-        self.parser = Parser::new(llhttp::RESPONSE);
+        let mut hooks = Hooks {
+            parser: Parser::new(llhttp::RESPONSE),
+            client: self,
+            field: (ptr::null(), 0),
+        };
         let timeout = if timeout == 0.0 {
-            self.response_timeout
+            self.response_timeout.get()
         } else {
             timeout
         };
@@ -906,8 +930,8 @@ impl Client {
             if received <= 0 {
                 if received == 0 {
                     socket.set_err(libc::ECONNRESET);
-                    if total > 0 && !self.parser.should_keep_alive() {
-                        llhttp::finish(&mut Hooks(this));
+                    if total > 0 && !hooks.parser.should_keep_alive() {
+                        llhttp::finish(&mut hooks);
                         success = true;
                     }
                 }
@@ -936,8 +960,9 @@ impl Client {
             total += count;
             // SAFETY: the buffer's first `count` bytes are this response's data.
             let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), count) };
-            let parsed = parse(this, data);
-            if self.bailout {
+            let parsed = hooks.parse(data);
+            self.status.set(hooks.parser.status_code);
+            if self.bailout.get() {
                 return false;
             }
             if socket
@@ -946,15 +971,15 @@ impl Client {
             {
                 break;
             }
-            if self.parser.error != llhttp::HPE_OK {
+            if hooks.parser.error != llhttp::HPE_OK {
                 socket.set_err(INVALID_PROTOCOL);
                 break;
             }
-            if self.event_stream && self.parser.needs_eof() {
-                llhttp::finish(&mut Hooks(this));
+            if self.event_stream.get() && hooks.parser.needs_eof() {
+                llhttp::finish(&mut hooks);
             }
-            if self.completed {
-                if self.parser.upgrade != 0 && count > parsed + WEBSOCKET_HEADER {
+            if self.completed.get() {
+                if hooks.parser.upgrade != 0 && count > parsed + WEBSOCKET_HEADER {
                     // Keep the bytes past the handshake (`reduce`).
                     #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
                     let parsed = parsed as i64;
@@ -980,7 +1005,7 @@ impl Client {
             self.close(true);
             return false;
         }
-        if self.websocket {
+        if self.websocket.get() {
             if !self.verify_handshake() {
                 self.set_error(
                     HANDSHAKE_FAILED,
@@ -992,7 +1017,7 @@ impl Client {
             }
             socket.websocket_protocol();
         }
-        if !self.websocket && (!self.keep_alive || self.connection_close) {
+        if !self.websocket.get() && (!self.keep_alive.get() || self.connection_close.get()) {
             self.close(true);
         } else {
             self.reset();
@@ -1031,11 +1056,11 @@ impl Client {
         swoole_rs_clients::ws::accept_valid(key, accept)
     }
 
-    fn recv_websocket_frame(&mut self, call: &Call, timeout: f64) {
+    fn recv_websocket_frame(&self, call: &Call, timeout: f64) {
         let Some(socket) = self.co() else {
             return call.set_bool(false);
         };
-        let Some(ws) = self.ws.as_mut() else {
+        let Some(ws) = &self.ws else {
             return call.set_bool(false);
         };
         ws.recv(socket, call, timeout);
@@ -1065,8 +1090,8 @@ impl Client {
         }
     }
 
-    fn upgrade(&mut self, path: &[u8]) -> bool {
-        self.defer = false;
+    fn upgrade(&self, path: &[u8]) -> bool {
+        self.defer.set(false);
         self.props().bytes(c"requestMethod", b"GET");
         let token = request::token::<WEBSOCKET_KEY>();
         let mut key = vec![0_u8; WEBSOCKET_KEY.div_ceil(3) * 4 + 1];
@@ -1092,8 +1117,8 @@ impl Client {
         if !self.exec(path) {
             return false;
         }
-        let status = self.parser.status_code;
-        if status != SWITCHING_PROTOCOLS || !self.websocket {
+        let status = self.status.get();
+        if status != SWITCHING_PROTOCOLS || !self.websocket.get() {
             self.set_error(
                 HANDSHAKE_FAILED,
                 c"websocket handshake failed: expected HTTP 101 with valid WebSocket upgrade headers",
@@ -1105,8 +1130,8 @@ impl Client {
         true
     }
 
-    fn push(&mut self, data: &Value, opcode: i64, flags: i64, code: i64) -> bool {
-        if !self.websocket {
+    fn push(&self, data: &Value, opcode: i64, flags: i64, code: i64) -> bool {
+        if !self.websocket.get() {
             swoole_rs_corebase::log::set_last_error(HANDSHAKE_FAILED);
             warn(true, c"websocket handshake failed, cannot push data");
             // SAFETY: a plain read of Swoole's thread error.
@@ -1128,7 +1153,7 @@ impl Client {
                 opcode,
                 flags,
                 code,
-                self.accept_websocket_compression,
+                self.accept_websocket_compression.get(),
             )
         });
         match result {
@@ -1152,21 +1177,21 @@ impl Client {
         }
     }
 
-    fn reset(&mut self) {
-        self.wait_response = false;
-        self.completed = false;
-        self.event_stream = false;
-        self.compress = Compress::None;
-        self.compression_error = false;
-        self.decoder = None;
-        if self.has_upload_files {
+    fn reset(&self) {
+        self.wait_response.set(false);
+        self.completed.set(false);
+        self.event_stream.set(false);
+        self.compress.set(Compress::None);
+        self.compression_error.set(false);
+        drop(self.decoder.take());
+        if self.has_upload_files.get() {
             self.props().null(c"uploadFiles");
         }
         // The close can yield, and another coroutine's fatal error can free
         // the client meanwhile, so the client lets go of the file first.
         if let Some(fd) = self.download_file.take() {
-            self.download_name = None;
-            self.download_offset = 0;
+            drop(self.download_name.take());
+            self.download_offset.set(0);
             self.props().null(c"downloadFile");
             self.props().long(c"downloadOffset", 0);
             native::swoole_http_client_coro_file_close(fd);
@@ -1175,11 +1200,11 @@ impl Client {
 
     /// `close`: the socket's members must not be read after its close, which
     /// can free it (the close hook clears `socket`).
-    fn close(&mut self, should_be_reset: bool) -> bool {
+    fn close(&self, should_be_reset: bool) -> bool {
         let Some(socket) = self.co() else {
             return false;
         };
-        if self.in_callback {
+        if self.in_callback.get() {
             if let Some(net) = socket.net() {
                 net.edit(|record| record.output.close_wait = 1);
             }
@@ -1197,31 +1222,33 @@ impl Client {
     }
 
     /// `decompress_response`: decode a body chunk onto `body`.
-    fn decompress(&mut self, input: &[u8]) -> bool {
+    fn decompress(&self, input: &[u8]) -> bool {
         if input.is_empty() {
             return false;
         }
-        if self.decoder.is_none() {
-            let decoder = match self.compress {
+        let mut decoder = self.decoder.borrow_mut();
+        if decoder.is_none() {
+            let compress = self.compress.get();
+            let made = match compress {
                 Compress::Gzip | Compress::Deflate => {
-                    Ok(Decoder::Zlib(Inflate::new(self.compress == Compress::Gzip)))
+                    Ok(Decoder::Zlib(Inflate::new(compress == Compress::Gzip)))
                 }
                 Compress::Br => brotli::Decoder::new().map(Decoder::Brotli),
                 Compress::Zstd => zstd::Decoder::new().map(Decoder::Zstd),
                 Compress::None => Err(format!(
                     "HttpClient::decompress_response unknown compress method [{}]",
-                    self.compress as c_int
+                    compress as c_int
                 )),
             };
-            match decoder {
-                Ok(decoder) => self.decoder = Some(decoder),
+            match made {
+                Ok(made) => *decoder = Some(made),
                 Err(message) => {
                     native::swoole_http_client_coro_inflate_warning(&message);
                     return false;
                 }
             }
         }
-        let output = match self.decoder.as_mut() {
+        let output = match decoder.as_mut() {
             Some(Decoder::Zlib(inflate)) => inflate
                 .decode(input)
                 .ok_or_else(|| "HttpClient::decompress_response failed".to_owned()),
@@ -1231,7 +1258,7 @@ impl Client {
         };
         match output {
             Ok(output) => {
-                self.body.extend_from_slice(output);
+                self.body.borrow_mut().extend_from_slice(output);
                 true
             }
             Err(message) => {
@@ -1345,46 +1372,31 @@ impl<'a> FilePart<'a> {
     }
 }
 
-/// The client `recv_response` parses for, inside its callbacks.
-fn parser_client<'a>(this: *mut Client) -> &'a mut Client {
-    // SAFETY: the client, live while `recv_response` parses; each callback
-    // takes it afresh, as the C callbacks read `parser->data`.
-    unsafe { &mut *this }
-}
-
-fn on_header_field(this: *mut Client, at: *const c_char, length: usize) -> c_int {
-    let client = parser_client(this);
-    client.header_field = (at.cast(), length);
-    0
-}
-
-fn on_header_value(this: *mut Client, at: *const c_char, length: usize) -> c_int {
-    let client = parser_client(this);
-    let (field, field_length) = client.header_field;
-    // SAFETY: llhttp's spans point into the buffer being parsed.
+fn on_header_value(hooks: &Hooks, data: &[u8]) -> c_int {
+    let client = hooks.client;
+    let (field, field_length) = hooks.field;
+    // SAFETY: llhttp's span points into the buffer being parsed.
     let name = unsafe { std::slice::from_raw_parts(field, field_length) };
-    // SAFETY: as above.
-    let data = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
     let lowered;
-    let name = if client.lowercase_header {
+    let name = if client.lowercase_header.get() {
         lowered = name.to_ascii_lowercase();
         &lowered[..]
     } else {
         name
     };
     client.add_header(name, data);
-    let status = client.parser.status_code;
+    let status = hooks.parser.status_code;
     if status == SWITCHING_PROTOCOLS && name == b"upgrade" {
         if request::token_list_contains(data, b"websocket") != 0 {
-            client.websocket = true;
+            client.websocket.set(true);
         }
     } else if features() & 1 != 0
-        && client.websocket
+        && client.websocket.get()
         && client.ws.as_ref().is_some_and(|ws| ws.compression())
         && name == b"sec-websocket-extensions"
     {
         if request::contains_ignore_case(data, b"permessage-deflate") {
-            client.accept_websocket_compression = true;
+            client.accept_websocket_compression.set(true);
         }
     } else if name == b"set-cookie" {
         // SAFETY: two properties nothing else borrows; no PHP runs while parsing.
@@ -1396,123 +1408,131 @@ fn on_header_value(this: *mut Client, at: *const c_char, length: usize) -> c_int
         }
     } else if features() != 0 && name == b"content-encoding" {
         if let Some(method) = request::content_encoding(data, features()) {
-            client.compress = method;
+            client.compress.set(method);
         }
-    } else if name == b"transfer-encoding" && request::starts_with_ignore_case(data, b"chunked") {
-        client.chunked = true;
     } else if name == b"connection" {
-        client.connection_close = request::starts_with_ignore_case(data, b"close");
+        client
+            .connection_close
+            .set(request::starts_with_ignore_case(data, b"close"));
     } else if name == b"content-type" {
-        client.event_stream = request::starts_with_ignore_case(data, b"text/event-stream");
+        client
+            .event_stream
+            .set(request::starts_with_ignore_case(data, b"text/event-stream"));
     }
     0
 }
 
-fn on_headers_complete(this: *mut Client) -> c_int {
-    let client = parser_client(this);
-    c_int::from(client.head || client.parser.status_code == NO_CONTENT)
-}
-
-fn on_body(this: *mut Client, at: *const c_char, length: usize) -> c_int {
-    let client = parser_client(this);
-    // SAFETY: llhttp's span points into the buffer being parsed.
-    let data = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
-    let decompress =
-        client.body_decompression && !client.compression_error && client.compress != Compress::None;
-    if let Some(callable) = client.write_func.clone() {
-        let mut chunk = data;
-        if decompress {
-            if client.decompress(data) {
-                if client.body.is_empty() {
-                    return 0;
-                }
-                chunk = &client.body;
-            } else {
-                client.compression_error = true;
+fn on_body(client: &Client, data: &[u8]) -> c_int {
+    let decompress = client.body_decompression.get()
+        && !client.compression_error.get()
+        && client.compress.get() != Compress::None;
+    let write_func = client.write_func.borrow().clone();
+    if let Some(callable) = write_func {
+        // The decoded chunk leaves the client for the call, which can reenter it.
+        let decoded = if !decompress {
+            None
+        } else if client.decompress(data) {
+            let decoded = client.body.take();
+            if decoded.is_empty() {
+                client.body.replace(decoded);
+                return 0;
             }
-        }
-        let object = client.object;
-        let (pointer, size) = (chunk.as_ptr(), chunk.len());
-        client.in_callback = true;
-        // SAFETY: the client's object and the chunk's bytes, which live until
-        // the call returns (the body is cleared after); the callable is held.
-        let result = unsafe {
-            native::swoole_http_client_coro_call(&callable, object, pointer.cast(), size)
+            Some(decoded)
+        } else {
+            client.compression_error.set(true);
+            None
         };
-        // The callback may have reentered the client; read it afresh.
-        let client = parser_client(this);
-        client.body.clear();
-        client.in_callback = false;
+        let chunk = decoded.as_deref().unwrap_or(data);
+        client.in_callback.set(true);
+        // SAFETY: the client's object and the chunk's bytes, which live until
+        // the call returns; the callable is held.
+        let result = unsafe {
+            native::swoole_http_client_coro_call(
+                &callable,
+                client.object,
+                chunk.as_ptr().cast(),
+                chunk.len(),
+            )
+        };
+        // Cleared after the call, keeping the buffer.
+        match decoded {
+            Some(mut decoded) => {
+                decoded.clear();
+                drop(client.body.replace(decoded));
+            }
+            None => client.body.borrow_mut().clear(),
+        }
+        client.in_callback.set(false);
         if result == 2 {
-            client.bailout = true;
+            client.bailout.set(true);
         }
         return if result == 0 { 0 } else { -1 };
     }
     if decompress {
         if !client.decompress(data) {
-            client.compression_error = true;
-            client.body.extend_from_slice(data);
+            client.compression_error.set(true);
+            client.body.borrow_mut().extend_from_slice(data);
         }
     } else {
-        client.body.extend_from_slice(data);
+        client.body.borrow_mut().extend_from_slice(data);
     }
-    if let Some(name) = &client.download_name {
-        if client.body.is_empty() {
-            return 0;
-        }
-        if client.download_file.is_none() {
-            let path = c_bytes(name.bytes());
-            client.download_file =
-                native::swoole_http_client_coro_file_open(&path, client.download_offset);
-        }
-        let Some(fd) = client.download_file else {
-            return -1;
-        };
-        if !native::swoole_http_client_coro_file_write(fd, &client.body) {
-            return -1;
-        }
-        client.body.clear();
+    if client.download_name.borrow().is_none() {
+        return 0;
     }
-    0
+    // Out of the client while the file calls yield to other coroutines.
+    let mut body = client.body.take();
+    let result = if body.is_empty() {
+        0
+    } else {
+        write_download(client, &body)
+    };
+    if result == 0 {
+        body.clear();
+    }
+    drop(client.body.replace(body));
+    result
 }
 
-fn on_message_complete(this: *mut Client) -> c_int {
-    let client = parser_client(this);
-    client.completed = true;
-    if client.parser.upgrade != 0 && !client.websocket {
-        client.parser.upgrade = 0;
+/// Append a body chunk to the download, opening its file first.
+fn write_download(client: &Client, body: &[u8]) -> c_int {
+    if client.download_file.get().is_none() {
+        let name = client.download_name.borrow();
+        let path = c_bytes(name.as_ref().map_or(&[][..], ZString::bytes));
+        drop(name);
+        let offset = client.download_offset.get();
+        client
+            .download_file
+            .set(native::swoole_http_client_coro_file_open(&path, offset));
+    }
+    let Some(fd) = client.download_file.get() else {
+        return -1;
+    };
+    if native::swoole_http_client_coro_file_write(fd, body) {
+        0
+    } else {
+        -1
+    }
+}
+
+fn on_message_complete(hooks: &mut Hooks) -> c_int {
+    let client = hooks.client;
+    client.completed.set(true);
+    if hooks.parser.upgrade != 0 && !client.websocket.get() {
+        hooks.parser.upgrade = 0;
         return llhttp::HPE_PAUSED;
     }
     client
         .props()
-        .long(c"statusCode", i64::from(client.parser.status_code));
-    if client.download_file.is_none() {
-        client.props().bytes(c"body", &client.body);
+        .long(c"statusCode", i64::from(hooks.parser.status_code));
+    if client.download_file.get().is_none() {
+        // Out of the client while the write can run PHP code.
+        let body = client.body.take();
+        client.props().bytes(c"body", &body);
+        drop(client.body.replace(body));
     } else {
-        client.download_name = None;
+        drop(client.download_name.take());
     }
     llhttp::HPE_PAUSED
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass; zeroed data is no client.
-    unsafe { ClientObject::create(&CLIENT, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    bailout::finish_after(|| {
-        // SAFETY: Zend frees a client object.
-        drop(unsafe { ClientObject::data(std) }.client.take());
-        // SAFETY: as above.
-        unsafe { ClientObject::dtor(std) };
-    });
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    ClientObject::install(entry, handlers, create, free);
 }
 
 method_table! {
@@ -1558,12 +1578,7 @@ swoole_rs_zend::minit!(http_client_minit => register);
 fn register(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
     FEATURES.store(swoole_rs_phpswoole::codecs(), Ordering::Relaxed);
-    minit.register(
-        &CLIENT,
-        c"Swoole\\Coroutine\\Http\\Client",
-        &METHODS.0,
-        configure,
-    );
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http\\Client", &METHODS.0, 0);
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http\\Client")?;
     }
@@ -1617,22 +1632,14 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// `$this`'s data.
-fn this<'a>(call: &Call) -> &'a mut Data {
-    // SAFETY: client methods are non-static, so `$this` is a client object.
-    unsafe { ClientObject::data(call.this()) }
-}
-
 /// `http_client_coro_get_client`: the constructed client; a fatal error if not.
-fn client<'a>(call: &Call) -> &'a mut Client {
-    let data = this(call);
-    if data.client.is_none() {
+fn client(call: &Call) -> &Client {
+    let client = call.custom::<Data>().and_then(|data| data.client.get());
+    client.unwrap_or_else(|| {
         // SAFETY: a fatal error; it does not return.
         unsafe { unconstructed() };
-    }
-    data.client
-        .as_deref_mut()
-        .unwrap_or_else(|| unreachable!("a fatal error does not return"))
+        unreachable!("a fatal error does not return")
+    })
 }
 
 /// `__construct(string $host, int $port = 0, bool $ssl = false)`.
@@ -1644,7 +1651,10 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     let object = call.this();
-    if this(call).client.is_some() {
+    let Some(data) = call.custom::<Data>() else {
+        return call.set_bool(false);
+    };
+    if data.client.get().is_some() {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
@@ -1657,7 +1667,7 @@ fn construct(call: &Call) {
         call.throw(&EXCEPTION, c"host is empty", i64::from(libc::EINVAL));
         return call.set_bool(false);
     }
-    this(call).client = Some(Client::new(object, host, port, ssl));
+    drop(data.client.set(Client::new(object, host, port, ssl)));
 }
 
 fn destruct(_call: &Call) {}
@@ -1677,7 +1687,7 @@ fn set(call: &Call) {
 }
 
 fn get_defer(call: &Call) {
-    call.set_bool(client(call).defer);
+    call.set_bool(client(call).defer.get());
 }
 
 /// `setDefer(bool $defer = true): bool`.
@@ -1686,7 +1696,7 @@ fn set_defer(call: &Call) {
     let Ok(defer) = call.arity(0, 1).and_then(|()| call.bool(1, true)) else {
         return call.set_bool(false);
     };
-    client.defer = defer;
+    client.defer.set(defer);
     call.set_bool(true);
 }
 
@@ -1884,8 +1894,8 @@ fn add_data(call: &Call) {
 }
 
 /// The result of a method that can run `write_func`: whether it bailed out.
-fn finish(client: &mut Client, call: &Call, result: bool) -> bool {
-    let bailout = std::mem::take(&mut client.bailout);
+fn finish(client: &Client, call: &Call, result: bool) -> bool {
+    let bailout = client.bailout.take();
     if !bailout {
         call.set_bool(result);
     }
@@ -2001,7 +2011,7 @@ fn recv(call: &Call) -> bool {
         return false;
     };
     let _hold = client.hold();
-    if client.websocket {
+    if client.websocket.get() {
         client.recv_websocket_frame(call, timeout);
         return false;
     }
@@ -2146,7 +2156,7 @@ fn payload(data: Option<&ZStr>) -> Owned {
 /// `ping(string $data = ''): bool`.
 fn ping(call: &Call) {
     let client = client(call);
-    if !client.is_available() || !client.websocket {
+    if !client.is_available() || !client.websocket.get() {
         return call.set_bool(false);
     }
     let Ok(data) = call.arity(0, 1).and_then(|()| call.zstr(1)) else {
@@ -2160,7 +2170,7 @@ fn ping(call: &Call) {
 /// frame, then close regardless.
 fn disconnect(call: &Call) {
     let client = client(call);
-    if !client.is_available() || !client.websocket {
+    if !client.is_available() || !client.websocket.get() {
         return call.set_bool(false);
     }
     let parsed = call

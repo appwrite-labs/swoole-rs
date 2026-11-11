@@ -1,7 +1,40 @@
 <?php
 // A persistent Client closed from its own package_length_func while recv() holds
 // the connection: the connection is closed, not pooled, and the key reconnects fresh.
+// A Coroutine\Http\Client whose write_func replaces itself and calls its client,
+// while another coroutine uses the client across the request's yields.
 function check(bool $condition,string $message):void { if(!$condition)throw new RuntimeException($message); }
+function http_reentry():array {
+    $result=[];
+    Swoole\Coroutine\run(static function()use(&$result):void{
+        $server=new Swoole\Coroutine\Http\Server('127.0.0.1',0);
+        $server->handle('/',static function($request,$response):void{
+            foreach(['a','b','c'] as $chunk){$response->write($chunk);Swoole\Coroutine::sleep(0.01);}
+            $response->end();
+        });
+        Swoole\Coroutine::create(static fn()=>$server->start());
+        $client=new Swoole\Coroutine\Http\Client('127.0.0.1',$server->port);
+        $first=[];$second=[];
+        $later=static function($c,string $data)use(&$second):void{$second[]=[$data,$c->getStatusCode(),$c->getDefer()];};
+        check($client->set(['timeout'=>5,'write_func'=>static function($c,string $data)use(&$first,$later):void{
+            $first[]=$data;check($c->set(['write_func'=>$later,'timeout'=>5]),'replace write_func from itself');
+        }]),'set write_func');
+        $busy=true;$uses=0;
+        Swoole\Coroutine::create(static function()use(&$client,&$busy,&$uses):void{
+            while($busy){check($client->set(['timeout'=>5])&&$client->getDefer()===false,'use while yielded');$uses++;Swoole\Coroutine::sleep(0.002);}
+        });
+        $get=$client->get('/');
+        $result['get']=['ok'=>$get,'status'=>$client->statusCode,'first'=>$first,'second'=>$second];
+        $client->close();$client=new Swoole\Coroutine\Http\Client('127.0.0.1',$server->port);
+        $file=tempnam(sys_get_temp_dir(),'reentry');
+        $download=$client->download('/',$file);
+        $busy=false;
+        $result['download']=['ok'=>$download,'status'=>$client->statusCode,'body'=>file_get_contents($file)];
+        $result['used_while_yielded']=$uses>0;
+        unlink($file);$client->close();$server->shutdown();
+    });
+    return $result;
+}
 $warnings=[];set_error_handler(static function(int $severity,string $message)use(&$warnings):bool{$warnings[]=[$severity,$message];return true;});
 $process=proc_open([PHP_BINARY,'-n',__DIR__.'/php_reentrant_close_peer.php'],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);check(is_resource($process),'spawn');fclose($pipes[0]);
 try {
@@ -23,5 +56,6 @@ try {
     check($second->close(true),'force close');
     $output=stream_get_contents($pipes[1]);$stderr=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);$exit=proc_close($process);$process=null;
     check($exit===0&&$stderr==='','peer clean exit:'.$stderr);$peer=json_decode(trim($output),true,512,JSON_THROW_ON_ERROR);
-    echo json_encode(['outer'=>$outer,'fresh'=>$fresh,'peer'=>$peer,'warnings'=>$warnings],JSON_THROW_ON_ERROR),"\n";
+    $http=http_reentry();
+    echo json_encode(['outer'=>$outer,'fresh'=>$fresh,'peer'=>$peer,'http'=>$http,'warnings'=>$warnings],JSON_THROW_ON_ERROR),"\n";
 }finally{if(is_resource($process)){proc_terminate($process);foreach($pipes as $pipe){if(is_resource($pipe))fclose($pipe);}proc_close($process);}}

@@ -274,7 +274,7 @@ mod tests {
             unsafe { swr_v1_core_proxy_configure(owner, texts.as_ptr(), 80, false, 1) };
         assert_eq!(configured.status, 0);
         assert_eq!(unsafe { (*prepared.fields).port }, 80);
-        let host = unsafe { crate::swr_v1_core_string_view(prepared.strings[0]) };
+        let host = unsafe { crate::swr_v1_core_string_view(&*prepared.strings[0]) };
         assert_eq!(unsafe { std::ffi::CStr::from_ptr(host.data) }, c"host");
         owner.packet().unwrap()[7] = 9;
         assert_eq!(unsafe { *prepared.buffer.add(7) }, 9);

@@ -20,7 +20,8 @@ const WAIT: c_int = 2;
 pub struct Host {
     /// A timer for the read or the `write` wait that calls `timer_fired`, or null.
     pub timer_add: fn(Co, f64, bool) -> *mut c_void,
-    pub timer_del: fn(*mut c_void),
+    /// Deletes a pending timer `timer_add` returned.
+    pub timer_del: unsafe fn(*mut c_void),
     /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
     pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, u32, usize),
     /// `Socket::recv/recv_all` (all selects the latter) into the read String's
@@ -84,8 +85,8 @@ pub(crate) struct Ops {
     pub reactor: fn(Co, u32, bool) -> bool,
     /// `remove_read_event`/`remove_write_event`.
     pub remove: fn(Co, u32),
-    /// Resumes a coroutine.
-    pub resume: fn(*mut c_void),
+    /// Resumes a parked coroutine.
+    pub resume: unsafe extern "C-unwind" fn(*mut c_void),
     /// `socket->ssl_shutdown()`.
     pub ssl_shutdown: fn(Co),
     /// `socket->check_liveness()`, errno set when it fails.
@@ -108,7 +109,7 @@ pub(crate) static NATIVE: Ops = Ops {
     sleep: native::sleep,
     reactor: native::reactor,
     remove: native::remove,
-    resume: crate::poll::native::resume,
+    resume: swoole_rs_coroutine::resume,
     ssl_shutdown: native::ssl_shutdown,
     liveness: native::liveness,
     suspend: native::suspend,
@@ -170,8 +171,11 @@ mod native {
         }
     }
 
-    fn timer_del(node: *mut c_void) {
-        crate::poll::native::timer_del(node);
+    /// # Safety
+    /// `node` is a pending timer.
+    unsafe fn timer_del(node: *mut c_void) {
+        // SAFETY: per the caller.
+        unsafe { swoole_rs_timer::swoole_timer_del(node.cast()) };
     }
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
@@ -524,7 +528,8 @@ impl Timer {
             return;
         }
         if node != SENTINEL {
-            (host().timer_del)(node);
+            // SAFETY: the timer `start` added, still pending: firing clears the slot.
+            unsafe { (host().timer_del)(node) };
         }
         self.set_slot(ptr::null_mut());
     }
@@ -544,7 +549,8 @@ pub(crate) fn timer_fired(socket: Co, event: u32) {
         *slot = ptr::null_mut();
         state.co(event)
     });
-    (NATIVE.resume)(co);
+    // SAFETY: the coroutine bound for `event`, parked in its wait on this socket.
+    unsafe { (NATIVE.resume)(co) };
 }
 
 /// A recording host for the operations' tests. Each thread records its own events.
@@ -587,7 +593,7 @@ pub(crate) mod test_host {
         }
     }
 
-    fn resume(co: *mut c_void) {
+    extern "C-unwind" fn resume(co: *mut c_void) {
         let cid = unsafe { *co.cast::<c_long>() };
         log(format!("resume:{cid}"));
         hook(&ON_RESUME, |f| f(cid));
@@ -1167,8 +1173,8 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
         swoole_rs_corebase::swr_v1_core_string_set(slot, message.as_ptr().cast(), message.len())
     };
     if status == 0 {
-        // SAFETY: the assignment left stable, terminated bytes in the slot.
-        let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
+        // SAFETY: the live slot, whose assignment left stable, terminated bytes.
+        let view = unsafe { &*slot }.view();
         // SAFETY: the record's own error string, as above.
         unsafe { socket.set_err_msg(view.data) };
     }

@@ -174,11 +174,7 @@ fn stream_event(kind: u8) -> bool {
     matches!(kind, 0 | 2..=5 | 11..=14)
 }
 
-/// `pthread_self(3)`: the calling thread's id.
-pub(crate) fn pthread_self() -> libc::pthread_t {
-    // SAFETY: pthread_self has no preconditions.
-    unsafe { libc::pthread_self() }
-}
+pub(crate) use swoole_rs_ossupport::pthread_self;
 
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
@@ -249,8 +245,8 @@ impl<'c> Objects<'_, 'c> {
     }
     /// The TLS port's `SSLContext` view.
     fn ssl(&self) -> Option<OwnedTlsPrepared> {
-        // SAFETY: a TLS port's context is null or live while the port is.
-        unsafe { self.port()?.ssl_context.as_ref() }.map(|context| swr_v1_tls_owner_view(context))
+        let context = self.port()?.ssl_context.as_deref()?;
+        Some(swr_v1_tls_owner_view(context))
     }
     fn ssl_fields(&self) -> Option<&OwnedTlsFields> {
         // SAFETY: the owner's fields live as long as the port's reference.
@@ -526,7 +522,7 @@ pub(crate) fn answer(
             // `client_cert_file`'s slot.
             let slot = o.ssl()?.strings[7];
             // SAFETY: a stable slot of the port's live owner.
-            u64::from(unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) }.length != 0)
+            u64::from(!unsafe { &*slot }.bytes().is_empty())
         }
         OP_VERIFY_PEER => u64::from(o.ssl_fields()?.verify_peer != 0),
         OP_PEER_CERT => {

@@ -21,9 +21,8 @@ pub struct EventWaitOps<S> {
     /// The current coroutine.
     pub(crate) current: extern "C" fn() -> *mut c_void,
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
-    /// `events`; the last error if the reactor refuses it. The wait passes its own
-    /// waiter, and drops the socket first.
-    pub(crate) add: fn(fd: i32, events: i32, waiter: *mut c_void) -> Result<S, i32>,
+    /// `events`; the last error if the reactor refuses it.
+    pub(crate) add: fn(fd: i32, events: i32, waiter: Registered) -> Result<S, i32>,
     /// `co->yield_ex(timeout)`: 0, or the last error if it timed out or was cancelled.
     pub(crate) park: fn(timeout: f64) -> i32,
 }
@@ -55,6 +54,17 @@ impl swoole_rs_reactor::event_api::Deferred for Parked {
     fn dispose(self) {}
 }
 
+/// A parked wait's waiter as its socket's object. Only `park` makes one, for its own
+/// waiter, which outlives the socket: it drops the socket before it returns.
+#[derive(Clone, Copy)]
+pub(crate) struct Registered(*mut c_void);
+
+impl Registered {
+    pub(crate) fn as_ptr(self) -> *mut c_void {
+        self.0
+    }
+}
+
 /// The reactor fired `event` on a waiter's socket: the coroutine to resume
 /// (deferred) on the first event.
 pub(crate) fn event_ready(waiter: &Waiter, event: i32) -> Option<Parked> {
@@ -72,7 +82,11 @@ fn park<S>(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps<S>) -> Result<
         revents: Cell::new(0),
     };
     // `waiter` outlives the socket, dropped (off the reactor) below.
-    let socket = (ops.add)(fd, events, (&raw const waiter).cast_mut().cast())?;
+    let socket = (ops.add)(
+        fd,
+        events,
+        Registered((&raw const waiter).cast_mut().cast()),
+    )?;
     let park = ops.park;
     let error = park(timeout);
     if error != 0 && waiter.revents.get() != 0 {
@@ -150,8 +164,9 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
     let ops = EventWaitOps {
         current: native::current,
         add: |fd, events, waiter| {
-            // SAFETY: `park` passes its own waiter, which outlives the watch it drops.
-            unsafe { Watch::add(fd, FdType::SW_FD_CO_EVENT as i32, events, waiter) }
+            // SAFETY: `park`'s own waiter, the object `waiter_ready` takes, which
+            // outlives the watch it drops.
+            unsafe { Watch::add(fd, FdType::SW_FD_CO_EVENT as i32, events, waiter.as_ptr()) }
         },
         park: native::park,
     };
@@ -345,11 +360,11 @@ mod tests {
     fn waiter<'a>() -> &'a Waiter {
         unsafe { &*WAITER.get().cast::<Waiter>() }
     }
-    fn add(fd: i32, _: i32, waiter: *mut c_void) -> Result<Socket, i32> {
+    fn add(fd: i32, _: i32, waiter: Registered) -> Result<Socket, i32> {
         if fd == 9 {
             return Err(libc::EBADF);
         }
-        WAITER.set(waiter);
+        WAITER.set(waiter.as_ptr());
         ADDED.set(ADDED.get() + 1);
         Ok(Socket)
     }

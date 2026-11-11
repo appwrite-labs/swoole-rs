@@ -6,7 +6,7 @@ use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_reactor::SocketRecord;
-use swoole_rs_tls::{DtlsSession, OwnedTlsContext, SslVersion, swr_v1_tls_owner_view};
+use swoole_rs_tls::{DtlsSession, SslVersion, TlsContext, swr_v1_tls_owner_view};
 
 use crate::records::ConnectionRecord;
 
@@ -102,8 +102,8 @@ pub struct PortConfig {
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: *mut c_void,
     /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
-    /// Rust owner), or null.
-    pub ssl_context: *const OwnedTlsContext,
+    /// Rust owner), or none: a nullable `SSLContext *` to native code.
+    pub ssl_context: Option<TlsContext>,
     /// The TLS state crates/ports owns (the SNI contexts and the DTLS sessions);
     /// `ListenPort`'s destructor releases it with the context. A thin box, as
     /// native code's mirror holds a `void *` here.
@@ -126,11 +126,10 @@ impl PortConfig {
     /// `ListenPort::is_dtls()`: the port's context speaks DTLS.
     #[must_use]
     pub fn is_dtls(&self) -> bool {
-        if self.ssl_context.is_null() {
+        let Some(context) = &self.ssl_context else {
             return false;
-        }
-        // SAFETY: the port's live owner.
-        let fields = swr_v1_tls_owner_view(unsafe { &*self.ssl_context }).fields;
+        };
+        let fields = swr_v1_tls_owner_view(context).fields;
         // SAFETY: the owner's fields live as long as the port's reference.
         let protocols = unsafe { (*fields).protocols };
         protocols & SslVersion::SW_SSL_DTLS as u32 != 0
@@ -228,7 +227,7 @@ impl PortConfig {
             host: Box::default(),
             protocol: default_protocol(),
             on_read: core::ptr::null_mut(),
-            ssl_context: core::ptr::null(),
+            ssl_context: None,
             tls: None,
         })
     }

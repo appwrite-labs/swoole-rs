@@ -278,8 +278,7 @@ pub(crate) fn close_socket(port: *mut c_void) {
     let Some(fd) = (unsafe { Socket::from_ptr(socket) }).map(Socket::fd) else {
         return;
     };
-    // SAFETY: close(2) has no memory preconditions.
-    if unsafe { libc::close(fd) } < 0 {
+    if swoole_rs_corebase::sys::close(fd) < 0 {
         log::sys_warning(
             c"ListenPort::close_socket",
             format_args!("close({fd}) failed"),
@@ -528,7 +527,7 @@ readable_callbacks! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::{close, ssl_context_create, ssl_context_init, ssl_init};
+    use crate::lifecycle::{close, context_create, ssl_context_init, ssl_init};
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 
     /// Stub callbacks, each body distinct so that no two share an address.
@@ -562,9 +561,8 @@ mod tests {
         let config = unsafe { port_config::of(at) };
         config.ssl = 1;
         assert!(ssl_context_init(at), "a stream port's context");
-        let context = config.ssl_context;
-        assert!(!context.is_null(), "published");
-        let fields = unsafe { swoole_rs_tls::owner_fields(context) };
+        let context = config.ssl_context.clone().expect("published");
+        let fields = unsafe { swoole_rs_tls::owner_fields(context.as_ptr()) };
         assert_eq!(
             (
                 fields.prefer_server_ciphers,
@@ -579,13 +577,13 @@ mod tests {
         // No files: ssl_init refuses unless SNI contexts exist.
         assert!(!unsafe { ssl_init(at) }, "no certificate");
         close(at);
-        assert!(config.ssl_context.is_null(), "released");
+        assert!(config.ssl_context.is_none(), "released");
         config.r#type = 2;
         assert!(ssl_context_init(at), "a datagram port's context");
         assert!(config.is_dtls(), "DTLS");
         crate::lifecycle::tls_free(unsafe { &mut **fresh.0 });
         assert!(
-            config.ssl_context.is_null(),
+            config.ssl_context.is_none(),
             "the destructor releases what close left"
         );
     }
@@ -1190,17 +1188,17 @@ mod tests {
         );
 
         assert!(ssl_context_init(at));
-        let context = config.ssl_context;
-        assert!(!unsafe { ssl_context_create(at, context, false) });
+        let context = config.ssl_context.clone().unwrap();
+        assert!(!context_create(config, &context, false));
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
-        let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(unsafe { &*context }).strings[4];
+        let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(&context).strings[4];
         let set = |text: &str| unsafe {
             swoole_rs_corebase::swr_v1_core_string_set(cert_file, text.as_ptr().cast(), text.len())
         };
         assert_eq!(set("server.crt"), 0, "cert_file = \"server.crt\"");
-        assert!(!unsafe { ssl_context_create(at, context, true) });
+        assert!(!context_create(config, &context, true));
         assert_eq!(set(""), 0, "cert_file.clear()");
-        assert!(unsafe { ssl_context_create(at, context, true) });
+        assert!(context_create(config, &context, true));
 
         close(at);
         unsafe { port_config::swr_v1_port_config_free(port) };

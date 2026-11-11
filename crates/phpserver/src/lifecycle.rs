@@ -1038,7 +1038,7 @@ fn port_facts(object: *mut zend_object) -> PortFacts {
     // SAFETY: a bound Port object.
     let port = unsafe { crate::port::bound_port(object) };
     let c = port.config();
-    let owner = c.ssl_context;
+    let owner = c.ssl_context.as_deref();
     PortFacts {
         port: port.raw(),
         protocols: [
@@ -1054,9 +1054,9 @@ fn port_facts(object: *mut zend_object) -> PortFacts {
         // `Socket::is_stream(type)`: TCP, TCP6 or a Unix stream socket.
         stream: matches!(c.r#type, 1 | 3 | 5),
         ssl: c.ssl != 0,
-        // SAFETY: null, or the port's live TLS context.
-        ssl_verify_without_ca: !owner.is_null()
-            && unsafe { swoole_rs_tls::verify_without_ca(owner) },
+        // SAFETY: the port's live TLS context, which nothing writes meanwhile.
+        ssl_verify_without_ca: owner
+            .is_some_and(|owner| unsafe { swoole_rs_tls::verify_without_ca(owner) }),
     }
 }
 

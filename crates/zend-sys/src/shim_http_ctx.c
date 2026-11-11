@@ -1,4 +1,5 @@
-/* Stays C (docs/zend.md, What stays C): globals (PG, SG(rfc1867_uploaded_files)),
+/* Stays C (docs/zend.md, What stays C): bailout (trap bodies that run
+ * __toString or __destruct), globals (PG, SG(rfc1867_uploaded_files)),
  * allocator (estrndup, array_init_size, zend_string_*) and version
  * (PG(arg_separator) became a zend_string in 8.5). */
 #include "shim_http_ctx.h"
@@ -42,6 +43,16 @@ void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length) {
 void swr_zend_http_get_string(void *arg) {
     swr_zend_http_string *string = arg;
     string->result = zval_get_string(string->value);
+}
+
+void swr_zend_http_release_objects(void *arg) {
+    swr_zend_http_release *release = arg;
+    if (release->begun == 0) {
+        release->begun = 1;
+        zval_ptr_dtor(release->request);
+    }
+    release->begun = 2;
+    zval_ptr_dtor(release->response);
 }
 
 bool swr_zend_http_treat_data(int arg, char *str, zval *dest) {

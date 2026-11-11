@@ -78,6 +78,9 @@ the factory fallback and hooked pair release.
 `php_reentrant_close.py` (`clients-php-reentrant-close`, every lane, Cargo build)
 closes a persistent `Swoole\Client` from its `package_length_func` while `recv()`
 holds the connection: `recv()` fails with 5001, and the key's next connect is fresh.
+It also runs a `Coroutine\Http\Client` whose `write_func` replaces itself and reads
+its client mid-response, while another coroutine calls `set()` and `getDefer()` across
+the `get()` and `download()` yields: every chunk and the downloaded file arrive intact.
 `php_property_array.py` (`clients-php-property-array`, every lane, Cargo build)
 gives `uploadFiles` and `setting` an object whose `__destruct` writes the
 property again: `addData` and `set` keep an array it writes, and `addData`

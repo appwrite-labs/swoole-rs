@@ -28,8 +28,7 @@ struct File(libc::c_int);
 impl File {
     fn open(path: &[u8]) -> Option<Self> {
         let path = CString::new(path).ok()?;
-        // SAFETY: a NUL-terminated path.
-        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
+        let fd = swoole_rs_corebase::sys::open(&path, libc::O_RDONLY, 0);
         (fd >= 0).then_some(Self(fd))
     }
 
@@ -38,10 +37,7 @@ impl File {
     fn read(&self, offset: i64, buf: &mut [u8], pooled: bool) -> Option<usize> {
         let fd = self.0;
         let mut result = -1;
-        let mut read = || {
-            // SAFETY: the buffer's writable bytes.
-            result = unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) };
-        };
+        let mut read = || result = swoole_rs_corebase::sys::pread(fd, buf, offset);
         if pooled {
             if !async_job(&mut read) {
                 return None;
@@ -55,8 +51,7 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        // SAFETY: the descriptor `open` made, closed once.
-        unsafe { libc::close(self.0) };
+        swoole_rs_corebase::sys::close(self.0);
     }
 }
 
@@ -240,8 +235,7 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
     let file = File::open(path.as_bytes())?;
     let mut buf = [0u8; 8192];
     loop {
-        // SAFETY: the open descriptor and a writable buffer.
-        let n = unsafe { libc::read(file.0, buf.as_mut_ptr().cast(), buf.len()) };
+        let n = swoole_rs_corebase::sys::read(file.0, &mut buf);
         let Ok(n) = usize::try_from(n) else { break };
         if n == 0 {
             break;

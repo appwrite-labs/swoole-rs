@@ -64,6 +64,24 @@ pub unsafe fn update_property(
     }
 }
 
+/// `is_numeric_string(text, len, &lval, &dval, false)`: the kind (`IS_LONG`,
+/// `IS_DOUBLE`, or 0 for text that is not numeric) with the long and double
+/// it filled.
+#[must_use]
+pub fn numeric(text: &[u8]) -> (u8, i64, f64) {
+    let (mut lval, mut dval) = (0, 0.0);
+    // SAFETY: a live byte range and two writable locals.
+    let kind = unsafe {
+        crate::sys::swr_zend_is_numeric_string(
+            text.as_ptr().cast(),
+            text.len(),
+            &raw mut lval,
+            &raw mut dval,
+        )
+    };
+    (kind, lval, dval)
+}
+
 /// `ZVAL_LONG`: a zval holding `value`.
 #[must_use]
 pub fn long_zval(value: i64) -> zval {

@@ -68,12 +68,10 @@ impl Context {
         // SAFETY: the ops reading it run with the context's live worker.
         unsafe { &mut *self.worker }
     }
-    /// `serv->get_worker(id)`.
-    fn other(&self, id: u64) -> &mut WorkerRecord {
-        let id = u16::try_from(id).unwrap_or(u16::MAX);
-        let worker = self.server().worker(id);
-        // SAFETY: its worker `id`, live.
-        unsafe { &mut *worker }
+    /// `serv->get_worker(id)`, or `None` past the last worker.
+    fn other(&self, id: u64) -> Option<Worker<'_>> {
+        self.server()
+            .worker_record(u16::try_from(id).unwrap_or(u16::MAX))
     }
     pub(super) fn reactor(&self) -> Reactor {
         // SAFETY: the context's live reactor, on this thread.
@@ -234,7 +232,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_OTHER_PIPE_NONBLOCK => {
             if swoole_get_worker_type() == SW_EVENT_WORKER
-                && let Some(pipe) = socket(ctx.other(arg).pipe_master)
+                && let Some(pipe) = ctx.other(arg).and_then(|w| socket(w.pipe_master()))
             {
                 set_nonblock(pipe);
             }
@@ -259,7 +257,10 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 kind: EVENT_SHUTDOWN,
                 ..DataHead::default()
             };
-            let worker: *mut WorkerRecord = ctx.other(arg);
+            let Some(worker) = ctx.other(arg) else {
+                return Some(sized(-1));
+            };
+            let worker = worker.raw();
             let data = (&raw const head).cast();
             let size = size_of::<DataHead>();
             // SAFETY: the live server, one of its workers and the event.
@@ -300,7 +301,9 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_UNREAD_THREAD_PIPE => {
-            ctx.unread(ctx.in_bus(ctx.other(arg).pipe_master));
+            if let Some(worker) = ctx.other(arg) {
+                ctx.unread(ctx.in_bus(worker.pipe_master()));
+            }
             0
         }
         OP_CONN_UNREAD => {
@@ -323,8 +326,10 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_DRAIN_WORKER_PIPES => {
-            let worker = ctx.other(arg);
-            for pipe in [worker.pipe_worker, worker.pipe_master] {
+            let Some(worker) = ctx.other(arg) else {
+                return Some(sized(-1));
+            };
+            for pipe in [worker.pipe_worker(), worker.pipe_master()] {
                 if let Some(pipe) = socket(pipe) {
                     Reactor::thread().drain(pipe);
                 }
@@ -332,8 +337,10 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_UNLIMIT_PIPES => {
-            let worker = ctx.other(arg);
-            for pipe in [worker.pipe_master, worker.pipe_worker] {
+            let Some(worker) = ctx.other(arg) else {
+                return Some(sized(-1));
+            };
+            for pipe in [worker.pipe_master(), worker.pipe_worker()] {
                 if let Some(pipe) = socket(pipe) {
                     pipe.edit(|pipe| pipe.output.buffer_size = u32::MAX);
                 }
@@ -537,7 +544,10 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let pipes = c_long::from(ctx.tables().reactor_pipe_num);
     let id = c_long::from(head.reactor_id)
         + (c_long::from(head.fd) % pipes) * c_long::from(ctx.config().reactor_num);
-    ctx.socket = ctx.other(id.cast_unsigned()).pipe_worker;
+    let Some(worker) = ctx.other(id.cast_unsigned()) else {
+        return -1;
+    };
+    ctx.socket = worker.pipe_worker();
     let size = size_of::<DataHead>() as u64;
     isize::try_from(run(&mut ctx, RUN_SEND_TO_REACTOR_THREAD, size)).unwrap_or(-1)
 }

@@ -118,8 +118,7 @@ pub(crate) static PORT: CustomClass<PortData> = CustomClass::new();
 /// Swoole was built with ext/sockets. `port` is a live `ListenPort`.
 pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     let fd = port.fd();
-    // SAFETY: a descriptor the port owns.
-    let fd = unsafe { libc::dup(fd) };
+    let fd = swoole_rs_corebase::sys::dup(fd);
     if fd < 0 {
         return call.set_bool(false);
     }
@@ -402,7 +401,11 @@ fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Res
         port,
     };
     port_settings::apply(&source)?;
-    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context));
+    let (ssl, kind, context) = source.config(|c| {
+        let context = c.ssl_context.as_ref();
+        let context = context.map_or(core::ptr::null(), swoole_rs_tls::TlsContext::as_ptr);
+        (c.ssl, c.r#type, context)
+    });
     if ssl == 0 {
         return Ok(());
     }

@@ -1019,29 +1019,17 @@ pub fn dup(fd: i32, kind: i32) -> *mut zend_object {
 }
 
 /// `php_swoole_get_socket(zobject)`: the object's core socket, or null.
-/// # Safety
-/// `value` is null or a live zval.
 #[must_use]
-pub unsafe fn get_socket(value: *const zval) -> Socket {
-    // SAFETY: per the caller.
-    let value = unsafe { Value::from_ptr(value) };
-    value
-        .and_then(Sock::of)
+pub fn get_socket(value: &Value) -> Socket {
+    Sock::of(value)
         .and_then(Sock::co)
         .map_or(ptr::null_mut(), Co::as_ptr)
 }
 
 /// `php_swoole_socket_is_closed(zobject)`.
-/// # Safety
-/// As [`get_socket`].
 #[must_use]
-pub unsafe fn is_socket_closed(value: *const zval) -> bool {
-    // SAFETY: per the caller.
-    let value = unsafe { Value::from_ptr(value) };
-    value
-        .and_then(Sock::of)
-        .and_then(Sock::co)
-        .is_none_or(Co::is_closed)
+pub fn is_socket_closed(value: &Value) -> bool {
+    Sock::of(value).and_then(Sock::co).is_none_or(Co::is_closed)
 }
 
 #[cfg(test)]

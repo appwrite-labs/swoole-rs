@@ -48,25 +48,22 @@ impl CpuSet {
     /// `pthread_getaffinity_np(pthread_self())` into this set: 0 or an error number.
     pub fn get_thread(&mut self) -> c_int {
         // SAFETY: a writable set of the size passed, for the calling thread.
-        unsafe { libc::pthread_getaffinity_np(current(), Self::BYTES, &raw mut self.0) }
+        unsafe { libc::pthread_getaffinity_np(crate::pthread_self(), Self::BYTES, &raw mut self.0) }
     }
 
     /// `pthread_setaffinity_np(pthread_self())`: 0 or an error number.
     #[must_use]
     pub fn set_thread(&self) -> c_int {
         // SAFETY: a valid set of the size passed, for the calling thread.
-        unsafe { libc::pthread_setaffinity_np(current(), Self::BYTES, &raw const self.0) }
+        unsafe {
+            libc::pthread_setaffinity_np(crate::pthread_self(), Self::BYTES, &raw const self.0)
+        }
     }
 
     /// The set's CPUs, ascending.
     pub fn cpus(&self) -> impl Iterator<Item = usize> + '_ {
         (0..Self::SIZE).filter(|&cpu| self.contains(cpu))
     }
-}
-
-fn current() -> libc::pthread_t {
-    // SAFETY: no preconditions.
-    unsafe { libc::pthread_self() }
 }
 
 #[cfg(test)]

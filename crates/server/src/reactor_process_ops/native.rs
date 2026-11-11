@@ -277,8 +277,12 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
-extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
-    // SAFETY: a reactor process pool's `ptr` is its live server.
+///
+/// # Safety
+/// As [`swoole_rs_process::process_pool::NotFoundFn`]: `pool` is a reactor process
+/// pool, whose `ptr` is its live server.
+unsafe extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
+    // SAFETY: as the caller promises, `ptr` is the pool's live server.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
     crate::manager_ops::restart_worker_process(serv, status)
 }

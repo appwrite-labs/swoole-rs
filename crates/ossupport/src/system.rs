@@ -279,6 +279,13 @@ pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
     }
 }
 
+/// `pthread_self()`: the calling thread.
+#[must_use]
+pub fn pthread_self() -> libc::pthread_t {
+    // SAFETY: pthread_self has no preconditions.
+    unsafe { libc::pthread_self() }
+}
+
 /// `swoole_thread_set_name(name)` for the calling thread; false after a pthread error,
 /// which becomes the last error (`check_pthread_return_value`).
 #[must_use]
@@ -287,12 +294,8 @@ pub fn thread_set_name(name: &CStr) -> bool {
     // SAFETY: a NUL-terminated name, read for the call.
     let rc = unsafe { libc::pthread_setname_np(name.as_ptr()) };
     #[cfg(not(target_vendor = "apple"))]
-    let rc = {
-        // SAFETY: pthread_self has no preconditions.
-        let thread = unsafe { libc::pthread_self() };
-        // SAFETY: a NUL-terminated name, read for the call; the calling thread is live.
-        unsafe { libc::pthread_setname_np(thread, name.as_ptr()) }
-    };
+    // SAFETY: a NUL-terminated name, read for the call; the calling thread is live.
+    let rc = unsafe { libc::pthread_setname_np(pthread_self(), name.as_ptr()) };
     pthread_ok(rc)
 }
 
@@ -302,8 +305,7 @@ pub fn thread_get_name(buf: &mut [u8]) -> bool {
     #[cfg(target_os = "android")]
     {
         // Upstream's Android shim: bionic lacks pthread_getname_np before API 26.
-        // SAFETY: pthread_self has no preconditions.
-        let name = format!("thread-{}", unsafe { libc::pthread_self() });
+        let name = format!("thread-{}", pthread_self());
         let room = buf.len().saturating_sub(1);
         for (to, &from) in buf
             .iter_mut()
@@ -315,8 +317,7 @@ pub fn thread_get_name(buf: &mut [u8]) -> bool {
     }
     #[cfg(not(target_os = "android"))]
     {
-        // SAFETY: pthread_self has no preconditions.
-        let thread = unsafe { libc::pthread_self() };
+        let thread = pthread_self();
         // SAFETY: `buf` is `buf.len()` writable bytes; the calling thread is live.
         let rc = unsafe { libc::pthread_getname_np(thread, buf.as_mut_ptr().cast(), buf.len()) };
         pthread_ok(rc)

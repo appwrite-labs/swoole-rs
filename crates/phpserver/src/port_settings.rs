@@ -449,7 +449,7 @@ impl Source for Zend<'_> {
             let Some(vht) = value.array() else {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
             };
-            // SAFETY: an SSL port; the copy's reference goes to `sni_add` below or is released.
+            // SAFETY: an SSL port.
             let context = unsafe { context_dup(self.port) };
             let item = Zend {
                 settings: Settings {
@@ -458,12 +458,8 @@ impl Source for Zend<'_> {
                 },
                 port: self.port,
             };
-            if let Err(stop) = files(&item, context) {
-                // SAFETY: the copy's only reference.
-                unsafe { tls::swr_v1_tls_owner_free(context) };
-                return Err(stop);
-            }
-            // SAFETY: a live port and name, and the copy's reference, handed over once.
+            files(&item, context.as_ptr())?;
+            // SAFETY: a live port.
             let added = unsafe { sni_add(self.port, name, context) };
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
@@ -1017,7 +1013,7 @@ mod tests {
         let view = |index: usize| {
             // SAFETY: a slot of the live owner.
             let view =
-                unsafe { swoole_rs_corebase::swr_v1_core_string_view(prepared.strings[index]) };
+                unsafe { swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]) };
             // SAFETY: as above.
             unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
         };
