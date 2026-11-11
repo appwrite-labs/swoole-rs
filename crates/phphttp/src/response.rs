@@ -717,10 +717,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             }
         } else if instance_of(object, socket_ce) {
             socket = Some(object);
-            // SAFETY: a `Swoole\Coroutine\Socket`.
-            fd = zend_long::from(websocket::sock_fd(unsafe {
-                swoole_rs_phpclients::get_socket(object.as_ptr())
-            }));
+            fd = zend_long::from(websocket::sock_fd(swoole_rs_phpclients::get_socket(object)));
         } else {
             return refuse(
                 call,

@@ -268,8 +268,7 @@ pub(crate) fn bind_server(state: &mut State, server: view::Server<'_>) {
 /// # Safety
 /// `socket` is a live `Swoole\Coroutine\Socket`.
 pub(crate) unsafe fn bind(state: &mut State, socket: &Value) {
-    // SAFETY: per the caller.
-    state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket.as_ptr()) };
+    state.private_data = swoole_rs_phpclients::get_socket(socket);
     // The context takes a reference.
     state.zsocket = socket.copy();
 }
@@ -353,8 +352,7 @@ pub(crate) fn available(mut ctx: Ctx) -> bool {
         return false;
     }
     if co_socket(state) {
-        // SAFETY: the context's live socket zval.
-        return !unsafe { swoole_rs_phpclients::is_socket_closed(state.zsocket.as_ptr()) };
+        return !swoole_rs_phpclients::is_socket_closed(&state.zsocket);
     }
     crate::context::server(state)
         .by_session(state.fd)
