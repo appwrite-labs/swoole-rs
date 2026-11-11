@@ -17,7 +17,10 @@ use swoole_rs_cares_sys as sdk;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{
+    Event, ReactorDeferred, ReactorFields, Running, Socket, SocketRecord, event_api,
+    socket_upstream,
+};
 
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
@@ -153,9 +156,10 @@ fn install() {
     unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
     // SAFETY: as above.
     unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
+    let queue = reactor_fields()
+        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, destroy_callbacks))
+        .cast::<*mut ReactorDeferred>();
     // SAFETY: the live reactor's destroy queue; the call keeps no data.
-    let queue = unsafe { &raw mut (*reactor_fields()).destroy_callbacks };
-    // SAFETY: as above.
     if unsafe {
         swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, cleanup, ptr::null_mut(), None)
     } != 0
@@ -285,9 +289,10 @@ unsafe extern "C" fn host(
             coroutine,
             resume: co::resume,
         }));
+        let slot = reactor_fields()
+            .wrapping_byte_add(std::mem::offset_of!(ReactorFields, defer_tasks))
+            .cast::<*mut ReactorDeferred>();
         // SAFETY: the live reactor's queue takes this owned completion payload once.
-        let slot = unsafe { &raw mut (*reactor_fields()).defer_tasks };
-        // SAFETY: as above.
         let pushed = unsafe {
             swoole_rs_reactor::swr_v1_reactor_deferred_push(
                 slot,

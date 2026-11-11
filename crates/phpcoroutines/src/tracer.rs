@@ -578,8 +578,11 @@ impl Func<'_> {
         let common = unsafe { &*common };
         let span = if common.type_ == INTERNAL_FUNCTION {
             let internal = func.cast::<z::zend_internal_function>();
-            // SAFETY: an internal function; only the address is taken.
-            unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+            // An internal function's reserved slot; only the address is taken.
+            internal
+                .wrapping_byte_add(mem::offset_of!(z::zend_internal_function, reserved))
+                .cast::<*mut c_void>()
+                .wrapping_add(SPAN_SLOT)
         } else {
             ptr::null_mut()
         };

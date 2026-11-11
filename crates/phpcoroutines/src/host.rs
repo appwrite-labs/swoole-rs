@@ -539,11 +539,13 @@ unsafe extern "C" fn defers(context: *mut c_void) {
         if task.is_null() {
             return;
         }
+        let fci = task
+            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fci))
+            .cast::<swoole_rs_zend::sys::zend_fcall_info>();
+        let fcc = task
+            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
+            .cast::<swoole_rs_zend::sys::zend_fcall_info_cache>();
         // SAFETY: a kept callable.
-        let fci = unsafe { &raw mut (*task).fci };
-        // SAFETY: as above.
-        let fcc = unsafe { &raw mut (*task).fcc };
-        // SAFETY: as above.
         if unsafe { swoole_rs_zend::host::call_anyway(fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }

@@ -119,8 +119,10 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
 pub(crate) unsafe fn execute_end(owner: *mut ReactorState, timed_out: bool) {
     // SAFETY: as the caller promises.
     unsafe { (*owner).fields.timed_out = timed_out };
-    // SAFETY: as above; each borrow ends before a callback runs.
-    let fields = unsafe { &raw mut (*owner).fields };
+    // Its fields' address, without a borrow: each borrow ends before a callback runs.
+    let fields = owner
+        .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
+        .cast::<crate::ReactorFields>();
     for slot in 0..END_SLOTS {
         // SAFETY: as above; the copy is read before the callback runs.
         let Some(end) = (unsafe { (*owner).callbacks.end.get(slot).copied().flatten() }) else {

@@ -359,8 +359,10 @@ pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
     // copied over. All-zero bytes are `Context::EMPTY` except `defer`.
     // SAFETY: fresh storage for one context.
     unsafe { ctx.write_bytes(0, 1) };
-    // SAFETY: a raw place in the storage above; nothing reads it.
-    let defer = unsafe { &raw mut (*ctx).defer };
+    // Its place in the storage above; nothing reads it.
+    let defer = ctx
+        .wrapping_byte_add(mem::offset_of!(Context, defer))
+        .cast::<Vec<*mut swr_zend_callable>>();
     // SAFETY: a write, so the zeroed `defer` is never read or dropped.
     unsafe { defer.write(Vec::new()) };
     // SAFETY: every field now holds a valid value, and the context lives until `on_close`.
@@ -487,9 +489,10 @@ pub(crate) unsafe fn close(context: *mut c_void) {
     // Upstream only drops the references (Z_TRY_DELREF), leaking a callable or
     // return value the coroutine held last, such as `go([new Foo, 'bar'])`'s array.
     let call = ctx.call();
-    // SAFETY: a live context; `open` added this reference.
-    let function_name = unsafe { &raw mut (*call).fci.function_name };
-    // SAFETY: as above.
+    let function_name = call
+        .wrapping_byte_add(mem::offset_of!(swr_zend_callable, fci.function_name))
+        .cast::<zval>();
+    // SAFETY: a live context's callable; `open` added this reference.
     unsafe { zval_ptr_dtor(function_name) };
     // SAFETY: as above.
     let undef = unsafe { &mut *function_name };
