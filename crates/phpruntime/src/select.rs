@@ -4,128 +4,79 @@
 use crate::socket::{Report, convert_to_fd, coroutine_check, poll, report};
 use std::{collections::HashMap, ptr};
 use swoole_rs_zend::{
-    Call, E_WARNING,
-    bailout::Bailout,
+    Array, ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
+    bailout::{self, Bailout},
     sys::{
-        _zend_new_array, IS_ARRAY_EX, swr_zend_hash_foreach_key, swr_zend_runtime_select_args,
-        swr_zend_stream_from_zval, swr_zend_string_copy, swr_zend_string_release,
-        swr_zval_try_addref, zend_argument_value_error, zend_array, zend_array_destroy,
-        zend_hash_clean, zend_hash_index_update, zend_hash_update, zend_long, zend_string,
-        zend_ulong, zend_value, zval, zval_add_ref, zval_ptr_dtor,
+        swr_zend_runtime_select_args, swr_zend_stream_from_zval, swr_zend_try_hash_clean,
+        zend_argument_value_error, zend_long, zend_ulong, zval,
     },
-    type_of,
-    value::{set, table},
 };
 
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`.
+/// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`, one per array.
 const READ: i32 = 1 << 9;
 const WRITE: i32 = 1 << 10;
 const ERROR: i32 = 1 << 11;
+const EVENTS: [i32; 3] = [READ, WRITE, ERROR];
 
 /// `zend::KeyValue`: where a stream sat in its array, and a reference to it.
 struct Entry {
+    key: Option<ZString>,
     index: zend_ulong,
-    key: *mut zend_string,
-    value: zval,
+    value: Owned,
 }
 
 impl Entry {
-    /// # Safety
-    /// `value` is a live, dereferenced zval; `key` is null or live.
-    unsafe fn new(index: zend_ulong, key: *mut zend_string, value: *mut zval) -> Self {
-        let key = if key.is_null() {
-            key
-        } else {
-            // SAFETY: per the caller.
-            unsafe { swr_zend_string_copy(key) }
-        };
-        // SAFETY: per the caller.
-        let mut value = unsafe { *value };
-        // SAFETY: our copy takes its own reference.
-        unsafe { swr_zval_try_addref(&raw mut value) };
-        Self { index, key, value }
+    fn new(key: Option<&ZStr>, index: zend_ulong, value: &Value) -> Self {
+        Self {
+            key: key.map(ZStr::to_owned),
+            index,
+            value: value.copy(),
+        }
     }
 
     /// Put the stream back in `array` under its key.
-    fn add_to(&mut self, array: *mut zval) {
-        // SAFETY: a live array zval.
-        let table = unsafe { table(array) };
-        let slot = if self.key.is_null() {
-            // SAFETY: a live table; Zend copies the zval.
-            unsafe { zend_hash_index_update(table, self.index, &raw mut self.value) }
-        } else {
-            // SAFETY: as above.
-            unsafe { zend_hash_update(table, self.key, &raw mut self.value) }
-        };
-        // SAFETY: the table's new slot takes its own reference.
-        unsafe { swr_zval_try_addref(slot) };
-    }
-}
-
-impl Drop for Entry {
-    fn drop(&mut self) {
-        if !self.key.is_null() {
-            // SAFETY: our copy.
-            unsafe { swr_zend_string_release(self.key) };
+    fn add_to(&self, array: &mut ArrayMut) {
+        let value = self.value.copy();
+        match &self.key {
+            Some(key) => array.update(key, value),
+            None => array.update_index(self.index, value),
         }
-        // SAFETY: our reference.
-        unsafe { zval_ptr_dtor(&raw mut self.value) };
     }
 }
 
-/// Each `(index, key, value)` of a table, values dereferenced.
-fn entries(table: *mut zend_array) -> Vec<(zend_ulong, *mut zend_string, *mut zval)> {
-    unsafe extern "C" fn each(
-        index: zend_ulong,
-        key: *mut zend_string,
-        value: *mut zval,
-        context: *mut std::ffi::c_void,
-    ) -> bool {
-        // SAFETY: the vector below.
-        let rows =
-            unsafe { &mut *context.cast::<Vec<(zend_ulong, *mut zend_string, *mut zval)>>() };
-        rows.push((index, key, deref(value)));
-        true
-    }
-    let mut rows: Vec<(zend_ulong, *mut zend_string, *mut zval)> = Vec::new();
-    // SAFETY: a live table; `each` gets the vector, live for the call.
-    unsafe { swr_zend_hash_foreach_key(table, Some(each), (&raw mut rows).cast()) };
-    rows
-}
+/// `$read`, `$write` and `$except` as parsing left them: null, or an array
+/// zval of the frame, dereferenced and separated. One is borrowed at a time,
+/// as the same array may be passed twice by reference.
+struct Arrays([*mut zval; 3]);
 
-/// `ZVAL_DEREF`.
-fn deref(value: *mut zval) -> *mut zval {
-    // SAFETY: a live zval.
-    if unsafe { type_of(value) } != swoole_rs_zend::sys::IS_REFERENCE {
-        return value;
+impl Arrays {
+    fn get(&mut self, which: usize) -> Option<&mut ArrayMut> {
+        let array = *self.0.get(which)?;
+        // SAFETY: a live array zval of the frame, which outlives the call;
+        // `&mut self` keeps this the only borrow of it.
+        (!array.is_null()).then(|| unsafe { ArrayMut::from_ptr(array) })
     }
-    // SAFETY: a live zval.
-    let inner = unsafe { (*value).value };
-    // SAFETY: a reference zval holds `ref_`.
-    let reference = unsafe { inner.ref_ };
-    // SAFETY: a live reference.
-    unsafe { &raw mut (*reference).val }
 }
 
 /// `stream_array_to_fd_set`: each stream's fd polled for `event`; the first
 /// entry of an fd is where its stream goes back.
 fn to_fd_set(
-    array: *mut zval,
+    array: &Array,
     event: i32,
     rows: &mut Vec<(i32, i32)>,
     found: &mut HashMap<i32, Entry>,
 ) -> Result<(), Bailout> {
-    // SAFETY: an array zval.
-    for (index, key, value) in entries(unsafe { table(array) }) {
+    let mut entries = array.entries();
+    while let Some((key, index, value)) = entries.next_stored() {
+        let value = value.dereferenced();
         // SAFETY: a live element.
-        let fd = unsafe { convert_to_fd(value) }?;
+        let fd = unsafe { convert_to_fd(value.as_ptr()) }?;
         if fd < 0 {
             continue;
         }
-        // SAFETY: a live element and key.
         found
             .entry(fd)
-            .or_insert_with(|| unsafe { Entry::new(index, key, value) });
+            .or_insert_with(|| Entry::new(key, index, value));
         rows.push((fd, event));
     }
     Ok(())
@@ -133,53 +84,38 @@ fn to_fd_set(
 
 /// `stream_array_emulate_read_fd_set`: keep only the streams with buffered
 /// data, if any; how many.
-fn emulate_read(array: *mut zval) -> i64 {
-    // SAFETY: an array zval.
-    let old = unsafe { table(array) };
-    // SAFETY: a live table.
-    let size = unsafe { (*old).nNumOfElements };
-    // SAFETY: a fresh table.
-    let ready = unsafe { _zend_new_array(size) };
-    let mut count = 0;
-    for (index, key, value) in entries(old) {
-        // SAFETY: a live element.
-        let stream = unsafe { swr_zend_stream_from_zval(value) };
-        // SAFETY: null or a live stream.
-        let Some(stream) = (unsafe { stream.as_ref() }) else {
-            continue;
-        };
-        if stream.writepos - stream.readpos <= 0 {
-            continue;
+fn emulate_read(array: &mut ArrayMut) -> usize {
+    let mut ready = Vec::new();
+    if let Some(table) = array.array() {
+        let mut entries = table.entries();
+        while let Some((key, index, value)) = entries.next_stored() {
+            let value = value.dereferenced();
+            // SAFETY: a live element.
+            let stream = unsafe { swr_zend_stream_from_zval(value.as_ptr()) };
+            // SAFETY: null or a live stream.
+            if unsafe { stream.as_ref() }.is_some_and(|stream| stream.writepos > stream.readpos) {
+                ready.push(Entry::new(key, index, value));
+            }
         }
-        let slot = if key.is_null() {
-            // SAFETY: the new table copies the zval.
-            unsafe { zend_hash_index_update(ready, index, value) }
-        } else {
-            // SAFETY: as above.
-            unsafe { zend_hash_update(ready, key, value) }
-        };
-        // SAFETY: the slot takes its own reference.
-        unsafe { zval_add_ref(slot) };
-        count += 1;
     }
-    if count > 0 {
-        // SAFETY: the old table goes; the array holds the new one.
-        unsafe { zend_array_destroy(old) };
-        // SAFETY: as above.
-        unsafe { set(array, zend_value { arr: ready }, IS_ARRAY_EX) };
-    } else {
-        // SAFETY: unused.
-        unsafe { zend_array_destroy(ready) };
+    if !ready.is_empty() {
+        clean(array);
+        for entry in &ready {
+            entry.add_to(array);
+        }
     }
-    count
+    ready.len()
 }
 
-fn clean(array: *mut zval) {
-    if !array.is_null() {
-        // SAFETY: an array zval.
-        let table = unsafe { table(array) };
-        // SAFETY: a live table.
-        unsafe { zend_hash_clean(table) };
+/// `zend_hash_clean`, in place: parsing separated the array, so only a
+/// reference taken since, the trace of an exception an element threw, shares
+/// it, and that sees it emptied too. A destructor's bailout is deferred.
+fn clean(array: &ArrayMut) {
+    if let Some(table) = array.array() {
+        // SAFETY: a live table that is not immutable (separated by parsing).
+        bailout::defer(bailout::trapped(unsafe {
+            swr_zend_try_hash_clean(table.as_ptr())
+        }));
     }
 }
 
@@ -248,10 +184,11 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
         }
     }
 
+    let mut arrays = Arrays([read, write, except]);
     let mut rows = Vec::new();
     let mut found = HashMap::new();
-    for (array, event) in [(read, READ), (write, WRITE), (except, ERROR)] {
-        if !array.is_null() {
+    for (which, event) in EVENTS.into_iter().enumerate() {
+        if let Some(array) = arrays.get(which).and_then(|array| array.array()) {
             to_fd_set(array, event, &mut rows, &mut found)?;
         }
     }
@@ -263,18 +200,17 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
 
     // slight hack to support buffered data: if streams in the read array
     // have buffered reads, answer with only those
-    if !read.is_null() {
-        let ready = emulate_read(read);
-        if ready > 0 {
-            clean(write);
-            clean(except);
-            call.set_long(ready);
-            return Ok(());
+    let ready = arrays.get(0).map_or(0, emulate_read);
+    // `$read` holds only its ready streams then; the others are emptied.
+    for which in usize::from(ready > 0)..EVENTS.len() {
+        if let Some(array) = arrays.get(which) {
+            clean(array);
         }
     }
-    clean(read);
-    clean(write);
-    clean(except);
+    if ready > 0 {
+        call.set_long(zend_long::try_from(ready).unwrap_or(zend_long::MAX));
+        return Ok(());
+    }
 
     // a timeout or a failure to add a socket
     let Some(polled) = poll(&rows, timeout) else {
@@ -286,11 +222,13 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
         if revents <= 0 {
             continue;
         }
-        let Some(entry) = found.get_mut(&fd) else {
+        let Some(entry) = found.get(&fd) else {
             continue;
         };
-        for (array, event) in [(read, READ), (write, WRITE), (except, ERROR)] {
-            if revents & event != 0 && !array.is_null() {
+        for (which, event) in EVENTS.into_iter().enumerate() {
+            if revents & event != 0
+                && let Some(array) = arrays.get(which)
+            {
                 entry.add_to(array);
             }
         }
