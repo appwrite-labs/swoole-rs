@@ -263,9 +263,9 @@ fn socket_error_properties(props: Props, socket: Co) -> c_int {
 
 /// Fill `rv` as `RETURN_ZVAL(property, 1, 0)` does.
 fn return_property(call: &Call, name: &CStr) {
-    // SAFETY: `$this` is a live client object, which declares `name`.
-    let property = unsafe { swoole_rs_zend::property(call.this(), name) };
-    call.set_owned(property.dereferenced().copy());
+    if let Some(property) = call.this_value().and_then(|this| this.property(name)) {
+        call.set_owned(property.dereferenced().copy());
+    }
 }
 
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
