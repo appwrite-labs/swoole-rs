@@ -314,11 +314,11 @@ def instructions(engine, workload, requests, warmup, profiles=None):
             proc = subprocess.Popen(command, env={**os.environ, **peers(), 'TEST_PORT': str(port), 'TEST_DATA': data},
                                     stdout=sink, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            wait_for_port(port, proc)
             try:
+                wait_for_port(port, proc)
                 send(port, workload, warmup)
             except Exception:
-                # The server's own words say why it closed or answered wrongly.
+                # The server's own words say why it exited, closed or answered wrongly.
                 print(log.read_text(errors='replace')[-4000:], file=sys.stderr, flush=True)
                 raise
             subprocess.run(['callgrind_control', '-i', 'on'], check=True, capture_output=True)
@@ -327,7 +327,8 @@ def instructions(engine, workload, requests, warmup, profiles=None):
             # Dump now: a signalled valgrind may exit without writing its profile.
             subprocess.run(['callgrind_control', '-d'], check=True, capture_output=True)
         finally:
-            os.killpg(proc.pid, signal.SIGTERM)
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=120)
         total = 0
         if profiles:

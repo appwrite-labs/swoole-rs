@@ -193,7 +193,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/install
         with:
-          packages: valgrind php-mysql php-pgsql
+          packages: valgrind php-mysql
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
@@ -229,7 +229,7 @@ jobs:
           python3 tools/build_ext.py --profile release-lto "${hooks[@]}"
           python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits --append \
             --workload pgsql --workload sqlite --workload curl --workload dns \
-            --php-extension pdo --php-extension pdo_sqlite --php-extension pdo_pgsql --php-extension curl \
+            --php-extension pdo --php-extension pdo_sqlite --php-extension curl \
             --engine cargo=target/ext/swoole.so \
             --engine upstream="$(sed -n 's/^\(Built\|Cached\) upstream: //p' hooks-upstream.log)" \
             --profiles target/callgrind/profiles --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
