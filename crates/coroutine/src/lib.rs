@@ -16,6 +16,7 @@
 pub mod chan;
 pub mod context;
 mod coroutine;
+mod fcontext;
 pub use coroutine::*;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod facade;

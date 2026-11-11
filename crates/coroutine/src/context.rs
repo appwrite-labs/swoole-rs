@@ -1,9 +1,10 @@
 //! A coroutine's context: its stack and the switch onto it through boost.context's
-//! fcontext (thirdparty/boost/asm). `AddressSanitizer` follows a stack switch only through its
+//! fcontext (`fcontext.rs`). `AddressSanitizer` follows a stack switch only through its
 //! fiber annotations, so they run whenever the process has its runtime. With
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
 use crate::Coroutine;
+use crate::fcontext::{Transfer, jump_fcontext, make_fcontext};
 use crate::stack::{swr_v1_context_stack_alloc, swr_v1_context_stack_free};
 use crate::thread::{self, THREAD};
 use core::ffi::{c_int, c_void};
@@ -66,21 +67,6 @@ impl Context {
     }
 }
 
-#[repr(C)]
-struct Transfer {
-    fctx: *mut c_void,
-    data: *mut c_void,
-}
-
-unsafe extern "C" {
-    fn swoole_make_fcontext(
-        stack: *mut c_void,
-        size: usize,
-        entry: extern "C" fn(Transfer),
-    ) -> *mut c_void;
-    fn swoole_jump_fcontext(to: *mut c_void, data: *mut c_void) -> Transfer;
-}
-
 /// `SW_ERROR_MALLOC_FAIL`.
 const SW_ERROR_MALLOC_FAIL: c_int = 501;
 
@@ -121,63 +107,69 @@ pub unsafe fn swr_v1_context_init(
     entry: unsafe extern "C" fn(*mut c_void),
     data: *mut c_void,
 ) -> c_int {
-    if flags & THREAD != 0 {
-        // SAFETY: `ctx` is writable, as the caller promises.
-        unsafe { ctx.write(Context::threaded(flags, entry, data)) };
-        // SAFETY: initialized above; it stays put until free.
-        return unsafe { thread::start(ctx) };
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream keeps the size as uint32_t"
-    )]
-    let stack_size = stack_size as u32;
-    let size = stack_size as usize;
-    let stack = swr_v1_context_stack_alloc(size, flags).cast::<u8>();
-    if stack.is_null() {
-        // SAFETY: nothing on this frame owns a destructor.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                SW_ERROR_MALLOC_FAIL,
-                c"failed to malloc stack memory.",
-            );
+    let context = if flags & THREAD != 0 {
+        Context::threaded(flags, entry, data)
+    } else {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream keeps the size as uint32_t"
+        )]
+        let stack_size = stack_size as u32;
+        let size = stack_size as usize;
+        let stack = swr_v1_context_stack_alloc(size, flags).cast::<u8>();
+        if stack.is_null() {
+            // SAFETY: nothing on this frame owns a destructor.
+            unsafe {
+                swoole_rs_corebase::fatal_error(
+                    SW_ERROR_MALLOC_FAIL,
+                    c"failed to malloc stack memory.",
+                );
+            }
+            std::process::exit(254);
         }
-        // SAFETY: exit has no preconditions.
-        unsafe { libc::exit(254) };
-    }
-    // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
-    let fctx = unsafe { swoole_make_fcontext(stack.wrapping_add(size).cast(), size, first_frame) };
-    let context = Context {
-        fctx,
-        swap_fctx: ptr::null_mut(),
-        stack,
-        stack_size,
-        flags,
-        entry,
-        data,
-        asan_bottom: ptr::null(),
-        asan_size: 0,
-        end: false,
+        // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
+        let fctx = unsafe { make_fcontext(stack.wrapping_add(size).cast(), size, first_frame) };
+        Context {
+            fctx,
+            swap_fctx: ptr::null_mut(),
+            stack,
+            stack_size,
+            flags,
+            entry,
+            data,
+            asan_bottom: ptr::null(),
+            asan_size: 0,
+            end: false,
+        }
     };
     // SAFETY: `ctx` is writable, as the caller promises.
     unsafe { ctx.write(context) };
+    if flags & THREAD != 0 {
+        // SAFETY: initialized above; it stays put until free.
+        return unsafe { thread::start(ctx) };
+    }
     0
 }
 
 /// # Safety
 /// `ctx` came from [`swr_v1_context_init`] and is not running.
 pub unsafe fn swr_v1_context_free(ctx: *mut Context) {
-    // SAFETY: a live context, as the caller promises.
-    if unsafe { (*ctx).flags } & THREAD != 0 {
+    // SAFETY: a live context, as the caller promises; the borrow ends before `thread::free`.
+    let record = unsafe { &mut *ctx };
+    if record.flags & THREAD != 0 {
         // SAFETY: a started thread context.
         return unsafe { thread::free(ctx) };
     }
-    // SAFETY: a live context, as the caller promises.
-    let ctx = unsafe { &mut *ctx };
-    if !ctx.stack.is_null() {
+    if !record.stack.is_null() {
         // SAFETY: allocated by init with this size and these flags, freed once.
-        unsafe { swr_v1_context_stack_free(ctx.stack.cast(), ctx.stack_size as usize, ctx.flags) };
-        ctx.stack = ptr::null_mut();
+        unsafe {
+            swr_v1_context_stack_free(
+                record.stack.cast(),
+                record.stack_size as usize,
+                record.flags,
+            );
+        }
+        record.stack = ptr::null_mut();
     }
 }
 
@@ -209,7 +201,7 @@ pub unsafe fn swr_v1_context_swap_in(ctx: *mut Context) {
         ctx.fctx
     };
     // SAFETY: `fctx` is the context's suspended state; it resumes with its record.
-    let transfer = unsafe { swoole_jump_fcontext(fctx, ctx.cast()) };
+    let transfer = unsafe { jump_fcontext(fctx, ctx.cast()) };
     // SAFETY: the context switched back out, so this stack owns the record again.
     unsafe { (*ctx).fctx = transfer.fctx };
     if let Some((_, finish)) = asan {
@@ -246,7 +238,7 @@ pub unsafe fn swr_v1_context_swap_out(ctx: *mut Context) {
         ctx.swap_fctx
     };
     // SAFETY: `swap_fctx` is the suspended caller of `swap_in`.
-    let transfer = unsafe { swoole_jump_fcontext(swap_fctx, ctx.cast()) };
+    let transfer = unsafe { jump_fcontext(swap_fctx, ctx.cast()) };
     // SAFETY: switched back in, so this stack owns the record again.
     unsafe { switched_in(ctx, transfer.fctx, asan, fake_stack) };
 }
@@ -299,5 +291,42 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Context, stack), 16);
         assert_eq!(std::mem::offset_of!(Context, stack_size), 24);
         assert_eq!(std::mem::offset_of!(Context, end), 64);
+    }
+
+    struct Log {
+        ctx: core::mem::MaybeUninit<Context>,
+        steps: Vec<&'static str>,
+    }
+
+    unsafe extern "C" fn entry(data: *mut c_void) {
+        let log = data.cast::<Log>();
+        // SAFETY: the test's log, which only the running stack touches.
+        unsafe { (*log).steps.push("entry") };
+        // SAFETY: the running context.
+        unsafe { swr_v1_context_swap_out((*log).ctx.as_mut_ptr()) };
+        // SAFETY: as above.
+        unsafe { (*log).steps.push("resumed") };
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri runs no assembly")]
+    fn a_context_switches_onto_its_stack_and_back() {
+        let mut log = Log {
+            ctx: core::mem::MaybeUninit::uninit(),
+            steps: Vec::new(),
+        };
+        let data = (&raw mut log).cast();
+        let ctx = log.ctx.as_mut_ptr();
+        // SAFETY: the record stays in `log` until freed, and each switch is the stack's turn.
+        unsafe {
+            assert_eq!(swr_v1_context_init(ctx, 64 * 1024, 0, entry, data), 0);
+            swr_v1_context_swap_in(ctx);
+            log.steps.push("main");
+            assert!(!(*ctx).end);
+            swr_v1_context_swap_in(ctx);
+            assert!((*ctx).end);
+            swr_v1_context_free(ctx);
+        }
+        assert_eq!(log.steps, ["entry", "main", "resumed"]);
     }
 }

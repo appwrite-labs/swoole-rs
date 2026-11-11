@@ -82,11 +82,12 @@ or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags.
 each coroutine's `swr_v1_coroutine`: init
 allocates the stack and makes the boost.context fcontext (out of memory is
 upstream's fatal error and exit 254), swap_in/swap_out jump with
-`swoole_jump_fcontext`, and the first frame runs the coroutine's C routine, sets `end` and switches out. ASan's fiber annotations run
+`jump_fcontext`, and the first frame runs the coroutine's C routine, sets `end` and switches out.
+`crates/coroutine/src/fcontext.rs` carries boost's x86_64 and aarch64 switch as naked
+functions; other architectures fail to compile, where config.m4 failed on a CPU without
+boost asm. ASan's fiber annotations run
 when `dlsym` finds `__sanitizer_{start,finish}_switch_fiber`. ucontext and
-valgrind stack registration are not kept; config.m4 fails on a CPU without
-boost asm, and links it with the thread backend too, since the Rust context
-references it either way.
+valgrind stack registration are not kept.
 
 With `THREAD` (`--enable-thread-context`) the record has no stack and
 `fctx` owns a thread (`crates/coroutine/src/thread.rs`; `thread_context.cc` is
