@@ -205,7 +205,7 @@ impl<'a> Server<'a> {
     /// The shared counters (`serv->gs`).
     #[must_use]
     pub fn counters(self) -> &'a ServerCounters {
-        let gs = self.config().gs.cast::<ServerCounters>();
+        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: `swr_v1_server_new` maps `ServerGS`, which starts with the
         // counters, for the server's life.
         unsafe { &*gs }
@@ -218,7 +218,7 @@ impl<'a> Server<'a> {
     /// No concurrent reader of the fields written, and no other reference to them.
     #[must_use]
     pub unsafe fn counters_mut(self) -> &'a mut ServerCounters {
-        let gs = self.config().gs.cast::<ServerCounters>();
+        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: as `counters`, with the caller's exclusion.
         unsafe { &mut *gs }
     }
@@ -341,7 +341,7 @@ impl<'a> Server<'a> {
     /// `serv->get_task_worker_pool()`.
     #[must_use]
     pub fn task_pool(self) -> *mut PoolRecord {
-        let gs = self.config().gs.cast::<u8>();
+        let gs = self.config().gs.as_ptr().cast::<u8>();
         gs.wrapping_add(core::mem::offset_of!(crate::shared::ServerShared, pools))
             .cast()
     }
@@ -567,11 +567,11 @@ mod tests {
     #[test]
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let state = crate::swr_v1_server_state_new();
-        let mut gs = Box::new(unsafe { core::mem::zeroed::<crate::shared::ServerShared>() });
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
         let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
         let config = unsafe { serv.config_mut() };
-        config.gs = (&raw mut *gs).cast();
+        config.gs =
+            swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
         config.mode_ = 1;
         config.worker_num = 1;
         let mut factory = 0u8;

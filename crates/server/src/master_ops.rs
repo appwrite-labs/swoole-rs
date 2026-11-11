@@ -198,7 +198,7 @@ impl Objects<'_> {
         unsafe { &mut *self.state.tables() }
     }
     fn gs(&self) -> &mut ServerCounters {
-        let gs = self.config().gs.cast::<ServerCounters>();
+        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: the server's shared counters, mapped for its life.
         unsafe { &mut *gs }
     }
@@ -2903,12 +2903,14 @@ mod tests {
     fn allocation_ops_fill_the_config_tables_and_counters() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        let mut gs = ServerCounters::default();
         // SAFETY: a fresh state; every pointer the ops write is checked and freed below.
         unsafe {
             let config = &mut *(*state).config();
             config.worker_num = 3;
-            config.gs = (&raw mut gs).cast();
+            config.gs = Shm::calloc(1, size_of::<ServerCounters>());
+            let gs = config.gs.as_ptr().cast::<ServerCounters>();
+            gs.write(ServerCounters::default());
+            let gs = &*gs;
             assert_eq!(answer(&raw mut ctx, &*state, OP_SIGNAL_ACTIVE, 0), Some(0));
             for op in [
                 OP_ALLOC_WORKERS,
@@ -2931,6 +2933,7 @@ mod tests {
                 sw_shm_free(allocation);
             }
             tables.session_list = core::ptr::null_mut();
+            config.gs.free();
             crate::swr_v1_server_state_free(state);
         }
     }

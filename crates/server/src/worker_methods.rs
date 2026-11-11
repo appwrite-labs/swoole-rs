@@ -236,11 +236,11 @@ mod tests {
     #[test]
     fn abort_and_reset() {
         let state = crate::swr_v1_server_state_new();
-        let mut gs = Box::new(unsafe { core::mem::zeroed::<crate::shared::ServerShared>() });
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
         let serv = unsafe { view::Server::from_raw(head.as_ptr().cast_mut().cast()) };
         unsafe { serv.config_mut() }.mode_ = 1;
-        unsafe { serv.config_mut() }.gs = (&raw mut *gs).cast();
+        unsafe { serv.config_mut() }.gs =
+            swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
         let workers = swoole_rs_memory::members::Shm::calloc(2, size_of::<WorkerRecord>());
         let worker = workers.as_ptr().cast::<WorkerRecord>();
         let other = worker.wrapping_add(1);
@@ -295,6 +295,7 @@ mod tests {
 
         unsafe { (*serv.state().tables()).session_list = core::ptr::null_mut() };
         unsafe { serv.config_mut() }.workers.free();
+        unsafe { serv.config_mut() }.gs.free();
         unsafe { crate::swr_v1_server_state_free(state) };
     }
 }
