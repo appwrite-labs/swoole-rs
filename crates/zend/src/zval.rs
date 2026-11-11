@@ -13,13 +13,13 @@ use crate::{
         add_next_index_long, add_next_index_null, add_next_index_stringl, php_format_date,
         php_url_encode, swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
         swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
-        swr_zend_separate_array, swr_zend_string_release, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_update,
-        swr_zend_try_ptr_dtor, swr_zend_try_symtable_update, swr_zend_zval_value_name,
-        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
-        zend_hash_add_new, zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert,
-        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
-        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_property_slot, swr_zend_separate_array, swr_zend_string_release,
+        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
+        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
+        swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref, zend_array_count,
+        zend_class_entry, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
+        zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -161,6 +161,19 @@ impl Value {
         let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
         // SAFETY: the zval holds the object while borrowed; a registered class or null.
         Some(unsafe { crate::Props::new(scope, object) })
+    }
+
+    /// `sw_zend_read_property_ex` of an object: the slot of the instance
+    /// property its class declares as `name` (an uninitialised typed property
+    /// reads as null), or None for no object or no such property.
+    #[must_use]
+    #[inline]
+    pub fn property(&self, name: &CStr) -> Option<&Self> {
+        let object = self.object()?;
+        // SAFETY: the zval holds the object while borrowed; Zend reads `name` only.
+        let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
+        // SAFETY: null, or a slot of the object, which the borrow keeps alive.
+        unsafe { Self::from_ptr(slot) }
     }
 
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
