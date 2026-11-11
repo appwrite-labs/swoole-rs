@@ -200,8 +200,11 @@ pub fn finish(
     current_task: Option<&DataHead>,
 ) -> bool {
     let mut buf = MaybeUninit::<EventData>::uninit();
+    let latest = super::LATEST_TASK.get();
     let mut ctx = Context::over(serv);
-    ctx.task = current_task.map_or(core::ptr::null(), core::ptr::from_ref);
+    ctx.task = current_task
+        .or(latest.as_ref())
+        .map_or(core::ptr::null(), core::ptr::from_ref);
     ctx.buf = buf.as_mut_ptr().cast();
     (ctx.data, ctx.data_len) = (data.as_ptr(), data.len());
     run_with(&mut ctx, RUN_FINISH, u64::from(flags.cast_unsigned())) != 0
