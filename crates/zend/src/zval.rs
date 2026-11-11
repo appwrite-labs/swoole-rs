@@ -45,6 +45,15 @@ impl Value {
         unsafe { value.cast::<Self>().as_ref() }
     }
 
+    /// Borrow a zval this code holds exclusively, such as a local return slot.
+    #[must_use]
+    #[inline]
+    pub fn of(value: &mut zval) -> &Self {
+        // SAFETY: `Value` is a transparent zval, and the exclusive borrow keeps
+        // anything else from freeing or overwriting it while borrowed.
+        unsafe { &*ptr::from_mut(value).cast::<Self>() }
+    }
+
     #[must_use]
     #[inline]
     pub fn as_ptr(&self) -> *mut zval {

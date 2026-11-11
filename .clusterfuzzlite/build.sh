@@ -3,12 +3,11 @@
 cd "$SRC/swoole-rs/fuzz"
 # OSS-Fuzz compiles C++ against libc++; link the oracle the same way.
 export CXXSTDLIB=c++
-# libcrypto.a, so the fuzzers run without OpenSSL in the runner image.
-export OPENSSL_STATIC=1
 # libz-sys's bundled zlib, built with the sanitizer CFLAGS so ASan sees what the
 # inflate targets make zlib do.
 export LIBZ_SYS_STATIC=1
-# pkg-config --static, so libbrotlidec.a and libbrotlienc.a bring libbrotlicommon.a.
+# pkg-config --static, so libbrotlidec.a and libbrotlienc.a bring libbrotlicommon.a and
+# libcrypto.a brings what it needs from libc.
 export PKG_CONFIG_ALL_STATIC=1
 cargo fuzz build -O --debug-assertions
 for target in $(cargo fuzz list); do

@@ -36,8 +36,28 @@ runtimes are incompatible: use `--native-ubsan-only --asan-runtime
 ## Logger
 
 The Logger is Rust (`crates/utilities/src/logger.rs`); its crate tests cover
-files, rotation, diagnostics and concurrent `put` with `reopen`. The upstream
-`log.cpp` GoogleTests run against it through `storage.py`'s originals families below.
+files, rotation, diagnostics and concurrent `put` with `reopen`.
+
+`core-tests/src/core/log.cpp`'s TESTs that read the log back are ported to
+`crates/utilities/src/logger/ported.rs`, one Rust test per TEST with the same
+inputs and expected values, over a logger of their own:
+
+| TEST | Rust test |
+| --- | --- |
+| `log.level` | `logger::ported::level` |
+| `log.date_format_long_string` | `logger::ported::date_format_long_string` |
+| `log.date_with_microseconds` | `logger::ported::date_with_microseconds` |
+| `log.redirect_1` | `logger::ported::redirect_1` |
+| `log.redirect_2` | `logger::ported::redirect_2` |
+| `log.ignore_error` | `logger::ported::ignore_error` |
+
+The worker type is the logger host's identity, which sets the line's symbol.
+`file_get_contents` and `File::read_content` read the file with `std::fs`.
+`spawn_exec_and_wait` forks; a failed assertion in the child exits 1, where
+upstream's helper exited 0 regardless. `printf` is one `write` to fd 1, the
+line-buffered terminal stdout upstream's run had. `ignore_error` runs in a child
+too, so the process logger and the ignored code stay out of the other tests. The
+rest of `log.cpp` runs through `storage.py`'s originals families below.
 
 `core-tests/src/core/util.cpp`'s one case, `util.bitmap`, has no Rust test:
 `swoole::BitMap` had no user in the hybrid, so it left `swoole_util.h` with its
@@ -58,20 +78,9 @@ profile flag. The native SDK is the pin's `include/` with the upstream build's `
 | `--logger-originals` | Unchanged GoogleTests `pretty_name`, `pretty_name_lambda`, `rotation`, `set_stream` |
 | `--pretty-originals` | The two pretty-name originals only |
 | `--hash-originals` | `hash.php`, `hash.jenkins` |
-| `--global-logger-originals` | `level`, `date_format_long_string`, `date_with_microseconds`, `ignore_error` |
-| `--redirect-originals` / `--redirect-original` | `redirect_1` and `redirect_2` (or just the first) |
 
-Originals run with real GoogleTest and strict XML/status/exit checks. The global
-and redirect profiles need complete exports beside both DSOs. Registered as
-`utilities-public-storage` and `utilities-{logger,hash,global-logger,redirect}-originals`.
-
-The original spawn helper calls `exit(0)` after its callback, even after a child
-`ASSERT` failure, so parent XML and exit status cannot prove child success.
-`child_assertions.h` journals child failures and completion; a negative control
-fails a synthetic child assertion and must be rejected on every engine. The
-redirect originals fail with a pipe stdout (the original `printf` reads the log
-before flushing), so `terminal_stdout.py` runs them with a real PTY stdout; the
-pipe outcome remains a FAIL.
+Originals run with real GoogleTest and strict XML/status/exit checks. Registered as
+`utilities-public-storage` and `utilities-{logger,hash}-originals`.
 
 Other consumers:
 

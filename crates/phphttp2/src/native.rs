@@ -3,7 +3,10 @@
 use libc::{c_char, c_int, c_void, size_t, ssize_t};
 use std::ptr;
 use swoole_rs_phpruntime::co;
-use swoole_rs_zend::sys::{zend_object, zend_string, zval};
+use swoole_rs_zend::{
+    Value,
+    sys::{zend_object, zend_string},
+};
 
 /// A `SocketImpl *`.
 pub(crate) type Socket = co::Socket;
@@ -54,7 +57,7 @@ pub(crate) unsafe fn swoole_http2_client_coro_enable_ssl(socket: Socket) -> bool
 }
 
 /// HTTP/2 framing on the socket, then `apply_setting(settings)`.
-pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings: *const zval) {
+pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings: &Value) {
     // SAFETY: per the caller.
     let record = unsafe { co::record(socket) };
     record.http2 = true;
@@ -70,11 +73,10 @@ pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings:
 }
 
 /// `php_swoole_socket_set` when `settings` is an array.
-pub(crate) unsafe fn swoole_http2_client_coro_apply(socket: Socket, settings: *const zval) {
-    // SAFETY: a live zval.
-    if unsafe { swoole_rs_zend::type_of(settings) } == swoole_rs_zend::sys::IS_ARRAY {
+pub(crate) unsafe fn swoole_http2_client_coro_apply(socket: Socket, settings: &Value) {
+    if settings.kind() == swoole_rs_zend::sys::IS_ARRAY {
         // SAFETY: a live socket and array; 0 applies every setting.
-        unsafe { swoole_rs_phpclients::socket_settings(socket, settings, 0) };
+        unsafe { swoole_rs_phpclients::socket_settings(socket, settings.as_ptr(), 0) };
     }
 }
 

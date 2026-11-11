@@ -451,7 +451,7 @@ fn header(call: &Call) {
     let run = || -> Option<()> {
         let parsed = call
             .arity(2, 3)
-            .and_then(|()| Ok((call.string_opt(1)?, call.passed(2), call.bool(3, true)?)));
+            .and_then(|()| Ok((call.string_opt(1)?, call.value(2), call.bool(3, true)?)));
         let (Some(key), Some(value), format) = parsed.ok()? else {
             return None;
         };
@@ -565,7 +565,7 @@ fn push(call: &Call) {
         let ctx = websocket(call)?;
         let parsed = call.arity(1, 3).and_then(|()| {
             Ok((
-                call.passed(1),
+                call.value(1),
                 call.long(2, OPCODE_TEXT)?,
                 call.zval_or_null(3),
             ))
@@ -643,7 +643,7 @@ fn create_response(call: &Call) {
 
 /// `Context::set_header`: `$response->header[key] = value`, the key in
 /// canonical case when `format` (lower case over HTTP/2).
-pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, format: bool) -> bool {
+pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: &Value, format: bool) -> bool {
     if key.len() > HEADER_KEY_SIZE - 1 {
         host::notice("header key is too long");
         return false;
@@ -666,10 +666,10 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
         }
         _ => key,
     };
-    // SAFETY: the value the array now also references.
-    unsafe { z::swr_zval_try_addref(value) };
+    // The array takes this copy's reference.
+    let mut value = value.copy().into_zval();
     // SAFETY: the live header array and the name's bytes, which Zend copies.
-    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), value) };
+    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), &raw mut value) };
     true
 }
 
@@ -678,7 +678,7 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
 pub(crate) fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) {
     // This frame's reference; the header array takes its own.
     let value = Owned::string(ZString::new(value));
-    set_header(ctx, key, value.as_ptr(), false);
+    set_header(ctx, key, &value, false);
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -813,16 +813,13 @@ fn redirect(call: &Call) {
     let mut run = || -> Option<()> {
         let parsed = call
             .arity(1, 2)
-            .map(|()| (call.passed(1), call.zval_or_null(2)));
+            .map(|()| (call.value(1), call.zval_or_null(2)));
         let (Some(url), code) = parsed.ok()? else {
             return None;
         };
         let ctx = checked(call)?;
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int status")]
-        let status = code.map_or(302, |code| {
-            // SAFETY: the argument.
-            unsafe { z::swr_zval_get_long(code) as c_int }
-        });
+        let status = code.map_or(302, |code| code.long() as c_int);
         send::state(ctx).response.status = status;
         set_header(ctx, b"Location", url, false);
         if swoole_rs_zend::bailout::pending() {

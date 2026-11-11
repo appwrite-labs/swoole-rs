@@ -111,7 +111,7 @@ pub mod exports {
     /// `socket` is a live server connection socket.
     unsafe fn connection<'a>(socket: *mut SocketRecord) -> &'a mut ConnectionRecord {
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { (*socket).object }.cast::<ConnectionRecord>();
+        let conn = unsafe { (*socket).fields.object }.cast::<ConnectionRecord>();
         // SAFETY: a connection socket's object is its live connection, which only
         // its reactor thread touches.
         unsafe { &mut *conn }

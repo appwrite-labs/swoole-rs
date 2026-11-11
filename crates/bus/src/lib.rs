@@ -720,9 +720,7 @@ impl Bus {
             let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
                 return false;
             };
-            socket.edit(|record| {
-                swoole_rs_reactor::catch_pipe_error(error, &mut record.kernel_nobufs)
-            }) == REDUCE_SIZE
+            socket.catch_pipe_error(error) == REDUCE_SIZE
         };
         if let Some(counter) = self.next_id {
             head.msg_id = counter.fetch_add(1, Ordering::SeqCst);

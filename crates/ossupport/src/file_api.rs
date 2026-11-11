@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/file.cc (Swoole contributors).
-//! The bodies of `src/os/file.cc` that Rust and `native/ossupport/swoole_file.h`
-//! still call: `swoole_tmpfile` (under its upstream symbol with `upstream-symbols`),
-//! `File::read_content`, `file_get_contents` and `file_put_contents`. Logs name
-//! the function as upstream's `__SW_FUNC__` did.
+//! The bodies of `src/os/file.cc` that Rust still calls: `swoole_tmpfile` (under its
+//! upstream symbol with `upstream-symbols`), `file_get_contents` and
+//! `file_put_contents`. Logs name the function as upstream's `__SW_FUNC__` did.
 use crate::file::{FileIo, file_open, file_size, tmpfile, write_all};
 use crate::file_record::FileRecord;
 use libc::{c_char, c_int};
@@ -16,8 +15,6 @@ const LOG_TRACE: c_int = 1;
 const LOG_WARNING: c_int = 4;
 const FILE_TOO_LARGE: c_int = 701;
 const FILE_EMPTY: c_int = 702;
-/// `SW_BUFFER_SIZE_STD`.
-const BUFFER_SIZE_STD: usize = 8192;
 
 /// `File::read_all`/`write_all`'s warning on an IO error.
 fn warn_io(origin: &CStr, call: &str, fd: c_int, data: *const u8, total: usize, io: FileIo) {
@@ -126,35 +123,6 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
     unsafe { content.set_len(io.done) };
     content.set_null_terminated();
     true
-}
-
-/// `file_get_contents` for `swoole_file.h`, which the logger originals compile.
-///
-/// # Safety
-/// `path` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_get_contents(
-    path: *const c_char,
-    content: &mut CppString,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let path = unsafe { CStr::from_ptr(path) };
-    file_get_contents(path, content)
-}
-
-/// `File::read_content`: reads to EOF into `content`, a fresh `String(SW_BUFFER_SIZE_STD)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_file_read_content(owner: &FileRecord, content: &mut CppString) {
-    let fd = owner.descriptor();
-    content.alloc(BUFFER_SIZE_STD, None);
-    loop {
-        let n = sys::read(fd, content.spare());
-        if n <= 0 {
-            break;
-        }
-        // SAFETY: the read filled the `n` spare bytes after the content.
-        unsafe { content.grow(n.unsigned_abs()) };
-    }
 }
 
 /// `file_put_contents`.

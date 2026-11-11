@@ -23,7 +23,7 @@ use swoole_rs_zend::{
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, add_assoc_stringl_ex,
         swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge, zend_class_entry,
-        zend_object, zend_object_handlers, zend_wrong_parameter_class_error, zval,
+        zend_object, zend_object_handlers, zend_wrong_parameter_class_error,
     },
     unset_property_deny,
 };
@@ -393,7 +393,7 @@ impl Client {
             return self.connect_failed(socket);
         }
         // SAFETY: `$this` declares `setting`.
-        let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") }.as_ptr();
+        let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") };
         // SAFETY: a live socket and property.
         unsafe { native::swoole_http2_client_coro_protocol(socket, settings) };
         // SAFETY: a live socket and the host bytes.
@@ -687,7 +687,7 @@ impl Client {
     }
 
     /// `write_data`: more of a pipeline request's body.
-    fn write_data(&mut self, id: u32, data: *mut zval, end: bool) -> bool {
+    fn write_data(&mut self, id: u32, data: Option<&Value>, end: bool) -> bool {
         let flags = self.streams.get(&id).map(|stream| stream.flags);
         if sw_rs_http2_write_allowed(u32::from(flags.is_some()), flags.unwrap_or(0)) == 0 {
             let message = format!("unable to found active pipeline stream#{id}");
@@ -695,8 +695,7 @@ impl Client {
             return false;
         }
         let flag = if end { FLAG_END_STREAM } else { 0 };
-        // SAFETY: the caller's live argument.
-        let Some(body) = unsafe { Value::from_ptr(data) }.and_then(body_bytes) else {
+        let Some(body) = data.and_then(body_bytes) else {
             return false;
         };
         if !self.send_data(id, body.bytes(), flag) {
@@ -1313,7 +1312,9 @@ fn set(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: `$this` declares `setting`; the settings are a live array.
-    unsafe { swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings) };
+    unsafe {
+        swr_zend_property_merge(ce(), call.this(), c"setting".as_ptr(), 7, settings.as_ptr());
+    }
     let socket = client.socket();
     if !socket.is_null() {
         // SAFETY: a live socket and array.
@@ -1420,7 +1421,7 @@ fn write(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream's uint32_t stream id"
     )]
-    let result = client.write_data(id as u32, call.zval(2), end);
+    let result = client.write_data(id as u32, call.value(2), end);
     call.set_bool(result);
 }
 

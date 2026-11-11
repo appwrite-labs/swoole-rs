@@ -347,8 +347,8 @@ impl Call {
     /// # Errors
     /// The argument is not an array; Zend has thrown.
     #[inline]
-    pub fn array(&self, n: u32) -> Result<*mut zval, Invalid> {
-        self.array_ref(n).map(|_| self.arg(n))
+    pub fn array(&self, n: u32) -> Result<&Value, Invalid> {
+        self.array_ref(n).map(|_| self.arg_value(n))
     }
 
     /// [`Call::array`]'s table, borrowed for the call.

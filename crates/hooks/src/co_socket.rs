@@ -13,7 +13,7 @@ use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_st
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_reactor::{Socket, SocketAddress, SocketRecord};
+use swoole_rs_reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
 use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
 pub use swoole_rs_corebase::net_types::Protocol;
@@ -210,10 +210,10 @@ impl Co {
 
     /// `f` over the `network::Socket`, or `None` before the socket opens. `f` is
     /// immediate: it neither yields nor reaches the record through another handle.
-    pub fn net<T>(self, f: impl FnOnce(&mut SocketRecord) -> T) -> Option<T> {
+    pub fn net<T>(self, f: impl FnOnce(&mut SocketFields) -> T) -> Option<T> {
         // SAFETY: `new`'s contract: null or a live network::Socket, borrowed only
         // for the immediate call.
-        unsafe { self.socket().as_mut() }.map(f)
+        unsafe { self.socket().as_mut() }.map(|record| f(record))
     }
 
     /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
@@ -281,9 +281,9 @@ impl CoSocket {
         clippy::mut_from_ref,
         reason = "the network::Socket record is its own allocation, which this record only points to"
     )]
-    pub unsafe fn record(&self) -> &mut SocketRecord {
+    pub unsafe fn record(&self) -> &mut SocketFields {
         // SAFETY: as the caller promises.
-        unsafe { &mut *self.socket }
+        unsafe { &mut (*self.socket).fields }
     }
 
     /// The socket's proxies' owners: SOCKS5, then HTTP. Each stays put until a
@@ -795,7 +795,7 @@ mod tests {
     fn release(mut socket: Box<CoSocket>) {
         if !socket.socket.is_null() {
             unsafe {
-                libc::close((*socket.socket).fd);
+                libc::close((*socket.socket).fields.fd);
                 SocketRecord::free(socket.socket);
             }
         }
@@ -877,7 +877,7 @@ mod tests {
             OPENED
         );
         assert_eq!(socket.kind, 2);
-        assert_eq!(unsafe { (*socket.socket).socket_type }, 2);
+        assert_eq!(unsafe { (*socket.socket).fields.socket_type }, 2);
         release(socket);
     }
 
@@ -910,7 +910,7 @@ mod tests {
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
             0
         );
-        assert_eq!(unsafe { (*socket.socket).fd_type }, 6);
+        assert_eq!(unsafe { (*socket.socket).fields.fd_type }, 6);
         release(socket);
 
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
@@ -932,9 +932,9 @@ mod tests {
         let old = reinit(unsafe { Co::new(&raw mut *socket) }, 3).unwrap();
         assert_eq!(old, first);
         assert_eq!((socket.kind, socket.sock_domain), (3, libc::AF_INET6));
-        assert_eq!(unsafe { (*socket.socket).info.kind }, 1);
+        assert_eq!(unsafe { (*socket.socket).fields.info.kind }, 1);
         unsafe {
-            libc::close((*old).fd);
+            libc::close((*old).fields.fd);
             SocketRecord::free(old);
         }
         release(socket);
@@ -948,13 +948,13 @@ mod tests {
         server.http2 = true;
         server.ssl_is_server = true;
         server.protocol.package_eof_len = 2;
-        unsafe { (*server.socket).timeouts.read = 1.5 };
+        unsafe { (*server.socket).fields.timeouts.read = 1.5 };
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         let conn = SocketRecord::with_fd(fd, 0).into_raw();
         let socket = unsafe { accepted(Co::new(&raw mut *server), conn) };
         let socket = unsafe { Box::from_raw(socket.raw()) };
         assert_eq!(
-            unsafe { (*conn).object },
+            unsafe { (*conn).fields.object },
             (&raw const *socket).cast_mut().cast()
         );
         assert_eq!((socket.kind, socket.sock_fd), (1, fd));
