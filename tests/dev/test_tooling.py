@@ -414,7 +414,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
         self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
-        self.assertNotIn('phphelpers-async', commands)  # Its cases run in phphelpers-unit.
+        self.assertNotIn('phphelpers-async', commands)
         self.assertIn('--archive', commands['ports-policy'])
         self.assertIn('--archive', commands['clients-http-format'])
         self.assertIn('--sanitize', commands['clients-http-format'])
