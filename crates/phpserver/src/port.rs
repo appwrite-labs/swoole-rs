@@ -18,12 +18,12 @@ use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Object, Value, ZString, bailout, message,
     sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
         zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
         zend_update_property, zval,
     },
-    type_of, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -355,10 +355,10 @@ fn get_callback(call: &Call) {
                 rv.as_mut_ptr(),
             )
         };
-        // SAFETY: Zend returned a live zval.
-        if unsafe { type_of(value) } != IS_NULL {
-            // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
-            return unsafe { swr_zval_copy(call.return_value(), value) };
+        // SAFETY: Zend returned a live zval, which the object or `rv` holds.
+        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+            // `RETURN_ZVAL(property, 1, 0)`.
+            return call.set_owned(value.copy());
         }
     }
     call.set_null();

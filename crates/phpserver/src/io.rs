@@ -15,7 +15,6 @@ use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Value, bailout, message,
     string::bytes,
     sys::{IS_NULL, IS_STRING, IS_TRUE, swr_zval_copy, zend_read_property, zval},
-    to_long, type_of,
 };
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
@@ -89,8 +88,7 @@ fn on(call: &Call) {
         let mut retval = crate::dispatch::undef();
         port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
-        // SAFETY: Zend wrote the method's result.
-        return call.set_bool(unsafe { type_of(&raw const retval) } == IS_TRUE);
+        return call.set_bool(Value::of(&mut retval).kind() == IS_TRUE);
     };
     let object = crate::lifecycle::ServerObject::this(call);
     let set = call.value(2).is_some_and(|cb| {
@@ -120,10 +118,10 @@ fn get_callback(call: &Call) {
                 rv.as_mut_ptr(),
             )
         };
-        // SAFETY: Zend returned a live zval.
-        if unsafe { type_of(value) } != IS_NULL {
-            // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
-            return unsafe { swr_zval_copy(call.return_value(), value) };
+        // SAFETY: Zend returned a live zval, which the object or `rv` holds.
+        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+            // `RETURN_ZVAL(property, 1, 0)`.
+            return call.set_owned(value.copy());
         }
     }
     if bailout::pending() {
@@ -229,9 +227,10 @@ fn send(call: &Call) {
     let Ok((Some(data), server_socket)) = parsed else {
         return call.set_bool(false);
     };
-    let zfd = call.zval(1);
-    // SAFETY: a passed argument.
-    let kind = unsafe { type_of(zfd) };
+    let Some(zfd) = call.value(1) else {
+        return call.set_bool(false);
+    };
+    let kind = zfd.kind();
     if kind == IS_NULL {
         fatal(E_WARNING, c"fd can not be null");
         return call.set_bool(false);
@@ -243,8 +242,7 @@ fn send(call: &Call) {
         return call.set_bool(false);
     }
     if kind == IS_STRING {
-        // SAFETY: an IS_STRING zval.
-        let path = unsafe { swoole_rs_zend::string_of(zfd) }.unwrap_or_default();
+        let path = zfd.bytes().unwrap_or_default();
         let config = serv.config();
         if path.first() == Some(&b'/') && config.have_dgram_sock {
             let socket = if server_socket == -1 {
@@ -257,8 +255,7 @@ fn send(call: &Call) {
             return call.set_bool(sent);
         }
     }
-    // SAFETY: a passed argument.
-    let fd = unsafe { to_long(zfd) };
+    let fd = zfd.long();
     if fd <= 0 {
         fatal(E_WARNING, message!("invalid fd[{fd}]").as_cstr());
         return call.set_bool(false);
@@ -373,7 +370,10 @@ fn send_message(call: &Call) {
         return call.set_bool(false);
     }
     let mut buf = crate::task::EventData::new();
-    if crate::task::pack(call.zval(1), &mut buf) < 0 {
+    if call
+        .value(1)
+        .is_none_or(|data| crate::task::pack(data, &mut buf) < 0)
+    {
         return call.set_bool(false);
     }
     #[expect(
@@ -420,7 +420,10 @@ fn task_finish(call: &Call) {
 
 /// `php_swoole_server_task_finish` of the data argument into the return slot.
 fn finished(call: &Call, serv: *mut c_void, req: *mut c_void) {
-    match crate::task::finish_task(serv, call.zval(1), req) {
+    let Some(data) = call.value(1) else {
+        return call.set_bool(false);
+    };
+    match crate::task::finish_task(serv, data, req) {
         Ok(done) => call.set_bool(done),
         Err(bailout) => bailout.defer(),
     }

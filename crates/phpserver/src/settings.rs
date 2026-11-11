@@ -4,7 +4,7 @@
 use crate::lifecycle::ServerObject;
 use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{CStr, CString, c_int},
     ptr,
     sync::atomic::Ordering,
 };
@@ -12,12 +12,7 @@ use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Value, bailout, message, report,
-    string::bytes,
-    sys::{
-        IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
-        swr_zend_try_facade_update, zend_string, zend_ulong, zval,
-    },
-    type_of,
+    sys::{swr_zend_callable_warning, swr_zend_try_facade_update, zval},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -793,46 +788,6 @@ fn http(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
 
 /// `url_rewrite_rules`: string keys to string replacements.
 fn rewrite_rules(s: &Settings) -> Step {
-    unsafe extern "C" fn each(
-        _index: zend_ulong,
-        key: *mut zend_string,
-        value: *mut zval,
-        context: *mut c_void,
-    ) -> bool {
-        // SAFETY: the `Rules` passed below, live for the loop.
-        let rules = unsafe { &mut *context.cast::<Rules>() };
-        let mut value = value;
-        // SAFETY: a live value; ZVAL_DEREF.
-        if unsafe { type_of(value) } == IS_REFERENCE {
-            // SAFETY: a live value.
-            let inner = unsafe { (*value).value };
-            // SAFETY: a reference zval holds `ref`.
-            let reference = unsafe { inner.ref_ };
-            // SAFETY: a live reference.
-            value = unsafe { &raw mut (*reference).val };
-        }
-        // SAFETY: as above.
-        let Some(replacement) = (unsafe { swoole_rs_zend::string_of(value) }) else {
-            rules.bad = true;
-            return false;
-        };
-        // An integer key has no pattern; upstream reads a null string there.
-        let pattern: &[u8] = if key.is_null() {
-            b""
-        } else {
-            // SAFETY: a live key.
-            unsafe { bytes(key) }
-        };
-        rules
-            .settings
-            .server()
-            .add_rewrite_rule(pattern, replacement);
-        true
-    }
-    struct Rules<'a> {
-        settings: &'a Settings<'a>,
-        bad: bool,
-    }
     let Some(value) = s.get(c"url_rewrite_rules") else {
         return Ok(());
     };
@@ -840,15 +795,14 @@ fn rewrite_rules(s: &Settings) -> Step {
         fatal(E_ERROR, c"The `url_rewrite_rules` must be array");
         return Err(Stop);
     };
-    let mut rules = Rules {
-        settings: s,
-        bad: false,
-    };
-    // SAFETY: a live array; `each` neither modifies it nor unwinds.
-    unsafe { swr_zend_hash_foreach_key(array.as_ptr(), Some(each), (&raw mut rules).cast()) };
-    if rules.bad {
-        fatal(E_ERROR, c"The `replacement` must be string");
-        return Err(Stop);
+    for (key, value) in array.entries() {
+        let Some(replacement) = value.dereferenced().bytes() else {
+            fatal(E_ERROR, c"The `replacement` must be string");
+            return Err(Stop);
+        };
+        // An integer key has no pattern; upstream reads a null string there.
+        let pattern = key.unwrap_or_default();
+        s.server().add_rewrite_rule(pattern, replacement);
     }
     Ok(())
 }
