@@ -11,7 +11,7 @@ use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::factory_methods::run;
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
@@ -69,8 +69,6 @@ const THREAD_WORKER: u8 = 4;
 
 /// A task pool's `onWorkerStart` and `onWorkerStop`, and `main_loop`, whose result
 /// thread mode ignores.
-type PoolHook = unsafe extern "C-unwind" fn(*mut PoolRecord, *mut WorkerRecord);
-
 /// The context's objects, each live when the op reading it runs.
 #[expect(
     clippy::mut_from_ref,
@@ -397,16 +395,12 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 /// The facts and effects on the context's worker and the thread manager.
 fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
-    let pool_hook = |hook: fn(&PoolRecord) -> *const c_void| {
+    let pool_hook = |hook: fn(&mut PoolRecord, Worker<'_>)| {
         let pool = ctx.workers().task_pool;
+        // SAFETY: the context's live worker, which the hook takes.
+        let worker = unsafe { Worker::new(worker) };
         // SAFETY: the live server's task pool.
-        let hook = hook(unsafe { &*pool });
-        // SAFETY: the pool's hook is null or a `(ProcessPool *, Worker *)` function.
-        let hook = unsafe { core::mem::transmute::<*const c_void, Option<PoolHook>>(hook) };
-        if let Some(hook) = hook {
-            // SAFETY: the pool and the context's live worker, as the hook takes them.
-            unsafe { hook(pool, worker) };
-        }
+        hook(unsafe { &mut *pool }, worker);
         0
     };
     Some(match op {
@@ -436,9 +430,21 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             }
             0
         }
-        OP_ON_WORKER_START => pool_hook(|pool| pool.on_worker_start),
-        OP_POOL_MAIN_LOOP => pool_hook(|pool| pool.main_loop),
-        OP_ON_WORKER_STOP => pool_hook(|pool| pool.on_worker_stop),
+        OP_ON_WORKER_START => pool_hook(|pool, worker| {
+            if let Some(hook) = pool.on_worker_start {
+                hook(pool.into(), worker);
+            }
+        }),
+        OP_POOL_MAIN_LOOP => pool_hook(|pool, worker| {
+            if let Some(main_loop) = pool.main_loop {
+                let _code = main_loop(pool.into(), worker);
+            }
+        }),
+        OP_ON_WORKER_STOP => pool_hook(|pool, worker| {
+            if let Some(hook) = pool.on_worker_stop {
+                hook(pool.into(), worker);
+            }
+        }),
         _ => return None,
     })
 }

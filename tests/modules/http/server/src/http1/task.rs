@@ -15,10 +15,10 @@ use std::sync::atomic::AtomicU32;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
-use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
+use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{self, EventHead, Packed, task_pack};
 use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::{methods as pool, workers::entry};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_utilities::swoole_set_log_file;
@@ -466,11 +466,8 @@ fn task_worker() {
         // SAFETY: the created server's task pool, its first worker and its main loop.
         unsafe {
             (*pool).running = true;
-            let main_loop = std::mem::transmute::<
-                *const c_void,
-                unsafe extern "C-unwind" fn(*mut PoolRecord, *mut WorkerRecord) -> c_int,
-            >((*pool).main_loop);
-            main_loop(pool, (*pool).workers);
+            let main_loop = (*pool).main_loop.unwrap();
+            main_loop(PoolRef::new(pool), Worker::new((*pool).workers));
         }
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
