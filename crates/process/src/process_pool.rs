@@ -324,8 +324,6 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         fn swoole_event_wait() -> c_int;
         #[link_name = "_Z25swoole_event_is_availablev"]
         fn swoole_event_is_available() -> bool;
-        #[link_name = "_Z11swoole_forki"]
-        fn swoole_fork(flags: c_int) -> c_int;
         #[link_name = "_Z14swoole_waitpidiPii"]
         fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     }
@@ -375,8 +373,8 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         OP_EVENT_WAIT => i64::from(unsafe { swoole_event_wait() }),
         // SAFETY: as above.
         OP_EVENT_AVAILABLE => i64::from(unsafe { swoole_event_is_available() }),
-        // SAFETY: src/core/base.cc's fork, with its process bookkeeping.
-        OP_FORK => i64::from(unsafe { swoole_fork(0) }),
+        // crates/corebase's fork, with its process bookkeeping.
+        OP_FORK => i64::from(swoole_rs_corebase::swoole_fork(0)),
         OP_WAITPID => {
             let mut status = 0;
             // SAFETY: `status` is writable.

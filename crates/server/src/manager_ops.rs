@@ -152,11 +152,7 @@ impl Context {
     }
 }
 
-// SAFETY: crates/reactor's body.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z14swoole_waitpidiPii"]
-    fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-}
+use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
@@ -169,11 +165,7 @@ fn kill_workers(ctx: &Context, category: c_int, origin: &core::ffi::CStr) {
     let registry = unsafe { &*ctx.registry() };
     // SAFETY: kill(2) has no memory preconditions.
     let kill = |pid, signo| unsafe { libc::kill(pid, signo) };
-    let wait = |pid| {
-        let mut status = 0;
-        // SAFETY: a local status.
-        unsafe { swoole_waitpid(pid, &raw mut status, 0) }
-    };
+    let wait = |pid| swoole_waitpid(pid, None, 0);
     let warn = |pid| log::sys_warning(origin, format_args!("waitpid({pid}) failed"));
     registry.terminate(category, libc::SIGTERM, kill, wait, warn);
 }

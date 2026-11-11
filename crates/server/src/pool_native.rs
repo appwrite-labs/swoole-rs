@@ -83,12 +83,6 @@ const CHAN_SHM: c_int = 8;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
-// SAFETY: crates/reactor's, under its upstream symbol.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-}
-
 /// A pool's message bus: the Rust bus, then the allocator its packets and buffer
 /// come from. crates/process and crates/phpprocess read both through `message_bus`.
 #[repr(C)]
@@ -580,8 +574,8 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             0
         }
         OP_EVENT_INIT => {
-            // SAFETY: this thread has no event loop yet.
-            if unsafe { swoole_event_init(EVENTLOOP_WAIT_EXIT) } < 0 {
+            // This thread has no event loop yet.
+            if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
                 return Some(-1);
             }
             // SAFETY: the loop just made.

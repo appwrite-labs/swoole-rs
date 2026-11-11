@@ -183,13 +183,7 @@ mod native {
     /// `Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER`.
     const EXIT_CONDITION_CO_SIGNAL_LISTENER: c_int = 3;
 
-    // SAFETY: native/reactor/reactor.cc's and crates/reactor's.
-    unsafe extern "C" {
-        #[link_name = "_Z17swoole_signal_setiPFviEb"]
-        fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-        #[link_name = "_Z25swoole_signal_get_handleri"]
-        safe fn swoole_signal_get_handler(signo: c_int) -> usize;
-    }
+    use swoole_rs_reactor::signal_upstream::{swoole_signal_get_handler, swoole_signal_set};
 
     /// A non-coroutine signal listener exists.
     pub(super) fn busy() -> bool {
