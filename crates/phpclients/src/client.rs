@@ -197,9 +197,7 @@ fn type_property(call: &Call) -> i64 {
 }
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
-unsafe extern "C" fn socket_closed(data: *mut libc::c_void, _socket: *mut libc::c_void) {
-    // SAFETY: the client outlives the hook on its socket.
-    let data = unsafe { &mut *data.cast::<Data>() };
+fn socket_closed(data: &mut Data) {
     if let Some(socket) = data.co() {
         let protocol = &mut socket.record().protocol;
         if !protocol.private_data_1.is_null() {
@@ -241,8 +239,13 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     };
     let socket = Sock::of(&created).and_then(Sock::co)?;
     data.zsocket = created;
-    // SAFETY: the client outlives the hook.
-    unsafe { socket.close_hook(socket_closed, std::ptr::from_mut(data).cast()) };
+    let client = ptr::from_mut(data);
+    swoole_rs_hooks::socket_extra::set_close_hook(
+        socket.handle(),
+        // SAFETY: the client outlives the hook on its socket, and no other
+        // reference to it is live while the hook runs.
+        Box::new(move |_| socket_closed(unsafe { &mut *client })),
+    );
     let record = socket.record();
     let props = data.props().own();
     props.long(c"fd", i64::from(record.sock_fd));
@@ -251,8 +254,7 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     record.zero_copy = true;
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
         report_object(data.props(), libc::EISCONN, error_message(libc::EISCONN));
-        // SAFETY: the client and its socket's hook argument.
-        unsafe { socket_closed(std::ptr::from_mut(data).cast(), socket.as_ptr()) };
+        socket_closed(data);
         return None;
     }
     Some(socket)
