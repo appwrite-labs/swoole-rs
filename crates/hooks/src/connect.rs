@@ -591,8 +591,7 @@ impl Co {
             resolve,
             socks5,
             http,
-            // SAFETY: an all-zero address, as `Address` starts.
-            address: unsafe { core::mem::zeroed() },
+            address: crate::socket_members::empty_address(),
             resolved: false,
         };
         connect_host(&mut live, host, port)

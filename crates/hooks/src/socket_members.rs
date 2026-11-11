@@ -151,6 +151,13 @@ macro_rules! call {
 const BAD_HOST_ADDR: c_int = 722;
 const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
 
+/// An all-zero address, as `Address` starts: a stale scope id would misroute an
+/// interface-local IPv6 destination.
+pub(crate) fn empty_address() -> SocketAddress {
+    // SAFETY: the address is plain data: integers and the sockaddr union.
+    unsafe { core::mem::zeroed() }
+}
+
 /// `Address::assign(type, std::string(host), port, false)` into `address`; false
 /// with the last error set.
 pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port: c_int) -> bool {
@@ -423,6 +430,31 @@ impl Co {
         unsafe { transfer(self, event, flags, buffer, length, &mut each) }
     }
 
+    /// [`Co::transfer`] reading into the caller's buffer.
+    fn transfer_in<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
+        self,
+        flags: u32,
+        buf: &mut [impl swoole_rs_corebase::sys::ReadSlot],
+        call: F,
+    ) -> isize {
+        let (at, n) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
+        // SAFETY: the caller's `n` one-byte slots, any value valid, which `call`
+        // receives into.
+        unsafe { self.transfer(READ, flags, at, n, call) }
+    }
+
+    /// [`Co::transfer`] writing the caller's bytes, which a write only reads (its
+    /// wait may move them to the write buffer, a copy).
+    fn transfer_out<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
+        self,
+        flags: u32,
+        buf: &[u8],
+        call: F,
+    ) -> isize {
+        // SAFETY: the caller's bytes, of their length, only read.
+        unsafe { self.transfer(WRITE, flags, buf.as_ptr().cast_mut(), buf.len(), call) }
+    }
+
     /// `Socket::bind(host, port)`: `SO_REUSEADDR` (a failure is only logged), bind to
     /// the host's literal address, then record the local name; false with the error
     /// set.
@@ -452,8 +484,7 @@ impl Co {
                 format_args!("setsockopt({}, SO_REUSEADDR) failed", self.sock_fd()),
             );
         }
-        // SAFETY: an all-zero address, as `Address` starts.
-        let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+        let mut address = empty_address();
         let bound = assign(&mut address, kind, host, port)
             && self.net(|record| record.bind(&address) >= 0 && record.get_name() >= 0)
                 == Some(true);
@@ -486,9 +517,7 @@ impl Co {
             set_err(self, libc::EPROTONOSUPPORT);
             return -1;
         }
-        // Zeroed whole: a stale scope id misroutes an interface-local IPv6 destination.
-        // SAFETY: an all-zero address.
-        let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+        let mut address = empty_address();
         let mut assigned = assign(&mut address, kind, host, port);
         if !assigned && log::last_error() == BAD_HOST_ADDR {
             let ip = crate::resolve::system_gethostbyname(host, domain, timeout);
@@ -520,16 +549,8 @@ impl Co {
         // SAFETY: the address's live length.
         let to_length = unsafe { *length };
         let call = call!(|s, at, len| libc::sendto((*s).fd, at.cast(), len, 0, to, to_length));
-        // SAFETY: the caller's bytes; availability was checked above.
-        unsafe {
-            self.transfer(
-                WRITE,
-                RETRY_INTERRUPTED | CHECKED,
-                buf.as_ptr().cast_mut(),
-                buf.len(),
-                call,
-            )
-        }
+        // Availability was checked above.
+        self.transfer_out(RETRY_INTERRUPTED | CHECKED, buf, call)
     }
 
     /// The peer certificate's PEM, or empty with the error set when there is none.
@@ -550,69 +571,77 @@ impl Co {
 
     /// `Socket::recv(buf, n)`.
     pub fn recv(self, buf: &mut [u8]) -> isize {
-        let (buf, n) = (buf.as_mut_ptr(), buf.len());
-        uring!(self, |ops| ring::plain(ops, ring::RECV, buf.cast(), n));
+        uring!(self, |ops| ring::plain(
+            ops,
+            ring::RECV,
+            buf.as_mut_ptr().cast(),
+            buf.len()
+        ));
         let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
-        // SAFETY: each try receives into the caller's buffer.
-        unsafe { self.transfer(READ, 0, buf, n, call) }
+        self.transfer_in(0, buf, call)
     }
 
     /// `Socket::send(buf, n)`.
     #[must_use]
     pub fn send(self, buf: &[u8]) -> isize {
-        let (buf, n) = (buf.as_ptr().cast_mut(), buf.len());
-        uring!(self, |ops| ring::plain(ops, ring::SEND, buf.cast(), n));
+        uring!(self, |ops| ring::plain(
+            ops,
+            ring::SEND,
+            buf.as_ptr().cast_mut().cast(),
+            buf.len()
+        ));
         let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
-        // SAFETY: each try sends from the caller's buffer.
-        unsafe { self.transfer(WRITE, 0, buf, n, call) }
+        self.transfer_out(0, buf, call)
     }
 
     /// `Socket::recv_all(buf, n)`.
     pub fn recv_all(self, buf: &mut [u8]) -> isize {
-        let (buf, n) = (buf.as_mut_ptr(), buf.len());
         uring!(self, |ops| ring::swr_v1_hook_uring_io_all(
             ops,
             false,
-            buf.cast(),
-            n
+            buf.as_mut_ptr().cast(),
+            buf.len()
         ));
         let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
-        // SAFETY: each try receives into the caller's buffer.
-        unsafe { self.transfer(READ, ALL, buf, n, call) }
+        self.transfer_in(ALL, buf, call)
     }
 
     /// `Socket::send_all(buf, n)`.
     #[must_use]
     pub fn send_all(self, buf: &[u8]) -> isize {
-        let (buf, n) = (buf.as_ptr().cast_mut(), buf.len());
         uring!(self, |ops| ring::swr_v1_hook_uring_io_all(
             ops,
             true,
-            buf.cast(),
-            n
+            buf.as_ptr().cast_mut().cast(),
+            buf.len()
         ));
         let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
-        // SAFETY: each try sends from the caller's buffer.
-        unsafe { self.transfer(WRITE, ALL, buf, n, call) }
+        self.transfer_out(ALL, buf, call)
     }
 
     /// `Socket::read(buf, n)`.
     pub fn read(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
-        let (buf, n) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
-        uring!(self, |ops| ring::plain(ops, ring::READ, buf.cast(), n));
+        uring!(self, |ops| ring::plain(
+            ops,
+            ring::READ,
+            buf.as_mut_ptr().cast(),
+            buf.len()
+        ));
         let call = call!(|s, at, len| libc::read((*s).fd, at.cast(), len));
-        // SAFETY: each try reads into the caller's buffer.
-        unsafe { self.transfer(READ, 0, buf, n, call) }
+        self.transfer_in(0, buf, call)
     }
 
     /// `Socket::write(buf, n)`.
     #[must_use]
     pub fn write(self, buf: &[u8]) -> isize {
-        let (buf, n) = (buf.as_ptr().cast_mut(), buf.len());
-        uring!(self, |ops| ring::plain(ops, ring::WRITE, buf.cast(), n));
+        uring!(self, |ops| ring::plain(
+            ops,
+            ring::WRITE,
+            buf.as_ptr().cast_mut().cast(),
+            buf.len()
+        ));
         let call = call!(|s, at, len| libc::write((*s).fd, at.cast(), len));
-        // SAFETY: each try writes from the caller's buffer.
-        unsafe { self.transfer(WRITE, 0, buf, n, call) }
+        self.transfer_out(0, buf, call)
     }
 
     /// `Socket::readv(io_vector)`.

@@ -675,12 +675,12 @@ pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
     socket.open_eof_check = server.open_eof_check;
     socket.http2 = server.http2;
     socket.protocol = server.protocol;
-    // SAFETY: the record's own state.
-    unsafe { (*socket.state).flags.connected = true };
     socket.ssl_is_server = server.ssl_is_server;
     swr_v1_hook_co_socket_created(&socket, result);
-    // SAFETY: the record just made, which the caller owns.
-    unsafe { Co::new(Box::into_raw(socket)) }
+    // SAFETY: the record just made, with its state and metadata, which the caller owns.
+    let socket = unsafe { Co::new(Box::into_raw(socket)) };
+    socket.with_state(|state| state.flags.connected = true);
+    socket
 }
 
 /// What a constructor's bits report (`Socket::created`): a failed socket(2) becomes
