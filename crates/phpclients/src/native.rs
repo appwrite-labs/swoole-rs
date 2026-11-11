@@ -711,10 +711,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
     if fd < 0 {
         return None;
     }
-    let socket = Owned::default();
-    // SAFETY: an undefined slot this owns, and a descriptor it takes.
-    unsafe { swoole_rs_phpswoole::socket_create(socket.as_ptr(), fd) };
-    Some(socket)
+    Some(swoole_rs_phpswoole::socket_create(fd).0)
 }
 
 /// The peer certificate of `socket`, which has TLS:

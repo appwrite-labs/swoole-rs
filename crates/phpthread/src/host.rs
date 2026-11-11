@@ -30,9 +30,7 @@ pub(crate) fn serialize(value: &Value) -> Option<Box<[u8]>> {
 
 /// `php_swoole_unserialize`; a bailout is deferred.
 pub(crate) fn unserialize(data: &[u8]) -> Owned {
-    let out = Owned::default();
-    // SAFETY: a slot this owns, on the thread running the request.
-    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(data, out.as_ptr()) };
+    let (out, bailed) = swoole_rs_phpswoole::unserialize(data);
     bailout::defer(bailed);
     out
 }
@@ -82,9 +80,8 @@ pub(crate) fn php_socket_cast(object: &Value) -> c_int {
 
 /// An ext/sockets Socket over `fd`, which it takes; `None` on failure.
 pub(crate) fn php_socket_create(fd: c_int) -> Option<Owned> {
-    let out = Owned::default();
-    // SAFETY: a slot this owns, in a request.
-    unsafe { swoole_rs_phpswoole::socket_create(out.as_ptr(), fd) }.then_some(out)
+    let (socket, imported) = swoole_rs_phpswoole::socket_create(fd);
+    imported.then_some(socket)
 }
 
 /// `php_swoole_error(level, "%s", message)`: reported when

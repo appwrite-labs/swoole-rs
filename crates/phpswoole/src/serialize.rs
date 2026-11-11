@@ -3,9 +3,9 @@
 //! the caller to raise once its frames are gone.
 use std::ffi::c_int;
 use swoole_rs_zend::{
-    Value, ZString,
+    Owned, Value, ZString,
     bailout::{self, Bailout},
-    sys::{swr_zend_facade_exception, swr_zend_serialize, swr_zend_unserialize, zval},
+    sys::{swr_zend_facade_exception, swr_zend_serialize, swr_zend_unserialize},
 };
 
 /// `serialize($value)`'s bytes (`None` when it threw), and whether it bailed out.
@@ -25,16 +25,15 @@ pub fn serialize(value: &Value) -> (Option<Box<[u8]>>, Result<(), Bailout>) {
     (result, bailout::trapped(c_int::from(bailed)))
 }
 
-/// `unserialize($text)` into `out`: whether it succeeded (a failure warns with
-/// its offset), and whether it bailed out.
-/// # Safety
-/// `out` is a writable zval, on a thread running PHP.
-pub unsafe fn unserialize(text: &[u8], out: *mut zval) -> (bool, Result<(), Bailout>) {
+/// `unserialize($text)`, as far as it parsed (a failure warns with its offset),
+/// and whether it bailed out.
+pub fn unserialize(text: &[u8]) -> (Owned, Result<(), Bailout>) {
+    let out = Owned::default();
     let (mut offset, mut bailed) = (0, false);
-    // SAFETY: per the caller, with the string's live bytes.
+    // SAFETY: a slot this owns and the string's live bytes, on the thread running PHP.
     let done = unsafe {
         swr_zend_unserialize(
-            out,
+            out.as_ptr(),
             text.as_ptr().cast(),
             text.len(),
             &raw mut offset,
@@ -50,5 +49,5 @@ pub unsafe fn unserialize(text: &[u8], out: *mut zval) -> (bool, Result<(), Bail
             ),
         );
     }
-    (done, bailout::trapped(c_int::from(bailed)))
+    (out, bailout::trapped(c_int::from(bailed)))
 }

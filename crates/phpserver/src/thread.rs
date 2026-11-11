@@ -97,9 +97,7 @@ fn run_worker(object: ServerObject) -> Result<(), Bailout> {
     // `$this->setting`, which upstream releases and unserializes in place: it is
     // released first, and nothing is written once the unserialize bailed out.
     Props::own(object).set(c"setting", &Owned::null());
-    let setting = Owned::default();
-    // SAFETY: an undefined slot this owns, on this PHP thread.
-    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(text, setting.as_ptr()) };
+    let (setting, bailed) = swoole_rs_phpswoole::unserialize(text);
     bailed?;
     Props::own(object).set(c"setting", &setting);
     // The coroutine options are thread-local: each worker thread sets them once.

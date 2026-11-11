@@ -6,7 +6,7 @@
 use crate::module::{Families, Step, families};
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with};
-use swoole_rs_zend::{Value, sys::zval};
+use swoole_rs_zend::{Owned, Value};
 
 #[cfg(feature = "ssh2")]
 // SAFETY: the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
@@ -132,26 +132,27 @@ pub fn socket_cast(value: &Value) -> c_int {
 /// blocking; zval zstream; zend_object std`) ends with the object.
 #[cfg(feature = "sockets")]
 fn php_socket(object: *mut swoole_rs_zend::sys::zend_object) -> *mut c_void {
-    const STD: usize = 4 * size_of::<c_int>() + size_of::<zval>();
+    const STD: usize = 4 * size_of::<c_int>() + size_of::<swoole_rs_zend::sys::zval>();
     object.cast::<u8>().wrapping_sub(STD).cast()
 }
 
-/// An ext/sockets `Socket` over `fd`, which it takes, into `out`; false when
-/// it can't import `fd` or the build lacks ext/sockets.
-/// # Safety
-/// `out` is a writable zval.
-pub unsafe fn socket_create(out: *mut zval, fd: c_int) -> bool {
+/// An ext/sockets `Socket` over `fd`, which it takes, and whether it imported
+/// `fd`: false, with the value undefined, when the build lacks ext/sockets.
+#[must_use]
+pub fn socket_create(fd: c_int) -> (Owned, bool) {
+    let out = Owned::default();
     #[cfg(feature = "sockets")]
     {
-        // SAFETY: ext/sockets' class, set at its MINIT; `out` per the caller.
-        let object = unsafe { swoole_rs_zend::init_object(out, socket_ce) };
+        // SAFETY: ext/sockets' class, set at its MINIT, into a slot this owns.
+        let object = unsafe { swoole_rs_zend::init_object(out.as_ptr(), socket_ce) };
         // SAFETY: the new `Socket`, whose `php_socket` precedes its object.
-        unsafe { socket_import_file_descriptor(fd, php_socket(object)) }
+        let imported = unsafe { socket_import_file_descriptor(fd, php_socket(object)) };
+        (out, imported)
     }
     #[cfg(not(feature = "sockets"))]
     {
-        let _ = (out, fd);
-        false
+        let _ = fd;
+        (out, false)
     }
 }
 
