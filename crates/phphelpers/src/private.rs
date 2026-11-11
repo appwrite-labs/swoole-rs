@@ -323,6 +323,8 @@ pub unsafe fn function_call(
     create: Create,
     report: unsafe extern "C" fn(*const c_char),
 ) -> Result<bool, bailout::Bailout> {
+    // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
+    bailout::outcome(())?;
     let success = if coroutine {
         if !retval.is_null() {
             // SAFETY: coroutines publish null before creation and have no return value.
