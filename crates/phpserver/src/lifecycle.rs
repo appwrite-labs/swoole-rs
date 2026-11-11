@@ -20,13 +20,11 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
-    class_name, init_object, message, object_of, report,
+    class_name, init_object, message, report,
     sys::{
-        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array,
-        swr_zend_try_json_encode, swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert,
-        zend_object, zend_object_std_dtor, zval,
+        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_try_json_encode,
+        swr_zval_stringl, zend_class_entry, zend_object, zend_object_std_dtor, zval,
     },
-    value::table,
 };
 
 /// `SWR_PHPSERVER_FACT_*`.
@@ -318,23 +316,16 @@ pub(crate) fn process_class() -> *mut zend_class_entry {
 pub(crate) struct ServerObject(*mut zend_object);
 
 impl ServerObject {
-    /// # Safety
-    /// `object` is a live Server object for as long as the handle is used.
-    pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
-        Self(object)
-    }
-
-    /// A Server method's `$this`.
+    /// A Server method's `$this`: the Server class's methods run on its live objects.
     pub(crate) fn this(call: &Call) -> Self {
-        // SAFETY: the Server class's methods run on its live objects.
-        unsafe { Self::new(call.this()) }
+        Self(call.this())
     }
 
-    /// The running server's object (`php_swoole_server_zval_ptr`).
+    /// The running server's object (`php_swoole_server_zval_ptr`), which
+    /// outlives its running server.
     pub(crate) fn running() -> Self {
-        let zserv = crate::dispatch::zserv();
-        // SAFETY: the server's object zval; the object outlives its running server.
-        Self(unsafe { object_of(&raw const zserv) })
+        let mut zserv = crate::dispatch::zserv();
+        Self(Value::of(&mut zserv).object().unwrap_or(ptr::null_mut()))
     }
 
     pub(crate) fn raw(self) -> *mut zend_object {
@@ -552,14 +543,6 @@ pub(crate) struct Props<'a>(
 );
 
 impl Props<'static> {
-    /// A live object, under its own class.
-    /// # Safety
-    /// `object` is live for as long as the handle is used.
-    pub(crate) unsafe fn of(object: *mut zend_object) -> Self {
-        // SAFETY: per the caller.
-        Self(unsafe { (*object).ce }, object, PhantomData)
-    }
-
     /// A Server object, under the Server class.
     pub(crate) fn server(object: ServerObject) -> Self {
         Self(SERVER.entry(), object.raw(), PhantomData)
@@ -572,6 +555,11 @@ impl Props<'static> {
 }
 
 impl<'a> Props<'a> {
+    /// The object `value` holds, under its own class, for as long as `value` is borrowed.
+    fn of_value(value: &'a Value) -> Option<Self> {
+        Some(Self(value.class()?, value.object()?, PhantomData))
+    }
+
     /// `object_init_ex(target, class)`: a new object in `target`, under its class;
     /// the handle borrows `target`, so it can't outlive the object.
     pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
@@ -647,22 +635,18 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> Owned 
     // SAFETY: a live server and, per the caller, one of its ports.
     let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port) };
     object.property(|p| p.ports.push(port_object));
-    // SAFETY: the Port object, live with the Server object that keeps it.
-    let props = unsafe { Props::of(port_object) };
     // SAFETY: a live port.
     let info = unsafe { PortInfo::of(port) };
-    props.port_info(&info, Some(info.fd));
-    // SAFETY: the Server object; its class declares `ports`.
-    let zports =
-        unsafe { swr_zend_property_array(object.class(), object.raw(), c"ports".as_ptr(), 5) };
-    // SAFETY: an array.
-    let zports = unsafe { table(zports) };
+    if let Some(props) = Props::of_value(&zport) {
+        props.port_info(&info, Some(info.fd));
+    }
     let copy = zport.copy();
-    let mut zport = zport.into_zval();
-    // SAFETY: `add_next_index_zval`: the array takes the Port's reference;
-    // `ports` borrows it.
-    unsafe { zend_hash_next_index_insert(zports, &raw mut zport) };
-    props.connections(serv, port);
+    // SAFETY: the Server object's `ports`, which its class declares; nothing
+    // else borrows it, and no PHP code runs, while the Port is appended.
+    unsafe { Props::own(object).zend().array(c"ports") }.push(zport);
+    if let Some(props) = Props::of_value(&copy) {
+        props.connections(serv, port);
+    }
     copy
 }
 
