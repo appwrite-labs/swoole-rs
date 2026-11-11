@@ -116,6 +116,18 @@ pub fn swr_v1_timer_rearm_after_add(current: i64, delay: i64) -> i64 {
     }
 }
 
+/// A new timer's delay from the floored clock. A one-shot's counts from the next
+/// millisecond, so it never falls due before `msec` has passed (#2799); a repeat's
+/// is its interval.
+#[must_use]
+pub fn swr_v1_timer_add_delay(msec: i64, persistent: bool) -> i64 {
+    if persistent {
+        msec
+    } else {
+        msec.saturating_add(1)
+    }
+}
+
 /// `Timer::delay`'s new deadline, `delay` after `now` (or after `previous` without a
 /// clock), unless it overflows or falls before zero.
 #[must_use]
@@ -127,6 +139,24 @@ pub fn swr_v1_timer_delay_deadline(now: i64, previous: i64, delay: i64) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-shot added late in a millisecond still waits its whole `msec` (#2799):
+    /// it fires once the floored clock reaches its deadline, so its earliest real
+    /// time is `deadline` ms; a repeat keeps its interval.
+    #[test]
+    fn one_shot_never_falls_due_early() {
+        for added_us in [5_000, 5_001, 5_500, 5_900, 5_999] {
+            let now = added_us / 1000;
+            for msec in [1, 2, 499, 500] {
+                let deadline = now + swr_v1_timer_add_delay(msec, false);
+                assert!(
+                    deadline * 1000 >= added_us + msec * 1000,
+                    "{msec} ms added at {added_us} us falls due at {deadline} ms"
+                );
+                assert_eq!(swr_v1_timer_add_delay(msec, true), msec);
+            }
+        }
+    }
 
     /// Upstream's `time.get_ms_steady`, over `Timer::get_absolute_msec`'s clock.
     #[test]

@@ -38,7 +38,9 @@ pub struct HttpStaticContext {
     rewritten: Option<Vec<u8>>,
     directory_path: Vec<u8>,
     index: Vec<u8>,
+    /// Written up to its NUL, never past `capacity`; see [`crate::static_path::span`].
     filename: Vec<u8>,
+    capacity: usize,
     boundary: Vec<u8>,
     content: Vec<u8>,
     end: Vec<u8>,
@@ -68,13 +70,13 @@ impl HttpStaticContext {
         let original = copied(url).ok()?;
         let mut filename = Vec::new();
         filename.try_reserve_exact(capacity).ok()?;
-        filename.resize(capacity, 0);
         Some(Self {
             original,
             rewritten: None,
             directory_path: Vec::new(),
             index: Vec::new(),
             filename,
+            capacity,
             boundary: Vec::new(),
             content: Vec::new(),
             end: Vec::new(),
@@ -121,8 +123,14 @@ impl HttpStaticContext {
     }
     fn path_step(&mut self, root: &[u8], facts: u32) -> i32 {
         let url = self.rewritten.as_ref().unwrap_or(&self.original);
-        let result =
-            crate::static_path::path_step(url, root, &mut self.filename, &mut self.path, facts);
+        let result = crate::static_path::path_step(
+            url,
+            root,
+            &mut self.filename,
+            self.capacity,
+            &mut self.path,
+            facts,
+        );
         if result == 3 {
             let Some(url) = url.get(..self.path.url_length) else {
                 return INVALID;
@@ -187,10 +195,9 @@ impl HttpStaticContext {
     }
     fn publish(&mut self, kind: u32, text: &[u8]) -> i32 {
         if kind == FILENAME {
-            let Some((nul, head)) = self
-                .filename
-                .get_mut(..=text.len())
-                .and_then(|slots| slots.split_last_mut())
+            let Some((nul, head)) =
+                crate::static_path::span(&mut self.filename, self.capacity, 0, text.len() + 1)
+                    .and_then(<[u8]>::split_last_mut)
             else {
                 return OVERFLOW;
             };
@@ -357,6 +364,7 @@ mod tests {
         let index_path = |owner: &mut HttpStaticContext| {
             crate::static_path::static_index_path(
                 &mut owner.filename,
+                owner.capacity,
                 owner.path.filename_length,
                 &owner.index,
             )
