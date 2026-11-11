@@ -51,10 +51,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       ext: ${{ steps.paths.outputs.ext }}
-      iouring: ${{ steps.paths.outputs.iouring }}
-      cares: ${{ steps.paths.outputs.cares }}
-      zts: ${{ steps.paths.outputs.zts }}
-      threadcontext: ${{ steps.paths.outputs.threadcontext }}
+      variants: ${{ steps.paths.outputs.variants }}
       h2spec: ${{ steps.paths.outputs.h2spec }}
       asan: ${{ steps.paths.outputs.asan }}
       tsan: ${{ steps.paths.outputs.tsan }}
@@ -108,18 +105,18 @@ jobs:
           if echo "$changed" | grep -qE '^(native/|tools/(build_(upstream|ext)|arginfo)\.py$|crates/(phpstubs|ext)/|\.github/|\.devcontainer/)'; then
             echo ext=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(native/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
-            echo iouring=true >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$changed" | grep -qE '^(crates/(clients|corebase|cares-sys)/|\.github/workflows/cares\.yml$)'; then
-            echo cares=true >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$changed" | grep -qE '^(crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
-            echo zts=true >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
-            echo threadcontext=true >> "$GITHUB_OUTPUT"
-          fi
+          # The build variants (variant.yml) whose code this PR touches, as one JSON list.
+          while read -r variant paths; do
+            if echo "$changed" | grep -qE "^($paths|\.github/workflows/variant\.yml$|corpus/upstream/(families|baseline)\.sh$)"; then
+              echo "$variant"
+            fi
+          done > variants <<'EOF'
+          iouring native/hooks/|crates/(hooks|uring[^/]*)/|\.devcontainer/install\.sh$
+          cares crates/(clients|corebase|cares-sys)/
+          zts crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
+          threadcontext native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/
+          EOF
+          echo "variants=$(jq -Rnc '[inputs]' variants)" >> "$GITHUB_OUTPUT"
           if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then
             echo h2spec=true >> "$GITHUB_OUTPUT"
           fi
@@ -201,45 +198,22 @@ jobs:
           name: pr-reports
           path: target/reports/
 
-  # The io_uring build variant (merge tier), when a PR touches io_uring code. Informative.
-  iouring:
+  # The build variants (variant.yml, merge tier) whose code a PR touches.
+  variant:
     needs: changes
-    if: needs.changes.outputs.iouring == 'true'
-    uses: ./.github/workflows/iouring.yml
+    if: needs.changes.outputs.variants != '[]'
+    name: ${{ matrix.variant }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.changes.outputs.variants) }}
+    uses: ./.github/workflows/variant.yml
     # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
     permissions:
       contents: read
       actions: read
-
-  # The c-ares build variant (merge tier), when a PR touches resolver code. Informative.
-  cares:
-    needs: changes
-    if: needs.changes.outputs.cares == 'true'
-    uses: ./.github/workflows/cares.yml
-    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
-    permissions:
-      contents: read
-      actions: read
-
-  # The ZTS build variant (merge tier), when a PR touches thread or ZTS code. Informative.
-  zts:
-    needs: changes
-    if: needs.changes.outputs.zts == 'true'
-    uses: ./.github/workflows/zts.yml
-    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
-    permissions:
-      contents: read
-      actions: read
-
-  # The thread-context build variant (merge tier), when a PR touches the coroutine context. Informative.
-  threadcontext:
-    needs: changes
-    if: needs.changes.outputs.threadcontext == 'true'
-    uses: ./.github/workflows/threadcontext.yml
-    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
-    permissions:
-      contents: read
-      actions: read
+    with:
+      variant: ${{ matrix.variant }}
 
   # HTTP/2 conformance (merge tier), when a PR touches HTTP/2 code. Informative.
   h2spec:
@@ -346,10 +320,10 @@ jobs:
 
   # The one check main's ruleset requires: every blocking job passed or was skipped.
   # A skipped reusable-workflow caller reports no check at all, so the ruleset can't
-  # name those jobs directly. cares, asan and tsan stay informative.
+  # name those jobs directly. asan and tsan stay informative.
   required:
     if: always()
-    needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, iouring, zts, threadcontext]
+    needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, variant]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

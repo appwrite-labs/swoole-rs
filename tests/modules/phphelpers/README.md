@@ -19,7 +19,7 @@ calls whose bodies are private to PHP (its README says why).
   (`runtime.php`), `bailout.php` children for direct/coroutine return/exception,
   and `vm_bailout.php` children that exit from PCRE/JSON warning handlers and a
   VM destructor inside stdext calls.
-- `exit_guard.py` runs in the ZTS workflow (`zts.yml`).
+- `exit_guard.py` runs in the ZTS variant (`variant.yml`).
 
 The `swoole_stdext` originals and `phphelpers-runtime` run in the merge tier's
 `phpt-stdext` job on `--stdext` builds. On Linux PHP 8.2, `mb_ucfirst` is

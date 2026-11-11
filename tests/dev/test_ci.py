@@ -354,17 +354,17 @@ class Ci(unittest.TestCase):
                 code, _, _ = self.ci('phpt-baseline', **state)
                 self.assertEqual((code, self.out), (2, ''), path)
             # A variant's own workflow is part of its key, and its one job makes its report.
-            variant = {**state, 'jobs': {'8': [['cares / phpt', 'success']]}, 'report': 'target/phpt/cares/upstream.json'}
+            variant = {**state, 'jobs': {'8': [['cares / phpt', 'success']]}, 'report': 'results/upstream.json'}
             git('checkout', '-q', base)
             code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', '--php', '8.3.6', **variant)
             self.assertEqual((code, self.out), (0, f'8 {base}\n'))
             self.assertIn('run download 8 -n phpt-cares', ' '.join(self.gh_calls))
-            commit('.github/workflows/cares.yml', 'families')
+            commit('.github/workflows/variant.yml', 'families')
             code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', **variant)
             self.assertEqual((code, self.out), (2, ''))
             # ZTS's report comes from its own artifact, and the thread-safe PHP it runs on
             # (.devcontainer/php.sh) is part of its key.
-            zts = {**state, 'jobs': {'8': [['zts / phpt', 'success']]}, 'report': 'target/phpt/zts/upstream.json'}
+            zts = {**state, 'jobs': {'8': [['zts / phpt', 'success']]}, 'report': 'results/upstream.json'}
             git('checkout', '-q', base)
             code, _, _ = self.ci('phpt-baseline', '--variant', 'zts', '--php', '8.3.6', **zts)
             self.assertEqual((code, self.out), (0, f'8 {base}\n'))

@@ -1,6 +1,6 @@
 #!/bin/sh
 # PHP built from source in $1 with the configure options that follow, for the builds
-# Ubuntu doesn't ship: thread-safe (zts.yml, --enable-zts), sanitized (tools/asan.py) and
+# Ubuntu doesn't ship: thread-safe (variant.yml's zts, --enable-zts), sanitized (tools/asan.py) and
 # the releases other than 8.3 that upstream supports (php-versions.yml, PHP_SERIES=8.2 …).
 # It has the extensions the PHPTs call (sockets, pcntl, posix, curl, openssl) compiled
 # in; install.sh has the libraries. CC and CFLAGS reach configure.
