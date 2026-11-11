@@ -107,7 +107,7 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
         tls: Tls {
             uring,
             socket,
-            ssl: network.ssl.cast(),
+            ssl: network.ssl().cast(),
             rbio: rbio.cast(),
             wbio: wbio.cast(),
             fd: network.fd,
@@ -562,7 +562,7 @@ pub(crate) unsafe fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> b
         return false;
     }
     let session = socket
-        .net(|network| network.ssl)
+        .net(|network| network.ssl())
         .unwrap_or(core::ptr::null_mut())
         .cast::<ssl::SSL>();
     // SAFETY: OpenSSL's static memory BIO method.

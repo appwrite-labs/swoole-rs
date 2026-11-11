@@ -500,7 +500,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
     let network = record.socket;
     // SAFETY: the socket's live network record, if any.
     if let Some(socket) = unsafe { Socket::from_ptr(network) }
-        && !socket.read(|record| record.ssl.is_null())
+        && !socket.read(|record| record.ssl().is_null())
     {
         socket_ssl_close(socket);
     }

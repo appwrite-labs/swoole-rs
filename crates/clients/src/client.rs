@@ -1061,7 +1061,7 @@ fn close(this: Handle) -> c_int {
     let saved = this.socket();
     if this.flag(OPEN_SSL)
         && !this.get().tls.get().is_null()
-        && !saved.read(|socket| socket.ssl.is_null())
+        && !saved.read(|socket| socket.ssl().is_null())
     {
         socket_ssl_close(saved);
     }
@@ -1246,7 +1246,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             return ERR;
         }
     }
-    if this.socket().read(|socket| socket.ssl.is_null()) {
+    if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = 1);
         // SAFETY: the live socket and context.
         if unsafe { socket_ssl_create(this.socket_ptr(), tls, SSL_CLIENT) } < 0 {
@@ -1258,7 +1258,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             // SAFETY: `SSL_set_tlsext_host_name` on the new session; OpenSSL copies the name.
             unsafe {
                 ssl_ctrl(
-                    this.socket().read(|socket| socket.ssl),
+                    this.socket().read(swoole_rs_reactor::SocketFields::ssl),
                     SSL_CTRL_SET_TLSEXT_HOSTNAME,
                     TLSEXT_NAMETYPE_HOST_NAME,
                     name.as_ptr().cast_mut().cast(),
@@ -1281,18 +1281,11 @@ fn ssl_handshake(this: Handle) -> c_int {
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
 fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
-    if !this
-        .socket()
-        .read(|socket| socket_ssl_verify(socket, allow_self_signed))
-    {
+    if !socket_ssl_verify(this.socket(), allow_self_signed) {
         return ERR;
     }
     let name = this.tls_host_name();
-    if !name.is_empty()
-        && !this
-            .socket()
-            .read(|socket| socket_ssl_check_host(socket, name))
-    {
+    if !name.is_empty() && !socket_ssl_check_host(this.socket(), name) {
         return ERR;
     }
     OK
