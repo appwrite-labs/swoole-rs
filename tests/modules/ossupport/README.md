@@ -22,3 +22,20 @@ values (`cargo test -p swoole-rs-ossupport --all-features os_`):
 | `os.thread_name` | `system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
 | `os.thread_id` | none: `swoole_thread_id_to_str` left the build with its one caller, the async-thread warnings, so there is no function to test |
 | `os.set_isolation` | `system::tests::os_set_isolation`, over `swr_v1_os_set_isolation` |
+
+`core-tests/src/os/file.cpp` tests `src/os/file.cc`, which is Rust (`crates/ossupport`'s
+`file_api.rs` and `file.rs`). Its `ASSERT_ERREQ`s read the last error, which only the log
+host `swoole_init` installs sets, so its TESTs are `file.<name>` in
+`tests/modules/hooks/system/src/file.rs` (`hooks-system-rust`), same inputs and expected values:
+
+| Upstream TEST | Rust test or reason |
+| --- | --- |
+| `file.read_line` | none: `File::read_line` left the build (not in `native/ossupport/swoole_file.h`, no Rust body, no caller) |
+| `file.read_line_no_crlf` | none, as `file.read_line` |
+| `file.file_put_contents` | `file.file_put_contents`, over `file_api::file_put_contents` |
+| `file.file_get_contents` | `file.file_get_contents`, over `file_api::file_get_contents`; the large file is the test binary, as upstream's is core-tests' |
+| `file.file_get_size` | `file.file_get_size`, over `file::file_size` (`file_get_size(int)`), which returns the error its caller publishes. The path overload left the build, so its ENOENT check has no subject |
+| `file.open_twice` | `ossupport-file-owner` (`file_owner.py`), which compiles the TEST's body against the pin |
+| `file.error` | `file.error`: `FileRecord::read_all`'s failure and errno (its callers warn), `fd_write_all` (`File::write_all`, which warns), and `file_size`'s `fstat` for `File::stat` |
+| `file.tmp_file` | `file.tmp_file` (`swoole_tmpfile`), and crates/process's `task_file::tests::make_tmpfile_in_a_missing_directory` for `make_tmpfile` |
+| `file.empty_file` | `file.empty_file`, over `FileRecord::read_all` |
