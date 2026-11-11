@@ -4,7 +4,7 @@
 use std::ffi::{c_char, c_int};
 use std::mem::MaybeUninit;
 
-use crate::{HttpSpan, swr_v1_http_boundary};
+use crate::bytes;
 
 /// `const char *get_status_message(int code)`.
 #[cfg_attr(
@@ -27,7 +27,7 @@ pub extern "C" fn get_status_message(code: c_int) -> *const c_char {
 #[must_use]
 pub unsafe extern "C" fn get_method(method: *const c_char, length: usize) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe { crate::swr_v1_http_method(method.cast(), length) }
+    unsafe { bytes(method.cast(), length) }.map_or_else(|status| status, swoole_rs_http::method)
 }
 
 /// `const char *get_method_string(int method)`.
@@ -56,11 +56,12 @@ pub unsafe extern "C" fn parse_multipart_boundary(
     out_boundary_str: &mut *mut c_char,
     out_boundary_len: &mut c_int,
 ) -> bool {
-    let mut span = HttpSpan::default();
-    // SAFETY: as the caller guarantees; `span` is a live local.
-    if unsafe { swr_v1_http_boundary(at.cast(), length, offset, Some(&mut span)) } != 1 {
+    // SAFETY: as the caller guarantees.
+    let found = unsafe { bytes(at.cast(), length) }
+        .and_then(|input| swoole_rs_http::boundary(input, offset));
+    let Ok(Some(span)) = found else {
         return false;
-    }
+    };
     *out_boundary_str = at.wrapping_add(span.offset).cast_mut();
     // A boundary inside a header line is far shorter than `int`.
     let boundary_len = c_int::try_from(span.length).unwrap_or(c_int::MAX);

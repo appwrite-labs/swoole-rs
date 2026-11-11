@@ -199,14 +199,7 @@ impl ServerState {
     pub(crate) fn set_isolation(&self) {
         let text = |index| CString::new(self.text(index)).unwrap_or_default();
         let (root, user, group) = (text(0), text(1), text(2));
-        // SAFETY: three C strings.
-        unsafe {
-            swoole_rs_ossupport::swr_v1_os_set_isolation(
-                group.as_ptr(),
-                user.as_ptr(),
-                root.as_ptr(),
-            );
-        }
+        swoole_rs_ossupport::set_isolation(&group, &user, &root);
     }
 
     /// `Server::lock()`: blocks until this thread holds the lock.
