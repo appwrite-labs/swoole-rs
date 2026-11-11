@@ -508,10 +508,8 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
     }
     if let Some(body) = body {
         let mut content_length = body.length;
-        // SAFETY: a live context; the body is only read when compression is accepted.
-        let compressed = unsafe { ctx.compress(bytes(body.data, body.length)) };
-        if let Some((encoding, compressed)) = compressed {
-            content_length = compressed.len();
+        if let Some((encoding, compressed)) = ctx.compress(bytes(body.data, body.length)) {
+            content_length = compressed;
             headers.add(b"content-encoding", encoding.to_bytes());
         }
         headers.add(
@@ -704,8 +702,7 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                 // Headers are sent: body failures must not permit a retry.
                 set(ctx, Field::End, 1);
                 if get(ctx, Field::ContentCompressed) != 0 {
-                    // SAFETY: a live context, which holds the compressed body.
-                    body = unsafe { ctx.compressed() }.to_vec();
+                    body = ctx.compressed();
                     compressed = true;
                 }
                 facts.chunked = get(ctx, Field::SendChunked);
@@ -1164,10 +1161,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
     }
     let ctx = stream.ctx;
     if length > 0 {
-        // SAFETY: a live context.
-        ctx.data_start();
-        // SAFETY: as above.
-        let buffered = unsafe { ctx.data() }.len();
+        let buffered = ctx.data_start();
         let ended = get(ctx, Field::End);
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) != 0 {
             reset(ctx, stream_id, 0);

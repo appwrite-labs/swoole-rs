@@ -121,7 +121,7 @@ impl QueueRecord {
     #[must_use]
     pub fn push(&self, node: &[u8]) -> bool {
         let Some((kind, length)) = node_parts(node) else {
-            log::set_last_error(libc::EINVAL);
+            invalid();
             return false;
         };
         loop {
@@ -150,7 +150,7 @@ impl QueueRecord {
     /// warns unless it is `ENOMSG` or `EINTR`.
     pub fn pop(&self, node: &mut [u8]) -> isize {
         let Some((kind, size)) = node_parts(node) else {
-            log::set_last_error(libc::EINVAL);
+            invalid();
             return -1;
         };
         // SAFETY: `node` is a writable `long` type and `size` payload bytes.
@@ -210,6 +210,13 @@ impl QueueRecord {
         let queue = Self::new(key, true, 0);
         queue.ready().then(|| Box::new(queue))
     }
+}
+
+/// A node shorter than a `long`: `EINVAL` in errno and the last error, as a failed
+/// call leaves them.
+fn invalid() {
+    swoole_rs_corebase::sys::set_errno(libc::EINVAL);
+    log::set_last_error(libc::EINVAL);
 }
 
 /// A `QueueNode`'s type and payload length, or `None` when it is shorter than a `long`.
@@ -395,6 +402,24 @@ mod tests {
 
         assert!(!q.set_capacity(8192));
         assert_eq!(log::last_error(), libc::EINVAL);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no msgget")]
+    fn a_node_shorter_than_its_type_is_einval_in_errno_and_the_last_error() {
+        use swoole_rs_corebase::sys;
+        let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
+        let mut short = [0u8; size_of::<c_long>() - 1];
+        let einval = || {
+            let errors = (sys::errno(), log::last_error());
+            sys::set_errno(0);
+            log::set_last_error(0);
+            errors == (libc::EINVAL, libc::EINVAL)
+        };
+        assert!(!queue.push(&short), "push");
+        assert!(einval(), "push's errno and last error");
+        assert_eq!(queue.pop(&mut short), -1, "pop");
+        assert!(einval(), "pop's errno and last error");
     }
 
     #[test]

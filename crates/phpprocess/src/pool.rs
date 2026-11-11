@@ -7,8 +7,10 @@ use crate::{
     signal::clean,
 };
 use std::{
+    cell::{Cell, RefCell},
     ffi::{c_int, c_void},
     ptr,
+    rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_phpstubs::process_pool;
@@ -23,15 +25,14 @@ use swoole_rs_process::{
 };
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, Value, ZString, handlers, long_zval,
-    message,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
+    long_zval, message,
     string::{self, ZBuf},
     sys::{
-        IS_ARRAY, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_array_init,
-        zend_class_entry, zend_hash_index_update, zend_object, zend_object_handlers,
-        zend_read_property, zval, zval_ptr_dtor,
+        IS_ARRAY, ZEND_ACC_PUBLIC, swr_zend_array_init, zend_hash_index_update, zend_read_property,
+        zval, zval_ptr_dtor,
     },
-    type_of, unset_property_deny,
+    type_of,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -60,7 +61,7 @@ struct BusHead {
     allocator: *const c_void,
 }
 
-static POOL: Class = Class::new();
+static POOL: CustomClass<PoolObject> = CustomClass::new();
 /// `current_pool` and `current_worker`.
 static CURRENT: AtomicPtr<PoolRecord> = AtomicPtr::new(ptr::null_mut());
 static CURRENT_WORKER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
@@ -138,71 +139,86 @@ fn message_data(pool: Pool, message: &RecvData) -> Owned {
     Owned::string(string)
 }
 
-/// `struct ProcessPoolObject`: the pool, its six callables and two flags.
-#[repr(C)]
+/// One event's callable. Dispatch clones it out before calling PHP, so the
+/// callback can replace it (`on()`) without freeing the callable that runs.
+#[derive(Default)]
+struct Handler(RefCell<Option<Rc<Callable>>>);
+
+impl Handler {
+    fn get(&self) -> Option<Rc<Callable>> {
+        self.0.borrow().clone()
+    }
+
+    fn is_set(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    /// Store `callable`, handing back the one it replaces for the caller to drop.
+    fn replace(&self, callable: Option<Callable>) -> Option<Rc<Callable>> {
+        self.0.replace(callable.map(Rc::new))
+    }
+}
+
+/// `struct ProcessPoolObject`: the pool, its six callables and two flags. PHP
+/// code a callback runs can call the object's methods, so every field is a cell
+/// and the object is only ever borrowed shared.
+#[derive(Default)]
 struct PoolObject {
-    pool: Pool,
-    on_start: Option<Callable>,
-    on_shutdown: Option<Callable>,
-    on_worker_start: Option<Callable>,
-    on_worker_stop: Option<Callable>,
-    on_worker_exit: Option<Callable>,
-    on_message: Option<Callable>,
-    enable_coroutine: bool,
-    enable_message_bus: bool,
+    pool: Cell<Pool>,
+    on_start: Handler,
+    on_shutdown: Handler,
+    on_worker_start: Handler,
+    on_worker_stop: Handler,
+    on_worker_exit: Handler,
+    on_message: Handler,
+    enable_coroutine: Cell<bool>,
+    enable_message_bus: Cell<bool>,
 }
 
-type Object_ = Object<PoolObject>;
-
-/// # Safety
-/// `object` is a live Pool object.
-unsafe fn data<'a>(object: *mut zend_object) -> &'a mut PoolObject {
-    // SAFETY: per the caller.
-    unsafe { Object_::data(object) }
+impl Custom for PoolObject {
+    fn class() -> &'static CustomClass<Self> {
+        &POOL
+    }
+    fn new() -> Self {
+        Self::default()
+    }
 }
 
-fn this<'a>(call: &Call) -> &'a mut PoolObject {
-    // SAFETY: Pool methods are non-static, so `$this` is a Pool object.
-    unsafe { data(call.this()) }
+impl Drop for PoolObject {
+    fn drop(&mut self) {
+        let pool = self.pool.get();
+        if !pool.is_null() {
+            pool_free(pool);
+        }
+        for handler in [
+            &self.on_worker_start,
+            &self.on_message,
+            &self.on_worker_stop,
+            &self.on_start,
+            &self.on_worker_exit,
+            &self.on_shutdown,
+        ] {
+            drop(handler.replace(None));
+        }
+    }
+}
+
+/// `$this`, which every instance method runs on.
+fn this(call: &Call) -> Option<&PoolObject> {
+    call.custom()
 }
 
 /// `process_pool_get_and_check_pool`.
-fn checked(object: &PoolObject) -> Pool {
-    if object.pool.is_null() {
+fn checked(object: Option<&PoolObject>) -> Pool {
+    let pool = object.map_or(ptr::null_mut(), |object| object.pool.get());
+    if pool.is_null() {
         host::unconstructed();
     }
-    object.pool
+    pool
 }
 
 fn view<'a>(pool: Pool) -> &'a PoolRecord {
     record(pool)
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass; zeroed
-    // data is a pool object without a pool or callables.
-    unsafe { Object_::create(&POOL, ce) }
-}
-
-unsafe extern "C" fn free(object: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    let pool = unsafe { data(object) };
-    if !pool.pool.is_null() {
-        pool_free(pool.pool);
-    }
-    for callable in [
-        pool.on_worker_start.take(),
-        pool.on_message.take(),
-        pool.on_worker_stop.take(),
-        pool.on_start.take(),
-        pool.on_worker_exit.take(),
-        pool.on_shutdown.take(),
-    ] {
-        drop(callable);
-    }
-    // SAFETY: as above.
-    unsafe { Object_::dtor(object) };
-    swoole_rs_zend::bailout::finish();
 }
 
 method_table! {
@@ -245,7 +261,7 @@ pub unsafe extern "C" fn php_swoole_process_pool_minit(module: c_int) {
     let minit = unsafe { Minit::new(module) };
     // SAFETY: a `zend_try` trap and Zend's bailout.
     unsafe { swoole_rs_process::pool::set_bailout(trap, raise) };
-    minit.register(&POOL, c"Swoole\\Process\\Pool", &METHODS.0, configure);
+    minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", &METHODS.0, 0);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
     }
@@ -264,13 +280,6 @@ pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
         let pool = record(pool);
         !master && (pool.is_async || pool.main_loop.is_none())
     })
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Object_::install(entry, handlers, create, free);
 }
 
 fn update_bool(object: &Value, name: &std::ffi::CStr, value: bool) {
@@ -337,11 +346,10 @@ fn signal(pool: Pool, signo: c_int) {
 }
 
 /// The object a pool callback belongs to, and its data.
-fn owner(pool: Pool) -> Option<(&'static Value, &'static mut PoolObject)> {
+fn owner<'a>(pool: Pool) -> Option<(&'a Value, &'a PoolObject)> {
     // SAFETY: the pool's copy of its object zval, alive while the pool runs.
     let object = unsafe { Value::from_ptr(record(pool).ptr.cast()) }?;
-    // SAFETY: a Pool object.
-    Some((object, unsafe { data(object.object()?) }))
+    Some((object, object.custom()?))
 }
 
 extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
@@ -362,21 +370,16 @@ extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     update_long(object, c"workerPid", getpid());
     update_long(object, c"workerId", id);
     methods::swoole_set_worker_type(WORKER);
-    swoole_rs_corebase::swr_v1_core_set_enable_coroutine(this.enable_coroutine);
-    if let Some(callable) = &this.on_worker_start {
-        dispatch(
-            callable,
-            object,
-            Some(id),
-            this.enable_coroutine,
-            "onWorkerStart",
-        );
+    swoole_rs_corebase::swr_v1_core_set_enable_coroutine(this.enable_coroutine.get());
+    if let Some(callable) = this.on_worker_start.get() {
+        let coroutine = this.enable_coroutine.get();
+        dispatch(&callable, object, Some(id), coroutine, "onWorkerStart");
     }
     if swoole_rs_zend::bailout::pending() {
         swoole_rs_zend::bailout::finish();
         return;
     }
-    let term = this.on_message.is_some() || this.enable_coroutine;
+    let term = this.on_message.is_set() || this.enable_coroutine.get();
     worker_signals(term);
     swoole_rs_zend::bailout::finish();
 }
@@ -404,10 +407,12 @@ extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
     let data = message_data(pool, message);
     worker_busy(true);
     // The onMessage callable `start()` required.
-    let called = this
-        .on_message
+    let callable = this.on_message.get();
+    let coroutine = this.enable_coroutine.get();
+    let called = callable
         .as_ref()
-        .is_some_and(|callable| callable.call(&[object, &data], this.enable_coroutine));
+        .is_some_and(|callable| callable.call(&[object, &data], coroutine));
+    drop(callable);
     let bailed = swoole_rs_zend::bailout::pending();
     if !called && !bailed {
         handler_error(object, "onMessage");
@@ -425,14 +430,14 @@ fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
     };
     update_bool(object, c"running", false);
     update_bool(object, c"workerRunning", false);
-    let (callable, event) = if exit {
+    let (handler, event) = if exit {
         (&this.on_worker_exit, "onWorkerExit")
     } else {
         (&this.on_worker_stop, "onWorkerStop")
     };
-    if let Some(callable) = callable {
+    if let Some(callable) = handler.get() {
         let id = i64::from(worker_view(worker).id);
-        dispatch(callable, object, Some(id), false, event);
+        dispatch(&callable, object, Some(id), false, event);
     }
 }
 
@@ -453,8 +458,8 @@ extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
         update_bool(object, c"running", true);
         methods::swoole_set_worker_type(MASTER);
         swoole_rs_corebase::swr_v1_core_set_enable_coroutine(false);
-        if let Some(callable) = &this.on_start {
-            dispatch(callable, object, None, false, "onStart");
+        if let Some(callable) = this.on_start.get() {
+            dispatch(&callable, object, None, false, "onStart");
         }
     }
     swoole_rs_zend::bailout::finish();
@@ -465,8 +470,8 @@ extern "C-unwind" fn on_shutdown(pool: PoolRef<'_>) {
     if let Some((object, this)) = owner(pool) {
         update_bool(object, c"running", false);
         update_bool(object, c"workerRunning", false);
-        if let Some(callable) = &this.on_shutdown {
-            dispatch(callable, object, None, false, "onShutdown");
+        if let Some(callable) = this.on_shutdown.get() {
+            dispatch(&callable, object, None, false, "onShutdown");
         }
     }
     swoole_rs_zend::bailout::finish();
@@ -515,12 +520,14 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let pool = this(call);
+    let Some(pool) = this(call) else {
+        return;
+    };
     let fail = |text: &std::ffi::CStr| {
         call.throw(exception(), text, i64::from(crate::report::errno()));
         call.set_bool(false);
     };
-    if !pool.pool.is_null() {
+    if !pool.pool.get().is_null() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
@@ -553,8 +560,8 @@ fn construct(call: &Call) {
     let Some(made) = made else {
         return fail(c"failed to create process pool");
     };
-    pool.enable_coroutine = coroutine;
-    pool.pool = made;
+    pool.enable_coroutine.set(coroutine);
+    pool.pool.set(made);
 }
 
 fn destruct(_call: &Call) {}
@@ -565,7 +572,9 @@ fn set(call: &Call) {
         return;
     };
     let this = this(call);
-    let pool = record(checked(this));
+    // Each conversion below can run PHP code, which can call this object's
+    // methods: the record is borrowed per write, after its value converted.
+    let pool = checked(this);
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
     swoole_rs_phpcoroutines::set_coroutine_option(options);
     // Each setter stops at a conversion's bailout, which upstream's ended the
@@ -579,26 +588,35 @@ fn set(call: &Call) {
     }
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
+        let pool = record(pool);
         pool.max_packet_size = packet_limit(pool.use_msgqueue != 0, max_package_size(size));
     }
     if let Some(value) = options.get(b"max_wait_time") {
         let Some(seconds) = value.applied_long() else {
             return;
         };
-        pool.max_wait_time = u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX);
+        record(pool).max_wait_time =
+            u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX);
     }
+    let Some(this) = this else {
+        return;
+    };
     if let Some(value) = options.get(b"enable_coroutine") {
-        this.enable_coroutine = value.truthy();
-        pool.is_async = this.enable_coroutine;
+        let enable = value.truthy();
+        this.enable_coroutine.set(enable);
+        record(pool).is_async = enable;
     }
     if let Some(value) = options.get(b"enable_message_bus") {
-        this.enable_message_bus = value.truthy();
+        this.enable_message_bus.set(value.truthy());
     }
 }
 
 fn on(call: &Call) {
     let this = this(call);
     let pool = checked(this);
+    let Some(this) = this else {
+        return;
+    };
     let view = view(pool);
     if view.started {
         fatal(
@@ -617,7 +635,7 @@ fn on(call: &Call) {
         return;
     };
     let slot = match name.to_ascii_lowercase().as_slice() {
-        b"workerstart" => &mut this.on_worker_start,
+        b"workerstart" => &this.on_worker_start,
         b"message" => {
             if i64::from(view.ipc_mode) == IPC_NONE {
                 call.throw(
@@ -628,12 +646,12 @@ fn on(call: &Call) {
                 call.set_bool(false);
                 return;
             }
-            &mut this.on_message
+            &this.on_message
         }
-        b"workerstop" => &mut this.on_worker_stop,
-        b"workerexit" => &mut this.on_worker_exit,
-        b"start" => &mut this.on_start,
-        b"shutdown" => &mut this.on_shutdown,
+        b"workerstop" => &this.on_worker_stop,
+        b"workerexit" => &this.on_worker_exit,
+        b"start" => &this.on_start,
+        b"shutdown" => &this.on_shutdown,
         _ => {
             notice(
                 E_WARNING,
@@ -644,7 +662,7 @@ fn on(call: &Call) {
         }
     };
     // The slot lets go first: a destructor that bails out leaves it empty.
-    if let Some(old) = slot.take() {
+    if let Some(old) = slot.replace(None) {
         drop(old);
         if swoole_rs_zend::bailout::pending() {
             return;
@@ -653,7 +671,7 @@ fn on(call: &Call) {
     let created = Callable::create(callback);
     // The old callable's destructor may have called on() for this event: this
     // call's callable replaces the one that stored, which drops.
-    drop(std::mem::replace(slot, created));
+    drop(slot.replace(created));
     call.set_bool(true);
 }
 
@@ -787,6 +805,9 @@ fn pool_signals() -> [c_int; 6] {
 fn start(call: &Call) {
     let this = this(call);
     let pool = checked(this);
+    let Some(this) = this else {
+        return;
+    };
     if view(pool).started {
         fatal(E_WARNING, &message!("process pool is started"));
         call.set_bool(false);
@@ -801,12 +822,12 @@ fn start(call: &Call) {
             *old = host::signal_swap(*signo, on_signal as *const () as usize, false);
         }
     }
-    if !protocol(pool, this.enable_message_bus) {
+    if !protocol(pool, this.enable_message_bus.get()) {
         call.set_bool(false);
         return;
     }
     let view = view(pool);
-    if this.on_worker_start.is_none() && this.on_message.is_none() {
+    if !this.on_worker_start.is_set() && !this.on_message.is_set() {
         if view.is_async {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
             call.set_bool(false);
@@ -817,7 +838,7 @@ fn start(call: &Call) {
             return;
         }
     }
-    if this.on_worker_exit.is_some() && !this.enable_coroutine {
+    if this.on_worker_exit.is_set() && !this.enable_coroutine.get() {
         call.throw(
             exception(),
             c"cannot set `onWorkerExit` without enable_coroutine",
@@ -828,16 +849,16 @@ fn start(call: &Call) {
     }
     CURRENT.store(pool, Ordering::Release);
     let record = record(pool);
-    if this.on_message.is_none() {
-        record.main_loop = None;
-    } else {
+    if this.on_message.is_set() {
         record.on_message = Some(on_message);
+    } else {
+        record.main_loop = None;
     }
     record.on_start = Some(on_start);
     record.on_shutdown = Some(on_shutdown);
     record.on_worker_start = Some(on_worker_start);
     record.on_worker_stop = Some(on_worker_stop);
-    if this.enable_coroutine && this.on_worker_exit.is_some() {
+    if this.enable_coroutine.get() && this.on_worker_exit.is_set() {
         record.on_worker_exit = Some(on_worker_exit);
     }
     // SAFETY: a created pool; runs the master loop until the pool stops.
@@ -1022,18 +1043,4 @@ handlers! {
     zim_swoole_process_pool_start => start;
     zim_swoole_process_pool_stop => stop;
     zim_swoole_process_pool_shutdown => shutdown;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pool_object_holds_the_pool_callables_and_flags() {
-        assert_eq!(
-            Object_::OFFSET,
-            7 * size_of::<*mut c_void>() + size_of::<*mut c_void>(),
-            "seven pointers and two bools, padded to the zend_object"
-        );
-    }
 }

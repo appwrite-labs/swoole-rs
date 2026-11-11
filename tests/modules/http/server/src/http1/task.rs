@@ -15,11 +15,11 @@ use std::sync::atomic::AtomicU32;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
+use swoole_rs_process::methods as pool;
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{self, EventHead, Packed, task_pack};
 use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_process::{methods as pool, workers::entry};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_utilities::swoole_set_log_file;
 
@@ -332,8 +332,8 @@ impl TaskServer for Server {
     }
 
     fn finish(self, data: &[u8], task: *mut c_void) -> bool {
-        // SAFETY: a live server, `data`'s bytes and the task being run.
-        unsafe { entry::finish(self.0, data.as_ptr().cast(), data.len(), 0, task) }
+        // SAFETY: the task being run.
+        unsafe { swoole_rs_server::task_worker_ops::finish(self.view(), data, 0, task) }
     }
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
@@ -375,8 +375,7 @@ impl TaskServer for Server {
     }
 
     fn kill_worker(self, worker_id: c_int) -> bool {
-        // SAFETY: a live server.
-        unsafe { entry::kill_worker(self.0, worker_id) }
+        swoole_rs_server::event_worker_ops::kill_worker(self.view(), worker_id)
     }
 
     fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize {

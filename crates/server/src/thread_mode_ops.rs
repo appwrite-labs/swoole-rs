@@ -13,7 +13,6 @@ use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
 use swoole_rs_process::workers::ops::{
     LOG_CALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CREATE_MESSAGE_BUS, OP_DESTROY_MESSAGE_BUS,
@@ -21,7 +20,7 @@ use swoole_rs_process::workers::ops::{
     OP_SET_MASTER_THREAD_ID, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_THREAD_ENTER,
     OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_THREAD_SUPPORTED,
     OP_WORKER_THREAD_START, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_THREAD_BODY,
-    RUN_THREAD_MAIN, RUN_THREAD_TERMINATE_MANAGER,
+    RUN_THREAD_MAIN, RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER,
 };
 use swoole_rs_process::workers::ops::{
     OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM, OP_CALLOC_CONNECTIONS,
@@ -95,9 +94,9 @@ impl Context {
         u64::from(workers.event_count) + u64::from(workers.task_count) + workers.user_count as u64
     }
     /// The context's worker.
-    fn worker(&self) -> &WorkerRecord {
+    fn worker(&self) -> Worker<'_> {
         // SAFETY: the ops reading it run with a live worker in the context.
-        unsafe { &*self.worker }
+        unsafe { Worker::new(self.worker) }
     }
     /// The thread factory's threads.
     fn manager(&self) -> &ThreadManager {
@@ -115,23 +114,13 @@ impl Context {
     }
 }
 
-/// Thread mode's `Server` and `ThreadFactory` methods (crates/process's entry.rs):
-/// over `serv` and a `ThreadFactory` method's own factory, `other`, or else the
-/// server's in thread mode.
-///
-/// # Safety
-/// The objects are what `operation`'s method took, live for the call.
-pub(crate) unsafe fn enter(
-    operation: u32,
-    serv: *mut c_void,
-    other: *mut c_void,
-    _extra: *mut c_void,
-    arg: u64,
-) -> i64 {
-    over(serv, other, operation).run(operation, arg)
+/// `Server::reload_worker_threads(reload_all_workers)`.
+pub(crate) fn reload_worker_threads(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
+    let arg = u64::from(reload_all_workers);
+    over(serv.raw(), null_mut(), RUN_THREAD_RELOAD).run(RUN_THREAD_RELOAD, arg) != 0
 }
 
-/// A thread-mode `Server` method over the live server alone, as [`enter`] runs it.
+/// A thread-mode `Server` method over the live server alone.
 pub(crate) fn run_server(serv: view::Server<'_>, operation: u32) -> i64 {
     over(serv.raw(), null_mut(), operation).run(operation, 0)
 }
@@ -218,9 +207,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let worker = ctx.worker();
             let status = ctx.manager().thread(worker.id().into()).exit_status() << 8;
             let status = ExitStatus::new(worker.pid(), status);
-            let status = (&raw const status).cast();
-            // SAFETY: the live server, its worker, and the status for the call.
-            unsafe { entry::call_worker_error_callback(serv, ctx.worker.cast(), status) };
+            crate::event_worker_ops::call_worker_error_callback(ctx.server(), worker, &status);
             0
         }
         OP_SPAWN_THREAD => {
@@ -409,8 +396,7 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_KILL_WORKER => {
             let id = c_int::try_from(arg.cast_signed()).ok()?;
-            // SAFETY: as above.
-            let _ = unsafe { entry::kill_worker(serv, id) };
+            _ = crate::event_worker_ops::kill_worker(ctx.server(), id);
             0
         }
         OP_TERMINATE_MANAGER_THREAD => {

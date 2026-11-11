@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::ffi::{CString, c_int, c_void};
 use swoole_rs_corebase::log;
-use swoole_rs_zend::{E_WARNING, bailout, sys::zend_long};
+use swoole_rs_zend::{E_WARNING, bailout};
 
 pub(crate) type Context = c_void;
 
@@ -87,24 +87,4 @@ pub(crate) fn log(level: c_int, error: c_int, func: &std::ffi::CStr, message: im
             log::sys_warning_errno(error.wrapping_neg(), func, format_args!("{message}"));
         }
     }
-}
-
-/// The context's state bits.
-pub(crate) fn flags(context: *const Context) -> u32 {
-    // SAFETY: a live context, which starts with its `ContextState`.
-    let state = unsafe { &*context.cast::<crate::state::State>() };
-    u32::from(state.end)
-        | u32::from(state.detached) << 1
-        | u32::from(state.completed) << 2
-        | u32::from(state.http2) << 3
-        | u32::from(state.send_chunked) << 4
-        | u32::from(crate::context::co_socket(state)) << 5
-        | u32::from(state.upgrade) << 6
-        | u32::from(state.websocket) << 7
-}
-
-/// `ctx->fd`.
-pub(crate) fn fd(context: *const Context) -> zend_long {
-    // SAFETY: as above.
-    unsafe { (*context.cast::<crate::state::State>()).fd }
 }

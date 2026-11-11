@@ -22,7 +22,7 @@ pub(super) unsafe fn release(sock: Sock) -> Result<(), Bailout> {
         }
     }
     // SAFETY: the object's core ownership is transferred exactly once to its native destructor.
-    freed.and(unsafe { native::free_socket(co) })
+    freed.and(unsafe { swoole_rs_phpruntime::co::free(co.as_ptr()) })
 }
 
 /// Free the length callback, then close an imported stream or the owned core socket.

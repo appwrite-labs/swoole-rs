@@ -7,9 +7,9 @@ use core::sync::atomic::Ordering;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::methods::{swoole_get_worker_pid, swoole_get_worker_type};
+use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_pid, swoole_get_worker_type};
 use swoole_rs_process::worker_globals::thread_globals;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::{
     OP_ARM_EXIT, OP_BUS_CLEAR, OP_BUS_EMPTY, OP_BUS_POP, OP_BUS_READ, OP_COMMAND_REQUEST,
     OP_CONN_UNREAD, OP_COUNT_COROUTINES, OP_DO_TASK, OP_DRAIN_WORKER_PIPES, OP_EVENT_BEGIN,
@@ -19,9 +19,10 @@ use swoole_rs_process::workers::ops::{
     OP_REACTOR_IF_EXIT, OP_REACTOR_STOP, OP_REACTOR_TIMEOUT, OP_REACTOR_WAIT, OP_REACTOR_WAIT_EXIT,
     OP_RECV_CONN, OP_SEND_SHUTDOWN, OP_SET_ISOLATION, OP_SET_REACTOR_TIMEOUT, OP_STORE_CLIENT_CERT,
     OP_THREAD_SHUTDOWN, OP_UNLIMIT_PIPES, OP_UNREAD_PIPE_MASTER, OP_UNREAD_PIPE_WORKER,
-    OP_UNREAD_THREAD_PIPE, RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_DRAIN_PIPES,
-    RUN_KILL_WORKER, RUN_PIPE_RECEIVE, RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_TRY_EXIT,
-    RUN_WORKER_SIGNAL,
+    OP_UNREAD_THREAD_PIPE, RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START,
+    RUN_CALL_WORKER_STOP, RUN_CLEAN_CONNECTIONS, RUN_DRAIN_PIPES, RUN_KILL_WORKER,
+    RUN_PIPE_RECEIVE, RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER,
+    RUN_STOP_ASYNC, RUN_TRY_EXIT, RUN_WORKER_SIGNAL, RUN_WORKER_START,
 };
 
 use super::{Context, SW_EVENT_WORKER, SW_WORKER_BUSY, SW_WORKER_IDLE};
@@ -437,39 +438,107 @@ fn run(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
     swoole_rs_process::workers::run_event_worker(ctx, operation, arg)
 }
 
-/// The event worker's `Server` methods (crates/process's entry.rs): `operation` over
-/// `serv` and this thread's worker, or the method's `worker`.
-///
-/// # Safety
-/// The objects are what `operation`'s method took, live for the call.
-pub(crate) unsafe fn enter(
-    operation: u32,
-    serv: *mut c_void,
-    worker: *mut c_void,
-    extra: *mut c_void,
-    arg: u64,
-) -> i64 {
-    let mut ctx = context(serv, Reactor::thread());
-    match operation {
-        RUN_SIGNAL_INIT | RUN_KILL_WORKER | RUN_DRAIN_PIPES => {}
-        RUN_WORKER_SIGNAL => ctx.serv = swoole_rs_corebase::swr_v1_core_server(),
-        RUN_ACCEPT_EVENT => ctx.info = extra.cast(),
-        RUN_SEND_TO_REACTOR_THREAD => {
-            // `worker` is the event's head and `extra` its session id.
-            ctx.info = worker.cast();
-            // SAFETY: the method lends its session id.
-            let session = unsafe { *extra.cast::<c_long>() };
-            // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
-            let pipes = c_long::from(ctx.tables().reactor_pipe_num);
-            let id = c_long::from(ctx.info().reactor_id)
-                + (session % pipes) * c_long::from(ctx.config().reactor_num);
-            ctx.socket = ctx.other(id.cast_unsigned()).pipe_worker;
-        }
-        RUN_CALL_WORKER_ERROR => {
-            ctx.worker = worker.cast();
-            ctx.status = extra.cast_const();
-        }
-        _ => ctx.worker = worker.cast(),
+impl Context {
+    /// The context over `serv`, this thread's worker and reactor.
+    fn of(serv: view::Server<'_>) -> Self {
+        context(serv.raw(), Reactor::thread())
     }
-    run(&mut ctx, operation, arg)
+    /// The context over `serv`, `worker` and this thread's reactor.
+    fn with(serv: view::Server<'_>, worker: Worker<'_>) -> Self {
+        Self {
+            worker: worker.raw(),
+            ..Self::of(serv)
+        }
+    }
+}
+
+/// `Server::worker_signal_init()`.
+pub fn worker_signal_init(serv: view::Server<'_>) {
+    run(&mut Context::of(serv), RUN_SIGNAL_INIT, 0);
+}
+
+/// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
+pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
+    let mut ctx = context(swoole_rs_corebase::swr_v1_core_server(), Reactor::thread());
+    run(
+        &mut ctx,
+        RUN_WORKER_SIGNAL,
+        i64::from(signo).cast_unsigned(),
+    );
+}
+
+/// `Server::worker_accept_event(info)`: the event whose head is `info` (its data, if
+/// any, in the worker message bus).
+pub(crate) fn accept_event(serv: view::Server<'_>, info: &mut DataHead) {
+    let mut ctx = Context::of(serv);
+    ctx.info = info;
+    run(&mut ctx, RUN_ACCEPT_EVENT, 0);
+}
+
+/// `Server::worker_start_callback(worker)`.
+pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) {
+    run(&mut Context::with(serv, worker), RUN_WORKER_START, 0);
+}
+
+/// `Server::call_worker_start_callback(worker)`.
+pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) {
+    run(&mut Context::with(serv, worker), RUN_CALL_WORKER_START, 0);
+}
+
+/// `Server::call_worker_stop_callback(worker)`.
+pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'_>) {
+    run(&mut Context::with(serv, worker), RUN_CALL_WORKER_STOP, 0);
+}
+
+/// `Server::call_worker_error_callback(worker, status)`.
+pub(crate) fn call_worker_error_callback(
+    serv: view::Server<'_>,
+    worker: Worker<'_>,
+    status: &ExitStatus,
+) {
+    let mut ctx = Context::with(serv, worker);
+    ctx.status = core::ptr::from_ref(status).cast();
+    run(&mut ctx, RUN_CALL_WORKER_ERROR, 0);
+}
+
+/// `Server::kill_worker(worker_id)`: -1 for this thread's worker.
+#[must_use]
+pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
+    let id = i64::from(worker_id).cast_unsigned();
+    run(&mut Context::of(serv), RUN_KILL_WORKER, id) != 0
+}
+
+/// `Server::stop_async_worker(worker)`.
+pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
+    run(&mut Context::with(serv, worker), RUN_STOP_ASYNC, 0);
+}
+
+/// `Server::drain_worker_pipe()`.
+pub fn drain_worker_pipe(serv: view::Server<'_>) {
+    run(&mut Context::of(serv), RUN_DRAIN_PIPES, 0);
+}
+
+/// `Server::clean_worker_connections(worker)`.
+pub fn clean_worker_connections(serv: view::Server<'_>, worker: Worker<'_>) {
+    run(&mut Context::with(serv, worker), RUN_CLEAN_CONNECTIONS, 0);
+}
+
+/// `Server::start_event_worker(worker)`.
+pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
+    let code = run(&mut Context::with(serv, worker), RUN_START_EVENT_WORKER, 0);
+    c_int::try_from(code).unwrap_or(-1)
+}
+
+/// `Server::send_to_reactor_thread(head, sizeof(*head), head->fd)`: the event `head`
+/// to its session's reactor pipe.
+pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) -> isize {
+    let mut ctx = Context::of(serv);
+    ctx.info = core::ptr::from_ref(head).cast_mut();
+    // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
+    let pipes = c_long::from(ctx.tables().reactor_pipe_num);
+    let id = c_long::from(head.reactor_id)
+        + (c_long::from(head.fd) % pipes) * c_long::from(ctx.config().reactor_num);
+    ctx.socket = ctx.other(id.cast_unsigned()).pipe_worker;
+    let size = size_of::<DataHead>() as u64;
+    isize::try_from(run(&mut ctx, RUN_SEND_TO_REACTOR_THREAD, size)).unwrap_or(-1)
 }

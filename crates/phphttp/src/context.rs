@@ -2,13 +2,13 @@
 use crate::{
     host::Context,
     parse::{self, Property},
-    send,
     state::{Slot, State},
 };
 use std::{
     borrow::Cow,
     collections::HashSet,
     ffi::{CStr, CString, c_int},
+    ptr::NonNull,
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
@@ -27,20 +27,70 @@ use swoole_rs_zend::{
     value::set_long,
 };
 
-pub(crate) type Holder = Object<*mut Context>;
+/// Either class's object: its context, none once released or before one is set.
+pub(crate) type Holder = Object<Option<Ctx>>;
 
-/// The context of an object of either class (null once released or before
+/// A live `swoole::http::Context`: the only way to reach its state. Only
+/// [`Ctx::of`], whose callers promise the context lives as long as the handle
+/// or a copy is used, and [`alloc`] make one; an object holds one until it
+/// lets go of it. What is read and done over it is then safe, until [`free`]
+/// ends it.
+///
+/// The handle is `Copy`, and a send can yield to a coroutine that reaches the
+/// same context through its objects, so a [`Ctx::state`] borrow ends before
+/// any host call, and before the handle (or a copy) is passed on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Ctx(NonNull<Context>);
+
+impl Ctx {
+    /// The handle of a context.
+    /// # Safety
+    /// `ctx` is a live context, which starts with its `ContextState`, for as
+    /// long as the handle or a copy is used.
+    pub(crate) const unsafe fn of(ctx: NonNull<Context>) -> Self {
+        Self(ctx)
+    }
+
+    /// The context the handle names.
+    pub(crate) fn raw(self) -> *mut Context {
+        self.0.as_ptr()
+    }
+
+    /// The context's `ContextState`, its first base, for as long as the
+    /// handle is borrowed.
+    pub(crate) fn state(&mut self) -> &mut State {
+        // SAFETY: `of`'s contract: a live context, which starts with its
+        // `ContextState`; no other reference to it outlives a host call.
+        unsafe { self.0.cast::<State>().as_mut() }
+    }
+
+    /// The context's state bits.
+    pub(crate) fn flags(mut self) -> u32 {
+        let state = self.state();
+        u32::from(state.end)
+            | u32::from(state.detached) << 1
+            | u32::from(state.completed) << 2
+            | u32::from(state.http2) << 3
+            | u32::from(state.send_chunked) << 4
+            | u32::from(co_socket(state)) << 5
+            | u32::from(state.upgrade) << 6
+            | u32::from(state.websocket) << 7
+    }
+}
+
+/// The context of an object of either class (none once released or before
 /// one is set).
 /// # Safety
 /// `object` is a live `Swoole\Http\Request` or `Swoole\Http\Response`.
 #[must_use]
-pub(crate) unsafe fn context_of(object: *const zend_object) -> *mut Context {
-    // SAFETY: per the caller; only the pointer is copied out.
+pub(crate) unsafe fn context_of(object: *const zend_object) -> Option<Ctx> {
+    // SAFETY: per the caller; only the handle is copied out.
     unsafe { *Holder::data(object.cast_mut()) }
 }
 
 /// The method's `$this` context.
-pub(crate) fn this(call: &swoole_rs_zend::Call) -> *mut Context {
+pub(crate) fn this(call: &swoole_rs_zend::Call) -> Option<Ctx> {
     // SAFETY: the classes' methods are non-static, so `$this` is one of ours.
     unsafe { context_of(call.this()) }
 }
@@ -79,11 +129,7 @@ pub(crate) enum Kind {
 
 /// A new `Swoole\Http\Request` or `Response` in the context's `slot`,
 /// pointing at `ctx`.
-pub(crate) fn new_object(
-    slot: &mut Slot,
-    kind: Kind,
-    ctx: *mut Context,
-) -> Option<*mut zend_object> {
+pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut zend_object> {
     let class = match kind {
         Kind::Request => &crate::request::REQUEST,
         Kind::Response => &crate::response::RESPONSE,
@@ -93,13 +139,13 @@ pub(crate) fn new_object(
     slot.ptr = &raw mut slot.value;
     let std = slot.object()?;
     // SAFETY: one of our objects, laid out as a `Holder`.
-    unsafe { *Holder::data(std) = ctx };
+    unsafe { *Holder::data(std) = Some(ctx) };
     Some(std)
 }
 
 /// A new object in `slot`, pointing at `ctx`, with its `fd` property (the
 /// slot at `offset`) set.
-fn object(slot: &mut Slot, kind: Kind, ctx: *mut Context, offset: u32, fd: i64) {
+fn object(slot: &mut Slot, kind: Kind, ctx: Ctx, offset: u32, fd: i64) {
     let Some(std) = new_object(slot, kind, ctx) else {
         return;
     };
@@ -112,20 +158,22 @@ fn object(slot: &mut Slot, kind: Kind, ctx: *mut Context, offset: u32, fd: i64) 
 /// `swoole_http_context_new`: a new context with its request and response
 /// objects, both pointing at it and holding `fd`, and the request's `server`
 /// and `header` arrays.
-pub(crate) fn context_new(fd: i64) -> *mut Context {
-    let ctx = alloc();
-    let state = send::state(ctx);
+pub(crate) fn context_new(fd: i64) -> Ctx {
+    let mut ctx = alloc();
+    // The objects' copies, which nothing reads until the context is filled.
+    let held = ctx;
+    let state = ctx.state();
     object(
         &mut state.request.zobject,
         Kind::Request,
-        ctx,
+        held,
         parse::fd_offset(),
         fd,
     );
     object(
         &mut state.response.zobject,
         Kind::Response,
-        ctx,
+        held,
         RESPONSE_FD.load(Relaxed),
         fd,
     );
@@ -138,16 +186,17 @@ pub(crate) fn context_new(fd: i64) -> *mut Context {
 /// `new Context()`: a value-initialised context, which
 /// `free` releases.
 #[must_use]
-pub(crate) fn alloc() -> *mut Context {
+pub(crate) fn alloc() -> Ctx {
     // Not `Box::new_zeroed`: glibc's `calloc` skips the thread cache and cost
     // 500 instructions a request where `malloc` and a memset cost about 100
     // (#2129). `black_box` keeps LLVM from folding them back into `calloc`.
-    let state = std::hint::black_box(Box::into_raw(Box::<State>::new_uninit()));
+    let state = std::hint::black_box(NonNull::from(Box::leak(Box::<State>::new_uninit())));
     // SAFETY: a fresh, writable `State`; all zeroes is a valid one (null
     // pointers, `None`s and `IS_UNDEF` zvals, as upstream's value-initialisation
     // left it), which `free` drops as a `Box<State>`.
     unsafe { state.write_bytes(0, 1) };
-    state.cast()
+    // SAFETY: the context just made, live until `free`.
+    unsafe { Ctx::of(state.cast()) }
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
@@ -164,9 +213,11 @@ pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     bind_server(state, server);
 }
 
-/// The server a context not bound to a coroutine socket answers through.
-pub(crate) fn server(state: &State) -> view::Server<'_> {
-    // SAFETY: a server-bound context's `private_data` is its live server.
+/// The server a context not bound to a coroutine socket answers through,
+/// which outlives the borrow of its state: the worker's server serves every
+/// request it binds.
+pub(crate) fn server(state: &State) -> view::Server<'static> {
+    // SAFETY: a server-bound context's `private_data` is the worker's live server.
     unsafe { view::Server::from_raw(state.private_data) }
 }
 
@@ -176,8 +227,8 @@ pub(crate) fn co_socket(state: &State) -> bool {
 }
 
 /// `ctx->send`: the server's send to the session, or the coroutine socket's.
-pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
-    let state = send::state(ctx);
+pub(crate) fn send(mut ctx: Ctx, data: &[u8]) -> bool {
+    let state = ctx.state();
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket; true once every byte is sent.
@@ -204,13 +255,8 @@ pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> boo
 }
 
 /// `ctx->sendfile`.
-pub(crate) fn sendfile(
-    ctx: *mut Context,
-    file: *mut zend_string,
-    offset: i64,
-    length: usize,
-) -> bool {
-    let state = send::state(ctx);
+pub(crate) fn sendfile(mut ctx: Ctx, file: *mut zend_string, offset: i64, length: usize) -> bool {
+    let state = ctx.state();
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket.
@@ -226,8 +272,8 @@ pub(crate) fn sendfile(
 }
 
 /// `ctx->close`.
-pub(crate) fn close(ctx: *mut Context) -> bool {
-    let state = send::state(ctx);
+pub(crate) fn close(mut ctx: Ctx) -> bool {
+    let state = ctx.state();
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket.
@@ -306,23 +352,21 @@ pub(crate) fn compression_type(state: &State, kind: Option<&[u8]>) -> bool {
 }
 
 /// `onBeforeRequest`: a server's request is counted, or queued past
-/// `worker_max_concurrency` (false: not now).
-/// # Safety
-/// `ctx` is a live context.
-pub(crate) unsafe fn before_request(ctx: *mut Context) -> bool {
-    let state = send::state(ctx);
+/// `worker_max_concurrency` (false: not now; the queue keeps the handle,
+/// whose context its objects keep live until the queued request runs).
+pub(crate) fn before_request(mut ctx: Ctx) -> bool {
+    let state = ctx.state();
     if state.before_request == 0 {
         return true;
     }
     state.before_request = 0;
     state.after_response = 1;
-    // SAFETY: per the caller.
-    unsafe { crate::server::admit(ctx) }
+    crate::server::admit(ctx)
 }
 
 /// `onAfterResponse`: the server uncounts the request and starts a queued one.
-pub(crate) fn after_response(ctx: *mut Context) {
-    let state = send::state(ctx);
+pub(crate) fn after_response(mut ctx: Ctx) {
+    let state = ctx.state();
     if state.after_response != 0 {
         state.after_response = 0;
         crate::server::release_request();
@@ -330,8 +374,8 @@ pub(crate) fn after_response(ctx: *mut Context) {
 }
 
 /// `Context::is_available`: the response can still reach its peer.
-pub(crate) fn available(ctx: *mut Context) -> bool {
-    let state = send::state(ctx);
+pub(crate) fn available(mut ctx: Ctx) -> bool {
+    let state = ctx.state();
     if state.response.zobject.ptr.is_null() {
         return false;
     }
@@ -351,12 +395,12 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
 /// `zend_try`; both are, so the context is freed, and a bailout is deferred.
 /// # Errors
 /// A destructor bailed out, or a bailout is pending.
-pub(crate) fn release_objects(ctx: *mut Context) -> Result<(), Bailout> {
-    let request = send::state(ctx).request.zobject.ptr;
+pub(crate) fn release_objects(mut ctx: Ctx) -> Result<(), Bailout> {
+    let request = ctx.state().request.zobject.ptr;
     // SAFETY: the context's live request object, released once; the shim's
     // setjmp sits between this frame and its destructors.
     bailout::defer(unsafe { bailout::trap(swr_zend_zval_release, request.cast()) });
-    let response = send::state(ctx).response.zobject.ptr;
+    let response = ctx.state().response.zobject.ptr;
     // SAFETY: as above, for the response.
     bailout::defer(unsafe { bailout::trap(swr_zend_zval_release, response.cast()) });
     bailout::outcome(())
@@ -366,8 +410,8 @@ pub(crate) fn release_objects(ctx: *mut Context) -> Result<(), Bailout> {
 /// stream holds it.
 /// # Safety
 /// `ctx` is a live context.
-pub(crate) unsafe fn free(ctx: *mut Context) {
-    let state = send::state(ctx);
+pub(crate) unsafe fn free(mut ctx: Ctx) {
+    let state = ctx.state();
     if !state.request.zobject.ptr.is_null()
         || !state.response.zobject.ptr.is_null()
         || state.stream_id > 0
@@ -385,7 +429,7 @@ pub(crate) unsafe fn free(ctx: *mut Context) {
     parse::parse_free(state);
     // SAFETY: `alloc`'s, which nothing references any more; the drop
     // releases the request's data, the socket and any unfinished upload.
-    drop(unsafe { Box::from_raw(ctx.cast::<State>()) });
+    drop(unsafe { Box::from_raw(ctx.raw().cast::<State>()) });
 }
 
 #[cfg(test)]

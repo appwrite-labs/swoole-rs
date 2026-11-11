@@ -6,7 +6,6 @@ use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::destroy as pool_destroy;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ADD_MASTER_TIMER, OP_ALL_WORKER_NUM, OP_CLOSE_CONNECTION, OP_CLOSE_EVENT_SOCKET,
     OP_CLOSE_SESSION, OP_CONN_AT, OP_CONN_CLOSE_FORCE, OP_CONN_CLOSE_QUEUED, OP_CONN_HEALTHY,
@@ -31,7 +30,7 @@ use crate::reactor_ops::sign;
 use crate::view;
 
 mod native;
-pub(crate) use native::enter;
+pub(crate) use native::start_reactor_processes;
 
 /// What an operation runs over.
 struct Context {
@@ -176,8 +175,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SINGLE_WORKER => u64::from(ctx.server().is_single_worker()),
-        // SAFETY: the context's live server.
-        OP_START_MANAGER => sign(unsafe { entry::start_manager_process(serv) }),
+        OP_START_MANAGER => sign(crate::manager_ops::start_manager_process(ctx.server())),
         OP_POOL_DESTROY => {
             // SAFETY: the server's live event worker pool.
             unsafe { pool_destroy(ctx.workers().event_pool.cast()) };
@@ -249,29 +247,30 @@ fn reactor(ctx: &Context) -> *mut c_void {
 
 /// The effects on the context's worker.
 fn worker(ctx: &Context, op: u32) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
+    let worker = ctx.worker;
     match op {
         OP_WORKER_ENTER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_EVENT_WORKER);
-            swoole_rs_process::methods::swoole_set_worker_id(ctx.worker_record().id());
+            swoole_rs_process::methods::swoole_set_worker_id(ctx.worker().id());
             swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
             // SAFETY: the context's live server and worker.
             unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
         }
-        // SAFETY: the context's live server.
-        OP_WORKER_SIGNAL_INIT => unsafe { entry::worker_signal_init(serv) },
+        OP_WORKER_SIGNAL_INIT => crate::event_worker_ops::worker_signal_init(ctx.server()),
         OP_RESET_CONNECTION_NUM => {
-            let id = ctx.worker_record().id() as usize;
+            let id = ctx.worker().id() as usize;
             // SAFETY: the live server's counters' slot for each worker.
             let slot = unsafe { &*ctx.counters().cells().wrapping_add(id) };
             slot.store(0, Ordering::Relaxed);
         }
-        OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker_record().pipe_worker.is_null())),
-        OP_WORKER_ID => return Some(u64::from(ctx.worker_record().id())),
-        // SAFETY: the context's live server and worker.
-        OP_WORKER_START_CALLBACK => unsafe { entry::worker_start_callback(serv, worker.cast()) },
-        // SAFETY: as above.
-        OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
+        OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker().pipe_worker().is_null())),
+        OP_WORKER_ID => return Some(u64::from(ctx.worker().id())),
+        OP_WORKER_START_CALLBACK => {
+            crate::event_worker_ops::worker_start_callback(ctx.server(), ctx.worker());
+        }
+        OP_WORKER_STOP_CALLBACK => {
+            crate::event_worker_ops::call_worker_stop_callback(ctx.server(), ctx.worker());
+        }
         _ => return None,
     }
     Some(0)

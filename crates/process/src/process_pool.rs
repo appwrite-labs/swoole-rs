@@ -68,13 +68,31 @@ pub struct PoolRecord {
     pub round_id: u32,
     pub workers: *mut WorkerRecord,
     pub pipes: *mut c_void,
-    pub registry: *mut WorkerRegistry,
+    /// Null, or the box `create` made: crate-private, so safe code elsewhere can't
+    /// forge it.
+    pub(crate) registry: *mut WorkerRegistry,
     pub queue: *mut c_void,
     pub ipc: *mut PoolIpc,
     pub message_box: *mut c_void,
     pub message_bus: *mut c_void,
     pub reload_task: *mut ReloadTask,
     pub ptr: *mut c_void,
+}
+
+impl PoolRecord {
+    /// The registry `create` made, or null.
+    #[must_use]
+    pub fn registry(&self) -> *mut WorkerRegistry {
+        self.registry
+    }
+
+    /// `f` over the registry `create` made; `None` before it.
+    pub(crate) fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
+        // SAFETY: `registry` is crate-private: null, or the box `create` made until
+        // `destroy` frees it. Only these calls reach it, one at a time, so nothing else
+        // borrows it while `f` runs.
+        unsafe { self.registry.as_mut() }.map(f)
+    }
 }
 
 /// A live pool, as the pool passes one to its callbacks. Like [`Worker`], it reads
@@ -643,14 +661,16 @@ impl<H: PoolHost> Pool<H> {
         unsafe { std::slice::from_raw_parts(self.workers(), self.worker_num() as usize) }
     }
 
+    /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
+    fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
+        // SAFETY: `p` is the live pool this runs over.
+        unsafe { &*self.p }.with_registry(f)
+    }
+
     /// `get_worker_by_pid`: the pool's worker at `pid`, or null.
     fn worker_by_pid(&self, pid: c_int) -> *mut WorkerRecord {
-        let registry = self.registry();
-        if registry.is_null() {
-            return ptr::null_mut();
-        }
-        // SAFETY: the pool's registry.
-        unsafe { (*registry).lookup(pid) }.cast()
+        self.with_registry(|registry| registry.lookup(pid))
+            .map_or(ptr::null_mut(), <*mut c_void>::cast)
     }
 
     /// `ProcessPool::create`.
@@ -814,8 +834,7 @@ impl<H: PoolHost> Pool<H> {
         // SAFETY: one of the pool's records.
         let worker = unsafe { Worker::new(worker) };
         let old = worker.pid();
-        // SAFETY: the pool's registry, which `create` made.
-        unsafe { (*self.registry()).unregister(old) };
+        self.with_registry(|registry| registry.unregister(old));
         let pid = self.on(worker.raw(), OP_FORK, 0);
         if pid == 0 {
             self.child(worker.raw())?;
@@ -824,8 +843,9 @@ impl<H: PoolHost> Pool<H> {
         let pid = c_int::try_from(pid).unwrap_or(-1);
         worker.set_pid(pid);
         let record = worker.raw().cast();
-        // SAFETY: as above.
-        unsafe { (*self.registry()).register(pid, record, 0) };
+        self.with_registry(|registry| {
+            registry.register(pid, record, 0);
+        });
         Ok(pid.into())
     }
 
@@ -1059,8 +1079,7 @@ impl<H: PoolHost> Pool<H> {
             if self.spawn(worker).is_err() {
                 crate::pool::raise_bailout();
             }
-            // SAFETY: the pool's registry.
-            unsafe { (*self.registry()).detach(pid) };
+            self.with_registry(|registry| registry.detach(pid));
         }
         self.set_read_message(false);
     }
@@ -1072,8 +1091,10 @@ impl<H: PoolHost> Pool<H> {
         if worker.is_null() {
             if self.on_worker_not_found().is_some() {
                 self.op(OP_ON_WORKER_NOT_FOUND, exited(pid, status));
-            // SAFETY: the pool's registry.
-            } else if !unsafe { (*self.registry()).reap_detached(pid) } {
+            } else if !self
+                .with_registry(|registry| registry.reap_detached(pid))
+                .unwrap_or(false)
+            {
                 self.op(LOG_UNKNOWN_CHILD, u64::from(pid.cast_unsigned()));
             }
             return false;
@@ -1773,8 +1794,8 @@ mod tests {
         let mut pool = fixture.pool(Script::default());
         record(&mut pool).use_socket = 1;
         let ipc = pool_ipc_new(true);
-        // SAFETY: a live handle and string.
-        unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
+        // SAFETY: a live handle.
+        crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc = ipc;
         let mut event = [0u8; 64];
         event[EVENT_LEN] = 3;
@@ -1804,7 +1825,7 @@ mod tests {
         // A pool whose listener is gone fails.
         let ipc = pool_ipc_new(true);
         // SAFETY: as above.
-        unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
+        crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc = ipc;
         for blocking in [true, false] {
             assert_eq!(

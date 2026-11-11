@@ -4,10 +4,9 @@
 //! request loop (`onAccept`), HTTP/2 on a connection and its request
 //! dispatch, over the coroutine sockets through `phpruntime::co`.
 use crate::{
-    context::{self, CompressionTypes},
-    host::{self, Context},
+    context::{self, CompressionTypes, Ctx},
+    host,
     parse::{Key, add_protocol, add_server, parse_request},
-    send,
     server::{Callable, call_handler},
     websocket,
 };
@@ -162,8 +161,8 @@ impl HttpServer {
     }
 
     /// `get_handler`: the callable for the request's path, if any.
-    fn handler(&self, context: *mut Context) -> Option<Rc<Callable>> {
-        let request = &send::state(context).request;
+    fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
+        let request = &context.state().request;
         // SAFETY: the request's path, `path_len` bytes.
         let path = unsafe {
             std::slice::from_raw_parts(request.path.cast::<u8>(), request.path_len as usize)
@@ -200,18 +199,18 @@ impl HttpServer {
     }
 
     /// `create_context`: the settings, the socket and the parser.
-    fn context(&self, socket: Co, zconn: *mut zval) -> *mut Context {
-        let context = context::context_new(i64::from(socket.sock_fd()));
+    fn context(&self, socket: Co, zconn: *mut zval) -> Ctx {
+        let mut context = context::context_new(i64::from(socket.sock_fd()));
         crate::parse::init_request_parser(context);
         // SAFETY: the live connection object.
         if let Some(zconn) = unsafe { Value::from_ptr(zconn) } {
-            if let Some(response) = send::state(context).response.zobject.props() {
+            if let Some(response) = context.state().response.zobject.props() {
                 response.value(c"socket", zconn);
             }
             // SAFETY: a coroutine socket object.
-            unsafe { context::bind(send::state(context), zconn) };
+            unsafe { context::bind(context.state(), zconn) };
         }
-        let state = send::state(context);
+        let state = context.state();
         state
             .compression_types
             .clone_from(&self.compression_types.borrow());
@@ -314,14 +313,14 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 /// `zend::assign_zend_string_by_val(&request.zdata, buffer->pop(SW_BUFFER_SIZE_BIG), length)`:
 /// the request's `length` bytes, in a zend string the buffer allocated,
 /// become `zdata`; the buffer starts a new allocation.
-fn request_data(context: *mut Context, buffer: &mut Buffer, length: usize) {
+fn request_data(mut context: Ctx, buffer: &mut Buffer, length: usize) {
     let data = buffer.pop(BUFFER_SIZE_BIG);
     let string = string::from_val(data);
     // SAFETY: the zend string allocator's string, holding `length` bytes
     // and room for the NUL.
     unsafe { string::truncate(string, length) };
     // SAFETY: the string's one reference moves into `zdata`.
-    send::state(context).request.zdata = Owned::string(unsafe { ZString::from_raw(string) });
+    context.state().request.zdata = Owned::string(unsafe { ZString::from_raw(string) });
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
@@ -881,8 +880,8 @@ fn shutdown(call: &Call) {
 
 /// The context's request and response objects, borrowed as upstream's
 /// handler arguments (released by the caller).
-fn objects(context: *mut Context) -> [zval; 2] {
-    let state = send::state(context);
+fn objects(mut context: Ctx) -> [zval; 2] {
+    let state = context.state();
     [state.request.zobject.value, state.response.zobject.value]
 }
 
@@ -977,8 +976,8 @@ fn on_accept(call: &Call) {
 }
 
 /// `$request->server`'s addresses and ports of the connection.
-fn add_peer(context: *mut Context, peer: &Peer) {
-    let state = send::state(context);
+fn add_peer(mut context: Ctx, peer: &Peer) {
+    let state = context.state();
     // The array takes a reference of its own to each of the loop's strings.
     let remote_addr = Owned::string(peer.remote_addr.clone());
     add_server(state, Key::RemoteAddr, remote_addr);
@@ -990,7 +989,7 @@ fn add_peer(context: *mut Context, peer: &Peer) {
 
 /// The request loop: parse each request on the connection and run its handler.
 fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
-    let mut context: *mut Context = ptr::null_mut();
+    let mut current: Option<Ctx> = None;
     let mut header_completed = false;
     let mut crlf_offset = 0;
     let mut total = 0;
@@ -1008,15 +1007,14 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             unsafe { buffer.set_len(length + received.cast_unsigned()) };
         }
         step = Step::Recv;
-        if context.is_null() {
-            context = conn.server.context(conn.socket, conn.zconn);
-        }
+        let mut context =
+            *current.get_or_insert_with(|| conn.server.context(conn.socket, conn.zconn));
         let max = conn.package_max_length();
         if !header_completed {
             let length = conn.buffer().len();
             let Some(pos) = find_crlf2(conn.data(crlf_offset, length)) else {
                 if length == conn.buffer().size() {
-                    send::state(context).response.status = ENTITY_TOO_LARGE;
+                    context.state().response.status = ENTITY_TOO_LARGE;
                     break;
                 }
                 crlf_offset = length.saturating_sub(4);
@@ -1027,20 +1025,20 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             crlf_offset = 0;
             // The header first, so `max - header_length` cannot underflow.
             if header_length > max {
-                send::state(context).response.status = ENTITY_TOO_LARGE;
+                context.state().response.status = ENTITY_TOO_LARGE;
                 break;
             }
             // The parser `context` initialised.
-            let parsed = parse_request(send::state(context), conn.data(0, header_length));
+            let parsed = parse_request(context.state(), conn.data(0, header_length));
             if parsed != header_length {
-                send::state(context).response.status = BAD_REQUEST;
+                context.state().response.status = BAD_REQUEST;
                 break;
             }
             let buffer = conn.buffer();
             buffer.set_offset(buffer.offset() + i64::try_from(header_length).unwrap_or(i64::MAX));
-            let content_length = send::state(context).parser.content_length;
+            let content_length = context.state().parser.content_length;
             if content_length > (max - header_length) as u64 {
-                send::state(context).response.status = ENTITY_TOO_LARGE;
+                context.state().response.status = ENTITY_TOO_LARGE;
                 break;
             }
             total = header_length + usize::try_from(content_length).unwrap_or(usize::MAX);
@@ -1048,14 +1046,14 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 conn.buffer().extend(total);
             }
             // Once per request, so the interim response is not repeated.
-            let state = send::state(context);
+            let state = context.state();
             if state.completed == 0 && state.request.version == 101 && expects_continue(context) {
                 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
                 let _sent = conn.socket.send_all(CONTINUE);
             }
         }
-        if send::state(context).completed == 0 {
-            let chunked = send::state(context).recv_chunked != 0;
+        if context.state().completed == 0 {
+            let chunked = context.state().recv_chunked != 0;
             if !chunked && conn.buffer().len() < total {
                 continue;
             }
@@ -1066,18 +1064,18 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 length = length.min(max - offset);
             }
             // `offset + length` lies within the buffer.
-            let parsed = parse_request(send::state(context), conn.data(offset, offset + length));
+            let parsed = parse_request(context.state(), conn.data(offset, offset + length));
             let buffer = conn.buffer();
             buffer.set_offset(buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX));
-            let error = send::state(context).parser.error;
+            let error = context.state().parser.error;
             if error != HPE_OK && error != HPE_PAUSED_H2_UPGRADE {
-                send::state(context).response.status = BAD_REQUEST;
+                context.state().response.status = BAD_REQUEST;
                 break;
             }
             if chunked {
-                if send::state(context).completed == 0 {
+                if context.state().completed == 0 {
                     if conn.buffer().len() >= max {
-                        send::state(context).response.status = ENTITY_TOO_LARGE;
+                        context.state().response.status = ENTITY_TOO_LARGE;
                         break;
                     }
                     if conn.buffer().len() == conn.buffer().size() {
@@ -1091,7 +1089,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             }
         }
         add_peer(context, peer);
-        if send::state(context).parser.error == HPE_PAUSED_H2_UPGRADE
+        if context.state().parser.error == HPE_PAUSED_H2_UPGRADE
             && conn.buffer().len() >= HTTP2_PRI.len()
             && conn.data(0, HTTP2_PRI.len()) == HTTP2_PRI
         {
@@ -1102,7 +1100,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         request_data(context, conn.buffer(), total);
         let callable = conn.server.handler(context);
         let mut args = objects(context);
-        let state = send::state(context);
+        let state = context.state();
         let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
@@ -1110,10 +1108,10 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 host::notice("handler error");
             }
         } else {
-            send::state(context).response.status = NOT_FOUND;
+            context.state().response.status = NOT_FOUND;
         }
         let released = context::release_objects(context);
-        context = ptr::null_mut();
+        current = None;
         released?;
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
@@ -1125,10 +1123,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             step = Step::Parse;
         }
     }
-    if context.is_null() {
-        return Ok(());
-    }
-    context::release_objects(context)
+    current.map_or(Ok(()), context::release_objects)
 }
 
 /// `swoole_strnpos(.., "\r\n\r\n")`.
@@ -1136,9 +1131,9 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
 /// takes the HTTP/1 request's context as its default and handles each frame
 /// until the peer goes or a frame fails (or a handler bailed out, which
 /// `onAccept` re-raises).
-fn http2(conn: &Connection, context: *mut Context) -> Result<(), bailout::Bailout> {
+fn http2(conn: &Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
     http2_begin(conn.socket);
-    let fd = send::state(context).fd;
+    let fd = context.state().fd;
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's uint32_t package_max_length"
@@ -1150,14 +1145,14 @@ fn http2(conn: &Connection, context: *mut Context) -> Result<(), bailout::Bailou
         let this = conn.this.copy();
         (server.session_new)(
             fd,
-            crate::http2::Ctx::of(context),
+            context,
             max_body_size,
             true,
             Box::new(move |ctx, http1| {
                 let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
                     return Ok(());
                 };
-                http2_request(ctx.raw(), http1.raw(), server)
+                http2_request(ctx, http1, server)
             }),
         );
         loop {
@@ -1174,7 +1169,7 @@ fn http2(conn: &Connection, context: *mut Context) -> Result<(), bailout::Bailou
         }
         (server.session_free)(fd);
     }
-    send::state(context).detached = 1;
+    context.state().detached = 1;
     context::release_objects(context)
 }
 
@@ -1183,8 +1178,8 @@ fn find_crlf2(data: &[u8]) -> Option<usize> {
 }
 
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
-fn expects_continue(context: *mut Context) -> bool {
-    let header = send::state(context).request.zheader.get();
+fn expects_continue(mut context: Ctx) -> bool {
+    let header = context.state().request.zheader.get();
     header
         .and_then(Value::array)
         .and_then(|header| header.find(b"expect"))
@@ -1204,17 +1199,12 @@ handlers! {
 /// `http2_server_onRequest`: an HTTP/2 stream's request, with the HTTP/1
 /// request's `$server` and `SERVER_PROTOCOL` `HTTP/2`.
 fn http2_request(
-    context: *mut Context,
-    http1: *mut Context,
+    mut context: Ctx,
+    mut http1: Ctx,
     server: &HttpServer,
 ) -> Result<(), bailout::Bailout> {
-    let source = send::state(http1)
-        .request
-        .zserver
-        .get()
-        .and_then(Value::array);
-    if let (Some(source), Some(target)) = (source, send::state(context).request.zserver.array_mut())
-    {
+    let source = http1.state().request.zserver.get().and_then(Value::array);
+    if let (Some(source), Some(target)) = (source, context.state().request.zserver.array_mut()) {
         // `http_server_add_server_array(ht, key, value)`: each entry with a
         // reference of its own.
         source.for_each(|key, entry| {
@@ -1223,7 +1213,7 @@ fn http2_request(
             }
         });
     }
-    add_protocol(send::state(context), Key::Http2);
+    add_protocol(context.state(), Key::Http2);
     let callable = server.handler(context);
     let mut args = objects(context);
     let mut result = Ok(());
@@ -1231,9 +1221,8 @@ fn http2_request(
         match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
-                let stream_id = send::state(context).stream_id;
+                let stream_id = context.state().stream_id;
                 if let Some(server) = crate::http2::server() {
-                    let context = crate::http2::Ctx::of(context);
                     (server.reset)(context, stream_id, HTTP2_INTERNAL_ERROR);
                 }
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
@@ -1241,7 +1230,7 @@ fn http2_request(
             Ok(true) => {}
         }
     } else {
-        send::state(context).response.status = NOT_FOUND;
+        context.state().response.status = NOT_FOUND;
     }
     result.and_then(|()| context::release_objects(context))
 }

@@ -6,7 +6,6 @@
 //! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
-pub mod entry;
 mod event_worker;
 mod factory;
 mod log;
@@ -159,8 +158,7 @@ fn effect(op: u32) -> Option<u64> {
         }
         // SAFETY: as above.
         ops::OP_TIMER_NEXT_MSEC => unsafe { swoole_timer_get_next_msec() }.cast_unsigned(),
-        // SAFETY: a plain syscall.
-        ops::OP_ROOT_USER => u64::from(unsafe { libc::geteuid() } == 0),
+        ops::OP_ROOT_USER => u64::from(swoole_rs_ossupport::swr_v1_os_is_root_user()),
         ops::OP_DEATH_SIGNAL => {
             swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
             0

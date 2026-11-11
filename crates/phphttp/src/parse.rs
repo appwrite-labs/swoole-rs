@@ -358,8 +358,8 @@ fn treat_data(arg: c_int, bytes: &[u8], array: *mut zval) {
 }
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
-pub(crate) fn init_request_parser(ctx: *mut crate::host::Context) {
-    crate::send::state(ctx).parser = Parser::new(llhttp::REQUEST);
+pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
+    ctx.state().parser = Parser::new(llhttp::REQUEST);
 }
 
 /// `swoole_http_parse_cookie`.
