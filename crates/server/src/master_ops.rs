@@ -13,7 +13,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Socket, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Socket, SocketGuard, SocketRecord, reactor_upstream};
 
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackSlot;
@@ -206,13 +206,22 @@ impl Objects<'_> {
         // SAFETY: the ops reading it run with a live connection in the context.
         unsafe { &mut *self.ctx.conn.cast::<ConnectionRecord>() }
     }
+    /// The context's socket guard, looked up on its first handle.
+    fn sockets(&self) -> SocketGuard {
+        let sockets = &self.ctx.sockets;
+        sockets.get().unwrap_or_else(|| {
+            let guard = SocketGuard::current();
+            sockets.set(Some(guard));
+            guard
+        })
+    }
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
-        unsafe { self.ctx.sockets.socket(self.ctx.sock.cast()) }
+        unsafe { self.sockets().socket(self.ctx.sock.cast()) }
     }
     fn conn_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: a live connection's socket, which the ops reading it have.
-        unsafe { self.ctx.sockets.socket(self.conn().socket.cast()) }
+        unsafe { self.sockets().socket(self.conn().socket.cast()) }
     }
     /// `edit` over the context's socket, or the default without one.
     fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketRecord) -> R) -> R {
@@ -237,7 +246,7 @@ impl Objects<'_> {
         // SAFETY: the accepting event.
         let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
         // SAFETY: its live listening socket.
-        let listener = unsafe { self.ctx.sockets.socket(listener.cast()) };
+        let listener = unsafe { self.sockets().socket(listener.cast()) };
         let socket = listener.map_or(core::ptr::null_mut(), |l| l.edit(SocketRecord::accept));
         self.ctx.sock = socket.cast();
         !socket.is_null()
@@ -253,7 +262,7 @@ impl Objects<'_> {
     /// The context port's listening socket.
     fn port_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live port, which owns its socket.
-        unsafe { self.ctx.sockets.socket(self.port().socket.cast()) }
+        unsafe { self.sockets().socket(self.port().socket.cast()) }
     }
     fn port(&self) -> &mut PortConfig {
         // SAFETY: the ops reading it run with a live port in the context.
@@ -495,7 +504,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_OUT_EMPTY => {
             // SAFETY: native code passes a live socket.
-            let socket = unsafe { o.ctx.sockets.socket(arg as *mut SocketRecord) }?;
+            let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
             let buffer = socket.read(|s| s.output.out_buffer);
             // SAFETY: null or the socket's live buffer (`Buffer::empty`).
             u64::from(buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast() }))
@@ -518,7 +527,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_QUEUE_CLOSE => {
             // SAFETY: a live session socket of this thread's reactor.
-            let socket = unsafe { o.ctx.sockets.socket(arg as *mut SocketRecord) }?;
+            let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
             let out = socket.read(|s| s.output.out_buffer);
             // SAFETY: its live output buffer.
             swr_cpp_buffer_typed_close(unsafe { &*out.cast() });
@@ -1712,7 +1721,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 pair.worker_socket
             };
             // SAFETY: a ready pair's live end.
-            sign(unsafe { o.ctx.sockets.socket(end) }?.fd())
+            sign(unsafe { o.sockets().socket(end) }?.fd())
         }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
