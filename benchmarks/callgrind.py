@@ -231,6 +231,29 @@ def wait_for_port(port, proc, seconds=180):
     raise RuntimeError('server did not listen in time')
 
 
+class OneWrite:
+    """Writes each request in one call. http.client writes the headers and the body
+    separately, and whether the server read the body with them or a wake-up later was
+    timing, so echo-1k's count took one of two values (#2949)."""
+    pending = b''
+
+    def send(self, data):
+        self.pending += bytes(data)
+
+    def getresponse(self):
+        data, self.pending = self.pending, b''
+        super().send(data)
+        return super().getresponse()
+
+
+class HTTP(OneWrite, http.client.HTTPConnection):
+    pass
+
+
+class HTTPS(OneWrite, http.client.HTTPSConnection):
+    pass
+
+
 def send(port, workload, count):
     _, method, path, payload, expected = workload
     if method in ('WS', 'WSF', 'WSZ', 'WSS'):
@@ -288,9 +311,9 @@ def send(port, workload, count):
                     time.sleep(0.002)
         return
     if method == 'TLS':
-        conn = http.client.HTTPSConnection('127.0.0.1', port, timeout=60, context=TLS)
+        conn = HTTPS('127.0.0.1', port, timeout=60, context=TLS)
     else:
-        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+        conn = HTTP('127.0.0.1', port, timeout=60)
     for _ in range(count):
         if method == 'GZ':
             conn.request('POST', path, payload, {'Accept-Encoding': 'gzip'})
