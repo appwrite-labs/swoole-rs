@@ -263,12 +263,13 @@ pub(crate) enum Step {
     Hook(Hook),
 }
 
-/// Run `steps` in order, each inside `zend_try`, stopping at a bailout.
-fn run(steps: &[Step], module_number: c_int) -> Result<(), Bailout> {
+/// Run `steps` in order, each inside `zend_try`, stopping at a bailout. It
+/// takes the list, which drops before the caller raises the result.
+fn run(steps: Vec<Step>, module_number: c_int) -> Result<(), Bailout> {
     for step in steps {
         // C and C++ hooks that Zend may run at this phase; the shim's setjmp
         // sits between this frame and the hook.
-        let bailed = match *step {
+        let bailed = match step {
             // SAFETY: as above.
             Step::Minit(hook) => unsafe { swr_zend_try_minit(Some(hook), module_number) },
             // SAFETY: as above.
@@ -326,7 +327,7 @@ pub(crate) fn startup(module_number: c_int) {
     ]);
     steps.extend(optional::minit());
     steps.extend([M(tracer_minit), H(php_hooks), H(ready)]);
-    bailout::defer(run(&steps, module_number));
+    bailout::defer(run(steps, module_number));
 }
 
 /// `php_swoole_tracer_minit`: blocking detection and the profiler need the
@@ -498,7 +499,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
         Step::Hook(clean),
         Step::Hook(swr_zend_leak_check),
     ]);
-    bailout::raise(run(&steps, module_number));
+    bailout::raise(run(steps, module_number));
     SUCCESS
 }
 
@@ -543,7 +544,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     ];
     steps.extend(optional::rinit(families));
     steps.push(Step::Hook(families.tracer_rinit));
-    if let Err(bailed) = run(&steps, module_number) {
+    if let Err(bailed) = run(steps, module_number) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
@@ -580,7 +581,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
-    if let Err(bailed) = run(&steps, module_number) {
+    if let Err(bailed) = run(steps, module_number) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
