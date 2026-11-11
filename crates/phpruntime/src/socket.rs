@@ -906,4 +906,22 @@ pub mod co {
         // SAFETY: per the caller.
         !unsafe { handle(socket) }.tls_owner().is_null()
     }
+
+    /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
+    /// # Safety
+    /// `socket` is live and `hook` may be called with `arg` until then.
+    pub unsafe fn close_hook(
+        socket: Socket,
+        hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
+        arg: *mut c_void,
+    ) {
+        // SAFETY: per the caller.
+        let socket = unsafe { handle(socket) };
+        swoole_rs_hooks::socket_extra::set_close_hook(
+            socket,
+            // SAFETY: per the caller, `hook` takes `arg` and the socket until it goes,
+            // which is when this runs.
+            Box::new(move |owner| unsafe { hook(arg, owner) }),
+        );
+    }
 }
