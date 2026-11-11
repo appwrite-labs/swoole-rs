@@ -14,7 +14,7 @@ default = []
 # archive has PHP; the native gates' archive leaves it off so it holds no Zend
 # references (docs/zend.md).
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
-       "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phphelpers/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php", "swoole-rs-oci?/php", "swoole-rs-curl?/php"]
+       "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php", "swoole-rs-oci?/php", "swoole-rs-curl?/php"]
 # Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
 # --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
 # --with-swoole-firebird, --enable-swoole-sqlite, --with-swoole-oracle, --enable-swoole-curl,
@@ -71,7 +71,6 @@ swoole-rs-http2 = { path = "../http2" }
 swoole-rs-phphttp2 = { path = "../phphttp2" }
 swoole-rs-ports = { path = "../ports", features = ["upstream-symbols"] }
 swoole-rs-phpserver = { path = "../phpserver", features = ["server"] }
-swoole-rs-phphelpers = { path = "../phphelpers" }
 swoole-rs-phpstdext = { path = "../phpstdext" }
 swoole-rs-phpcollections = { path = "../phpcollections" }
 swoole-rs-phpevents = { path = "../phpevents" }

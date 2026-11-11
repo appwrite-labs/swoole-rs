@@ -1,10 +1,10 @@
 //! Known-string ownership: `sw_zend_known_strings`, the table C++'s
 //! `SW_ZSTR_KNOWN` reads.
-use std::ptr;
-use swoole_rs_zend::{
+use crate::{
     bailout,
     sys::{self, zend_string},
 };
+use std::ptr;
 
 /// Zend's interned known strings, in `SW_ZEND_KNOWN_STRINGS` order: null until
 /// MINIT fills it, and again after MSHUTDOWN.

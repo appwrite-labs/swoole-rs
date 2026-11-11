@@ -327,7 +327,7 @@ pub(crate) fn set_preemptive(enable: bool) {
 }
 
 /// `PHPCoroutine::create`, the coroutine leaf the callers of
-/// `swoole_rs_phphelpers::function_call` and the zend-sys shims pass (C ABI).
+/// `swoole_rs_zend::host::function_call` and the zend-sys shims pass (C ABI).
 /// # Safety
 /// As `zend_call_function`'s callable; `bailout` is writable.
 pub unsafe extern "C" fn create_coroutine(
@@ -353,7 +353,7 @@ pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result
     // SAFETY: a kept callable's cache and arguments, which its owner keeps
     // live through the call; the leaves are this crate's and C's.
     unsafe {
-        swoole_rs_phphelpers::function_call(
+        swoole_rs_zend::host::function_call(
             cache,
             argc,
             argv,
@@ -371,7 +371,7 @@ pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result
 /// # Errors
 /// PHP bailed out.
 pub fn call_handler(
-    handler: &swoole_rs_phphelpers::callable::Callable,
+    handler: &swoole_rs_zend::host::callable::Callable,
     args: &[swoole_rs_zend::Owned],
     retval: &swoole_rs_zend::Owned,
     coroutine: bool,
@@ -381,7 +381,7 @@ pub fn call_handler(
     // the call, live arguments and a return slot; the leaves are this crate's
     // and C's.
     unsafe {
-        swoole_rs_phphelpers::function_call(
+        swoole_rs_zend::host::function_call(
             handler.cache_ptr(),
             argc,
             args.as_ptr().cast_mut().cast(),
@@ -409,7 +409,7 @@ unsafe extern "C" fn zend_function_call(
 ) -> bool {
     // SAFETY: per the caller.
     let result = unsafe {
-        swoole_rs_phphelpers::function_call(
+        swoole_rs_zend::host::function_call(
             cache,
             argc,
             argv,

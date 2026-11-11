@@ -10,10 +10,10 @@ use swoole_rs_corebase::{
     swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads,
 };
 use swoole_rs_phpcoroutines::create_coroutine;
-use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
 use swoole_rs_server::view;
+use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
     sys::{
