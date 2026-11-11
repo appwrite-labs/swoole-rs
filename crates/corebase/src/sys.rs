@@ -510,7 +510,6 @@ pub fn gettid() -> libc::c_long {
 
 /// `clock_gettime(2)`: the clock's time, or `None` with errno set.
 #[must_use]
-#[inline]
 pub fn clock_gettime(clock: libc::clockid_t) -> Option<libc::timespec> {
     let mut now = libc::timespec {
         tv_sec: 0,
@@ -557,6 +556,47 @@ mod tests {
             let libc = unsafe { CStr::from_ptr(libc::strerror(code)) };
             assert_eq!(strerror(code), libc.to_str().unwrap(), "code {code}");
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options or MSG_PEEK")]
+    fn socket_calls_round_trip_through_a_pair() {
+        let [left, right] = socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0).unwrap();
+        assert_eq!(
+            setsockopt::<c_int>(left, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &1),
+            0
+        );
+        let mut kind: c_int = 0;
+        let length = getsockopt(left, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind);
+        assert_eq!(
+            (length, kind),
+            (Some(socklen::<c_int>()), libc::SOCK_STREAM)
+        );
+        assert_eq!(send(left, b"abc", 0), 3);
+        let mut buf = [0_u8; 8];
+        assert_eq!(recv(right, &mut buf, libc::MSG_PEEK), 3);
+        assert_eq!(recv(right, &mut buf, 0), 3);
+        assert_eq!(&buf[..3], b"abc");
+        assert_eq!(close(left), 0);
+        assert_eq!(close(right), 0);
+        assert!(socketpair(-1, 0, 0).is_none());
+        assert!(getsockopt(-1, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind).is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no kill, if_nametoindex or getifaddrs")]
+    fn paths_and_plain_data() {
+        let zero: libc::sockaddr_storage = zeroed();
+        assert_eq!(zero.ss_family, 0);
+        assert_eq!(zeroed::<[u8; 4]>(), [0; 4]);
+        assert!(stat(c"/").is_some_and(|root| root.st_mode & libc::S_IFMT == libc::S_IFDIR));
+        assert!(stat(c"/no/such/path").is_none());
+        assert_eq!(access(c"/", libc::R_OK), 0);
+        assert!(sysconf(libc::_SC_PAGESIZE) > 0);
+        assert_eq!(kill(getpid(), 0), 0);
+        assert_eq!(if_nametoindex(c"no-such-interface"), 0);
+        let interfaces = Interfaces::new().unwrap();
+        assert!(interfaces.iter().all(|entry| !entry.name().is_empty()));
     }
 
     #[test]
