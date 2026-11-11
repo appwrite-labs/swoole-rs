@@ -436,6 +436,12 @@ extern "C" fn ready() {
 /// # Errors
 /// The library's code bailed out.
 pub fn load_library() -> Result<(), Bailout> {
+    /// The loader swaps the process-global `zend_compile_string` around its
+    /// eval: one thread at a time, or a thread's restore undoes another's swap.
+    static LOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _loading = LOADING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: the loader, a zend_try body.
     if unsafe { swr_zend_try_hook(Some(load_library_body)) } == 0 {
         Ok(())

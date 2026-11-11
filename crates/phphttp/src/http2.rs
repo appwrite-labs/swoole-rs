@@ -263,15 +263,26 @@ impl Ctx {
         self.state().fd
     }
 
-    /// `~Stream`: the stream lets go of its context, which is complete.
+    /// `~Stream`: the stream lets go of its context, which is complete. A
+    /// request that never reached its handler (reset, or its connection
+    /// closed, first) also releases the request and response objects, which
+    /// only the context holds.
     /// # Safety
     /// A stream's context, released once; no copy of the handle is used after.
-    pub unsafe fn release_stream(mut self) {
-        let state = self.state();
-        state.stream_id = 0;
-        state.end = 1;
+    /// # Errors
+    /// A destructor bailed out.
+    pub unsafe fn release_stream(mut self, dispatched: bool) -> Result<(), Bailout> {
+        // Ended first, so the response's release answers nothing.
+        self.state().end = 1;
+        let released = if dispatched {
+            Ok(())
+        } else {
+            context::release_objects(self)
+        };
+        self.state().stream_id = 0;
         // SAFETY: per the caller.
         unsafe { free(self) };
+        released
     }
 
     /// The static handler answers the request: no server hook counts it.

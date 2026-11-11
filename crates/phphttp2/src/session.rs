@@ -216,7 +216,7 @@ impl StreamState {
 impl Drop for StreamState {
     fn drop(&mut self) {
         // SAFETY: the stream's own context, released once.
-        unsafe { self.ctx.release_stream() };
+        bailout::defer(unsafe { self.ctx.release_stream(self.request_received.get()) });
     }
 }
 
