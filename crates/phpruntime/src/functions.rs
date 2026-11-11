@@ -17,15 +17,14 @@ use std::{
 };
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
-    Call, E_WARNING, bailout,
+    Call, E_WARNING, Owned, ZString, bailout,
     sys::{
         ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find, swr_zend_runtime_call_handler,
         swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
         swr_zend_runtime_instanceof, swr_zend_runtime_parent, swr_zend_runtime_set_parent,
-        swr_zend_runtime_unsupported, swr_zend_runtime_version, swr_zend_string_release,
-        swr_zend_try_lookup_class, swr_zval_stringl, zend_class_entry, zend_execute_data,
-        zend_fcall_info, zend_function, zend_internal_arg_info, zend_string, zif_handler, zval,
-        zval_ptr_dtor,
+        swr_zend_runtime_unsupported, swr_zend_runtime_version, swr_zend_try_lookup_class,
+        zend_class_entry, zend_execute_data, zend_fcall_info, zend_function,
+        zend_internal_arg_info, zend_string, zif_handler, zval,
     },
 };
 
@@ -42,8 +41,6 @@ unsafe extern "C" {
 
 /// `ZEND_INTERNAL_FUNCTION`.
 const INTERNAL_FUNCTION: u8 = 1;
-/// `IS_STRING`.
-const IS_STRING: u32 = 6;
 
 /// `PhpFunc`: a hooked or disabled function.
 struct Hooked {
@@ -53,9 +50,8 @@ struct Hooked {
     ori_fn_flags: u32,
     /// The arginfo copy installed with the handler, freed at RSHUTDOWN.
     arg_info_copy: *mut zend_internal_arg_info,
-    /// The library replacement's callable, and its name.
+    /// The library replacement's callable.
     callable: *mut c_void,
-    name: zval,
 }
 
 #[derive(Default)]
@@ -147,8 +143,6 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
             ori_fn_flags: 0,
             arg_info_copy: ptr::null_mut(),
             callable: ptr::null_mut(),
-            // SAFETY: all-zero is `IS_UNDEF`.
-            name: unsafe { std::mem::zeroed() },
         };
         entry.handler = handler;
         if !arg_info.is_null() {
@@ -176,17 +170,11 @@ fn library_callable(key: &[u8]) {
     if has || bailout::pending() {
         return;
     }
-    let mut name = [b"swoole_".as_slice(), key].concat();
-    // SAFETY: all-zero is `IS_UNDEF`.
-    let mut zname: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: a writable zval and the name's bytes, which Zend copies.
-    unsafe { swr_zval_stringl(&raw mut zname, name.as_ptr().cast(), name.len()) };
-    name.clear();
+    let name = Owned::from(ZString::new(&[b"swoole_".as_slice(), key].concat()));
     // SAFETY: a string zval; the callable keeps its own copy.
-    let callable = unsafe { crate::callable_create(&raw mut zname) };
+    let callable = unsafe { crate::callable_create(name.as_ptr()) };
     let mut table = table();
     if let Some(record) = table.hooked.as_mut().and_then(|hooked| hooked.get_mut(key)) {
-        record.name = zname;
         record.callable = callable;
     }
 }
@@ -228,8 +216,6 @@ fn disable(name: &CStr, handler: zif_handler) {
         ori_fn_flags: entry.fn_flags,
         arg_info_copy: ptr::null_mut(),
         callable: ptr::null_mut(),
-        // SAFETY: all-zero is `IS_UNDEF`.
-        name: unsafe { std::mem::zeroed() },
     };
     entry.handler = handler;
     entry.fn_flags = ZEND_ACC_FAKE_CLOSURE;
@@ -341,15 +327,10 @@ pub(crate) fn finish() {
         table.originals.clear();
         (table.hooked.take(), std::mem::take(&mut table.children))
     };
-    for (_, mut record) in hooked.unwrap_or_default() {
+    for (_, record) in hooked.unwrap_or_default() {
         if !record.callable.is_null() {
             // SAFETY: the callable `callable_create` made, freed once.
             unsafe { crate::callable_free(record.callable) };
-        }
-        // SAFETY: every zval sets its type.
-        if unsafe { record.name.u1.type_info } & 0xff == IS_STRING {
-            // SAFETY: the string zval made for the callable.
-            unsafe { zval_ptr_dtor(&raw mut record.name) };
         }
         let function = internal!(record.function);
         if !record.arg_info_copy.is_null() {
@@ -423,8 +404,7 @@ pub(crate) fn user_func(
     }
     // SAFETY: a live callable.
     let fcc = unsafe { swoole_rs_zend::host::callable::cache(callable.cast()) };
-    // SAFETY: all-zero is an empty call (`function_name` undefined, no object).
-    let mut fci: zend_fcall_info = unsafe { std::mem::zeroed() };
+    let mut fci = swoole_rs_zend::EMPTY_FCI;
     fci.size = size_of::<zend_fcall_info>();
     fci.retval = value;
     fci.param_count = call.num_args();
@@ -436,12 +416,9 @@ pub(crate) fn user_func(
 /// `zend_lookup_class`, which may run an autoloader.
 fn lookup_class(name: &CStr) -> Result<*mut zend_class_entry, Bailout> {
     let mut found = ptr::null_mut();
-    let name = swoole_rs_zend::string::copy(name.to_bytes());
-    // SAFETY: a fresh string and a writable slot; the shim traps a bailout.
-    let bailed = unsafe { swr_zend_try_lookup_class(name, &raw mut found) } != 0;
-    // SAFETY: the string made above, released once.
-    unsafe { swr_zend_string_release(name) };
-    if bailed {
+    let name = ZString::new(name.to_bytes());
+    // SAFETY: a live string and a writable slot; the shim traps a bailout.
+    if unsafe { swr_zend_try_lookup_class(name.as_ptr(), &raw mut found) } != 0 {
         return Err(Bailout);
     }
     Ok(found)
