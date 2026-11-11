@@ -82,7 +82,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.manifest.outputs.tests != '0'
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-${{ matrix.engine }}-${{ matrix.index }}
           path: target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json
 
@@ -216,7 +216,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt
           path: |
             phpt.json

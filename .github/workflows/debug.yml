@@ -69,7 +69,7 @@ jobs:
       # phpt-env downloads it under this name.
       - uses: actions/upload-artifact@v7
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-engines
           path: target/phpt/
 
@@ -109,7 +109,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: debug-phpt-${{ matrix.engine }}-${{ matrix.index }}
           path: target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json
 
@@ -161,7 +161,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-debug
           path: |
             phpt-debug.json

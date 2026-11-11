@@ -98,13 +98,13 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phases-${{ matrix.shard }}
           path: target/reports/dev/*/loop.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: validation-reports-${{ matrix.shard }}
           # Logs and JSON only: the exported swoole.so and Rust archives were ~140 MB of
           # each shard's ~158 MB and are rebuilt from the commit.
@@ -247,7 +247,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: callgrind-${{ matrix.shard }}
           path: |
             callgrind.json
@@ -298,7 +298,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phases-stdext
           # Keep structured per-engine outcomes and logs; never SDK mirrors,
           # compiled helpers, exported engines, archives or build caches.
@@ -308,7 +308,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-stdext
           path: target/phpt/stdext/gate.json
 
@@ -351,7 +351,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phases-halfclose
           path: target/reports/dev/*/loop.json
 
@@ -417,7 +417,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-root
           path: |
             phpt-root.json
@@ -478,7 +478,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: library
           path: target/reports/library/
 
@@ -513,7 +513,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: autobahn
           path: target/reports/
 
@@ -594,13 +594,13 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: alpine-reports
           path: target/reports/
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-alpine
           path: target/reports/phpt-alpine.json
 

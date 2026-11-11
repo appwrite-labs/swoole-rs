@@ -68,6 +68,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: soak
           path: target/soak/

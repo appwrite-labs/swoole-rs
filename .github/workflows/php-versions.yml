@@ -62,7 +62,7 @@ jobs:
           for engine in upstream cargo; do target/php/bin/php -n -d extension=$PWD/target/phpt/$engine.so -r 'echo PHP_VERSION, " ", swoole_version(), "\n";'; done
       - uses: actions/upload-artifact@v7
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: engines-${{ matrix.php }}
           path: target/phpt/
 
@@ -119,7 +119,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: phpt-${{ matrix.php }}-${{ matrix.shard }}
           path: |
             phpt-${{ matrix.php }}-${{ matrix.shard }}.json
