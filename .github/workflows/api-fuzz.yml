@@ -11,6 +11,9 @@ on:
       seed:
         description: "Seed (default: today's date, YYYYMMDD)"
         required: false
+  # A change to this workflow runs it on its PR, which files nothing.
+  pull_request:
+    paths: [.github/workflows/api-fuzz.yml]
 permissions:
   contents: read
 defaults:
@@ -66,6 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           report=target/fuzz/report.json
@@ -84,6 +88,7 @@ jobs:
             "Reproduce program K: `python3 tests/differential/fuzz.py --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so --seed \($seed) --first K --programs 1`. Fix each divergence and add its minimised program to `tests/differential/cases/`."
           ' "$report")
           echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          [ "$EVENT" != pull_request ] || exit 0
           if [ "$(jq '[.findings[] | select(.verdict == "divergent")] | length' "$report")" = 0 ]; then
             echo "Only flaky findings: no bug filed." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
