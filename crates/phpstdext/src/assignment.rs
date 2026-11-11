@@ -208,7 +208,7 @@ unsafe fn assign_op(
     value: &Value,
 ) -> Result<(), Bailout> {
     // SAFETY: per the caller.
-    let ht = unsafe { separate(container, source) }?;
+    let ht = unsafe { separate(container, source) };
     let mut slot = ptr::null_mut();
     // Upstream selects W_CONST from the value's OP_DATA type here, unlike ASSIGN_DIM.
     // SAFETY: retain that exact distinction when invoking the native VM primitive.
