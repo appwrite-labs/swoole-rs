@@ -413,8 +413,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     }
-    // SAFETY: a plain read of the native default.
-    let size = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.buffer_size };
+    let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
     swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
     let ssl = socket.edit(|record| {
         record.dtls = 1;

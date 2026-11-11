@@ -32,7 +32,7 @@ use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{Event, Running};
 use swoole_rs_reactor::{
-    Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
+    SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
     swr_v1_socket_domain_and_type,
 };
 #[cfg(not(test))]
@@ -1563,8 +1563,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     }
     this.set(ACTIVE, true);
     let fd = this.socket().fd();
-    // SAFETY: a plain read of the defaults, which only the owning thread assigns.
-    let default_size = unsafe { swr_v1_socket_defaults.buffer_size };
+    let default_size = SOCKET_DEFAULTS.buffer_size();
     swr_v1_socket_buffer_size(fd, true, true, default_size);
     if timeout > 0.0 {
         this.set_timeout(timeout);

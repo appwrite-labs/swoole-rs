@@ -11,7 +11,7 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{make_socket_fd, socket_set_fd_option};
-use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_defaults};
+use swoole_rs_reactor::{SOCKET_DEFAULTS, Socket, SocketRecord, swr_v1_socket_buffer_size};
 
 /// `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_ALL` and `SW_OK`.
 const FD_PIPE: c_int = 3;
@@ -47,8 +47,7 @@ fn open<'a>(
     unix: Option<c_int>,
     origin: &CStr,
 ) -> Option<&'a mut SocketPair> {
-    // SAFETY: the defaults are only assigned while no pair is being built.
-    let timeout = unsafe { swr_v1_socket_defaults.timeouts.read };
+    let timeout = SOCKET_DEFAULTS.read.get();
     let pair = SocketPair {
         blocking,
         timeout,
@@ -97,8 +96,7 @@ pub extern "C" fn unix_socket_new(
     protocol: c_int,
 ) -> *mut SocketPair {
     if let Some(pair) = open(this, blocking, Some(protocol), c"UnixSocket") {
-        // SAFETY: the defaults are only assigned while no pair is being built.
-        let size = unsafe { swr_v1_socket_defaults.buffer_size };
+        let size = SOCKET_DEFAULTS.buffer_size();
         #[expect(
             clippy::let_underscore_must_use,
             reason = "upstream's constructor ignores whether the buffers were set"
@@ -315,9 +313,7 @@ mod tests {
             pipe_new(this, true);
         });
         assert!(pair.blocking);
-        assert_eq!(pair.timeout, unsafe {
-            swr_v1_socket_defaults.timeouts.read
-        });
+        assert_eq!(pair.timeout, SOCKET_DEFAULTS.read.get());
         round_trip(pair);
     }
 

@@ -10,7 +10,7 @@ use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use swoole_rs_corebase::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
@@ -99,25 +99,72 @@ pub struct SocketFields {
     pub info: SocketAddress,
 }
 
-/// `Socket::default_*_timeout` and `Socket::default_buffer_size`, which native code
-/// reads and assigns by name and every new record copies.
-#[repr(C)]
+/// A process-wide `f64` setting, its bits in an `AtomicU64`.
+pub struct DefaultTimeout(AtomicU64);
+
+impl DefaultTimeout {
+    const fn new(seconds: f64) -> Self {
+        Self(AtomicU64::new(seconds.to_bits()))
+    }
+
+    #[must_use]
+    pub fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn set(&self, seconds: f64) {
+        self.0.store(seconds.to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// `Socket::default_*_timeout` and `Socket::default_buffer_size`, which every new
+/// record copies. `Co::set()` may assign them from any thread while others create
+/// sockets, so each is an atomic. They are independent settings, nothing is published
+/// through them, so `Relaxed` is enough.
 pub struct SocketDefaults {
-    pub timeouts: SocketTimeouts,
-    pub buffer_size: u32,
+    pub dns: DefaultTimeout,
+    pub connect: DefaultTimeout,
+    pub read: DefaultTimeout,
+    pub write: DefaultTimeout,
+    buffer_size: AtomicU32,
+}
+
+impl SocketDefaults {
+    /// The timeouts, as a new record takes them.
+    #[must_use]
+    pub fn timeouts(&self) -> SocketTimeouts {
+        SocketTimeouts {
+            dns: self.dns.get(),
+            connect: self.connect.get(),
+            read: self.read.get(),
+            write: self.write.get(),
+        }
+    }
+
+    #[must_use]
+    pub fn buffer_size(&self) -> u32 {
+        self.buffer_size.load(Ordering::Relaxed)
+    }
+
+    pub fn set_buffer_size(&self, size: u32) {
+        self.buffer_size.store(size, Ordering::Relaxed);
+    }
 }
 
 /// `SW_SOCKET_DEFAULT_*_TIMEOUT` and `SW_SOCKET_BUFFER_SIZE`.
-#[unsafe(no_mangle)]
-pub static mut swr_v1_socket_defaults: SocketDefaults = SocketDefaults {
-    timeouts: SocketTimeouts {
-        dns: SW_SOCKET_DEFAULT_DNS_TIMEOUT as f64,
-        connect: SW_SOCKET_DEFAULT_CONNECT_TIMEOUT as f64,
-        read: SW_SOCKET_DEFAULT_READ_TIMEOUT as f64,
-        write: SW_SOCKET_DEFAULT_WRITE_TIMEOUT as f64,
-    },
-    buffer_size: SW_SOCKET_BUFFER_SIZE,
+pub static SOCKET_DEFAULTS: SocketDefaults = SocketDefaults {
+    dns: DefaultTimeout::new(SW_SOCKET_DEFAULT_DNS_TIMEOUT as f64),
+    connect: DefaultTimeout::new(SW_SOCKET_DEFAULT_CONNECT_TIMEOUT as f64),
+    read: DefaultTimeout::new(SW_SOCKET_DEFAULT_READ_TIMEOUT as f64),
+    write: DefaultTimeout::new(SW_SOCKET_DEFAULT_WRITE_TIMEOUT as f64),
+    buffer_size: AtomicU32::new(SW_SOCKET_BUFFER_SIZE),
 };
+
+/// The default timeouts, for native `Socket`'s constructor.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_socket_default_timeouts() -> SocketTimeouts {
+    SOCKET_DEFAULTS.timeouts()
+}
 
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).
 #[cfg(target_pointer_width = "64")]
@@ -181,8 +228,7 @@ impl SocketRecord {
         // SAFETY: every field is an integer, a float, a raw pointer, a union of C
         // address structs or the borrow count, all of which are valid zeroed.
         let mut socket: Self = unsafe { std::mem::zeroed() };
-        // SAFETY: a plain read of the defaults, which only the owning thread assigns.
-        socket.timeouts = unsafe { (*ptr::addr_of!(swr_v1_socket_defaults)).timeouts };
+        socket.timeouts = SOCKET_DEFAULTS.timeouts();
         socket
     }
 

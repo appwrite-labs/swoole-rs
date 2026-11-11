@@ -115,8 +115,7 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
 
 /// `new ListenPort(serv)`: a port of `serv` with the default settings.
 pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
-    // SAFETY: `Socket::default_buffer_size`, which only the main thread sets.
-    let buffer_size = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.buffer_size };
+    let buffer_size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
     let mut config = PortConfig::boxed(c_int::try_from(buffer_size).unwrap_or(c_int::MAX));
     config.protocol.private_data_2 = serv;
     Box::into_raw(config).cast()

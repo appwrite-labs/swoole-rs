@@ -424,10 +424,7 @@ extern "C" fn ready() {
         clippy::cast_sign_loss,
         reason = "upstream assigns the zend_long to a uint32_t"
     )]
-    // SAFETY: MINIT, before any thread reads the process-wide defaults.
-    unsafe {
-        swoole_rs_reactor::swr_v1_socket_defaults.buffer_size = size as u32;
-    }
+    swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size as u32);
     swr_phpswoole_pcre_jit_off();
     swoole_rs_zend::host::known_init();
 }
