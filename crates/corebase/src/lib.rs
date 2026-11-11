@@ -57,7 +57,7 @@ pub use lifecycle::{
     ThreadGlobal, fork_exec, set_thread, set_thread_async_threads, set_thread_message_bus,
     set_thread_reactor, swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean,
     swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
-    thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor,
+    thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor, thread_timer,
 };
 pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;

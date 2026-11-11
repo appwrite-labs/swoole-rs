@@ -100,8 +100,7 @@ pub(super) fn port_config<'a>(port: *mut c_void) -> &'a crate::port_config::Port
 
 /// This thread's timer, or null.
 fn timer() -> *mut c_void {
-    // SAFETY: this thread's timer slot.
-    unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
+    swoole_rs_corebase::thread_timer()
 }
 
 /// The ops on native objects.
