@@ -23,11 +23,15 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: steps.upstream.outputs.cache-hit != 'true'
+      - name: Build upstream
+        if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - run: cargo fetch --locked
-      - run: python3 tools/build_ext.py
-      - run: >
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py
+      - name: Run Autobahn
+        run: >
           python3 tests/modules/websocket/autobahn.py ${{ github.event_name != 'pull_request' && '--full --timeout 4200' || '' }}
           --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
           --output target/reports/autobahn.json

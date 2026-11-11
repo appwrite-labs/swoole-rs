@@ -28,14 +28,18 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - run: test -f target/upstream/src/run-tests.php || python3 tools/build_upstream.py
+      - name: Build upstream
+        run: test -f target/upstream/src/run-tests.php || python3 tools/build_upstream.py
       - uses: actions/cache@v4
         with:
           path: target/asan/php
           key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}-${{ github.workspace }}
-      - run: cargo fetch --locked
-      - run: python3 corpus/thirdparty/hyperf.py --prepare
-      - run: python3 tools/asan.py
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Prepare hyperf
+        run: python3 corpus/thirdparty/hyperf.py --prepare
+      - name: Run ASan lanes
+        run: python3 tools/asan.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
