@@ -21,6 +21,14 @@ use std::{ffi::CStr, ptr};
 /// (`ZEND_CALL_FRAME_SLOT`).
 const FRAME_SLOT: usize = size_of::<zend_execute_data>().div_ceil(size_of::<zval>());
 
+/// `Z_TYPE`.
+#[must_use]
+#[inline]
+pub fn kind(value: &zval) -> u32 {
+    // SAFETY: every zval sets `u1.type_info`, and any four bytes are a `u32`.
+    unsafe { value.u1.type_info & 0xff }
+}
+
 /// `Z_TYPE_P`.
 /// # Safety
 /// `value` is a live zval.
@@ -28,9 +36,7 @@ const FRAME_SLOT: usize = size_of::<zend_execute_data>().div_ceil(size_of::<zval
 #[inline]
 pub unsafe fn type_of(value: *const zval) -> u32 {
     // SAFETY: per the caller.
-    let zv = unsafe { *value };
-    // SAFETY: every zval sets `u1.type_info`.
-    unsafe { zv.u1.type_info & 0xff }
+    kind(unsafe { &*value })
 }
 
 /// The arguments did not parse; Zend has raised the error (or a user error

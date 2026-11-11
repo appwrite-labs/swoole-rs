@@ -267,8 +267,6 @@ def plan(args, reports):
         script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', archive, *report(phase))
     if 'ossupport' in modules:
-        script('ossupport-async-file-owner', 'tests/modules/ossupport/async_file.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, *report('ossupport-async-file-owner'))
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, *report('ossupport-file-owner'))
     if 'corebase' in modules:

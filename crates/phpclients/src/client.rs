@@ -381,7 +381,8 @@ fn connect(call: &Call) {
             call.long(4, 0)?,
         ))
     });
-    let Ok((host, port, timeout, flags)) = parsed else {
+    // The coroutine socket's connect ignores `$sock_flag`, as upstream's does.
+    let Ok((host, port, timeout, _flags)) = parsed else {
         return call.set_bool(false);
     };
     if host.is_empty() {
@@ -391,7 +392,7 @@ fn connect(call: &Call) {
     let Some(socket) = socket_for_connect(call, port) else {
         return call.set_bool(false);
     };
-    if !socket.connect_host(host, port, timeout, flags) {
+    if !socket.connect_host(host, port, timeout) {
         report_socket(call, socket);
         socket.close();
         return call.set_bool(false);
@@ -506,8 +507,7 @@ fn sendfile(call: &Call) {
         props.bytes(c"errMsg", b"dgram socket cannot use sendfile");
         return call.set_bool(false);
     }
-    // SAFETY: a string argument's bytes are NUL-terminated.
-    if unsafe { socket.sendfile(file.as_ptr().cast(), offset, length) } {
+    if socket.sendfile(file, offset, length) {
         call.set_bool(true);
     } else {
         report_socket(call, socket);

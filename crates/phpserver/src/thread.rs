@@ -15,6 +15,7 @@ use swoole_rs_server::view;
 use swoole_rs_zend::{
     Value,
     bailout::{self, Bailout},
+    kind,
     string::bytes,
     sys::{
         IS_ARRAY_EX, IS_NULL, IS_STRING, swr_zend_property_slot, swr_zend_string_persistent,
@@ -171,8 +172,7 @@ fn string_of<'a>(slot: *mut zval) -> &'a [u8] {
 /// `init_arguments()`'s array, copied for the threads.
 fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
     let callable = object.init_arguments();
-    // SAFETY: a live zval.
-    if unsafe { type_of(&raw const callable) } == IS_NULL {
+    if kind(&callable) == IS_NULL {
         return Ok(None);
     }
     let mut result = crate::dispatch::undef();

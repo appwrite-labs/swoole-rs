@@ -1,10 +1,7 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::sys::{
-    CONST_PERSISTENT, std_object_handlers, swr_zend_register_class, zend_class_entry,
-    zend_declare_class_constant_long, zend_declare_property_bool, zend_declare_property_double,
-    zend_declare_property_long, zend_declare_property_null, zend_declare_property_string,
-    zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers,
-    zend_register_double_constant, zend_register_long_constant, zend_string, zend_throw_error,
+    std_object_handlers, swr_zend_register_class, zend_class_entry, zend_function_entry,
+    zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string, zend_throw_error,
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -45,27 +42,14 @@ impl Class {
         }
     }
 
-    /// Register `name` with `methods`, then let `configure` adjust the entry and a
-    /// copy of the standard handlers (Swoole's `SW_INIT_CLASS_ENTRY` followed by
-    /// its `SW_SET_CLASS_*` macros).
+    /// Register `name` with `methods`, extending `parent` (null for none), then
+    /// let `configure` adjust the entry and a copy of the standard handlers
+    /// (Swoole's `SW_INIT_CLASS_ENTRY` followed by its `SW_SET_CLASS_*` macros).
     /// # Safety
-    /// Called once, at MINIT. `methods` is a static, `PHP_FE_END`-terminated
-    /// table, such as one built from a stub's generated arginfo.
-    pub(crate) unsafe fn register(
-        &self,
-        name: &CStr,
-        methods: *const zend_function_entry,
-        configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
-    ) {
-        // SAFETY: per the caller.
-        unsafe { self.register_child(name, methods, ptr::null_mut(), configure) };
-    }
-
-    /// `register`, extending `parent` (null for none).
-    /// # Safety
-    /// As `register`; `parent` is null or a registered class. A
-    /// [`CustomClass`](crate::CustomClass) registers only through
-    /// [`Minit::register_object`](crate::Minit::register_object).
+    /// Called at MINIT. `methods` is null or a static, `PHP_FE_END`-terminated
+    /// table, such as one built from a stub's generated arginfo; `parent` is
+    /// null or a registered class. A [`CustomClass`](crate::CustomClass)
+    /// registers only through [`Minit::register_object`](crate::Minit::register_object).
     pub(crate) unsafe fn register_child(
         &self,
         name: &CStr,
@@ -91,34 +75,6 @@ impl Class {
     #[must_use]
     pub fn entry(&self) -> *mut zend_class_entry {
         self.entry.load(Ordering::Acquire)
-    }
-
-    /// `zend_declare_class_constant_long`.
-    /// # Safety
-    /// At MINIT, after `register`.
-    pub(crate) unsafe fn constant_long(&self, name: &CStr, value: zend_long) {
-        // SAFETY: per the caller; Zend copies the name.
-        unsafe {
-            zend_declare_class_constant_long(
-                self.entry(),
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-            );
-        }
-    }
-
-    /// Swoole's `SW_CLASS_ALIAS`: `name` (no leading backslash) names this class too.
-    /// # Safety
-    /// At MINIT, after `register`.
-    /// # Errors
-    /// Returns a contained PHP allocation or alias registration bailout.
-    pub(crate) unsafe fn alias(&self, name: &CStr) -> Result<(), crate::bailout::Bailout> {
-        // SAFETY: per the caller; the Rust registry owns the full alias construction.
-        unsafe {
-            crate::registration::class_alias(name.as_ptr(), name.count_bytes(), self.entry(), false)
-        }
-        .map(|_| ())
     }
 
     /// `object_init_ex` of this class, then its `__construct(args)` (Swoole's
@@ -175,125 +131,6 @@ impl Class {
     #[inline]
     pub fn handlers(&self) -> *const zend_object_handlers {
         self.handlers.load(Ordering::Acquire)
-    }
-}
-
-/// `ZEND_ACC_*` flags as the `int` the declare functions take.
-fn flags(value: u32) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
-/// `zend_declare_property_long` with `access` flags.
-/// # Safety
-/// MINIT, with a registered class.
-pub(crate) unsafe fn declare_long(
-    ce: *mut zend_class_entry,
-    name: &CStr,
-    value: zend_long,
-    access: u32,
-) {
-    // SAFETY: per the caller.
-    unsafe {
-        zend_declare_property_long(ce, name.as_ptr(), name.count_bytes(), value, flags(access));
-    }
-}
-
-/// `zend_declare_property_string` with `access` flags.
-/// # Safety
-/// MINIT, with a registered class.
-pub(crate) unsafe fn declare_string(
-    ce: *mut zend_class_entry,
-    name: &CStr,
-    value: &CStr,
-    access: u32,
-) {
-    // SAFETY: per the caller; Zend copies the value.
-    unsafe {
-        zend_declare_property_string(
-            ce,
-            name.as_ptr(),
-            name.count_bytes(),
-            value.as_ptr(),
-            flags(access),
-        );
-    }
-}
-
-/// `zend_declare_property_bool` with `access` flags.
-/// # Safety
-/// MINIT, with a registered class.
-pub(crate) unsafe fn declare_bool(
-    ce: *mut zend_class_entry,
-    name: &CStr,
-    value: bool,
-    access: u32,
-) {
-    // SAFETY: per the caller.
-    unsafe {
-        zend_declare_property_bool(
-            ce,
-            name.as_ptr(),
-            name.count_bytes(),
-            zend_long::from(value),
-            flags(access),
-        );
-    }
-}
-
-/// `zend_declare_property_double` with `access` flags.
-/// # Safety
-/// MINIT, with a registered class.
-pub(crate) unsafe fn declare_double(
-    ce: *mut zend_class_entry,
-    name: &CStr,
-    value: f64,
-    access: u32,
-) {
-    // SAFETY: per the caller.
-    unsafe {
-        zend_declare_property_double(ce, name.as_ptr(), name.count_bytes(), value, flags(access));
-    }
-}
-
-/// `zend_declare_property_null` with `access` flags.
-/// # Safety
-/// MINIT, with a registered class.
-pub(crate) unsafe fn declare_null(ce: *mut zend_class_entry, name: &CStr, access: u32) {
-    // SAFETY: per the caller.
-    unsafe { zend_declare_property_null(ce, name.as_ptr(), name.count_bytes(), flags(access)) };
-}
-
-/// `SW_REGISTER_LONG_CONSTANT`: a persistent global constant.
-/// # Safety
-/// At MINIT, with the extension's module number.
-pub(crate) unsafe fn register_long_constant(name: &CStr, value: zend_long, module: i32) {
-    #[expect(clippy::cast_possible_wrap, reason = "a small flag")]
-    // SAFETY: per the caller; Zend copies the name.
-    unsafe {
-        zend_register_long_constant(
-            name.as_ptr(),
-            name.count_bytes(),
-            value,
-            CONST_PERSISTENT as i32,
-            module,
-        );
-    }
-}
-
-/// `SW_REGISTER_DOUBLE_CONSTANT`: a persistent global constant.
-/// # Safety
-/// At MINIT, with the extension's module number.
-pub(crate) unsafe fn register_double_constant(name: &CStr, value: f64, module: i32) {
-    #[expect(clippy::cast_possible_wrap, reason = "a small flag")]
-    // SAFETY: per the caller; Zend copies the name.
-    unsafe {
-        zend_register_double_constant(
-            name.as_ptr(),
-            name.count_bytes(),
-            value,
-            CONST_PERSISTENT as i32,
-            module,
-        );
     }
 }
 
