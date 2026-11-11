@@ -670,16 +670,14 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
     }
 }
 
+/// `gettimeofday`'s seconds and microseconds, as upstream's `microtime()` adds them.
 fn microtime() -> f64 {
-    let mut now = libc::timeval {
-        tv_sec: 0,
-        tv_usec: 0,
+    let Some(now) = swoole_rs_corebase::sys::clock_gettime(libc::CLOCK_REALTIME) else {
+        return 0.0;
     };
-    // SAFETY: a writable timeval and no timezone.
-    unsafe { libc::gettimeofday(&raw mut now, ptr::null_mut()) };
+    let micros = u32::try_from(now.tv_nsec / 1000).unwrap_or(0);
     #[expect(clippy::cast_precision_loss, reason = "as upstream's (double) casts")]
-    let seconds =
-        now.tv_sec as f64 + (f64::from(u32::try_from(now.tv_usec).unwrap_or(0)) / 1_000_000.0);
+    let seconds = now.tv_sec as f64 + (f64::from(micros) / 1_000_000.0);
     seconds
 }
 
