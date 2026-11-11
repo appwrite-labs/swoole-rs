@@ -477,7 +477,7 @@ fn sleep() {
 
 /// `Iouring::wait(stat_loc, timeout)`, which is `waitpid(-1, stat_loc, 0, timeout)`.
 fn wait(status: &mut c_int, timeout: f64) -> libc::pid_t {
-    unsafe { uring::waitpid(&HOST, -1, status, 0, timeout) }
+    uring::waitpid(&HOST, -1, Some(status), 0, timeout)
 }
 
 #[test]
@@ -518,12 +518,12 @@ fn waitpid() {
     with_engine(|| unsafe {
         let mut status = 0;
         assert_eq!(
-            uring::waitpid(&HOST, pid, &raw mut status, libc::WNOHANG, -1.0),
+            uring::waitpid(&HOST, pid, Some(&mut status), libc::WNOHANG, -1.0),
             0,
             "WNOHANG"
         );
         assert_eq!(
-            uring::waitpid(&HOST, pid, &raw mut status, 0, 0.1),
+            uring::waitpid(&HOST, pid, Some(&mut status), 0, 0.1),
             -1,
             "timed out"
         );
@@ -532,7 +532,7 @@ fn waitpid() {
         libc::kill(pid, libc::SIGKILL);
         let _slept = uring::sleep(&HOST, 0.3);
         assert_eq!(
-            uring::waitpid(&HOST, pid, &raw mut status, 0, 0.1),
+            uring::waitpid(&HOST, pid, Some(&mut status), 0, 0.1),
             pid,
             "reaped"
         );
@@ -560,7 +560,7 @@ fn poll() {
         fds[0] = mem::zeroed();
         fds[0].fd = fd0;
         fds[0].events = libc::POLLIN | libc::POLLOUT;
-        assert_eq!(uring::poll(&HOST, fds.as_mut_ptr(), 1000), 1, "writable");
+        assert_eq!(uring::poll(&HOST, &mut fds[0], 1000), 1, "writable");
         assert_ne!(fds[0].revents & libc::POLLOUT, 0, "POLLOUT");
 
         let writer = thread::spawn(move || {
@@ -577,7 +577,7 @@ fn poll() {
         fds[0].fd = fd1;
         fds[0].events = libc::POLLIN;
 
-        assert_eq!(uring::poll(&HOST, fds.as_mut_ptr(), 1000), 1, "readable");
+        assert_eq!(uring::poll(&HOST, &mut fds[0], 1000), 1, "readable");
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "POLLIN");
 
         let result = uring::read(&HOST, fd1, buf.as_mut_ptr().cast(), buf.len(), -1.0);
@@ -590,7 +590,7 @@ fn poll() {
         fds[0] = mem::zeroed();
         fds[0].fd = fd0;
         fds[0].events = libc::POLLIN | libc::POLLOUT;
-        assert_eq!(uring::poll(&HOST, fds.as_mut_ptr(), 1000), 1, "ready");
+        assert_eq!(uring::poll(&HOST, &mut fds[0], 1000), 1, "ready");
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "POLLIN");
         writer.join().unwrap();
     });

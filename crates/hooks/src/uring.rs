@@ -874,18 +874,16 @@ pub unsafe fn stat(host: &Host, path: *const c_char, stat: *mut libc::stat) -> c
 }
 
 /// `waitpid` through `IORING_OP_WAITID`; `WNOHANG` stays a plain waitpid(2).
-///
-/// # Safety
-/// `stat_loc` is valid.
-pub unsafe fn waitpid(
+pub fn waitpid(
     host: &Host,
     pid: libc::pid_t,
-    stat_loc: *mut c_int,
+    stat_loc: Option<&mut c_int>,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
     if options & libc::WNOHANG != 0 {
-        // SAFETY: the caller's contract.
+        let stat_loc = stat_loc.map_or(ptr::null_mut(), ptr::from_mut);
+        // SAFETY: null or the caller's status word.
         return unsafe { libc::waitpid(pid, stat_loc, options) };
     }
     // SAFETY: an all-zero siginfo_t is valid.
@@ -905,23 +903,19 @@ pub unsafe fn waitpid(
     }
     // SAFETY: the kernel filled `info` for a waited child.
     let status = wait_status(info.si_code, unsafe { info.si_status() });
-    // SAFETY: the caller's contract.
-    unsafe { *stat_loc = status };
+    if let Some(stat_loc) = stat_loc {
+        *stat_loc = status;
+    }
     // SAFETY: as above.
     unsafe { info.si_pid() }
 }
 
 /// poll(2) of one descriptor; `timeout` 0 polls without the ring.
-///
-/// # Safety
-/// `fd` points to one pollfd.
-pub unsafe fn poll(host: &Host, fd: *mut libc::pollfd, timeout: c_int) -> c_int {
+pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
     if timeout == 0 {
-        // SAFETY: the caller's contract.
-        return unsafe { libc::poll(fd, 1, timeout) };
+        // SAFETY: one live pollfd.
+        return unsafe { libc::poll(pollfd, 1, timeout) };
     }
-    // SAFETY: the caller's contract.
-    let pollfd = unsafe { &mut *fd };
     let (descriptor, events) = (pollfd.fd, pollfd.events);
     // SAFETY: the request carries no pointers.
     let rc = int(request(host, f64::from(timeout) / 1000.0, |sqe| unsafe {

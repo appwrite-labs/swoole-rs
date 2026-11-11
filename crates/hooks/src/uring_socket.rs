@@ -9,15 +9,16 @@
 //! take these paths for it.
 use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::Co;
+use crate::hooked::{bytes, bytes_mut};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use openssl_sys as ssl;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{
     ReactorIov, SocketRecord, swr_v1_reactor_iov_advance, swr_v1_reactor_iov_view,
 };
-use swoole_rs_tls::upstream::{socket_recv, socket_send};
 
 unsafe extern "C" {
     fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
@@ -120,7 +121,7 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
     })
 }
 
-/// The scalar operations of [`swr_v1_hook_uring_io`].
+/// The scalar operations of [`UringSocketOps::io`].
 pub const READ: c_int = 0;
 pub const WRITE: c_int = 1;
 pub const RECV: c_int = 2;
@@ -161,11 +162,14 @@ impl UringSocketOps {
         result
     }
 
-    /// One scalar operation (see [`swr_v1_hook_uring_io`]).
+    /// One scalar operation: `op` is 0 read, 1 write, 2 recv, 3 send (TLS when the
+    /// socket has it), 4 recvmsg and 5 sendmsg (`extra` the msghdr, with `flags`),
+    /// 6 recvfrom (`extra`/`extra_length` the address), 7 sendto (to that address,
+    /// without a second availability check).
     ///
     /// # Safety
-    /// As [`swr_v1_hook_uring_io`].
-    unsafe fn io(
+    /// The buffers are valid as for the system call.
+    pub(crate) unsafe fn io(
         &self,
         op: c_int,
         buf: *mut c_void,
@@ -191,7 +195,7 @@ impl UringSocketOps {
     /// The request itself.
     ///
     /// # Safety
-    /// As [`swr_v1_hook_uring_io`].
+    /// As [`UringSocketOps::io`].
     unsafe fn request(
         &self,
         op: c_int,
@@ -209,11 +213,11 @@ impl UringSocketOps {
             // SAFETY: as above.
             WRITE => unsafe { uring::write(host, fd, buf, n, wt) },
             // SAFETY: as above.
-            RECV if self.ssl() => unsafe { tls.recv(buf, n) },
+            RECV if self.ssl() => tls.recv(unsafe { bytes_mut(buf, n) }),
             // SAFETY: as above.
             RECV => unsafe { uring::recv(host, fd, buf, n, 0, rt) },
             // SAFETY: as above.
-            SEND if self.ssl() => unsafe { tls.send(buf, n) },
+            SEND if self.ssl() => tls.send(unsafe { bytes(buf, n) }),
             // SAFETY: as above.
             SEND => unsafe { uring::send(host, fd, buf, n, 0, wt) },
             // SAFETY: as above.
@@ -240,10 +244,11 @@ impl UringSocketOps {
             let iov = unsafe { *iov };
             let result = if write {
                 // SAFETY: the iovec's buffer.
-                unsafe { self.tls.send(iov.iov_base, iov.iov_len) }
+                self.tls.send(unsafe { bytes(iov.iov_base, iov.iov_len) })
             } else {
                 // SAFETY: the iovec's buffer.
-                unsafe { self.tls.recv(iov.iov_base, iov.iov_len) }
+                self.tls
+                    .recv(unsafe { bytes_mut(iov.iov_base, iov.iov_len) })
             };
             total += result.max(0);
             vector.update(result);
@@ -285,60 +290,49 @@ impl UringSocketOps {
     }
 }
 
-/// One scalar operation: `op` is 0 read, 1 write, 2 recv, 3 send (TLS when the
-/// socket has it), 4 recvmsg and 5 sendmsg (`extra` the msghdr, with `flags`),
-/// 6 recvfrom (`extra`/`extra_length` the address), 7 sendto (to that address,
-/// without a second availability check).
-///
-/// # Safety
-/// The buffers are valid as for the system call.
-pub(crate) unsafe fn swr_v1_hook_uring_io(
-    ops: &UringSocketOps,
-    op: c_int,
-    buf: *mut c_void,
-    n: usize,
-    extra: *mut c_void,
-    extra_length: *mut libc::socklen_t,
-    flags: c_int,
-) -> isize {
-    // SAFETY: the caller's buffers.
-    unsafe { ops.io(op, buf, n, extra, extra_length, flags) }
+/// `read` into `buf`, which may be uninitialized: the ring writes it.
+pub(crate) fn read(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
+    into(ops, READ, buf)
 }
 
-/// [`swr_v1_hook_uring_io`] without an address or flags.
-///
-/// # Safety
-/// As [`swr_v1_hook_uring_io`].
-pub(crate) unsafe fn plain(ops: &UringSocketOps, op: c_int, buf: *mut c_void, n: usize) -> isize {
-    // SAFETY: as the caller promises.
-    unsafe { ops.io(op, buf, n, core::ptr::null_mut(), core::ptr::null_mut(), 0) }
+/// `recv` into `buf`, which TLS reads as bytes.
+pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [u8]) -> isize {
+    into(ops, RECV, buf)
 }
 
-/// `recv_all` (`write` false) or `send_all`: recv/send until `n` bytes moved, it
-/// failed, or (receiving) the peer closed.
-///
-/// # Safety
-/// `buf` holds `n` bytes.
-pub(crate) unsafe fn swr_v1_hook_uring_io_all(
-    ops: &UringSocketOps,
-    write: bool,
-    buf: *mut c_void,
-    n: usize,
-) -> isize {
+/// `op` ([`READ`], or [`RECV`] over initialized bytes) into `buf`.
+fn into(ops: &UringSocketOps, op: c_int, buf: &mut [impl ReadSlot]) -> isize {
+    let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
+    // SAFETY: `buf` is `n` writable bytes.
+    unsafe { ops.io(op, at, n, core::ptr::null_mut(), core::ptr::null_mut(), 0) }
+}
+
+/// `write` (`op` [`WRITE`]) or `send` ([`SEND`]) from `buf`.
+pub(crate) fn send(ops: &UringSocketOps, op: c_int, buf: &[u8]) -> isize {
+    let (at, n) = (buf.as_ptr().cast_mut().cast(), buf.len());
+    // SAFETY: `buf` is `n` readable bytes, which a write only reads.
+    unsafe { ops.io(op, at, n, core::ptr::null_mut(), core::ptr::null_mut(), 0) }
+}
+
+/// `recv_all` into `buf`: recv until it is full, it failed, or the peer closed.
+pub(crate) fn recv_all(ops: &UringSocketOps, buf: &mut [u8]) -> isize {
+    all(ops, buf.len(), |at| {
+        recv(ops, buf.get_mut(at..).unwrap_or_default())
+    })
+}
+
+/// `send_all` of `buf`: send until all of it went or it failed.
+pub(crate) fn send_all(ops: &UringSocketOps, buf: &[u8]) -> isize {
+    all(ops, buf.len(), |at| {
+        send(ops, SEND, buf.get(at..).unwrap_or_default())
+    })
+}
+
+/// `step(moved)` again while it moves bytes and fewer than `n` moved.
+fn all(ops: &UringSocketOps, n: usize, mut step: impl FnMut(usize) -> isize) -> isize {
     let mut total = 0usize;
     let result = loop {
-        let rest = buf.cast::<u8>().wrapping_add(total).cast();
-        // SAFETY: the unsent rest of the caller's buffer.
-        let result = unsafe {
-            ops.io(
-                if write { SEND } else { RECV },
-                rest,
-                n - total,
-                core::ptr::null_mut(),
-                core::ptr::null_mut(),
-                0,
-            )
-        };
+        let result = step(total);
         total += result.max(0).unsigned_abs();
         if !(result > 0 && total < n) {
             break result;
@@ -462,8 +456,7 @@ pub(crate) fn swr_v1_hook_uring_poll(
     } else {
         timeout
     } as c_int;
-    // SAFETY: the host table and one local pollfd.
-    let rc = unsafe { uring::poll(ops.host(), &raw mut fd, milliseconds) };
+    let rc = uring::poll(ops.host(), &mut fd, milliseconds);
     if rc != 1 {
         let error = if rc == 0 { libc::ETIMEDOUT } else { errno() };
         (ops.set_err)(ops.socket, error);
@@ -540,24 +533,11 @@ fn want(socket: Co) -> c_int {
     })
 }
 
-/// `UringSocket::send_once` (`write`) or `recv_once`: one attempt on the
-/// `network::Socket`, the TLS BIOs pumped through the ring until it moves bytes.
-///
-/// # Safety
-/// `ops` is a live, open socket's view; `buf` holds `n` bytes.
-pub(crate) unsafe fn once(ops: &UringSocketOps, buf: *mut c_void, n: usize, write: bool) -> isize {
-    let socket = ops.socket;
-    let io = || {
-        let network = socket.socket();
-        if write {
-            // SAFETY: its open network::Socket, from the caller's buffer.
-            unsafe { socket_send(network, buf, n, 0) }
-        } else {
-            // SAFETY: its open network::Socket, into the caller's buffer.
-            unsafe { socket_recv(network, buf, n, 0) }
-        }
-    };
-    ops.tls.once(io, || want(socket))
+/// `UringSocket::send_once` or `recv_once`: `io`, the open socket's one attempt on
+/// its `network::Socket`, with the TLS BIOs pumped through the ring until it moves
+/// bytes.
+pub(crate) fn once(ops: &UringSocketOps, io: impl FnMut() -> isize) -> isize {
+    ops.tls.once(io, || want(ops.socket))
 }
 
 /// `UringSocket::poll(event, timeout)`, in a coroutine.
@@ -688,17 +668,8 @@ mod tests {
             let (a, b) = (ops(fds[0], socket.co()), ops(fds[1], socket.co()));
             let mut message = *b"hello world";
             let mut received = [0u8; 11];
-            // SAFETY: local tables and buffers.
-            unsafe {
-                assert_eq!(
-                    swr_v1_hook_uring_io_all(&a, true, message.as_mut_ptr().cast(), 11),
-                    11
-                );
-                assert_eq!(
-                    swr_v1_hook_uring_io_all(&b, false, received.as_mut_ptr().cast(), 11),
-                    11
-                );
-            }
+            assert_eq!(send_all(&a, &message), 11);
+            assert_eq!(recv_all(&b, &mut received), 11);
             assert_eq!(&received, b"hello world");
             let bound = socket.co().with_state(|state| state.bound_co(EVENT_READ));
             assert!(bound.is_null(), "unbound after the call");
@@ -712,18 +683,7 @@ mod tests {
             );
             // An unavailable socket stops before the request.
             AVAILABLE.with(|v| *v.borrow_mut() = false);
-            // SAFETY: as above.
-            let result = unsafe {
-                swr_v1_hook_uring_io(
-                    &a,
-                    READ,
-                    message.as_mut_ptr().cast(),
-                    1,
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    0,
-                )
-            };
+            let result = super::read(&a, &mut message[..1]);
             AVAILABLE.with(|v| *v.borrow_mut() = true);
             assert_eq!(result, -1);
             assert_eq!(logged(), std::slice::from_ref(&read));
@@ -783,8 +743,7 @@ mod tests {
             let mut message = *b"ping";
             // SAFETY: a local table, buffer and address.
             let sent = unsafe {
-                swr_v1_hook_uring_io(
-                    &to,
+                to.io(
                     SENDTO,
                     message.as_mut_ptr().cast(),
                     4,
