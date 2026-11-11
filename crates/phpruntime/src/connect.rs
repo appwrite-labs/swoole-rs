@@ -86,8 +86,7 @@ fn connect(host: &CStr, port: u16, options: &Options) -> Result<c_int, Bailout> 
     } else {
         libc::AF_INET
     };
-    // SAFETY: Swoole's hooked socket().
-    let fd = unsafe { swoole_coroutine_socket(domain, libc::SOCK_STREAM, 0) };
+    let fd = swoole_coroutine_socket(domain, libc::SOCK_STREAM, 0);
     if fd < 0 {
         return Ok(-1);
     }

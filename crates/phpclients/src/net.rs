@@ -509,18 +509,12 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
         if conn.flag(state::ASYNC_CONNECT) {
             conn.set_flag(state::ASYNC_CONNECT, false);
             let mut error: c_int = -1;
-            #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-            let mut length = size_of::<c_int>() as libc::socklen_t;
-            // SAFETY: the client's socket; writable locals of the sizes given.
-            if unsafe {
-                libc::getsockopt(
-                    conn.fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_ERROR,
-                    (&raw mut error).cast(),
-                    &raw mut length,
-                )
-            } == 0
+            if swoole_rs_corebase::sys::getsockopt_int(
+                conn.fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                &mut error,
+            ) == 0
                 && error == 0
             {
                 conn.set_flag(state::ACTIVE, true);

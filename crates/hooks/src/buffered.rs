@@ -66,10 +66,10 @@ fn read_buffered(
 }
 
 /// `recv_line`: bytes up to and including the first `\n` or `\r`, at most
-/// `out.len() - 1`, one `read` (`recv_with_buffer`) of a byte at a time. -1 on
-/// error; at EOF, what was read.
+/// `out.len()`, one `read` (`recv_with_buffer`) of a byte at a time. -1 on error;
+/// at EOF, what was read.
 pub(crate) fn recv_line(out: &mut [u8], mut read: impl FnMut(&mut [u8]) -> isize) -> isize {
-    let limit = out.len().saturating_sub(1);
+    let limit = out.len();
     let mut count = 0;
     let mut last = 0;
     if let Some(first) = out.first_mut() {
@@ -224,7 +224,7 @@ mod tests {
     fn lines_end_at_a_newline_the_limit_or_eof() {
         let mut b = Buffered::new(16, b"ab\ncd");
         let line = |b: &mut Buffered, limit: usize| {
-            let mut out = vec![0; limit + 1];
+            let mut out = vec![0; limit];
             let n = recv_line(&mut out, |at| {
                 let (got, bytes) = b.read(at.len());
                 at[..bytes.len()].copy_from_slice(&bytes);

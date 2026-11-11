@@ -217,14 +217,16 @@ struct Tail {
     size: usize,
 }
 
-/// `async::Handler`: runs on a pool thread, or as the completion.
-/// The pool lends the handler its copy of the event, exclusively, for the call.
+/// `async::Handler`: runs on a pool thread over its own copy of the event, of which
+/// the pool keeps `error` and `retval`.
 type AsyncHandler = extern "C" fn(&mut AsyncEvent);
+
+/// The completion, on the dispatching thread.
+type AsyncCallback = extern "C" fn(&AsyncEvent);
 
 /// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
 /// DNS record.
 #[repr(C)]
-#[derive(Clone, Copy)]
 struct AsyncEvent {
     task_id: usize,
     canceled: u8,
@@ -235,7 +237,7 @@ struct AsyncEvent {
     timestamp: f64,
     object: *mut c_void,
     handler: Option<AsyncHandler>,
-    callback: Option<AsyncHandler>,
+    callback: Option<AsyncCallback>,
 }
 
 #[cfg(target_pointer_width = "64")]
@@ -247,13 +249,18 @@ const _: () = assert!(
 );
 
 // SAFETY: crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
-// above this crate.
+// above this crate. Its `dispatch` is a safe fn over this layout: only this module
+// builds an event, whose request is null or live.
 #[cfg(not(test))]
 unsafe extern "C" {
     /// `async::dispatch`: queues a copy of the event, holding its own reference
     /// to the request; null without a pool.
     #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    fn async_dispatch(event: *const c_void) -> *mut c_void;
+    #[expect(
+        improper_ctypes,
+        reason = "the request record is opaque behind its pointer; Rust defines both sides"
+    )]
+    safe fn async_dispatch(event: &AsyncEvent) -> *mut c_void;
 }
 
 /// The public, trivially copyable fields of `network::Client`. C++ keeps typed
@@ -1127,8 +1134,7 @@ fn shutdown(this: Handle, how: c_int) -> c_int {
         return ERR;
     }
     let fd = this.socket().fd();
-    // SAFETY: shutdown(2) on the client's descriptor.
-    let call = |how| unsafe { libc::shutdown(fd, how) };
+    let call = |how| swoole_rs_corebase::sys::shutdown(fd, how);
     match how {
         libc::SHUT_RD if this.flag(SHUTDOWN_READ) || call(how) != 0 => ERR,
         libc::SHUT_WR if this.flag(SHUTDOWN_WRITE) || call(how) < 0 => ERR,
@@ -1370,17 +1376,16 @@ fn dns_lookup(this: Handle) -> c_int {
         handler: Some(resolve),
         callback: Some(resolve_completed),
     };
-    // SAFETY: a complete event over a live request; the pool's copy holds its
-    // own reference to it.
-    if unsafe { async_dispatch((&raw const event).cast()) }.is_null() {
+    // The pool's copy holds its own reference to the request.
+    if async_dispatch(&event).is_null() {
         ERR
     } else {
         OK
     }
 }
 
-/// `async::handler_gethostbyname`, on a pool thread, over the pool's copy of the
-/// event [`dns_lookup`] dispatched.
+/// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
+/// [`dns_lookup`] dispatched.
 extern "C" fn resolve(event: &mut AsyncEvent) {
     // SAFETY: its request record, held by the copy.
     (event.retval, event.error) = crate::resolver::host(unsafe { &*event.data });
@@ -1388,7 +1393,7 @@ extern "C" fn resolve(event: &mut AsyncEvent) {
 
 /// `Client_onResolveCompleted`, on the client's thread, over the completed copy
 /// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: &mut AsyncEvent) {
+extern "C" fn resolve_completed(event: &AsyncEvent) {
     // SAFETY: its request record, held by the copy.
     let address = crate::resolver::address(unsafe { &*event.data });
     resolved(
@@ -1701,19 +1706,8 @@ mod ops {
 
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`.
     pub(super) fn socket_error(this: Handle, error: &mut c_int) -> c_int {
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-        let mut length = size_of::<c_int>() as libc::socklen_t;
         let fd = this.socket().fd();
-        // SAFETY: `error` holds an int and `length` says so.
-        unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                core::ptr::from_mut(error).cast(),
-                &raw mut length,
-            )
-        }
+        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
     }
 }
 

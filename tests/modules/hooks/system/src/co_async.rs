@@ -6,7 +6,7 @@
 use std::ffi::{c_char, c_int, c_void};
 use std::net::Ipv4Addr;
 
-use swoole_rs_hooks::offload::{AsyncEvent, async_job, swr_v1_hook_async};
+use swoole_rs_hooks::offload::{AsyncEvent, Handler, async_job, swr_v1_hook_async};
 use swoole_rs_hooks::resolve::COROUTINE_ASYNC;
 
 use super::{AF_INET, ENOENT, O_RDONLY, SW_ERROR_CO_TIMEDOUT};
@@ -24,18 +24,12 @@ unsafe extern "C" {
 
 /// `AsyncEvent ev = {}`.
 fn empty() -> AsyncEvent {
-    // SAFETY: integers, a float, raw pointers and optional function pointers, for which
-    // all-zero is the empty event.
-    unsafe { std::mem::zeroed() }
+    AsyncEvent::empty()
 }
 
 /// `swoole::coroutine::async(handler, event, timeout)`.
-fn co_async(
-    handler: unsafe extern "C" fn(*mut AsyncEvent),
-    event: &mut AsyncEvent,
-    timeout: f64,
-) -> bool {
-    // SAFETY: a live event and a pool handler for it, in a coroutine.
+fn co_async(handler: Handler, event: &mut AsyncEvent, timeout: f64) -> bool {
+    // SAFETY: these tests' handlers only sleep and set retval; none reads the object.
     unsafe { swr_v1_hook_async(event, handler, timeout, &COROUTINE_ASYNC) }
 }
 
@@ -44,20 +38,16 @@ fn co_async_fn(mut job: impl FnMut() + Send) -> bool {
     async_job(&mut job)
 }
 
-unsafe extern "C" fn sleep_1ms(event: *mut AsyncEvent) {
-    // SAFETY: usleep(3); the pool's copy of the event.
-    unsafe {
-        usleep(1000);
-        (*event).retval = MAGIC_CODE;
-    }
+extern "C" fn sleep_1ms(event: &mut AsyncEvent) {
+    // SAFETY: usleep(3).
+    unsafe { usleep(1000) };
+    event.retval = MAGIC_CODE;
 }
 
-unsafe extern "C" fn sleep_200ms(event: *mut AsyncEvent) {
-    // SAFETY: usleep(3); the pool's copy of the event.
-    unsafe {
-        usleep(200_000);
-        (*event).retval = MAGIC_CODE;
-    }
+extern "C" fn sleep_200ms(event: &mut AsyncEvent) {
+    // SAFETY: usleep(3).
+    unsafe { usleep(200_000) };
+    event.retval = MAGIC_CODE;
 }
 
 fn usleep_() {
