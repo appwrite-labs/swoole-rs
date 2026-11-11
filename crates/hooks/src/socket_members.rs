@@ -6,7 +6,7 @@
 //! `readv`, `writev` and their `_all` forms, `recvmsg`, `sendmsg`, `recvfrom`),
 //! `peek` and `poll`. Only the read and write buffers keep their upstream symbols,
 //! which crates/phpclients and crates/phphttp link by name.
-use crate::buffered::{recv_buffered, swr_v1_hook_recv_line};
+use crate::buffered::{recv_buffered, recv_line};
 use crate::co_io::{
     NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
 };
@@ -264,7 +264,7 @@ impl Co {
     /// `out` holds `size` writable bytes, outside the socket's read buffer.
     pub unsafe fn recv_with_buffer(self, out: *mut u8, size: usize) -> isize {
         // SAFETY: as the caller promises.
-        unsafe { recv_buffered(self, out, size) }
+        recv_buffered(self, unsafe { core::slice::from_raw_parts_mut(out, size) })
     }
 
     /// `Socket::recv_line(buf, maxlen)`, one buffered byte at a time.
@@ -272,14 +272,9 @@ impl Co {
     /// # Safety
     /// `out` holds `limit` bytes and one more, outside the socket's read buffer.
     pub unsafe fn recv_line(self, out: *mut u8, limit: usize) -> isize {
-        unsafe extern "C" fn read(this: *mut c_void, out: *mut u8, size: usize) -> isize {
-            // SAFETY: `recv_line`'s live socket.
-            let socket = unsafe { Co::of(this) };
-            // SAFETY: one byte of `recv_line`'s output.
-            unsafe { recv_buffered(socket, out, size) }
-        }
-        // SAFETY: as the caller promises; each read is the socket's buffered read.
-        unsafe { swr_v1_hook_recv_line(read, self.this(), out, limit) }
+        // SAFETY: as the caller promises.
+        let out = unsafe { core::slice::from_raw_parts_mut(out, limit + 1) };
+        recv_line(out, |at| recv_buffered(self, at))
     }
 
     /// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on
