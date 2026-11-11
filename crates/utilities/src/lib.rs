@@ -371,7 +371,9 @@ pub(crate) fn log_micros(output: &mut [u8], microseconds: i64) -> usize {
     sink.finish()
 }
 
+// Every test here calls the C++ oracle, which Miri can't run.
 #[cfg(test)]
+#[cfg(not(miri))]
 mod upstream;
 
 #[cfg(test)]
