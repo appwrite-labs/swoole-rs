@@ -704,8 +704,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
     if !built_with(Switch::Sockets) {
         return None;
     }
-    // SAFETY: dup(2) of the client's descriptor.
-    let fd = unsafe { libc::dup(cli.net()?.fd()) };
+    let fd = swoole_rs_corebase::sys::dup(cli.net()?.fd());
     if fd < 0 {
         return None;
     }

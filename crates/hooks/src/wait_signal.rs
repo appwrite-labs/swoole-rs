@@ -15,7 +15,7 @@ const WRONG_OPERATION: i32 = 509;
 struct Listener {
     co: *mut c_void,
     signo: i32,
-    resume: fn(*mut c_void),
+    resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
 
 /// Which listener each signal wakes (upstream's `listeners`).
@@ -38,8 +38,8 @@ struct SignalOps {
     waiting: fn(bool),
     /// `co->yield_ex(timeout)`: false on timeout or cancellation.
     yield_for: fn(f64) -> bool,
-    /// `co->resume()`.
-    resume: fn(*mut c_void),
+    /// `co->resume()` of a parked coroutine.
+    resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
 
 /// A signal's handler from before a wait installed its own (upstream's `PreviousSignal`).
@@ -88,7 +88,8 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
         return;
     };
     waiting.signo = signo;
-    (waiting.resume)(waiting.co);
+    // SAFETY: the listener's coroutine, parked in `wait_signal` until this wake.
+    unsafe { (waiting.resume)(waiting.co) };
 }
 
 /// `signo` as upstream's `std::vector<int>` holds it.
@@ -195,7 +196,7 @@ static NATIVE: SignalOps = SignalOps {
     listen: native::listen,
     waiting: native::waiting,
     yield_for: crate::resolve::park_for,
-    resume: crate::poll::native::resume,
+    resume: swoole_rs_coroutine::resume,
 };
 
 /// The unit tests link no signal table: theirs is the fake.
@@ -343,7 +344,7 @@ mod tests {
     fn timed_out(_: f64) -> bool {
         false
     }
-    fn resume(_: *mut c_void) {
+    extern "C-unwind" fn resume(_: *mut c_void) {
         log("resume".into());
     }
 
