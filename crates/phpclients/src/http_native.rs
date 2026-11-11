@@ -8,6 +8,7 @@ use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
+use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
@@ -79,15 +80,6 @@ pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, 
     }
 }
 
-/// The close hook: hands the popped write buffer to the client's conn.
-unsafe extern "C" fn socket_dtor(conn: *mut c_void, socket: *mut c_void) {
-    // SAFETY: the socket being destroyed.
-    let record = unsafe { co::record(socket) };
-    let written = std::mem::replace(&mut record.write_buffer, std::ptr::null_mut());
-    // SAFETY: the conn the client registered, and the buffer it takes over.
-    unsafe { crate::http_client::socket_closed(conn, written) };
-}
-
 /// `delete buffer`.
 pub(crate) unsafe fn swoole_http_client_coro_buffer_free(buffer: *mut c_void) {
     if buffer.is_null() {
@@ -143,13 +135,8 @@ impl Co {
     /// Connect timeout (0: the default), resolve context, the close hook and
     /// the zend string allocator.
     /// # Safety
-    /// `resolve` and `conn` outlive the socket.
-    pub(crate) unsafe fn configure_http(
-        self,
-        timeout: f64,
-        resolve: *mut c_void,
-        conn: *mut c_void,
-    ) {
+    /// `resolve` outlives the socket.
+    pub(crate) unsafe fn configure_http(self, timeout: f64, resolve: *mut c_void, hook: CloseHook) {
         let timeout = if timeout == 0.0 {
             // SAFETY: the reactor's defaults, written only by settings.
             unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.connect }
@@ -160,8 +147,7 @@ impl Co {
         let record = self.record();
         record.resolve_context = resolve;
         record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-        // SAFETY: per the caller, the conn outlives the socket.
-        unsafe { self.close_hook(socket_dtor, conn) };
+        set_close_hook(self.handle(), hook);
     }
 
     /// `connect(host, port)` under the timeout `configure_http` set.
@@ -179,8 +165,7 @@ impl Co {
     pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
         let buffer = self.write_buffer();
         buffer.clear();
-        // SAFETY: the caller's bytes.
-        unsafe { buffer.append(data.as_ptr(), data.len()) };
+        buffer.append(data);
         self.send_all(buffer.view())
     }
 

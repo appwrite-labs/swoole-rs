@@ -13,7 +13,7 @@ use swoole_rs_phpthread::Arguments;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
-    Props, Value,
+    Value,
     bailout::{self, Bailout},
     kind,
     string::bytes,
@@ -80,12 +80,9 @@ pub(crate) fn worker(object: ServerObject, serv: view::Server<'_>) -> Option<Res
 }
 
 fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
-    let mut zserv = crate::dispatch::undef();
-    // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
-    unsafe { swoole_rs_zend::set_object(&raw mut zserv, object.raw()) };
     // SAFETY: the Server object and its class, which declares `setting`.
     let setting = unsafe {
-        swoole_rs_zend::host::array_property_of(object.class(), &raw mut zserv, c"setting")
+        swoole_rs_zend::host::array_property_of(object.class(), object.raw(), c"setting")
     }?;
     // SAFETY: the property's array, replaced below.
     unsafe { zval_ptr_dtor(setting) };
@@ -130,9 +127,7 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
         if !path.is_null() {
             // SAFETY: the request's NUL-terminated script.
             let path = unsafe { CStr::from_ptr(path) };
-            // SAFETY: the object and its class.
-            unsafe { Props::new(object.class(), object.raw()) }
-                .bytes(c"bootstrap", path.to_bytes());
+            crate::lifecycle::Props::own(object).bytes(c"bootstrap", path.to_bytes());
         }
     }
     let script = string_of(slot);
