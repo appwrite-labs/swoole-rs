@@ -4,16 +4,18 @@
 //! `websocket::Frame`. With `upstream-symbols` each is defined under its upstream
 //! (Itanium) symbol, and the file leaves the build.
 use std::ffi::{CStr, c_char, c_int};
+use std::mem::MaybeUninit;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, control_invalid, decode_in_place, encoded_size, frame_length,
+    DecodedFrame, INVALID_CONTROL, control_invalid, decode_in_place, encode_close_into,
+    encode_parts, encoded_size, frame_length,
 };
 
-use crate::{swr_v1_ws_encode, swr_v1_ws_encode_close, swr_v1_ws_mask};
+use crate::swr_v1_ws_mask;
 
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = 4;
@@ -52,7 +54,11 @@ fn header_only_mask(flags: u8) -> bool {
 
 /// `encode`/`pack_close_frame`'s tail: reserve `size` bytes past the buffer's
 /// length, let `write` fill them, and count them only when it wrote `size`.
-fn append_frame(buffer: &mut CppString, size: usize, write: impl FnOnce(*mut u8) -> usize) -> bool {
+fn append_frame(
+    buffer: &mut CppString,
+    size: usize,
+    write: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize,
+) -> bool {
     let length = buffer.len();
     if size == 0 || size > usize::MAX - length {
         return false;
@@ -60,7 +66,10 @@ fn append_frame(buffer: &mut CppString, size: usize, write: impl FnOnce(*mut u8)
     if length + size > buffer.size() {
         buffer.reserve(length + size);
     }
-    if write(buffer.as_mut_ptr().wrapping_add(length)) != size {
+    let Some(spare) = buffer.spare().get_mut(..size) else {
+        return false;
+    };
+    if write(spare) != size {
         return false;
     }
     // SAFETY: `write` filled the `size` bytes after the content, inside the buffer.
@@ -84,19 +93,9 @@ fn control_warning(origin: &CStr, opcode: u8, fin: u8, length: usize) {
 /// # Errors
 /// An incomplete frame or a compressed control frame, after upstream's warning.
 ///
-/// # Safety
-/// `data` covers `length` writable bytes (null only at length zero).
 #[inline]
-pub unsafe fn decode_frame(
-    data: *mut u8,
-    length: usize,
-) -> Result<DecodedFrame, (DecodedFrame, bool)> {
-    let data = if length == 0 {
-        &mut []
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { std::slice::from_raw_parts_mut(data, length) }
-    };
+pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool)> {
+    let length = data.len();
     let (total, decoded) = decode_in_place(data);
     if total == INVALID_CONTROL {
         log::warning(
@@ -177,8 +176,15 @@ upstream! {
             return false;
         }
         let size = encoded_size(length, flags);
-        // SAFETY: `data`'s bytes and the `size` bytes just reserved.
-        append_frame(buffer, size, |out| unsafe { swr_v1_ws_encode(data.cast(), length, opcode, flags, out, size) })
+        let data = if flags & HEADER_ONLY != 0 || length == 0 {
+            &[]
+        } else if data.is_null() {
+            return false;
+        } else {
+            // SAFETY: as the caller promises.
+            unsafe { std::slice::from_raw_parts(data.cast(), length) }
+        };
+        append_frame(buffer, size, |out| encode_parts(length, data, opcode, flags, out))
             && !header_only_mask(flags)
     }
 
@@ -188,8 +194,13 @@ upstream! {
     /// # Safety
     /// `data` covers `length` writable bytes.
     pub unsafe extern "C" fn decode(frame: &mut Frame, data: *mut c_char, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        let result = unsafe { decode_frame(data.cast(), length) };
+        let bytes = if length == 0 {
+            &mut []
+        } else {
+            // SAFETY: as the caller promises.
+            unsafe { std::slice::from_raw_parts_mut(data.cast(), length) }
+        };
+        let result = decode_frame(bytes);
         let (decoded, ok, filled) = match result {
             Ok(decoded) => (decoded, true, true),
             Err((decoded, filled)) => (decoded, false, filled),
@@ -233,8 +244,15 @@ upstream! {
             return false;
         }
         let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
-        // SAFETY: the reason's bytes and the `size` bytes just reserved.
-        append_frame(buffer, size, |out| unsafe { swr_v1_ws_encode_close(code, reason.cast(), length, flags, out, size) })
+        let reason = if length == 0 {
+            &[]
+        } else if reason.is_null() {
+            return false;
+        } else {
+            // SAFETY: as the caller promises.
+            unsafe { std::slice::from_raw_parts(reason.cast(), length) }
+        };
+        append_frame(buffer, size, |out| encode_close_into(code, reason, flags, out))
             && !header_only_mask(flags)
     }
 

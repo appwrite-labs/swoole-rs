@@ -219,13 +219,10 @@ pub(crate) fn answer(
             (&raw mut ctx.task).expose_provenance() as u64
         }
         OP_DESTROY_CALLBACK => {
-            let queue = &raw mut handle?.fields().destroy_callbacks;
-            let push = swoole_rs_reactor::swr_v1_reactor_deferred_push;
-            // SAFETY: the reactor's live destroy queue; the call takes the reactor, which
-            // outlives it.
-            if unsafe { push(queue, close_connections, reactor, None) } != 0 {
-                std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
-            }
+            let handle = handle?;
+            let fields = handle.fields();
+            // SAFETY: the call takes the reactor, which outlives it.
+            unsafe { swoole_rs_reactor::defer_destroy(fields, close_connections, reactor) };
             0
         }
         OP_CLOSE_FORWARD => {

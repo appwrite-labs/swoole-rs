@@ -15,7 +15,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_trace_flags,
 };
 use swoole_rs_utilities::{
-    LoggerSetting, process_logger, swoole_set_log_file, swoole_set_log_level, swr_v1_logger_set,
+    LoggerSetting, process_logger, set_log_file, swoole_set_log_level, swr_v1_logger_set,
     swr_v1_logger_set_date_format,
 };
 use swoole_rs_zend::{
@@ -114,9 +114,9 @@ fn option<T>(options: &Array, key: &CStr, convert: impl FnOnce(&Value) -> T, set
 
 /// The option under `key`, if set, as a NUL-terminated string (`zend::String`)
 /// with its length, for `set`.
-fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&[u8])) {
+fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
     if let Some(value) = get(options, key) {
-        set(value.string().bytes());
+        set(&value.string());
     }
 }
 
@@ -167,15 +167,12 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     flag(c"enable_kqueue", &|on| swr_v1_core_set_enable_kqueue(on));
     // [Logger]: the process logger, live from MINIT on.
     number(c"trace_flags", &|flags| swr_v1_core_set_trace_flags(flags));
-    text_option(options, c"log_file", |file| {
-        // SAFETY: a NUL-terminated path (a Zend string's bytes).
-        unsafe { swoole_set_log_file(file.as_ptr().cast()) };
-    });
+    text_option(options, c"log_file", |file| set_log_file(file.c_str()));
     number(c"log_level", &|level| swoole_set_log_level(int(level)));
     text_option(options, c"log_date_format", |format| {
         if let Some(logger) = process_logger() {
             // SAFETY: a NUL-terminated format (a Zend string's bytes).
-            unsafe { swr_v1_logger_set_date_format(logger, format.as_ptr().cast()) };
+            unsafe { swr_v1_logger_set_date_format(logger, format.c_str().as_ptr()) };
         }
     });
     flag(c"log_date_with_microseconds", &|on| {
@@ -206,7 +203,9 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         }
     });
     // [DNS]
-    text_option(options, c"dns_server", set_dns_server);
+    text_option(options, c"dns_server", |server| {
+        set_dns_server(server.bytes());
+    });
     // [Socket]
     if let Some(dns) = get(options, c"socket_dns_timeout").and_then(timeout) {
         defaults.dns.set(dns);

@@ -1,8 +1,8 @@
 //! Owned DNS request strings, hints and address storage. A record is reference
 //! counted: its native request holds one reference and each pool copy of an
 //! `AsyncEvent` carrying it another. Records contain no callbacks.
+use crate::StringSlot;
 use crate::resolver::{DIAGNOSTIC_FAILED, gethostbyname, ntop, resolve_addresses};
-use crate::{StringSlot, swr_v1_core_string_set};
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -194,10 +194,8 @@ impl ResolverRequest {
             return -1;
         };
         let text = terminated(&text);
-        let address = ptr::from_ref(&self.strings[2]);
-        // SAFETY: a live slot that nothing reads while this sets it (see `copy`), and
-        // readable text.
-        unsafe { swr_v1_core_string_set(address, text.as_ptr().cast(), text.len()) }
+        // SAFETY: a slot that nothing reads while this sets it (see `copy`).
+        unsafe { self.strings[2].set_shared(&text) }
     }
 
     /// Address `index` as text, or none past the end; `valid` false if it does not

@@ -2,7 +2,6 @@
 //! owner and its packet buffer; the header keeps `create`'s C++ allocation and
 //! `handshake`'s `std::function` send.
 use std::ffi::{c_char, c_int};
-use std::ptr;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
     socks_auth, socks_config, socks_connect, socks_negotiate, socks_strerror, socks_transition,
@@ -64,25 +63,22 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
             if let Some(prefix) = buffer.get_mut(..3) {
                 prefix.copy_from_slice(&[5, 1, 0]);
             }
-            let host = owner.string(3);
+            let host = owner.string_with_nul(3);
+            let name = host.split_last().map_or(&[][..], |(_, name)| name);
             let mut address: AddressStorage = swoole_rs_corebase::sys::zeroed();
             let mut length = 0;
             let (inet4, inet6);
             let (kind, address): (u8, &[u8]) = if fields.dns_tunnel != 0 {
-                (3, &host)
+                (3, name)
             } else {
-                // SAFETY: the exact address operation receives a local union/length and terminated host.
-                let error = unsafe {
-                    swoole_rs_clients::address::swr_v1_clients_address_assign(
-                        ptr::from_mut(&mut address).cast(),
-                        &raw mut length,
-                        fields.socket_type,
-                        host.as_ptr().cast(),
-                        host.len(),
-                        fields.target_port,
-                        None,
-                    )
-                };
+                let error = swoole_rs_clients::address::assign(
+                    &mut address,
+                    &mut length,
+                    fields.socket_type,
+                    &host,
+                    fields.target_port,
+                    false,
+                );
                 if error != 0 {
                     result.diagnostic = 1;
                     result.last_error = error;

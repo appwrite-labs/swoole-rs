@@ -225,12 +225,6 @@ pub fn coroutine_check() {
     }
 }
 
-/// `swoole_set_task_tmpdir(dir)`.
-pub fn set_task_tmpdir(dir: &CStr) {
-    // SAFETY: a NUL-terminated path, which the setter copies.
-    unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(dir.as_ptr()) };
-}
-
 /// `sw_module_number()`: the number Zend gave the module at MINIT.
 #[unsafe(no_mangle)]
 pub extern "C" fn sw_module_number() -> c_int {

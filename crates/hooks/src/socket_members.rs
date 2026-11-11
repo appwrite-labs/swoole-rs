@@ -145,18 +145,14 @@ const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
 pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port: c_int) -> bool {
     address.kind = kind;
     let terminated = [host, &[0]].concat();
-    // SAFETY: the address's own union and length, and the host's bytes and NUL.
-    let error = unsafe {
-        swoole_rs_clients::address::swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            kind,
-            terminated.as_ptr().cast(),
-            host.len(),
-            port,
-            None,
-        )
-    };
+    let error = swoole_rs_clients::address::assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        &terminated,
+        port,
+        false,
+    );
     if error != 0 {
         log::set_last_error(error);
     }

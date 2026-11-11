@@ -22,7 +22,7 @@ fn errno() -> c_int {
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
 mod registry {
     use super::{c_int, c_void, wait_count};
-    use crate::signal_upstream::{swoole_signal_clear, swoole_signal_set};
+    use crate::signal_upstream::{self, Handler};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use swoole_rs_process::wait::{Coroutines, wait_reap};
@@ -45,15 +45,11 @@ mod registry {
 
     extern "C-unwind" fn destroyed(_data: *mut c_void) {
         SIGNAL_READY.store(false, Ordering::Relaxed);
-        // SAFETY: the loop's thread, which owns the handlers.
-        unsafe { swoole_signal_clear() };
+        signal_upstream::clear();
     }
 
     fn register() {
-        // SAFETY: the loop's thread, which owns the handlers.
-        let _ = unsafe {
-            swoole_signal_set(libc::SIGCHLD, signal_handler as *const () as usize, false)
-        };
+        _ = signal_upstream::set(libc::SIGCHLD, Handler::new(signal_handler), false);
     }
 
     /// SIGCHLD's registration, deferred to the loop's thread.

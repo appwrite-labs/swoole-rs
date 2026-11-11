@@ -36,7 +36,8 @@ pub unsafe extern "C" fn get_package_length(
     pl: &mut PacketLength,
 ) -> isize {
     // SAFETY: `buf` addresses `buf_size` initialized bytes.
-    let length = unsafe { swr_v1_mqtt_frame_length(pl.buf, pl.buf_size as usize) };
+    let length =
+        unsafe { crate::input(pl.buf, pl.buf_size as usize) }.map_or(-1, mqtt_frame_length);
     if length < 0 {
         swoole_rs_corebase::log::error_log(
             /* SW_LOG_WARNING */ 4,

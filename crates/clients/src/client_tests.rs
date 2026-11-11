@@ -288,21 +288,7 @@ extern "C" fn socks5_handshake_step(
 
 /// Gives the client a proxy at proxy.test:1080.
 fn set_proxy(client: *mut Client, http: bool) {
-    let host = c"proxy.test";
-    // SAFETY: a live state and texts of their lengths.
-    unsafe {
-        swr_v1_clients_proxy(
-            client,
-            http,
-            host.as_ptr(),
-            host.count_bytes(),
-            1080,
-            c"".as_ptr(),
-            0,
-            c"".as_ptr(),
-            0,
-        );
-    }
+    super::set_proxy(unsafe { &*client }, http, b"proxy.test", 1080, b"", b"");
 }
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {

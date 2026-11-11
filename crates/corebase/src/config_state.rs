@@ -173,15 +173,23 @@ fn set_task_path(
     Ok(())
 }
 
-/// `bool swoole_set_task_tmpdir(const std::string &dir)` under its lock, with
-/// upstream's warnings.
+/// [`set_task_tmpdir`] for native code.
 /// # Safety
 /// `dir` is a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_set_task_tmpdir(dir: *const c_char) -> bool {
-    let mut slot = task_slot();
     // SAFETY: the caller's NUL-terminated string.
-    let dir = unsafe { CStr::from_ptr(dir) };
+    set_task_tmpdir(unsafe { CStr::from_ptr(dir) })
+}
+
+/// `bool swoole_set_task_tmpdir(const std::string &dir)` under its lock, with
+/// upstream's warnings.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "PHP's setters ignore it, as upstream's do"
+)]
+pub fn set_task_tmpdir(dir: &CStr) -> bool {
+    let mut slot = task_slot();
     let mut scratch = [0u8; libc::PATH_MAX as usize];
     let result = set_task_path(&mut slot, dir, &mut scratch);
     drop(slot);

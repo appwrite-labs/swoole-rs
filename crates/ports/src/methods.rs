@@ -5,14 +5,12 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
-use swoole_rs_clients::address::{
-    swr_v1_clients_address_assign, swr_v1_clients_address_port, type_name,
-};
+use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
+use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{
     GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
 };
-use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
 use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 #[cfg(not(test))]
@@ -208,25 +206,19 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
         return fail();
     }
-    let host = config.host_bytes();
     let mut address = SocketAddress {
         addr: swoole_rs_corebase::sys::zeroed(),
         len: 0,
         kind,
     };
-    // SAFETY: the union and its length, and the host's bytes, which its slot keeps
-    // NUL-terminated.
-    let error = unsafe {
-        swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            kind,
-            host.as_ptr().cast(),
-            host.len(),
-            config.port,
-            Some(swr_v1_clients_gethostbyname),
-        )
-    };
+    let error = assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        config.host.bytes_with_nul(),
+        config.port,
+        true,
+    );
     if error != 0 {
         log::set_last_error(error);
         let name = type_name(kind);

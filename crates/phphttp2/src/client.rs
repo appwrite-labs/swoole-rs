@@ -226,12 +226,6 @@ fn ce() -> *mut zend_class_entry {
     CLIENT.entry()
 }
 
-/// `convert_to_type(host)`: the socket type and how much of the host goes.
-fn host_type(host: &[u8]) -> swoole_rs_reactor::HostType {
-    // SAFETY: the host's bytes.
-    unsafe { swoole_rs_reactor::swr_v1_socket_host_type(host.as_ptr(), host.len()) }
-}
-
 /// `php_swoole_socket_set` when `settings` is an array.
 fn apply(socket: Co, settings: &Value) {
     if settings.array().is_some() {
@@ -400,7 +394,7 @@ impl Client {
             return false;
         }
         // `php_swoole_create_socket(convert_to_type(host))`.
-        let kind = host_type(&self.host.borrow());
+        let kind = swoole_rs_reactor::host_type(&self.host.borrow());
         {
             let mut host = self.host.borrow_mut();
             let erase = kind.erase.min(host.len());

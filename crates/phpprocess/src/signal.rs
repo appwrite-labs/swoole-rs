@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, bailout, message};
 
-use swoole_rs_reactor::signal_upstream::swoole_signal_get_handler;
+use swoole_rs_reactor::signal_upstream::{self, Handler};
 
 /// `SwooleG.signal_listener_num += delta`.
 fn listeners(delta: i32) {
@@ -27,8 +27,6 @@ fn listeners(delta: i32) {
 const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
-/// `SIG_IGN` as a `swSignalHandler`.
-const IGNORE: usize = 1;
 
 /// `signal_fci_caches`: the callable per signal (null: none).
 static CALLABLES: [AtomicPtr<c_void>; SLOTS] = [const { AtomicPtr::new(ptr::null_mut()) }; SLOTS];
@@ -39,7 +37,7 @@ fn slot(signo: i64) -> Option<&'static AtomicPtr<c_void>> {
 }
 
 /// `php_swoole_onSignal`: call the signal's callable with its number.
-unsafe extern "C" fn on_signal(signo: c_int) {
+extern "C" fn on_signal(signo: c_int) {
     let Some(slot) = slot(i64::from(signo)) else {
         return;
     };
@@ -88,9 +86,9 @@ pub(crate) fn signal(call: &Call) {
     };
     #[expect(clippy::cast_possible_truncation, reason = "0 <= signo < 128")]
     let number = signo as c_int;
-    let current = swoole_signal_get_handler(number);
-    let ours = on_signal as *const () as usize;
-    if current != 0 && current != ours && current != IGNORE {
+    let current = signal_upstream::get(number);
+    let ours = Handler::new(on_signal);
+    if current != Handler::NONE && current != ours && current != Handler::IGNORE {
         fatal(
             E_WARNING,
             &message!("signal [{signo}] processor has been registered by the system"),
@@ -111,7 +109,7 @@ pub(crate) fn signal(call: &Call) {
             }
             // Reset the handler, then free the callable once the loop is past
             // any dispatch using it.
-            host::signal_set(number, 0, false);
+            host::signal_set(number, Handler::NONE, false);
             slot.store(ptr::null_mut(), Ordering::Release);
             // SAFETY: the callable this slot owned.
             if let Some(old) = unsafe { Callable::from_raw(old) } {
@@ -121,7 +119,7 @@ pub(crate) fn signal(call: &Call) {
             call.set_bool(true);
             return;
         }
-        Some(value) if value.as_long() == Some(SIG_IGN) => (None, IGNORE),
+        Some(value) if value.as_long() == Some(SIG_IGN) => (None, Handler::IGNORE),
         Some(value) => {
             let Some(callable) = Callable::create(value) else {
                 call.set_bool(false);

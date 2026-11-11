@@ -112,6 +112,17 @@ impl ProxyState {
             strings.get(index).map_or(&[][..], StringSlot::bytes)
         })
     }
+    /// [`Self::string`] and the NUL after it.
+    ///
+    /// # Panics
+    /// While a string is being set.
+    pub fn string_with_nul(&self, index: usize) -> Ref<'_, [u8]> {
+        Ref::map(self.strings.borrow(), |strings| {
+            strings
+                .get(index)
+                .map_or(&[0][..], StringSlot::bytes_with_nul)
+        })
+    }
     /// Sets the string at `index`: 0, or -2 when the allocation fails or past the
     /// four.
     ///

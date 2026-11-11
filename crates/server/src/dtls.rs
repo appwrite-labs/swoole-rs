@@ -5,7 +5,6 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
 use std::ffi::CString;
 
-use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
@@ -52,18 +51,14 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
         kind,
         ..SocketAddress::default()
     };
-    // SAFETY: the union and its length, and the host's bytes.
-    let error = unsafe {
-        swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            kind,
-            host.as_ptr(),
-            host.count_bytes(),
-            port,
-            None,
-        )
-    };
+    let error = swoole_rs_clients::address::assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        host.to_bytes_with_nul(),
+        port,
+        false,
+    );
     if error != 0 {
         log::set_last_error(error);
         return false;

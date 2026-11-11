@@ -516,7 +516,7 @@ fn workers(s: &Settings) -> Step {
     s.clamped(c"task_ipc_mode", f::TASK_IPC_MODE, 0, i64::from(u8::MAX))?;
     s.string_option(c"task_tmpdir", |dir| {
         let dir = dir.split(|&b| b == 0).next().unwrap_or_default();
-        swoole_rs_phpswoole::set_task_tmpdir(&CString::new(dir).unwrap_or_default());
+        swoole_rs_corebase::set_task_tmpdir(&CString::new(dir).unwrap_or_default());
     })?;
     if let Some(value) = s.get(c"task_max_request") {
         let v = Settings::long(value)?.clamp(0, i64::from(u32::MAX));

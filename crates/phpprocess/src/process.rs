@@ -22,7 +22,7 @@ use swoole_rs_zend::{
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zend_object_addref,
         swr_zend_object_release, zend_class_entry, zend_get_executed_filename, zend_object,
-        zend_read_property, zend_string, zval,
+        zend_read_property, zend_string,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -269,18 +269,10 @@ fn signal_constants() -> Vec<(&'static CStr, i64)> {
     all
 }
 
-/// `php_swoole_process_get_worker` (`check`: `..._get_and_check_worker`).
-/// # Safety
-/// `object` is a live Process object zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void {
-    // SAFETY: per the caller.
-    let process = unsafe { Value::from_ptr(object) }.and_then(Value::custom);
-    if check {
-        checked(process)
-    } else {
-        process.map_or(ptr::null_mut(), |process| process.worker.get())
-    }
+/// `php_swoole_process_get_and_check_worker`: the worker of a Process object; null,
+/// with the error thrown, before its constructor ran.
+pub fn checked_worker(object: &Value) -> *mut c_void {
+    checked(object.custom())
 }
 
 fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pipe_type: c_int) {
@@ -294,17 +286,12 @@ fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pi
 /// as `exit` would. -1 when the callback or the event loop cannot start; a
 /// bailout pending on the way is raised here, as the closing one is.
 /// # Safety
-/// `worker` is the live worker of the Process object `object`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int {
-    // SAFETY: per the caller.
-    match unsafe { Value::from_ptr(object) } {
-        Some(this) => start_child(worker, this),
-        None => -1,
-    }
+/// `worker` is the live worker of the Process object `this`.
+pub unsafe fn start_worker(worker: *mut c_void, this: &Value) -> c_int {
+    start_child(worker, this)
 }
 
-/// [`swr_v1_phpprocess_start`] on `$this`.
+/// [`start_worker`] on `$this`.
 fn start_child(worker: *mut c_void, this: &Value) -> c_int {
     let Some(std) = this.object() else {
         return -1;

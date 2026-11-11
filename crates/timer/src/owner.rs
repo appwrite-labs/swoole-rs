@@ -13,7 +13,7 @@ use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::ReactorPrepared;
 use swoole_rs_reactor::{
-    swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition, swr_v1_reactor_deferred_push,
+    event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition,
 };
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
@@ -235,11 +235,8 @@ impl Owner {
             self.reactor.set(reactor);
             attach(reactor);
         } else if backend != MANUAL {
-            let alarm = alarm as *const () as usize;
-            // SAFETY: a plain signal handler, which nothing unloads.
-            _ = unsafe {
-                swoole_rs_reactor::signal_upstream::swoole_signal_set(libc::SIGALRM, alarm, false)
-            };
+            let alarm = swoole_rs_reactor::signal_upstream::Handler::new(alarm);
+            _ = swoole_rs_reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
         }
     }
 
@@ -480,14 +477,9 @@ impl Owner {
 fn attach(reactor: *mut c_void) {
     swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select);
     swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle);
-    // The thread's live reactor.
-    let fields = ReactorPrepared::of(reactor).fields;
-    // SAFETY: its live fields.
-    let queue = unsafe { &raw mut (*fields).destroy_callbacks };
-    // SAFETY: the live destroy queue; `destroyed` takes the reactor back.
-    if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, reactor, None) } != 0 {
-        std::process::abort();
-    }
+    // SAFETY: `reactor` is the thread's, whose destroy queue this is; `destroyed`
+    // takes it back.
+    unsafe { event_api::on_destroy_with(destroyed, reactor) };
 }
 
 /// The exit condition: no timer is pending.

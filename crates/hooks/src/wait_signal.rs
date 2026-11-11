@@ -5,6 +5,7 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
+use swoole_rs_reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: i32 = 128;
@@ -45,15 +46,15 @@ struct SignalOps {
 /// A signal's handler from before a wait installed its own (upstream's `PreviousSignal`).
 #[derive(Clone, Copy)]
 struct Previous {
-    /// The `SignalHandler`, or 0.
-    handler: usize,
+    /// The `SignalHandler`, or none.
+    handler: Handler,
     /// Whether the wait's handler is installed.
     registered: bool,
 }
 
 impl Previous {
     const NONE: Self = Self {
-        handler: 0,
+        handler: Handler::NONE,
         registered: false,
     };
 }
@@ -217,7 +218,7 @@ mod native {
     const EXIT_CONDITION_CO_SIGNAL_LISTENER: c_int = 3;
 
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
-    use swoole_rs_reactor::signal_upstream::{swoole_signal_get_handler, swoole_signal_set};
+    use swoole_rs_reactor::signal_upstream::{self, Handler};
 
     /// A non-coroutine signal listener exists.
     pub(super) fn busy() -> bool {
@@ -227,7 +228,7 @@ mod native {
     /// A signal change: register `previous` (non-null), or put `handler` back.
     struct Change {
         signo: c_int,
-        handler: usize,
+        handler: Handler,
         previous: *const Cell<Previous>,
     }
 
@@ -241,15 +242,14 @@ mod native {
                 Some(previous) if previous.get().registered => return,
                 Some(previous) => {
                     previous.set(Previous {
-                        handler: swoole_signal_get_handler(self.signo),
+                        handler: signal_upstream::get(self.signo),
                         registered: true,
                     });
-                    super::swr_v1_hook_signal_wake as extern "C" fn(i32) as usize
+                    Handler::new(super::swr_v1_hook_signal_wake)
                 }
                 None => self.handler,
             };
-            // SAFETY: the wake handler, or the one recorded from the table.
-            let _previous = unsafe { swoole_signal_set(self.signo, handler, false) };
+            _ = signal_upstream::set(self.signo, handler, false);
         }
     }
 
@@ -317,10 +317,10 @@ mod tests {
     }
     fn listen(signo: i32, previous: &Cell<Previous>, on: bool) -> bool {
         if !on {
-            log(format!("restore {signo} {}", previous.get().handler));
+            log(format!("restore {signo} {}", previous.get().handler.raw()));
         } else if !previous.get().registered {
             previous.set(Previous {
-                handler: 7,
+                handler: unsafe { Handler::from_raw(7) },
                 registered: true,
             });
             log(format!("listen {signo}"));

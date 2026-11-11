@@ -65,7 +65,6 @@ pub const RUN_SCHEDULE_WORKER: u32 = 33;
 pub const RUN_FEEDBACK: u32 = 34;
 /// `Server::sendwait(arg)`: context data and length.
 pub const RUN_SENDWAIT: u32 = 35;
-pub const RUN_KERNEL_NOBUFS: u32 = 36;
 pub const RUN_IDLE_WORKERS: u32 = 37;
 pub const RUN_IDLE_TASK_WORKERS: u32 = 38;
 pub const RUN_TASKING: u32 = 39;
@@ -560,10 +559,6 @@ pub const OP_FEEDBACK_SEND: u32 = 412;
 pub const OP_VERIFY_CONN: u32 = 413;
 /// `send_sync` of the context data; whether all of it was sent.
 pub const OP_SEND_SYNC: u32 = 414;
-/// Selects `get_connection(arg)`: 0 when it has no socket, else 1, plus 2 in process mode.
-pub const OP_SOCKET_CONN: u32 = 415;
-pub const OP_PIPE_NOBUFS: u32 = 416;
-pub const OP_SOCKET_NOBUFS: u32 = 417;
 pub const OP_WORKER_IDLE: u32 = 418;
 /// `gs->tasking_num`, an `int`; reset it to 0.
 pub const OP_TASKING: u32 = 419;

@@ -21,35 +21,26 @@ unsafe extern "C" {
     fn gethostbyname2(name: *const c_char, family: c_int) -> *mut libc::hostent;
 }
 
-/// Copies the entry's first address (`h_length` bytes, zero if it has none) to `addr`.
+/// The entry's first address (`h_length` bytes, zero if it has none) and its length.
 ///
 /// # Safety
-/// `entry` is a resolved hostent; `addr` holds `h_length` bytes.
-unsafe fn first_address(entry: &libc::hostent, addr: *mut c_char) {
+/// `entry` is a resolved hostent.
+unsafe fn first_address(entry: &libc::hostent) -> ([c_char; 46], usize) {
     let length = usize::try_from(entry.h_length).unwrap_or(0).min(46);
-    let mut bytes = [0u8; 46];
+    let mut bytes = [0 as c_char; 46];
     // SAFETY: `h_addr_list` is the resolver's null-terminated list, which some
     // libcs (Apple's) do not align.
     let first = unsafe { entry.h_addr_list.read_unaligned() };
     if !first.is_null() {
         // SAFETY: each address holds `h_length` bytes.
-        unsafe { std::ptr::copy_nonoverlapping(first.cast::<u8>(), bytes.as_mut_ptr(), length) };
+        unsafe { std::ptr::copy_nonoverlapping(first, bytes.as_mut_ptr(), length) };
     }
-    // SAFETY: the caller's `addr` holds `h_length` bytes.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr.cast(), length) };
+    (bytes, length)
 }
 
-/// `network::gethostbyname(flags, name, addr)`: the first address of `name` for the
-/// flags' family into `addr`; 0, or -1 if it does not resolve.
-///
-/// # Safety
-/// `name` is NUL-terminated; `addr` holds an address of the family.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
-    flags: c_int,
-    name: *const c_char,
-    addr: *mut c_char,
-) -> c_int {
+/// `network::gethostbyname(flags, name)`: the first address of `name` for the
+/// flags' family and its length, or none if it does not resolve.
+fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
     let family = flags & !LOOKUP_RANDOM;
     #[cfg(target_os = "linux")]
     {
@@ -58,10 +49,10 @@ pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
         let mut result = std::ptr::null_mut();
         let mut error = 0;
         loop {
-            // SAFETY: every out-parameter is valid for the call.
+            // SAFETY: a terminated name; every out-parameter is valid for the call.
             let rc = unsafe {
                 gethostbyname2_r(
-                    name,
+                    name.as_ptr(),
                     family,
                     &raw mut entry,
                     buffer.as_mut_ptr(),
@@ -75,12 +66,12 @@ pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
                 continue;
             }
             if rc != 0 || result.is_null() {
-                return -1;
+                return None;
             }
             break;
         }
-        // SAFETY: `entry` was filled by the resolver; `addr` is the caller's.
-        unsafe { first_address(&entry, addr) };
+        // SAFETY: `entry` was filled by the resolver.
+        Some(unsafe { first_address(&entry) })
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -88,15 +79,31 @@ pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
         let _held = LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // SAFETY: the lock serializes gethostbyname2's shared result.
-        let entry = unsafe { gethostbyname2(name, family) };
+        // SAFETY: a terminated name; the lock serializes gethostbyname2's shared result.
+        let entry = unsafe { gethostbyname2(name.as_ptr(), family) };
         // SAFETY: a non-null result is the resolver's entry, read under the lock.
-        let Some(entry) = (unsafe { entry.as_ref() }) else {
-            return -1;
-        };
+        let entry = unsafe { entry.as_ref() }?;
         // SAFETY: as above.
-        unsafe { first_address(entry, addr) };
+        Some(unsafe { first_address(entry) })
     }
+}
+
+/// [`gethostbyname`] into `addr`; 0, or -1 if it does not resolve.
+///
+/// # Safety
+/// `name` is NUL-terminated; `addr` holds an address of the family.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
+    flags: c_int,
+    name: *const c_char,
+    addr: *mut c_char,
+) -> c_int {
+    // SAFETY: the caller's NUL-terminated name.
+    let Some((bytes, length)) = lookup(flags, unsafe { CStr::from_ptr(name) }) else {
+        return -1;
+    };
+    // SAFETY: the caller's `addr` holds the family's `h_length` bytes.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr, length) };
     0
 }
 
@@ -170,13 +177,11 @@ pub(crate) fn resolve_addresses(
     }
 }
 
-/// `swr_v1_clients_gethostbyname` into room for any family's address.
+/// `network::gethostbyname(flags, name, addr)`: the first address of `name` for the
+/// flags' family, in room for any family's address; none if it does not resolve.
 #[must_use]
 pub fn gethostbyname(flags: c_int, name: &CStr) -> Option<[c_char; 46]> {
-    let mut binary = [0 as c_char; 46];
-    // SAFETY: a terminated name, and `first_address` copies at most 46 bytes.
-    let status = unsafe { swr_v1_clients_gethostbyname(flags, name.as_ptr(), binary.as_mut_ptr()) };
-    (status == 0).then_some(binary)
+    lookup(flags, name).map(|(binary, _)| binary)
 }
 
 // SAFETY: libc's.
