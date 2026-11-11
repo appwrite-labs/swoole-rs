@@ -36,20 +36,19 @@ use crate::ops::{
     OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
     OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
     OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
-    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_IDLE_TIME, OP_PORT_NODELAY,
-    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE,
-    OP_REACTOR_ADD_READ, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
-    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
-    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
-    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER,
+    OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ,
+    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS,
+    OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND,
+    OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
     OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
-    OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SOCKET_NOBUFS,
-    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH,
-    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
-    OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
-    OP_WRONG_OPERATION,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR,
+    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY,
+    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING,
+    OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
+    OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
     OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_PIPE_BIND,
@@ -1117,30 +1116,15 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.conn().high_watermark = 1;
             0
         }
-        OP_FD_CONN | OP_VERIFY_CONN | OP_SOCKET_CONN => {
-            // OP_SOCKET_CONN: `get_connection(int)` of the session id, as master.cc did.
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s int parameter")]
-            let fd = arg as c_int;
-            let (key, kind) = match op {
-                OP_FD_CONN => (libc::c_long::from(o.ctx.server_fd), 0),
-                OP_VERIFY_CONN => (arg.cast_signed(), 3),
-                _ => (libc::c_long::from(fd), 0),
+        OP_FD_CONN | OP_VERIFY_CONN => {
+            let (key, kind) = if op == OP_FD_CONN {
+                (libc::c_long::from(o.ctx.server_fd), 0)
+            } else {
+                (arg.cast_signed(), 3)
             };
             let conn = state.connection(key, kind);
-            let missing = conn.as_ref().is_none_or(|conn| conn.socket.is_null());
             o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| (&raw mut *conn).cast());
-            if op != OP_SOCKET_CONN {
-                return Some(u64::from(!o.ctx.conn.is_null()));
-            }
-            o.ctx.session_id = arg.cast_signed();
-            if missing {
-                return Some(0);
-            }
-            if u64::from(o.config().mode_) == MODE_PROCESS {
-                3
-            } else {
-                1
-            }
+            u64::from(!o.ctx.conn.is_null())
         }
 
         // The context's own fields.
@@ -1233,19 +1217,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SC_FLAGS => send_flags(o),
         OP_SC_VERIFY => verify(o),
-        OP_PIPE_NOBUFS => {
-            // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
-            let pipes = i64::from(o.tables().reactor_pipe_num);
-            let index = o.ctx.session_id % pipes;
-            let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
-            let id = u16::try_from(id).unwrap_or(u16::MAX);
-            let pipe = o.server().worker_pipe(id, false);
-            u64::from(pipe.is_some_and(|pipe| pipe.take_kernel_nobufs()))
-        }
-        OP_SOCKET_NOBUFS => {
-            let socket = o.conn_socket();
-            u64::from(socket.is_some_and(|socket| socket.take_kernel_nobufs()))
-        }
         OP_SC_TOUCH_SEND => {
             o.conn().last_send_time = swoole_rs_corebase::microtime();
             0
