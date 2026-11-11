@@ -217,31 +217,9 @@ impl UringSocketOps {
         }
     }
 
-    /// `ssl_readv`/`ssl_writev`: TLS transfers over each iovec while they move data.
-    fn tls_vector(&self, vector: &IoVector, write: bool) -> isize {
-        let mut total = 0isize;
-        loop {
-            let (iov, _) = vector.current();
-            // SAFETY: the vector's current iovec.
-            let iov = unsafe { *iov };
-            let result = if write {
-                // SAFETY: the iovec's buffer.
-                self.tls.send(unsafe { bytes(iov.iov_base, iov.iov_len) })
-            } else {
-                // SAFETY: the iovec's buffer.
-                self.tls
-                    .recv(unsafe { slots_mut(iov.iov_base, iov.iov_len) })
-            };
-            total += result.max(0);
-            vector.update(result);
-            if !(result > 0 && vector.current().1 > 0) {
-                return if total > 0 { total } else { result };
-            }
-        }
-    }
-
-    /// `readv`/`writev`.
-    fn vector(&self, vector: &IoVector, write: bool) -> isize {
+    /// `readv`/`writev`. The transfer borrows the remaining iovecs, so the vector
+    /// advances here, once per transfer, after that borrow ends.
+    fn vector(&self, vector: &mut IoVector, write: bool) -> isize {
         let event = if write { EVENT_WRITE } else { EVENT_READ };
         if !self.available(event) {
             return -1;
@@ -249,17 +227,24 @@ impl UringSocketOps {
         let (host, fd) = (self.host(), self.tls.fd);
         let result = self.bound(event, || {
             loop {
+                let iovecs = vector.iovecs();
+                let (iov, count) = (iovecs.as_ptr(), c_int::try_from(iovecs.len()).unwrap_or(0));
                 let result = if self.ssl() {
-                    self.tls_vector(vector, write)
+                    tls_vector(iovecs, |at, n| {
+                        if write {
+                            // SAFETY: part of an iovec's buffer.
+                            self.tls.send(unsafe { bytes(at, n) })
+                        } else {
+                            // SAFETY: part of an iovec's buffer.
+                            self.tls.recv(unsafe { slots_mut(at, n) })
+                        }
+                    })
+                } else if write {
+                    // SAFETY: the vector's remaining iovecs.
+                    unsafe { uring::writev(host, fd, iov, count, self.tls.write_timeout) }
                 } else {
-                    let (iov, count) = vector.current();
-                    if write {
-                        // SAFETY: the vector's remaining iovecs.
-                        unsafe { uring::writev(host, fd, iov, count, self.tls.write_timeout) }
-                    } else {
-                        // SAFETY: the vector's remaining iovecs.
-                        unsafe { uring::readv(host, fd, iov, count, self.tls.read_timeout) }
-                    }
+                    // SAFETY: the vector's remaining iovecs.
+                    unsafe { uring::readv(host, fd, iov, count, self.tls.read_timeout) }
                 };
                 vector.update(result);
                 if !(result < 0 && errno() == libc::EINTR) {
@@ -270,6 +255,26 @@ impl UringSocketOps {
         self.check(result);
         result
     }
+}
+
+/// `ssl_readv`/`ssl_writev`: `io` over `iovecs` in order while it moves data,
+/// resuming a short transfer where it stopped. The bytes moved, or the failing
+/// result when none moved; the caller advances its vector by that, once.
+fn tls_vector(iovecs: &[libc::iovec], mut io: impl FnMut(*mut c_void, usize) -> isize) -> isize {
+    let mut total = 0isize;
+    let mut result = 0isize;
+    'iovecs: for iov in iovecs {
+        let mut done = 0usize;
+        while done < iov.iov_len {
+            result = io(iov.iov_base.wrapping_byte_add(done), iov.iov_len - done);
+            if result <= 0 {
+                break 'iovecs;
+            }
+            total += result;
+            done += result.unsigned_abs();
+        }
+    }
+    if total > 0 { total } else { result }
 }
 
 /// `read` into `buf`, which may be uninitialized: the ring writes it.
@@ -337,7 +342,7 @@ fn transfer_result(result: isize, total: usize) -> isize {
 /// and some remains.
 pub(crate) fn swr_v1_hook_uring_vector(
     ops: &UringSocketOps,
-    vector: &IoVector,
+    vector: &mut IoVector,
     write: bool,
     all: bool,
 ) -> isize {
@@ -351,7 +356,7 @@ pub(crate) fn swr_v1_hook_uring_vector(
             break result;
         }
         total += result.unsigned_abs();
-        if vector.current().1 <= 0 {
+        if vector.iovecs().is_empty() {
             break result;
         }
     };
@@ -633,6 +638,45 @@ mod tests {
             check,
             set_err,
         }
+    }
+
+    /// A short TLS transfer over two iovecs moves the vector by the bytes moved,
+    /// once: the next transfer resumes inside the second iovec.
+    #[test]
+    fn tls_vector_moves_the_vector_once() {
+        let mut buffer = [0u8; 8];
+        let base = buffer.as_mut_ptr();
+        let source = [
+            libc::iovec {
+                iov_base: base.cast(),
+                iov_len: 4,
+            },
+            libc::iovec {
+                iov_base: base.wrapping_add(4).cast(),
+                iov_len: 4,
+            },
+        ];
+        // SAFETY: two iovecs over `buffer`, which outlives the vector.
+        let mut vector = unsafe { IoVector::new(source.as_ptr(), 2) }.unwrap();
+        let mut calls = Vec::new();
+        let mut transfer = |vector: &mut IoVector, results: &[isize]| {
+            let mut results = results.iter().copied();
+            let result = tls_vector(vector.iovecs(), |at, n| {
+                calls.push((at.cast::<u8>().addr() - base.addr(), n));
+                results.next().unwrap()
+            });
+            vector.update(result);
+            (result, core::mem::take(&mut calls))
+        };
+        // 3 then 1 fill the first iovec, 2 lands in the second, then it would block.
+        let (moved, made) = transfer(&mut vector, &[3, 1, 2, -1]);
+        assert_eq!((moved, made), (6, vec![(0, 4), (3, 1), (4, 4), (6, 2)]));
+        assert_eq!(vector.stopped(), (1, 2));
+        let (moved, made) = transfer(&mut vector, &[2]);
+        assert_eq!((moved, made), (2, vec![(6, 2)]));
+        assert!(vector.iovecs().is_empty());
+        // Nothing moved: the failure itself.
+        assert_eq!(tls_vector(&source, |_, _| -1), -1);
     }
 
     #[test]

@@ -155,6 +155,11 @@ pub trait Custom: Sized + 'static {
     /// code it runs sees a live object; a bailout it defers is raised after it,
     /// unless one was already pending.
     fn destruct(&self) {}
+    /// Whether PHP may serialize the objects, asked once, when the class registers.
+    #[must_use]
+    fn serializable() -> bool {
+        false
+    }
 }
 
 /// A class whose objects embed a `T`, which only
@@ -183,10 +188,12 @@ impl<T> std::ops::Deref for CustomClass<T> {
 }
 
 /// `T`'s data in `std`, when `std` is one of `T`'s objects: made by [`create`]
-/// or [`new_object`], whose handlers are `T`'s class's.
+/// or [`new_object`], whose handlers are `T`'s class's. For an object held
+/// by pointer; [`Call::custom`](crate::Call::custom) and
+/// [`Value::custom`](crate::Value::custom) borrow one a frame or zval holds.
 /// # Safety
 /// `std` is a live object that outlives `'a`.
-pub(crate) unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
+pub unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
     // SAFETY: per the caller.
     if unsafe { (*std).handlers } != T::class().handlers() {
         return None;

@@ -310,6 +310,16 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             ctx.conn = ctx.state().connection_ptr(session, kind);
             return Some(u64::from(!ctx.conn.is_null()));
         }
+        OP_ON_CLOSE => {
+            let call = |info: &mut DataHead| {
+                if let Some(slot) = ctx.slot(CB_CLOSE) {
+                    // SAFETY: onClose takes the server and the close event.
+                    unsafe { slot.call(serv, core::ptr::from_mut(info).cast()) };
+                }
+            };
+            let fd = ctx.send().info.fd;
+            return crate::base_factory::on_close(|| ctx.conn(), fd, call).map(|()| 0);
+        }
         _ => {}
     }
     let conn = ctx.conn()?;
@@ -357,25 +367,6 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                     .is_ok()
             };
             u64::from(set && won())
-        }
-        OP_ON_CLOSE => {
-            let mut info = DataHead {
-                fd: send().fd,
-                reactor_id: if conn.close_actively != 0 {
-                    -1
-                } else {
-                    i16::from(conn.reactor_id)
-                },
-                server_fd: low16(conn.server_fd),
-                ..DataHead::default()
-            };
-            conn.closing = 1;
-            if let Some(slot) = ctx.slot(CB_CLOSE) {
-                // SAFETY: onClose takes the server and the close event.
-                unsafe { slot.call(serv, (&raw mut info).cast()) };
-            }
-            conn.closing = 0;
-            0
         }
         OP_FORWARD_CLOSE => {
             let ev = DataHead {

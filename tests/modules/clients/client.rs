@@ -446,7 +446,11 @@ impl<'a> Client<'a> {
     }
 
     pub(super) fn enable_ssl_encrypt(&self) -> c_int {
-        self.int(Op::EnableSsl)
+        if self.handle().enable_ssl().is_some() {
+            0
+        } else {
+            -1
+        }
     }
 
     fn ssl_handshake(&self) -> c_int {
