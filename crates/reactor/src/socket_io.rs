@@ -28,16 +28,9 @@ const fn failed(error: c_int) -> SocketIoResult {
 
 /// `Socket::wait_event`: poll `fd` for `events` (already translated to poll bits)
 /// for `timeout_ms` (negative waits forever). On `EINTR` it fails if
-/// `dont_restart`, otherwise calls `dispatch` (`swoole_signal_dispatch`) and polls
-/// again.
+/// `dont_restart`, otherwise runs `swoole_signal_dispatch` and polls again.
 #[must_use]
-pub fn fd_wait(
-    fd: c_int,
-    events: i16,
-    timeout_ms: c_int,
-    dont_restart: bool,
-    dispatch: Option<unsafe extern "C" fn()>,
-) -> SocketIoResult {
+pub fn fd_wait(fd: c_int, events: i16, timeout_ms: c_int, dont_restart: bool) -> SocketIoResult {
     let mut event = libc::pollfd {
         fd,
         events,
@@ -59,10 +52,7 @@ pub fn fd_wait(
         if error != libc::EINTR || dont_restart {
             return failed(error);
         }
-        if let Some(dispatch) = dispatch {
-            // SAFETY: callers pass swoole_signal_dispatch, callable on this thread.
-            unsafe { dispatch() };
-        }
+        swoole_rs_process::signal::swoole_signal_dispatch();
     }
 }
 
@@ -264,17 +254,17 @@ mod tests {
     fn wait_times_out_then_sees_data() {
         let [a, b] = pair();
         assert_eq!(
-            fd_wait(a, libc::POLLIN, 10, false, None),
+            fd_wait(a, libc::POLLIN, 10, false),
             SocketIoResult {
                 status: 1,
                 error: libc::EAGAIN
             }
         );
         write(b, b"x");
-        assert_eq!(fd_wait(a, libc::POLLIN, -5, false, None), READY);
+        assert_eq!(fd_wait(a, libc::POLLIN, -5, false), READY);
         fd_clean(a);
         assert_eq!(
-            fd_wait(a, libc::POLLIN, 0, false, None).status,
+            fd_wait(a, libc::POLLIN, 0, false).status,
             1,
             "clean drained it"
         );

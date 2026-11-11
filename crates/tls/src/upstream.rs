@@ -16,7 +16,7 @@ use std::ptr::NonNull;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_reactor::socket_upstream::{
-    make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
+    make_socket_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputEffects, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
@@ -547,7 +547,6 @@ struct Call<'a> {
     socket: Socket<'a>,
     io: Io,
     dont_restart: bool,
-    dispatch: Option<unsafe extern "C" fn()>,
 }
 
 /// The I/O a blocking call repeats, with the operands beyond the loop's buffer.
@@ -572,10 +571,6 @@ impl SyncEffects for Call<'_> {
 
     fn dont_restart(&self) -> bool {
         self.dont_restart
-    }
-
-    fn dispatch(&self) -> Option<unsafe extern "C" fn()> {
-        self.dispatch
     }
 
     /// Edits only what it changes: threads share some records (a pool's pipe socket),
@@ -677,7 +672,6 @@ unsafe fn sync(
         socket,
         io,
         dont_restart,
-        dispatch: signal_dispatch(),
     };
     let event = if write { EVENT_WRITE } else { EVENT_READ };
     #[expect(
