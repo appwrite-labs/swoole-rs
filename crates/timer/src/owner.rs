@@ -567,16 +567,18 @@ mod tests {
     use super::*;
     use std::rc::Rc;
 
-    // The natives a manual timer never calls, which crates that depend on this one
-    // define: the test binary links them from here.
+    /// `Owner::init` declares the reactor's `swoole_signal_set` by symbol: naming it
+    /// links its object into the test binary on every linker.
+    #[used]
+    static SIGNAL_SET: unsafe extern "C" fn(c_int, usize, bool) -> usize =
+        swoole_rs_reactor::signal_upstream::swoole_signal_set;
+
+    /// The reactor's signal code calls `Socket::free`, which crates/tls defines and
+    /// a manual timer never reaches; crates/tls depends on this one, so the test
+    /// binary links it from here.
     #[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
     extern "C" fn socket_free() {
         unreachable!("a manual timer frees no socket");
-    }
-
-    #[unsafe(export_name = "_Z17swoole_signal_setiPFviEb")]
-    extern "C" fn signal_set(_: c_int, _: extern "C" fn(c_int), _: bool) -> usize {
-        unreachable!("a manual timer sets no signal");
     }
 
     type Call = Box<dyn FnMut(&Owner, *mut TimerNode)>;

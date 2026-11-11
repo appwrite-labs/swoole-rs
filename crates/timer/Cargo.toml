@@ -18,5 +18,9 @@ libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-reactor = { path = "../reactor", optional = true }
 
+[dev-dependencies]
+# The owner tests link the reactor's `swoole_signal_set`, which `Owner::init` declares.
+swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
+
 [lints]
 workspace = true
