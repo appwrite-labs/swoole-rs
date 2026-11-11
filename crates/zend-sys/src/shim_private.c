@@ -1,5 +1,5 @@
-/* Stays C (docs/zend.md, What stays C): bailout (property hooks, user calls,
- * allocation failures), allocator, globals (EG(function_table), EG(exception),
+/* Stays C (docs/zend.md, What stays C): bailout (property hooks, user calls),
+ * allocator, globals (EG(function_table), EG(exception),
  * CG(function_table)) and private (ZEND_CLOSURE_OBJECT). */
 #include "shim.h"
 #include "shim_private.h"
@@ -50,19 +50,8 @@ int swr_zend_try_facade_coroutine(long (*create)(zend_fcall_info_cache *, uint32
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed || raised;
 }
-int swr_zend_try_facade_palloc(size_t size, void **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = pemalloc(size, 1); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
+void *swr_zend_facade_palloc(size_t size) { return pemalloc(size, 1); }
 void swr_zend_facade_pfree(void *allocation) { pefree(allocation, 1); }
-int swr_zend_try_facade_pstring(const char *text, size_t length, zend_string **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_string_init(text, length, 1); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 int swr_zend_try_facade_intern(zend_string *string, zend_string **result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = zend_new_interned_string(string); }
@@ -71,42 +60,6 @@ int swr_zend_try_facade_intern(zend_string *string, zend_string **result) {
 }
 HashTable *swr_zend_facade_function_table(void) { return EG(function_table); }
 
-int swr_zend_try_facade_alloc(size_t size, void **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = emalloc(size); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_string(const char *text, size_t length, zend_string **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_string_init(text, length, 0); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_value_string(zval *value, const char *text, size_t length) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { ZVAL_STRINGL(value, text, length); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_object_alloc(size_t size, zend_class_entry *ce, void **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_object_alloc(size, ce); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_array_init(zval *value) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { array_init(value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_objects_new(zend_class_entry *ce, zend_object **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_objects_new(ce); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 int swr_zend_try_facade_creation_error(zend_class_entry *ce) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { zend_throw_error(NULL, "The object of %s can not be created for security reasons", ZSTR_VAL(ce->name)); }
@@ -114,18 +67,6 @@ int swr_zend_try_facade_creation_error(zend_class_entry *ce) {
     return bailed;
 }
 
-int swr_zend_try_facade_object_init(zend_object *object, zend_class_entry *ce) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { zend_object_std_init(object, ce); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_properties_init(zend_object *object, zend_class_entry *ce) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { object_properties_init(object, ce); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 int swr_zend_try_facade_object_dtor(zend_object *object) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { zend_object_std_dtor(object); }

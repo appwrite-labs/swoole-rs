@@ -27,13 +27,8 @@ impl Call {
 /// # Safety
 /// Installed as `create_object`, so Zend passes a registered class.
 pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: a registered class.
-    let mut object = ptr::null_mut();
-    // SAFETY: Zend's allocation failure is contained in the C leaf.
-    if unsafe { crate::sys::swr_zend_try_facade_objects_new(ce, &raw mut object) } != 0 {
-        crate::bailout::Bailout.defer();
-    }
-    crate::bailout::finish();
+    // SAFETY: a registered class; creating an object never bails out.
+    let object = unsafe { crate::sys::zend_objects_new(ce) };
     // SAFETY: class entries live for the process.
     let class = unsafe { &*ce };
     let count = usize::try_from(class.default_properties_count).unwrap_or(0);

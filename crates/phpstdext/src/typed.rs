@@ -511,20 +511,13 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
 /// resuming a contained bailout.
 /// # Safety
 /// `container` holds the fresh separated array.
-pub(crate) unsafe fn copy_type(container: *mut zval, source: Typed) -> Result<(), Bailout> {
+pub(crate) unsafe fn copy_type(container: *mut zval, source: Typed) {
     let source_info = info_of(source.ht);
     let extra = info_size(usize::from(source.header().len));
     // SAFETY: an array zval.
     let ht = unsafe { table(container) };
-    let mut memory = ptr::null_mut();
-    // SAFETY: allocate the real table header and trailing type metadata below a native trap.
-    swoole_rs_zend::bailout::trapped(unsafe {
-        swoole_rs_zend::sys::swr_zend_try_facade_alloc(
-            size_of::<HashTable>() + extra,
-            &raw mut memory,
-        )
-    })?;
-    let copy = memory.cast::<HashTable>();
+    // SAFETY: allocate the real table header and trailing type metadata.
+    let copy = unsafe { swr_zend_emalloc(size_of::<HashTable>() + extra) }.cast::<HashTable>();
     // SAFETY: both hold a table.
     unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
     // SAFETY: the source holds `extra` bytes of definition; the copy has room.
@@ -535,7 +528,6 @@ pub(crate) unsafe fn copy_type(container: *mut zval, source: Typed) -> Result<()
     unsafe { (*container).value = zend_value { arr: copy } };
     // SAFETY: the old allocation, which nothing references now.
     unsafe { swr_zend_efree(ht.cast()) };
-    Ok(())
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,

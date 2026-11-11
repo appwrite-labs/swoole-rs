@@ -17,20 +17,11 @@ typedef void (*swr_zend_then)(void *);
 int swr_zend_try_facade_coroutine(long (*)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
                                   zend_fcall_info_cache *, uint32_t, zval *, zval *, long *,
                                   swr_zend_then, void *, bool *);
-int swr_zend_try_facade_palloc(size_t, void **);
+void *swr_zend_facade_palloc(size_t);
 void swr_zend_facade_pfree(void *);
-int swr_zend_try_facade_pstring(const char *, size_t, zend_string **);
 int swr_zend_try_facade_intern(zend_string *, zend_string **);
 HashTable *swr_zend_facade_function_table(void);
-int swr_zend_try_facade_alloc(size_t, void **);
-int swr_zend_try_facade_string(const char *, size_t, zend_string **);
-int swr_zend_try_facade_value_string(zval *, const char *, size_t);
-int swr_zend_try_facade_object_alloc(size_t, zend_class_entry *, void **);
-int swr_zend_try_facade_array_init(zval *);
-int swr_zend_try_facade_objects_new(zend_class_entry *, zend_object **);
 int swr_zend_try_facade_creation_error(zend_class_entry *);
-int swr_zend_try_facade_object_init(zend_object *, zend_class_entry *);
-int swr_zend_try_facade_properties_init(zend_object *, zend_class_entry *);
 int swr_zend_try_facade_object_dtor(zend_object *);
 #include "zend_smart_str.h"
 int swr_zend_try_facade_callable_frame(zval *, zend_object *, zend_execute_data *, uint32_t, zend_fcall_info_cache *, char **, bool *);
