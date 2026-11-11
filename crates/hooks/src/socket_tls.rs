@@ -11,9 +11,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, owner_fields, owner_tls_host_name, reason_text, swoole_ssl_init,
-    swr_v1_tls_owner_clone, swr_v1_tls_owner_new, swr_v1_tls_owner_socket_context,
-    swr_v1_tls_owner_socket_session,
+    OwnedTlsContext, TlsContext, owner_fields, owner_tls_host_name, reason_text, swoole_ssl_init,
+    swr_v1_tls_owner_socket_context, swr_v1_tls_owner_socket_session,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -34,7 +33,8 @@ impl Co {
             return core::ptr::null();
         }
         // SAFETY: the record's live extra.
-        unsafe { (*extra).tls }
+        let tls = unsafe { &(*extra).tls };
+        tls.as_ref().map_or(core::ptr::null(), TlsContext::as_ptr)
     }
 
     /// `Socket::enable_ssl_encrypt()`: a fresh `SSLContext` owner; false when the
@@ -42,10 +42,10 @@ impl Co {
     #[must_use]
     pub fn enable_ssl(self) -> bool {
         self.with_extra(|extra| {
-            if !extra.tls.is_null() {
+            if extra.tls.is_some() {
                 return false;
             }
-            extra.tls = swr_v1_tls_owner_new().owner;
+            extra.tls = Some(TlsContext::new());
             true
         })
         .unwrap_or(false)
@@ -54,14 +54,12 @@ impl Co {
     /// The accepting constructor's TLS: `self`, accepted on `server`, shares the
     /// server's context and gets a session over it, or is closed when that fails.
     pub(crate) fn share_tls(self, server: Self) {
-        let owner = server.tls_owner();
-        if owner.is_null() {
+        let Some(shared) = server.with_extra(|extra| extra.tls.clone()).flatten() else {
             return;
-        }
-        // SAFETY: the server's live ownership handle.
-        let shared = unsafe { swr_v1_tls_owner_clone(owner) };
+        };
+        let owner = shared.as_ptr();
         // The client's metadata takes the reference.
-        self.with_extra(|extra| extra.tls = shared);
+        self.with_extra(|extra| extra.tls = Some(shared));
         if !self.create_session(owner) {
             // Nothing else holds the new socket yet.
             self.close();
@@ -125,7 +123,7 @@ impl Co {
             .unwrap_or(false)
             && {
                 // SAFETY: the live owner of the socket's context.
-                let name = unsafe { owner_tls_host_name(self.tls_owner()) };
+                let name = owner_tls_host_name(unsafe { &*self.tls_owner() });
                 name.length == 0 || {
                     // SAFETY: the view's NUL-terminated bytes, live for the call.
                     let name = unsafe { CStr::from_ptr(name.data) };

@@ -16,7 +16,6 @@ use core::ptr::null_mut;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{
     CoreStringView, NameResolverContext, ProxyState, StringSlot, log, swr_v1_core_string_set,
-    swr_v1_core_string_view,
 };
 use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
@@ -302,9 +301,7 @@ impl Live<'_> {
 
     fn string(&self, index: usize) -> Vec<u8> {
         // SAFETY: a live slot.
-        let view = unsafe { swr_v1_core_string_view(self.slot(index)) };
-        // SAFETY: its bytes, copied at once.
-        unsafe { bytes(view) }
+        unsafe { &*self.slot(index) }.bytes().to_vec()
     }
 
     /// The SOCKS5 packet's first `length` bytes.
@@ -499,8 +496,8 @@ impl Connecting for Live<'_> {
         let tls = self.socket.tls_owner();
         let mut name = Vec::new();
         if !tls.is_null() {
-            // SAFETY: the live owner's host name.
-            let view = unsafe { owner_tls_host_name(tls) };
+            // SAFETY: the live owner.
+            let view = owner_tls_host_name(unsafe { &*tls });
             // SAFETY: its bytes, copied at once.
             name = unsafe { bytes(view) };
         }

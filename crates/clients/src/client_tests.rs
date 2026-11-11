@@ -222,9 +222,7 @@ pub(super) unsafe extern "C" fn async_dispatch(event: *const c_void) -> *mut c_v
         &*(*event.cast::<AsyncEvent>()).data
     });
     // SAFETY: the request's name, live with it.
-    let name = unsafe { swoole_rs_corebase::swr_v1_core_string_view(view.name) };
-    // SAFETY: `length` bytes at `data`.
-    let name = unsafe { core::slice::from_raw_parts(name.data.cast::<u8>(), name.length) };
+    let name = unsafe { &*view.name }.bytes();
     // SAFETY: the request's fields, live with it.
     let family = unsafe { (*view.fields).family };
     log(format!("dns {} {family}", String::from_utf8_lossy(name)));

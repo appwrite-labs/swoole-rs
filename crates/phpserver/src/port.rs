@@ -415,7 +415,12 @@ fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Res
         return Ok(());
     }
     let dgram = port_settings::is_dgram(config.r#type);
-    port_settings::tls(&source, config.ssl_context, dgram)
+    let context = config.ssl_context.as_ref();
+    port_settings::tls(
+        &source,
+        context.map_or(core::ptr::null(), swoole_rs_tls::TlsContext::as_ptr),
+        dgram,
+    )
 }
 
 swoole_rs_zend::handlers! {

@@ -232,8 +232,9 @@ impl Objects<'_> {
     }
     /// The TLS port's `SSLContext` view.
     fn ssl(&self) -> OwnedTlsPrepared {
-        // SAFETY: the ops reading it run on a TLS port, whose context is live.
-        swr_v1_tls_owner_view(unsafe { &*self.port().ssl_context })
+        // The ops reading it run on a TLS port, which has a context.
+        let context = self.port().ssl_context.as_deref();
+        swr_v1_tls_owner_view(context.unwrap_or_else(|| std::process::abort()))
     }
     fn ssl_fields(&self) -> &OwnedTlsFields {
         // SAFETY: the owner's fields live as long as the port's reference.
@@ -520,7 +521,7 @@ pub(crate) unsafe fn answer(
             // `client_cert_file`'s slot.
             let slot = o.ssl().strings[7];
             // SAFETY: a stable slot of the port's live owner.
-            u64::from(unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) }.length != 0)
+            u64::from(!unsafe { &*slot }.bytes().is_empty())
         }
         OP_VERIFY_PEER => u64::from(o.ssl_fields().verify_peer != 0),
         OP_PEER_CERT => {

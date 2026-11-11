@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::cell::{Cell, OnceCell, RefCell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
@@ -43,7 +43,7 @@ use swoole_rs_tls::upstream::{
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
-    swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view,
+    TlsContext, swr_v1_tls_owner_view,
 };
 #[cfg(test)]
 use tests::{
@@ -298,8 +298,8 @@ pub struct Client {
     listener: Cell<Option<Listener>>,
     /// `1 << event` for each event the listener hears.
     events: Cell<u32>,
-    /// The `SSLContext`, null while TLS is off.
-    tls: Cell<*const OwnedTlsContext>,
+    /// The `SSLContext`, none while TLS is off.
+    tls: OnceCell<TlsContext>,
     /// The proxies, null when unset.
     socks5: Cell<*mut ProxyState>,
     http_proxy: Cell<*mut ProxyState>,
@@ -493,8 +493,8 @@ impl Handle {
 
     /// The TLS context's view; TLS is on.
     fn tls(self) -> OwnedTlsPrepared {
-        // SAFETY: the client's live context.
-        swr_v1_tls_owner_view(unsafe { &*self.get().tls.get() })
+        let tls = self.get().tls.get();
+        swr_v1_tls_owner_view(tls.unwrap_or_else(|| std::process::abort()))
     }
 
     fn tls_fields(self) -> &'static mut OwnedTlsFields {
@@ -506,7 +506,7 @@ impl Handle {
     fn tls_host_name(self) -> &'static CStr {
         let slot = self.tls().strings[TLS_HOST_NAME];
         // SAFETY: the live context's slot.
-        let name = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
+        let name = unsafe { &*slot }.view();
         // SAFETY: a slot's view is NUL-terminated.
         unsafe { CStr::from_ptr(name.data) }
     }
@@ -621,7 +621,7 @@ impl Handle {
         let Some(proxy) = self.proxy(Proxy::Http) else {
             return (core::ptr::null(), 0);
         };
-        let tls = !self.get().tls.get().is_null();
+        let tls = self.get().tls.get().is_some();
         let target = proxy.string(3);
         let host = if tls && !self.tls_host_name().is_empty() {
             self.tls_host_name().to_bytes()
@@ -823,7 +823,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         low_watermark: Cell::new(0),
         listener: Cell::new(None),
         events: Cell::new(0),
-        tls: Cell::new(core::ptr::null()),
+        tls: OnceCell::new(),
         socks5: Cell::new(core::ptr::null_mut()),
         http_proxy: Cell::new(core::ptr::null_mut()),
     });
@@ -973,8 +973,6 @@ impl Handle {
             // SAFETY: a proxy the client owns, released once.
             unsafe { swr_v1_core_proxy_free(proxy.get()) };
         }
-        // SAFETY: the client's reference to its context, released once.
-        unsafe { swr_v1_tls_owner_free(client.tls.get()) };
     }
 
     /// `Client::get_peer_name`: datagram peers are value snapshots of the last
@@ -1066,7 +1064,7 @@ fn close(this: Handle) -> c_int {
     this.set(CLOSED, true);
     let saved = this.socket();
     if this.flag(OPEN_SSL)
-        && !this.get().tls.get().is_null()
+        && this.get().tls.get().is_some()
         && !saved.read(|socket| socket.ssl().is_null())
     {
         socket_ssl_close(saved);
@@ -1148,12 +1146,10 @@ fn wakeup(this: Handle) -> c_int {
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
 /// client. -1 when TLS was already on.
 fn enable_ssl(this: Handle) -> c_int {
-    if !this.get().tls.get().is_null() {
+    // A new context and the client's reference to it.
+    if this.get().tls.set(TlsContext::new()).is_err() {
         return ERR;
     }
-    // A new context and the client's reference to it.
-    let tls = swr_v1_tls_owner_new();
-    this.get().tls.set(tls.owner);
     this.set(OPEN_SSL, true);
     if is_dgram(this.socket_type()) {
         enable_dtls(this);
@@ -1226,7 +1222,10 @@ pub extern "C" fn swr_v1_clients_proxy_fields(
 /// The client's `SSLContext`, which crates/tls configures; null while TLS is off.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_ssl_context(client: &Client) -> *const OwnedTlsContext {
-    client.tls.get()
+    client
+        .tls
+        .get()
+        .map_or(core::ptr::null(), TlsContext::as_ptr)
 }
 
 /// `Client::enable_dtls()`: the context's protocols become DTLS.
@@ -1244,7 +1243,11 @@ fn ssl_handshake(this: Handle) -> c_int {
     if this.tls_state() == SSL_STATE_READY {
         return ERR;
     }
-    let tls = this.get().tls.get();
+    let tls = this
+        .get()
+        .tls
+        .get()
+        .map_or(core::ptr::null(), TlsContext::as_ptr);
     if this.tls_fields().context.is_null() {
         this.tls_fields().http_v2 = u8::from(this.fields().http2);
         // SAFETY: the client's live context.

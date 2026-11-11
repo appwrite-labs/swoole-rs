@@ -72,6 +72,17 @@ impl StringSlot {
     pub fn bytes(&self) -> &[u8] {
         self.with_nul().split_last().map_or(&[], |(_, bytes)| bytes)
     }
+    /// A C view of the bytes; its pointer also covers the NUL after them, which
+    /// native readers stop at. Reading through it is the reader's promise that
+    /// the slot stays unchanged meanwhile.
+    #[must_use]
+    pub fn view(&self) -> CoreStringView {
+        let bytes = self.with_nul();
+        CoreStringView {
+            data: bytes.as_ptr().cast(),
+            length: bytes.len().saturating_sub(1),
+        }
+    }
     /// The bytes and their terminating NUL, which C views read as a C string.
     fn with_nul(&self) -> &[u8] {
         // SAFETY: a write through a shared slot is `swr_v1_core_string_set`, whose
@@ -82,17 +93,10 @@ impl StringSlot {
         }
     }
 }
-/// # Safety
-/// slot is live; its bytes cannot change while the returned view is used.
+/// [`StringSlot::view`], for native code.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_string_view(slot: *const StringSlot) -> CoreStringView {
-    // SAFETY: the caller lends a live synchronized slot.
-    let bytes = unsafe { &*slot }.with_nul();
-    // The pointer covers the NUL too: native readers stop at it.
-    CoreStringView {
-        data: bytes.as_ptr().cast(),
-        length: bytes.len().saturating_sub(1),
-    }
+pub extern "C" fn swr_v1_core_string_view(slot: &StringSlot) -> CoreStringView {
+    slot.view()
 }
 /// Fallible byte assignment; 0 success, -2 allocation refusal.
 /// Embedded NULs remain part of the value, with a separate trailing terminator.
@@ -119,19 +123,15 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
     unsafe { *slot.bytes.get() = replacement };
     0
 }
-/// Independent value-copy for native `auto snapshot = context.field`.
-/// # Safety
-/// source is live and not concurrently mutated. The returned Arc is released once.
+/// Independent value-copy for native `auto snapshot = context.field`; null when
+/// the allocation fails. The returned Arc is released once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_string_clone(source: *const StringSlot) -> *const StringSlot {
-    let slot = StringSlot::empty();
-    // SAFETY: the caller lends the source bytes.
-    let view = unsafe { swr_v1_core_string_view(source) };
-    // SAFETY: a new exclusive slot, and a still-live source view.
-    if unsafe { swr_v1_core_string_set(Arc::as_ptr(&slot), view.data, view.length) } != 0 {
+pub extern "C" fn swr_v1_core_string_clone(source: &StringSlot) -> *const StringSlot {
+    let mut slot = StringSlot::new();
+    if slot.set(source.bytes()) != 0 {
         return ptr::null();
     }
-    Arc::into_raw(slot)
+    Arc::into_raw(Arc::new(slot))
 }
 /// # Safety
 /// slot is one owned Arc returned by clone, released once after its view ends.
@@ -151,11 +151,11 @@ mod tests {
             let slot = StringSlot::empty();
             let pointer = Arc::as_ptr(&slot);
             assert_eq!(swr_v1_core_string_set(pointer, c"initial".as_ptr(), 7), 0);
-            let copied = swr_v1_core_string_clone(pointer);
+            let copied = swr_v1_core_string_clone(&slot);
             assert!(!copied.is_null());
             assert_eq!(swr_v1_core_string_set(pointer, c"changed".as_ptr(), 7), 0);
             assert_eq!(
-                std::ffi::CStr::from_ptr(swr_v1_core_string_view(copied).data).to_bytes(),
+                std::ffi::CStr::from_ptr(swr_v1_core_string_view(&*copied).data).to_bytes(),
                 b"initial"
             );
             let embedded = b"a\0b";
@@ -163,7 +163,7 @@ mod tests {
                 swr_v1_core_string_set(pointer, embedded.as_ptr().cast(), embedded.len()),
                 0
             );
-            let view = swr_v1_core_string_view(pointer);
+            let view = swr_v1_core_string_view(&slot);
             assert_eq!(view.length, 3);
             assert_eq!(
                 std::slice::from_raw_parts(view.data.cast::<u8>(), 4),
@@ -183,7 +183,7 @@ mod tests {
                     swr_v1_core_string_set(pointer, expected.as_ptr().cast(), length),
                     0
                 );
-                let view = swr_v1_core_string_view(pointer);
+                let view = swr_v1_core_string_view(&slot);
                 assert_eq!(view.length, length);
                 assert_eq!(
                     std::slice::from_raw_parts(view.data.cast::<u8>(), length),
@@ -195,7 +195,7 @@ mod tests {
                         swr_v1_core_string_set(pointer, view.data.add(1), length - 2),
                         0
                     );
-                    let view = swr_v1_core_string_view(pointer);
+                    let view = swr_v1_core_string_view(&slot);
                     assert_eq!(view.length, length - 2);
                     assert_eq!(
                         std::slice::from_raw_parts(view.data.cast::<u8>(), view.length),

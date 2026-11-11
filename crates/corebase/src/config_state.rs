@@ -3,7 +3,7 @@
 //! code reads in place, then its empty accessor members (`RustField` over
 //! `global.rs`'s record, `RustPath` over the paths here), whose bytes `views`
 //! reserves. Both sides assert the layout.
-use crate::{StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
+use crate::{StringSlot, swr_v1_core_string_set};
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::{Mutex, PoisonError};
@@ -86,8 +86,7 @@ fn set_path(slot: &StringSlot, path: &[u8]) -> bool {
 }
 
 fn path(slot: &StringSlot) -> *const c_char {
-    // SAFETY: a live slot, changed only by init, clean and the task-dir setter.
-    unsafe { swr_v1_core_string_view(slot) }.data
+    slot.view().data
 }
 
 /// `SwooleG.task_tmpfile.c_str()`.

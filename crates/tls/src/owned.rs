@@ -132,6 +132,49 @@ pub unsafe extern "C" fn swr_v1_tls_owner_free(owner: *const OwnedTlsContext) {
         unsafe { drop(Arc::from_raw(owner)) };
     }
 }
+/// One counted reference to an owner, held as native code holds an `SSLContext *`:
+/// the Arc's own pointer, so a nullable field of it is that pointer. Cloning takes
+/// another reference and dropping releases this one.
+#[repr(transparent)]
+pub struct TlsContext(core::ptr::NonNull<OwnedTlsContext>);
+impl TlsContext {
+    /// A new owner that warns through [`tls_warning`].
+    #[must_use]
+    pub fn new() -> Self {
+        let owner = core::ptr::NonNull::new(swr_v1_tls_owner_new().owner.cast_mut());
+        Self(owner.unwrap_or_else(|| std::process::abort()))
+    }
+    /// The owner, for native code and the raw-owner API; the handle keeps it live.
+    #[must_use]
+    pub fn as_ptr(&self) -> *const OwnedTlsContext {
+        self.0.as_ptr()
+    }
+}
+impl Default for TlsContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl core::ops::Deref for TlsContext {
+    type Target = OwnedTlsContext;
+    fn deref(&self) -> &OwnedTlsContext {
+        // SAFETY: the reference this handle holds keeps the owner live while it is borrowed.
+        unsafe { self.0.as_ref() }
+    }
+}
+impl Clone for TlsContext {
+    fn clone(&self) -> Self {
+        // SAFETY: the Arc's own pointer, live through the reference this handle holds.
+        unsafe { Arc::increment_strong_count(self.0.as_ptr()) };
+        Self(self.0)
+    }
+}
+impl Drop for TlsContext {
+    fn drop(&mut self) {
+        // SAFETY: this handle's one reference to the Arc, released once.
+        unsafe { drop(Arc::from_raw(self.0.as_ptr())) };
+    }
+}
 /// OpenSSL's reason text for `error`, or `(null)` as printf shows a missing one.
 #[must_use]
 pub fn reason_text(error: std::os::raw::c_ulong) -> String {
@@ -152,29 +195,17 @@ pub unsafe fn owner_fields(owner: *const OwnedTlsContext) -> OwnedTlsFields {
     // SAFETY: as the caller promises; a copy, no borrow is kept.
     unsafe { *owner.fields.get() }
 }
-/// `tls_host_name`'s NUL-terminated bytes.
-/// # Safety
-/// owner is live; the name does not change while the view is used.
+/// `tls_host_name`'s NUL-terminated bytes, read while the name stays unchanged.
 #[must_use]
-pub unsafe fn owner_tls_host_name(
-    owner: *const OwnedTlsContext,
-) -> swoole_rs_corebase::CoreStringView {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { &*owner };
-    // SAFETY: the owner's stable slot, unchanged while the view is used.
-    unsafe {
-        swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[TLS_HOST_NAME]))
-    }
+pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreStringView {
+    owner.strings[TLS_HOST_NAME].view()
 }
 /// # Safety
 /// owner is live; neither its strings nor scalar slots change during the operation.
 unsafe fn configuration(owner: *const OwnedTlsContext) -> TlsConfig {
     // SAFETY: the caller lends the live owner for this short snapshot.
     let owner = unsafe { &*owner };
-    let strings = owner.strings.each_ref().map(|slot| {
-        // SAFETY: owner's stable string slots remain live and unchanged for the returned view.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }
-    });
+    let strings = owner.strings.each_ref().map(|slot| slot.view());
     // SAFETY: field observation is externally synchronized.
     let fields = unsafe { &*owner.fields.get() };
     TlsConfig {
@@ -207,7 +238,7 @@ unsafe extern "C" fn slot_password(
     slot: *mut c_void,
 ) -> c_int {
     // SAFETY: per the caller.
-    let view = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot.cast()) };
+    let view = unsafe { &*slot.cast::<StringSlot>() }.view();
     // SAFETY: per the caller.
     unsafe { copy_password(buffer, capacity, view.into()) }
 }
@@ -317,11 +348,15 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     let source = unsafe { &*source };
     let slots = source.strings.iter().zip(&destination.strings);
     for (index, (from, to)) in slots.enumerate() {
-        // SAFETY: the source owns this stable, unchanged string slot.
-        let value = unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(from)) };
-        // SAFETY: the destination slot is exclusive and its cache catches exceptions.
+        let value = from.bytes();
+        // SAFETY: the destination slot is exclusive (a distinct owner) and the source's
+        // bytes stay unchanged while they are copied.
         let status = unsafe {
-            swoole_rs_corebase::swr_v1_core_string_set(Arc::as_ptr(to), value.data, value.length)
+            swoole_rs_corebase::swr_v1_core_string_set(
+                Arc::as_ptr(to),
+                value.as_ptr().cast(),
+                value.len(),
+            )
         };
         if status != 0 {
             return OwnedTlsCopy {
@@ -452,14 +487,12 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     if status != 0 {
         return OwnedTlsSessionResult { status, error };
     }
-    // SAFETY: the owner keeps the explicit hostname slot alive throughout configuration.
-    let explicit =
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner_ref.strings[8])) };
+    let explicit = owner_ref.strings[8].view();
     let selected = if explicit.length != 0 {
         Some(explicit)
     } else if fields.disable_tls_host_name == 0 {
-        // SAFETY: the enclosing socket lends its automatic hostname slot.
-        let automatic = unsafe { swoole_rs_corebase::swr_v1_core_string_view(hostname) };
+        // SAFETY: the enclosing socket lends its live automatic hostname slot.
+        let automatic = unsafe { &*hostname }.view();
         (automatic.length != 0).then_some(automatic)
     } else {
         None
@@ -605,31 +638,20 @@ pub unsafe fn set_value(owner: *const OwnedTlsContext, value: Value) {
 }
 
 /// Whether the owner has a certificate file and a key file.
-/// # Safety
-/// owner is live.
-pub unsafe fn has_files(owner: *const OwnedTlsContext) -> (bool, bool) {
-    // SAFETY: the caller lends the live owner.
-    let state = unsafe { &*owner };
-    let set = |slot: &Arc<StringSlot>| {
-        // SAFETY: a stable slot of the live owner.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }.length != 0
-    };
-    (set(&state.strings[4]), set(&state.strings[5]))
+#[must_use]
+pub fn has_files(owner: &OwnedTlsContext) -> (bool, bool) {
+    let set = |slot: &Arc<StringSlot>| !slot.bytes().is_empty();
+    (set(&owner.strings[4]), set(&owner.strings[5]))
 }
 
 /// `verify_peer` with no client certificate file, cafile or capath.
 /// # Safety
-/// owner is live.
-pub unsafe fn verify_without_ca(owner: *const OwnedTlsContext) -> bool {
-    // SAFETY: the caller lends the live owner.
-    let state = unsafe { &*owner };
-    let empty = |slot: &Arc<StringSlot>| {
-        // SAFETY: a stable slot of the live owner.
-        unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(slot)) }.length == 0
-    };
-    // SAFETY: the caller serializes field writes against this read.
-    let verify_peer = unsafe { &*state.fields.get() }.verify_peer != 0;
-    verify_peer && empty(&state.strings[7]) && empty(&state.strings[9]) && empty(&state.strings[10])
+/// The caller serializes field writes against this read.
+pub unsafe fn verify_without_ca(owner: &OwnedTlsContext) -> bool {
+    let empty = |slot: &Arc<StringSlot>| slot.bytes().is_empty();
+    // SAFETY: as the caller promises.
+    let verify_peer = unsafe { &*owner.fields.get() }.verify_peer != 0;
+    verify_peer && empty(&owner.strings[7]) && empty(&owner.strings[9]) && empty(&owner.strings[10])
 }
 
 #[cfg(test)]
@@ -661,7 +683,7 @@ mod tests {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
             let text = |index: usize| {
-                let view = swoole_rs_corebase::swr_v1_core_string_view(prepared.strings[index]);
+                let view = swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]);
                 std::slice::from_raw_parts(view.data.cast::<u8>(), view.length).to_vec()
             };
             assert!(set_text(owner, Text::HostName, b"example.test"));
@@ -672,10 +694,10 @@ mod tests {
             assert!(set_text(owner, Text::Ciphers, b"HIGH"));
             assert_eq!(text(0), b"HIGH");
             assert!(!set_text(owner, Text::CertFile, b"/nonexistent/cert.pem"));
-            assert_eq!(has_files(owner), (false, false));
+            assert_eq!(has_files(&*owner), (false, false));
             let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
             assert!(set_text(owner, Text::KeyFile, manifest.as_bytes()));
-            assert_eq!(has_files(owner), (false, true));
+            assert_eq!(has_files(&*owner), (false, true));
             set_value(owner, Value::Protocols(1 << 3));
             set_value(owner, Value::VerifyDepth(7));
             set_value(owner, Value::VerifyPeer(true));
@@ -795,7 +817,7 @@ mod tests {
             );
             assert_eq!(
                 std::ffi::CStr::from_ptr(
-                    swoole_rs_corebase::swr_v1_core_string_view(source.strings[PASSPHRASE]).data
+                    swoole_rs_corebase::swr_v1_core_string_view(&*source.strings[PASSPHRASE]).data
                 )
                 .to_bytes(),
                 b"source"
