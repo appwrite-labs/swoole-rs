@@ -1,7 +1,7 @@
 name: Miri
-# The unit tests of the crates without native dependencies, interpreted by Miri for
-# undefined behaviour in their unsafe code. Tests Miri can't run in reasonable time
-# carry #[cfg_attr(miri, ignore = "...")]. Nightly, and on PRs that change a listed crate.
+# The crates' unit tests, interpreted by Miri for undefined behaviour in their unsafe
+# code. Tests Miri can't run in reasonable time, or that call native code, carry
+# #[cfg_attr(miri, ignore = "...")]. Nightly, and on PRs that change a listed crate.
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -12,12 +12,14 @@ on:
       - crates/base64/**
       - crates/buffer/**
       - crates/bus/**
+      - crates/clients/**
       - crates/corebase/**
       - crates/coroutine/**
       - crates/crc32/**
-      - crates/error/**
       - crates/error-ffi/**
+      - crates/error/**
       - crates/framing/**
+      - crates/hooks/**
       - crates/http2/**
       - crates/httpbindings/**
       - crates/locks/**
@@ -25,6 +27,7 @@ on:
       - crates/ossupport/**
       - crates/process/**
       - crates/reactor/**
+      - crates/server/**
       - crates/timer/**
       - crates/utilities/**
       - crates/websocket-ffi/**
@@ -61,5 +64,16 @@ jobs:
           -p swoole-rs-buffer -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
           -p swoole-rs-locks -p swoole-rs-memory -p swoole-rs-ossupport -p swoole-rs-process
           -p swoole-rs-reactor -p swoole-rs-timer -p swoole-rs-utilities -p swoole-rs-websocket-ffi
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
+      # One crate per run, as verified: hooks and server turn on upstream-symbols in
+      # coroutine, reactor and timer, which the core step mustn't share. The clients
+      # tests' fake ops never free a closed socket (tests read it after close), so
+      # its leaks are ignored.
+      - name: Miri clients, hooks and server
+        run: |
+          MIRIFLAGS="$MIRIFLAGS -Zmiri-ignore-leaks" cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-clients
+          cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-hooks
+          cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-server
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
