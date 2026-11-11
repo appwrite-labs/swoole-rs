@@ -34,7 +34,7 @@ pub use system::swoole_daemon;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 pub use system::swoole_get_cpu_affinity;
 pub use system::{
-    swoole_random_bytes, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
+    pthread_self, swoole_random_bytes, swr_v1_os_is_root_user, swr_v1_os_set_isolation,
     swr_v1_os_set_process_death_signal, swr_v1_os_thread_native_id, thread_get_name,
     thread_set_name,
 };
