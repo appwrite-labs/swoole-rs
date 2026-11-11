@@ -266,9 +266,10 @@ impl Facts for Live<'_> {
 
     fn connection(&mut self, index: u64) -> Connection {
         let conn = self.connection_record(index);
-        let listener = self.serv.port_by_server_fd(conn.server_fd);
-        // SAFETY: the connection's live port.
-        let listener = live(unsafe { view::port(listener) }.socket).read(|s| s.info);
+        let config = self.serv.port_of_server_fd(conn.server_fd);
+        // A connection's port is live while a command runs, as `live`'s sockets are.
+        let config = config.unwrap_or_else(|| std::process::abort());
+        let listener = live(config.socket).read(|s| s.info);
         let (received, sent) = live(conn.socket).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
             session_id: conn.session_id,

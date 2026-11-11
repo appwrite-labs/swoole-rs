@@ -658,9 +658,9 @@ pub unsafe fn package_max_length(serv: *mut c_void, conn: *mut c_void) -> u32 {
     let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.
     let fd = unsafe { &*conn.cast::<ConnectionRecord>() }.fd;
-    let port = serv.port_by_fd(fd);
-    // SAFETY: the connection's live port, as in C++, which doesn't check it either.
-    unsafe { view::port(port) }.protocol.package_max_length
+    // The connection's live port, as in C++, which doesn't check it either.
+    serv.port_of_fd(fd)
+        .map_or(0, |port| port.protocol.package_max_length)
 }
 
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.

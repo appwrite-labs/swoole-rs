@@ -78,10 +78,21 @@ fn bus_of(thread: &mut ThreadRecord) -> *mut c_void {
     (&raw mut thread.bus).cast()
 }
 
+/// The context's event.
+fn event<'a>(ctx: &ReactorContext) -> &'a swoole_rs_reactor::Event {
+    // SAFETY: the ops reading it run on a live event.
+    unsafe { &*ctx.event }
+}
+
+/// The context's port settings.
+fn port_config<'a>(ctx: &ReactorContext) -> &'a crate::port_config::PortConfig {
+    // SAFETY: the ops reading it run with a live port, whose settings live as long as it.
+    unsafe { crate::port_config::of(ctx.port) }
+}
+
 /// The context event's socket.
 fn event_socket<'a>(ctx: &ReactorContext) -> Option<Socket<'a>> {
-    // SAFETY: the ops reading it run on a live event.
-    socket(unsafe { (*ctx.event).socket_ptr() })
+    socket(event(ctx).socket_ptr())
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
@@ -154,8 +165,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_PACKET_INIT => {
-            // SAFETY: the context's live event.
-            let fd = unsafe { (*ctx.event).fd() };
+            let fd = event(ctx).fd();
             // The event's fd is a listening socket's, whose slot is live.
             let conn = state.connection(fd.into(), 0)?;
             let kind = conn.socket_type;
@@ -240,8 +250,7 @@ pub(crate) unsafe fn answer(
         OP_PC_NOTIFY => {
             let mut head = DataHead {
                 reactor_id: i16::try_from(reactor_id()).unwrap_or_default(),
-                // SAFETY: the context's live event.
-                fd: c_long::from(unsafe { (*ctx.event).fd() }),
+                fd: c_long::from(event(ctx).fd()),
                 kind: EVENT_CLOSE,
                 ..DataHead::default()
             };
@@ -253,8 +262,7 @@ pub(crate) unsafe fn answer(
         OP_CC_COUNT => {
             use core::sync::atomic::Ordering::SeqCst;
             let gs = crate::shared::server_counters(state)?;
-            // SAFETY: the context's live port, whose counters live as long as it.
-            let port = unsafe { crate::port_config::of(ctx.port) }.counters()?;
+            let port = port_config(ctx).counters()?;
             gs.close_count.fetch_add(1, SeqCst);
             port.close_count.fetch_add(1, SeqCst);
             // arg: base mode, which counts connections per reactor
@@ -534,8 +542,7 @@ pub(crate) unsafe fn answer(
             // The event's socket, which the read may close.
             let sock = event_socket(ctx)?;
             let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
-            // SAFETY: the context's live port.
-            let port_config = unsafe { crate::port_config::of(port) };
+            let port_config = port_config(ctx);
             let on_read = port_config.on_read;
             // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
             let on_read: unsafe extern "C-unwind" fn(

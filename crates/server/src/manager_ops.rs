@@ -144,8 +144,16 @@ impl Context {
         // SAFETY: the ops reading it run with the message being read.
         unsafe { &*self.task }
     }
-    fn registry(&self) -> *mut registry::WorkerRegistry {
-        self.config().worker_registry.cast()
+    /// The server's worker registry.
+    fn registry(&self) -> &mut registry::WorkerRegistry {
+        let registry = self.config().worker_registry.cast();
+        // SAFETY: the server's live registry, which only the manager writes.
+        unsafe { &mut *registry }
+    }
+    /// The event pool's reload task, for the ops that run while the manager reloads.
+    fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {
+        // SAFETY: the reload task the manager started.
+        unsafe { &mut *self.pool().reload_task }
     }
 }
 
@@ -158,8 +166,7 @@ const REGISTRY_USER: c_int = 2;
 /// `Factory::kill_event_workers()` (`origin` `kill_event_workers`) and
 /// `kill_user_workers()`: SIGTERM each worker of `category`, then wait for each.
 fn kill_workers(ctx: &Context, category: c_int, origin: &core::ffi::CStr) {
-    // SAFETY: the server's live registry.
-    let registry = unsafe { &*ctx.registry() };
+    let registry = ctx.registry();
     let kill = swoole_rs_process::os::kill;
     let wait = |pid| swoole_waitpid(pid, None, 0);
     let warn = |pid| log::sys_warning(origin, format_args!("waitpid({pid}) failed"));
@@ -338,12 +345,11 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the server's `count` worker records.
             let workers: &[WorkerRecord] =
                 unsafe { core::slice::from_raw_parts(workers, count as usize) };
-            // SAFETY: the reload task the manager started.
-            unsafe { &mut *ctx.pool().reload_task }.add_workers(workers);
+            ctx.reload_task().add_workers(workers);
         }
         OP_RELOAD_KILL_ALL => {
-            // SAFETY: the reload task the manager started.
-            unsafe { &mut *ctx.pool().reload_task }.kill_all(libc::SIGTERM, methods::reload_warn);
+            ctx.reload_task()
+                .kill_all(libc::SIGTERM, methods::reload_warn);
         }
         OP_RESTART_WORKER => {
             let status = exit_status(arg);
@@ -358,12 +364,10 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_REAP_DETACHED => {
-            // SAFETY: the server's live registry.
-            return Some(u64::from(unsafe { (*registry).reap_detached(pid_of(arg)) }));
+            return Some(u64::from(registry.reap_detached(pid_of(arg))));
         }
         OP_UNREGISTER_PID => {
-            // SAFETY: the server's live registry.
-            unsafe { (*registry).unregister(pid_of(arg)) };
+            registry.unregister(pid_of(arg));
         }
         OP_HAS_COMMAND => {
             let id = i32::from(ctx.task().info.server_fd);
@@ -407,12 +411,8 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let pid = match op {
         OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg).cast()),
         OP_SPAWN_USER_WORKER => {
-            // SAFETY: the server's live registry.
-            let pending = unsafe { (*ctx.registry()).pending().as_ptr() };
             // The manager spawns the pending workers by index, below their count.
-            let slot = pending.wrapping_add(index(arg));
-            // SAFETY: as above.
-            let worker = unsafe { *slot };
+            let &worker = ctx.registry().pending().get(index(arg))?;
             spawn(RUN_SPAWN_USER_WORKER, worker)
         }
         OP_WORKER_BY_PID => {
@@ -505,8 +505,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(ctx.stop.worker_id)
         }
         OP_DETACH_STOPPED => {
-            // SAFETY: the server's live registry.
-            unsafe { (*ctx.registry()).detach(ctx.stop.pid) };
+            ctx.registry().detach(ctx.stop.pid);
             0
         }
         OP_COMMAND_REPLY => {

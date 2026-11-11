@@ -244,7 +244,8 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     // SAFETY: per the caller; a port's protocol keeps its server.
     let serv = unsafe { (*proto).private_data_2 };
     // SAFETY: per the caller, a live server's.
-    let state = unsafe { view::Server::from_raw(serv) }.state();
+    let server = unsafe { view::Server::from_raw(serv) };
+    let state = server.state();
     // SAFETY: per the caller, a live session socket.
     let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
         return -1;
@@ -305,9 +306,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
-    let port = crate::reactor_ops::port_by_fd(state, c.fd);
-    // SAFETY: the connection's live port, whose counters live as long as it.
-    if let Some(gs) = unsafe { crate::port_config::of(port) }.counters() {
+    if let Some(gs) = server.port_of_fd(c.fd).and_then(|port| port.counters()) {
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
     0

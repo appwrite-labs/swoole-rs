@@ -205,6 +205,10 @@ impl Objects<'_> {
         // SAFETY: the ops reading it run on a live event.
         unsafe { &*self.ctx.event }
     }
+    fn resp(&self) -> &DataHead {
+        // SAFETY: OP_PIPE_READ stored the live message first.
+        unsafe { &*self.ctx.resp }
+    }
     fn front(&self) -> &DataHead {
         // SAFETY: OP_RT_FRONT stored the live front message first.
         unsafe { &*self.ctx.front }
@@ -580,10 +584,8 @@ pub(crate) unsafe fn answer(
         }
         OP_CONN_FORCE => u64::from(o.conn().close_force),
         OP_CONN_HANDSHAKING => u64::from(o.conn().ssl != 0 && o.conn().ssl_ready == 0),
-        // SAFETY: OP_PIPE_READ stored the live message first.
-        OP_PIPE_TYPE => u64::from(unsafe { (*o.ctx.resp).kind }),
-        // SAFETY: as above.
-        OP_PIPE_FD => sign(unsafe { (*o.ctx.resp).fd }),
+        OP_PIPE_TYPE => u64::from(o.resp().kind),
+        OP_PIPE_FD => sign(o.resp().fd),
         OP_MICROTIME => microtime().to_bits(),
         OP_QUEUE_FULL => {
             u64::from(o.conn().recv_queued_bytes.load(SeqCst) > o.config().max_queued_bytes)
@@ -761,8 +763,8 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let config = unsafe { port_config::of(port) };
             let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
             let fd = socket.fd();
-            // SAFETY: the connection table's slot for the listening fd.
-            let serv_sock = unsafe { &mut *o.connection(c_long::from(fd), 0) };
+            // The connection table's slot for the listening fd.
+            let serv_sock = o.state.connection(c_long::from(fd), 0)?;
             serv_sock.fd = fd;
             serv_sock.socket_type = config.r#type;
             serv_sock.object = port;
