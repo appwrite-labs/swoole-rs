@@ -41,13 +41,14 @@ impl Co {
     /// socket has one already.
     #[must_use]
     pub fn enable_ssl(self) -> bool {
-        // SAFETY: the record's live extra record.
-        let tls = unsafe { &mut (*self.extra()).tls };
-        if !tls.is_null() {
-            return false;
-        }
-        *tls = swr_v1_tls_owner_new().owner;
-        true
+        self.with_extra(|extra| {
+            if !extra.tls.is_null() {
+                return false;
+            }
+            extra.tls = swr_v1_tls_owner_new().owner;
+            true
+        })
+        .unwrap_or(false)
     }
 
     /// The accepting constructor's TLS: `self`, accepted on `server`, shares the
@@ -59,8 +60,8 @@ impl Co {
         }
         // SAFETY: the server's live owner.
         let shared = swr_v1_tls_owner_clone(unsafe { &*owner });
-        // SAFETY: the client's live extra record, which takes the reference.
-        unsafe { (*self.extra()).tls = shared };
+        // The client's metadata takes the reference.
+        self.with_extra(|extra| extra.tls = shared);
         if !self.create_session(owner) {
             // Nothing else holds the new socket yet.
             self.close();

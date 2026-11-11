@@ -250,7 +250,7 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     let props = data.props().own();
     props.long(c"fd", i64::from(record.sock_fd));
     props.value(c"socket", &data.zsocket);
-    record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
+    socket.use_zend_strings();
     record.zero_copy = true;
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
         report_object(

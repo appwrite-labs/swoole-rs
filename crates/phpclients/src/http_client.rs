@@ -271,7 +271,9 @@ fn return_property(call: &Call, name: &CStr) {
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
 /// drop the socket and say so on the object.
 fn socket_closed(conn: &Conn, socket: Co) {
-    let written = std::mem::replace(&mut socket.record().write_buffer, ptr::null_mut());
+    let written = socket.handle().write_buffer();
+    // SAFETY: null, as before the socket's first write; the conn owns the old buffer.
+    unsafe { socket.handle().set_write_buffer(ptr::null_mut()) };
     let saved = conn.written.replace(written);
     // SAFETY: the buffer the conn took from its last socket, freed once.
     unsafe { native::swoole_http_client_coro_buffer_free(saved) };
