@@ -51,10 +51,8 @@ fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.
 fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
     let mut address = SocketAddress {
-        // SAFETY: the sockaddr union is plain data.
-        addr: unsafe { core::mem::zeroed() },
-        len: 0,
         kind,
+        ..SocketAddress::default()
     };
     // SAFETY: the union and its length, and the host's bytes.
     let error = unsafe {

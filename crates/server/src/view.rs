@@ -6,10 +6,10 @@
 //! (`native/include/swoole_rs_server_view.h`). `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
-use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};
+use crate::{ConnectionRecord, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 use std::ffi::CString;
 use std::sync::Arc;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
@@ -265,15 +265,19 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn connection_num(self) -> usize {
         let gs = self.counters();
-        if gs.cells().is_null() {
-            return gs.connection_num.load(Ordering::Relaxed) as usize;
+        self.connections(&gs.connection_num, gs.cells())
+    }
+
+    /// The sum of a record's per-worker connection `cells`, or its one shared
+    /// `total` when it has none.
+    fn connections(self, total: &AtomicU32, cells: *mut AtomicU32) -> usize {
+        if cells.is_null() {
+            return total.load(Ordering::Relaxed) as usize;
         }
-        let workers = self.config().worker_num as usize;
-        (0..workers)
+        (0..self.config().worker_num as usize)
             .map(|i| {
-                let cell = gs.cells().wrapping_add(i);
-                // SAFETY: one cell per event worker, allocated with the counters.
-                let cell = unsafe { &*cell };
+                // SAFETY: the server's records hold one cell per event worker.
+                let cell = unsafe { &*cells.wrapping_add(i) };
                 cell.load(Ordering::Relaxed) as usize
             })
             .fold(0, usize::wrapping_add)
@@ -322,16 +326,9 @@ impl<'a> Server<'a> {
 
     /// `ListenPort::get_connection_num()` of the port whose settings are `config`.
     pub(crate) fn port_connections(self, config: &PortConfig) -> usize {
-        let gs = config.gs;
-        // SAFETY: the port's mapped counters.
-        let cells = unsafe { &*gs.cast::<PortCounters>() }.cells();
-        let workers = if cells.is_null() {
-            0
-        } else {
-            self.config().worker_num
-        };
-        // SAFETY: the port's live counters, with one cell per event worker.
-        unsafe { crate::swr_v1_server_port_connections(gs, workers) }
+        config
+            .counters()
+            .map_or(0, |gs| self.connections(&gs.connection_num, gs.cells()))
     }
 
     /// `Server::get_max_connection()`.
@@ -642,6 +639,32 @@ mod tests {
         config.task_worker_num = 0;
         config.factory_ = core::ptr::null_mut();
         config.gs.free();
+        unsafe { crate::swr_v1_server_state_free(state) };
+    }
+
+    /// A port counts its connections in the per-worker cells when it has them, one
+    /// per event worker, and in its one shared count otherwise.
+    #[test]
+    fn port_counts_use_the_shared_worker_cells_when_present() {
+        use crate::PortCounters;
+        use core::sync::atomic::AtomicU32;
+        let state = crate::swr_v1_server_state_new();
+        let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
+        let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
+        let mut counters = PortCounters::default();
+        counters.connection_num.store(99, Ordering::Relaxed);
+        let mut port = PortConfig::boxed(0);
+        port.gs = (&raw mut counters).cast();
+        unsafe { serv.config_mut() }.worker_num = 2;
+        assert_eq!(serv.port_connections(&port), 99);
+        let mut cells = [AtomicU32::new(3), AtomicU32::new(5)];
+        counters.connection_nums = crate::records::tests::naming(&mut cells);
+        port.gs = (&raw mut counters).cast();
+        assert_eq!(serv.port_connections(&port), 8);
+        unsafe { serv.config_mut() }.worker_num = 0;
+        assert_eq!(serv.port_connections(&port), 0);
+        port.gs = core::ptr::null_mut();
+        assert_eq!(serv.port_connections(&port), 0, "no counters yet");
         unsafe { crate::swr_v1_server_state_free(state) };
     }
 }

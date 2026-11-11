@@ -89,8 +89,7 @@ pub use records::{
 };
 
 pub use shared::{
-    PortCounters, ServerCounters, swr_v1_server_port_connections, swr_v1_server_port_shared_init,
-    swr_v1_server_shared_init,
+    PortCounters, ServerCounters, swr_v1_server_port_shared_init, swr_v1_server_shared_init,
 };
 
 pub use config::ServerConfig;
