@@ -358,6 +358,7 @@ jobs:
       families: ${{ needs.changes.outputs.families != 'all' && needs.changes.outputs.families || '' }}
       baseline: ${{ needs.changes.outputs.baseline }}
       shards: ${{ needs.phpt-build.outputs.shards }}
+      shard-gate: ${{ needs.changes.outputs.baseline != '' }}
 
   # The one check main's ruleset requires: every blocking job passed or was skipped.
   # A skipped reusable-workflow caller reports no check at all, so the ruleset can't
