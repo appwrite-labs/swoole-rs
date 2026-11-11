@@ -83,7 +83,7 @@ use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::hook;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_memory::members::{Shm, sw_shm_calloc, sw_shm_free};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
@@ -162,11 +162,6 @@ unsafe fn port_config<'a>(port: *mut core::ffi::c_void) -> &'a mut PortConfig {
     let config = unsafe { *port.cast::<*mut PortConfig>() };
     // SAFETY: the port's settings live as long as it.
     unsafe { &mut *config }
-}
-
-/// `sw_shm_calloc(count, size)` as a typed pointer.
-fn shm_calloc<T>(count: usize, size: usize) -> *mut T {
-    sw_shm_calloc(count, size).cast()
 }
 
 fn sign(value: impl Into<i64>) -> u64 {
@@ -361,7 +356,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 let at = usize::from(o.ctx.reactor_id);
                 // Base mode has one connection-count cell per worker, and the
                 // reactor id is the accepting worker's.
-                let cells = [o.gs().connection_nums, o.port_gs().connection_nums];
+                let cells = [o.gs().cells(), o.port_gs().cells()];
                 for cell in cells.map(|cells| cells.wrapping_add(at)) {
                     // SAFETY: a cell of the counters' per-worker array, as above.
                     unsafe { &*cell }.fetch_add(1, SeqCst);
@@ -395,7 +390,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let fd = o.edit_sock(|s| s.fd);
             let conn = o
                 .tables()
-                .connection_list
+                .connections()
                 .wrapping_add(usize::try_from(fd).unwrap_or(0));
             o.ctx.conn = conn.cast();
             #[expect(
@@ -1365,9 +1360,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ALLOC_SESSIONS => {
-            let list = shm_calloc(SW_SESSION_LIST_SIZE as usize, SESSION_SIZE);
-            o.tables().session_list = list;
-            u64::from(!list.is_null())
+            o.tables().session_list = Shm::calloc(SW_SESSION_LIST_SIZE as usize, SESSION_SIZE);
+            u64::from(!o.tables().session_list.is_null())
         }
         OP_ALLOC_PORT_GS => {
             let ports = o.tables().ports();
@@ -1404,10 +1398,11 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_ALLOC_CONNECTIONS => {
+            // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
             let size = size_of::<ConnectionRecord>();
-            let list = swoole_rs_corebase::sw_calloc(o.tables().max_connection as usize, size);
-            o.tables().connection_list = list.cast();
-            u64::from(!list.is_null())
+            let max = o.tables().max_connection as usize;
+            o.tables().connection_list = Shm::calloc_private(max, size);
+            u64::from(!o.tables().connection_list.is_null())
         }
         OP_PORT_MAX_LENGTH | OP_PORT_MIN_LENGTH => {
             let protocol = &mut o.port_at(arg)?.protocol;
@@ -1418,7 +1413,7 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ST_PIPE_BIND => {
             let fd = isize::try_from(arg).unwrap_or(isize::MAX);
-            let conn = o.tables().connection_list.wrapping_offset(fd);
+            let conn = o.tables().connections().wrapping_offset(fd);
             // SAFETY: the pipe's fd indexes the live connection list, as in master.cc.
             unsafe { (*conn).object = o.ctx.object };
             0
@@ -1497,15 +1492,14 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ALLOC_CONNECTION_NUMS => {
-            let nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
-            o.gs().connection_nums = nums;
-            u64::from(!nums.is_null())
+            o.gs().connection_nums = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            u64::from(!o.gs().connection_nums.is_null())
         }
         OP_ALLOC_PORT_CONNECTION_NUMS => {
             let Some(gs) = o.port_at(arg).and_then(|port| port.counters()) else {
                 return Some(0);
             };
-            gs.connection_nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            gs.connection_nums = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
             u64::from(!gs.connection_nums.is_null())
         }
         OP_HTTP_DEFAULTS => {
@@ -1893,7 +1887,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let fd = socket.fd();
             let at = isize::try_from(fd).unwrap_or(isize::MAX);
             // SAFETY: the listening socket's fd indexes the live connection list.
-            let conn = unsafe { &mut *o.tables().connection_list.wrapping_offset(at) };
+            let conn = unsafe { &mut *o.tables().connections().wrapping_offset(at) };
             conn.fd = fd;
             conn.socket = port.socket.cast();
             conn.socket_type = port.r#type;
@@ -2044,7 +2038,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FREE_SERVER => {
             let tables = o.tables();
             let config = o.config();
-            sw_shm_free(core::mem::replace(&mut tables.session_list, core::ptr::null_mut()).cast());
+            tables.session_list.free();
             tables.port_gs_list.free();
             config.workers.free();
             let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
@@ -2758,15 +2752,13 @@ pub(crate) fn release_abandoned_base(serv: crate::view::Server<'_>) {
 /// `Server::destroy_base_factory()`: the connection list and the connection counts.
 fn destroy_base_factory(o: &Objects<'_>) -> u64 {
     let tables = o.tables();
-    // SAFETY: the base factory's `sw_calloc`ed connection list, freed once.
-    unsafe { swoole_rs_corebase::sw_free(tables.connection_list.cast()) };
-    sw_shm_free(o.gs().connection_nums.cast());
+    tables.connection_list.free();
+    o.gs().connection_nums.free();
     for index in 0..tables.ports().len() {
         if let Some(gs) = o.port_at(index as u64).and_then(|port| port.counters()) {
-            sw_shm_free(gs.connection_nums.cast());
+            gs.connection_nums.free();
         }
     }
-    o.gs().connection_nums = core::ptr::null_mut();
     0
 }
 
@@ -2941,7 +2933,6 @@ mod tests {
             config.gs = Shm::calloc(1, size_of::<ServerCounters>());
             let gs = config.gs.as_ptr().cast::<ServerCounters>();
             gs.write(ServerCounters::default());
-            let gs = &*gs;
             assert_eq!(answer(&raw mut ctx, &*state, OP_SIGNAL_ACTIVE, 0), Some(0));
             for op in [
                 OP_ALLOC_WORKERS,
@@ -2951,19 +2942,18 @@ mod tests {
             ] {
                 assert_eq!(answer(&raw mut ctx, &*state, op, 0), Some(1), "op {op}");
             }
-            assert_eq!((*gs.connection_nums.add(2)).load(Relaxed), 0, "zeroed");
+            let nums = (*gs).cells();
+            assert_eq!((*nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
-            assert_eq!((*tables.session_list.add(5)).fd, 0, "zeroed");
+            assert_eq!((*tables.sessions().add(5)).fd, 0, "zeroed");
             config.user_workers = Shm::calloc(1, 8);
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             config.task_results.free();
             config.workers.free();
-            for allocation in [gs.connection_nums.cast(), tables.session_list.cast()] {
-                sw_shm_free(allocation);
-            }
-            tables.session_list = core::ptr::null_mut();
+            (*gs).connection_nums.free();
+            tables.session_list.free();
             config.gs.free();
             crate::swr_v1_server_state_free(state);
         }

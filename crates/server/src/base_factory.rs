@@ -464,8 +464,8 @@ mod tests {
         fn script(&mut self, facts: &[(u32, u64)]) -> Script {
             let mut s = Script::with(facts);
             s.state = crate::ServerState::with_tables(ServerTables {
-                session_list: self.sessions.as_mut_ptr(),
-                connection_list: self.connections.as_mut_ptr(),
+                session_list: crate::records::tests::naming(&mut self.sessions),
+                connection_list: crate::records::tests::naming(&mut self.connections),
                 max_connection: 2,
                 ..ServerTables::default()
             });

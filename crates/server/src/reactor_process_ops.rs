@@ -263,7 +263,7 @@ fn worker(ctx: &Context, op: u32) -> Option<u64> {
         OP_RESET_CONNECTION_NUM => {
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the live server's counters' slot for each worker.
-            let slot = unsafe { &*ctx.counters().connection_nums.wrapping_add(id) };
+            let slot = unsafe { &*ctx.counters().cells().wrapping_add(id) };
             slot.store(0, Ordering::Relaxed);
         }
         OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker_record().pipe_worker.is_null())),
