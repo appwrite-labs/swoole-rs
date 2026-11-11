@@ -248,6 +248,16 @@ class OneWrite:
         return super().getresponse()
 
 
+class Batch:
+    """Collects a WebSocket client's frames, so the fragments of one message go out in one
+    write: sent apart, whether the server read them in one wake-up or several was timing,
+    so websocket-fragmented's count moved by 1.5% (#2954)."""
+    data = b''
+
+    def sendall(self, data):
+        self.data += data
+
+
 class HTTP(OneWrite, http.client.HTTPConnection):
     pass
 
@@ -264,8 +274,11 @@ def send(port, workload, count):
             for _ in range(count):
                 if method == 'WSF':
                     quarter = len(payload) // 4
+                    sock, client.socket = client.socket, Batch()
                     for i in range(4):
                         client.send(payload[i * quarter:(i + 1) * quarter], opcode=0 if i else 1, fin=i == 3)
+                    sock.sendall(client.socket.data)
+                    client.socket = sock
                 else:
                     client.send(payload)
                 body = client.receive()
