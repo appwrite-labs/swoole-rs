@@ -370,21 +370,10 @@ pub unsafe fn listen<T>(
 }
 
 /// `ProcessPool::response(data, length)`: append to the stream connection's reply.
-///
-/// # Safety
-/// `pool` is a created `ProcessPool`; `data` is null or holds `length` bytes.
 #[must_use]
-pub unsafe fn response(pool: *const PoolRecord, data: *const u8, length: u32) -> c_int {
-    // SAFETY: the caller lends a live pool.
-    let ipc = unsafe { (*pool).ipc };
-    let data = if data.is_null() {
-        &[]
-    } else {
-        // SAFETY: the caller's `length` bytes.
-        unsafe { std::slice::from_raw_parts(data, length as usize) }
-    };
+pub fn response(pool: &PoolRecord, data: &[u8]) -> c_int {
     // SAFETY: null, or the pool's IPC state, which nothing else borrows meanwhile.
-    let ipc = unsafe { ipc.as_mut() };
+    let ipc = unsafe { pool.ipc.as_mut() };
     if ipc.is_some_and(|ipc| swr_v1_process_pool_ipc_respond(ipc, data)) {
         0
     } else {
@@ -397,18 +386,10 @@ pub unsafe fn response(pool: *const PoolRecord, data: *const u8, length: u32) ->
 /// `ProcessPool::send_message(worker_id, message, length)`: to the worker's
 /// master pipe, through the message bus when the pool has one.
 ///
-/// False for a `worker_id` the pool has no worker for.
-///
-/// # Safety
-/// `pool` is a created `ProcessPool`; `message` holds `length` bytes.
+/// False for a `worker_id` the pool has no worker for, or a pool without pipes.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub unsafe fn send_message(
-    pool: *const PoolRecord,
-    worker_id: u32,
-    message: *const c_char,
-    length: usize,
-) -> bool {
+pub fn send_message(pool: &PoolRecord, worker_id: u32, message: &[u8]) -> bool {
     use swoole_rs_corebase::DataHead;
     // SAFETY: crates/bus' write and crates/tls's; declared, since both depend on
     // this crate.
@@ -422,18 +403,18 @@ pub unsafe fn send_message(
         #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
         fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
     }
-    // SAFETY: the caller lends a live pool.
-    let pool = unsafe { &*pool };
     // `get_worker`: the pool's record for `worker_id`.
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
-    if index >= pool.worker_num as usize {
+    // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
+    // `destroy` frees them and clears it.
+    let Some(worker) = pool.worker(index).filter(|_| !pool.pipes.is_null()) else {
         return false;
-    }
-    // SAFETY: a created pool's `workers` holds its `worker_num` records.
-    let pipe = unsafe { Worker::new(pool.workers.wrapping_add(index)).pipe_master() };
+    };
+    let pipe = worker.pipe_master();
+    let length = message.len();
     if pool.message_bus.is_null() {
         // SAFETY: the worker's pipe and the caller's bytes.
-        return unsafe { send_async(pipe, message.cast(), length) } != 0;
+        return unsafe { send_async(pipe, message.as_ptr().cast(), length) } != 0;
     }
     #[expect(
         clippy::cast_possible_truncation,
@@ -447,29 +428,23 @@ pub unsafe fn send_message(
     // SAFETY: `MessageBus` starts with its `swr_bus *`.
     let bus = unsafe { *pool.message_bus.cast::<*mut c_void>() };
     // SAFETY: the pool's bus, the worker's pipe and a header over the caller's bytes.
-    unsafe { swr_v1_bus_write(bus, pipe, &raw mut head, message) }
+    unsafe { swr_v1_bus_write(bus, pipe, &raw mut head, message.as_ptr().cast()) }
 }
 
 /// `ProcessPool::pop_message(data, size)`: the next message in the master's box,
 /// under the box's lock.
 ///
-/// # Safety
-/// `pool` is a created `ProcessPool` whose box, if any, was made with
-/// `SW_CHAN_LOCK`; `data` is writable for `size` bytes.
+/// The pool's box is the one `create` made with `SW_CHAN_LOCK`.
 #[must_use]
-pub unsafe fn pop_message(pool: *const PoolRecord, data: *mut c_void, size: usize) -> c_int {
-    // SAFETY: the caller lends a live pool.
-    let message_box = unsafe { (*pool).message_box };
-    if message_box.is_null() {
+pub fn pop_message(pool: &PoolRecord, data: &mut [u8]) -> c_int {
+    // SAFETY: null, or the pool's box: a live channel record whose mutex serializes
+    // its users.
+    let Some(message_box) = (unsafe {
+        pool.message_box
+            .cast::<swoole_rs_memory::channel::Record>()
+            .as_ref()
+    }) else {
         return -1;
-    }
-    // SAFETY: the box is a live channel record whose mutex serializes its users.
-    let message_box = unsafe { &*message_box.cast::<swoole_rs_memory::channel::Record>() };
-    let data = if size == 0 {
-        &mut []
-    } else {
-        // SAFETY: the caller lends `size` writable bytes.
-        unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), size) }
     };
     message_box.pop(data, true)
 }
@@ -785,8 +760,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         let mut out = [0u8; 16];
-        // SAFETY: the pool is live and `out` writable.
-        let none = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        let none = pop_message(&pool, &mut out);
         assert_eq!(none, -1, "no box");
         let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
         let record = memory.as_mut_ptr().cast::<Record>();
@@ -801,22 +775,19 @@ pub(crate) mod tests {
             // SAFETY: the record made above.
             assert_eq!(unsafe { &*record }.push(message), 0, "pushed");
         }
-        // SAFETY: as above.
-        let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        let n = pop_message(&pool, &mut out);
         assert_eq!(
             &out[..usize::try_from(n).unwrap_or(0)],
             b"first",
             "oldest first"
         );
-        // SAFETY: as above.
-        let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        let n = pop_message(&pool, &mut out);
         assert_eq!(
             &out[..usize::try_from(n).unwrap_or(0)],
             b"second",
             "then the next"
         );
-        // SAFETY: as above.
-        let n = unsafe { pop_message(&raw const pool, out.as_mut_ptr().cast(), out.len()) };
+        let n = pop_message(&pool, &mut out);
         assert_eq!(n, -1, "then empty");
     }
 
@@ -825,12 +796,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = pool_ipc_new(true);
-        // SAFETY: the pool is live and the bytes readable.
-        assert_eq!(
-            unsafe { response(&raw const pool, b"ok".as_ptr(), 2) },
-            -1,
-            "no connection"
-        );
+        assert_eq!(response(&pool, b"ok"), -1, "no connection");
         assert_eq!(
             swoole_rs_corebase::log::last_error(),
             505,
