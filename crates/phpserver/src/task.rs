@@ -750,12 +750,12 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
         let props = Props::init(&mut args[1], &TASK);
-        crate::server::task_bind(props.object(), server.raw(), &task.head());
         props.long(c"worker_id", info.worker_id);
         props.long(c"id", info.id);
         props.value(c"data", &mut data);
         props.double(c"dispatch_time", info.time);
         props.long(c"flags", info.flags);
+        crate::server::task_bind(Value::of(&mut args[1]), server.raw(), &task.head());
         2
     } else {
         args[1] = long_zval(info.id);

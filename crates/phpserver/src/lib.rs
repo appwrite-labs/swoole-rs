@@ -28,6 +28,9 @@ mod port_settings;
 pub use port::*;
 
 #[cfg(feature = "server")]
+mod callable;
+
+#[cfg(feature = "server")]
 mod dispatch;
 
 #[cfg(feature = "server")]
