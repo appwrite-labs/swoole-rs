@@ -429,15 +429,14 @@ impl Client {
         // HTTP/2 framing on the socket, then the settings.
         socket.set_http2(true);
         socket.set_open_length_check(true);
-        socket.with(|record| {
-            let protocol = &mut record.protocol;
-            // SW_HTTP2_FRAME_HEADER_SIZE.
-            protocol.package_length_size = 9;
-            protocol.package_length_offset = 0;
-            protocol.package_body_offset = 0;
-            protocol.get_package_length =
-                swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
-        });
+        let mut protocol = socket.protocol();
+        // SW_HTTP2_FRAME_HEADER_SIZE.
+        protocol.package_length_size = 9;
+        protocol.package_length_offset = 0;
+        protocol.package_body_offset = 0;
+        protocol.get_package_length =
+            swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+        socket.set_protocol(protocol);
         // SAFETY: `$this` declares `setting`.
         apply(socket, unsafe {
             swoole_rs_zend::property(self.object, c"setting")
@@ -500,7 +499,8 @@ impl Client {
             0 => {}
             2 => {
                 socket.set_err_code(QUEUE_FULL);
-                socket.set_err_msg(c"the send queue is full, try again later".as_ptr());
+                // SAFETY: a static message.
+                unsafe { socket.set_err_msg(c"the send queue is full, try again later".as_ptr()) };
                 self.io_error(socket);
                 return false;
             }
