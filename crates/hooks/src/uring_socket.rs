@@ -698,13 +698,6 @@ mod tests {
     use crate::co_socket::TestSocket;
     use crate::uring::testing::{HOST, with_engine};
     use crate::uring_tls::TlsHost;
-
-    /// `operator new` for this test binary, which links no C++ runtime: [`of`]'s TLS
-    /// host reaches the socket buffers' allocation.
-    #[unsafe(export_name = "_Znwm")]
-    extern "C" fn operator_new(size: usize) -> *mut c_void {
-        unsafe { libc::malloc(size) }
-    }
     use core::ffi::{c_char, c_ulong};
     use std::cell::RefCell;
 

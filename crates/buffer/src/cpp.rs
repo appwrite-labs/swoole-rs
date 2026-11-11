@@ -154,27 +154,21 @@ upstream! {
     }
 }
 
-/// `new Buffer(chunk_size)`: operator new's storage, so C++ `delete` frees it.
+/// `new Buffer(chunk_size)`, boxed: [`delete_buffer`] frees it.
 #[must_use]
 pub fn new_buffer(chunk_size: u32) -> *mut CppBuffer {
-    // SAFETY: `new Buffer`'s storage. A failed operator new throws `bad_alloc`, which
-    // aborts at this extern "C" frame, as every queue failure does.
-    let storage = unsafe { crate::string::operator_new(size_of::<CppBuffer>()) };
-    // SAFETY: a fresh, aligned allocation for one Buffer, owned by nothing else.
-    swr_cpp_buffer_new(unsafe { &mut *storage.cast() }, chunk_size)
+    swr_cpp_buffer_new(Box::leak(Box::new_uninit()), chunk_size)
 }
 
 /// `delete buffer`.
 ///
 /// # Safety
-/// `buffer` came from `new Buffer` (C++ or [`new_buffer`]) and is not used again.
+/// `buffer` came from [`new_buffer`] and is not used again.
 pub unsafe fn delete_buffer(buffer: *mut CppBuffer) {
     // SAFETY: as the caller promises.
-    let this = unsafe { &mut *buffer };
-    // SAFETY: as above.
-    unsafe { swr_cpp_buffer_drop(this) };
-    // SAFETY: operator new's storage, destroyed above.
-    unsafe { crate::string::operator_delete(buffer.cast()) };
+    let mut this = unsafe { Box::from_raw(buffer) };
+    // SAFETY: as above; the box frees it next.
+    unsafe { swr_cpp_buffer_drop(&mut this) };
 }
 
 #[cfg(test)]
@@ -282,5 +276,14 @@ mod tests {
             assert_eq!(swr_cpp_buffer_typed_front(this).kind, TYPE_CLOSE);
             // Teardown pops the queued CLOSE marker.
         });
+    }
+
+    #[test]
+    fn new_and_delete_buffer() {
+        let buffer = new_buffer(4);
+        unsafe { swr_cpp_buffer_append(&*buffer, b"abcdef".as_ptr(), 6) };
+        assert_eq!(swr_cpp_buffer_count(unsafe { &*buffer }), 2);
+        // Deleting a non-empty Buffer pops its entries first.
+        unsafe { delete_buffer(buffer) };
     }
 }
