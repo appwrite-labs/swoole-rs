@@ -1178,7 +1178,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             break;
         }
         header_completed = false;
-        if conn.buffer().len() > 0 {
+        if !conn.buffer().is_empty() {
             step = Step::Parse;
         }
     }
