@@ -14,7 +14,7 @@ use super::*;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
-use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
+use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods as pool;
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{self, EventHead, Packed, task_pack};
@@ -45,9 +45,6 @@ const SIGIO: c_int = 29;
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 const TEST_COUNTER_NUM: usize = 32;
 const IPC_MAX_SIZE: usize = SW_IPC_MAX_SIZE as usize;
-/// `Lock::MUTEX`, `LOCK_EX`.
-const MUTEX: i32 = 3;
-const LOCK_EX: i32 = 2;
 
 // Callback slots, in callbacks.rs's order.
 const CB_TASK: usize = 4;
@@ -108,7 +105,7 @@ impl EventData {
 struct TaskPool {
     pool: *mut PoolRecord,
     pipe: *mut SocketPair,
-    lock: *mut c_void,
+    lock: Option<&'static SharedMutex>,
 }
 
 impl TaskHost for TaskPool {
@@ -136,13 +133,8 @@ impl TaskHost for TaskPool {
     }
 
     fn lock(&mut self, on: bool) {
-        // SAFETY: this worker's live mutex.
-        unsafe {
-            if on {
-                swr_v1_locks_lock(self.lock, MUTEX, LOCK_EX, -1, 0);
-            } else {
-                swr_v1_locks_unlock(self.lock, MUTEX);
-            }
+        if let Some(lock) = self.lock {
+            _ = if on { lock.lock() } else { lock.unlock() };
         }
     }
 }
@@ -155,7 +147,7 @@ fn tasks(serv: Server, sync: bool) -> Tasks<'static, TaskPool> {
     let mut host = TaskPool {
         pool: view.task_pool(),
         pipe: ptr::null_mut(),
-        lock: ptr::null_mut(),
+        lock: None,
     };
     let mut result = ptr::null_mut();
     if sync {

@@ -1496,8 +1496,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
             let worker = unsafe { &mut *worker };
-            // SAFETY: a worker `create_worker` set up; shutdown holds no lock of it.
-            unsafe { crate::worker_methods::destroy_worker(worker) };
+            crate::worker_methods::destroy_worker(worker);
             0
         }
         OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
@@ -1784,7 +1783,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const SW_FD_PIPE: c_int = 3;
     use swoole_rs_error::swoole_clear_last_error_msg;
     use swoole_rs_reactor::event_api::swoole_event_wait;
-    use swoole_rs_reactor::signal_upstream::{swoole_signal_clear, swoole_signal_set};
+    use swoole_rs_reactor::signal_upstream::{self, Handler};
     use swoole_rs_reactor::swoole_event_free;
     // `SwooleTG.timer`.
     let timer = swoole_rs_corebase::thread_timer;
@@ -1825,19 +1824,19 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
             let handler = if op == OP_SIGNAL_HANDLE {
-                crate::server_methods::master_signal_handler as *const () as usize
+                let handler = crate::server_methods::master_signal_handler as *const () as usize;
+                // SAFETY: the master's handler, which runs while `SwooleG.server` is live.
+                unsafe { Handler::from_raw(handler) }
             } else {
-                0
+                Handler::NONE
             };
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let signo = arg as c_int;
-            // SAFETY: a handler nothing unloads, or none.
-            _ = unsafe { swoole_signal_set(signo, handler, false) };
+            _ = signal_upstream::set(signo, handler, false);
             0
         }
         OP_MARK_SHUTDOWN => {
-            // SAFETY: the master, which owns the signal handlers.
-            unsafe { swoole_signal_clear() };
+            signal_upstream::clear();
             o.gs().start.store(0, SeqCst);
             o.gs().shutdown.store(1, SeqCst);
             0

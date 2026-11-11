@@ -8,9 +8,7 @@ use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
 use core::ffi::{c_int, c_void};
 use core::ptr::NonNull;
-use swoole_rs_reactor::{
-    ReactorIov, swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare, swr_v1_reactor_iov_view,
-};
+use swoole_rs_reactor::{ReactorIov, swr_v1_reactor_iov_view};
 
 /// A `network::IOVector` over the caller's iovecs, destroyed on drop, and the
 /// direction it was made for. Its owner is its first member, so a pointer to it is
@@ -31,11 +29,13 @@ impl IoVector {
     /// vector lives: readable when `write`, writable otherwise.
     #[must_use]
     pub unsafe fn new(vectors: *const libc::iovec, count: c_int, write: bool) -> Option<Self> {
-        // SAFETY: as the caller promises.
-        let prepared = unsafe { swr_v1_reactor_iov_prepare(vectors, count) };
-        NonNull::new(prepared.owner)
-            .filter(|_| prepared.status == 0)
-            .map(|owner| Self { owner, write })
+        let vectors = match usize::try_from(count).ok()? {
+            0 => &[][..],
+            // SAFETY: as the caller promises; the iovecs are only copied.
+            count => unsafe { core::slice::from_raw_parts(vectors, count) },
+        };
+        let owner = NonNull::from(Box::leak(ReactorIov::new(vectors)?));
+        Some(Self { owner, write })
     }
 
     /// Whether the vector was made to write from.
@@ -79,7 +79,7 @@ impl IoVector {
     #[cfg(feature = "iouring")]
     pub(crate) fn update(&mut self, result: isize) {
         // SAFETY: the live owner; no reference to it is held across the call.
-        unsafe { swoole_rs_reactor::swr_v1_reactor_iov_advance(self.owner.as_ptr(), result) };
+        unsafe { self.owner.as_mut() }.advance(result);
     }
 
     /// The `IOVector *` the `network::Socket` calls take.
@@ -90,8 +90,8 @@ impl IoVector {
 
 impl Drop for IoVector {
     fn drop(&mut self) {
-        // SAFETY: the owner `new` made, released once.
-        unsafe { swr_v1_reactor_iov_destroy(self.owner.as_ptr()) };
+        // SAFETY: the box `new` leaked, released once.
+        drop(unsafe { Box::from_raw(self.owner.as_ptr()) });
     }
 }
 

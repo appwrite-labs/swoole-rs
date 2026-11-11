@@ -2,6 +2,8 @@
 //! Each reads the Rust-owned configuration straight from the `Server` ([`crate::view`]).
 
 use core::ffi::c_int;
+use core::mem::MaybeUninit;
+use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::worker_record::Worker;
 
 use swoole_rs_corebase::log;
@@ -104,25 +106,26 @@ pub unsafe fn destroy_task_workers(serv: view::Server<'_>) {
     swoole_rs_process::methods::destroy(serv.task_pool_ref());
 }
 
-/// `Lock::MUTEX`: the kind of a worker's lock.
-const MUTEX: i32 = 3;
-
 /// `Server::create_worker(worker)`: the worker's process-shared mutex, from the
 /// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
 ///
 /// # Safety
 /// `serv` is a live `Server` and `worker` one of its workers.
 pub unsafe fn create_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
-    let size = u32::try_from(swoole_rs_locks::swr_v1_locks_size(MUTEX)).unwrap_or(u32::MAX);
+    let size = u32::try_from(size_of::<SharedMutex>()).unwrap_or(u32::MAX);
     let lock = swoole_rs_memory::members::pool::alloc(size);
-    // SAFETY: `size` fresh bytes, aligned by the pool; nothing else sees them yet.
-    if lock.is_null() || unsafe { swoole_rs_locks::swr_v1_locks_init(lock, MUTEX, 1) } != 0 {
-        // Upstream's `Mutex` constructor throws, which ends the process here.
+    // SAFETY: null, or `size` fresh bytes, aligned by the pool, which the global pool
+    // keeps for the program's life; nothing else sees them yet.
+    let lock = unsafe { lock.cast::<MaybeUninit<SharedMutex>>().as_mut() };
+    // Upstream's `Mutex` constructor throws, which ends the process here.
+    let lock = lock.unwrap_or_else(|| std::process::abort());
+    let lock = lock.write(SharedMutex::new());
+    if lock.init() != 0 {
         std::process::abort();
     }
     // SAFETY: per the caller.
     let worker = unsafe { &mut *worker };
-    worker.lock = lock;
+    worker.lock = Some(lock);
     if !worker.pipe_object.is_null() {
         // SAFETY: per the caller; the worker's live pipe.
         unsafe { crate::server_methods::store_pipe_fd(serv.raw(), worker.pipe_object) };
@@ -130,16 +133,11 @@ pub unsafe fn create_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
 }
 
 /// `Server::destroy_worker(worker)`: frees the lock [`create_worker`] gave it.
-///
-/// # Safety
-/// `worker` is a worker [`create_worker`] set up, whose lock nobody holds.
-pub unsafe fn destroy_worker(worker: &mut WorkerRecord) {
-    let lock = core::mem::replace(&mut worker.lock, core::ptr::null_mut());
-    if lock.is_null() {
-        return;
+pub fn destroy_worker(worker: &mut WorkerRecord) {
+    // The global pool's `free` is a no-op: the storage stays.
+    if let Some(lock) = worker.lock.take() {
+        lock.destroy();
     }
-    // SAFETY: an initialized mutex nobody holds; the global pool's `free` is a no-op.
-    unsafe { swoole_rs_locks::swr_v1_locks_destroy(lock, MUTEX) };
 }
 
 /// `Server::create_event_workers()`.

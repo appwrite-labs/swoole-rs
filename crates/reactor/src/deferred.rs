@@ -175,8 +175,28 @@ pub unsafe fn defer(
     let slot = fields
         .wrapping_byte_add(std::mem::offset_of!(ReactorFields, defer_tasks))
         .cast::<*mut ReactorDeferred>();
+    let task = Task::Native {
+        call,
+        data,
+        dispose,
+    };
     // SAFETY: the live reactor's queue slot.
-    if unsafe { swr_v1_reactor_deferred_push(slot, call, data, dispose) } != 0 {
+    if push(unsafe { &mut *slot }, task) != 0 {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
+    }
+}
+
+/// `Reactor::add_destroy_callback(fn, data)` on the reactor whose fields these are.
+///
+/// # Safety
+/// `call(data)` is sound when the reactor is destroyed.
+pub unsafe fn defer_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) {
+    let task = Task::Native {
+        call,
+        data,
+        dispose: None,
+    };
+    if push(&mut fields.destroy_callbacks, task) != 0 {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
     }
 }

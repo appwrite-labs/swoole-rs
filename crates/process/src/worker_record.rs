@@ -6,6 +6,7 @@
 //! fails when that header is stale. See #629.
 
 use std::ffi::{c_int, c_void};
+use swoole_rs_locks::SharedMutex;
 
 /// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
 /// pointer and atomic fields are opaque storage here.
@@ -30,7 +31,7 @@ pub struct WorkerRecord {
     pub request_count: i64,
     pub response_count: i64,
     pub coroutine_num: usize,
-    pub lock: *mut c_void,
+    pub lock: Option<&'static SharedMutex>,
     pub pipe_object: *mut c_void,
     pub pipe_master: *mut c_void,
     pub pipe_worker: *mut c_void,
@@ -42,8 +43,8 @@ impl WorkerRecord {
     /// `new Worker()`: a zeroed record (no pipe, no queue, id 0, pid 0).
     #[must_use]
     pub fn boxed() -> Box<Self> {
-        // SAFETY: every field is an integer, a bool or a raw pointer, for which
-        // all-zero is a valid value.
+        // SAFETY: every field is an integer, a bool, a raw pointer or an optional
+        // reference, for which all-zero is a valid value.
         Box::new(unsafe { core::mem::zeroed() })
     }
 
@@ -227,7 +228,7 @@ impl Worker<'_> {
     );
     field!(
         /// The worker's mutex.
-        lock, set_lock, lock: *mut c_void
+        lock, set_lock, lock: Option<&'static SharedMutex>
     );
     field!(
         /// The worker's process (or thread) id.

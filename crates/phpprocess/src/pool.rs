@@ -23,6 +23,7 @@ use swoole_rs_process::{
     signal::swoole_signal_isset,
     worker_record,
 };
+use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Props, Value, ZString,
@@ -330,7 +331,7 @@ fn handler_error(object: &Value, event: &str) {
 }
 
 /// `process_pool_signal_handler`.
-unsafe extern "C" fn on_signal(signo: c_int) {
+extern "C" fn on_signal(signo: c_int) {
     let pool = CURRENT.load(Ordering::Acquire);
     if pool.is_null() {
         return;
@@ -399,7 +400,7 @@ fn worker_signals(term: bool) {
     let signals = [term.then_some(libc::SIGTERM), Some(libc::SIGWINCH), rtmin];
     for signo in signals.into_iter().flatten() {
         if !swoole_signal_isset(signo) {
-            _ = host::signal_swap(signo, on_signal as *const () as usize, false);
+            _ = host::signal_swap(signo, SignalHandler::new(on_signal), false);
         }
     }
 }
@@ -821,10 +822,10 @@ fn start(call: &Call) {
     // The reactor must be cleaned up before registering signals.
     swoole_rs_reactor::swoole_event_free();
     let signals = pool_signals();
-    let mut previous = [0usize; 6];
+    let mut previous = [SignalHandler::NONE; 6];
     for (signo, old) in signals.iter().zip(previous.iter_mut()) {
         if *signo != 0 {
-            *old = host::signal_swap(*signo, on_signal as *const () as usize, false);
+            *old = host::signal_swap(*signo, SignalHandler::new(on_signal), false);
         }
     }
     if !protocol(pool, this.enable_message_bus.get()) {

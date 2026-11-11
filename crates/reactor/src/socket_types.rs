@@ -96,7 +96,9 @@ pub struct HostType {
     pub erase: usize,
 }
 
-fn host_type(host: &[u8]) -> HostType {
+/// `Socket::convert_to_type(host)` over `host`'s bytes.
+#[must_use]
+pub fn host_type(host: &[u8]) -> HostType {
     if host.starts_with(b"unix:/") {
         // "unix:" goes, then every leading '/' but one; all slashes erases everything.
         let path = host.get(5..).unwrap_or_default();

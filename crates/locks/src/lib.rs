@@ -444,6 +444,69 @@ impl Drop for Lock {
     }
 }
 
+/// A process-shared mutex (`new Mutex(true)`) in storage its owner places, such as a
+/// shared-memory header: zeroed until [`init`](Self::init) and after
+/// [`destroy`](Self::destroy). Its words are `AtomicU64`s only to be 8-aligned, `Sync`
+/// storage that pthread alone accesses. On these platforms pthread reports locking
+/// zeroed or destroyed storage, and misuse of an initialized mutex, as an error code.
+#[derive(Debug)]
+#[repr(C)]
+pub struct SharedMutex([AtomicU64; MUTEX_WORDS]);
+
+const MUTEX_WORDS: usize = size_of::<Mutex>().div_ceil(size_of::<AtomicU64>());
+const _: () = assert!(
+    align_of::<Mutex>() <= align_of::<AtomicU64>(),
+    "the words align a mutex"
+);
+
+impl SharedMutex {
+    /// Zeroed storage, not yet a mutex.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self([const { AtomicU64::new(0) }; MUTEX_WORDS])
+    }
+
+    fn ptr(&self) -> *mut c_void {
+        self.0.as_ptr().cast_mut().cast()
+    }
+
+    /// Makes the storage a process-shared mutex: 0 or an errno. Processes that share
+    /// it don't use it until this returns.
+    #[must_use]
+    pub fn init(&mut self) -> i32 {
+        // SAFETY: storage sized and aligned for a mutex, which `&mut` keeps from this
+        // process's other users while it is made.
+        unsafe { swr_v1_locks_init(self.ptr(), 3, 1) }
+    }
+
+    /// `Mutex::lock()`, blocking: 0 or an errno.
+    #[must_use]
+    pub fn lock(&self) -> i32 {
+        // SAFETY: a mutex `init` made, or storage pthread refuses, as above.
+        unsafe { pthread_mutex_lock(mutex(self.ptr()).0) }
+    }
+
+    /// `Mutex::unlock()`: 0 or an errno.
+    #[must_use]
+    pub fn unlock(&self) -> i32 {
+        // SAFETY: as in `lock`.
+        unsafe { pthread_mutex_unlock(mutex(self.ptr()).0) }
+    }
+
+    /// Destroys the mutex `init` made. pthread refuses to destroy a held one, and
+    /// refuses to lock it afterwards.
+    pub fn destroy(&self) {
+        // SAFETY: storage sized and aligned for a mutex, which only pthread accesses.
+        unsafe { swr_v1_locks_destroy(self.ptr(), 3) };
+    }
+}
+
+impl Default for SharedMutex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Generic operations preserve unsigned/signed wrapping and __sync CAS/add/sub fences.
 // op: load=0, store=1, add-fetch=2, sub-fetch=3, compare-set=4 (expected last).
 macro_rules! atomic_api {
@@ -789,6 +852,17 @@ mod tests {
             }
         });
         barrier_destroy(&barrier);
+    }
+
+    #[test]
+    fn shared_mutex_locks_once_made_and_refuses_after_destroy() {
+        let mut mutex = SharedMutex::new();
+        assert_eq!(mutex.init(), 0);
+        assert_eq!(mutex.lock(), 0);
+        assert_eq!(mutex.unlock(), 0);
+        mutex.destroy();
+        #[cfg(target_os = "macos")]
+        assert_eq!(mutex.lock(), EINVAL, "a destroyed mutex");
     }
 
     #[test]

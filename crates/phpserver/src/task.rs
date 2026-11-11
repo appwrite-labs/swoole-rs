@@ -18,7 +18,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
+use swoole_rs_locks::SharedMutex;
 use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
@@ -82,14 +82,11 @@ struct Info {
     flags: i64,
 }
 
-/// `Lock::MUTEX`.
-const MUTEX: i32 = 3;
-
 /// The server's task pool, and this worker's notify pipe and lock.
 struct Host {
     pool: *mut PoolRecord,
     pipe: *mut SocketPair,
-    lock: *mut c_void,
+    lock: Option<&'static SharedMutex>,
 }
 
 impl TaskHost for Host {
@@ -117,12 +114,8 @@ impl TaskHost for Host {
     }
 
     fn lock(&mut self, on: bool) {
-        if on {
-            // SAFETY: this worker's live mutex.
-            unsafe { swr_v1_locks_lock(self.lock, MUTEX, libc::LOCK_EX, -1, 0) };
-        } else {
-            // SAFETY: as above.
-            unsafe { swr_v1_locks_unlock(self.lock, MUTEX) };
+        if let Some(lock) = self.lock {
+            _ = if on { lock.lock() } else { lock.unlock() };
         }
     }
 }
@@ -134,7 +127,7 @@ fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host> {
     let mut host = Host {
         pool: serv.task_pool(),
         pipe: ptr::null_mut(),
-        lock: ptr::null_mut(),
+        lock: None,
     };
     let mut result = ptr::null_mut();
     if sync {
