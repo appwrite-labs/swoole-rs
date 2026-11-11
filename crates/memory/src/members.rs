@@ -668,13 +668,8 @@ pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
 }
 
 /// `Table::create()`: lays the table out in a fresh shared arena.
-///
-/// # Safety
-/// `this` is a made table.
 #[must_use]
-pub unsafe fn swr_table_create(this: *mut Table) -> bool {
-    // SAFETY: as the caller promises.
-    let table = unsafe { &mut *this };
+pub fn swr_table_create(table: &mut Table) -> bool {
     let size = table.arena_size();
     if size == 0 {
         return false;
@@ -732,7 +727,7 @@ impl SharedTable {
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
         // SAFETY: a made table, which `&mut self` borrows alone.
-        unsafe { swr_table_create(self.table.as_ptr()) }
+        swr_table_create(unsafe { self.table.as_mut() })
     }
 
     /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.
