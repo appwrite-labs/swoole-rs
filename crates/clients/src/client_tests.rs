@@ -108,38 +108,34 @@ pub(super) fn thread_buffer() -> *mut c_void {
 pub(super) unsafe fn socket_free(_: *mut SocketRecord) {
     log("free");
 }
-pub(super) unsafe fn socket_recv(
-    _: *mut SocketRecord,
-    _: *mut c_void,
-    length: usize,
-    _: c_int,
-) -> isize {
-    io("recv", length)
-}
-pub(super) unsafe fn socket_recv_sync(
-    _: *mut SocketRecord,
-    _: *mut c_void,
-    length: usize,
-    _: c_int,
-) -> isize {
-    io("recv_sync", length)
-}
-pub(super) unsafe fn socket_send_sync(
-    _: *mut SocketRecord,
-    _: *const c_void,
-    length: usize,
-    _: c_int,
-) -> isize {
-    io("send_sync", length)
-}
-pub(super) unsafe fn socket_recvfrom_sync_address(
-    _: *mut SocketRecord,
-    _: *mut c_void,
-    length: usize,
-    _: c_int,
-    _: *mut SocketAddress,
-) -> isize {
-    io("recvfrom_sync", length)
+/// crates/tls's slice-taking transfers.
+pub(super) mod net {
+    use super::{SocketAddress, io};
+    use core::ffi::c_int;
+    use swoole_rs_corebase::sys::ReadSlot;
+    use swoole_rs_reactor::Socket;
+
+    pub(in super::super) fn recv(_: Socket<'_>, buffer: &mut [impl ReadSlot], _: c_int) -> isize {
+        io("recv", buffer.len())
+    }
+    pub(in super::super) fn recv_sync(
+        _: Socket<'_>,
+        buffer: &mut [impl ReadSlot],
+        _: c_int,
+    ) -> isize {
+        io("recv_sync", buffer.len())
+    }
+    pub(in super::super) fn send_sync(_: Socket<'_>, data: &[u8], _: c_int) -> isize {
+        io("send_sync", data.len())
+    }
+    pub(in super::super) fn recvfrom_sync(
+        _: Socket<'_>,
+        buffer: &mut [impl ReadSlot],
+        _: c_int,
+        _: &mut SocketAddress,
+    ) -> isize {
+        io("recvfrom_sync", buffer.len())
+    }
 }
 pub(super) unsafe fn socket_sendfile_sync(
     _: *mut SocketRecord,
@@ -537,13 +533,13 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     sock().output.out_buffer = queue.cast();
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(&*client, true).write(8) };
-    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), 4);
+    assert_eq!(send(Handle(client), b"data", 0), 4);
     assert_eq!(taken(), ["write 4", "call 5 0"]);
     // Already high: no second call.
-    send(Handle(client), c"data".as_ptr(), 4, 0);
+    send(Handle(client), b"data", 0);
     assert_eq!(taken(), ["write 4"]);
     log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
-    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), -1);
+    assert_eq!(send(Handle(client), b"data", 0), -1);
     free(client);
 }
 
@@ -629,12 +625,12 @@ fn stream_read_delivers_data_and_closes_at_eof() {
 fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     let client = client(2, false, false);
     // The record's descriptor is -1, so sendto(2) fails.
-    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), -1);
+    assert_eq!(send(Handle(client), b"data", 0), -1);
     assert_eq!(errno(), libc::EBADF);
     assert!(enable_ssl(Handle(client)).is_some());
     assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
     taken();
-    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), 4);
+    assert_eq!(send(Handle(client), b"data", 0), 4);
     assert_eq!(taken(), ["send_sync 4"]);
     free(client);
 }
