@@ -33,14 +33,10 @@ mod registry {
     /// SIGCHLD's handler, exit condition and destroy callback are installed.
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
 
-    unsafe extern "C" fn resume(co: *mut c_void) {
-        // SAFETY: the registry hands back a coroutine it holds suspended.
-        unsafe { swoole_rs_coroutine::resume(co) };
-    }
-
     extern "C" fn signal_handler(signo: c_int) {
-        // SAFETY: the signal dispatch runs on the loop's thread.
-        unsafe { wait_reap(signo, resume) };
+        // SAFETY: the signal dispatch runs on the loop's thread; the registry hands
+        // `resume` the coroutines it holds suspended.
+        unsafe { wait_reap(signo, swoole_rs_coroutine::resume) };
     }
 
     extern "C-unwind" fn no_waiters(_event_num: &mut usize) -> bool {

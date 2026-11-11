@@ -148,7 +148,7 @@ pub unsafe fn wait_pid(
 ///
 /// # Safety
 /// `resume` is `co->resume()`.
-pub unsafe fn wait_reap(signo: c_int, resume: unsafe extern "C" fn(*mut c_void)) {
+pub unsafe fn wait_reap(signo: c_int, resume: unsafe extern "C-unwind" fn(*mut c_void)) {
     if signo != libc::SIGCHLD {
         return;
     }
@@ -202,7 +202,7 @@ mod tests {
         std::ptr::dangling_mut()
     }
     fn nothing() {}
-    unsafe extern "C" fn resume(_: *mut c_void) {}
+    unsafe extern "C-unwind" fn resume(_: *mut c_void) {}
     fn not_timed_out() -> bool {
         false
     }
