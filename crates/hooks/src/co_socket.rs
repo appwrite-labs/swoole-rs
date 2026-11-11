@@ -415,8 +415,7 @@ impl CoSocket {
             open_length_check: false,
             open_eof_check: false,
             http2: false,
-            // SAFETY: every field is an integer, a bool, a byte array or a raw pointer.
-            protocol: unsafe { core::mem::zeroed() },
+            protocol: Protocol::EMPTY,
             kind: 0,
             socket: ptr::null_mut(),
             sock_domain: 0,

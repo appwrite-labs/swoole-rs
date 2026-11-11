@@ -17,9 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{
-    Event, Socket, SocketFields, SocketRecord, reactor_upstream, what_event_want,
-};
+use swoole_rs_reactor::{Event, Socket, SocketFields, SocketRecord, what_event_want};
 use swoole_rs_timer::swoole_timer_del;
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
@@ -212,6 +210,12 @@ impl<'c> Objects<'_, 'c> {
     }
     fn sock(&self) -> Option<Socket<'c>> {
         self.ctx.sock
+    }
+    /// The connection of the context's session socket: its object.
+    fn sock_conn(&self) -> Option<&'c mut ConnectionRecord> {
+        let conn = self.sock()?.read(|s| s.object.cast::<ConnectionRecord>());
+        // SAFETY: a session socket's object is null or its live connection.
+        unsafe { conn.as_mut() }
     }
     /// `read` over the context's socket, or the default without one.
     fn read_sock<R: Default>(&self, read: impl FnOnce(&SocketFields) -> R) -> R {
@@ -513,9 +517,7 @@ pub(crate) fn answer(
             0
         }
         OP_SSL_READY => {
-            let conn = o.sock()?.read(|s| s.object.cast::<ConnectionRecord>());
-            // SAFETY: a session socket's object is null or its live connection.
-            unsafe { conn.as_mut() }?.ssl_ready = 1;
+            o.sock_conn()?.ssl_ready = 1;
             0
         }
         OP_CLIENT_CERT => {
@@ -789,10 +791,8 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             )]
             let errno = errno as u16;
             o.conn()?.close_errno = errno;
-            let reactor = o.handle()?.ptr();
-            let event = core::ptr::from_mut(o.ctx.event.as_deref_mut()?).cast();
-            // SAFETY: the context's live reactor and event.
-            sign(unsafe { reactor_upstream::trigger_close_event(reactor, event) })
+            let reactor = o.handle()?;
+            sign(reactor.trigger_close_event(o.ctx.event.as_deref_mut()?))
         }
         OP_HEARTBEAT_TIMER_CLEAR => {
             let thread = o.ctx.thread_record()?;
@@ -897,11 +897,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_NOTIFY_CONNECT | OP_WR_NOTIFY_CLOSE | OP_WR_BUFFER_EMPTY => {
             let (conn, event) = match op {
-                OP_NOTIFY_CONNECT => {
-                    let conn = o.sock()?.read(|s| s.object).cast::<ConnectionRecord>();
-                    // SAFETY: a session socket's object is null or its live connection.
-                    (unsafe { conn.as_ref() }?, EVENT_CONNECT)
-                }
+                OP_NOTIFY_CONNECT => (&*o.sock_conn()?, EVENT_CONNECT),
                 OP_WR_NOTIFY_CLOSE => (&*o.conn()?, EVENT_CLOSE),
                 _ => {
                     let conn = o.conn()?;
@@ -964,8 +960,12 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             })
         }
         OP_CC_DTLS_FREE => {
-            // SAFETY: the closing socket's live port; nothing uses its session after.
-            unsafe { crate::dtls::free(o.ctx.port?.raw(), o.sock()?.fd()) };
+            let fd = o.sock()?.fd();
+            // SAFETY: the closing socket's live port, whose settings only this reactor
+            // thread reads or writes while it closes a session.
+            let port = unsafe { o.ctx.port?.config_mut() };
+            // `Server::close_connection`'s `delete` of the socket's DTLS session.
+            (port_config::methods().dtls_free)(port, fd);
             0
         }
         OP_WR_TIMER_DELAY => {

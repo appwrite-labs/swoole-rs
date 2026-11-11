@@ -16,8 +16,7 @@ use swoole_rs_zend::{
         swr_zend_bailout_to, swr_zend_guard_clear, swr_zend_guard_mark, swr_zend_guard_pending,
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
-        swr_zend_tsrm_api_name, swr_zend_tsrm_is_main_thread, swr_zend_tsrm_is_shutdown,
-        zend_declare_class_constant_string,
+        swr_zend_tsrm_api_name, swr_zend_tsrm_is_shutdown, zend_declare_class_constant_string,
     },
 };
 
@@ -209,8 +208,7 @@ pub fn thread_minit(minit: &Minit) {
 
 /// `tsrm_is_main_thread()`.
 fn main_thread() -> bool {
-    // SAFETY: no preconditions.
-    unsafe { swr_zend_tsrm_is_main_thread() }
+    swoole_rs_zend::is_main_thread()
 }
 
 /// RINIT: the main thread keeps its script path and `$argv` for new threads.

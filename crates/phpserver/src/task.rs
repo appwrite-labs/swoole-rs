@@ -35,7 +35,7 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
-        swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval, zval_ptr_dtor,
+        swr_zval_stringl, zend_hash_index_update, zval, zval_ptr_dtor,
     },
     value::{count, table},
 };
@@ -101,13 +101,13 @@ impl TaskHost for Host {
     }
 
     fn set_timeout(&mut self, timeout: f64) {
-        // SAFETY: as above.
+        // SAFETY: this worker's live notify pipe, which only this call borrows.
         socket_pair::set_timeout(unsafe { &mut *self.pipe }, timeout);
     }
 
     fn read_notify(&mut self) -> isize {
         let mut notify = 0u64;
-        // SAFETY: as above.
+        // SAFETY: this worker's live notify pipe.
         let pipe = unsafe { &*self.pipe };
         // SAFETY: a local of that size.
         unsafe { socket_pair::read(pipe, (&raw mut notify).cast(), size_of::<u64>()) }
@@ -653,12 +653,13 @@ fn task_co(call: &Call, fill_false: bool) {
         return;
     }
     for j in 0..n_task as usize {
-        // SAFETY: the result array.
-        let array = unsafe { table(result) };
-        // SAFETY: a live array.
-        if unsafe { zend_hash_index_find(array, j as u64) }.is_null() {
+        // SAFETY: the result array in the return slot, which nothing frees or
+        // overwrites during this read.
+        let results = unsafe { Value::from_ptr(result) }.and_then(Value::array);
+        let missing = results.is_none_or(|results| results.index(j as u64).is_none());
+        if missing {
             if task_co.fill_false {
-                // SAFETY: as above.
+                // SAFETY: the result array.
                 unsafe { add_index_bool(result, j as u64, false) };
             }
             if let Some(&id) = task_co.list.get(j) {

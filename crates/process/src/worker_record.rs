@@ -43,9 +43,33 @@ impl WorkerRecord {
     /// `new Worker()`: a zeroed record (no pipe, no queue, id 0, pid 0).
     #[must_use]
     pub fn boxed() -> Box<Self> {
-        // SAFETY: every field is an integer, a bool, a raw pointer or an optional
-        // reference, for which all-zero is a valid value.
-        Box::new(unsafe { core::mem::zeroed() })
+        let null = core::ptr::null_mut();
+        Box::new(Self {
+            pid: 0,
+            id: 0,
+            pool: null,
+            queue: null,
+            shared: false,
+            redirect_stdout: false,
+            redirect_stdin: false,
+            redirect_stderr: false,
+            status: 0,
+            kind: 0,
+            msgqueue_mode: 0,
+            child_process: 0,
+            concurrency: 0,
+            start_time: 0,
+            dispatch_count: 0,
+            request_count: 0,
+            response_count: 0,
+            coroutine_num: 0,
+            lock: None,
+            pipe_object: null,
+            pipe_master: null,
+            pipe_worker: null,
+            pipe_current: null,
+            ptr: null,
+        })
     }
 
     /// Makes the record `pool`'s worker `id`, of `kind`.

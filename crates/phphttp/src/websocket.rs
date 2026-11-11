@@ -32,10 +32,9 @@ use swoole_rs_zend::{
     string::{self},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
-        swr_zend_ws_property_not_null, swr_zval_str, zend_ce_stringable, zend_class_entry,
-        zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
-        zval_ptr_dtor,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_ws_property_not_null, swr_zval_str,
+        zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long, zend_object,
+        zend_string, zend_value, zval, zval_ptr_dtor,
     },
     value::{empty_string, obj_of},
 };
@@ -281,10 +280,7 @@ pub fn websocket_minit(args: &MinitArgs) {
     }
     minit.property_null(&FRAME, c"finish", ZEND_ACC_PUBLIC);
     for (slot, name) in SLOTS.iter().zip(SLOT_NAMES) {
-        // SAFETY: the registered class, which declares the property.
-        let offset =
-            unsafe { swr_zend_http_property_offset(ce, name.as_ptr(), name.count_bytes()) };
-        slot.store(offset, Relaxed);
+        slot.store(FRAME.property_offset(name), Relaxed);
     }
     let frame = minit.parent(&FRAME);
     minit.register_child(
@@ -375,7 +371,7 @@ impl<'a> FrameObject<'a> {
     /// properties, or the arguments around any other value.
     fn new(data: Option<&'a Value>, opcode: i64, flags: i64, code: i64) -> Self {
         let frame = data.filter(|value| value.instance_of(&FRAME));
-        let Some(object) = frame.and_then(Value::object) else {
+        let Some((frame, object)) = frame.and_then(|frame| Some((frame, frame.object()?))) else {
             #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
             #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
             let code = code as u16;
@@ -386,8 +382,8 @@ impl<'a> FrameObject<'a> {
                 data,
             };
         };
-        // SAFETY: a live Frame, which declares the property.
-        let long = |name: &CStr| unsafe { swoole_rs_zend::property(object, name) }.long();
+        // A Frame declares both properties read.
+        let long = |name: &CStr| frame.property(name).map_or(0, Value::long);
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == OPCODE_CLOSE {
@@ -544,10 +540,10 @@ impl Frame {
     }
 
     /// The frame as a new string the caller owns.
-    fn into_string(self) -> *mut zend_string {
+    fn into_string(self) -> ZString {
         match self {
-            Self::Inline(..) => string::copy(self.bytes()),
-            Self::Heap(string) => string.into_raw(),
+            Self::Inline(..) => ZString::new(self.bytes()),
+            Self::Heap(string) => string,
         }
     }
 }
@@ -703,8 +699,7 @@ pub(crate) fn zval_of(string: *mut zend_string) -> zval {
 /// `swoole_websocket_server_pack`'s body: the packed frame, or `""`.
 fn pack_value(call: &Call, data: Option<&Value>, opcode: i64, flags: i64) {
     match pack(&FrameObject::new(data, opcode, flags, 0)) {
-        // SAFETY: the return slot takes the new string.
-        Some(packed) => unsafe { call.set_string(packed.into_string()) },
+        Some(packed) => call.set_zstring(packed.into_string()),
         None => call.set_empty_string(),
     }
 }

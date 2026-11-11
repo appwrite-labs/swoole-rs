@@ -805,8 +805,17 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         return core::ptr::null_mut();
     };
     let mut client = Box::new(Client {
-        // SAFETY: all-zero pointers, bools, addresses and Protocol are valid.
-        record: Cell::new(unsafe { core::mem::zeroed() }),
+        record: Cell::new(ClientRecord {
+            http2: false,
+            open_length_check: false,
+            open_eof_check: false,
+            protocol: Protocol::EMPTY,
+            server_addr: swoole_rs_corebase::sys::zeroed(),
+            remote_addr: swoole_rs_corebase::sys::zeroed(),
+            socket: core::ptr::null_mut(),
+            object: core::ptr::null_mut(),
+            buffer: core::ptr::null_mut(),
+        }),
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
@@ -1569,10 +1578,11 @@ fn bind_unix(this: Handle) -> c_int {
         let family = libc::AF_UNIX as libc::sa_family_t;
         address.sun_family = family;
         swoole_rs_corebase::sys::unlink(&bound);
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_un)")]
-        let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
-        // SAFETY: binds the client's descriptor to its own address storage.
-        unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) }
+        // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps
+        // its own length.
+        let mut local = socket.info;
+        local.len = swoole_rs_corebase::sys::socklen::<libc::sockaddr_un>();
+        local.bind(socket.fd)
     });
     if ret < 0 {
         log::sys_warning(c"Client_udp_connect", format_args!("bind({path}) failed"));

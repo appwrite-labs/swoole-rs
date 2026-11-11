@@ -92,26 +92,27 @@ fn effect(op: u32) -> Option<u64> {
     use swoole_rs_corebase::log::{last_error, set_last_error};
     // SAFETY: crates/reactor's and crates/timer's functions, under their upstream
     // symbols. Declarations, since crates/reactor (and through it crates/timer)
-    // depends on this crate.
+    // depends on this crate. Each is a safe Rust function there, taking no pointer
+    // and acting on the calling thread's event loop or timer, so it is safe here.
     unsafe extern "C-unwind" {
         #[link_name = "_Z17swoole_event_initi"]
-        fn swoole_event_init(flags: c_int) -> c_int;
+        safe fn swoole_event_init(flags: c_int) -> c_int;
         #[link_name = "_Z17swoole_event_freev"]
-        fn swoole_event_free() -> c_int;
+        safe fn swoole_event_free() -> c_int;
         #[link_name = "_Z25swoole_event_is_availablev"]
-        fn swoole_event_is_available() -> bool;
+        safe fn swoole_event_is_available() -> bool;
         #[link_name = "_Z17swoole_event_waitv"]
-        fn swoole_event_wait() -> c_int;
+        safe fn swoole_event_wait() -> c_int;
         #[link_name = "_Z19swoole_timer_createb"]
-        fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
+        safe fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
         #[link_name = "_Z25swoole_timer_is_availablev"]
-        fn swoole_timer_is_available() -> bool;
+        safe fn swoole_timer_is_available() -> bool;
         #[link_name = "_Z17swoole_timer_freev"]
-        fn swoole_timer_free();
+        safe fn swoole_timer_free();
         #[link_name = "_Z19swoole_timer_selectv"]
-        fn swoole_timer_select();
+        safe fn swoole_timer_select();
         #[link_name = "_Z26swoole_timer_get_next_msecv"]
-        fn swoole_timer_get_next_msec() -> i64;
+        safe fn swoole_timer_get_next_msec() -> i64;
 
     }
     /// `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_OUTPUT_SEND_YIELD`, `SW_ERROR_SOCKET_POLL_TIMEOUT`.
@@ -120,43 +121,31 @@ fn effect(op: u32) -> Option<u64> {
     const POLL_TIMEOUT: c_int = 6002;
     let int = |value: c_int| i64::from(value).cast_unsigned();
     Some(match op {
-        // SAFETY: this thread's event loop.
-        ops::OP_EVENT_INIT => int(unsafe { swoole_event_init(0) }),
+        ops::OP_EVENT_INIT => int(swoole_event_init(0)),
         ops::OP_EVENT_FREE => {
-            // SAFETY: as above.
-            unsafe { swoole_event_free() };
+            swoole_event_free();
             0
         }
-        // SAFETY: as above.
-        ops::OP_EVENT_AVAILABLE => u64::from(unsafe { swoole_event_is_available() }),
-        // SAFETY: as above.
-        ops::OP_EVENT_WAIT => int(unsafe { swoole_event_wait() }),
+        ops::OP_EVENT_AVAILABLE => u64::from(swoole_event_is_available()),
+        ops::OP_EVENT_WAIT => int(swoole_event_wait()),
         ops::OP_TIMER_CREATE => {
-            // SAFETY: this thread's timer.
-            unsafe { swoole_timer_create(true) };
+            swoole_timer_create(true);
             0
         }
-        ops::OP_TIMER_AVAILABLE | ops::OP_HAS_TIMER => {
-            // SAFETY: as above.
-            u64::from(unsafe { swoole_timer_is_available() })
-        }
+        ops::OP_TIMER_AVAILABLE | ops::OP_HAS_TIMER => u64::from(swoole_timer_is_available()),
         ops::OP_TIMER_FREE => {
             // In the function that closes the timer, the scheduler is called again;
             // therefore, it is essential to set the scheduler to null after the timer has been consumed.
-            // SAFETY: as above.
-            if unsafe { swoole_timer_is_available() } {
-                // SAFETY: the thread's timer, freed once.
-                unsafe { swoole_timer_free() };
+            if swoole_timer_is_available() {
+                swoole_timer_free();
             }
             0
         }
         ops::OP_TIMER_SELECT => {
-            // SAFETY: as above.
-            unsafe { swoole_timer_select() };
+            swoole_timer_select();
             0
         }
-        // SAFETY: as above.
-        ops::OP_TIMER_NEXT_MSEC => unsafe { swoole_timer_get_next_msec() }.cast_unsigned(),
+        ops::OP_TIMER_NEXT_MSEC => swoole_timer_get_next_msec().cast_unsigned(),
         ops::OP_ROOT_USER => u64::from(swoole_rs_ossupport::swr_v1_os_is_root_user()),
         ops::OP_DEATH_SIGNAL => {
             swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);

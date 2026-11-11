@@ -287,8 +287,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(valid));
         }
         OP_EVENT_CONN_ACTIVE => {
-            // SAFETY: the context's live event.
-            let fd = unsafe { (*ctx.event).fd() };
+            let fd = ctx.event().fd();
             let conn = server.at(fd);
             let active = conn.as_ref().is_some_and(|c| c.active != 0);
             ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);

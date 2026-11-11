@@ -202,15 +202,9 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_COMMAND_REQUEST => {
-            let pair = ctx
-                .config()
-                .pipe_command
-                .cast::<swoole_rs_tls::socket_pair::SocketPair>();
-            // SAFETY: the server's live command pipe, a `UnixSocket`.
-            let pipe = unsafe { (*pair).worker_socket }.cast();
             let id = u16::try_from(ctx.worker().id()).unwrap_or(0);
             let bus = crate::master_ops::server_message_bus(ctx.state());
-            let pipe = crate::objects::socket(pipe);
+            let pipe = crate::objects::socket(ctx.server().command_pipe_worker());
             crate::commands::call_command_handler(ctx.server(), bus, id, pipe);
             0
         }

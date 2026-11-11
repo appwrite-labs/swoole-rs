@@ -1,7 +1,8 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::sys::{
-    std_object_handlers, swr_zend_register_class, zend_class_entry, zend_function_entry,
-    zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string, zend_throw_error,
+    std_object_handlers, swr_zend_http_property_offset, swr_zend_register_class, zend_class_entry,
+    zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string,
+    zend_throw_error,
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -89,10 +90,7 @@ impl Class {
     ) -> Result<crate::Owned, crate::bailout::Bailout> {
         let entry = self.entry();
         assert!(!entry.is_null(), "instantiate a registered class");
-        let object = crate::Owned::default();
-        // SAFETY: a slot this owns and a registered class; Zend refuses one it
-        // cannot instantiate, leaving no object.
-        unsafe { crate::init_object(object.as_ptr(), entry) };
+        let object = self.create_object();
         let Some(std) = object.object() else {
             return Ok(object);
         };
@@ -124,6 +122,20 @@ impl Class {
         assert!(!entry.is_null(), "throw a registered class");
         // SAFETY: a registered exception class; Zend copies the message.
         unsafe { crate::throw_exception(entry, message, code) };
+    }
+
+    /// The offset of the slot of the instance property this class declares as
+    /// `name` (`zend_property_info::offset`); 0 for no such property, or before
+    /// MINIT registers the class.
+    #[must_use]
+    pub fn property_offset(&self, name: &CStr) -> u32 {
+        let entry = self.entry();
+        if entry.is_null() {
+            return 0;
+        }
+        // SAFETY: a registered class, which lives for the process; Zend reads
+        // its property table and `name` only.
+        unsafe { swr_zend_http_property_offset(entry, name.as_ptr(), name.count_bytes()) }
     }
 
     /// The handlers this class's objects use (null before MINIT).

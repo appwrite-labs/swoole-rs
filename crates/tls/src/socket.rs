@@ -421,8 +421,8 @@ pub unsafe fn swr_v1_socket_ssl_pem(
         unsafe { BIO_free_all(bio) };
     }
     if consume {
-        // SAFETY: drops the reference the caller handed over.
-        unsafe { X509_free(cert) };
+        // The reference the caller handed over, released as this side's own.
+        drop(NonNull::new(cert).map(Cert));
     }
     written
 }

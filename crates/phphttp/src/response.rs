@@ -131,9 +131,8 @@ pub fn response_minit(args: &MinitArgs) {
     for name in [c"socket", c"header", c"cookie", c"trailer"] {
         minit.property_null(&RESPONSE, name, ZEND_ACC_PUBLIC);
     }
-    let ce = RESPONSE.entry();
-    crate::header::minit(ce);
-    context::response_minit(ce);
+    crate::header::minit(&RESPONSE);
+    context::response_minit(&RESPONSE);
     crate::parse::minit(codecs);
 }
 

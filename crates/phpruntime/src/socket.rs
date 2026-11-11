@@ -7,9 +7,9 @@ use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
-    E_ERROR, Owned, Value,
+    E_ERROR, Owned, Value, ZString,
     bailout::{self, Bailout},
-    sys::{swr_zval_stringl, zval, zval_ptr_dtor},
+    sys::{zval, zval_ptr_dtor},
 };
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
@@ -425,9 +425,8 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let certificate = Owned::default();
     let retval = certificate.as_ptr();
     let read = || {
-        let mut string: zval = swoole_rs_zend::UNDEF;
-        // SAFETY: the caller's bytes, copied into a new string.
-        unsafe { swr_zval_stringl(&raw mut string, pem.as_ptr().cast(), pem.len()) };
+        // The caller's bytes, copied into a new string.
+        let mut string: zval = Owned::string(ZString::new(pem)).into_zval();
         let name = c"openssl_x509_read";
         // SAFETY: one live argument and the caller's writable result.
         unsafe {

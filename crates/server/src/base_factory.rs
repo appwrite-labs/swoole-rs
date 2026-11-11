@@ -82,15 +82,6 @@ fn session<H: Host>(h: &mut H, id: c_long) -> crate::Effect<Option<(u32, c_int)>
         .map(|slot| (slot.reactor_bits & 0xff, slot.fd)))
 }
 
-/// A live connection record for one step; no native op runs while it is borrowed.
-///
-/// # Safety
-/// `conn` is non-null and in the server's connection table.
-unsafe fn record<'a>(conn: *mut ConnectionRecord) -> &'a mut ConnectionRecord {
-    // SAFETY: as the caller guarantees.
-    unsafe { &mut *conn }
-}
-
 /// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
 fn close_event(c: &ConnectionRecord, fd: c_long) -> DataHead {
     DataHead {
@@ -332,8 +323,9 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         log::set_last_error(SESSION_NOT_EXIST);
         return Ok(false);
     }
-    // SAFETY: a non-null lookup is a connection record.
-    let c = unsafe { record(conn) };
+    // SAFETY: a non-null lookup is a live connection record, borrowed for the steps
+    // below; no native op runs meanwhile.
+    let c = unsafe { &mut *conn };
     if flags & CLOSE_RESET != 0 {
         c.close_reset = 1;
     }
@@ -370,7 +362,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         h.op(OP_ON_CLOSE, address(&raw const info))?;
     }
     // SAFETY: as above, re-derived: onClose, which reaches it by session, has returned.
-    let c = unsafe { record(conn) };
+    let c = unsafe { &mut *conn };
     c.closing = 0;
     c.close_errno = 0;
     let socket = c.socket;
@@ -386,7 +378,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         return Ok(h.op(OP_CLOSE_SOCKET, address(socket))?.cast_signed() == SW_OK);
     }
     // SAFETY: as above.
-    unsafe { record(conn) }.close_queued = 1;
+    unsafe { &mut *conn }.close_queued = 1;
     Ok(h.op(OP_QUEUE_CLOSE, address(socket))? != 0)
 }
 

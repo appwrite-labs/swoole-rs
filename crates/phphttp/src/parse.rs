@@ -17,8 +17,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_zend::sys::{
     swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
-    swr_zend_http_property_offset, swr_zend_http_treat_data, swr_zend_http_upload,
-    zend_class_entry, zend_string, zval,
+    swr_zend_http_treat_data, swr_zend_http_upload, zend_string, zval,
 };
 use swoole_rs_zend::{Owned, OwnedArray, Value, ZStr, ZString, string};
 
@@ -276,13 +275,17 @@ pub(crate) fn minit(codecs: u32) {
             Relaxed,
         );
     }
-    let ce: *mut zend_class_entry = crate::request::entry();
     for (slot, name) in OFFSETS.iter().zip([
-        "get", "post", "cookie", "files", "tmpfiles", "server", "header", "fd",
+        c"get",
+        c"post",
+        c"cookie",
+        c"files",
+        c"tmpfiles",
+        c"server",
+        c"header",
+        c"fd",
     ]) {
-        // SAFETY: the registered class, which declares the property.
-        let offset = unsafe { swr_zend_http_property_offset(ce, name.as_ptr().cast(), name.len()) };
-        slot.store(offset, Relaxed);
+        slot.store(crate::request::REQUEST.property_offset(name), Relaxed);
     }
 }
 

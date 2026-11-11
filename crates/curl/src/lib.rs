@@ -278,12 +278,11 @@ impl Multi {
         }
         self.active.borrow_mut().retain(|&active| active != socket);
         // SAFETY: a socket this multi made and has not freed.
-        let reactor = unsafe { (*socket).socket };
+        let curl_socket = unsafe { &*socket };
         // SAFETY: that socket's reactor socket, which nothing uses afterwards.
-        unsafe { reactor.free() };
+        unsafe { curl_socket.socket.free() };
         if self.executing.get() {
-            // SAFETY: as above.
-            unsafe { (*socket).deleted.set(true) };
+            curl_socket.deleted.set(true);
             insert(&self.release, socket);
         } else {
             // SAFETY: curl let go of it above and the selector holds no copy.

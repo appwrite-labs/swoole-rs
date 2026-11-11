@@ -28,7 +28,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     sys::{
-        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_http_build_query, swr_zend_sensitive_parameter,
+        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_property_not_null, swr_zend_sensitive_parameter,
         zend_class_entry, zend_object, zval,
     },
 };
@@ -240,24 +240,13 @@ fn ce() -> *mut zend_class_entry {
 
 /// Property access on a client object.
 mod props {
-    use super::{CLIENT, CStr, Call, Value, zend_object};
-    use swoole_rs_zend::{Props, sys::swr_zend_property_not_null};
+    use super::{CLIENT, Call};
+    use swoole_rs_zend::Props;
 
     /// Writes on `$this`, a client method's object, under the client class;
     /// None in a static call.
     pub(super) fn this(call: &Call) -> Option<Props<'_>> {
         call.props(Some(&CLIENT))
-    }
-
-    /// `sw_zend_read_property_not_null_ex`: the property unless it is null.
-    /// # Safety
-    /// As [`swoole_rs_zend::property`].
-    pub(super) unsafe fn not_null<'a>(object: *mut zend_object, name: &CStr) -> Option<&'a Value> {
-        // SAFETY: per the caller.
-        let found =
-            unsafe { swr_zend_property_not_null(object, name.as_ptr(), name.count_bytes()) };
-        // SAFETY: null or a live property.
-        unsafe { Value::from_ptr(found) }
     }
 }
 
@@ -333,10 +322,24 @@ impl Client {
         unsafe { Props::new(ce(), self.object) }
     }
 
+    /// The property `name`, which the client class declares.
+    fn property(&self, name: &CStr) -> &Value {
+        // SAFETY: the object outlives its client, and its class declares `name`.
+        unsafe { swoole_rs_zend::property(self.object, name) }
+    }
+
+    /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it is null.
+    fn not_null(&self, name: &CStr) -> Option<&Value> {
+        // SAFETY: the object outlives its client, and its class declares `name`.
+        let found =
+            unsafe { swr_zend_property_not_null(self.object, name.as_ptr(), name.count_bytes()) };
+        // SAFETY: null or a live property of the object.
+        unsafe { Value::from_ptr(found) }
+    }
+
     /// `zval_get_long` of a declared property of the client object.
     fn get_long(&self, name: &CStr) -> i64 {
-        // SAFETY: as `props`, and the class declares `name`.
-        unsafe { swoole_rs_zend::property(self.object, name) }.long()
+        self.property(name).long()
     }
 
     fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Self {
@@ -544,8 +547,7 @@ impl Client {
             self.close(true);
             return false;
         }
-        // SAFETY: `$this` declares `setting`.
-        let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") };
+        let settings = self.property(c"setting");
         self.apply_setting(settings, false);
         self.websocket.set(false);
         self.accept_websocket_compression.set(false);
@@ -593,7 +595,6 @@ impl Client {
         reason = "upstream's send_request, in its order"
     )]
     fn send_request(&self, path: &[u8]) -> bool {
-        let object = self.object;
         if path.is_empty() {
             set_error_properties(self.props(), INVALID_PARAMS, strerror(INVALID_PARAMS));
             return false;
@@ -614,22 +615,16 @@ impl Client {
         swoole_rs_corebase::log::set_last_error(0);
         self.body.borrow_mut().clear();
 
-        // SAFETY: `$this` declares each property, and nothing changes them while sending.
-        let method = unsafe { props::not_null(object, c"requestMethod") };
-        // SAFETY: as above.
-        let headers = unsafe { swoole_rs_zend::property(object, c"requestHeaders") }.array();
+        let method = self.not_null(c"requestMethod");
+        let headers = self.property(c"requestHeaders").array();
         // The body and files with references of their own: a multipart send yields
         // between its writes, and `setData()` or `addFile()` may replace or add to
         // them meanwhile (an add separates the shared array).
-        // SAFETY: as above.
-        let body = unsafe { props::not_null(object, c"requestBody") }.map(Value::copy);
-        // SAFETY: as above.
-        let files = unsafe { swoole_rs_zend::property(object, c"uploadFiles") }.copy();
+        let body = self.not_null(c"requestBody").map(Value::copy);
+        let files = self.property(c"uploadFiles").copy();
         let body = body.as_deref();
-        // SAFETY: as above.
-        let cookies = unsafe { swoole_rs_zend::property(object, c"cookies") }.array();
-        // SAFETY: as above.
-        let download = unsafe { props::not_null(object, c"downloadFile") };
+        let cookies = self.property(c"cookies").array();
+        let download = self.not_null(c"downloadFile");
 
         let host_header = headers
             .and_then(|headers| headers.find(b"Host").or_else(|| headers.find(b"host")))
@@ -756,14 +751,10 @@ impl Client {
                     b"application/x-www-form-urlencoded",
                 );
                 if fields.count() > 0 {
-                    // SAFETY: a live array zval.
-                    let query = unsafe { swr_zend_http_build_query(body.as_ptr()) };
-                    if query.is_null() {
+                    let Some(query) = body.http_build_query() else {
                         warn(false, c"http_build_query failed");
                         return false;
-                    }
-                    // SAFETY: the reference the query builder returned.
-                    let query = unsafe { ZString::from_raw(query) };
+                    };
                     request::content_length(&mut out, query.bytes().len());
                     out.extend_from_slice(query.bytes());
                 } else {
@@ -1029,10 +1020,8 @@ impl Client {
         fn text<'a>(array: &'a Array, key: &[u8]) -> Option<&'a [u8]> {
             array.find(key).and_then(Value::bytes)
         }
-        // SAFETY: `$this` declares both properties.
-        let request = unsafe { swoole_rs_zend::property(self.object, c"requestHeaders") }.array();
-        // SAFETY: as above.
-        let response = unsafe { swoole_rs_zend::property(self.object, c"headers") }.array();
+        let request = self.property(c"requestHeaders").array();
+        let response = self.property(c"headers").array();
         let (Some(request), Some(response)) = (request, response) else {
             return false;
         };

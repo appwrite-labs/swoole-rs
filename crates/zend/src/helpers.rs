@@ -3,8 +3,9 @@
 use crate::{
     Value,
     sys::{
-        module_registry, php_time, swr_zend_property_slot, zend_class_entry, zend_fcall_info,
-        zend_fcall_info_cache, zend_hash_str_find, zend_object, zval,
+        module_registry, php_time, swr_zend_property_slot, swr_zend_tsrm_is_main_thread,
+        zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find, zend_object,
+        zval,
     },
 };
 use std::ffi::CStr;
@@ -50,6 +51,14 @@ pub fn module_loaded(name: &CStr) -> bool {
     // SAFETY: the registry lives for the process and is filled before any
     // extension code runs; Zend reads `name` only.
     !unsafe { zend_hash_str_find(registry, name.as_ptr(), name.count_bytes()) }.is_null()
+}
+
+/// `tsrm_is_main_thread()`: whether this is the thread that started PHP, always
+/// true on a PHP without thread safety.
+#[must_use]
+pub fn is_main_thread() -> bool {
+    // SAFETY: no preconditions: TSRM reads its own per-thread flag.
+    unsafe { swr_zend_tsrm_is_main_thread() }
 }
 
 /// `php_time`: PHP's clock, in seconds.

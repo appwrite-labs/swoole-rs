@@ -87,35 +87,46 @@ pub(crate) unsafe fn text(text: *const c_char) -> String {
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
 #[must_use]
 pub fn peer(info: &SocketAddress) -> (String, c_int) {
-    let mut buffer = [0 as c_char; 46];
+    let mut buffer = [0_u8; 46];
     let (family, address, port): (c_int, *const c_void, u16) = match info.kind {
-        // SAFETY: TCP, UDP and raw sockets hold the IPv4 union member.
-        1 | 2 | 7 => unsafe {
-            (
-                libc::AF_INET,
-                (&raw const info.addr.inet_v4.sin_addr).cast(),
-                info.addr.inet_v4.sin_port,
-            )
-        },
-        // SAFETY: TCP6, UDP6 and raw6 sockets hold the IPv6 union member.
-        3 | 4 | 8 => unsafe {
+        // TCP, UDP and raw sockets hold the IPv4 member.
+        1 | 2 | 7 => {
+            let v4 = info.addr.v4();
+            (libc::AF_INET, (&raw const v4.sin_addr).cast(), v4.sin_port)
+        }
+        // TCP6, UDP6 and raw6 sockets hold the IPv6 member.
+        3 | 4 | 8 => {
+            let v6 = info.addr.v6();
             (
                 libc::AF_INET6,
-                (&raw const info.addr.inet_v6.sin6_addr).cast(),
-                info.addr.inet_v6.sin6_port,
+                (&raw const v6.sin6_addr).cast(),
+                v6.sin6_port,
             )
-        },
+        }
         5 | 6 => {
-            // SAFETY: Unix sockets hold the Unix union member's NUL-terminated path.
-            let path = unsafe { text((&raw const info.addr.un.sun_path).cast()) };
-            return (path, 0);
+            // Unix sockets hold the Unix member, whose path `%s` prints up to its NUL.
+            let path = info.addr.unix().sun_path;
+            let path: Vec<u8> = path
+                .iter()
+                .flat_map(|unit| unit.to_ne_bytes())
+                .take_while(|&byte| byte != 0)
+                .collect();
+            return (String::from_utf8_lossy(&path).into_owned(), 0);
         }
         _ => return ("unknown".into(), 0),
     };
     // SAFETY: the address is the selected family's, and the buffer holds the longest IPv6 text.
-    let host = unsafe { inet_ntop(family, address, buffer.as_mut_ptr(), 46) };
-    // SAFETY: inet_ntop returned null or the NUL-terminated buffer.
-    (unsafe { text(host) }, c_int::from(u16::from_be(port)))
+    let host = unsafe { inet_ntop(family, address, buffer.as_mut_ptr().cast(), 46) };
+    // inet_ntop returned null or the buffer, NUL-terminated.
+    let host = if host.is_null() {
+        "(null)".into()
+    } else {
+        CStr::from_bytes_until_nul(&buffer).map_or_else(
+            |_| String::new(),
+            |host| host.to_string_lossy().into_owned(),
+        )
+    };
+    (host, c_int::from(u16::from_be(port)))
 }
 
 /// `step` over a copy of the record's TLS group and its SSL (None without one), then
@@ -971,17 +982,16 @@ pub unsafe extern "C" fn socket_ssl_get_peer_certificate_string(
     socket: *const SocketRecord,
     buffer: *mut c_void,
 ) -> bool {
-    let buffer = buffer.cast::<NativeString>();
-    // SAFETY: the caller's live String.
-    let string = unsafe { &*buffer };
+    // SAFETY: the caller's live String, lent for the call; the PEM goes to the bytes
+    // it owns at `str`, outside these fields.
+    let string = unsafe { &mut *buffer.cast::<NativeString>() };
     let (str, size) = (string.str, string.size);
     // SAFETY: as the caller promises; the String owns `size` bytes at `str`.
     let n = unsafe { socket_ssl_get_peer_certificate_pem(socket, str, size) };
     let Ok(n) = usize::try_from(n) else {
         return false;
     };
-    // SAFETY: the caller's live String.
-    unsafe { (*buffer).length = n };
+    string.length = n;
     true
 }
 
@@ -1561,36 +1571,29 @@ pub unsafe extern "C-unwind" fn make_server_socket(
     // SAFETY: as the caller promises.
     let address = unsafe { CStr::from_ptr(address) };
     let host = address.to_string_lossy();
-    if bind_host(record, address, port) < 0 {
+    // Bound, listening when a stream, and named; else the warning for what failed.
+    let served = if bind_host(record, address, port) < 0 {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
-        // SAFETY: the new record, which nothing else holds.
-        return unsafe { discard(socket) };
-    }
-    if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
+        false
+    } else if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
         log::sys_warning(
             ORIGIN,
             format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
         );
-        // SAFETY: the new record, which nothing else holds.
-        return unsafe { discard(socket) };
-    }
-    if record.edit(SocketFields::get_name) < 0 {
+        false
+    } else if record.edit(SocketFields::get_name) < 0 {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
-        // SAFETY: the new record, which nothing else holds.
-        return unsafe { discard(socket) };
+        false
+    } else {
+        true
+    };
+    if served {
+        return socket;
     }
-    socket
-}
-
-/// Frees a socket `make_server_socket` gave up on.
-///
-/// # Safety
-/// As `Socket::free`.
-unsafe fn discard(socket: *mut SocketRecord) -> *mut SocketRecord {
-    // SAFETY: as the caller promises.
+    // SAFETY: the new record, which nothing else holds; `Socket::free`.
     unsafe { socket_free(socket) };
     std::ptr::null_mut()
 }

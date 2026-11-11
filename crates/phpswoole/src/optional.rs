@@ -236,10 +236,7 @@ pub fn set_blocking(driver: Switch, blocking: bool) {
 
 /// `SW_MUST_BE_MAIN_THREAD`'s test: always true without `SW_THREAD`.
 pub(crate) fn main_thread() -> bool {
-    !built_with(Switch::Thread) || {
-        // SAFETY: no preconditions.
-        unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
-    }
+    !built_with(Switch::Thread) || swoole_rs_zend::is_main_thread()
 }
 
 /// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.

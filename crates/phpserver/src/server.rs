@@ -16,8 +16,7 @@ use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long, zend_class_entry,
-        zend_object, zend_object_handlers, zval,
+        add_assoc_stringl_ex, zend_class_entry, zend_object, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -776,8 +775,7 @@ fn heartbeat(call: &Call) {
                     conn.close_force = 1;
                     server_methods::close(serv, session_id, false);
                 }
-                // SAFETY: the return slot holds an array.
-                unsafe { add_next_index_long(call.return_value(), session_id) };
+                call.add_next_index_long(session_id);
             }
         }
         fd += 1;
@@ -835,12 +833,7 @@ fn get_socket(call: &Call) {
     }
 }
 
-/// `add_assoc_*(return_value, key, ...)`.
-fn add_double(call: &Call, key: &CStr, value: f64) {
-    // SAFETY: the return slot holds an array.
-    unsafe { add_assoc_double_ex(call.return_value(), key.as_ptr(), key.count_bytes(), value) };
-}
-
+/// `add_assoc_stringl_ex(return_value, key, ...)`.
 fn add_bytes(call: &Call, key: &CStr, value: *const c_char, length: usize) {
     // SAFETY: the return slot holds an array; Zend copies the bytes.
     unsafe {
@@ -920,9 +913,9 @@ fn get_client_info(call: &Call) {
     call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id));
     call.add_assoc_long(c"connect_time", conn.connect_time as i64);
     call.add_assoc_long(c"last_time", i64::from(conn.last_recv_time as i32));
-    add_double(call, c"last_recv_time", conn.last_recv_time);
-    add_double(call, c"last_send_time", conn.last_send_time);
-    add_double(call, c"last_dispatch_time", conn.last_dispatch_time);
+    call.add_assoc_double(c"last_recv_time", conn.last_recv_time);
+    call.add_assoc_double(c"last_send_time", conn.last_send_time);
+    call.add_assoc_double(c"last_dispatch_time", conn.last_dispatch_time);
     call.add_assoc_long(c"close_errno", i64::from(conn.close_errno));
     let recv_queued = conn.recv_queued_bytes.load(Ordering::Relaxed);
     call.add_assoc_long(c"recv_queued_bytes", i64::from(recv_queued));
@@ -961,8 +954,7 @@ fn get_client_list(call: &Call) {
             if session_id <= 0 {
                 continue;
             }
-            // SAFETY: the return slot holds an array.
-            unsafe { add_next_index_long(call.return_value(), session_id) };
+            call.add_next_index_long(session_id);
             find_count -= 1;
         }
         if find_count <= 0 {

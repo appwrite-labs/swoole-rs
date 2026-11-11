@@ -23,7 +23,6 @@ use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
 use crate::view;
-use swoole_rs_timer::{owner_reactor, owner_reinit};
 
 /// `SW_IPC_UNIXSOCK`, `SW_WORKER`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const IPC_UNIXSOCK: c_int = 1;
@@ -85,15 +84,14 @@ impl Context<'_> {
             unsafe { slot.call(self.serv.raw(), self.bus().buffer().cast()) };
         }
     }
-    pub(super) fn event_socket(&self) -> *mut c_void {
-        // SAFETY: the context's live event.
-        unsafe { (*self.event).socket_ptr() }.cast()
+    /// The context's event, for the ops that run with one.
+    pub(super) fn event(&self) -> &Event {
+        // SAFETY: the ops reading it run with the context's live event.
+        unsafe { &*self.event }
     }
-}
-
-/// This thread's timer, or null.
-fn timer() -> *mut c_void {
-    swoole_rs_corebase::thread_timer()
+    pub(super) fn event_socket(&self) -> *mut c_void {
+        self.event().socket_ptr()
+    }
 }
 
 /// The ops on native objects.
@@ -147,17 +145,9 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             ctx.bus().pop();
             0
         }
-        OP_TIMER_DETACHED => {
-            let timer = timer();
-            // SAFETY: this thread's live timer.
-            u64::from(
-                !timer.is_null()
-                    && owner_reactor(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }).is_null(),
-            )
-        }
+        OP_TIMER_DETACHED => u64::from(crate::objects::timer_detached()),
         OP_TIMER_REINIT => {
-            // SAFETY: this thread's live timer.
-            owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
+            crate::objects::timer_reinit(false);
             0
         }
         OP_PORT_ADD => {

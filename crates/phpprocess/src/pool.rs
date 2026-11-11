@@ -26,8 +26,8 @@ use swoole_rs_process::{
 use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Props, Value, ZString,
-    handlers, message,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
+    message,
     string::{self, ZBuf},
     sys::{ZEND_ACC_PUBLIC, zend_hash_index_update, zval},
 };
@@ -925,8 +925,10 @@ fn get_process(call: &Call) {
     if id < 0 {
         id = current_id;
     }
-    // SAFETY: `$this`, of the registered class.
-    let props = unsafe { Props::new(POOL.entry(), call.this()) };
+    // `$this`, of the registered class.
+    let Some(props) = call.props(Some(&POOL)) else {
+        return;
+    };
     // SAFETY: nothing else borrows `workers` here.
     let workers = unsafe { props.array(c"workers") };
     // Separated: a new worker is added in place.

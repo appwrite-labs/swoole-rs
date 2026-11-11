@@ -5,6 +5,8 @@
 use crate::ip::swr_v1_clients_ip;
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::io::Write;
+use std::net::Ipv4Addr;
 use swoole_rs_corebase::net_address::{
     BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, RAW, RAW6, TCP, TCP6, UDP, UDP6, UNIX_DGRAM,
     UNIX_STREAM, platform_parses,
@@ -206,12 +208,10 @@ pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *con
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const c_char {
     if inet4(address.kind) {
-        // SAFETY: inet4 selects the initialized IPv4 union member.
-        let ip = unsafe { address.addr.inet_v4.sin_addr.s_addr };
+        let ip = address.addr.v4().sin_addr.s_addr;
         address_string(libc::AF_INET, &ip.to_ne_bytes())
     } else if inet6(address.kind) {
-        // SAFETY: inet6 selects the initialized IPv6 union member.
-        let ip = unsafe { address.addr.inet_v6.sin6_addr.s6_addr };
+        let ip = address.addr.v6().sin6_addr.s6_addr;
         address_string(libc::AF_INET6, &ip)
     } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
         // A local socket selects the initialized Unix union member.
@@ -229,11 +229,13 @@ pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const
 pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
     let mut text = [0u8; 46];
     let written = if inet4(address.kind) {
-        // inet4 selects the initialized IPv4 union member.
-        let ip = (&raw const address.addr.inet_v4)
-            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in, sin_addr));
-        // SAFETY: the field holds an IPv4 address and `text` has 46 bytes.
-        unsafe { inet_ntop(libc::AF_INET, ip.cast(), text.as_mut_ptr().cast(), 46) }
+        // `inet_ntop(AF_INET)` writes the four octets in decimal, as `Ipv4Addr` displays;
+        // at most 15 characters, which leave the buffer its terminator.
+        let ip = Ipv4Addr::from(address.addr.v4().sin_addr.s_addr.to_ne_bytes());
+        if write!(&mut text[..45], "{ip}").is_err() {
+            return f(c"");
+        }
+        return f(CStr::from_bytes_until_nul(&text).unwrap_or_default());
     } else if inet6(address.kind) {
         // inet6 selects the initialized IPv6 union member.
         let ip = (&raw const address.addr.inet_v6)

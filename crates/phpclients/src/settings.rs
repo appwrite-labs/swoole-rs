@@ -10,9 +10,8 @@ use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
-    Array, E_ERROR, Value as Zval, ZString, bailout, long_zval, string,
+    Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval,
     sys::{self, zend_ini_parse_quantity, zval, zval_ptr_dtor},
-    value,
 };
 
 /// `SW_DATA_EOF_MAXLEN`.
@@ -44,9 +43,7 @@ pub(crate) unsafe extern "C" fn php_swoole_length_func(
 }
 
 fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
-    let mut data = long_zval(0);
-    // SAFETY: a fresh string; the zval takes its reference.
-    unsafe { value::set_str(&raw mut data, string::copy(bytes)) };
+    let mut data = Owned::string(ZString::new(bytes)).into_zval();
     let mut retval = long_zval(0);
     let called = native::invoke(callable, std::slice::from_mut(&mut data), &raw mut retval);
     let length = match called {
@@ -386,10 +383,11 @@ pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: *const z
     let value = |value| unsafe { tls::set_value(owner, value) };
     // SAFETY: the caller's live settings.
     let options = unsafe { Options::new(settings) };
+    // SAFETY: as above.
+    let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
     let text = |key: &str, which| {
         if let Some(text) = options.string(key) {
-            // SAFETY: as above.
-            unsafe { tls::set_text(owner, which, text.bytes()) };
+            set_text(which, text.bytes());
         }
     };
     if let Some(protocols) = options.long("ssl_protocols") {
@@ -403,8 +401,7 @@ pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: *const z
         ("ssl_key_file", Text::KeyFile, "key"),
     ] {
         if let Some(path) = options.string(key)
-            // SAFETY: as above.
-            && !unsafe { tls::set_text(owner, which, path.bytes()) }
+            && !set_text(which, path.bytes())
         {
             let path = c_text(path.bytes());
             report(

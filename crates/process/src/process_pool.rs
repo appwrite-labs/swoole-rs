@@ -741,6 +741,14 @@ impl<H: PoolHost> Pool<H> {
         unsafe { std::slice::from_raw_parts(self.workers(), self.worker_num() as usize) }
     }
 
+    /// The pool's IPC state, or none before `create` makes it. The borrow of the
+    /// pool lasts as long as the state's, so no operation runs meanwhile.
+    fn ipc_state(&mut self) -> Option<&mut PoolIpc> {
+        // SAFETY: null, or the box `create` made, live until `destroy` clears the
+        // field; only this operation's thread reaches it, through `self`.
+        unsafe { self.ipc().as_mut() }
+    }
+
     /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
     fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
         // SAFETY: `p` is the live pool this runs over.
@@ -876,8 +884,8 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::start_check`.
     fn start_check(&mut self) -> i64 {
         if self.ipc_mode() == IPC_SOCKET
-            // SAFETY: null, or the pool's IPC state.
-            && unsafe { self.ipc().as_ref() }
+            && self
+                .ipc_state()
                 .is_none_or(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
         {
             self.op(LOG_MUST_LISTEN, 0);
@@ -1125,8 +1133,7 @@ impl<H: PoolHost> Pool<H> {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
                 let size = self.max_packet_size();
-                // SAFETY: null, or the pool's IPC state, which nothing else borrows meanwhile.
-                if let Some(ipc) = unsafe { self.ipc().as_mut() } {
+                if let Some(ipc) = self.ipc_state() {
                     pool_ipc_prepare(ipc, size);
                 }
                 self.op(OP_PIPE_HANDLER, 0);
@@ -1251,13 +1258,19 @@ impl<H: PoolHost> Pool<H> {
         let size = self.h.event_size();
         assert!(length < size - EVENT_DATA, "the message fits in EventData");
         let mut message = vec![0u64; size.div_ceil(8)];
+        // The DataHead's length and type share the word at `EVENT_LEN`: the length
+        // in its first four bytes, the type in its seventh.
+        const {
+            assert!(
+                EVENT_LEN.is_multiple_of(8) && EVENT_TYPE == EVENT_LEN + 6,
+                "DataHead's len and type lie in one word"
+            );
+        };
+        let [a, b, c, d] = u32::try_from(length).unwrap_or(u32::MAX).to_ne_bytes();
+        if let Some(word) = message.get_mut(EVENT_LEN / 8) {
+            *word = u64::from_ne_bytes([a, b, c, d, 0, 0, kind, 0]);
+        }
         let bytes = message.as_mut_ptr().cast::<u8>();
-        // SAFETY: the DataHead's type and length fields, inside the buffer.
-        unsafe { bytes.wrapping_add(EVENT_TYPE).write(kind) };
-        let len = u32::try_from(length).unwrap_or(u32::MAX);
-        let len = len.to_ne_bytes();
-        // SAFETY: as above.
-        unsafe { ptr::copy_nonoverlapping(len.as_ptr(), bytes.wrapping_add(EVENT_LEN), len.len()) };
         // SAFETY: the caller's `length` bytes fit in the data field (asserted).
         unsafe { ptr::copy_nonoverlapping(data, bytes.wrapping_add(EVENT_DATA), length) };
         self.push_message(bytes)
@@ -1272,9 +1285,8 @@ impl<H: PoolHost> Pool<H> {
         if self.use_socket() != 0 {
             // SAFETY: the caller's EventData holds `size` bytes.
             let data = unsafe { std::slice::from_raw_parts(event, size as usize) };
-            // SAFETY: a socket pool's IPC state.
-            let ipc = unsafe { self.ipc().as_ref() };
-            let sent = crate::pool::swr_v1_process_pool_ipc_send(ipc, data, blocking);
+            let ipc = self.ipc_state();
+            let sent = crate::pool::swr_v1_process_pool_ipc_send(ipc.as_deref(), data, blocking);
             return if sent { SW_OK } else { SW_ERR };
         }
         let p = self.p;

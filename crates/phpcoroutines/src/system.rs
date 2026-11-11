@@ -144,8 +144,7 @@ fn read_file(call: &Call) {
         return;
     };
     match swoole_rs_hooks::file_io::read_file(&path, flags & FILE_LOCK != 0) {
-        // SAFETY: a new string, whose reference the return slot takes.
-        Some(content) => unsafe { call.set_string(swoole_rs_zend::string::copy(&content)) },
+        Some(content) => call.set_bytes(&content),
         None => call.set_bool(false),
     }
 }

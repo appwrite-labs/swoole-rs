@@ -80,8 +80,7 @@ pub(crate) fn flag(bit: u32) -> bool {
             .is_some_and(swoole_rs_server::view::Server::is_started),
         FATAL => last_error_fatal() || swoole_rs_reactor::event_api::swoole_event_bailed_out(),
         // `sw_is_main_thread()`.
-        // SAFETY: no preconditions.
-        MAIN_THREAD => !cfg!(zts) || unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() },
+        MAIN_THREAD => !cfg!(zts) || swoole_rs_zend::is_main_thread(),
         // Only SW_CORO_TIME builds give the scheduler a clock.
         CORO_TIME => sched().hooks.clock.is_some(),
         THREAD => swoole_rs_phpswoole::built_with(swoole_rs_phpswoole::Switch::Thread),

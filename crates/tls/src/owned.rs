@@ -201,10 +201,8 @@ pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreS
     owner.strings[TLS_HOST_NAME].view()
 }
 /// # Safety
-/// owner is live; neither its strings nor scalar slots change during the operation.
-unsafe fn configuration(owner: *const OwnedTlsContext) -> TlsConfig {
-    // SAFETY: the caller lends the live owner for this short snapshot.
-    let owner = unsafe { &*owner };
+/// Neither the owner's strings nor its scalar slots change during the operation.
+unsafe fn configuration(owner: &OwnedTlsContext) -> TlsConfig {
     let strings = owner.strings.each_ref().map(|slot| slot.view());
     // SAFETY: field observation is externally synchronized.
     let fields = unsafe { &*owner.fields.get() };
@@ -238,17 +236,17 @@ unsafe extern "C" fn slot_password(
     slot: *mut c_void,
 ) -> c_int {
     // SAFETY: per the caller.
-    let view = unsafe { &*slot.cast::<StringSlot>() }.view();
+    let passphrase = unsafe { &*slot.cast::<StringSlot>() }.bytes_with_nul();
     // SAFETY: per the caller.
-    unsafe { copy_password(buffer, capacity, view.into()) }
+    unsafe { copy_password(buffer, capacity, passphrase) }
 }
 /// # Safety
 /// owner is live/exclusive, and its logger does not throw.
 pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
-    // SAFETY: snapshot raw views without retaining a record reference across OpenSSL/log callbacks.
-    let mut config = unsafe { configuration(owner) };
     // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.
     let state = unsafe { &*owner };
+    // SAFETY: snapshot raw views without retaining a record reference across OpenSSL/log callbacks.
+    let mut config = unsafe { configuration(state) };
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
     let retained_password = if config.passphrase.length == 0 {
         None
@@ -533,64 +531,53 @@ pub enum Value {
     PreferServerCiphers(bool),
 }
 
-/// `set_cert_file`/`set_key_file`: false, logged from `origin`, when the file
-/// can't be read.
-/// # Safety
-/// owner is live and exclusive.
-unsafe fn set_file(
-    owner: *const OwnedTlsContext,
-    index: u32,
-    path: &[u8],
-    origin: &CStr,
-    what: &str,
-) -> bool {
+/// `set_cert_file`/`set_key_file`'s check: false, logged from `origin`, when the
+/// file can't be read.
+fn readable(path: &[u8], origin: &CStr, what: &str) -> bool {
     // access(2) reads up to the first NUL, as upstream's c_str() does.
     let name = path.split(|&b| b == 0).next().unwrap_or_default();
     let terminated = [name, b"\0"].concat();
-    // SAFETY: the exclusive owner and a terminated path; the stored value keeps every byte.
-    let status =
-        unsafe { swr_v1_tls_owner_set_path(owner, index, terminated.as_ptr().cast(), path.len()) };
-    match status {
-        0 => true,
-        1 => {
-            let name = String::from_utf8_lossy(name);
-            swoole_rs_corebase::log::warning(
-                origin,
-                format_args!("ssl {what} file[{name}] not found"),
-            );
-            false
-        }
-        // An allocation refusal, which std::bad_alloc ends.
-        _ => std::process::abort(),
+    let found = CStr::from_bytes_with_nul(&terminated)
+        .is_ok_and(|name| swoole_rs_corebase::sys::access(name, libc::R_OK) >= 0);
+    if !found {
+        let name = String::from_utf8_lossy(name);
+        swoole_rs_corebase::log::warning(origin, format_args!("ssl {what} file[{name}] not found"));
     }
+    found
 }
 
 /// Write the text setting into the owner: false for a certificate or key file
 /// that can't be read.
 /// # Safety
-/// owner is live and exclusive.
+/// owner is live and exclusive, and `value` is none of its own strings.
 pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8]) -> bool {
     // SAFETY: the caller lends the live owner.
     let state = unsafe { &*owner };
-    let slot = match which {
-        // SAFETY: as the caller promises.
-        Text::CertFile => return unsafe { set_file(owner, 4, value, c"set_cert_file", "cert") },
-        // SAFETY: as the caller promises.
-        Text::KeyFile => return unsafe { set_file(owner, 5, value, c"set_key_file", "key") },
-        Text::ClientCertFile => {
-            // SAFETY: as the caller promises.
-            return unsafe { set_file(owner, 7, value, c"set_client_cert_file", "client cert") };
-        }
-        Text::Passphrase => &state.strings[PASSPHRASE],
-        Text::HostName => &state.strings[8],
-        Text::Cafile => &state.strings[9],
-        Text::Capath => &state.strings[10],
-        Text::Ciphers => &state.strings[0],
-        Text::EcdhCurve => &state.strings[1],
-        Text::DhParam => &state.strings[3],
+    // The slot, and for a file its setter's log origin and name.
+    let (slot, file) = match which {
+        Text::CertFile => (&state.strings[4], Some((c"set_cert_file", "cert"))),
+        Text::KeyFile => (&state.strings[5], Some((c"set_key_file", "key"))),
+        Text::ClientCertFile => (
+            &state.strings[7],
+            Some((c"set_client_cert_file", "client cert")),
+        ),
+        Text::Passphrase => (&state.strings[PASSPHRASE], None),
+        Text::HostName => (&state.strings[TLS_HOST_NAME], None),
+        Text::Cafile => (&state.strings[9], None),
+        Text::Capath => (&state.strings[10], None),
+        Text::Ciphers => (&state.strings[0], None),
+        Text::EcdhCurve => (&state.strings[1], None),
+        Text::DhParam => (&state.strings[3], None),
     };
-    // SAFETY: a stable slot of the exclusive owner, which `value` is not.
+    if let Some((origin, what)) = file
+        && !readable(value, origin, what)
+    {
+        return false;
+    }
+    // SAFETY: a stable slot of the exclusive owner, which `value` is not; the stored
+    // value keeps every byte.
     let status = unsafe { slot.set_shared(value) };
+    // An allocation refusal, which std::bad_alloc ends.
     if status != 0 {
         std::process::abort();
     }

@@ -251,12 +251,3 @@ pub(crate) unsafe fn on_read(port: *mut c_void, sock: Socket<'_>, fd: c_int) -> 
     // SAFETY: the session's live socket.
     !session.listened() && !unsafe { swr_v1_tls_dtls_session_listen(session) }
 }
-
-/// `Server::close_connection`'s `delete` of the socket's DTLS session.
-///
-/// # Safety
-/// `port` is the live DTLS port; nothing uses the session afterwards.
-pub(crate) unsafe fn free(port: *mut c_void, fd: c_int) {
-    // SAFETY: the port's live record, as the caller guarantees.
-    (port_config::methods().dtls_free)(unsafe { port_config::of(port) }, fd);
-}

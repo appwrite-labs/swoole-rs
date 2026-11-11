@@ -57,9 +57,8 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
-    owner_reinit, swoole_timer_create, swoole_timer_del, swoole_timer_free,
-    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
-    swr_v1_timer_add_plain,
+    swoole_timer_create, swoole_timer_del, swoole_timer_free, swoole_timer_get_next_msec,
+    swoole_timer_is_available, swoole_timer_select, swr_v1_timer_add_plain,
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
@@ -451,31 +450,16 @@ extern "C" fn recv_message(reactor: Running<'_>, event: &mut Event) -> c_int {
     0
 }
 
-/// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop; a
-/// callback's bailout is raised once the export's frames are gone.
-unsafe fn run_main(pool: Pool, worker: Worker, protocol: u64) -> c_int {
-    // SAFETY: the live pool and worker the loop runs over.
-    let result = unsafe { pool_run_op(&NATIVE, pool, worker, RUN_MAIN, protocol) };
+/// `ProcessPool::run_with_*_protocol` (`P` its `PROTOCOL_*`) and `run_async` (4), as
+/// the pool's `main_loop`: the worker loop; a callback's bailout is raised once the
+/// export's frames are gone.
+extern "C-unwind" fn run_main<const P: u64>(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
+    // SAFETY: the pool calls its main loop over itself and a live worker.
+    let result = unsafe { pool_run_op(&NATIVE, pool.raw(), worker.raw(), RUN_MAIN, P) };
     if result == RAISE {
         raise_bailout();
     }
     result as c_int
-}
-
-macro_rules! main_loops {
-    ($($name:ident = $protocol:expr;)*) => {$(
-        extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
-            // SAFETY: the pool calls its main loop over itself and a live worker.
-            unsafe { run_main(pool.raw(), worker.raw(), $protocol) }
-        }
-    )*};
-}
-
-main_loops! {
-    run_task = PROTOCOL_TASK as u64;
-    run_stream = PROTOCOL_STREAM as u64;
-    run_message = PROTOCOL_MESSAGE as u64;
-    run_async = 4;
 }
 
 // ---------------------------------------------------------------- the table
@@ -530,10 +514,10 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_NEW_PIPE => new_pipe(pool, worker),
         OP_MAIN_LOOP => {
             record(pool).main_loop = Some(match arg {
-                1 => run_task,
-                2 => run_stream,
-                3 => run_message,
-                _ => run_async,
+                1 => run_main::<{ PROTOCOL_TASK as u64 }>,
+                2 => run_main::<{ PROTOCOL_STREAM as u64 }>,
+                3 => run_main::<{ PROTOCOL_MESSAGE as u64 }>,
+                _ => run_main::<4>,
             });
             0
         }
@@ -664,9 +648,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_TIMER_INIT => {
             if swoole_timer_is_available() {
-                let timer = swoole_rs_corebase::thread_timer();
-                // SAFETY: a timer is available, so the slot holds this thread's live timer.
-                owner_reinit(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }, true);
+                crate::objects::timer_reinit(true);
             } else {
                 // This thread has no timer.
                 swoole_timer_create(true);

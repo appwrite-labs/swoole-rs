@@ -505,13 +505,13 @@ impl ReactorState {
 }
 /// Actual kernel wait over the owner's stable arrays. No native callbacks run.
 /// # Safety
-/// owner is live/exclusive; entries is writable for one int.
+/// owner is live/exclusive.
 // Its one caller, the wait loop, runs it once per iteration (#1435).
 #[inline(always)]
 pub(crate) unsafe fn kernel_wait(
     owner: *mut ReactorState,
     deferred: bool,
-    entries: *mut c_int,
+    entries: &mut c_int,
 ) -> c_int {
     // SAFETY: the kernel operation exclusively borrows state, without native callbacks.
     let owner = unsafe { &mut *owner };
@@ -519,8 +519,7 @@ pub(crate) unsafe fn kernel_wait(
         Backend::None => -1,
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
-            // SAFETY: the caller lends an entry-count slot.
-            unsafe { entries.write(count) };
+            *entries = count;
             // SAFETY: poll initializes revents in the first count valid records.
             unsafe {
                 libc::poll(
@@ -730,7 +729,7 @@ pub(crate) mod tests {
                 (*state.fields).timeout_msec = 0;
                 let view = (*state.owner).backend_view();
                 let mut entries = 0;
-                assert_eq!(kernel_wait(state.owner, false, &raw mut entries), 1);
+                assert_eq!(kernel_wait(state.owner, false, &mut entries), 1);
                 assert_eq!(view.events, (*state.owner).backend_view().events);
                 if kind == 3 {
                     assert_eq!(entries, 1);

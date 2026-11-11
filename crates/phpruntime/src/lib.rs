@@ -108,8 +108,7 @@ fn exception() -> *mut zend_class_entry {
 
 /// `sw_is_main_thread()`.
 fn main_thread() -> bool {
-    // SAFETY: no preconditions.
-    unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
+    swoole_rs_zend::is_main_thread()
 }
 
 /// `sw_callable_create(value)`: a `swoole_rs_zend::host` callable, or null after a

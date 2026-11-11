@@ -80,9 +80,8 @@ impl Context<'_> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
     fn tables(&self) -> &mut crate::ServerTables {
         // SAFETY: its tables, written by the master before its threads and workers start.

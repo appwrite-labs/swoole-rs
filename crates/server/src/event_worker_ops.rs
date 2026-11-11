@@ -61,9 +61,8 @@ impl<'a> Context<'a> {
     }
 }
 
-/// `swGlobalHookType`'s worker and shutdown hooks.
+/// `swGlobalHookType`'s worker hooks.
 const SW_GLOBAL_HOOK_BEFORE_WORKER_START: c_int = 2;
-const SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
 const SW_GLOBAL_HOOK_BEFORE_WORKER_STOP: c_int = 8;
 /// `swoole::WorkerType::SW_EVENT_WORKER`, `SW_WORKER_MESSAGE_STOP`.
 const SW_EVENT_WORKER: c_int = 2;
@@ -304,15 +303,13 @@ pub(crate) fn swr_workers_signal_set(arg: u64, own: extern "C" fn(c_int)) {
 fn global_hook(ctx: &Context<'_>, hook: u64) {
     let id = match hook {
         HOOK_BEFORE_WORKER_START => SW_GLOBAL_HOOK_BEFORE_WORKER_START,
-        HOOK_BEFORE_SERVER_SHUTDOWN => SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN,
+        HOOK_BEFORE_SERVER_SHUTDOWN => {
+            ctx.serv.call_hook(view::ServerHook::BeforeShutdown);
+            return;
+        }
         _ => SW_GLOBAL_HOOK_BEFORE_WORKER_STOP,
     };
     if !swoole_rs_corebase::swoole_isset_hook(id) {
-        return;
-    }
-    if hook == HOOK_BEFORE_SERVER_SHUTDOWN {
-        // SAFETY: the shutdown hooks take the server.
-        unsafe { swoole_rs_corebase::swoole_call_hook(id, ctx.serv.raw()) };
         return;
     }
     let worker_id = ctx.worker().id() as usize;

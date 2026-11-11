@@ -12,15 +12,15 @@ use crate::{
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_long, add_next_index_null, add_next_index_stringl, php_format_date,
         php_url_encode, swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
-        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
-        swr_zend_property_slot, swr_zend_separate_array, swr_zend_string_release,
-        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
-        swr_zend_try_get_string, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
-        swr_zend_try_symtable_update, swr_zend_zval_value_name, swr_zval_is_true,
-        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
-        zend_value, zval, zval_ptr_dtor,
+        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_http_build_query,
+        swr_zend_object_properties, swr_zend_property_slot, swr_zend_separate_array,
+        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
+        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_update,
+        swr_zend_try_ptr_dtor, swr_zend_try_symtable_update, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_hash_add_new, zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert,
+        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
+        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -340,6 +340,18 @@ impl Value {
         // SAFETY: the zval holds the table while borrowed; `Array` is a
         // transparent table.
         Some(unsafe { &*table.cast::<Array>() })
+    }
+
+    /// `http_build_query(value)` (`php_url_encode_hash_ex`, RFC 1738) of an
+    /// array or an object's properties: None for any other value, or when
+    /// there is nothing to encode.
+    #[must_use]
+    pub fn http_build_query(&self) -> Option<ZString> {
+        // SAFETY: a live zval, which Zend only reads; anything but an array or
+        // an object gives null, and otherwise a new string, whose one reference
+        // the result takes.
+        let query = unsafe { swr_zend_http_build_query(self.as_ptr()) };
+        (!query.is_null()).then(|| ZString(query))
     }
 
     /// `ZVAL_COPY`: the same value with a reference of its own.

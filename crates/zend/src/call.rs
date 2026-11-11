@@ -91,12 +91,18 @@ impl Call {
         crate::local::Php(std::marker::PhantomData)
     }
 
+    /// `EX(This)`, copied: its value is `$this` and its `u2` the argument count.
+    #[inline]
+    fn this_slot(&self) -> zval {
+        // SAFETY: a live frame.
+        unsafe { (*self.frame).This }
+    }
+
     /// `ZEND_NUM_ARGS()`.
     #[must_use]
     #[inline]
     pub fn num_args(&self) -> u32 {
-        // SAFETY: a live frame.
-        let this = unsafe { (*self.frame).This };
+        let this = self.this_slot();
         // SAFETY: a call frame's `This.u2` holds the argument count.
         unsafe { this.u2.num_args }
     }
@@ -105,8 +111,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn this(&self) -> *mut zend_object {
-        // SAFETY: a live frame.
-        let this = unsafe { (*self.frame).This };
+        let this = self.this_slot();
         // SAFETY: a non-static method's `This` holds its object.
         unsafe { this.value.obj }
     }
@@ -146,10 +151,8 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn this_value(&self) -> Option<&Value> {
-        // SAFETY: a live frame.
-        let this = unsafe { &raw const (*self.frame).This };
         // SAFETY: the frame holds `This` for the call.
-        unsafe { Value::from_ptr(this) }.filter(|this| this.object().is_some())
+        unsafe { Value::from_ptr(self.this_zval()) }.filter(|this| this.object().is_some())
     }
 
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
@@ -526,15 +529,31 @@ impl Call {
         unsafe { swr_zend_array_init(self.value) };
     }
 
-    /// `add_assoc_long_ex(return_value, key, value)`, after `set_array`
-    /// (nothing unless the return slot holds an array).
-    pub fn add_assoc_long(&self, key: &CStr, value: i64) {
+    /// Add to the array in the return slot, after `set_array` (nothing unless
+    /// the slot holds an array).
+    fn add(&self, add: impl FnOnce(&mut crate::ArrayMut)) {
         // SAFETY: the return slot is live for the handler, and nothing else
         // borrows it; `Owned` is a transparent zval, and is not dropped here.
         let slot = unsafe { &mut *self.value.cast::<crate::Owned>() };
         if let Some(array) = slot.array_mut() {
-            array.insert_long(key.to_bytes(), value);
+            add(array);
         }
+    }
+
+    /// `add_assoc_long_ex(return_value, key, value)`, after `set_array`
+    /// (nothing unless the return slot holds an array).
+    pub fn add_assoc_long(&self, key: &CStr, value: i64) {
+        self.add(|array| array.insert_long(key.to_bytes(), value));
+    }
+
+    /// `add_assoc_double_ex(return_value, key, value)`, as [`Call::add_assoc_long`].
+    pub fn add_assoc_double(&self, key: &CStr, value: f64) {
+        self.add(|array| array.insert_double(key.to_bytes(), value));
+    }
+
+    /// `add_next_index_long(return_value, value)`, as [`Call::add_assoc_long`].
+    pub fn add_next_index_long(&self, value: i64) {
+        self.add(|array| array.push_long(value));
     }
 
     /// `zend_update_property_long(scope, Z_OBJ_P(ZEND_THIS), name, value)`;
@@ -625,8 +644,7 @@ impl Call {
     /// `RETVAL_EMPTY_STRING`.
     #[inline]
     pub fn set_empty_string(&self) {
-        // SAFETY: the interned empty string needs no reference.
-        unsafe { self.set_string(crate::value::empty_string()) };
+        self.set_zstring(crate::ZString::empty());
     }
 
     /// `RETVAL_EMPTY_ARRAY`.

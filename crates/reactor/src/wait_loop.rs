@@ -202,7 +202,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
         // SAFETY: a single field read of the live state; deferred work waits without blocking.
         let deferred = !unsafe { (*fields).defer_tasks }.is_null();
         // SAFETY: the kernel wait runs no native effect.
-        let ready = unsafe { kernel_wait(owner, deferred, &raw mut entries) };
+        let ready = unsafe { kernel_wait(owner, deferred, &mut entries) };
         match ready.cmp(&0) {
             core::cmp::Ordering::Less => {
                 // upstream's Reactor::catch_error()

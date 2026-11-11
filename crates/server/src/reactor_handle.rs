@@ -8,7 +8,9 @@
 )]
 use core::ffi::{c_int, c_void};
 
-use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, reactor_set_handler};
+use swoole_rs_reactor::reactor_upstream::{
+    reactor_change, reactor_interest, reactor_set_handler, trigger_close_event,
+};
 use swoole_rs_reactor::{Handler, ReactorFields, ReactorPrepared, Running, Socket};
 
 /// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
@@ -77,6 +79,18 @@ impl Reactor {
             // SAFETY: the reactor's close on one of its live sockets.
             unsafe { close(self.0, sock.as_ptr().cast()) }
         })
+    }
+    /// `reactor->trigger_close_event(event)`.
+    pub(crate) fn trigger_close_event(self, event: &mut swoole_rs_reactor::Event) -> c_int {
+        // SAFETY: a live reactor on its own thread, and an event lent for the call.
+        unsafe { trigger_close_event(self.0, core::ptr::from_mut(event).cast()) }
+    }
+    /// `reactor->trigger_close_event(&event)` of an event over `conn`'s socket.
+    pub(crate) fn trigger_close(self, conn: &crate::ConnectionRecord) -> c_int {
+        // SAFETY: null, or the connection's live socket (`ConnectionRecord::socket`),
+        // for this call.
+        let mut event = unsafe { swoole_rs_reactor::Event::new(conn.fd, 0, 0, conn.socket) };
+        self.trigger_close_event(&mut event)
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
         // SAFETY: a live reactor.
