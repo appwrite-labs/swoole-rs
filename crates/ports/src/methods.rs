@@ -24,8 +24,7 @@ pub(crate) use swoole_rs_tls::upstream::socket_free;
 pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
     // SAFETY: the caller's live record.
     let fd = unsafe { (*socket).fields.fd };
-    // SAFETY: close(2) has no memory preconditions.
-    unsafe { libc::close(fd) };
+    swoole_rs_corebase::sys::close(fd);
     // SAFETY: Rust allocated the record and nothing uses it after.
     unsafe { SocketRecord::free(socket) };
 }

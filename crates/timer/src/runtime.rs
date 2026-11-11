@@ -53,7 +53,8 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
         it_interval: every,
         it_value: every,
     };
-    if swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value) < 0 {
+    // SAFETY: `value` is a live itimerval; the old value is not wanted.
+    if unsafe { libc::setitimer(libc::ITIMER_REAL, &raw const value, std::ptr::null_mut()) } < 0 {
         -1
     } else {
         0
@@ -82,13 +83,16 @@ pub extern "C" fn realtime_add(time: &mut libc::timespec, milliseconds: i64) {
 /// `Timer::get_absolute_msec()`: `std::chrono::steady_clock` in milliseconds.
 #[must_use]
 pub fn absolute_msec() -> i64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    let Some(now) = swoole_rs_corebase::sys::clock_gettime(clock) else {
-        return 0;
-    };
+    // SAFETY: a writable timespec.
+    unsafe { libc::clock_gettime(clock, &raw mut now) };
     now.tv_sec * 1000 + now.tv_nsec / 1_000_000
 }
 

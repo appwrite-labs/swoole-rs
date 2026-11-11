@@ -44,6 +44,7 @@ plain!(
     i64,
     u64,
     usize,
+    *mut libc::c_void,
     libc::addrinfo,
     libc::group_req,
     libc::group_source_req,
@@ -316,6 +317,25 @@ pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
 pub fn unlink(path: &CStr) -> c_int {
     // SAFETY: `path` is NUL-terminated.
     unsafe { libc::unlink(path.as_ptr()) }
+}
+
+/// `bytes` to C's `stdout`, which native code's own `printf` shares, so the two
+/// keep their order.
+pub fn print(bytes: &[u8]) {
+    for chunk in bytes.chunks(c_int::MAX.unsigned_abs() as usize) {
+        let length = c_int::try_from(chunk.len()).unwrap_or(c_int::MAX);
+        // SAFETY: "%.*s" reads at most `length` bytes of `chunk`.
+        unsafe { libc::printf(c"%.*s".as_ptr(), length, chunk.as_ptr()) };
+    }
+}
+
+/// One change to the kqueue `kq`, no events out: `kevent(2)`'s result.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+#[must_use]
+pub fn kevent_change(kq: c_int, change: &libc::kevent) -> c_int {
+    let (none, no_wait) = (std::ptr::null_mut(), std::ptr::null());
+    // SAFETY: one live change record, and no output records.
+    unsafe { libc::kevent(kq, change, 1, none, 0, no_wait) }
 }
 
 /// `if_nametoindex(3)`: the interface's index, 0 with errno set when there is none.

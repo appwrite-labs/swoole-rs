@@ -152,17 +152,7 @@ mod kqueue {
         event.flags = flags;
         event.fflags = fflags;
         event.udata = socket.cast();
-        // SAFETY: one valid change record, no output records.
-        let result = unsafe {
-            libc::kevent(
-                kq,
-                &raw const event,
-                1,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null(),
-            )
-        };
+        let result = swoole_rs_corebase::sys::kevent_change(kq, &event);
         result >= 0
     }
 

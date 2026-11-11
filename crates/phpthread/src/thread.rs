@@ -161,6 +161,13 @@ fn sched_param() -> libc::sched_param {
     swoole_rs_corebase::sys::zeroed()
 }
 
+/// `pthread_getschedparam` of the calling thread.
+fn get_sched(policy: &mut c_int, param: &mut libc::sched_param) -> c_int {
+    let me = swoole_rs_ossupport::pthread_self();
+    // SAFETY: two writable out-parameters.
+    unsafe { libc::pthread_getschedparam(me, policy, param) }
+}
+
 /// `body` on `$this`, which the instance methods run on.
 fn with_this(call: &Call, body: impl FnOnce(&PhpThread)) {
     if let Some(thread) = call.custom::<PhpThread>() {
@@ -287,8 +294,7 @@ fn set_priority(call: &Call) {
     let mut sched_policy = policy as c_int;
     let me = swoole_rs_ossupport::pthread_self();
     if policy == -1 {
-        // SAFETY: writable locals.
-        unsafe { libc::pthread_getschedparam(me, &raw mut sched_policy, &raw mut param) };
+        get_sched(&mut sched_policy, &mut param);
     }
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int conversion")]
     {
@@ -309,15 +315,7 @@ fn set_priority(call: &Call) {
 fn get_priority(call: &Call) {
     let mut param = sched_param();
     let mut policy: c_int = 0;
-    // SAFETY: writable locals.
-    if unsafe {
-        libc::pthread_getschedparam(
-            swoole_rs_ossupport::pthread_self(),
-            &raw mut policy,
-            &raw mut param,
-        )
-    } != 0
-    {
+    if get_sched(&mut policy, &mut param) != 0 {
         warn(&message!("pthread_getschedparam() failed"));
         call.set_bool(false);
         return;
