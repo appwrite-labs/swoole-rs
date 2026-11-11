@@ -8,7 +8,7 @@ description = "The swoole module host: global constants, Swoole\\Exception/Error
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:swoole-rs-error-ffi", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-framing", "dep:swoole-rs-http2", "dep:swoole-rs-memory", "dep:swoole-rs-reactor", "dep:swoole-rs-hooks", "dep:swoole-rs-clients", "dep:swoole-rs-timer", "dep:swoole-rs-utilities", "dep:swoole-rs-coroutine", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-brotli"]
+php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:swoole-rs-error-ffi", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-framing", "dep:swoole-rs-http2", "dep:swoole-rs-memory", "dep:swoole-rs-reactor", "dep:swoole-rs-hooks", "dep:swoole-rs-clients", "dep:swoole-rs-timer", "dep:swoole-rs-utilities", "dep:swoole-rs-coroutine", "dep:swoole-rs-brotli"]
 # The coroutine PDO drivers configure built (crates/ffi's features of the same names):
 # their MINIT, MSHUTDOWN, RINIT and blocking switches.
 pgsql = ["dep:swoole-rs-pgsql", "swoole-rs-pgsql/php"]
@@ -40,7 +40,6 @@ swoole-rs-clients = { path = "../clients", optional = true }
 swoole-rs-timer = { path = "../timer", optional = true }
 swoole-rs-utilities = { path = "../utilities", optional = true }
 swoole-rs-coroutine = { path = "../coroutine", optional = true }
-swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 swoole-rs-brotli = { path = "../brotli", optional = true }
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-pgsql = { path = "../pgsql", optional = true }

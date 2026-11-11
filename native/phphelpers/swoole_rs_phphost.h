@@ -170,7 +170,7 @@ static sw_inline int php_swoole_check_reactor() {
 END_EXTERN_C()
 
 // clang-format off
-// The order matches crates/phphelpers' known-string table.
+// The order matches crates/zend/src/host's known-string table.
 #define SW_ZEND_KNOWN_STRINGS(_) \
     _(SW_ZEND_STR_SETTING,                  "setting") \
     _(SW_ZEND_STR_FD,                       "fd") \
@@ -200,7 +200,7 @@ const swoole::Allocator *sw_zend_string_allocator();
 
 namespace zend {
 namespace function {
-// Event callbacks go through this so exceptions are handled; crates/phphelpers.
+// Event callbacks go through this so exceptions are handled; crates/zend/src/host.
 bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *retval, const bool enable_coroutine);
 }  // namespace function
 

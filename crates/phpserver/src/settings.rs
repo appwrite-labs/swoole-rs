@@ -8,8 +8,8 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
-use swoole_rs_phphelpers::callable;
 use swoole_rs_server::{server_methods, view};
+use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Value, bailout, message, report,
     string::bytes,

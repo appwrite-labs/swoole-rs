@@ -1,13 +1,13 @@
 //! Long-lived callbacks own their zval, callable cache and diagnostic name together.
+use crate::{
+    bailout, string,
+    sys::{self, zend_fcall_info_cache, zend_string, zval},
+    type_of,
+};
 use std::{
     ffi::{CStr, CString, c_char},
     ptr,
     rc::Rc,
-};
-use swoole_rs_zend::{
-    bailout, string,
-    sys::{self, zend_fcall_info_cache, zend_string, zval},
-    type_of,
 };
 
 /// A C/C++ warning leaf, invoked below Zend's C bailout trap.
@@ -48,7 +48,7 @@ impl Callable {
     /// bailout.
     /// # Errors
     /// A native PHP leaf bailed out.
-    pub fn new(value: &swoole_rs_zend::Value) -> Result<Option<Rc<Self>>, bailout::Bailout> {
+    pub fn new(value: &crate::Value) -> Result<Option<Rc<Self>>, bailout::Bailout> {
         Self::argument(Some(value), None, true, None)
     }
 
@@ -59,12 +59,12 @@ impl Callable {
     /// # Errors
     /// A native PHP leaf bailed out.
     pub fn argument(
-        value: Option<&swoole_rs_zend::Value>,
+        value: Option<&crate::Value>,
         name: Option<&CStr>,
         allow_null: bool,
-        exception: Option<&swoole_rs_zend::Class>,
+        exception: Option<&crate::Class>,
     ) -> Result<Option<Rc<Self>>, bailout::Bailout> {
-        let value = value.map_or(ptr::null_mut(), swoole_rs_zend::Value::as_ptr);
+        let value = value.map_or(ptr::null_mut(), crate::Value::as_ptr);
         if value.is_null() && name.is_none() {
             return Ok(None);
         }
@@ -75,7 +75,7 @@ impl Callable {
                 value,
                 name.map_or(ptr::null(), CStr::as_ptr),
                 allow_null,
-                exception.map_or(ptr::null_mut(), swoole_rs_zend::Class::entry),
+                exception.map_or(ptr::null_mut(), crate::Class::entry),
                 sys::swr_zend_callable_warning,
             )
         }?;
@@ -101,8 +101,8 @@ impl Callable {
 /// `value` is a live callable candidate. `report` is C/C++ and may report a PHP warning.
 pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, bailout::Bailout> {
     let mut state = Box::new(Callable {
-        value: swoole_rs_zend::UNDEF,
-        cache: swoole_rs_zend::EMPTY_FCC,
+        value: crate::UNDEF,
+        cache: crate::EMPTY_FCC,
         name: ptr::null_mut(),
     });
     let mut truth = false;
@@ -212,8 +212,8 @@ pub unsafe fn invoke(
 ) -> Result<bool, bailout::Bailout> {
     // SAFETY: the owned callback remains live; retain raw pointers across PHP reentry.
     let cache = unsafe { &raw mut (*handle).cache };
-    let mut fci = swoole_rs_zend::EMPTY_FCI;
-    let mut temporary = swoole_rs_zend::UNDEF;
+    let mut fci = crate::EMPTY_FCI;
+    let mut temporary = crate::UNDEF;
     fci.size = size_of::<sys::zend_fcall_info>();
     fci.retval = if retval.is_null() {
         &raw mut temporary

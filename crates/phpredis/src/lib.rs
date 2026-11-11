@@ -24,11 +24,11 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::{log::set_last_error, sys::set_errno};
-use swoole_rs_phphelpers::callable::Callable;
 use swoole_rs_phpserver::REDIS_SERVER as SERVER;
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
 use swoole_rs_server::{server_methods, view};
+use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, bailout, handlers, method_table,
     sys::{ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long},

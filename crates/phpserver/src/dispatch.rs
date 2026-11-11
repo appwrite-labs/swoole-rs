@@ -13,7 +13,6 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_add
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
 use swoole_rs_phpcoroutines::create_coroutine;
-use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -24,6 +23,7 @@ use swoole_rs_server::callbacks::{
     CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE, CB_SHUTDOWN, CB_START, CB_TASK, CB_USER_WORKER_START,
     CB_WORKER_ERROR, CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
 };
+use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, OwnedArray,
     bailout::{self, Bailout},
@@ -172,7 +172,7 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
     }
     let name = [br"\Swoole\Server\Helper::", name.to_bytes()].concat();
     // SAFETY: initialised arguments.
-    unsafe { swoole_rs_phphelpers::named_call(&name, args) }.is_err()
+    unsafe { swoole_rs_zend::host::named_call(&name, args) }.is_err()
 }
 
 fn facts(server: view::Server<'_>) -> Facts {

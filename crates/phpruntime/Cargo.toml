@@ -16,7 +16,7 @@ crate-type = ["rlib"]
 upstream-symbols = []
 # Native curl (crates/ffi's curl, with --enable-swoole-curl): its MINIT and MSHUTDOWN.
 curl = []
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-corebase", "dep:swoole-rs-error-ffi", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-utilities", "dep:swoole-rs-tls", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-corebase", "dep:swoole-rs-error-ffi", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-utilities", "dep:swoole-rs-tls"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -30,7 +30,6 @@ swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-utilities = { path = "../utilities", optional = true }
 swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
-swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 
 [lints]
 workspace = true
