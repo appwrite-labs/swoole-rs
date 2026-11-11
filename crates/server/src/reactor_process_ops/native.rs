@@ -5,16 +5,16 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::ExitStatus;
-use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
+use swoole_rs_process::process_pool::PoolRef;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ADD_HEARTBEAT_TIMER, OP_ADD_PIPES, OP_BUS_POP, OP_BUS_READ, OP_CLOSE_NOTIFY,
     OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CREATE_PIPE_BUFFERS, OP_INFO_REACTOR_ID,
     OP_INFO_TYPE, OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_POOL_CREATE, OP_PORT_ADD,
     OP_REACTOR_DEL_EVENT, OP_REACTOR_SETUP, OP_RUN_SINGLE_WORKER, OP_STOP_ASYNC,
     OP_TASK_PIPE_NONBLOCK, OP_TIMER_DETACHED, OP_TIMER_REINIT, RUN_REACTOR_PROCESS_CLOSE,
-    RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_PIPE_READ, RUN_REACTOR_PROCESS_TIMEOUT,
+    RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_PIPE_READ, RUN_REACTOR_PROCESS_START,
+    RUN_REACTOR_PROCESS_TIMEOUT,
 };
 use swoole_rs_reactor::{Event, Running};
 
@@ -106,8 +106,8 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: its live event pool, which has a worker.
             let worker = unsafe { (*pool).workers };
             swoole_rs_process::worker_globals::set_current_worker(worker);
-            // SAFETY: the pool and its first worker.
-            sign(unsafe { entry::reactor_process_main_loop(pool.cast(), worker.cast()) })
+            let mut ctx = over(ctx.serv, worker);
+            sign(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN))
         }
         OP_BUS_READ => (ctx.bus().read(socket(ctx.event_socket())?) as i64).cast_unsigned(),
         OP_INFO_TYPE => u64::from(ctx.bus().head().kind),
@@ -270,15 +270,17 @@ fn create_pool(ctx: &Context) -> u64 {
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
 extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    // SAFETY: the live pool and one of its live workers.
-    unsafe { entry::reactor_process_main_loop(pool.raw().cast(), worker.raw().cast()) }
+    // A reactor process pool's `ptr` is its server.
+    let mut ctx = over(pool.ptr(), worker.raw());
+    c_int::try_from(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN)).unwrap_or(-1)
 }
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
 extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
-    // SAFETY: the pool's server and the worker's exit status.
-    unsafe { entry::restart_worker_process(pool.ptr(), core::ptr::from_ref(status).cast()) }
+    // SAFETY: a reactor process pool's `ptr` is its live server.
+    let serv = unsafe { view::Server::from_raw(pool.ptr()) };
+    crate::manager_ops::restart_worker_process(serv, status)
 }
 
 /// Runs `operation` over a context of `reactor`'s server and `event`.
@@ -300,34 +302,22 @@ fn run_over(ctx: &mut Context, operation: u32) -> i64 {
     swoole_rs_process::workers::run_over(ctx, operation, 0)
 }
 
-/// `Server::start_reactor_processes` over `object`, the server, and
-/// `Server::reactor_process_main_loop` over `object`, a pool, and its `worker`
-/// (crates/process's entry.rs).
-///
-/// # Safety
-/// The objects are what `operation`'s method took, live for the call.
-pub(crate) unsafe fn enter(
-    operation: u32,
-    object: *mut c_void,
-    worker: *mut c_void,
-    _extra: *mut c_void,
-    _arg: u64,
-) -> i64 {
-    let serv = if operation == RUN_REACTOR_PROCESS_MAIN {
-        // SAFETY: as the caller guarantees: a reactor process pool's `ptr` is its server.
-        unsafe { (*object.cast::<PoolRecord>()).ptr }
-    } else {
-        object
-    };
-    let mut ctx = Context {
+/// The context over `serv` and `worker` alone.
+fn over(serv: *mut c_void, worker: *mut WorkerRecord) -> Context {
+    Context {
         serv,
-        worker: worker.cast(),
+        worker,
         reactor: core::ptr::null_mut(),
         event: core::ptr::null_mut(),
         conn: core::ptr::null_mut(),
         now: 0.0,
-    };
-    run_over(&mut ctx, operation)
+    }
+}
+
+/// `Server::start_reactor_processes()`.
+pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
+    let mut ctx = over(serv.raw(), core::ptr::null_mut());
+    c_int::try_from(run_over(&mut ctx, RUN_REACTOR_PROCESS_START)).unwrap_or(-1)
 }
 
 /// `ReactorProcess_onPipeRead`.

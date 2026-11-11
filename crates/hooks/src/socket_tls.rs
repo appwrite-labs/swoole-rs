@@ -58,8 +58,8 @@ impl Co {
         if owner.is_null() {
             return;
         }
-        // SAFETY: the server's live owner.
-        let shared = swr_v1_tls_owner_clone(unsafe { &*owner });
+        // SAFETY: the server's live ownership handle.
+        let shared = unsafe { swr_v1_tls_owner_clone(owner) };
         // The client's metadata takes the reference.
         self.with_extra(|extra| extra.tls = shared);
         if !self.create_session(owner) {

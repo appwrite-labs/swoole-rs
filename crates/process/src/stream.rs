@@ -3,12 +3,12 @@
 //! to its stream listener. The connect is non-blocking, like upstream's async client's: a failure
 //! the kernel reports at once fails [`Stream::create`]; a later one (a refused TCP connect) is
 //! reported when the stream flushes.
-use std::ffi::{CStr, c_int};
+use std::ffi::c_int;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::SocketAddrV4;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{log, sys};
 
 /// `SW_INPUT_BUFFER_SIZE`: the client's default `package_max_length`.
 const MAX_LENGTH: u32 = 2 * 1024 * 1024;
@@ -39,27 +39,21 @@ fn errno() -> c_int {
 
 /// `Stream_onError`'s warning.
 fn connect_failed(code: c_int) {
-    // SAFETY: plain strerror(3).
-    let text = unsafe { libc::strerror(code) };
-    // SAFETY: strerror's NUL-terminated string, read before the next call on this thread.
-    let text = unsafe { CStr::from_ptr(text) };
     log::error_log(
         LOG_WARNING,
         SERVER_CONNECT_FAIL,
         c"Stream_onError",
         format_args!(
             " connect() failed ({code}: {}) while connecting to worker process",
-            text.to_string_lossy()
+            sys::strerror(code)
         ),
     );
 }
 
 fn set_flags(fd: c_int, get: c_int, set: c_int, flag: c_int, on: bool) -> io::Result<()> {
-    // SAFETY: fcntl's get form on a descriptor this stream owns.
-    let flags = unsafe { libc::fcntl(fd, get) };
+    let flags = sys::fcntl(fd, get, 0);
     let flags = if on { flags | flag } else { flags & !flag };
-    // SAFETY: fcntl's set form on the same descriptor.
-    if flags < 0 || unsafe { libc::fcntl(fd, set, flags) } < 0 {
+    if flags < 0 || sys::fcntl(fd, set, flags) < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -157,8 +151,7 @@ impl Stream {
             events: libc::POLLOUT,
             revents: 0,
         };
-        // SAFETY: one pollfd.
-        while unsafe { libc::poll(&raw mut poll, 1, -1) } < 0 && errno() == libc::EINTR {}
+        while sys::poll(std::slice::from_mut(&mut poll), -1) < 0 && errno() == libc::EINTR {}
         let mut error: c_int = 0;
         #[expect(
             clippy::cast_possible_truncation,

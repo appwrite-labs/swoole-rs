@@ -13,7 +13,7 @@ use std::ffi::c_int;
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
 use swoole_rs_corebase::log;
-use swoole_rs_process::signal::swoole_signal_to_str;
+use swoole_rs_process::signal::signal_name;
 use swoole_rs_process::signal_loop::{self, Ops};
 
 /// `SW_FD_SIGNAL`, `SW_EVENT_READ`, `SW_LOG_WARNING` and `SW_ERROR_UNREGISTERED_SIGNAL`.
@@ -87,10 +87,8 @@ unsafe fn invoke(handler: usize, signo: i32) {
 }
 
 fn report(kind: u8, signo: i32, error: i32) {
-    let name = || {
-        // SAFETY: a static buffer, NUL-terminated.
-        unsafe { std::ffi::CStr::from_ptr(swoole_signal_to_str(signo)) }.to_string_lossy()
-    };
+    let signal = signal_name(signo);
+    let name = || signal.as_cstr().to_string_lossy();
     let unregistered = |origin| {
         log::error_log(
             LOG_WARNING,

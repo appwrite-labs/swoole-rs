@@ -187,8 +187,8 @@ impl<H: TaskHost> Tasks<'_, H> {
             set_last_error(errno());
             return Ok(false);
         }
-        // SAFETY: `fd` is open and owned here; upstream keeps only the path.
-        unsafe { libc::close(fd) };
+        // `fd` is open and owned here; upstream keeps only the path.
+        swoole_rs_corebase::sys::close(fd);
         let Ok(path) = CStr::from_bytes_until_nul(&path) else {
             return Ok(false);
         };
@@ -296,8 +296,7 @@ impl<H: TaskHost> Tasks<'_, H> {
         if !read {
             return Ok(Some(false));
         }
-        // SAFETY: the result file's NUL-terminated path.
-        unsafe { libc::unlink(path.as_ptr()) };
+        swoole_rs_corebase::sys::unlink(path);
         Ok(Some(true))
     }
 }
