@@ -1265,7 +1265,12 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_WORKER_COROUTINES | OP_WORKER_CONCURRENCY => {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
-            let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
+            let worker = o
+                .config()
+                .workers
+                .as_ptr()
+                .cast::<WorkerRecord>()
+                .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which the caller indexes.
             let worker = unsafe { &*worker };
             if op == OP_WORKER_COROUTINES {
@@ -1350,8 +1355,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ALLOC_PORT_GS => {
             let ports = o.tables().ports();
-            let list = shm_calloc::<PortCounters>(ports.len(), size_of::<PortCounters>());
-            o.tables().port_gs_list = list.cast();
+            o.tables().port_gs_list = Shm::calloc(ports.len(), size_of::<PortCounters>());
+            let list = o.tables().port_gs_list.as_ptr().cast::<PortCounters>();
             if list.is_null() {
                 return Some(0);
             }
@@ -1361,9 +1366,10 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             1
         }
         OP_ALLOC_WORKERS => {
-            let workers = shm_calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            let workers = Shm::calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            let ready = !workers.is_null();
             o.config().workers = workers;
-            u64::from(!workers.is_null())
+            u64::from(ready)
         }
         OP_ALLOC_TASK_RESULTS => {
             let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
@@ -1456,7 +1462,12 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_INIT_TASK_WORKERS => u64::from(unsafe { entry::init_task_workers(serv) }),
         OP_DESTROY_WORKER => {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
-            let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
+            let worker = o
+                .config()
+                .workers
+                .as_ptr()
+                .cast::<WorkerRecord>()
+                .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
             let worker = unsafe { &mut *worker };
             // SAFETY: a worker `create_worker` set up; shutdown holds no lock of it.
@@ -2018,11 +2029,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let tables = o.tables();
             let config = o.config();
             sw_shm_free(core::mem::replace(&mut tables.session_list, core::ptr::null_mut()).cast());
-            sw_shm_free(core::mem::replace(
-                &mut tables.port_gs_list,
-                core::ptr::null_mut(),
-            ));
-            sw_shm_free(core::mem::replace(&mut config.workers, core::ptr::null_mut()).cast());
+            tables.port_gs_list.free();
+            config.workers.free();
             let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
             if !factory.is_null() {
                 // SAFETY: `delete factory_`: nothing names the factory afterwards.
@@ -2918,11 +2926,8 @@ mod tests {
             assert!(config.user_workers.is_null());
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             config.task_results.free();
-            for allocation in [
-                config.workers,
-                gs.connection_nums.cast(),
-                tables.session_list.cast(),
-            ] {
+            config.workers.free();
+            for allocation in [gs.connection_nums.cast(), tables.session_list.cast()] {
                 sw_shm_free(allocation);
             }
             tables.session_list = core::ptr::null_mut();
