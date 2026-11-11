@@ -406,6 +406,24 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no msgget")]
+    fn a_node_shorter_than_its_type_is_einval_in_errno_and_the_last_error() {
+        use swoole_rs_corebase::sys;
+        let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
+        let mut short = [0u8; size_of::<c_long>() - 1];
+        let einval = || {
+            let errors = (sys::errno(), log::last_error());
+            sys::set_errno(0);
+            log::set_last_error(0);
+            errors == (libc::EINVAL, libc::EINVAL)
+        };
+        assert!(!queue.push(&short), "push");
+        assert!(einval(), "push's errno and last error");
+        assert_eq!(queue.pop(&mut short), -1, "pop");
+        assert!(einval(), "pop's errno and last error");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_private_queue_round_trips_reports_empty_quietly_and_is_removed_on_drop() {
         let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
         assert_eq!(queue.perms, 0o666, "default permissions");
