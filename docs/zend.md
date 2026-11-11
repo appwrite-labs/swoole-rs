@@ -161,7 +161,7 @@ reactor or timer callback), bails out. So every error Rust raises goes through
   `php_swoole_error`/`_fatal_error`/`_sys_error` live in C++), one function per
   argument shape.
 - `Call`'s ZPP slow paths (null-to-scalar and float-to-int deprecations) and
-  `zend::value::get_long`/`get_double`/`get_string` (`zval_get_*`: an object or
+  `Value::long`/`double`/`string` (`zval_get_*`: an object or
   array warns, `__toString` runs PHP).
 - `Props` and `ArrayMut` writes (`zend_update_property`: a subclass's `__set`
   or property hook runs PHP), skipped once a bailout is pending; and the
