@@ -155,7 +155,7 @@ pub fn host(owner: &ResolverRequest) -> (isize, c_int) {
     (status, if status < 0 { RESOLVE_FAILED } else { 0 })
 }
 
-unsafe extern "C" fn unknown_family(_: *mut c_void, family: c_int) -> bool {
+extern "C" fn unknown_family(_: *mut c_void, family: c_int) -> bool {
     log::warning(
         c"getaddrinfo",
         format_args!("unknown socket family[{family}]"),

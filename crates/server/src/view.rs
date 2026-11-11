@@ -320,7 +320,12 @@ impl<'a> Server<'a> {
     #[must_use]
     pub unsafe fn port_connection_num(self, port: *mut c_void) -> usize {
         // SAFETY: per the caller.
-        let gs = unsafe { self::port(port) }.gs;
+        self.port_connections(unsafe { self::port(port) })
+    }
+
+    /// `ListenPort::get_connection_num()` of the port whose settings are `config`.
+    pub(crate) fn port_connections(self, config: &PortConfig) -> usize {
+        let gs = config.gs;
         // SAFETY: the port's mapped counters.
         let cells = unsafe { &*gs.cast::<PortCounters>() }.cells();
         let workers = if cells.is_null() {
@@ -445,6 +450,19 @@ impl<'a> Server<'a> {
             .unwrap_or(core::ptr::null_mut())
     }
 
+    /// The settings of the `ListenPort` listening on `server_fd`, if there is one.
+    pub(crate) fn port_of_server_fd(self, server_fd: c_int) -> Option<&'a PortConfig> {
+        let port = self.port_by_server_fd(server_fd);
+        // SAFETY: null, or one of the server's ports, which live as long as it.
+        (!port.is_null()).then(|| unsafe { self::port(port) })
+    }
+
+    /// The settings of the `ListenPort` connection `fd` arrived on, if there is one.
+    pub(crate) fn port_of_fd(self, fd: c_int) -> Option<&'a PortConfig> {
+        let server_fd = self.connection_field(c_long::from(fd), 0, |conn| conn.server_fd)?;
+        self.port_of_server_fd(server_fd)
+    }
+
     /// `Server::is_healthy_connection(now, conn)`: protected, never received, or
     /// received within its port's heartbeat idle time.
     #[must_use]
@@ -456,12 +474,10 @@ impl<'a> Server<'a> {
         let Some(fd) = self.connection_field(conn.session_id, 1, |conn| conn.fd) else {
             return true;
         };
-        let port = self.port_by_fd(fd);
-        if port.is_null() {
+        let Some(port) = self.port_of_fd(fd) else {
             return true;
-        }
-        // SAFETY: the connection's live port, which the server owns.
-        let idle = unsafe { self::port(port) }.heartbeat_idle_time;
+        };
+        let idle = port.heartbeat_idle_time;
         idle == 0 || conn.last_recv_time > now - f64::from(idle)
     }
 
@@ -486,10 +502,9 @@ impl<'a> Server<'a> {
             .tables_ref()
             .ports()
             .iter()
-            .copied()
-            // SAFETY: the server's own live ports.
-            .find(|&ls| wanted(unsafe { port(ls) }))
-            .unwrap_or(core::ptr::null_mut())
+            .enumerate()
+            .find(|&(index, _)| (self.state().tables_ref().port_config(index)).is_some_and(&wanted))
+            .map_or(core::ptr::null_mut(), |(_, &ls)| ls)
     }
 }
 

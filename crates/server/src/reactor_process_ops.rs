@@ -216,10 +216,10 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_ONSTART_CALLED => u64::from(ctx.counters().onstart_called),
         OP_ON_START => {
             ctx.counters().onstart_called = true;
-            if let Some(slot) = ctx.callback_slot(CB_START) {
-                // SAFETY: `onStart` takes the server.
-                unsafe { slot.call_server(serv) };
-            }
+            ctx.server()
+                .state()
+                .callbacks
+                .call_server(CB_START, ctx.server());
             0
         }
         OP_ADD_MASTER_TIMER => {
@@ -283,16 +283,15 @@ const SW_EVENT_WORKER: c_int = 2;
 /// The connection the context selected (`OP_CONN_AT`, `OP_EVENT_CONN_ACTIVE`) and
 /// the event being closed.
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
-    // SAFETY: the context's live server.
-    let server = unsafe { view::Server::from_raw(serv) };
+    let server = ctx.server();
     match op {
         OP_CONN_AT => {
             let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
-            let conn = server.at(fd).map_or(core::ptr::null_mut(), |c| &raw mut *c);
-            // SAFETY: null or a live connection whose socket is null or live.
-            let valid = unsafe { crate::reactor_ops::valid(conn) };
-            ctx.conn = if valid { conn } else { core::ptr::null_mut() };
+            let conn = server
+                .at(fd)
+                .filter(|conn| crate::reactor_ops::valid(Some(conn)));
+            let valid = conn.is_some();
+            ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
             return Some(u64::from(valid));
         }
         OP_EVENT_CONN_ACTIVE => {

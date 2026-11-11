@@ -77,10 +77,10 @@ pub struct AsyncOps {
 }
 
 /// The waiting coroutine, on its stack; the event's `object` while the job runs.
-struct Task {
+struct Task<'a> {
     co: *mut c_void,
-    resume: unsafe extern "C" fn(*mut c_void),
-    job: Option<(unsafe extern "C" fn(*mut c_void), *mut c_void)>,
+    ops: &'a AsyncOps,
+    job: Option<&'a mut (dyn FnMut() + Send)>,
 }
 
 /// The pool thread's handler for a job: runs it, then records its errno.
@@ -88,11 +88,10 @@ unsafe extern "C" fn run_job(event: *mut AsyncEvent) {
     // SAFETY: the pool passes the dispatched copy; the reactor thread reads it only
     // after completion.
     let event = unsafe { &mut *event };
-    // SAFETY: its object is the parked task.
-    let task = unsafe { &*event.object.cast::<Task>() };
-    if let Some((job, context)) = task.job {
-        // SAFETY: the caller of `swr_v1_hook_async_job` vouched for `job(context)`.
-        unsafe { job(context) };
+    // SAFETY: its object is the parked task, untouched by its coroutine until completion.
+    let task = unsafe { &mut *event.object.cast::<Task<'_>>() };
+    if let Some(job) = &mut task.job {
+        job();
     }
     event.error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     event.retval = 0;
@@ -106,9 +105,9 @@ unsafe extern "C" fn completed(event: *mut AsyncEvent) {
         return;
     }
     // SAFETY: not canceled, so the task's coroutine is still parked on it.
-    let task = unsafe { &*event.object.cast::<Task>() };
+    let task = unsafe { &*event.object.cast::<Task<'_>>() };
     // SAFETY: `co` is the parked coroutine.
-    unsafe { (task.resume)(task.co) };
+    unsafe { (task.ops.resume)(task.co) };
 }
 
 /// `coroutine::async(handler, event, timeout)`: runs `handler(event)` on the pool and
@@ -124,11 +123,7 @@ pub unsafe fn swr_v1_hook_async(
     ops: &AsyncOps,
 ) -> bool {
     let co = (ops.current)();
-    let mut task = Task {
-        co,
-        resume: ops.resume,
-        job: None,
-    };
+    let mut task = Task { co, ops, job: None };
     event.object = (&raw mut task).cast();
     event.handler = Some(handler);
     event.callback = Some(completed);
@@ -158,33 +153,24 @@ pub unsafe fn swr_v1_hook_async(
 }
 
 /// `coroutine::async_job`: [`swr_v1_hook_async_job`] over the coroutine's own
-/// operations; the hooked functions' and `System::read_file`'s offload.
-///
-/// # Safety
-/// As [`swr_v1_hook_async_job`].
-pub unsafe extern "C" fn async_job(
-    job: unsafe extern "C" fn(*mut c_void),
-    context: *mut c_void,
-) -> bool {
-    // SAFETY: the coroutine's operations; the caller's job.
-    unsafe { swr_v1_hook_async_job(job, context, &crate::resolve::COROUTINE_ASYNC) }
+/// operations; the hooked functions' and `System::read_file`'s offload. Outside a
+/// coroutine it raises upstream's fatal error.
+pub fn async_job(job: &mut (dyn FnMut() + Send)) -> bool {
+    // SAFETY: the coroutine's operations, whose `current` is fatal outside a coroutine.
+    unsafe { swr_v1_hook_async_job(job, &crate::resolve::COROUTINE_ASYNC) }
 }
 
-/// `coroutine::async(fn)`: runs `job(context)` on the pool and waits for it, then sets
-/// errno to the job's. False if the pool refused it.
+/// `coroutine::async(fn)`: runs `job` on the pool and waits for it, then sets errno
+/// to the job's. False if the pool refused it.
 ///
 /// # Safety
-/// `ops` is valid; `job(context)` is safe to run on another thread; inside a coroutine.
-pub unsafe fn swr_v1_hook_async_job(
-    job: unsafe extern "C" fn(*mut c_void),
-    context: *mut c_void,
-    ops: &AsyncOps,
-) -> bool {
+/// `ops` is valid; inside a coroutine.
+pub unsafe fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> bool {
     let co = (ops.current)();
     let mut task = Task {
         co,
-        resume: ops.resume,
-        job: Some((job, context)),
+        ops,
+        job: Some(job),
     };
     let event = AsyncEvent::request(
         (&raw mut task).cast(),
@@ -261,10 +247,6 @@ mod tests {
         last_error,
     };
 
-    unsafe extern "C" fn job(context: *mut c_void) {
-        unsafe { *context.cast::<u32>() += 1 };
-        set_errno(libc::ENOENT);
-    }
     unsafe extern "C" fn handler(event: *mut AsyncEvent) {
         unsafe {
             (*event).retval = 7;
@@ -294,11 +276,15 @@ mod tests {
     #[test]
     fn job_runs_on_the_pool_and_publishes_its_errno() {
         let mut runs = 0u32;
+        let mut job = || {
+            runs += 1;
+            set_errno(libc::ENOENT);
+        };
         RESUMED.set(0);
-        assert!(unsafe { swr_v1_hook_async_job(job, (&raw mut runs).cast(), &OPS) });
-        assert_eq!((runs, RESUMED.get(), errno()), (1, 1, libc::ENOENT));
+        assert!(unsafe { swr_v1_hook_async_job(&mut job, &OPS) });
+        assert_eq!((RESUMED.get(), errno()), (1, libc::ENOENT));
         REFUSE.set(true);
-        assert!(!unsafe { swr_v1_hook_async_job(job, (&raw mut runs).cast(), &OPS) });
+        assert!(!unsafe { swr_v1_hook_async_job(&mut job, &OPS) });
         REFUSE.set(false);
         assert_eq!(runs, 1);
     }

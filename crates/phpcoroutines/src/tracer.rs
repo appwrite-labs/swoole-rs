@@ -27,7 +27,6 @@ use swoole_rs_zend::{
         swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
         zend_observer_fcall_handlers, zend_string, zval,
     },
-    value,
 };
 
 handlers! {
@@ -290,7 +289,7 @@ impl Leaks {
     }
 }
 
-unsafe extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
+extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
         LEAKS.with(|leaks| {
             let mut leaks = leaks.borrow_mut();
@@ -300,7 +299,7 @@ unsafe extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
     }
 }
 
-unsafe extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: usize) {
+extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
         LEAKS.with(|leaks| {
             let mut leaks = leaks.borrow_mut();
@@ -310,7 +309,7 @@ unsafe extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: us
     }
 }
 
-unsafe extern "C" fn on_free(ptr: *mut c_void) {
+extern "C" fn on_free(ptr: *mut c_void) {
     LEAKS.with(|leaks| {
         // Busy only while this module's own bookkeeping frees: not a user block.
         if let Ok(mut leaks) = leaks.try_borrow_mut() {
@@ -482,26 +481,20 @@ fn prof_begin(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if let Some(options) = options {
-        // SAFETY: an array argument.
-        let table = unsafe { value::table(options) };
-        let key = c"root_path";
-        // SAFETY: a live table; Zend reads the key.
-        let found = unsafe { z::zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) };
-        if let Some(found) = NonNull::new(found) {
-            // SAFETY: a live zval; a `__toString` bailout is deferred.
-            let root = unsafe { value::get_string(found.as_ptr()) };
-            if bailout::pending() {
-                return;
-            }
-            let mut path = c_bytes(root).to_vec();
-            // SAFETY: the reference get_string returned.
-            unsafe { swr_zend_string_release(root) };
-            if path.last() != Some(&b'/') {
-                path.push(b'/');
-            }
-            PROFILE.with(|profile| profile.borrow_mut().root_path = path);
+    if let Some(found) = options
+        .and_then(Value::array)
+        .and_then(|options| options.find(b"root_path"))
+    {
+        // A `__toString` bailout is deferred.
+        let root = found.string();
+        if bailout::pending() {
+            return;
         }
+        let mut path = until_nul(root.bytes()).to_vec();
+        if path.last() != Some(&b'/') {
+            path.push(b'/');
+        }
+        PROFILE.with(|profile| profile.borrow_mut().root_path = path);
     }
     call.set_bool(true);
 }
@@ -578,8 +571,11 @@ impl Func<'_> {
         let common = unsafe { &*common };
         let span = if common.type_ == INTERNAL_FUNCTION {
             let internal = func.cast::<z::zend_internal_function>();
-            // SAFETY: an internal function; only the address is taken.
-            unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+            // An internal function's reserved slot; only the address is taken.
+            internal
+                .wrapping_byte_add(mem::offset_of!(z::zend_internal_function, reserved))
+                .cast::<*mut c_void>()
+                .wrapping_add(SPAN_SLOT)
         } else {
             ptr::null_mut()
         };

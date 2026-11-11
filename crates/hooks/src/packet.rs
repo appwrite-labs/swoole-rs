@@ -522,7 +522,7 @@ pub(crate) mod tests {
         let mut out = [0; 4];
         for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
             assert_eq!(
-                unsafe { recv_buffered(socket.co(), out.as_mut_ptr(), length) },
+                recv_buffered(socket.co(), &mut out[..length]),
                 expected.len() as isize
             );
             assert_eq!(&out[..expected.len()], expected);
@@ -543,10 +543,7 @@ pub(crate) mod tests {
         let (fake, mut socket) = buffered_fixture();
         socket.0.sock_fd = -1;
         let mut out = [0; 1];
-        assert_eq!(
-            unsafe { recv_buffered(socket.co(), out.as_mut_ptr(), 1) },
-            -1
-        );
+        assert_eq!(recv_buffered(socket.co(), &mut out), -1);
         assert_eq!(recv_packet(socket.co(), 0.0), -1);
         assert_eq!(socket.0.err_code, libc::EBADF);
         assert_eq!((fake.gets, fake.receives), (0, 0));

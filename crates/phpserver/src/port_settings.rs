@@ -8,12 +8,7 @@ use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
-use swoole_rs_zend::{
-    E_ERROR, E_WARNING, Message,
-    string::bytes,
-    sys::{IS_ARRAY, swr_zend_hash_foreach_key, zend_string, zend_ulong, zval},
-    type_of,
-};
+use swoole_rs_zend::{E_ERROR, E_WARNING, Message, sys::IS_ARRAY};
 
 /// `SW_TIMER_MIN_SEC`.
 const TIMER_MIN_SEC: f64 = 0.001;
@@ -414,17 +409,6 @@ impl Source for Zend<'_> {
     }
 
     fn sni(&self) -> Step {
-        unsafe extern "C" fn each(
-            _index: zend_ulong,
-            key: *mut zend_string,
-            value: *mut zval,
-            context: *mut c_void,
-        ) -> bool {
-            // SAFETY: the `Vec` passed below, live for the loop.
-            let entries = unsafe { &mut *context.cast::<Vec<(*mut zend_string, *mut zval)>>() };
-            entries.push((key, value));
-            true
-        }
         let Some(certs) = self.settings.get(c"ssl_sni_certs") else {
             return Ok(());
         };
@@ -432,17 +416,12 @@ impl Source for Zend<'_> {
             let message = c"ssl_sni_certs requires an array mapping host names to cert paths";
             return Err(self.fatal(E_WARNING, message));
         };
-        let mut entries: Vec<(*mut zend_string, *mut zval)> = Vec::new();
-        // SAFETY: a live array, which nothing modifies while set() runs; `each`
-        // only records the entries.
-        unsafe { swr_zend_hash_foreach_key(certs.as_ptr(), Some(each), (&raw mut entries).cast()) };
-        for (key, value) in entries {
-            if key.is_null() {
+        for (key, value) in certs.entries() {
+            let Some(name) = key else {
                 let message = c"ssl_sni_certs array requires string host name keys";
                 return Err(self.fatal(E_WARNING, message));
-            }
-            // SAFETY: a live entry of the array.
-            if unsafe { type_of(value) } != IS_ARRAY {
+            };
+            if value.kind() != IS_ARRAY {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
             }
             // SAFETY: an SSL port; the copy's reference goes to `sni_add` below or is released.
@@ -450,7 +429,7 @@ impl Source for Zend<'_> {
             let item = Self {
                 settings: Settings {
                     serv: self.settings.serv,
-                    vht: value,
+                    vht: value.array(),
                 },
                 port: self.port,
             };
@@ -459,8 +438,6 @@ impl Source for Zend<'_> {
                 unsafe { tls::swr_v1_tls_owner_free(context) };
                 return Err(stop);
             }
-            // SAFETY: a live key.
-            let name = unsafe { bytes(key) };
             // SAFETY: a live port and name, and the copy's reference, handed over once.
             let added = unsafe { sni_add(self.port, name, context) };
             if !added {

@@ -1,12 +1,12 @@
 //! Upstream's `core-tests/src/coroutine/async.cpp`, one function per TEST with the same
 //! inputs and expected values: `coroutine::async(handler, event, timeout)` and
-//! `async(fn)` are crates/hooks's `swr_v1_hook_async` and `swr_v1_hook_async_job` over
+//! `async(fn)` are crates/hooks's `swr_v1_hook_async` and `async_job` over
 //! the coroutine's own operations (`COROUTINE_ASYNC`), as the hooked functions call them.
 
 use std::ffi::{c_char, c_int, c_void};
 use std::net::Ipv4Addr;
 
-use swoole_rs_hooks::offload::{AsyncEvent, swr_v1_hook_async, swr_v1_hook_async_job};
+use swoole_rs_hooks::offload::{AsyncEvent, async_job, swr_v1_hook_async};
 use swoole_rs_hooks::resolve::COROUTINE_ASYNC;
 
 use super::{AF_INET, ENOENT, O_RDONLY, SW_ERROR_CO_TIMEDOUT};
@@ -39,16 +39,9 @@ fn co_async(
     unsafe { swr_v1_hook_async(event, handler, timeout, &COROUTINE_ASYNC) }
 }
 
-unsafe extern "C" fn call(context: *mut c_void) {
-    // SAFETY: `co_async_fn` passes its closure, live until the job completes.
-    unsafe { (*context.cast::<&mut dyn FnMut()>())() };
-}
-
 /// `swoole::coroutine::async(fn)`.
-fn co_async_fn(mut job: impl FnMut()) -> bool {
-    let mut job: &mut dyn FnMut() = &mut job;
-    // SAFETY: the coroutine waits for the job, which borrows only this frame.
-    unsafe { swr_v1_hook_async_job(call, (&raw mut job).cast(), &COROUTINE_ASYNC) }
+fn co_async_fn(mut job: impl FnMut() + Send) -> bool {
+    async_job(&mut job)
 }
 
 unsafe extern "C" fn sleep_1ms(event: *mut AsyncEvent) {

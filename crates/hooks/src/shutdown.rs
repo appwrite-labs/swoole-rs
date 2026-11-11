@@ -26,8 +26,8 @@ pub struct SocketState {
     write_co: *mut c_void,
     /// `want_event`: the direction a TLS wait added instead of its own, or 0.
     pub(crate) want: u32,
-    /// The barriers installed for the read and the write wait, with their state.
-    pub(crate) barriers: [Option<(Barrier, *mut c_void)>; 2],
+    /// The barriers installed for the read and the write wait.
+    pub(crate) barriers: [Option<Barrier>; 2],
     /// The native `TimerNode` timing the read and the write wait, or null.
     pub(crate) timers: [*mut c_void; 2],
 }

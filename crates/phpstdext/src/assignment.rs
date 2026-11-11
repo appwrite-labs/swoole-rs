@@ -1,5 +1,5 @@
 //! Complete typed-array assignment opcode operations over Zend's actual frame.
-use crate::{CONTINUE, DISPATCH, deref, ex_var, ptr_ptr_var, rt_constant, typed};
+use crate::{CONTINUE, DISPATCH, ex_var, ptr_ptr_var, rt_constant, typed};
 use std::{ffi::c_int, mem::offset_of, ptr};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
@@ -280,18 +280,17 @@ unsafe fn dispatch(frame: *mut zend_execute_data, operation: bool) -> Result<c_i
     let array_var = unsafe { op.op1.var };
     // SAFETY: this original array operand is a live variable slot in the active frame.
     let array = unsafe { ptr_ptr_var(frame, array_var) };
-    // SAFETY: the original handler dereferences this optional reference once.
-    let array = unsafe { deref(array) };
-    // SAFETY: the selected frame slot is initialized.
-    if unsafe { type_of(array) } != z::IS_ARRAY {
+    // SAFETY: the selected frame slot is initialized; the original handler
+    // dereferences this optional reference once.
+    let array =
+        unsafe { swoole_rs_zend::Value::from_ptr(array) }.map(swoole_rs_zend::Value::dereferenced);
+    // Only marked typed arrays have the required trailing type information.
+    let Some((array, ht)) = array.and_then(|array| {
+        let ht = array.array().filter(|ht| typed::is_typed(ht))?;
+        Some((array.as_ptr(), ht.as_ptr()))
+    }) else {
         return Ok(DISPATCH);
-    }
-    // SAFETY: this initialized array slot owns a live hash table.
-    let ht = unsafe { table(array) };
-    // SAFETY: only marked typed arrays have the required trailing type information.
-    if !unsafe { typed::is_typed(ht) } {
-        return Ok(DISPATCH);
-    }
+    };
     let data_ptr = op_ptr.wrapping_add(1);
     // SAFETY: each assignment has this live plain C OP_DATA record, with no destructor.
     // Copy the fields without borrowing native instruction storage across effects.

@@ -106,8 +106,9 @@ pub unsafe fn defer(
     data: *mut c_void,
     dispose: Option<DeferDispose>,
 ) {
-    // SAFETY: as the caller promises.
-    let slot = unsafe { &raw mut (*fields).defer_tasks };
+    let slot = fields
+        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, defer_tasks))
+        .cast::<*mut ReactorDeferred>();
     // SAFETY: the live reactor's queue slot.
     if unsafe { swr_v1_reactor_deferred_push(slot, call, data, dispose) } != 0 {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());

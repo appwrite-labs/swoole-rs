@@ -28,7 +28,8 @@ mod live;
 pub use live::*;
 mod scheduler;
 pub use scheduler::{
-    Routine, current, resume, scheduler, swr_v1_coroutine_bail, yield_with_cancel,
+    Routine, coroutine_count, coroutine_get, coroutine_older, current, resume, scheduler,
+    set_callback, set_stack_size, swr_v1_coroutine_bail, yield_with_cancel,
 };
 mod stack;
 pub use stack::*;

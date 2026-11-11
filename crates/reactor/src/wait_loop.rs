@@ -157,14 +157,22 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let reactor = ops.reactor;
     // SAFETY: the state is live; the backend's arrays stay put until the state closes it.
     let view = unsafe { (*owner).backend_view() };
-    // SAFETY: the state is live; its fields and handler tables live as long as it does.
-    let fields = unsafe { &raw const (*owner).fields };
-    // SAFETY: as above.
-    let handlers = unsafe { &raw const (*owner).handlers };
-    // SAFETY: as above.
-    let running = unsafe { &raw const (*fields).running };
-    // SAFETY: as above.
-    let once = unsafe { &raw const (*fields).once };
+    // The state's fields and handler tables live as long as it does; their
+    // addresses are taken without a borrow.
+    let fields = owner
+        .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
+        .cast::<ReactorFields>()
+        .cast_const();
+    let handlers = owner
+        .wrapping_byte_add(std::mem::offset_of!(ReactorState, handlers))
+        .cast::<Handlers>()
+        .cast_const();
+    let running = fields
+        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, running))
+        .cast::<bool>();
+    let once = fields
+        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, once))
+        .cast::<bool>();
     // SAFETY: a single field read of the live state.
     let id = unsafe { (*fields).id };
     let mut event = Event::empty();

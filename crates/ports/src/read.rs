@@ -855,18 +855,15 @@ pub(crate) mod tests {
         }
         fn init_multipart(&mut self) -> bool {
             let upload_max = usize::try_from(self.uploads).unwrap();
-            // The fake's live request, with a form.
-            let ok = unsafe {
-                swoole_rs_http_ffi::init_multipart_parser(&raw mut self.req, b"/tmp", upload_max)
-            };
+            let ok = self.req.init_multipart_parser(b"/tmp", upload_max);
             self.current = self.req.buffer;
             ok
         }
         fn parse_multipart(&mut self) -> bool {
-            unsafe { swoole_rs_http_ffi::parse_multipart_data(&raw mut self.req, self.current) }
+            self.req.parse_multipart_data(unsafe { &mut *self.current })
         }
         fn finish_multipart(&mut self) {
-            unsafe { swoole_rs_http_ffi::destroy_multipart_parser(&raw mut self.req) };
+            self.req.destroy_multipart_parser();
             self.current = self.req.buffer;
         }
         fn client(&mut self) -> (i64, String, i64) {

@@ -383,22 +383,20 @@ impl Connection for Read<'_> {
     fn init_multipart(&mut self) -> bool {
         let dir = self.server.upload_tmp_dir();
         let max = self.config().upload_max_filesize;
-        // SAFETY: the connection's live request, with a form.
-        let ok =
-            unsafe { swoole_rs_http_ffi::init_multipart_parser(self.request, dir.as_bytes(), max) };
+        let ok = self.request().init_multipart_parser(dir.as_bytes(), max);
         self.buffer = self.request().buffer.cast();
         ok
     }
 
     fn parse_multipart(&mut self) -> bool {
-        // SAFETY: the connection's live request, with a form, and the current buffer;
-        // the parser's callbacks are the only other users of either during the call.
-        unsafe { swoole_rs_http_ffi::parse_multipart_data(self.request, self.buffer.cast()) }
+        // SAFETY: the current buffer, live and apart from the request's own fields; the
+        // parser's callbacks only append past its contents.
+        let buffer = unsafe { &mut *self.buffer.cast::<HttpString>() };
+        self.request().parse_multipart_data(buffer)
     }
 
     fn finish_multipart(&mut self) {
-        // SAFETY: the connection's live request, which nothing else uses during the call.
-        unsafe { swoole_rs_http_ffi::destroy_multipart_parser(self.request) };
+        self.request().destroy_multipart_parser();
         self.buffer = self.request().buffer.cast();
     }
 

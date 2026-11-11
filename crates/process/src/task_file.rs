@@ -449,6 +449,7 @@ mod tests {
     /// Upstream's `file.tmp_file`, second half: `make_tmpfile` with `task_tmpfile`
     /// in a missing directory (core-tests sets the template directly) makes no file.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn make_tmpfile_in_a_missing_directory() {
         let mut path = [0; super::TASK_TMP_PATH_SIZE];
         assert!(super::make_tmpfile(c"/tmp/not-exists-dir/test.XXXXXX", &mut path) < 0);
