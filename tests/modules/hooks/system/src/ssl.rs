@@ -6,9 +6,7 @@
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 
 use super::network_socket::err_put_error;
-use super::socket::{
-    TlsPrepared, get_ssl_dir, swr_v1_core_string_set, swr_v1_tls_owner_new, tls_warning,
-};
+use super::socket::{TlsPrepared, get_ssl_dir, swr_v1_core_string_set, swr_v1_tls_owner_new};
 
 // OpenSSL's codes (the SSL_F_* function codes are 0 in OpenSSL 3).
 const ERR_LIB_SSL: c_int = 20;
@@ -47,7 +45,7 @@ struct SslContext(TlsPrepared);
 
 impl SslContext {
     fn new() -> Self {
-        let prepared = swr_v1_tls_owner_new(tls_warning);
+        let prepared = swr_v1_tls_owner_new();
         assert!(!prepared.owner.is_null());
         Self(prepared)
     }

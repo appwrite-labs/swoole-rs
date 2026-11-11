@@ -490,12 +490,14 @@ impl CppString {
         } else {
             length.max(init_size)
         });
-        let malloc = self.allocator.unwrap_or(&STD_ALLOCATOR).malloc;
+        // An empty String has no allocator yet; the buffer then names the one that made it.
+        let with = self.allocator.unwrap_or(&STD_ALLOCATOR);
         // SAFETY: an allocator's malloc.
-        let new_value: *mut u8 = unsafe { malloc(size) }.cast();
+        let new_value: *mut u8 = unsafe { (with.malloc)(size) }.cast();
         if new_value.is_null() {
             return ptr::null_mut();
         }
+        self.allocator = Some(with);
         self.str = new_value;
         self.size = size;
         self.length = length;
@@ -694,7 +696,8 @@ upstream! {
     #[must_use]
     pub extern "C" fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
         let mut result = CppString::EMPTY;
-        if offset.wrapping_add(length) <= this.length {
+        // Checked: upstream's `offset + len > length` wraps, and this fn is safe.
+        if offset.checked_add(length).is_some_and(|end| end <= this.length) {
             result.alloc(length, None);
             // SAFETY: the range lies inside `str`.
             unsafe { result.append(this.str.wrapping_add(offset), length) };
@@ -913,12 +916,29 @@ mod tests {
         assert!(s.as_ptr().is_null() && s.size() == 0 && s.is_empty());
     }
 
+    /// `pop` on an empty String gives its new buffer the standard allocator, so a later
+    /// `reserve` keeps the content and `dispose` frees it.
+    #[test]
+    fn pop_on_an_empty_string_records_its_allocator() {
+        let mut s = CppString::EMPTY;
+        assert!(s.pop(8).is_null(), "no old buffer to hand back");
+        unsafe { swr_string_append(&mut s, b"123".as_ptr(), 3) };
+        s.reserve(64);
+        assert_eq!(s.view(), b"123");
+        s.dispose();
+        assert!(s.as_ptr().is_null());
+    }
+
     #[test]
     fn substr_copy_move_and_release() {
         let mut s = new(b"hello world");
         let mut sub = swr_string_substr(&s, 6, 5);
         assert_eq!(sub.view(), b"world");
         assert!(swr_string_substr(&s, 6, 6).str.is_null());
+        assert!(
+            swr_string_substr(&s, usize::MAX, 2).str.is_null(),
+            "no wrap past the end"
+        );
         let mut moved = CppString::EMPTY;
         moved.move_from(&mut sub);
         assert!(sub.str.is_null() && moved.view() == b"world");

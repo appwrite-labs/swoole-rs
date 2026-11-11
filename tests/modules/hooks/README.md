@@ -154,6 +154,7 @@ is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in
 is `ssl_close_notify` in `crates/hooks/src/uring_tls.rs`, with the same exchange and
 assertions over the ring's TLS transport; both sessions use an anonymous TLS 1.2 cipher
 in place of the pin's `tests/include/ssl_certs`, which the crate's tests cannot read.
+The file's other 13 TESTs are not yet ported (#3045).
 
 `core-tests/src/coroutine/iouring.cpp` is `crates/hooks/src/uring/ported.rs`, one test per
 TEST (upstream's names, inputs and expected values), run by `cargo test --all-features`
@@ -195,7 +196,7 @@ may run after it.
 | `iouring.poll` | `poll`, except `poll(fds, 2, 1000)` failing with `SW_ERROR_INVALID_PARAMS`: the engine's `poll` takes one pollfd, and the hooked `poll` (like upstream's hook) sends only `nfds == 1` to it |
 | `iouring.accept_timeout` | `accept_timeout` |
 
-Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
+Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures
 

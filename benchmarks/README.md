@@ -97,16 +97,15 @@ Five send larger or concurrent traffic to `benchmarks/traffic` (#2652), a server
 of its own so its static handler's per-request file check stays out of the other
 workloads: `http2-concurrent` (16 HTTP/2 streams at once, each posting 4000 bytes
 that come back), `websocket-64k` (one 64 KiB frame echoed), `websocket-fragmented`
-(a 4 KiB message sent as four fragments, echoed as one frame), `upload` (a
-multipart POST with a 64 KiB file) and `static` (a 16 KiB file from
+(a 4 KiB message sent as four fragments in one write, echoed as one frame; #2954),
+`upload` (a multipart POST with a 64 KiB file) and `static` (a 16 KiB file from
 `enable_static_handler`). Their records started 5% above an arm64 Linux run
 (1.26, 0.57, 0.73, 1.00 and 1.05), which the x86_64 merge tier never met (#2778).
 `http2-concurrent` measured 3.56 there until #2712 and 1.09 after it; 66,000 of its
 444,000 instructions a request were the static handler zero-filling a 4 KiB filename
-buffer for each of the 16 streams, which it no longer does, and it keeps its 0.93.
-`websocket-64k` is two 64 KiB copies on both engines (0.98 on x86_64), so its record
-is 1.03, and `websocket-fragmented`'s is 0.88, 5% above its 0.834 before #2795 (#2808
-tracks the read-path cost that took it to 0.876).
+buffer for each of the 16 streams, which it no longer does. `websocket-64k` is two
+64 KiB copies on both engines, so its ratio stays near 1.0 on x86_64. The ratchet has
+lowered all five since.
 
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
@@ -122,11 +121,11 @@ the HTTP peer with `SWOOLE_HOOK_NATIVE_CURL`, and `dns` a
 `Coroutine\System::dnsLookup` through c-ares, with the DNS cache off, that a
 resolver `callgrind.py` serves answers. They need both engines built with
 `--configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite
---configure=--enable-swoole-curl --configure=--enable-cares` and
-`--php-extension pdo_pgsql --php-extension curl`. Building the main pair that way
-would shift every other workload's record, so they run on a second pair, and
-`--append` adds their results to the main pair's `--output`, which stays the one
-result the ratchet reads.
+--configure=--enable-swoole-curl --configure=--enable-cares` and `--php-extension pdo
+--php-extension pdo_sqlite --php-extension curl`, but not PHP's `pdo_pgsql`: that build
+registers its own PDO pgsql driver. Building the main pair that way would shift every
+other workload's record, so the merge tier runs them on a second pair, as a fourth
+`callgrind` shard whose result the ratchet reads with the other three.
 
 Two run only on a build variant (#2683), against `benchmarks/variants`. `uring-file`
 reads a file with `Coroutine\System::readFile`, which the `--enable-iouring` build

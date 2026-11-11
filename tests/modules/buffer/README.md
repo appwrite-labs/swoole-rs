@@ -26,6 +26,13 @@ is ported there, one Rust test per `TEST`:
 | --- | --- |
 | `buffer.append_iov` | `cpp::tests::append_iov` (64 seeded runs of the same lengths, offsets and checks) |
 
+## String gates
+
+| Command (dev.py phase) | Checks |
+| --- | --- |
+| `string/test_compatibility.py --archive A --sanitize` (`buffer-string-compatibility`) | 44 ordinary String operations, original versus selected |
+| `string/test_gate.py --archive A --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 23 TESTs on the pin; on the Rust String the 16 that test `swoole::String`. The other seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089), so they run on the pin only |
+
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream
 checkout (`target/upstream/src`).
 
@@ -77,6 +84,3 @@ adds a previous hybrid build to the comparison.
 | POSIX iovec adaptation | Rust reads the `iovec` array in place |
 | `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, under the upstream symbols, calling the String's own allocator |
 | `split`'s `std::function` handler, `format_impl`'s printf varargs, inline accessors | C++ |
-
-The ltrim/rtrim/strnpos/strnstr original String tests exercise native helpers in
-`include/swoole_util.h` and `include/swoole.h`, not Rust code.

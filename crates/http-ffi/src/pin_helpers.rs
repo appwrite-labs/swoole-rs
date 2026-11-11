@@ -1,4 +1,5 @@
-//! The status, method, URL and boundary helpers against v6.2.4's `src/protocol/http.cc`.
+//! The status, method, URL and boundary helpers against the pin's `src/protocol/http.cc`
+//! (v6.2.5; these bodies are unchanged since v6.2.4).
 //! `pin` transcribes the pinned bodies (C locale). The cases are the ones the retired
 //! `tests/modules/http/gate.cc`, `status_buffer_gate.cc` and `dispatch_gate.cc` compared.
 use crate::{

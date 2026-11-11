@@ -93,13 +93,12 @@ fn create(call: &Call) {
 
 /// `defer()`/`Co::defer()`: `(callable $callback)`.
 fn defer(call: &Call) {
-    let Ok(mut callable) = call.arity(1, 1).and_then(|()| Callable::parse(call, 1)) else {
+    let Ok(callable) = call.arity(1, 1).and_then(|()| Callable::parse(call, 1)) else {
         call.set_bool(false);
         return;
     };
     host::current_safe();
-    callable.keep(None);
-    context::defer(callable.into_raw());
+    context::defer(callable.keep(None).into_raw());
 }
 
 /// `swoole_test_kernel_coroutine(int $count = 100, float $sleep = 1)`.

@@ -18,16 +18,6 @@
 #include <ares.h>
 #endif
 
-zend_module_entry *swr_v1_phpswoole_module(void);
-
-// The hybrid's swoole.so exports get_module() from here, an object it links directly;
-// the Cargo-built one (crates/ext) exports it from Rust.
-#ifdef COMPILE_DL_SWOOLE
-ZEND_DLEXPORT zend_module_entry *get_module(void) {
-    return swr_v1_phpswoole_module();
-}
-#endif
-
 // MINFO's version rows: the headers' macros, or the linked library's answer.
 struct swr_phpswoole_versions {
     const char *built, *openssl, *curl, *cares, *zlib, *zstd;
