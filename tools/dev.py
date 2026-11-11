@@ -269,8 +269,6 @@ def plan(args, reports):
     if 'ossupport' in modules:
         script('ossupport-async-file-owner', 'tests/modules/ossupport/async_file.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, *report('ossupport-async-file-owner'))
-        script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, *report('ossupport-file-owner'))
     if 'corebase' in modules:
         script('corebase-dns-request-guard', 'tests/modules/corebase/resolver_guard.py',
                '--archive', archive, *report('corebase-dns-request-guard'))

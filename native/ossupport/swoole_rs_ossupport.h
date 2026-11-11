@@ -24,19 +24,11 @@ bool swr_v1_os_async_file_sync(const swr_v1_os_async_file *, int (*effect)(int))
 bool swr_v1_os_async_file_truncate(const swr_v1_os_async_file *, off_t, int (*effect)(int, off_t));
 bool swr_v1_os_async_file_stat(const swr_v1_os_async_file *, struct stat *, int (*effect)(int, struct stat *));
 off_t swr_v1_os_async_file_offset(const swr_v1_os_async_file *, off_t, int, off_t (*effect)(int, off_t, int));
-/* Rust-owned File state; Native path-view updates retain exceptions outside Rust. */
-struct stat;
+/* Rust-owned File state. */
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
-typedef int (*swr_v1_os_file_path_update)(void *context);
-swr_v1_os_file_record *swr_v1_os_file_record_new(int fd, const char *path, size_t length);
-swr_v1_os_file_record *swr_v1_os_file_record_clone(const swr_v1_os_file_record *source);
+swr_v1_os_file_record *swr_v1_os_file_record_open(const char *path, int flags, int mode);
 void swr_v1_os_file_record_free(swr_v1_os_file_record *owner);
 int swr_v1_os_file_record_fd(swr_v1_os_file_record *owner, bool release);
-bool swr_v1_os_file_record_close(swr_v1_os_file_record *owner);
-int swr_v1_os_file_record_open(swr_v1_os_file_record *owner, const char *path, size_t length, int flags, int mode, swr_v1_os_file_path_update update, void *context);
-int swr_v1_os_file_record_assign(swr_v1_os_file_record *owner, const swr_v1_os_file_record *source, swr_v1_os_file_path_update update, void *context);
-ssize_t swr_v1_os_file_record_io(const swr_v1_os_file_record *owner, uint32_t operation, void *buffer, size_t length, off_t offset);
-off_t swr_v1_os_file_record_control(const swr_v1_os_file_record *owner, uint32_t operation, off_t value);
 /* file_get_contents and File::read_content; `content` is a
  * swoole::String (default-constructed, or File's fresh one). */
 bool swr_v1_os_file_get_contents(const char *path, void *content);

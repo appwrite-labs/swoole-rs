@@ -28,5 +28,5 @@ values (`cargo test -p swoole-rs-ossupport --all-features os_`):
 
 | Upstream TEST | Where it runs |
 | --- | --- |
-| `file.open_twice` | `file_owner.py` (`ossupport-file-owner`): the unchanged body, compiled against the pin and against the Cargo SDK's `native/ossupport/swoole_file.h` |
+| `file.open_twice` | `file_record::tests::file_open_twice`, over `FileRecord::open`/`close` (`cargo test -p swoole-rs-ossupport file_open_twice`) |
 | the other eight | not yet ported (#3043) |

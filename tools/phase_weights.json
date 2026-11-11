@@ -59,7 +59,6 @@
  "memory-table-witnesses": 2,
  "memory-unit": 13,
  "ossupport-async-file-owner": 5,
- "ossupport-file-owner": 3,
  "ossupport-unit": 10,
  "ownership": 1,
  "php-sockets-sendfile-original": 1,
