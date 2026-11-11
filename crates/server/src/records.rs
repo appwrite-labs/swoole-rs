@@ -2,6 +2,7 @@
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::AtomicU32;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_memory::members::Shm;
 
 /// A shared session-table slot; reactor bits preserve the native reserved bits.
 #[repr(C)]
@@ -64,7 +65,7 @@ pub struct ConnectionRecord {
 pub struct ServerTables {
     pub connection_list: *mut ConnectionRecord,
     pub session_list: *mut SessionRecord,
-    pub port_gs_list: *mut c_void,
+    pub port_gs_list: Shm,
     pub max_connection: u32,
     pub enable_accept_timer: *mut c_void,
     pub reactor_pipe_num: u16,
@@ -99,7 +100,7 @@ impl Default for ServerTables {
         Self {
             connection_list: core::ptr::null_mut(),
             session_list: core::ptr::null_mut(),
-            port_gs_list: core::ptr::null_mut(),
+            port_gs_list: Shm::NULL,
             max_connection: 0,
             enable_accept_timer: core::ptr::null_mut(),
             reactor_pipe_num: 0,

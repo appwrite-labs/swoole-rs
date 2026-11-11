@@ -241,10 +241,13 @@ mod tests {
         let serv = unsafe { view::Server::from_raw(head.as_ptr().cast_mut().cast()) };
         unsafe { serv.config_mut() }.mode_ = 1;
         unsafe { serv.config_mut() }.gs = (&raw mut *gs).cast();
-        let mut workers = [*WorkerRecord::boxed(), *WorkerRecord::boxed()];
-        let (worker, other) = (&raw mut workers[0], &raw mut workers[1]);
+        let workers = swoole_rs_memory::members::Shm::calloc(2, size_of::<WorkerRecord>());
+        let worker = workers.as_ptr().cast::<WorkerRecord>();
+        let other = worker.wrapping_add(1);
+        unsafe { worker.write(*WorkerRecord::boxed()) };
+        unsafe { other.write(*WorkerRecord::boxed()) };
         unsafe { serv.config_mut() }.worker_num = 2;
-        unsafe { serv.config_mut() }.workers = worker.cast();
+        unsafe { serv.config_mut() }.workers = workers;
         unsafe { (*worker).set_pid(79) };
         unsafe { (*other).set_pid(79) };
         assert_eq!(get_worker_by_pid(serv, 79), worker);
@@ -291,6 +294,7 @@ mod tests {
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
         unsafe { (*serv.state().tables()).session_list = core::ptr::null_mut() };
+        unsafe { serv.config_mut() }.workers.free();
         unsafe { crate::swr_v1_server_state_free(state) };
     }
 }
