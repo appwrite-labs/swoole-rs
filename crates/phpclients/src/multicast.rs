@@ -738,7 +738,8 @@ pub(crate) fn get_ipv6(call: &Call, socket: Co, level: c_int, name: c_int) -> Re
 fn inet6_text(address: Ipv6Addr) -> String {
     let groups = address.segments();
     let [.., a, b, c, d] = address.octets();
-    let compatible = groups[..6] == [0; 6] && (groups[6] != 0 || groups[7] > 1);
+    // glibc embeds the IPv4 form only when the leading zero run is exactly six groups.
+    let compatible = groups[..6] == [0; 6] && groups[6] != 0;
     if compatible {
         format!("::{}", Ipv4Addr::new(a, b, c, d))
     } else {
