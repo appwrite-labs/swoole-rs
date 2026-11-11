@@ -288,12 +288,13 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees a client object.
-    let object = unsafe { Obj::new(std) };
-    crate::async_net::free_callbacks(object);
-    // SAFETY: as above.
-    unsafe { ClientObject::dtor(std) };
-    bailout::finish();
+    bailout::finish_after(|| {
+        // SAFETY: Zend frees a client object.
+        let object = unsafe { Obj::new(std) };
+        crate::async_net::free_callbacks(object);
+        // SAFETY: as above.
+        unsafe { ClientObject::dtor(std) };
+    });
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
@@ -706,19 +707,9 @@ fn set(call: &Call) {
 /// `set()`'s `php_array_merge` of `settings` into `$this->setting` (made an
 /// array first, under `scope`); nothing when `settings` is no array.
 pub(crate) fn merge_setting(call: &Call, scope: &Class, settings: &Value) {
-    if settings.array().is_none() {
-        return;
+    if let Some(props) = call.props(Some(scope)) {
+        props.merge(c"setting", settings);
     }
-    // SAFETY: a client method's live `$this`, a registered class and a live array.
-    unsafe {
-        z::swr_zend_property_merge(
-            scope.entry(),
-            call.this(),
-            c"setting".as_ptr(),
-            7,
-            settings.as_ptr(),
-        );
-    };
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0.5, int $sock_flag = 0): bool`.

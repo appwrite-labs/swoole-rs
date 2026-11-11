@@ -14,12 +14,13 @@ use crate::{
         php_url_encode, swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
         swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
         swr_zend_property_slot, swr_zend_separate_array, swr_zend_string_release,
-        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
-        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
-        swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref, zend_array_count,
-        zend_class_entry, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
-        zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
+        swr_zend_try_get_string, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_zval_value_name, swr_zval_is_true,
+        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_add_new,
+        zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
+        zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -795,8 +796,9 @@ impl ArrayMut {
     }
 
     /// `SEPARATE_ARRAY`: the zval, holding an array of its own, to write, or
-    /// None once a bailout is pending: nothing is written then, because
-    /// upstream never ran past it.
+    /// None once a bailout is pending (nothing is written then, because
+    /// upstream never ran past it) or when PHP code has since put something
+    /// else in a property's slot.
     #[inline]
     fn separate(&mut self) -> Option<*mut zval> {
         if bailout::pending() {
@@ -805,7 +807,7 @@ impl ArrayMut {
         let zval = self.0.as_ptr();
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
-        if self.0.array().is_some_and(|array| header(&array.0)[0] <= 1) {
+        if header(&self.0.array()?.0)[0] <= 1 {
             return Some(zval);
         }
         // SAFETY: an array zval borrowed mutably; a shared or immutable array
@@ -958,6 +960,29 @@ impl ArrayMut {
         unsafe {
             swr_zend_array_add_or_merge(array, crate::key_ptr(key), key.len(), &raw mut value);
         }
+    }
+
+    /// `php_array_merge(this, source)`, with a replaced value's `__destruct`
+    /// run inside `zend_try` and a bailout deferred; nothing when `source` is
+    /// no array.
+    #[inline]
+    pub fn merge_array(&mut self, source: &Value) {
+        if source.array().is_none() {
+            return;
+        }
+        let Some(array) = self.separate() else { return };
+        // SAFETY: two live arrays.
+        bailout::defer(bailout::trapped(unsafe {
+            swr_zend_try_array_merge(array, source.as_ptr())
+        }));
+    }
+
+    /// The array zval, separated, for a C writer; None once a bailout is
+    /// pending.
+    #[must_use]
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> Option<*mut zval> {
+        self.separate()
     }
 }
 

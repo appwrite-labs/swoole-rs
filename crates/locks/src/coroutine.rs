@@ -1,8 +1,6 @@
 //! Coroutine lock state and complete acquisition/release loops.
 use std::{
     cell::Cell,
-    ffi::c_void,
-    ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
@@ -24,8 +22,8 @@ impl CoroutineOutcome {
 /// Immutable, process-lived effects supplied once when the lock is constructed.
 /// No native lock state or per-call operation table is retained.
 pub struct CoroutineHost {
-    pub current: fn() -> *mut c_void,
-    pub cid: fn(*mut c_void) -> i64,
+    /// The running coroutine's id, `None` outside one.
+    pub current: fn() -> Option<i64>,
     /// A process-shared word, for the program's life, or None.
     pub alloc_shared: fn() -> Option<&'static AtomicU32>,
     pub sleep: Option<fn(f64) -> CoroutineOutcome>,
@@ -40,7 +38,7 @@ pub struct CoroutineHost {
 pub struct CoroutineLock {
     host: &'static CoroutineHost,
     word: Word,
-    cookie: Cell<*mut c_void>,
+    /// The owner's id, 0 for none (ids start at 1).
     cid: Cell<i64>,
 }
 
@@ -82,7 +80,6 @@ impl CoroutineLock {
         Box::new(Self {
             host,
             word,
-            cookie: Cell::new(ptr::null_mut()),
             cid: Cell::new(0),
         })
     }
@@ -98,12 +95,10 @@ impl CoroutineLock {
     pub fn acquire(&self, blocking: bool) -> CoroutineOutcome {
         let host = self.host;
         // The current-coroutine identity, once, before possible suspension.
-        let current = (host.current)();
-        if current.is_null() {
+        let Some(cid) = (host.current)() else {
             return outside(host);
-        }
-        let cid = (host.cid)(current);
-        if current == self.cookie.get() && cid == self.cid.get() {
+        };
+        if cid == self.cid.get() {
             return CoroutineOutcome::code(0);
         }
         let word = self.word();
@@ -144,10 +139,7 @@ impl CoroutineLock {
                 );
             }
         }
-        // The acquired coroutine is live after suspension; refresh its token at
-        // publication, in the same order as the native implementation.
-        self.cid.set((host.cid)(current));
-        self.cookie.set(current);
+        self.cid.set(cid);
         CoroutineOutcome::code(0)
     }
 
@@ -155,7 +147,7 @@ impl CoroutineLock {
     pub fn unlock(&self) -> CoroutineOutcome {
         let host = self.host;
         // Query the current coroutine before accessing ownership, as upstream does.
-        if (host.current)().is_null() {
+        if (host.current)().is_none() {
             return outside(host);
         }
         let word = self.word();
@@ -166,7 +158,6 @@ impl CoroutineLock {
         word.store(0, Ordering::Release);
         // Release clears ownership before waking a waiter.
         self.cid.set(0);
-        self.cookie.set(ptr::null_mut());
         let Some(wake) = host.wake else {
             return CoroutineOutcome::code(0);
         };
@@ -204,11 +195,11 @@ mod tests {
         // What the other coroutines do while the sleeping one is suspended.
         static ON_SLEEP: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     }
-    fn current() -> *mut c_void {
-        STATE.with(|state| state.borrow().current as *mut c_void)
-    }
-    fn cid(_: *mut c_void) -> i64 {
-        STATE.with(|state| state.borrow().cid)
+    fn current() -> Option<i64> {
+        STATE.with(|state| {
+            let state = state.borrow();
+            (state.current != 0).then_some(state.cid)
+        })
     }
     /// A fresh word for the program's life, as the pool's are.
     fn allocate() -> Option<&'static AtomicU32> {
@@ -259,7 +250,6 @@ mod tests {
     }
     static SLEEP: CoroutineHost = CoroutineHost {
         current,
-        cid,
         alloc_shared: allocate,
         sleep: Some(sleep),
         wait: None,
@@ -268,7 +258,6 @@ mod tests {
     };
     static FUTEX: CoroutineHost = CoroutineHost {
         current,
-        cid,
         alloc_shared: allocate,
         sleep: None,
         wait: Some(wait),
@@ -415,7 +404,6 @@ mod tests {
         );
         STATE.with(|state| state.borrow_mut().bailed = 1);
         assert_eq!(lock.acquire(true).bailed, 1);
-        assert_eq!(lock.cookie.get() as usize, 1);
         assert_eq!(lock.cid.get(), 7);
         drop(lock);
     }
@@ -440,7 +428,6 @@ mod tests {
             state.bailed = 1;
         });
         assert_eq!(lock.unlock().bailed, 1);
-        assert_eq!(lock.cookie.get(), ptr::null_mut());
         assert_eq!(lock.cid.get(), 0);
         drop(lock);
         STATE.with(|state| assert_eq!(state.borrow().wakes, 2));
@@ -472,11 +459,9 @@ mod tests {
         static DATA: Data = Data(std::cell::UnsafeCell::new(0));
         static WORD: AtomicU32 = AtomicU32::new(0);
         static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        fn current() -> *mut c_void {
-            ptr::NonNull::dangling().as_ptr()
-        }
-        fn cid(_: *mut c_void) -> i64 {
-            1
+        #[expect(clippy::unnecessary_wraps, reason = "CoroutineHost::current's type")]
+        fn current() -> Option<i64> {
+            Some(1)
         }
         #[expect(
             clippy::unnecessary_wraps,
@@ -494,7 +479,6 @@ mod tests {
         }
         static HOST: CoroutineHost = CoroutineHost {
             current,
-            cid,
             alloc_shared: shared,
             sleep: Some(sleep),
             wait: None,
