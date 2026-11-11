@@ -113,7 +113,7 @@ pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut z
         Kind::Request => object.custom::<crate::request::Data>()?.0.set(Some(ctx)),
         Kind::Response => object.custom::<crate::response::Data>()?.0.set(Some(ctx)),
     }
-    slot.object()
+    object.object()
 }
 
 /// A new object in `slot`, pointing at `ctx`, with its `fd` property (the
