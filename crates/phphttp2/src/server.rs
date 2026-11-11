@@ -20,6 +20,8 @@ use swoole_rs_http2::{
     sw_rs_http2_respond_next, sw_rs_http2_response_status, sw_rs_http2_setting_plan,
     sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
+use swoole_rs_phpserver::RecvData;
+use swoole_rs_server::view;
 use swoole_rs_zend::{
     Array, Owned, Value as Zval, ZString, bailout, string,
     sys::{
@@ -847,11 +849,10 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
 /// # Safety
-/// `server` is the live server, `conn` the session's connection and `request`
-/// its `RecvData`.
-unsafe fn on_receive(server: *mut c_void, conn: *mut c_void, request: *mut c_void) -> c_int {
-    // SAFETY: a `RecvData` begins with its `DataHead`.
-    let session_id = unsafe { (*request.cast::<swoole_rs_corebase::DataHead>()).fd };
+/// `conn` is the session's connection.
+unsafe fn on_receive(view: view::Server<'_>, conn: *mut c_void, request: &RecvData) -> c_int {
+    let server = view.raw();
+    let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         // SAFETY: the live server.
         let default_ctx = unsafe { Ctx::server_context(server, session_id) };
@@ -872,8 +873,8 @@ unsafe fn on_receive(server: *mut c_void, conn: *mut c_void, request: *mut c_voi
         SessionState::find(session_id)
     });
     let zdata = Owned::default();
-    // SAFETY: the live server and its request; the data is a new string.
-    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
+    // SAFETY: a new string.
+    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(view, zdata.as_ptr(), request) };
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));

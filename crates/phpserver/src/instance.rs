@@ -2,6 +2,7 @@
 //! object zval, a Server object's `Server`, its ports' callbacks and a
 //! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
+use crate::RecvData;
 use crate::port::PortProperty;
 use crate::server::{ServerData, THREAD};
 use std::{
@@ -13,7 +14,6 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{
-    DataHead,
     constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
     log,
 };
@@ -28,13 +28,6 @@ use swoole_rs_zend::{
     },
     value::{empty_string, set_str},
 };
-
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *mut u8,
-}
 
 /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: one per
 /// process, or one per thread under `SW_THREAD`.
@@ -141,19 +134,15 @@ unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
 /// `php_swoole_get_recv_data`: a request's payload into `zdata`, taking the
 /// message bus's packet or the connection's receive buffer when it holds them.
 /// # Safety
-/// `serv` is the running server, `req` its live `RecvData`, `zdata` writable.
-pub unsafe fn php_swoole_get_recv_data(serv: *mut c_void, zdata: *mut zval, req: *mut c_void) {
-    // SAFETY: per the caller.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: per the caller.
-    let req = unsafe { &*req.cast::<RecvData>() };
+/// `zdata` is writable.
+pub unsafe fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: *mut zval, req: &RecvData) {
     let (flags, length) = (req.info.flags, req.info.len as usize);
     if length == 0 {
         // SAFETY: per the caller.
         unsafe { set_str(zdata, empty_string()) };
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
-        unsafe { assign_by_val(zdata, req.data, length) };
+        unsafe { assign_by_val(zdata, req.data.cast_mut().cast(), length) };
         move_packet(serv);
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
         .then(|| serv.by_session(req.info.fd))

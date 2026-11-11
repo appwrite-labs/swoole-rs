@@ -261,16 +261,14 @@ fn receive_args(
 ) -> usize {
     let info = &request.info;
     let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
-    let recv_data = php_swoole_get_recv_data;
-    let request = ptr::from_ref(request).cast_mut().cast();
     if event_object {
         let props = Props::init(&mut args[1], &DATA[EVENT]);
         props.long(c"fd", fd);
         props.long(c"reactor_id", reactor_id);
         props.double(c"dispatch_time", info.time);
         let mut data = undef();
-        // SAFETY: a live server and request; `data` receives the payload.
-        unsafe { recv_data(server.raw(), &raw mut data, request) };
+        // SAFETY: `data` receives the payload.
+        unsafe { php_swoole_get_recv_data(server, &raw mut data, request) };
         props.value(c"data", &mut data);
         dtor(&mut data);
         2
@@ -278,7 +276,7 @@ fn receive_args(
         args[1] = long_zval(fd);
         args[2] = long_zval(reactor_id);
         // SAFETY: as above.
-        unsafe { recv_data(server.raw(), &raw mut args[3], request) };
+        unsafe { php_swoole_get_recv_data(server, &raw mut args[3], request) };
         4
     }
 }
@@ -594,11 +592,20 @@ const UNIX_DGRAM: c_int = 6;
 const WEBSOCKET_ACTIVE: u8 = 3;
 
 /// `RecvData`: the event's head, then its payload. Native code lends each
-/// receive slot its request for the call.
+/// receive slot its request for the call; private fields, so safe code can't
+/// make one whose payload pointer and length disagree.
 #[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const c_char,
+pub struct RecvData {
+    pub(crate) info: DataHead,
+    pub(crate) data: *const c_char,
+}
+
+impl RecvData {
+    /// The event's head.
+    #[must_use]
+    pub fn info(&self) -> &DataHead {
+        &self.info
+    }
 }
 
 /// `DgramPacket`'s head; the datagram follows.
@@ -723,19 +730,10 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, req: *mut c
     relay(bailed);
 }
 
-/// `php_swoole_server_onReceive` (crates/phphttp's fallback).
-/// # Safety
-/// `server` is the running server and `request` its `RecvData`.
-pub unsafe fn php_swoole_server_on_receive(
-    server: view::Server<'_>,
-    request: *mut c_void,
-) -> c_int {
-    // SAFETY: per the caller.
-    receive(server, unsafe { &*request.cast() })
-}
-
-/// `php_swoole_server_onReceive`: the port's `onReceive`, if any.
-fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+/// `php_swoole_server_onReceive`: the port's `onReceive`, if any (and
+/// crates/phphttp's fallback).
+#[must_use]
+pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let info = &request.info;
     let cb = port_callback(server, info.server_fd, ON_RECEIVE);
     if cb.is_null() {
@@ -762,7 +760,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 }
 
 extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    receive(server, request)
+    php_swoole_server_on_receive(server, request)
 }
 
 extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
@@ -788,19 +786,15 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     let port = server.port_by_fd(conn.fd);
     // SAFETY: null, or the connection's live port.
     if port.is_null() || !unsafe { view::port(port) }.open_redis_protocol {
-        return receive(server, request);
+        return php_swoole_server_on_receive(server, request);
     }
     let Some(redis) = crate::server::redis_receive() else {
-        return receive(server, request);
+        return php_swoole_server_on_receive(server, request);
     };
     let data = swoole_rs_zend::Owned::default();
     // SAFETY: the live server and its received request; `data` takes the payload.
     unsafe {
-        php_swoole_get_recv_data(
-            server.raw(),
-            data.as_ptr(),
-            ptr::from_ref(request).cast_mut().cast(),
-        );
+        php_swoole_get_recv_data(server, data.as_ptr(), request);
     }
     let result = redis(server, fd, &data, coroutine_enabled(server));
     relay(result.is_err());

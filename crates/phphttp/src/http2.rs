@@ -11,6 +11,8 @@ use std::{
     ffi::{CStr, c_int, c_void},
     sync::{OnceLock, atomic::Ordering::Relaxed},
 };
+use swoole_rs_phpserver::RecvData;
+use swoole_rs_server::view;
 use swoole_rs_zend::sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval};
 
 /// A live context the HTTP/2 server holds: a connection's settings context
@@ -59,7 +61,7 @@ pub struct Server {
     /// connection.
     /// # Safety
     /// The live server, the session's connection (or null) and its `RecvData`.
-    pub on_receive: unsafe fn(*mut c_void, *mut c_void, *mut c_void) -> c_int,
+    pub on_receive: for<'a> unsafe fn(view::Server<'a>, *mut c_void, &RecvData) -> c_int,
     /// The static file handler for the live server: true once it answered.
     pub static_file: fn(*mut c_void, Ctx) -> bool,
     /// `Response::end`: the stream's last frames.
