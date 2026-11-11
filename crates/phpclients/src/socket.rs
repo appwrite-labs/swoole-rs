@@ -304,8 +304,7 @@ fn pagesize() -> usize {
     if size != 0 {
         return size;
     }
-    // SAFETY: a pure query.
-    let size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
+    let size = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     SIZE.store(size, Ordering::Relaxed);
     size
 }

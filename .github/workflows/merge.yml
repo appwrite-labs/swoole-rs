@@ -297,6 +297,8 @@ jobs:
     uses: ./.github/workflows/variant.yml
     with:
       variant: ${{ matrix.variant }}
+      # Queue groups skip callgrind, as they skip the callgrind job (#2766).
+      callgrind: ${{ github.event_name != 'merge_group' }}
 
   # HTTP/2 conformance: h2spec on upstream and the Cargo build.
   h2spec:

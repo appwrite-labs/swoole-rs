@@ -34,10 +34,8 @@ typedef struct {
   swr_v1_tls_owner_fields *fields;
   const swr_v1_core_string *strings[11];
 } swr_v1_tls_owner_prepared;
-/* Logs "<function>(): <message>" at warning level. */
-void swr_v1_tls_warning(const char *function, const char *message);
-swr_v1_tls_owner_prepared swr_v1_tls_owner_new(void (*warn)(const char *,
-                                                            const char *));
+/* A new owner, which logs "<function>(): <message>" at warning level. */
+swr_v1_tls_owner_prepared swr_v1_tls_owner_new(void);
 /* Drops one reference; the last releases the owner. */
 void swr_v1_tls_owner_free(const swr_v1_tls_owner *);
 /* The owner's fields and string slots. */

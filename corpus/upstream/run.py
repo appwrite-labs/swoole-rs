@@ -154,13 +154,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "worker's close event for fd-1 races the master freeing its connections at shutdown; "
         'losing it, onClose never logs `close: fd-1` (upstream 27/30, hybrid 23/30, cargo 21/30 '
         'in the aarch64 dev image; closing the client 200 ms before the kill, 20/20, #2018)',
-        'tests/swoole_server/getClientInfo_in_callback_of_close_2.phpt':
-        "the parent SIGTERMs the SWOOLE_PROCESS server tens of µs after its client closes, so "
-        "the worker's close event races the master freeing its connections at shutdown; when the "
-        "master frees fd 1 first, getClientInfo() in onClose is false on every engine (aarch64 "
-        'dev image: idle, upstream 3/300, cargo 9/300; under CPU load, upstream 5/100, cargo '
-        '8/100; a script that kills right after the close fails 3/100 on both, and with a 50 µs '
-        'wait before the kill, 0/80 on both, #2892; Docker, upstream 4/150, cargo 5/150, #2890)',
         'tests/swoole_server/discard_timeout_packet.phpt':
         "the client has sent and closed before the server accepts, so the reactor thread "
         "dispatches the first packet and closes the session on the FIN one epoll pass later; "
@@ -212,7 +205,16 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_runtime/file_hook/async_file.phpt':
         "its 27 AIO reads finish in about 0.8 ms, and the other coroutine's 1 ms usleep fires only "
         "when they cross a millisecond of the timer's whole-millisecond clock, so the count >= 1 "
-        'assert fails on both engines (Docker, 260 runs: upstream 125, cargo 143, #2772)'}
+        'assert fails on both engines (Docker, 260 runs: upstream 125, cargo 143, #2772)',
+        'tests/swoole_http_client_coro/slow_server.phpt':
+        "the server's body is base64_encode(random_bytes(rand(1024, 65536))), and the client "
+        'asserts it is over 5 KiB; base64 of under 3840 bytes is not, so about 4.4% of runs '
+        "fail on every engine (#2887's queue run: cargo failed 2 of 3, upstream passed 24)",
+        'tests/swoole_server/getClientInfo_in_callback_of_close_2.phpt':
+        "the parent kills the SWOOLE_PROCESS server as soon as its client closes, and shutdown "
+        "joins the reactor threads, whose destroy callback closes every connection, before it "
+        "stops the worker; when that wins, onClose's getClientInfo() finds no session and the "
+        'isArray assert fails on both engines (Docker, 150 runs each: upstream 4, cargo 5, #2890)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "

@@ -3,6 +3,7 @@
 //! pool callbacks that run its operations: what workers.cc's `TaskWorkerContext` did.
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use swoole_rs_corebase::{DataHead, log};
@@ -12,7 +13,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_pack};
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
+use swoole_rs_process::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     LOG_INVALID_SOURCE, LOG_READ_TASK, LOG_RESULT_WRITE, LOG_UNKNOWN_COMMAND, OP_ADD_REQUEST_COUNT,
@@ -37,12 +38,43 @@ use crate::view;
 mod native;
 pub(crate) use native::enter;
 
+/// The server's task pool, live and owned by the server for `'a`. Native code
+/// passes one as a `ProcessPool *`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub(crate) struct TaskPool<'a> {
+    raw: *mut PoolRecord,
+    live: PhantomData<&'a PoolRecord>,
+}
+
+impl<'a> TaskPool<'a> {
+    /// `server`'s task pool.
+    fn of(server: view::Server<'a>) -> Self {
+        Self {
+            raw: server.task_pool(),
+            live: PhantomData,
+        }
+    }
+    /// Runs `f` over the record, borrowed for the call alone.
+    fn edit<R>(self, f: impl FnOnce(&mut PoolRecord) -> R) -> R {
+        // SAFETY: a live pool, which this task worker's thread alone touches while
+        // its callbacks run; the borrow ends with `f`.
+        f(unsafe { &mut *self.raw })
+    }
+    /// The pool's server: a task pool's `ptr`.
+    fn server(self) -> view::Server<'a> {
+        let serv = self.edit(|pool| pool.ptr);
+        // SAFETY: OP_POOL_INIT sets a task pool's `ptr` to the server that owns it.
+        unsafe { view::Server::from_raw(serv) }
+    }
+}
+
 /// What an operation runs over.
-struct Context {
-    serv: *mut c_void,
-    pool: *mut PoolRecord,
-    worker: *mut WorkerRecord,
-    /// The task being run, or the one being finished.
+struct Context<'a> {
+    server: view::Server<'a>,
+    pool: Option<TaskPool<'a>>,
+    worker: Option<Worker<'a>>,
+    /// The task being run, or the one being finished: null, or live for `'a`.
     task: *const DataHead,
     socket: *mut SocketRecord,
     /// `Server::finish`'s result, its packed form and its file.
@@ -56,40 +88,26 @@ struct Context {
     packet: (usize, *const c_char),
 }
 
-impl Context {
-    /// The context's live server.
-    fn server(&self) -> view::Server<'_> {
-        // SAFETY: the method that built the context lent its live server for the call.
-        unsafe { view::Server::from_raw(self.serv) }
-    }
+impl<'a> Context<'a> {
     /// The pipe or stream socket the op runs over, if any.
     fn socket(&self) -> Option<Socket<'_>> {
         // SAFETY: null, or the live socket the method that built the context lent.
         unsafe { Socket::from_ptr(self.socket) }
     }
-}
-
-/// The context's objects, each live when the op reading it runs.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written by the task worker that owns them"
-)]
-impl Context {
     /// The context over `pool`'s server and `worker`.
-    fn of(pool: *mut PoolRecord, worker: *mut WorkerRecord) -> Self {
+    fn of(pool: TaskPool<'a>, worker: Worker<'a>) -> Self {
         Self {
-            pool,
-            worker,
-            // SAFETY: a task pool, whose `ptr` is its server, calls back with itself.
-            ..Self::over(unsafe { (*pool).ptr })
+            pool: Some(pool),
+            worker: Some(worker),
+            ..Self::over(pool.server())
         }
     }
-    /// The context over `serv` alone.
-    fn over(serv: *mut c_void) -> Self {
+    /// The context over `server` alone.
+    fn over(server: view::Server<'a>) -> Self {
         Self {
-            serv,
-            pool: core::ptr::null_mut(),
-            worker: core::ptr::null_mut(),
+            server,
+            pool: None,
+            worker: None,
             task: core::ptr::null(),
             socket: core::ptr::null_mut(),
             data: core::ptr::null(),
@@ -104,29 +122,32 @@ impl Context {
             packet: (0, core::ptr::null()),
         }
     }
-    fn state(&self) -> &crate::ServerState {
-        self.server().state()
+    fn serv(&self) -> *mut c_void {
+        self.server.raw()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
+    fn state(&self) -> &'a crate::ServerState {
+        self.server.state()
+    }
+    fn config(&self) -> &'a mut crate::ServerConfig {
         // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+        unsafe { self.server.config_mut() }
     }
-    fn pool(&self) -> &mut PoolRecord {
-        // SAFETY: the ops reading it run with the context's live task pool.
-        unsafe { &mut *self.pool }
+    /// The task pool, which the ops reading it run with.
+    fn pool(&self) -> TaskPool<'a> {
+        self.pool.unwrap_or_else(|| std::process::abort())
     }
-    fn worker(&self) -> &mut WorkerRecord {
-        // SAFETY: the ops reading it run with the context's live worker.
-        unsafe { &mut *self.worker }
+    /// The worker, which the ops reading it run with.
+    fn worker(&self) -> Worker<'a> {
+        self.worker.unwrap_or_else(|| std::process::abort())
     }
     fn task(&self) -> &DataHead {
         // SAFETY: the ops reading it run with a live task.
         unsafe { &*self.task }
     }
-    /// The packed result.
-    fn packed(&self) -> &mut DataHead {
-        // SAFETY: the ops reading it run after the result is packed.
-        unsafe { &mut *self.packed }
+    /// Runs `f` over the packed result, which the ops editing it run after packing.
+    fn edit_packed<R>(&self, f: impl FnOnce(&mut DataHead) -> R) -> R {
+        // SAFETY: the packed result, live and borrowed for `f` alone.
+        f(unsafe { &mut *self.packed })
     }
     /// The worker that sent the finishing task.
     fn source(&self) -> u16 {
@@ -134,7 +155,7 @@ impl Context {
     }
     /// The source worker's slot of `task_results`: an `EventData` per worker.
     fn result_slot(&self) -> *mut u8 {
-        let results = self.config().task_results.cast::<u8>();
+        let results = self.config().task_results.as_ptr().cast::<u8>();
         results.wrapping_add(usize::from(self.source()) * EVENT_DATA_SIZE)
     }
     /// `buf->size()`: the packed result's header and payload.
@@ -180,7 +201,7 @@ fn errno() -> c_int {
 
 /// Answers each task-worker op over the context. The groups each task asks of
 /// (`task`, `finish`, then `worker`) come first; setup and commands come last.
-impl swoole_rs_process::workers::Answer for Context {
+impl swoole_rs_process::workers::Answer for Context<'_> {
     #[inline(always)]
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
         // Plain branches, not `or_else` closures, so each group inlines and an op
@@ -205,7 +226,8 @@ impl swoole_rs_process::workers::Answer for Context {
 /// The task pool and worker: setup, state and callbacks.
 #[inline(always)]
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
+    let serv = ctx.serv();
+    let worker = ctx.worker.map_or(core::ptr::null_mut(), Worker::raw);
     let config = ctx.config();
     match op {
         OP_TASK_IPC_MODE => return Some(u64::from(config.task_ipc_mode)),
@@ -216,11 +238,12 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(config.worker_num) + u64::from(config.task_worker_num));
         }
         OP_EXCEEDED_MAX_REQUEST => return Some(u64::from(ctx.worker().exceeded_max_request())),
-        OP_SET_SYSVMSG => ctx.pool().schedule_by_sysvmsg = true,
+        OP_SET_SYSVMSG => ctx.pool().edit(|pool| pool.schedule_by_sysvmsg = true),
         OP_CREATE_TASK_WORKER => {
-            let worker = ctx.pool().workers.wrapping_add(usize::try_from(arg).ok()?);
+            let id = usize::try_from(arg).ok()?;
+            let worker = ctx.pool().edit(|pool| pool.workers.wrapping_add(id));
             // SAFETY: the live server and its task worker `arg`, one of `task_worker_num`.
-            unsafe { crate::worker_methods::create_worker(ctx.server(), worker) };
+            unsafe { crate::worker_methods::create_worker(ctx.server, worker) };
         }
         OP_WORKER_STATUS => {
             let status = if arg != 0 {
@@ -230,7 +253,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             };
             ctx.worker().set_status(status);
         }
-        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker()),
         // SAFETY: the context's live server and worker.
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
         OP_ADD_REQUEST_COUNT => ctx.worker().add_request_count(),
@@ -255,9 +278,11 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
         OP_WORKER_INIT => {
-            swr_v1_worker_init(ctx.worker().into());
-            let pool = ctx.pool();
-            worker_set_max_request(worker, pool.max_request, pool.max_request_grace);
+            swr_v1_worker_init(ctx.worker());
+            let (max, grace) = ctx
+                .pool()
+                .edit(|pool| (pool.max_request, pool.max_request_grace));
+            worker_set_max_request(worker, max, grace);
         }
         _ => return None,
     }
@@ -267,7 +292,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 /// The task being run: its header, its callbacks and the pipe it came over.
 #[inline(always)]
 fn task(ctx: &mut Context, op: u32) -> Option<u64> {
-    let serv = ctx.serv;
+    let serv = ctx.serv();
     Some(match op {
         LOG_UNKNOWN_COMMAND => {
             let id = ctx.task().server_fd;
@@ -316,7 +341,7 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             );
             0
         }
-        OP_ON_TASK_POOL => signed(native::on_task(ctx.pool, ctx.worker, ctx.buf)),
+        OP_ON_TASK_POOL => signed(native::run_task(ctx.pool(), ctx.worker(), ctx.buf)),
         _ => return None,
     })
 }
@@ -324,12 +349,10 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
 /// `Server::finish`: the result goes back to the worker that sent the task.
 #[inline(always)]
 fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
     Some(match op {
         OP_SOURCE_WORKER => {
-            // SAFETY: the live server.
-            ctx.worker = unsafe { view::Server::from_raw(serv) }.worker(ctx.source());
-            u64::from(!ctx.worker.is_null())
+            ctx.worker = ctx.server.worker_record(ctx.source());
+            u64::from(ctx.worker.is_some())
         }
         LOG_INVALID_SOURCE => {
             let id = ctx.source();
@@ -348,27 +371,25 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(unsafe { task_pack(packed, ctx.data.cast(), ctx.data_len) })
         }
         OP_ZERO_RESULT => {
-            ctx.packed().len = 0;
+            ctx.edit_packed(|packed| packed.len = 0);
             0
         }
         OP_FINISH_HEADER => {
             let id = ctx.task().fd;
-            let packed = ctx.packed();
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "DataHead's uint16_t ext_flags"
             )]
             let flags = arg as u16;
-            packed.ext_flags |= flags;
-            packed.kind = EVENT_FINISH;
-            packed.fd = id;
+            ctx.edit_packed(|packed| {
+                packed.ext_flags |= flags;
+                packed.kind = EVENT_FINISH;
+                packed.fd = id;
+            });
             0
         }
         OP_STREAM_CONNECTION => {
-            // SAFETY: the source worker.
-            let pool = unsafe { swoole_rs_process::worker_record::Worker::new(ctx.worker) }
-                .pool()
-                .cast::<PoolRecord>();
+            let pool = ctx.worker().pool().cast::<PoolRecord>();
             // SAFETY: its live pool.
             let pool = unsafe { &*pool };
             // Only a stream pool has IPC state: an event worker's pool has none.
@@ -401,17 +422,22 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let (buf, size) = (ctx.buf.cast(), ctx.packed_size());
             // SAFETY: the source worker, live, and the packed result.
             let sent = unsafe {
-                swoole_rs_process::methods::send_pipe_message(ctx.worker, buf, size, PIPE_MASTER)
+                swoole_rs_process::methods::send_pipe_message(
+                    ctx.worker().raw(),
+                    buf,
+                    size,
+                    PIPE_MASTER,
+                )
             };
             signed(sent as i64)
         }
         OP_LOCK_WORKER => {
-            let lock = ctx.worker().lock;
+            let lock = ctx.worker().lock();
             // SAFETY: the source worker's live mutex.
             signed(unsafe { swoole_rs_locks::swr_v1_locks_lock(lock, MUTEX, libc::LOCK_EX, -1, 0) })
         }
         OP_UNLOCK_WORKER => {
-            let lock = ctx.worker().lock;
+            let lock = ctx.worker().lock();
             // SAFETY: the source worker's live mutex, which this process holds.
             signed(unsafe { swoole_rs_locks::swr_v1_locks_unlock(lock, MUTEX) })
         }

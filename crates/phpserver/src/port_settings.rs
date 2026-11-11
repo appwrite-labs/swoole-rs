@@ -899,12 +899,12 @@ mod tests {
         );
     }
 
-    extern "C" fn warning(_function: *const c_char, _message: *const c_char) {}
+    fn warning(_function: &CStr, _message: &str) {}
 
     #[test]
     fn tls_options_in_order_and_converted() {
         // tls_settings: each option's order and conversion.
-        let prepared = tls::swr_v1_tls_owner_new(warning);
+        let prepared = tls::owner_new(warning);
         let owner = prepared.owner;
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").as_bytes();
         let table = Table::default()
@@ -973,7 +973,7 @@ mod tests {
 
     #[test]
     fn a_missing_certificate_is_fatal() {
-        let prepared = tls::swr_v1_tls_owner_new(warning);
+        let prepared = tls::owner_new(warning);
         for key in ["ssl_cert_file", "ssl_key_file", "ssl_client_cert_file"] {
             let table = Table::default().with(key, text(b"/nonexistent/x.pem\0tail"));
             assert!(tls(&table, prepared.owner, false).is_err());

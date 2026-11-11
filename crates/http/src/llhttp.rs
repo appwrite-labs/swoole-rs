@@ -175,7 +175,6 @@ enum State {
     Method,
     ReqFirstSpace,
     ReqSpaces,
-    UrlEntryNormal,
     UrlEntryConnect,
     UrlStart,
     UrlSchema,
@@ -231,7 +230,6 @@ enum State {
     TeToken,
     TeTokenOws,
     HeadersAlmostDone,
-    HeadersComplete,
     AfterHeadersComplete,
     Body,
     Eof,
@@ -264,7 +262,6 @@ impl State {
         matches!(
             self,
             Self::FieldComplete
-                | Self::HeadersComplete
                 | Self::AfterHeadersComplete
                 | Self::MessageComplete
                 | Self::UpgradeCheck
@@ -714,6 +711,16 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         Ok(state)
     }
 
+    /// Go on to `next`, a state that reads a byte, with that byte here when the
+    /// input has it: the run loop's step without its dispatch, which costs more
+    /// than most states' work on the usual request.
+    fn go(&mut self, next: State, step: impl FnOnce(&mut Self, u8) -> Next) -> Next {
+        match self.data.get(self.p) {
+            Some(&c) => step(self, c),
+            None => Ok(next),
+        }
+    }
+
     /// Stop with `error`, resuming at `resume` if it is a pause.
     fn stop(&mut self, error: i32, reason: &'static &'static str, resume: State) -> Next {
         let p = self.p;
@@ -825,7 +832,147 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 15,
                 &"Transfer-Encoding can't be present with Content-Length",
             ),
-            _ => Ok(State::DiscardWs),
+            _ => self.go(State::DiscardWs, Self::discard_ws),
+        }
+    }
+
+    fn discard_ws(&mut self, c: u8) -> Next {
+        match c {
+            9 | b' ' => {
+                self.p += 1;
+                match self.data.get(self.p) {
+                    Some(&c) if !matches!(c, 9 | 10 | 13 | b' ') => self.value_start(c),
+                    _ => Ok(State::DiscardWs),
+                }
+            }
+            10 => self.eat_fail(10, &"Invalid header value char"),
+            13 => self.eat(State::DiscardWsAlmostDone),
+            _ => self.value_start(c),
+        }
+    }
+
+    /// A header line's first byte, or the head's end.
+    fn field_start(&mut self, c: u8) -> Next {
+        match c {
+            10 => self.eat_fail(10, &"Invalid header field char"),
+            13 if self.data.get(self.p + 1) == Some(&10) => {
+                self.p += 1;
+                self.head_end()
+            }
+            13 => self.eat(State::HeadersAlmostDone),
+            b':' => self.fail(10, &"Invalid header token"),
+            _ => {
+                self.open(Span::Field);
+                self.parser().index = 0;
+                self.header_field(c)
+            }
+        }
+    }
+
+    /// The LF that ends the head.
+    fn head_end(&mut self) -> Next {
+        self.p += 1;
+        if self.parser().flags & F_TRAILING != 0 {
+            Ok(State::MessageComplete)
+        } else {
+            self.headers_complete()
+        }
+    }
+
+    /// The head's first header line, after the start line.
+    fn headers_start(&mut self, c: u8) -> Next {
+        if c == b' ' {
+            return self.eat_fail(30, &"Unexpected space after start line");
+        }
+        self.field_start(c)
+    }
+
+    /// Past the space after the method, the URL's first byte if it is here.
+    fn req_space(&mut self) -> Next {
+        self.p += 1;
+        match self.data.get(self.p) {
+            Some(&c) if c != b' ' => self.url_entry(c),
+            _ => Ok(State::ReqSpaces),
+        }
+    }
+
+    /// The URL's first byte: an origin-form `/` or `*` goes straight to its path.
+    fn url_entry(&mut self, c: u8) -> Next {
+        if self.parser().method == CONNECT {
+            return Ok(State::UrlEntryConnect);
+        }
+        if url_ws(c) {
+            return self.eat_fail(7, &"Invalid characters in url");
+        }
+        self.open(Span::Url);
+        if matches!(c, b'*' | b'/') {
+            return self.eat(State::UrlPath);
+        }
+        Ok(State::UrlStart)
+    }
+
+    /// The space after the URL: its span's end, then the protocol.
+    fn url_end(&mut self) -> Next {
+        self.close(false, State::UrlSkipToHttp)?;
+        self.p += 1;
+        self.go(State::UrlToHttp, Self::url_to_http)
+    }
+
+    fn url_to_http(&mut self, c: u8) -> Next {
+        if url_ws(c) {
+            return self.eat_fail(7, &"Invalid characters in url");
+        }
+        if c == b' ' {
+            return self.eat(State::ReqHttpStart);
+        }
+        self.protocol(c)
+    }
+
+    /// The `/` after the protocol, and the version with it when `/D.D` is here.
+    fn after_protocol(&mut self, c: u8) -> Next {
+        if c != b'/' {
+            return self.fail(8, &"Expected HTTP/, RTSP/ or ICE/");
+        }
+        if let Some(&[_, major, b'.', minor]) = self.data.get(self.p..self.p + 4)
+            && let Some(major) = digit(major)
+        {
+            self.parser().http_major = major;
+            self.p += 3;
+            return self.http_minor(minor);
+        }
+        self.eat(State::HttpMajor)
+    }
+
+    /// The CR after a request's version, and the LF with it.
+    fn req_http_complete(&mut self, c: u8) -> Next {
+        match c {
+            10 => self.eat_fail(9, &"Expected CRLF after version"),
+            13 if self.data.get(self.p + 1) == Some(&10) => {
+                self.p += 2;
+                self.go(State::HeadersStart, Self::headers_start)
+            }
+            13 => self.eat(State::ReqHttpCompleteCrlf),
+            _ => self.fail(9, &"Expected CRLF after version"),
+        }
+    }
+
+    /// A header value's bytes, up to and past its CRLF when that is here. It
+    /// doesn't go on to the next line, whose value would call it again.
+    fn header_value(&mut self, c: u8) -> Next {
+        if value_char(c) {
+            self.skip(State::HeaderValue, value_char)?;
+        }
+        // The usual end: CR LF and the next line's first byte, all here, as
+        // `ValueOtherwise`, `ValueAlmostDone` and `ValueLws` take them.
+        match self.data.get(self.p..).unwrap_or_default() {
+            [] => Ok(State::HeaderValue),
+            [b'\r', b'\n', next, ..] if !matches!(next, 9 | b' ') => {
+                self.close(true, State::ValueAlmostDone)?;
+                self.p += 1;
+                self.parser().header_flags();
+                Ok(State::HeaderFieldStart)
+            }
+            _ => Ok(State::ValueOtherwise),
         }
     }
 
@@ -848,7 +995,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             }
             _ => return self.fail(17, &"User callback error"),
         }
-        Ok(State::AfterHeadersComplete)
+        self.after_headers_complete()
     }
 
     fn after_headers_complete(&mut self) -> Next {
@@ -873,7 +1020,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             }
             5 => self.fail(15, &"Request has invalid `Transfer-Encoding`"),
             _ => match self.cb.on_message_complete() {
-                0 => Ok(State::AfterMessageComplete),
+                0 => Ok(self.after_message_complete()),
                 HPE_PAUSED => self.stop(
                     HPE_PAUSED,
                     &"on_message_complete pause",
@@ -910,7 +1057,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     }
 
     /// The header value's first byte, by the header it belongs to.
-    fn value_start(&mut self) -> Next {
+    fn value_start(&mut self, c: u8) -> Next {
         self.open(Span::Value);
         let parser = self.parser();
         match parser.header_state {
@@ -927,9 +1074,9 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             4 => {
                 parser.flags |= F_UPGRADE;
                 parser.header_state = 0;
-                Ok(State::HeaderValue)
+                self.header_value(c)
             }
-            _ => Ok(State::HeaderValue),
+            _ => self.header_value(c),
         }
     }
 
@@ -943,7 +1090,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 if let Some(method) = whole_word(&METHODS, &METHOD_STARTS, name, false) {
                     self.parser().method = method;
                     self.p += end;
-                    return Ok(State::ReqFirstSpace);
+                    return self.req_space();
                 }
             }
         }
@@ -998,17 +1145,23 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         };
         let parser = self.parser();
         let (kind, method) = (parser.kind, parser.method);
-        if kind != REQUEST {
-            return Ok(State::AfterProtocol);
+        let valid = kind != REQUEST
+            || match protocol {
+                0 => method <= PRI || method == 46,
+                1 => method == 33,
+                _ => matches!(method, 1 | 3 | 6 | 35..=45),
+            };
+        if !valid {
+            return self.fail(
+                8,
+                match protocol {
+                    0 => &"Invalid method for HTTP/x.x request",
+                    1 => &"Expected SOURCE method for ICE/x.x request",
+                    _ => &"Invalid method for RTSP/x.x request",
+                },
+            );
         }
-        match protocol {
-            0 if method <= PRI || method == 46 => Ok(State::AfterProtocol),
-            0 => self.fail(8, &"Invalid method for HTTP/x.x request"),
-            1 if method == 33 => Ok(State::AfterProtocol),
-            1 => self.fail(8, &"Expected SOURCE method for ICE/x.x request"),
-            _ if matches!(method, 1 | 3 | 6 | 35..=45) => Ok(State::AfterProtocol),
-            _ => self.fail(8, &"Invalid method for RTSP/x.x request"),
-        }
+        self.go(State::AfterProtocol, Self::after_protocol)
     }
 
     /// A tracked header name's next byte, or the general token rules; the whole
@@ -1121,7 +1274,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         } else if parser.method == PRI {
             Ok(State::PriUpgrade)
         } else {
-            Ok(State::ReqHttpComplete)
+            self.go(State::ReqHttpComplete, Self::req_http_complete)
         }
     }
 
@@ -1156,16 +1309,16 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 parser.finish = 2;
                 parser.index = 0;
                 parser.word = 0;
-                Ok(if parser.kind == RESPONSE {
-                    S::Protocol
+                if parser.kind == RESPONSE {
+                    self.protocol(c)
                 } else {
-                    S::Method
-                })
+                    self.method(c)
+                }
             }
             S::Method => self.method(c),
             S::ReqFirstSpace => {
                 if c == b' ' {
-                    return self.eat(S::ReqSpaces);
+                    return self.req_space();
                 }
                 self.fail(6, &"Expected space after method")
             }
@@ -1173,22 +1326,14 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 if c == b' ' {
                     return self.eat(S::ReqSpaces);
                 }
-                Ok(if self.parser().method == CONNECT {
-                    S::UrlEntryConnect
-                } else {
-                    S::UrlEntryNormal
-                })
+                self.url_entry(c)
             }
-            S::UrlEntryNormal | S::UrlEntryConnect => {
+            S::UrlEntryConnect => {
                 if url_ws(c) {
                     return self.eat_fail(7, &"Invalid characters in url");
                 }
                 self.open(Span::Url);
-                Ok(if state == S::UrlEntryNormal {
-                    S::UrlStart
-                } else {
-                    S::UrlServer
-                })
+                Ok(S::UrlServer)
             }
             S::UrlStart | S::UrlSchema => match c {
                 9 | 10 | 12 | 13 | b' ' => self.eat_fail(7, &"Invalid characters in url"),
@@ -1221,14 +1366,21 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             },
             S::UrlPath => match c {
                 9 | 12 => self.eat_fail(7, &"Invalid characters in url"),
-                _ if path_char(c) => self.skip(S::UrlPath, path_char),
+                _ if path_char(c) => {
+                    self.skip(S::UrlPath, path_char)?;
+                    if self.data.get(self.p) == Some(&b' ') {
+                        return self.url_end();
+                    }
+                    Ok(S::UrlPath)
+                }
+                b' ' => self.url_end(),
                 _ => Ok(S::UrlQueryOrFragment),
             },
             S::UrlQueryOrFragment | S::UrlQuery | S::UrlFragment => match c {
                 9 | 12 => self.eat_fail(7, &"Invalid characters in url"),
                 10 => self.close(false, S::UrlSkipToHttp09),
                 13 => self.close(false, S::UrlSkipLfToHttp09),
-                b' ' => self.close(false, S::UrlSkipToHttp),
+                b' ' => self.url_end(),
                 b'#' if state != S::UrlFragment => self.eat(S::UrlFragment),
                 b'?' if state == S::UrlQueryOrFragment => self.eat(S::UrlQuery),
                 0x21..=0x7e if state == S::UrlQuery => self.skip(S::UrlQuery, query_char),
@@ -1267,12 +1419,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 parser.http_minor = 9;
                 Ok(S::HeadersStart)
             }
-            S::UrlToHttp => {
-                if url_ws(c) {
-                    return self.eat_fail(7, &"Invalid characters in url");
-                }
-                Ok(S::ReqHttpStart)
-            }
+            S::UrlToHttp => self.url_to_http(c),
             S::ReqHttpStart => {
                 if c == b' ' {
                     return self.eat(S::ReqHttpStart);
@@ -1280,12 +1427,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 Ok(S::Protocol)
             }
             S::Protocol => self.protocol(c),
-            S::AfterProtocol => {
-                if c == b'/' {
-                    return self.eat(S::HttpMajor);
-                }
-                self.fail(8, &"Expected HTTP/, RTSP/ or ICE/")
-            }
+            S::AfterProtocol => self.after_protocol(c),
             S::HttpMajor => {
                 let Some(major) = digit(c) else {
                     return self.fail(9, &"Invalid major version");
@@ -1300,14 +1442,11 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 self.fail(9, &"Expected dot")
             }
             S::HttpMinor => self.http_minor(c),
-            S::ReqHttpComplete => match c {
-                10 => self.eat_fail(9, &"Expected CRLF after version"),
-                13 => self.eat(S::ReqHttpCompleteCrlf),
-                _ => self.fail(9, &"Expected CRLF after version"),
-            },
+            S::ReqHttpComplete => self.req_http_complete(c),
             S::ReqHttpCompleteCrlf => {
                 if c == 10 {
-                    return self.eat(S::HeadersStart);
+                    self.p += 1;
+                    return self.go(S::HeadersStart, Self::headers_start);
                 }
                 self.fail(2, &"Expected CRLF after version")
             }
@@ -1352,23 +1491,8 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 }
                 self.fail(2, &"Expected LF after CR")
             }
-            S::HeadersStart => {
-                if c == b' ' {
-                    return self.eat_fail(30, &"Unexpected space after start line");
-                }
-                Ok(S::HeaderFieldStart)
-            }
-            S::HeaderFieldStart => match c {
-                10 => self.eat_fail(10, &"Invalid header field char"),
-                13 => self.eat(S::HeadersAlmostDone),
-                b':' => self.fail(10, &"Invalid header token"),
-                _ => {
-                    self.open(Span::Field);
-                    let parser = self.parser();
-                    parser.index = 0;
-                    Ok(S::HeaderField)
-                }
-            },
+            S::HeadersStart => self.headers_start(c),
+            S::HeaderFieldStart => self.field_start(c),
             S::HeaderField => self.header_field(c),
             S::HeaderFieldColon => match c {
                 b' ' => self.close_fail(true, 10, &"Invalid header field char"),
@@ -1383,12 +1507,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 b':' => self.close(true, S::FieldComplete),
                 _ => self.fail(10, &"Invalid header token"),
             },
-            S::DiscardWs => match c {
-                9 | b' ' => self.eat(S::DiscardWs),
-                10 => self.eat_fail(10, &"Invalid header value char"),
-                13 => self.eat(S::DiscardWsAlmostDone),
-                _ => self.value_start(),
-            },
+            S::DiscardWs => self.discard_ws(c),
             S::DiscardWsAlmostDone => {
                 if c == 10 {
                     return self.eat(S::DiscardLws);
@@ -1406,23 +1525,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 self.open(Span::Value);
                 self.close(false, S::HeaderFieldStart)
             }
-            S::HeaderValue => {
-                if value_char(c) {
-                    self.skip(S::HeaderValue, value_char)?;
-                }
-                // The usual end: CR LF and the next line's first byte, all here, as
-                // `ValueOtherwise`, `ValueAlmostDone` and `ValueLws` take them.
-                match self.data.get(self.p..).unwrap_or_default() {
-                    [] => Ok(S::HeaderValue),
-                    [b'\r', b'\n', next, ..] if !matches!(next, 9 | b' ') => {
-                        self.close(true, S::ValueAlmostDone)?;
-                        self.p += 1;
-                        self.parser().header_flags();
-                        Ok(S::HeaderFieldStart)
-                    }
-                    _ => Ok(S::ValueOtherwise),
-                }
-            }
+            S::HeaderValue => self.header_value(c),
             S::ValueOtherwise => match c {
                 10 => self.close_fail(false, 25, &"Missing expected CR after header value"),
                 13 => self.close(true, S::ValueAlmostDone),
@@ -1439,7 +1542,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     return self.fail(10, &"Unexpected whitespace after header value");
                 }
                 self.parser().header_flags();
-                Ok(S::HeaderFieldStart)
+                self.field_start(c)
             }
             S::Connection => match c {
                 9 | b' ' => self.eat(S::Connection),
@@ -1510,12 +1613,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 if c != 10 {
                     return self.fail(2, &"Expected LF after headers");
                 }
-                self.p += 1;
-                Ok(if self.parser().flags & F_TRAILING != 0 {
-                    S::MessageComplete
-                } else {
-                    S::HeadersComplete
-                })
+                self.head_end()
             }
             S::Eof => {
                 self.open_body();
@@ -1610,7 +1708,6 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 self.eat(S::ChunkSizeDigit)
             }
             S::FieldComplete => self.field_complete(),
-            S::HeadersComplete => self.headers_complete(),
             S::AfterHeadersComplete => self.after_headers_complete(),
             S::MessageComplete => self.message_complete(),
             S::UpgradeCheck => Ok(if self.parser().upgrade == 1 {

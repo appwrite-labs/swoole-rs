@@ -340,7 +340,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_DISPATCH => swoole_rs_process::signal::swoole_signal_dispatch(),
         OP_RELOAD_ADD_EVENT_WORKERS | OP_RELOAD_ADD_TASK_WORKERS => {
             let (workers, count) = if op == OP_RELOAD_ADD_EVENT_WORKERS {
-                (config.workers.cast(), config.worker_num)
+                (config.workers.as_ptr().cast(), config.worker_num)
             } else {
                 (ctx.task_pool().workers, config.task_worker_num)
             };
