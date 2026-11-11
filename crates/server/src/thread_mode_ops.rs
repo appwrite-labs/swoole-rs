@@ -21,7 +21,7 @@ use swoole_rs_process::workers::ops::{
     OP_SET_MASTER_THREAD_ID, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_THREAD_ENTER,
     OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_THREAD_SUPPORTED,
     OP_WORKER_THREAD_START, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_THREAD_BODY,
-    RUN_THREAD_MAIN,
+    RUN_THREAD_MAIN, RUN_THREAD_TERMINATE_MANAGER,
 };
 use swoole_rs_process::workers::ops::{
     OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM, OP_CALLOC_CONNECTIONS,
@@ -130,6 +130,17 @@ pub(crate) unsafe fn enter(
     _extra: *mut c_void,
     arg: u64,
 ) -> i64 {
+    over(serv, other, operation).run(operation, arg)
+}
+
+/// A thread-mode `Server` method over the live server alone, as [`enter`] runs it.
+pub(crate) fn run_server(serv: view::Server<'_>, operation: u32) -> i64 {
+    over(serv.raw(), null_mut(), operation).run(operation, 0)
+}
+
+/// The context of `operation` over `serv` and a `ThreadFactory` method's own
+/// factory, `other`, or else the server's in thread mode.
+fn over(serv: *mut c_void, other: *mut c_void, operation: u32) -> Context {
     let mut ctx = Context {
         serv,
         factory: null_mut(),
@@ -141,7 +152,7 @@ pub(crate) unsafe fn enter(
         _ if u64::from(ctx.config().mode_) == crate::MODE_THREAD => ctx.config().factory_,
         _ => null_mut(),
     };
-    ctx.run(operation, arg)
+    ctx
 }
 
 /// Answers each thread-mode op over the context.
@@ -413,8 +424,9 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_TERMINATE_MANAGER_THREAD => {
-            // SAFETY: the context's live ThreadFactory.
-            unsafe { entry::terminate_manager_thread(ctx.factory) };
+            // `ThreadFactory::terminate_manager_thread()` over the context's factory.
+            over(serv, ctx.factory, RUN_THREAD_TERMINATE_MANAGER)
+                .run(RUN_THREAD_TERMINATE_MANAGER, 0);
             0
         }
         OP_ON_USER_WORKER_START => {
