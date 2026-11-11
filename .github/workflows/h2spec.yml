@@ -21,16 +21,21 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/thirdparty
+      - name: Clear cached builds
+        run: rm -rf target/ext target/thirdparty
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
-      - run: cargo fetch --locked
-      - run: python3 tools/build_ext.py
-      - run: >
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py
+      - name: Run h2spec
+        run: >
           python3 tests/modules/http2/h2spec.py --engine upstream=target/upstream/src/modules/swoole.so
           --engine cargo=target/ext/swoole.so --output target/reports/h2spec.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

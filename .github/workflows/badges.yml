@@ -38,7 +38,8 @@ jobs:
       # Not on a push: a push changes none of the run results below, and looking them up costs
       # about 40 API calls from the hourly limit every job shares. The badges that come from
       # the checkout are still rewritten.
-      - id: gate
+      - name: Find gate run
+        id: gate
         if: github.event_name != 'push'
         run: |
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
@@ -54,7 +55,8 @@ jobs:
       # The two newest completed merge-tier runs on main whose callgrind job uploaded a result
       # (it uploads one when the limits fail too, which is when the badge matters most):
       # cg/ is the newest, for the badge, and cg-previous/ the one before it.
-      - id: callgrind
+      - name: Find callgrind runs
+        id: callgrind
         if: github.event_name != 'push'
         run: |
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
@@ -70,7 +72,8 @@ jobs:
           done
       # When both runs beat a record once rounded up, file one ready ticket for an executor
       # (GITHUB_TOKEN may not open pull requests here, and one it opened would start no PR tier).
-      - if: hashFiles('cg-previous/callgrind.json') != ''
+      - name: File callgrind ratchet
+        if: hashFiles('cg-previous/callgrind.json') != ''
         run: |
           lowered=$(python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits --ratchet cg/callgrind.json cg-previous/callgrind.json)
           [ -n "$lowered" ] || exit 0
@@ -88,19 +91,23 @@ jobs:
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/1894/sub_issues" -F sub_issue_id="$id"
           fi
       # The newest completed Coverage run on main whose report job uploaded a summary.
-      - if: github.event_name != 'push'
+      - name: Find coverage run
+        if: github.event_name != 'push'
         run: |
           for run in $(gh run list --workflow coverage.yml --branch main --status completed --limit 5 --json databaseId -q '.[].databaseId'); do
             gh run download "$run" -n coverage -D coverage 2>/dev/null && [ -f coverage/summary.json ] && break
             rm -rf coverage
           done
-      - run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
-      - run: >
+      - name: Check out badges branch
+        run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
+      - name: Write badges
+        run: >
           python3 tools/badges.py --output out
           ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json --commit {0}', steps.gate.outputs.commit) || '' }}
           ${{ steps.callgrind.outputs.commit && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.callgrind.outputs.commit) || '' }}
           ${{ hashFiles('coverage/summary.json') != '' && '--coverage coverage' || '' }}
-      - working-directory: out
+      - name: Push badges
+        working-directory: out
         run: |
           git add -A
           git diff --cached --quiet && exit 0

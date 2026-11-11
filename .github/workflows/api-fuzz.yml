@@ -34,24 +34,30 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/upstream target/upstream-builds target/thirdparty
+      - name: Clear cached builds
+        run: rm -rf target/upstream target/upstream-builds target/thirdparty
       - id: upstream
         uses: actions/cache/restore@v4
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: steps.upstream.outputs.cache-hit != 'true'
+      - name: Build upstream
+        if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - run: cargo fetch --locked
-      - run: python3 tools/build_ext.py
-      - id: seed
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py
+      - name: Pick seed
+        id: seed
         env:
           SEED: ${{ inputs.seed }}
         run: |
           seed=${SEED:-$(date -u +%Y%m%d)}
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
           echo "API fuzz seed: $seed (program K reproduces with \`fuzz.py --seed $seed --print K\`)" | tee -a "$GITHUB_STEP_SUMMARY"
-      - id: fuzz
+      - name: Fuzz upstream against cargo
+        id: fuzz
         run: >
           python3 tests/differential/fuzz.py
           --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
@@ -65,7 +71,8 @@ jobs:
           if-no-files-found: ignore
       # fuzz.py exits 1 on a divergence or a failed case. Divergences are bugs; flaky
       # findings (a rerun alone did not reproduce them) are listed but never filed alone.
-      - if: always() && steps.fuzz.outcome == 'failure'
+      - name: File divergences
+        if: always() && steps.fuzz.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

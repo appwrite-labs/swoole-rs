@@ -23,7 +23,8 @@ jobs:
       RUN_URL: ${{ github.event.workflow_run.html_url }}
       SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
-      - run: |
+      - name: Report failure
+        run: |
           title="Scheduled $WORKFLOW run fails"
           jobs=$(gh run view "$RUN_ID" --json jobs -q '.jobs[] | select(.conclusion == "failure") | "- [\(.name)](\(.url))"')
           body=$(printf 'The scheduled run %s failed at %s.\n\nFailed jobs:\n%s\n' "$RUN_URL" "$SHA" "$jobs")

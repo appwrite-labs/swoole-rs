@@ -18,6 +18,7 @@ defaults:
 
 jobs:
   build:
+    name: Build PHP ${{ matrix.php }}
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     strategy:
@@ -35,7 +36,8 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/upstream target/thirdparty
+      - name: Clear cached builds
+        run: rm -rf target/ext target/upstream target/thirdparty
       # Restored only: the pinned reference is rebuilt for this PHP below, never saved.
       - uses: actions/cache/restore@v4
         with:
@@ -45,9 +47,12 @@ jobs:
         with:
           path: target/php
           key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
-      - run: .devcontainer/php.sh target/php
-      - run: cargo fetch --locked
-      - run: |
+      - name: Build PHP
+        run: .devcontainer/php.sh target/php
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build engines
+        run: |
           php="--php-config $PWD/target/php/bin/php-config --php-sockets"
           python3 tools/build_upstream.py $php --phpize $PWD/target/php/bin/phpize | tee upstream.log
           python3 tools/build_ext.py $php
@@ -62,6 +67,7 @@ jobs:
 
   # A version whose build failed fails its shards too; the others still run.
   phpt:
+    name: PHPT PHP ${{ matrix.php }} ${{ matrix.shard }}/4
     needs: build
     if: ${{ !cancelled() }}
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
@@ -93,7 +99,8 @@ jobs:
           path: target/phpt
       # Exit 1 means some tests failed, which the gate judges. Re-runs as phpt-gate does,
       # unless more than 20 are flagged: that is a broad breakage, not flakiness.
-      - run: |
+      - name: Run and gate PHPTs
+        run: |
           python3 corpus/upstream/inventory.py --shard ${{ matrix.shard }}/4 --output target/phpt/manifest.json
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php/bin/php"
           mkdir -p target/phpt/results
