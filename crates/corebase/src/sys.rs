@@ -22,21 +22,33 @@ mod sealed {
     impl Sealed for u8 {}
     impl Sealed for std::mem::MaybeUninit<u8> {}
 
+    /// Only the types `Zeroed` documents.
+    pub trait Zero {}
+
     /// Only the types `Pod` documents.
-    pub trait Plain {}
+    pub trait Plain: Zero {}
 }
 
+/// A C struct all-zero bytes initialize: its fields are integers, byte arrays, raw
+/// pointers and nullable function pointers. Sealed: only the types listed here.
+pub trait Zeroed: sealed::Zero {}
+impl<T: sealed::Zero> Zeroed for T {}
+
 /// C plain data: integers, byte arrays, raw pointers, and structs and unions of
-/// them. Any bytes are a value of one, all-zero included, so a caller may zero it
-/// or hand it to the kernel to fill. Sealed: only the types listed here.
+/// them, with no function pointer. Any bytes are a value of one, so a caller may
+/// hand it to the kernel to fill. Sealed: only the types listed here.
 pub trait Pod: sealed::Plain + Copy {}
 impl<T: sealed::Plain + Copy> Pod for T {}
 
 macro_rules! plain {
     ($($(#[$cfg:meta])? $type:ty),* $(,)?) => {
+        $($(#[$cfg])? impl sealed::Zero for $type {})*
         $($(#[$cfg])? impl sealed::Plain for $type {})*
     };
 }
+// Linux's sigaction holds `sa_restorer`, a nullable function pointer: zero is a
+// value of it, arbitrary bytes are not one to call.
+impl sealed::Zero for libc::sigaction {}
 plain!(
     u8,
     i32,
@@ -58,7 +70,6 @@ plain!(
     libc::itimerval,
     libc::linger,
     libc::sched_param,
-    libc::sigaction,
     libc::siginfo_t,
     // Apple's sigset_t is a u32.
     #[cfg(not(target_vendor = "apple"))]
@@ -90,12 +101,13 @@ plain!(
     #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
     libc::kevent,
 );
+impl<T: sealed::Zero, const N: usize> sealed::Zero for [T; N] {}
 impl<T: sealed::Plain, const N: usize> sealed::Plain for [T; N] {}
 
 /// An all-zero `T`, as C's `= {}`.
 #[must_use]
-pub const fn zeroed<T: Pod>() -> T {
-    // SAFETY: zero bytes are a value of every `Pod`.
+pub const fn zeroed<T: Zeroed>() -> T {
+    // SAFETY: zero bytes are a value of every `Zeroed`.
     unsafe { std::mem::zeroed() }
 }
 
