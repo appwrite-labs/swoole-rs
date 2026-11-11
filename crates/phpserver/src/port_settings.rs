@@ -5,7 +5,7 @@
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
-use swoole_rs_ports::lifecycle_native::{context_dup, sni_add};
+use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
@@ -451,7 +451,7 @@ impl Source for Zend<'_> {
 
     fn ssl_init(&self) -> bool {
         // SAFETY: an SSL port.
-        unsafe { swoole_rs_ports::methods::ssl_init(self.port) }
+        unsafe { swoole_rs_ports::lifecycle::ssl_init(self.port) }
     }
 }
 

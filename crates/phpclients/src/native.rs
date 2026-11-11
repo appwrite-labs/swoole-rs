@@ -13,6 +13,7 @@ use swoole_rs_clients::{
     client::{Call, Client, ClientRecord, Op, swr_v1_clients_run},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_hooks::co_socket::Co as Handle;
 use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
@@ -101,21 +102,28 @@ pub(crate) fn ssl_supports(option: c_int) -> bool {
     }
 }
 
-/// A live coroutine socket (`SocketImpl *`). Its constructor is the only
-/// unsafe point: a socket stays live while the object or client that owns it
-/// is, and a method holds that owner for its whole call.
+/// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
+/// Its constructor is the only unsafe point: a socket stays live while the
+/// object or client that owns it is, and a method holds that owner for its
+/// whole call.
 #[derive(Clone, Copy)]
-pub struct Co(Socket);
+pub struct Co(Handle);
 
 impl Co {
     /// # Safety
     /// `socket` is a live coroutine socket that outlives every use of the handle.
     pub const unsafe fn new(socket: Socket) -> Self {
-        Self(socket)
+        // SAFETY: per the caller; the native socket is its record.
+        Self(unsafe { Handle::of(socket) })
     }
 
     #[must_use]
     pub fn as_ptr(self) -> Socket {
+        self.0.this()
+    }
+
+    /// crates/hooks' handle to the same record.
+    pub(crate) fn handle(self) -> Handle {
         self.0
     }
 
@@ -124,7 +132,7 @@ impl Co {
     pub(crate) fn record<'a>(self) -> &'a mut co::CoSocket {
         // SAFETY: a live socket, as the handle promises; callers drop the
         // borrow before any effect that may touch the record.
-        unsafe { co::record(self.0) }
+        unsafe { co::record(self.as_ptr()) }
     }
 
     /// The `network::Socket` (`get_socket()`), while the socket is open.
@@ -143,12 +151,12 @@ impl Co {
     }
 
     pub(crate) fn fd(self) -> c_int {
-        self.record().sock_fd
+        self.0.sock_fd()
     }
 
     /// `move_fd()`: the socket forgets its fd, which stays open.
     pub(crate) fn move_fd(self) {
-        self.record().sock_fd = -1;
+        self.0.set_sock_fd(-1);
         if let Some(net) = self.net() {
             net.edit(|record| record.fd = -1);
         }
@@ -159,120 +167,112 @@ impl Co {
     /// A close hook bailed out.
     pub(crate) fn close_trapped(self) -> Result<bool, Bailout> {
         // SAFETY: a live socket.
-        unsafe { co::close_trapped(self.0) }
+        unsafe { co::close_trapped(self.as_ptr()) }
     }
 
     /// `close()`; the socket may be gone after it returns true.
     pub(crate) fn close(self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::close(self.0) }
+        self.0.close()
     }
 
     pub(crate) fn is_closed(self) -> bool {
-        self.record().is_closed()
+        self.0.is_closed()
     }
 
     /// `errCode` and `errMsg`.
     pub(crate) fn error<'a>(self) -> (c_int, &'a CStr) {
-        let r = self.record();
-        let message = if r.err_msg.is_null() {
+        let message = self.0.err_msg();
+        let message = if message.is_null() {
             c""
         } else {
             // SAFETY: errMsg is a NUL-terminated string the socket keeps.
-            unsafe { CStr::from_ptr(r.err_msg) }
+            unsafe { CStr::from_ptr(message) }
         };
-        (r.err_code, message)
+        (self.0.err_code(), message)
     }
 
     /// `set_err(code)`: the code's message.
     pub(crate) fn set_err(self, code: c_int) {
-        // SAFETY: a live socket.
-        unsafe { co::set_err(self.0, code) };
+        self.0.set_err(code);
     }
 
     /// `set_err(code, message)`.
     pub(crate) fn set_error(self, code: c_int, message: &[u8]) {
-        // SAFETY: a live socket.
-        unsafe { co::set_error(self.0, code, message) };
+        if self.0.set_error(code, message) != 0 {
+            // std::bad_alloc, which upstream leaves uncaught.
+            std::process::abort();
+        }
     }
 
     /// `socket->errCode = code`, nothing else.
     pub(crate) fn set_err_code(self, code: c_int) {
-        self.record().err_code = code;
+        self.0.set_err_code(code);
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn bind(self, address: &[u8], port: i64) -> bool {
-        // SAFETY: a live socket and the address's bytes.
-        unsafe {
-            co::bind(
-                self.0,
-                address.as_ptr().cast(),
-                address.len(),
-                port as c_int,
-            )
-        }
+        self.0.bind(address, port as c_int)
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int backlog")]
     pub(crate) fn listen(self, backlog: i64) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::listen(self.0, backlog as c_int) }
+        self.0.listen(backlog as c_int)
+    }
+
+    /// `sw_callable_free(protocol.private_data_1)`, the `package_length_func` the socket
+    /// owns: upstream's ordering publishes null only after the callback's destruction
+    /// returns, which frees it even when it bails out.
+    /// # Errors
+    /// The callable's destructor bailed out; the bailout stays pending.
+    pub fn free_length_callable(self) -> Result<(), Bailout> {
+        // Copy the owned callback pointer without borrowing the protocol across PHP.
+        let callable = self.record().protocol.private_data_1;
+        if callable.is_null() {
+            return Ok(());
+        }
+        let freed = callable_free(callable);
+        self.record().protocol.private_data_1 = ptr::null_mut();
+        freed
     }
 
     /// `accept(timeout)`: the new connection, owned by the caller, or null. It
     /// copies the listener's length callable, so closing it leaves the listener's.
     #[must_use]
     pub fn accept(self, timeout: f64) -> Socket {
-        // SAFETY: a live socket.
-        let conn = unsafe { co::accept(self.0, timeout) };
+        let Some(conn) = self.0.accept(timeout) else {
+            return ptr::null_mut();
+        };
         let callable = self.record().protocol.private_data_1;
-        if !conn.is_null() && !callable.is_null() {
-            // SAFETY: the new connection, live and not yet shared.
-            let conn = unsafe { Self::new(conn) };
-            // SAFETY: the listener's live callable.
-            conn.record().protocol.private_data_1 =
+        if !callable.is_null() {
+            // SAFETY: the listener's live callable, copied for the new connection.
+            Self(conn).record().protocol.private_data_1 =
                 unsafe { swoole_rs_phpruntime::callable_dup(callable) };
         }
-        conn
+        conn.this()
     }
 
     pub(crate) fn port_required(self) -> bool {
-        self.record().kind <= SOCK_UDP6
+        self.0.kind() <= SOCK_UDP6
     }
 
     /// `connect(host, port)` under a connect timeout of `timeout`.
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn connect(self, host: &[u8], port: i64, timeout: f64) -> bool {
         let _timeout = self.timeout(timeout, TIMEOUT_CONNECT);
-        // SAFETY: a live socket and the host's bytes.
-        unsafe { co::connect(self.0, host.as_ptr().cast(), host.len(), port as c_int, 0) }
+        self.0.connect_host(host, port as c_int)
     }
 
-    /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port,
-    /// flags)` of the host up to its first NUL, as upstream reads it.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's int port and flags"
-    )]
-    pub(crate) fn connect_host(self, host: &[u8], port: i64, timeout: f64, flags: i64) -> bool {
+    /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port)` of
+    /// the host up to its first NUL, as upstream reads it.
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
+    pub(crate) fn connect_host(self, host: &[u8], port: i64, timeout: f64) -> bool {
         self.set_timeout(timeout, TIMEOUT_CONNECT);
         let host = host.split(|byte| *byte == 0).next().unwrap_or_default();
-        // SAFETY: a live socket and the host's bytes.
-        unsafe {
-            co::connect(
-                self.0,
-                host.as_ptr().cast(),
-                host.len(),
-                port as c_int,
-                flags as c_int,
-            )
-        }
+        self.0.connect_host(host, port as c_int)
     }
 
     pub(crate) fn check_liveness(self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::check_liveness(self.0) }
+        self.0.check_liveness()
     }
 
     #[expect(
@@ -281,66 +281,28 @@ impl Co {
         reason = "an event bit set"
     )]
     pub(crate) fn bound_cid(self, event: i64) -> i64 {
-        // SAFETY: a live socket.
-        unsafe { co::bound_cid(self.0, event as u32) }
+        self.0.bound_cid(event as u32)
     }
 
     /// A timeout of `kind` for the guard's life (`TimeoutSetter`).
     pub(crate) fn timeout(self, timeout: f64, kind: c_int) -> co::Timeout {
-        // SAFETY: a live socket, which outlives the guard in every caller.
-        unsafe { co::Timeout::set(self.0, timeout, kind) }
-    }
-
-    /// One [`Transfer`] of `length` bytes at `buffer` under `timeout`.
-    /// # Safety
-    /// `buffer` holds `length` bytes, writable unless the transfer sends.
-    pub(crate) unsafe fn transfer(
-        self,
-        op: Transfer,
-        buffer: *mut c_char,
-        length: size_t,
-        timeout: f64,
-    ) -> ssize_t {
-        use co::Io;
-        let io = match op {
-            Transfer::Peek => Io::Peek,
-            Transfer::Recv => Io::Recv,
-            Transfer::RecvAll => Io::RecvAll,
-            Transfer::Send => Io::Send,
-            Transfer::SendAll => Io::SendAll,
-            Transfer::RecvLine | Transfer::RecvWithBuffer => Io::Recv,
-        };
-        if matches!(op, Transfer::Peek) {
-            // SAFETY: per the caller.
-            return unsafe { co::io(self.0, io, buffer, length) };
-        }
-        let kind = if matches!(op, Transfer::Send | Transfer::SendAll) {
-            TIMEOUT_WRITE
-        } else {
-            TIMEOUT_READ
-        };
-        let _timeout = self.timeout(timeout, kind);
-        match op {
-            // SAFETY: per the caller.
-            Transfer::RecvLine => unsafe { co::recv_line(self.0, buffer, length) },
-            // SAFETY: per the caller.
-            Transfer::RecvWithBuffer => unsafe { co::recv_with_buffer(self.0, buffer, length) },
-            // SAFETY: per the caller.
-            _ => unsafe { co::io(self.0, io, buffer, length) },
-        }
+        co::Timeout::set(self.0, timeout, kind)
     }
 
     /// One send [`Transfer`] of `data` under `timeout`.
     pub(crate) fn send(self, op: Transfer, data: &[u8], timeout: f64) -> ssize_t {
-        // SAFETY: a send only reads the bytes.
-        unsafe { self.transfer(op, data.as_ptr().cast_mut().cast(), data.len(), timeout) }
+        let _timeout = self.timeout(timeout, TIMEOUT_WRITE);
+        if matches!(op, Transfer::SendAll) {
+            self.0.send_all(data)
+        } else {
+            self.0.send(data)
+        }
     }
 
     /// `recv_packet(timeout)`; with `clear_empty`, an empty packet clears the
     /// read buffer.
     pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> ssize_t {
-        // SAFETY: a live socket.
-        let retval = unsafe { co::recv_packet(self.0, timeout) };
+        let retval = swoole_rs_hooks::packet::recv_packet(self.0, timeout);
         if retval == 0
             && clear_empty
             && let Some(buffer) = self.read_buffer()
@@ -351,7 +313,7 @@ impl Co {
     }
 
     fn read_buffer<'a>(self) -> Option<&'a mut swoole_rs_buffer::string::CppString> {
-        let buffer = self.record().read_buffer;
+        let buffer = self.0.read_buffer();
         // SAFETY: the socket's live read buffer, or null before the first read.
         unsafe {
             buffer
@@ -391,30 +353,42 @@ impl Co {
         let _timeout = self.timeout(timeout, kind);
         let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
         // SAFETY: per the caller.
-        unsafe { co::vector(self.0, op, vectors.as_ptr(), count) }
+        unsafe { co::vector(self.as_ptr(), op, vectors.as_ptr(), count) }
     }
 
-    /// `sendfile(file, offset, length)`.
-    /// # Safety
-    /// `file` is NUL-terminated.
-    pub(crate) unsafe fn sendfile(self, file: *const c_char, offset: i64, length: i64) -> bool {
-        // SAFETY: per the caller.
-        unsafe { co::sendfile(self.0, file, offset, length) }
+    /// `sendfile(file, offset, length)` of the file named up to the first NUL,
+    /// as upstream reads it.
+    pub(crate) fn sendfile(self, file: &[u8], offset: i64, length: i64) -> bool {
+        let file = file.split(|byte| *byte == 0).next().unwrap_or_default();
+        let file = CString::new(file).unwrap_or_default();
+        // size_t's conversion of the length, as upstream's call.
+        let length = usize::try_from(length.cast_unsigned()).unwrap_or(usize::MAX);
+        self.0.sendfile(&file, offset, length)
     }
 
     /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
     pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
         let _timeout = self.timeout(timeout, TIMEOUT_READ);
-        let (at, room) = room(buffer);
-        // SAFETY: `room` writable bytes at `at`.
-        filled(buffer, unsafe { co::recvfrom(self.0, at, room) })
+        let received = self.0.recvfrom_peer(room(buffer));
+        filled(buffer, received)
     }
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
     pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
-        let (at, room) = room(buffer);
-        // SAFETY: `room` writable bytes at `at`.
-        filled(buffer, unsafe { self.transfer(op, at, room, timeout) })
+        let _timeout = (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TIMEOUT_READ));
+        let out = room(buffer);
+        let received = match op {
+            Transfer::Peek => self.0.peek(out),
+            Transfer::RecvAll => self.0.recv_all(out),
+            // SAFETY: `out`'s writable bytes.
+            Transfer::RecvLine => unsafe { self.0.recv_line(out.as_mut_ptr(), out.len()) },
+            Transfer::RecvWithBuffer => {
+                // SAFETY: `out`'s writable bytes.
+                unsafe { self.0.recv_with_buffer(out.as_mut_ptr(), out.len()) }
+            }
+            _ => self.0.recv(out),
+        };
+        filled(buffer, received)
     }
 
     /// `get_addr()` and `get_port()`.
@@ -425,36 +399,22 @@ impl Co {
 
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> ssize_t {
-        // SAFETY: a live socket and the slices' bytes.
-        unsafe {
-            co::sendto(
-                self.0,
-                address.as_ptr().cast(),
-                address.len(),
-                port as c_int,
-                data.as_ptr().cast(),
-                data.len(),
-            )
-        }
+        self.0.sendto(address, port as c_int, data)
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int how")]
     pub(crate) fn shutdown(self, how: i64) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::shutdown(self.0, how as c_int) }
+        self.0.shutdown(how as c_int)
     }
 
     pub(crate) fn getsockname(self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::getsockname(self.0) }
+        self.0.getsockname()
     }
 
     /// `getpeername(&sa)`: the peer's address text and port.
     pub(crate) fn getpeername(self) -> Option<(CString, c_int)> {
-        // SAFETY: an all-zero address is valid.
-        let mut sa: SocketAddress = unsafe { std::mem::zeroed() };
-        // SAFETY: a live socket.
-        if !unsafe { co::getpeername(self.0, &mut sa) } {
+        let mut sa = SocketAddress::default();
+        if !self.0.getpeername(&mut sa) {
             return None;
         }
         let (host, port) = address(&sa);
@@ -463,23 +423,20 @@ impl Co {
 
     #[expect(clippy::cast_sign_loss, reason = "an event bit set")]
     pub(crate) fn cancel(self, event: c_int) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::cancel(self.0, event as u32) }
+        self.0.cancel(event as u32)
     }
 
     pub(crate) fn ssl_handshake(self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::ssl_handshake(self.0) }
+        self.0.ssl_handshake()
     }
 
     /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
     pub(crate) fn set_flag(self, flag: c_int, value: bool) {
-        let r = self.record();
-        *match flag {
-            0 => &mut r.open_length_check,
-            1 => &mut r.open_eof_check,
-            _ => &mut r.http2,
-        } = value;
+        match flag {
+            0 => self.0.set_open_length_check(value),
+            1 => self.0.set_open_eof_check(value),
+            _ => self.0.set_http2(value),
+        }
     }
 
     /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
@@ -495,59 +452,50 @@ impl Co {
 
     /// `set_option(level, name, value)`, warning (a log line) on failure.
     pub(crate) fn set_option(self, level: c_int, name: c_int, value: c_int) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::set_option(self.0, level, name, value) }
+        self.0.set_int_option(level, name, value)
     }
 
     pub(crate) fn set_timeout(self, timeout: f64, kind: c_int) {
-        // SAFETY: a live socket.
-        unsafe { co::set_timeout(self.0, timeout, kind) };
+        self.0.set_timeout(timeout, kind);
     }
 
     pub(crate) fn get_timeout(self, kind: c_int) -> f64 {
-        // SAFETY: a live socket.
-        unsafe { co::get_timeout(self.0, kind) }
+        self.0.timeout(kind)
     }
 
     /// `set_http_proxy` or `set_socks5_proxy`.
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn proxy(self, http: bool, host: &[u8], port: i64, user: &[u8], password: &[u8]) {
-        // SAFETY: a live socket.
-        unsafe { co::proxy(self.0, http, host, port as c_int, user, password) };
+        self.0.set_proxy(http, host, port as c_int, user, password);
     }
 
     /// `enable_ssl_encrypt()`: false when TLS was already on.
     pub(crate) fn enable_ssl(self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::enable_ssl(self.0) }
+        self.0.enable_ssl()
     }
 
     /// The socket's `SSLContext` owner; null while TLS is off.
     pub(crate) fn ssl_context(self) -> *const c_void {
-        // SAFETY: a live socket.
-        unsafe { co::ssl_context(self.0) }
+        self.0.tls_owner().cast()
     }
 
     /// The socket's domain and type.
     pub(crate) fn family(self) -> (c_int, c_int) {
-        let r = self.record();
-        (r.sock_domain, r.sock_type)
+        (self.0.sock_domain(), self.0.sock_type())
     }
 
     /// `swSocketType`.
     pub(crate) fn kind(self) -> c_int {
-        self.record().kind
+        self.0.kind()
     }
 
     /// `open_length_check || open_eof_check`.
     pub(crate) fn packet_mode(self) -> bool {
-        let record = self.record();
-        record.open_length_check || record.open_eof_check
+        self.0.open_length_check() || self.0.open_eof_check()
     }
 
     pub(crate) fn is_connected(self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { co::is_connected(self.0) }
+        self.0.is_connected()
     }
 
     /// `get_ssl() != nullptr`.
@@ -562,8 +510,7 @@ impl Co {
     }
 
     pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
-        // SAFETY: a live socket with TLS, as the callers check.
-        unsafe { co::ssl_verify(self.0, allow_self_signed) }
+        self.0.ssl_verify(allow_self_signed)
     }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
@@ -575,7 +522,7 @@ impl Co {
         arg: *mut c_void,
     ) {
         // SAFETY: a live socket; per the caller.
-        unsafe { co::close_hook(self.0, hook, arg) };
+        unsafe { swoole_rs_hooks::socket_extra::set_close_hook(self.0, hook, arg) };
     }
 }
 
@@ -744,10 +691,12 @@ pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
 }
 
 /// The unwritten room of `buffer`.
-pub(crate) fn room(buffer: &mut ZBuf) -> (*mut c_char, size_t) {
+pub(crate) fn room(buffer: &mut ZBuf) -> &mut [u8] {
     let written = buffer.len();
+    let room = buffer.capacity() - written;
     let at = buffer.as_mut_ptr().wrapping_add(written);
-    (at.cast(), buffer.capacity() - written)
+    // SAFETY: `capacity()` bytes are writable from the start, so `room` from `at`.
+    unsafe { std::slice::from_raw_parts_mut(at, room) }
 }
 
 /// Count the `received` bytes a transfer wrote into `buffer`'s [`room`].

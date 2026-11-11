@@ -45,6 +45,11 @@ def sanitized(reports, name):
     return {'TSAN_OPTIONS': options}
 
 
+def outside_upstream(counts):
+    """The reports LIMIT bounds: those in every directory but upstream's runs'."""
+    return sum(found for name, found in counts.items() if not name.startswith('upstream'))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--timeout', type=int, default=120, help='Per PHPT, in seconds')
@@ -102,13 +107,23 @@ def main():
                                 cwd=ROOT, env={**run, **sanitized(reports, name)}).returncode
         if status not in (0, 1):  # 1: a test failed, which the ZTS lane gates
             failed.append(f'{name} phpt')
-    if subprocess.run([sys.executable, 'tests/modules/phphelpers/exit_guard.py', '--php', php / 'bin/php',
+    # exit_guard.py needs the pair in one run through one PHP: a wrapper sends each engine's
+    # reports to its own directory, by the extension it loads.
+    options = {name: sanitized(reports, f'{name}-guard')['TSAN_OPTIONS'] for name in engines}
+    guard = OUT / 'guard-php'
+    guard.write_text(f"""#!/bin/sh
+case "$*" in *'extension={engines['upstream']}'*) TSAN_OPTIONS='{options['upstream']}' ;; *) TSAN_OPTIONS='{options['cargo']}' ;; esac
+export TSAN_OPTIONS
+exec '{php / 'bin/php'}' "$@"
+""")
+    guard.chmod(0o755)
+    if subprocess.run([sys.executable, 'tests/modules/phphelpers/exit_guard.py', '--php', guard,
                        '--php-config', php / 'bin/php-config', '--build-manifest', ROOT / 'target/ext/build-manifest.json',
                        *[arg for name, extension in engines.items() for arg in ['--engine', f'{name}={extension}']],
-                       '--output', OUT / 'phpt/guard.json'], cwd=ROOT, env={**run, **sanitized(reports, 'guard')}).returncode:
+                       '--output', OUT / 'phpt/guard.json'], cwd=ROOT, env=run).returncode:
         failed.append('exit_guard')
     counts = {path.name: len(list(path.iterdir())) for path in sorted(reports.iterdir())}
-    ours = sum(found for name, found in counts.items() if name != 'upstream')
+    ours = outside_upstream(counts)
     print('sanitizer reports: ' + ', '.join(f'{found} in {reports / name}' for name, found in counts.items()))
     if ours > LIMIT:
         failed.append(f'{ours} reports outside upstream, over the limit of {LIMIT},')

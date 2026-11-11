@@ -11,8 +11,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-mod async_file;
-pub use async_file::*;
 mod file;
 mod file_api;
 mod file_record;

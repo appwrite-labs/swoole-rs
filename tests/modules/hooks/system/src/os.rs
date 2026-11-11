@@ -259,8 +259,11 @@ fn schedule() {
     let count = Cell::new(n);
     let event = &event;
     tick(2, |timer| {
+        // SW_LOOP_N(swoole_rand(5, 15)): the bound is drawn again before every iteration.
+        let mut i = 0;
         // SAFETY: swoole_rand(3).
-        for _ in 0..unsafe { swoole_rand(5, 15) } {
+        while i < unsafe { swoole_rand(5, 15) } {
+            i += 1;
             let ret = dispatch(event);
             // SAFETY: the pool's live copy.
             assert_eq!(unsafe { (*ret).object }, event.object);

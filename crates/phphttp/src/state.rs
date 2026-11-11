@@ -1,5 +1,5 @@
-//! `swoole::http::ContextState`: the part of `swoole::http::Context` the
-//! request parser reads and writes. Rust owns the layout.
+//! `swoole::http::Context`: a request's and response's state, which
+//! `context::alloc` allocates and Request and Response point at.
 use std::{
     collections::HashSet,
     ffi::{CString, c_char, c_int, c_void},
@@ -91,8 +91,8 @@ pub(crate) struct Request {
     pub(crate) ztmpfiles: Slot,
 }
 
-/// The parser's own bookkeeping (`ContextState::parse_`), Rust's alone. All
-/// zeroes is the initial state: C++ value-initialises the context.
+/// The parser's own bookkeeping (`ContextState::parse_`). All zeroes is the
+/// initial state, which `context::alloc` writes.
 #[repr(C)]
 pub(crate) struct Parse {
     pub(crate) header_name: *const u8,

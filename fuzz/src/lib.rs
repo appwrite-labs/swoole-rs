@@ -25,7 +25,8 @@ use swoole_rs_protocols_ffi as _;
 
 mod network;
 pub use network::{
-    dns_reply, http_chunked, http_rewrite, http2_frame, http2_hpack, multipart, resp_server,
+    dns_reply, http_chunked, http_inflate, http_rewrite, http2_frame, http2_hpack, multipart,
+    resp_server, ws_inflate,
 };
 use swoole_rs_websocket::{decode_in_place, frame_length, mask};
 

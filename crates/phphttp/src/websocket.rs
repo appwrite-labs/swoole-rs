@@ -384,8 +384,7 @@ fn constants(minit: &Minit) {
     }
 }
 
-/// `swoole::websocket::FrameObject`: an outgoing frame (C++ shares the layout).
-#[repr(C)]
+/// `swoole::websocket::FrameObject`: an outgoing frame.
 pub struct FrameObject {
     opcode: u8,
     flags: u8,
@@ -1614,13 +1613,6 @@ pub(crate) fn recv(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frame_object_matches_the_cxx_layout() {
-        // `struct FrameObject { uint8_t opcode; uint8_t flags; uint16_t code; zval *data; }`
-        assert_eq!(size_of::<FrameObject>(), 16, "size");
-        assert_eq!(std::mem::offset_of!(FrameObject, data), 8, "data");
-    }
 
     #[test]
     fn bytes_truncate_like_uint8_t() {

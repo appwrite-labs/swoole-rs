@@ -1,8 +1,9 @@
 //! `Swoole\Http\Server` from upstream's `swoole_http_server.cc`: `onReceive`'s
 //! routing and request parsing, the addresses cached for keep-alive sessions
 //! until they close, and the requests queued past `worker_max_concurrency`.
-//! The other protocols' `onReceive`, the port callbacks and the received data
-//! stay C++, and so does the handler's call (no Rust frame under PHP code).
+//! The other protocols' `onReceive` and the received data are crates/phpserver's;
+//! handlers and port callbacks run through `swoole_rs_zend::host::function_call`,
+//! which traps a bailout before it reaches a Rust frame.
 use crate::{
     context,
     host::{self, Context},

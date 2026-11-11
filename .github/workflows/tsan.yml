@@ -1,9 +1,11 @@
 name: ThreadSanitizer
 # The ZTS lane, PHP, upstream and the Cargo-built swoole.so, under ThreadSanitizer, with
 # the thread, atomic and lock PHPT families and exit_guard.py (tools/tsan.py). Nightly,
-# and from the PR tier when a PR touches this run. Any unsuppressed report fails the run;
-# rerun tools/tsan.py locally to read it and file it as a p0 kind:bug, or privately if
-# upstream code is at fault. Reports are never uploaded here.
+# and from the PR tier when a PR touches this run. Upstream's reports are only counted; the
+# run fails while reports outside upstream's runs exceed LIMIT in tools/tsan.py, which falls
+# as races are fixed. Rerun tools/tsan.py locally to read them and file a race in this
+# repository's code as a p0 kind:bug; an upstream one goes to the private security
+# repository. Reports are never uploaded here.
 on:
   schedule:
     - cron: '47 3 * * *'

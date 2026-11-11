@@ -237,10 +237,6 @@ type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
 pub(crate) struct Property {
     /// The Port objects, borrowed from `$server->ports`.
     ports: Vec<*mut zend_object>,
-    /// `addProcess`'s processes, copies holding a reference; boxed, as each
-    /// worker's user data points at its copy.
-    #[expect(clippy::vec_box, reason = "a worker's user data points at its copy")]
-    user_processes: Vec<Box<Owned>>,
     /// Server-level callbacks (callables) by type.
     callbacks: [*mut c_void; CALLBACKS],
     /// `addCommand`'s callables.
@@ -249,6 +245,12 @@ pub(crate) struct Property {
     send_waiters: HashMap<i64, Waiters>,
     /// The next waiter's token.
     send_token: u64,
+    /// `addProcess`'s processes, copies holding a reference; boxed, as each
+    /// worker's user data points at its copy. Last, so `default()` builds nothing
+    /// after it that could unwind and drop it, which would link Zend's destructor
+    /// into tests that have no PHP.
+    #[expect(clippy::vec_box, reason = "a worker's user data points at its copy")]
+    user_processes: Vec<Box<Owned>>,
 }
 
 fn fact(serv: view::Server<'_>, id: u32) -> bool {
@@ -359,8 +361,9 @@ impl ServerObject {
         self.data().serv
     }
 
-    /// The bound `Server`, or none before `__construct`.
-    pub(crate) fn server(self) -> Option<view::Server<'static>> {
+    /// The bound `Server`, or none before `__construct`, borrowed for as long as
+    /// the handle is: the handle's contract keeps the object, and so its server, live.
+    pub(crate) fn server(&self) -> Option<view::Server<'_>> {
         let serv = self.serv();
         // SAFETY: the object's live server, which it keeps until `free`.
         (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) })
@@ -476,7 +479,8 @@ pub(crate) fn owns_shared() -> bool {
 /// Zend frees a Server object.
 pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     // The object's live server; the master deletes it below.
-    let server = ServerObject(object).server();
+    let handle = ServerObject(object);
+    let server = handle.server();
     // SAFETY: per the caller.
     let data = unsafe { Object::<ServerData>::data(object) };
     // SAFETY: `create` boxed it; nothing else frees it.
@@ -1473,7 +1477,9 @@ mod tests {
 
     #[test]
     fn property_starts_empty() {
-        let property = Property::default();
+        // Not dropped: its drop would link `Owned`'s Zend destructor, which the test
+        // binary has no PHP to resolve; an empty property owns nothing to free.
+        let property = std::mem::ManuallyDrop::new(Property::default());
         assert!(property.callbacks.iter().all(|cb| cb.is_null()));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
         assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);

@@ -355,7 +355,7 @@ class Lanes(unittest.TestCase):
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
         self.assertIn('corebase-native',commands)
-        self.assertIn('ossupport-async-file-owner', commands)
+        self.assertIn('ossupport-file-owner', commands)
         self.assertIn('http-rewrites', commands)
         self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
@@ -414,7 +414,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
         self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
-        self.assertNotIn('phphelpers-async', commands)  # Its cases run in phphelpers-unit.
+        self.assertNotIn('phphelpers-async', commands)
         self.assertIn('--archive', commands['ports-policy'])
         self.assertIn('--archive', commands['clients-http-format'])
         self.assertIn('--sanitize', commands['clients-http-format'])

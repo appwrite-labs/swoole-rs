@@ -4,7 +4,7 @@
 //! coroutine/gethostbyname.cpp in gethostbyname.rs, coroutine/accept.cpp in hook.rs, os/timer.cpp
 //! in timer.rs, coroutine/async.cpp in co_async.rs, os/pipe.cpp in pipe.rs,
 //! os/process_pool.cpp in process_pool.rs, os/wait.cpp, os/async.cpp and os/os.cpp's
-//! os.daemon in os.rs, os/signal.cpp in signal.rs and protocol/ssl.cpp in ssl.rs), one
+//! os.daemon in os.rs, os/file.cpp in file.rs, os/signal.cpp in signal.rs and protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -41,6 +41,7 @@ mod gethostbyname;
 #[path = "../../../coroutine/base.rs"]
 mod base;
 mod co_async;
+mod file;
 mod hook;
 mod network_socket;
 mod os;
@@ -509,11 +510,16 @@ fn test_getaddrinfo(
     let ip_list = getaddrinfo(host, family, kind, protocol, service, timeout);
     assert!(!ip_list.is_empty());
     for ip in &ip_list {
-        let parsed: std::net::IpAddr = ip.parse().unwrap();
-        assert_eq!(parsed.is_ipv4(), family == AF_INET);
-        if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        assert!(dns::verify_ip(family, ip));
+        let kind = if family == AF_INET {
+            socket::SW_SOCK_TCP
+        } else {
+            socket::SW_SOCK_TCP6
+        };
+        let c = client::Client::new(kind, false).expect("created");
+        if !socket::is_github_ci() {
             println!("{ip}");
-            assert!(std::net::TcpStream::connect((parsed, 443)).is_ok());
+            assert_eq!(c.connect(ip, 443, -1.0, 0), 0);
         }
     }
 }
@@ -902,6 +908,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("os_wait", os::WAIT_CASES),
     ("async", os::ASYNC_CASES),
     ("os", os::OS_CASES),
+    ("file", file::CASES),
     ("os_signal", signal::CASES),
 ];
 

@@ -55,11 +55,10 @@ for both native and Rust, so `import` refuses every descriptor there.
 
 ## TLS, SNI, import and close
 
-`crates/ports/src/lifecycle.rs` decides each step of `ssl_context_init`,
-`ssl_context_create`, `ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI
-callback, `import` and `close`; `lifecycle_native.rs` performs them, over the
-port's Rust-owned settings, its contexts' Rust TLS owners, the socket record and
-OpenSSL. The port's `ssl_context` is a `PortConfig` field holding one reference
+`crates/ports/src/lifecycle.rs` is `ssl_context_init`, `ssl_context_create`,
+`ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI callback, `import` and
+`close`, over the port's Rust-owned settings, its contexts' Rust TLS owners, the
+socket record and OpenSSL. The port's `ssl_context` is a `PortConfig` field holding one reference
 to its Rust owner; the SNI contexts and the DTLS sessions by fd, each with its
 reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
 both. SNI contexts are matched in insertion order; upstream iterated an
@@ -71,7 +70,7 @@ both. SNI contexts are matched in insertion order; upstream iterated an
 option's lookup, conversion, bound and order, written into the Rust-owned
 `PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
 `package_eof` is rejected rather than copied. `set()` calls `dup_ssl_context`
-(`lifecycle_native::context_dup`), `ssl_add_sni_cert` (`sni_add`) and `ssl_init` in
+(`lifecycle::context_dup`), `ssl_add_sni_cert` (`sni_add`) and `ssl_init` in
 crates/ports directly.
 
 ## Class properties: `swr_v1_ports_class_property(index)`

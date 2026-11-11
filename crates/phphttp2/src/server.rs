@@ -1200,7 +1200,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
         let buffered = unsafe { ctx.data() }.len();
         let ended = get(ctx, Field::End);
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) != 0 {
-            send_u32_frame(ctx, TYPE_RST_STREAM, 0, FLAG_ACK, 0, 0);
+            reset(ctx, stream_id, 0);
             session.remove(stream_id);
             return SW_OK;
         }

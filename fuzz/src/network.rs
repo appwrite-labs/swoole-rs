@@ -5,12 +5,14 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
+use swoole_rs_deflate::Allocator;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
+use swoole_rs_inflate::Inflate;
 use swoole_rs_oracle::nghttp2;
 use swoole_rs_protocols::{RespPhpState, resp_php_next};
 
@@ -383,4 +385,87 @@ pub fn http_rewrite(bytes: &[u8]) {
         Some(expected).filter(|expected| expected != url),
         "~{pattern:?}~ -> {replacement:?} on {url:?}"
     );
+}
+
+/// A permessage-deflate payload (RFC 7692): any bytes into
+/// `swoole_rs_inflate::message` return, and the first byte as a level (-1 to 9) with
+/// the rest as a message round-trips through `swoole_rs_deflate::message`.
+pub fn ws_inflate(bytes: &[u8]) {
+    let _ = swoole_rs_inflate::message(bytes);
+    let Some((&level, data)) = bytes.split_first() else {
+        return;
+    };
+    let level = c_int::from(level % 11) - 1;
+    let compressed = swoole_rs_deflate::message(data, level, Allocator::MALLOC)
+        .unwrap_or_else(|failure| panic!("deflate at {level}: {failure:?}"));
+    assert_eq!(
+        swoole_rs_inflate::message(&compressed).as_deref(),
+        Ok(data),
+        "level {level}"
+    );
+}
+
+/// An HTTP response body: the first byte picks gzip, zlib or raw deflate (and the
+/// HTTP/2 client's gzip-only decoder), the second how many of the next bytes are
+/// chunk lengths; the rest, compressed, fed to `Inflate::decode` in those chunks
+/// gives back what one call over the whole stream does: the rest. The rest as it
+/// is, whole or in those chunks, decodes without a panic.
+pub fn http_inflate(bytes: &[u8]) {
+    let Some((&[mode, count], rest)) = bytes.split_first_chunk::<2>() else {
+        return;
+    };
+    let (lengths, body) = rest.split_at(usize::from(count % 16).min(rest.len()));
+    let (window_bits, gzip) = match mode % 3 {
+        0 => (swoole_rs_deflate::GZIP, true),
+        1 => (swoole_rs_deflate::DEFLATE, false),
+        _ => (-swoole_rs_deflate::DEFLATE, false),
+    };
+    let decoder = || {
+        if gzip && mode & 4 != 0 {
+            Inflate::gzip_only()
+        } else {
+            Inflate::new(gzip)
+        }
+    };
+    let _ = decoder().decode(body);
+    let _ = in_chunks(decoder(), body, lengths);
+    let level = c_int::from(mode >> 3) % 10;
+    let stream = swoole_rs_deflate::compress(
+        body,
+        2 * body.len() + 64,
+        window_bits,
+        level,
+        Allocator::MALLOC,
+    )
+    .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
+    assert_eq!(decoder().decode(&stream), Some(body), "one call");
+    // The raw retry is the first chunk's alone: a raw stream whose first two bytes
+    // read as a zlib header, or whose first chunk is shorter, fails in pieces.
+    if window_bits < 0
+        && (lengths.first().is_some_and(|&n| n < 2)
+            || u16::from_be_bytes([stream[0], stream[1]]) % 31 == 0 && stream[0] & 0xf == 8)
+    {
+        return;
+    }
+    assert_eq!(
+        in_chunks(decoder(), &stream, lengths).as_deref(),
+        Some(body),
+        "chunks {lengths:?}"
+    );
+}
+
+/// `stream` through `inflate` in chunks of `lengths` (0 as 1), then the rest in one:
+/// what they produced, or None once one fails.
+fn in_chunks(mut inflate: Inflate, mut stream: &[u8], lengths: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let lengths = lengths.iter().map(|&n| usize::from(n.max(1)));
+    for length in lengths.chain([usize::MAX]) {
+        if stream.is_empty() {
+            break;
+        }
+        let (chunk, tail) = stream.split_at(length.min(stream.len()));
+        out.extend_from_slice(inflate.decode(chunk)?);
+        stream = tail;
+    }
+    Some(out)
 }

@@ -54,8 +54,8 @@ mod php {
         "HAVE_REUSEPORT",
         "HAVE_RWLOCK",
     ];
-    /// Every build's: the switches config.m4 sets unconditionally, less
-    /// `COMPILE_DL_SWOOLE` (lib.rs exports `get_module()`).
+    /// Every build's: the switches config.m4 sets unconditionally. Not
+    /// `COMPILE_DL_SWOOLE`: lib.rs exports `get_module()`.
     const COMMON: &[&str] = &[
         "SWOOLE_RS_BRIDGE",
         "SW_HAVE_BROTLI",
