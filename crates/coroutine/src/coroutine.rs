@@ -96,7 +96,7 @@ pub struct Hooks {
     pub bailout: Option<unsafe extern "C" fn(*mut c_void)>,
     pub bailout_data: *mut c_void,
     /// `SW_CORO_TIME`'s clock in microseconds; null without it.
-    pub clock: Option<unsafe extern "C" fn() -> c_long>,
+    pub clock: Option<extern "C" fn() -> c_long>,
 }
 
 /// Per-thread scheduler state (one per PHP thread under ZTS).
@@ -328,8 +328,7 @@ fn charge(hooks: &Hooks, yielding: Option<Co>, resuming: Option<Co>) {
     let Some(clock) = hooks.clock else {
         return;
     };
-    // SAFETY: C++'s clock reads the time.
-    let now = unsafe { clock() };
+    let now = clock();
     if let Some(yielding) = yielding {
         yielding.with(|co| switch_time(Some(co), None, now));
     }
@@ -562,7 +561,7 @@ pub(crate) mod tests {
     unsafe extern "C" fn bailout(_: *mut c_void) {
         event("bailout".into());
     }
-    unsafe extern "C" fn clock() -> c_long {
+    extern "C" fn clock() -> c_long {
         100
     }
     unsafe extern "C" fn on_resume(task: *mut c_void) {
