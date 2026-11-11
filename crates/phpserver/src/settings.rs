@@ -774,7 +774,8 @@ fn rewrite_rules(s: &Settings) -> Step {
         return Err(Stop);
     };
     for (key, value) in array.entries() {
-        let Some(replacement) = value.dereferenced().bytes() else {
+        let value = value.dereferenced();
+        let Some(replacement) = value.bytes() else {
             fatal(E_ERROR, c"The `replacement` must be string");
             return Err(Stop);
         };

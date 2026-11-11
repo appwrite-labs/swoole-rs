@@ -919,10 +919,8 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     };
-    let socket = call
-        .value(1)
-        .map(Value::dereferenced)
-        .map_or(ptr::null_mut(), get_socket);
+    let conn = call.value(1).map(Value::dereferenced);
+    let socket = conn.as_deref().map_or(ptr::null_mut(), get_socket);
     // SAFETY: the object's live socket, which the server's array keeps.
     let socket = unsafe { Co::of(socket) };
     // The request allocator first.
