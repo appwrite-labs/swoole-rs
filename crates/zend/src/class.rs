@@ -10,17 +10,15 @@ use std::{
     ffi::{CStr, c_char, c_void},
     mem::offset_of,
     ptr,
-    sync::{
-        OnceLock,
-        atomic::{AtomicPtr, Ordering},
-    },
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
 /// A class entry and the object handlers its objects share: process-global,
 /// written once at MINIT and read-only afterwards.
 pub struct Class {
     entry: AtomicPtr<zend_class_entry>,
-    handlers: OnceLock<zend_object_handlers>,
+    /// Leaked at the first registration: a handler's object check is one load.
+    handlers: AtomicPtr<zend_object_handlers>,
 }
 
 impl Default for Class {
@@ -34,7 +32,7 @@ impl Class {
     pub const fn new() -> Self {
         Self {
             entry: AtomicPtr::new(ptr::null_mut()),
-            handlers: OnceLock::new(),
+            handlers: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -73,7 +71,10 @@ impl Class {
         let mut handlers = unsafe { std_object_handlers };
         // SAFETY: Zend returned the registered entry, which nothing else uses yet.
         configure(unsafe { &mut *entry }, &mut handlers);
-        self.handlers.get_or_init(|| handlers);
+        if self.handlers.load(Ordering::Acquire).is_null() {
+            self.handlers
+                .store(Box::leak(Box::new(handlers)), Ordering::Release);
+        }
         self.entry.store(entry, Ordering::Release);
     }
 
@@ -150,7 +151,7 @@ impl Class {
     #[must_use]
     #[inline]
     pub fn handlers(&self) -> *const zend_object_handlers {
-        self.handlers.get().map_or(ptr::null(), ptr::from_ref)
+        self.handlers.load(Ordering::Acquire)
     }
 }
 
