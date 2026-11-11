@@ -60,16 +60,24 @@ impl IoVector {
         usize::try_from(swr_v1_reactor_iov_view(self.owner()).remain_count).unwrap_or(0)
     }
 
-    /// The current iovec and how many remain.
+    /// The iovecs left to transfer, the current one trimmed to where the transfers
+    /// stopped. The borrow ends before [`update`](Self::update) can move them.
     #[cfg(feature = "iouring")]
-    pub(crate) fn current(&self) -> (*const libc::iovec, c_int) {
+    pub(crate) fn iovecs(&self) -> &[libc::iovec] {
         let view = swr_v1_reactor_iov_view(self.owner());
-        (view.iterator, view.remain_count)
+        let count = usize::try_from(view.remain_count).unwrap_or(0);
+        if count == 0 {
+            return &[];
+        }
+        // SAFETY: the owner's iterator names `remain_count` live iovecs, which only
+        // `update` (taking `&mut self`) changes.
+        unsafe { core::slice::from_raw_parts(view.iterator, count) }
     }
 
-    /// Advance past a transfer's `result`.
+    /// Advance past a transfer's `result`. It takes `&mut self`, so no transfer
+    /// holding [`iovecs`](Self::iovecs) can advance the vector itself.
     #[cfg(feature = "iouring")]
-    pub(crate) fn update(&self, result: isize) {
+    pub(crate) fn update(&mut self, result: isize) {
         // SAFETY: the live owner; no reference to it is held across the call.
         unsafe { swoole_rs_reactor::swr_v1_reactor_iov_advance(self.owner.as_ptr(), result) };
     }

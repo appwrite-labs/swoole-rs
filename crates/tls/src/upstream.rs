@@ -120,10 +120,13 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
 /// `step` over a copy of the record's TLS group and its SSL (None without one), then
 /// the group stored back: OpenSSL's info callback reads the record meanwhile.
 fn with_tls<R>(socket: Socket<'_>, step: impl FnOnce(&mut SocketTls, Ssl) -> R) -> Option<R> {
-    let (tls, ssl) = (socket.read(|record| record.tls), Ssl::of(socket));
-    let mut tls = tls;
+    let (before, ssl) = socket.read(|record| (record.tls, Ssl::of_fields(record)));
+    let mut tls = before;
     let result = step(&mut tls, ssl?);
-    socket.edit(|record| record.tls = tls);
+    // Most transfers leave the group as it was, and then the record needs no edit.
+    if tls != before {
+        socket.edit(|record| record.tls = tls);
+    }
     Some(result)
 }
 

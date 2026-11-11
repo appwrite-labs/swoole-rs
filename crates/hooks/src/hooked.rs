@@ -541,8 +541,11 @@ pub(crate) mod tests {
         socket.network = SocketRecord::new();
         socket.network.fd = fd;
         socket.record.sock_fd = fd;
-        socket.record.socket = &raw mut socket.network;
-        unsafe { Co::new(Box::into_raw(socket).cast()) }
+        // The record's pointer comes from the raw one `free` reclaims, so it outlives
+        // the box giving the allocation up.
+        let socket = Box::into_raw(socket);
+        unsafe { (*socket).record.socket = &raw mut (*socket).network };
+        unsafe { Co::new(socket.cast()) }
     }
 
     fn open(domain: c_int, kind: c_int, _: c_int) -> Co {
@@ -596,6 +599,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sendmsg")]
     fn a_coroutine_transfers_on_mapped_fds_through_the_rust_members() {
         wrapped(|fd, peer| unsafe {
             let mut buf = [0u8; 16];
@@ -634,6 +638,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no accept on a socketpair")]
     fn a_coroutine_connects_accepts_and_waits_on_mapped_fds_through_the_rust_members() {
         use crate::co_io::test_host::{TIMER_OK, take};
         wrapped(|fd, _| unsafe {
@@ -697,6 +702,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no AF_UNIX sockets")]
     fn outside_a_coroutine_calls_go_to_libc() {
         let mut pair = [0; 2];
         unsafe {

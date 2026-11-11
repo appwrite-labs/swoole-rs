@@ -15,7 +15,7 @@ use core::ffi::{c_char, c_int, c_long};
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::log;
-use swoole_rs_process::worker_globals::thread_globals;
+use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::Worker;
 
 /// `swoole::SendData`.
@@ -89,6 +89,41 @@ fn session<H: Host>(h: &mut H, id: c_long) -> crate::Effect<Option<(u32, c_int)>
 unsafe fn record<'a>(conn: *mut ConnectionRecord) -> &'a mut ConnectionRecord {
     // SAFETY: as the caller guarantees.
     unsafe { &mut *conn }
+}
+
+/// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
+fn close_event(c: &ConnectionRecord, fd: c_long) -> DataHead {
+    DataHead {
+        fd,
+        reactor_id: if c.close_actively != 0 {
+            -1
+        } else {
+            i16::from(c.reactor_id)
+        },
+        server_fd: low16(c.server_fd),
+        ..DataHead::default()
+    }
+}
+
+/// `ProcessFactory`'s onClose for session `fd`: `call` runs with the close event
+/// while the connection `conn` gives is marked closing. onClose reaches the same
+/// record by session (`exist()`, `getClientInfo()`, `close()`), so `conn` is asked
+/// again after it rather than a reference held across it.
+#[cfg_attr(
+    not(any(test, feature = "upstream-symbols")),
+    expect(dead_code, reason = "only process mode's factory ops call it")
+)]
+pub(crate) fn on_close<'a>(
+    conn: impl Fn() -> Option<&'a mut ConnectionRecord>,
+    fd: c_long,
+    call: impl FnOnce(&mut DataHead),
+) -> Option<()> {
+    let c = conn()?;
+    let mut info = close_event(c, fd);
+    c.closing = 1;
+    call(&mut info);
+    conn()?.closing = 0;
+    Some(())
 }
 
 /// `Server::create_base_factory`: one reactor per worker and per-worker counters.
@@ -172,9 +207,12 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     if task.info.kind != RECV_DATA && !dgram {
         return Ok(false);
     }
-    // SAFETY: this thread's worker globals; only the fields are read.
-    let globals = unsafe { &*thread_globals() };
-    let (worker, max_request) = (globals.worker, globals.max_request);
+    let (worker, max_request) = with_globals(|g| {
+        (
+            g.worker.load(Ordering::Relaxed),
+            g.max_request.load(Ordering::Relaxed),
+        )
+    });
     if worker.is_null() || max_request != 0 {
         return Ok(false);
     }
@@ -331,28 +369,17 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         return Ok(false);
     }
     c.closing = 1;
-    // `if_do_close_callback`: once, by whoever sets `closed`.
-    if h.is(OP_HAS_ON_CLOSE)? {
-        // SAFETY: the record is still the session's; native code did not free it.
-        let c = unsafe { record(conn) };
-        if c.closed
+    // `if_do_close_callback`: once, by whoever sets `closed`. The slot's presence
+    // is Rust's fact, so nothing else reaches the record before onClose.
+    if h.is(OP_HAS_ON_CLOSE)?
+        && c.closed
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-        {
-            let info = DataHead {
-                fd: id,
-                reactor_id: if c.close_actively != 0 {
-                    -1
-                } else {
-                    i16::from(c.reactor_id)
-                },
-                server_fd: low16(c.server_fd),
-                ..DataHead::default()
-            };
-            h.op(OP_ON_CLOSE, address(&raw const info))?;
-        }
+    {
+        let info = close_event(c, id);
+        h.op(OP_ON_CLOSE, address(&raw const info))?;
     }
-    // SAFETY: as above; the callback has returned.
+    // SAFETY: as above, re-derived: onClose, which reaches it by session, has returned.
     let c = unsafe { record(conn) };
     c.closing = 0;
     c.close_errno = 0;
@@ -430,6 +457,7 @@ mod tests {
     use crate::records::{ServerTables, SessionRecord};
     use crate::script::Script;
     use core::sync::atomic::AtomicU32;
+    use swoole_rs_process::worker_globals::set_current_worker;
 
     /// One session (id 1, fd 2, reactor/worker 0) on connection 2; worker 0 runs.
     struct Tables {
@@ -464,16 +492,18 @@ mod tests {
         fn script(&mut self, facts: &[(u32, u64)]) -> Script {
             let mut s = Script::with(facts);
             s.state = crate::ServerState::with_tables(ServerTables {
-                session_list: crate::records::tests::naming(&mut self.sessions),
-                connection_list: crate::records::tests::naming(&mut self.connections),
+                session_list: crate::records::tests::naming_at(self.sessions.as_mut_ptr()),
+                connection_list: crate::records::tests::naming_at(self.connections.as_mut_ptr()),
                 max_connection: 2,
                 ..ServerTables::default()
             });
             s
         }
 
+        /// Through the table's pointer, as the scripts' state reaches it: indexing would
+        /// borrow the whole table and end their pointers.
         fn conn(&mut self) -> &mut ConnectionRecord {
-            &mut self.connections[2]
+            unsafe { &mut *self.connections.as_mut_ptr().add(2) }
         }
     }
 
@@ -549,9 +579,7 @@ mod tests {
         t.conn().recv_queued_bytes = AtomicU32::new(5);
         // SAFETY: a worker record is plain data; zero is a fresh one.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        let globals = thread_globals();
-        // SAFETY: this test thread's worker globals.
-        unsafe { (*globals).worker = &raw mut worker };
+        set_current_worker(&raw mut worker);
         let mut task = send(2, RECV_DATA, 5);
         task.info.time = 1.5;
         let mut s = t.script(&[(OP_ON_RECEIVE, 1)]);
@@ -574,19 +602,15 @@ mod tests {
         assert_eq!(packet.info.fd, 9, "unconverted");
 
         // A request limit, or a factory dispatch, takes the bus.
-        // SAFETY: as above.
-        unsafe { (*globals).max_request = 1 };
+        with_globals(|g| g.max_request.store(1, Ordering::Relaxed));
         let mut task = send(2, RECV_DATA, 5);
         let mut s = t.script(&[]);
         assert!(dispatch(&mut s, &raw mut task, true).unwrap());
         let mut again = send(2, RECV_DATA, 5);
         assert!(dispatch(&mut s, &raw mut again, false).unwrap());
         assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (0, 2));
-        // SAFETY: as above.
-        unsafe {
-            (*globals).max_request = 0;
-            (*globals).worker = core::ptr::null_mut();
-        }
+        with_globals(|g| g.max_request.store(0, Ordering::Relaxed));
+        set_current_worker(core::ptr::null_mut());
     }
 
     #[test]
@@ -675,5 +699,27 @@ mod tests {
         let close = send(1, 4, 0);
         assert!(!finish(&mut s, &raw const close).unwrap(), "unknown event");
         assert_eq!(s.called(OP_FORWARD), 0);
+    }
+
+    /// onClose sees its connection closing through the session lookup
+    /// `$server->exist()` and `close()` use, and writes through its own
+    /// reference to the slot; the caller's write after it is still valid
+    /// (`cargo miri test` checks the aliasing).
+    #[test]
+    fn on_close_reaches_the_record_by_session() {
+        let mut t = Tables::new();
+        t.conn().close_actively = 1;
+        let s = t.script(&[]);
+        // As process mode's factory holds the slot `OP_SESSION_CONN` looked up.
+        let conn = s.state.connection_ptr(1, crate::records::VERIFIED);
+        let mut seen = None;
+        let call = |info: &mut DataHead| {
+            let c = s.state.connection(1, crate::records::BY_SESSION).unwrap();
+            seen = Some((info.fd, info.reactor_id, info.server_fd, c.closing));
+            c.close_errno = 104;
+        };
+        on_close(|| unsafe { conn.as_mut() }, 1, call).unwrap();
+        assert_eq!(seen, Some((1, -1, 7, 1)), "closing during onClose");
+        assert_eq!((t.conn().closing, t.conn().close_errno), (0, 104));
     }
 }

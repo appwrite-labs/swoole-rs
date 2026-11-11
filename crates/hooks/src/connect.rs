@@ -8,7 +8,7 @@ use crate::co_io::{
 };
 use crate::co_socket::{Co, CoSocket, reinit};
 use crate::packet::recv_packet;
-use crate::socket_members::{assign, put_host};
+use crate::socket_members::assign;
 use crate::socket_scope::ProtocolScope;
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::null_mut;
@@ -279,7 +279,7 @@ unsafe fn bytes(view: CoreStringView) -> Vec<u8> {
 struct Live<'a> {
     socket: Co,
     /// The `NameResolver::Context` the lookup uses.
-    resolve: *mut c_void,
+    resolve: &'a mut NameResolverContext,
     socks5: Option<&'a ProxyState>,
     http: Option<&'a ProxyState>,
     address: SocketAddress,
@@ -429,17 +429,8 @@ impl Connecting for Live<'_> {
         let co = (NATIVE.current)();
         // Locked like wait_event.
         self.socket.with_state(|state| state.bind(RDWR, co));
-        // SAFETY: the resolver context, the name and the Vec `put_host` appends to.
-        let with_port = unsafe {
-            crate::resolve::socket_lookup(
-                self.resolve,
-                domain,
-                timeout,
-                &name,
-                (&raw mut address).cast(),
-                put_host,
-            )
-        };
+        let with_port =
+            crate::resolve::socket_lookup(self.resolve, domain, timeout, &name, &mut address);
         self.socket.with_state(|state| state.bind(RDWR, null_mut()));
         if address.is_empty() {
             Connecting::set_err(self, log::last_error());
@@ -560,10 +551,9 @@ impl Co {
     #[must_use]
     pub fn connect_host(self, host: &[u8], port: c_int) -> bool {
         let mut fallback = NameResolverContext::default();
-        let resolve = match self.resolve_context() {
-            context if context.is_null() => (&raw mut fallback).cast(),
-            context => context,
-        };
+        let context = self.resolve_context().cast::<NameResolverContext>();
+        // SAFETY: null or the context its owner set, which outlives the socket's connect.
+        let resolve = unsafe { context.as_mut() }.unwrap_or(&mut fallback);
         let proxies = self.with_extra(|extra| extra.proxies).unwrap_or_default();
         // SAFETY: each null or a live owner, which stays put while the socket connects.
         let [socks5, http] = proxies.map(|owner| unsafe { owner.as_ref() });
@@ -953,6 +943,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn tls_host_name_and_proxy_family_switch() {
         // An IPv4 socket whose proxy (::1) is IPv6 reopens as TCP6.
         let mut ops = connect_ops(PROXY_SOCKS5, true, libc::AF_INET);
@@ -1151,6 +1142,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn ip_checks_match_inet_pton() {
         assert!(is_ip(libc::AF_INET, b"127.0.0.1"));
         assert!(!is_ip(libc::AF_INET, b"localhost"));

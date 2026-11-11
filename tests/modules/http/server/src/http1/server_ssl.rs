@@ -209,7 +209,7 @@ impl SyncClient {
     }
 
     fn enable_ssl_encrypt(&self) -> bool {
-        if self.run(Op::EnableSsl) < 0 {
+        if self.handle().enable_ssl().is_none() {
             return false;
         }
         !self.connected || self.run(Op::SslHandshake) == i64::from(SW_OK)
