@@ -5,7 +5,7 @@
 //! `onReceive` and `onClose` for its HTTP/2 connections. The HTTP contexts are
 //! crates/phphttp's.
 use crate::session::{Session, SessionState, Stream};
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -21,7 +21,7 @@ use swoole_rs_http2::{
     sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::view;
+use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
     Array, Owned, Value as Zval, ZString, bailout, string,
     sys::{
@@ -848,27 +848,21 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
-/// # Safety
-/// `conn` is the session's connection.
-unsafe fn on_receive(view: view::Server<'_>, conn: *mut c_void, request: &RecvData) -> c_int {
-    let server = view.raw();
+fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvData) -> c_int {
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
+        let conn = ptr::from_ref(conn).cast_mut().cast();
         // SAFETY: the live server and the session's connection.
         let max_body_size =
-            unsafe { swoole_rs_server::server_methods::package_max_length(server, conn) };
-        // SAFETY: the session's own settings context and the server's request handler.
-        unsafe {
-            crate::session::session_new(
-                session_id,
-                default_ctx,
-                max_body_size,
-                false,
-                swoole_rs_phphttp::http2_request_handler,
-                ptr::null_mut(),
-            );
-        };
+            unsafe { swoole_rs_server::server_methods::package_max_length(view.raw(), conn) };
+        crate::session::session_new(
+            session_id,
+            default_ctx,
+            max_body_size,
+            false,
+            Box::new(|ctx, _| swoole_rs_phphttp::http2_request(ctx)),
+        );
         SessionState::find(session_id)
     });
     let zdata = Owned::default();

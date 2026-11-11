@@ -25,13 +25,12 @@ use swoole_rs_inflate::Inflate;
 use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString, string,
+    ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
+    string,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, add_assoc_stringl_ex,
-        swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge, zend_class_entry,
-        zend_object, zend_object_handlers, zend_wrong_parameter_class_error,
+        ZEND_ACC_PUBLIC, add_assoc_stringl_ex, swr_zend_http_build_query, swr_zend_instanceof,
+        swr_zend_property_merge, zend_class_entry, zend_object, zend_wrong_parameter_class_error,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -86,19 +85,62 @@ const NO_CONNECTION: c_int = 5001;
 const SEND_CONTROL_FRAME_FAILED: i64 = 3005;
 const SERVER_RESET: i64 = -3;
 
-static CLIENT: Class = Class::new();
+static CLIENT: CustomClass<Data> = CustomClass::new();
 static EXCEPTION: Class = Class::new();
-static REQUEST: Class = Class::new();
-static RESPONSE: Class = Class::new();
+static REQUEST: CustomClass<Plain<0>> = CustomClass::new();
+static RESPONSE: CustomClass<Plain<1>> = CustomClass::new();
 
 /// `struct Http2ClientObject { Client *client; zend_object std; }`.
-#[repr(C)]
 pub(crate) struct Data {
-    client: *mut Client,
+    /// The constructor's client (null before it), dropped with the object.
+    client: Cell<*mut Client>,
 }
 
-type ClientObject = Object<Data>;
-type PlainObject = Object<()>;
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &CLIENT
+    }
+
+    fn new() -> Self {
+        Self {
+            client: Cell::new(ptr::null_mut()),
+        }
+    }
+}
+
+impl Drop for Data {
+    fn drop(&mut self) {
+        let client = self.client.replace(ptr::null_mut());
+        if !client.is_null() {
+            // SAFETY: the client the constructor boxed, dropped once.
+            drop(unsafe { Box::from_raw(client) });
+        }
+    }
+}
+
+/// `Swoole\Http2\Request` (0) and `Response` (1): no data, but not
+/// cloneable, serializable or `unset`.
+pub(crate) struct Plain<const KIND: u8>;
+
+impl Custom for Plain<0> {
+    fn class() -> &'static CustomClass<Self> {
+        &REQUEST
+    }
+
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl Custom for Plain<1> {
+    fn class() -> &'static CustomClass<Self> {
+        &RESPONSE
+    }
+
+    fn new() -> Self {
+        Self
+    }
+}
 
 /// What the socket's close hook changes, shared with the client. The hook
 /// drops the socket; the client releases what hangs off it (streams, queue,
@@ -1075,43 +1117,9 @@ fn body_bytes(data: &Value) -> Option<ZString> {
     Some(data.string())
 }
 
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass; zeroed data is no client.
-    unsafe { ClientObject::create(&CLIENT, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees a client object.
-    let data = unsafe { ClientObject::data(std) };
-    let client = std::mem::replace(&mut data.client, ptr::null_mut());
-    if !client.is_null() {
-        // SAFETY: the client the constructor boxed, dropped once.
-        drop(unsafe { Box::from_raw(client) });
-    }
-    // SAFETY: as above.
-    unsafe { ClientObject::dtor(std) };
-}
-
-unsafe extern "C" fn create_request(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass; there is no data.
-    unsafe { PlainObject::create(&REQUEST, ce) }
-}
-
-unsafe extern "C" fn create_response(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: as above.
-    unsafe { PlainObject::create(&RESPONSE, ce) }
-}
-
-unsafe extern "C" fn free_plain(std: *mut zend_object) {
-    // SAFETY: Zend frees an object of a class without data.
-    unsafe { PlainObject::dtor(std) };
-}
-
-fn deny(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-}
+/// A table of no methods, as `register_object` takes one.
+static NO_METHODS: swoole_rs_zend::arginfo::Methods<1> =
+    swoole_rs_zend::arginfo::Methods([swoole_rs_zend::arginfo::END]);
 
 /// `SW_REGISTER_LONG_CONSTANT`s of the frame types and error codes.
 const CONSTANTS: [(&CStr, i64); 24] = [
@@ -1171,15 +1179,7 @@ pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
 }
 
 fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    minit.register(
-        &CLIENT,
-        c"Swoole\\Coroutine\\Http2\\Client",
-        &METHODS.0,
-        |entry, handlers| {
-            deny(entry, handlers);
-            ClientObject::install(entry, handlers, create, free);
-        },
-    );
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http2\\Client", &METHODS.0, 0);
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http2\\Client")?;
     }
@@ -1194,24 +1194,8 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
     if shortname {
         minit.alias(&EXCEPTION, c"Co\\Http2\\Client\\Exception")?;
     }
-    minit.register(
-        &REQUEST,
-        c"Swoole\\Http2\\Request",
-        &[],
-        |entry, handlers| {
-            deny(entry, handlers);
-            PlainObject::install(entry, handlers, create_request, free_plain);
-        },
-    );
-    minit.register(
-        &RESPONSE,
-        c"Swoole\\Http2\\Response",
-        &[],
-        |entry, handlers| {
-            deny(entry, handlers);
-            PlainObject::install(entry, handlers, create_response, free_plain);
-        },
-    );
+    minit.register_object::<Plain<0>>(c"Swoole\\Http2\\Request", &NO_METHODS.0, 0);
+    minit.register_object::<Plain<1>>(c"Swoole\\Http2\\Response", &NO_METHODS.0, 0);
     let public = ZEND_ACC_PUBLIC;
     minit.property_long(&CLIENT, c"errCode", 0, public);
     minit.property_string(&CLIENT, c"errMsg", c"", public);
@@ -1244,14 +1228,15 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
     Ok(())
 }
 
-fn this<'a>(call: &Call) -> &'a mut Data {
-    // SAFETY: client methods are non-static, so `$this` is a client object.
-    unsafe { ClientObject::data(call.this()) }
+/// `$this`'s client, null before its constructor.
+fn this(call: &Call) -> *mut Client {
+    call.custom::<Data>()
+        .map_or(ptr::null_mut(), |data| data.client.get())
 }
 
 /// `http2_client_coro_get_client`: the constructed client; a fatal error if not.
 fn client<'a>(call: &Call) -> &'a mut Client {
-    let client = this(call).client;
+    let client = this(call);
     if client.is_null() {
         // SAFETY: a fatal error; the frames it may longjmp across own nothing.
         unsafe {
@@ -1280,7 +1265,7 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     let object = call.this();
-    if !this(call).client.is_null() {
+    if !this(call).is_null() {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
@@ -1293,7 +1278,9 @@ fn construct(call: &Call) {
     props.bytes(c"host", host);
     props.long(c"port", port);
     props.bool(c"ssl", ssl);
-    this(call).client = Box::into_raw(client);
+    if let Some(data) = call.custom::<Data>() {
+        data.client.set(Box::into_raw(client));
+    }
 }
 
 fn destruct(_call: &Call) {}

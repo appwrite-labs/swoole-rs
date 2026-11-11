@@ -32,7 +32,7 @@ use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_class_entry, zend_long, zval,
 };
-use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout, string, value};
+use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 pub(crate) static SERVER: Class = Class::new();
@@ -214,14 +214,12 @@ pub unsafe fn http_server_on_receive(server: *mut c_void, request: *mut c_void) 
         TCP => php_swoole_server_on_receive(server, request),
         WEBSOCKET => websocket::on_message(server, request),
         HTTP2 => {
-            let conn = server
-                .verified(info.fd)
-                .map_or(ptr::null_mut(), ptr::from_mut);
-            let Some(http2) = crate::http2::server() else {
+            // `receive` verified the session.
+            let (Some(conn), Some(http2)) = (server.verified(info.fd), crate::http2::server())
+            else {
                 return -1;
             };
-            // SAFETY: as above, with the session's connection.
-            unsafe { (http2.on_receive)(server, conn.cast(), request) }
+            (http2.on_receive)(server, conn, request)
         }
         _ => 0,
     }
@@ -272,8 +270,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         .flatten();
     facts.coroutine = enable_coroutine(server);
     let ctx = context::context_new(session);
-    // SAFETY: the new context.
-    unsafe { context::init(ctx, server) };
+    context::init(state(ctx), server);
     let state = state(ctx);
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
@@ -282,7 +279,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     unsafe { php_swoole_get_recv_data(server, zdata, request) };
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
-    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
+    let result = handle(server, conn, ctx, session, server_fd, &facts).and_then(|route| {
         if route == REQUEST {
             // SAFETY: a live context; false leaves it queued.
             if !unsafe { context::before_request(ctx) } {
@@ -423,17 +420,14 @@ fn handle(
     server: view::Server<'_>,
     conn: *mut ConnectionRecord,
     ctx: *mut Context,
-    zdata: *mut zval,
     session: i64,
     server_fd: c_int,
     facts: &Receive,
 ) -> Result<c_int, bailout::Bailout> {
-    // SAFETY: the context's request data, a string.
-    let data = unsafe { value::str_of(zdata) };
-    // SAFETY: as above.
-    let data = unsafe { string::bytes(data) };
-    // SAFETY: a live context, whose parser `receive` initialised.
-    let parsed = unsafe { parse_request(ctx, data) };
+    // The request data `receive` moved into the context, a string.
+    let data = state(ctx).request.zdata.bytes().unwrap_or_default();
+    // The parser `receive` initialised.
+    let parsed = parse_request(state(ctx), data);
     if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
         context::send(ctx, BAD_REQUEST);
         context::close(ctx);
@@ -536,14 +530,6 @@ fn http2_connection(
     Some((conn, facts))
 }
 
-/// `SessionRequest` (crates/phphttp2).
-#[repr(C)]
-struct Http2Request {
-    ctx: *mut Context,
-    default_ctx: *mut c_void,
-    data: *mut c_void,
-}
-
 /// `SW_HTTP_VERSION_2`, `SW_HTTP_SERVICE_UNAVAILABLE` and
 /// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
 const HTTP_VERSION_2: c_int = 3;
@@ -551,18 +537,12 @@ const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
 const HTTP2_INTERNAL_ERROR: u32 = 2;
 
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
-/// connection, answered by the static handler or the port's `onRequest`.
-/// A bailout in the handler is raised last, over this frame only.
-/// # Safety
-/// `request` is the session's `SessionRequest` for a live stream context.
-pub unsafe extern "C" fn http2_request_handler(request: *mut c_void) {
-    // SAFETY: per the caller.
-    let ctx = unsafe { (*request.cast::<Http2Request>()).ctx };
-    let result = http2_request(ctx);
-    bailout::raise(result);
-}
-
-fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
+/// connection (the session's handler), answered by the static handler or the
+/// port's `onRequest`.
+/// # Errors
+/// The handler bailed out.
+pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
+    let ctx = ctx.raw();
     let (server, fd) = (context::server(state(ctx)), state(ctx).fd);
     let Some((conn, facts)) = http2_connection(server, fd) else {
         context::release_objects(ctx);
