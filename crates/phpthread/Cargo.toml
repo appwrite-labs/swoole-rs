@@ -10,7 +10,7 @@ description = "PHP Swoole\\Thread and its Map, ArrayList, Queue and Barrier"
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phplocks", "swoole-rs-phplocks/php",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php",
-       "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php",
+       "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php",
        "dep:swoole-rs-corebase", "dep:swoole-rs-error", "dep:swoole-rs-ossupport", "dep:swoole-rs-reactor"]
 
 [dependencies]
@@ -22,7 +22,6 @@ swoole-rs-phplocks = { path = "../phplocks", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-phpclients = { path = "../phpclients", optional = true }
-swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-ossupport = { path = "../ossupport", optional = true }

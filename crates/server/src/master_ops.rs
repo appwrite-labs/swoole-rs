@@ -197,8 +197,7 @@ impl Objects<'_> {
         unsafe { Socket::from_ptr(self.ctx.sock.cast()) }
     }
     fn conn_socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: a live connection's socket, which the ops reading it have.
-        unsafe { Socket::from_ptr(self.conn().socket.cast()) }
+        self.conn().socket()
     }
     /// `edit` over the context's socket, or the default without one.
     fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
@@ -392,10 +391,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_EVENT_FD => sign(o.ctx.server_fd),
         OP_CONN_RESET => {
             let fd = o.edit_sock(|s| s.fd);
-            let conn = o
-                .tables()
-                .connections()
-                .wrapping_add(usize::try_from(fd).unwrap_or(0));
+            let conn = o.tables().connection_slot(fd)?;
             o.ctx.conn = conn.cast();
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1402,10 +1398,8 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(protocol.package_max_length)
         }
         OP_ST_PIPE_BIND => {
-            let fd = isize::try_from(arg).unwrap_or(isize::MAX);
-            let conn = o.tables().connections().wrapping_offset(fd);
-            // SAFETY: the pipe's fd indexes the live connection list, as in master.cc.
-            unsafe { (*conn).object = o.ctx.object };
+            let fd = c_int::try_from(arg).ok()?;
+            o.tables().connection_at(fd)?.object = o.ctx.object;
             0
         }
         OP_ABORT => {
@@ -1913,9 +1907,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let (ls, port) = (listen.raw(), listen.config());
             let socket = o.server().port_socket_at(index)?;
             let fd = socket.fd();
-            let at = isize::try_from(fd).unwrap_or(isize::MAX);
-            // SAFETY: the listening socket's fd indexes the live connection list.
-            let conn = unsafe { &mut *o.tables().connections().wrapping_offset(at) };
+            let conn = o.tables().connection_at(fd)?;
             conn.fd = fd;
             conn.socket = port.socket.cast();
             conn.socket_type = port.r#type;
@@ -2847,24 +2839,26 @@ mod tests {
     fn config_ops_read_and_write_the_config() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        // SAFETY: a fresh state owns its config; the ops below touch only it.
+        // SAFETY: a fresh state owns its config; the ops below touch only it. The test
+        // reads it through the state's pointer, as the ops do, so no reference of its
+        // own outlives an op.
         unsafe {
-            let config = &mut *(*state).config();
-            config.send_timeout = 2.5;
-            config.worker_num = 6;
+            let config = (*state).config();
+            (*config).send_timeout = 2.5;
+            (*config).worker_num = 6;
             assert_eq!(
                 answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT, 0),
                 Some(2.5f64.to_bits())
             );
             answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT_MIN, 0);
-            assert_eq!(config.send_timeout, 0.001);
+            assert_eq!((*config).send_timeout, 0.001);
             answer(&raw mut ctx, &*state, OP_CLEAR_SEND_YIELD, 0);
-            assert!(!config.send_yield);
+            assert!(!(*config).send_yield);
             answer(&raw mut ctx, &*state, OP_BASE_REACTORS, 0);
-            assert_eq!(config.reactor_num, 6);
-            config.scheduler_warning = true;
+            assert_eq!((*config).reactor_num, 6);
+            (*config).scheduler_warning = true;
             answer(&raw mut ctx, &*state, OP_WARNING_RESET, 7 << 1);
-            assert!(!config.scheduler_warning);
+            assert!(!(*config).scheduler_warning);
             assert_eq!(answer(&raw mut ctx, &*state, OP_WARNING_TIME, 0), Some(7));
             crate::swr_v1_server_state_free(state);
         }
@@ -2928,6 +2922,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn allocation_ops_fill_the_config_tables_and_counters() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
@@ -2984,7 +2979,7 @@ mod tests {
         ctx.port = (&raw mut port).cast();
         ctx.data = data.as_ptr().cast();
         ctx.length = 3;
-        let socket = (&raw const sock).addr() as u64;
+        let socket = (&raw const sock).expose_provenance() as u64;
         // SAFETY: the context's records are live above.
         unsafe {
             assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(1));

@@ -248,6 +248,7 @@ mod tests {
     use swoole_rs_memory::members::Shm;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
         use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
@@ -283,7 +284,7 @@ mod tests {
             *(*state).tables() = ServerTables {
                 connection_list: crate::records::tests::naming(&mut connections),
                 session_list: crate::records::tests::naming(&mut sessions),
-                max_connection: 2,
+                max_connection: 3,
                 ..ServerTables::default()
             };
             count_send(&*state, 1, 4);
@@ -309,6 +310,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn shared_counter_updates_survive_a_worker_fork() {
         unsafe {
             let gs = swoole_rs_memory::members::Shm::calloc(1, 4096);

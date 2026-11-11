@@ -142,10 +142,11 @@ impl Sock {
 
     /// `accept()`: the accepted connection.
     fn accept(&self) -> Option<Self> {
-        let mut addr: libc::sockaddr_storage = unsafe { mem::zeroed() };
-        let mut length = socklen::<libc::sockaddr_storage>();
-        let fd =
-            unsafe { swr_v1_hook_uring_accept(&self.ops, (&raw mut addr).cast(), &raw mut length) };
+        let mut address = SocketAddress {
+            len: socklen::<libc::sockaddr_storage>(),
+            ..SocketAddress::default()
+        };
+        let fd = swr_v1_hook_uring_accept(&self.ops, &mut address);
         (fd >= 0).then(|| Self::new(fd))
     }
 

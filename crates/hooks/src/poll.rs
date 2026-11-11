@@ -24,10 +24,10 @@ pub struct PollFd {
 pub struct PollOps<S> {
     /// Registers `fd` for `events` with the task as its object; none if the reactor
     /// refused it.
-    add: fn(i32, i32, Parked) -> Option<S>,
+    add: fn(i32, i32, Registered) -> Option<S>,
     /// A one-shot timer of `timeout` seconds calling [`timeout`] on the task; none if
     /// it could not be added.
-    timer_add: fn(f64, Parked) -> Option<Timer>,
+    timer_add: fn(f64, Registered) -> Option<Timer>,
     /// `Coroutine::get_current_safe()`.
     current: extern "C" fn() -> *mut c_void,
     /// `co->yield()`.
@@ -40,7 +40,7 @@ pub struct PollOps<S> {
 pub struct Wake {
     timer_del: fn(Timer),
     /// Defers [`completed`] of the task to the reactor.
-    defer: fn(Parked),
+    defer: fn(Registered),
 }
 
 /// A parked poll's task as the object of its sockets, timer and deferred wake. Only
@@ -48,7 +48,7 @@ pub struct Wake {
 /// sockets are dropped, its timer has fired or been deleted, and its deferred wake has
 /// run: the coroutine resumes after all three.
 #[derive(Clone, Copy)]
-pub struct Parked(NonNull<Task<'static>>);
+pub struct Registered(NonNull<Task<'static>>);
 
 /// A parked poll's pending timer: it fires once, or [`Wake`] deletes it. Only this
 /// module makes one.
@@ -112,7 +112,7 @@ pub fn ready(task: &Task<'_>, fd: i32, event: i32) {
             (task.wake.timer_del)(timer);
         }
         // `poll_sockets`' own task, which `wait` lets only this first readiness defer.
-        (task.wake.defer)(Parked(NonNull::from(task).cast()));
+        (task.wake.defer)(Registered(NonNull::from(task).cast()));
     }
 }
 
@@ -168,11 +168,11 @@ fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> bool
         wake: &ops.wake,
     };
     // `task` stays here until the coroutine resumes, which `clean` precedes.
-    let parked = Parked(NonNull::from(&task).cast());
+    let registered = Registered(NonNull::from(&task).cast());
     let mut tasked = false;
     for (entry, socket) in fds.iter().zip(&sockets) {
         let PollFd { fd, events, .. } = entry.get();
-        let added = (ops.add)(fd, events, parked);
+        let added = (ops.add)(fd, events, registered);
         tasked |= added.is_some();
         socket.set(added);
     }
@@ -181,7 +181,7 @@ fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> bool
     }
     if timeout > 0.0 {
         // The timer is deleted or fires before the coroutine resumes.
-        task.timer.set((ops.timer_add)(timeout, parked));
+        task.timer.set((ops.timer_add)(timeout, registered));
     }
     // Callbacks reach `task` while `co` is parked.
     (ops.park)();
@@ -252,21 +252,7 @@ pub fn socket_poll_rows(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i
 
 /// The hooked `poll(2)` in a coroutine with a nonzero timeout: a repeated fd counts
 /// once, through its first entry; the others' `revents` stay as they were.
-///
-/// # Safety
-/// `fds` holds `nfds` pollfds.
-pub unsafe fn swr_v1_hook_poll<S>(
-    fds: *mut libc::pollfd,
-    nfds: libc::nfds_t,
-    timeout: i32,
-    ops: &PollOps<S>,
-) -> i32 {
-    let fds: &mut [libc::pollfd] = if nfds == 0 {
-        &mut []
-    } else {
-        // SAFETY: the caller passes `nfds` pollfds.
-        unsafe { std::slice::from_raw_parts_mut(fds, usize::try_from(nfds).unwrap_or(0)) }
-    };
+pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps<S>) -> i32 {
     let mut first = Vec::new();
     let mut rows: Vec<PollFd> = Vec::new();
     for (i, polled) in fds.iter().enumerate() {
@@ -317,7 +303,7 @@ pub use tests::Socket as TestSocket;
 
 #[cfg(not(test))]
 pub(crate) mod native {
-    use super::{Parked, Task, Timer};
+    use super::{Registered, Task, Timer};
     use crate::wait_event::Watch;
     use core::ffi::c_void;
     use swoole_rs_corebase::constants::FdType;
@@ -326,7 +312,7 @@ pub(crate) mod native {
 
     use swoole_rs_timer::{swoole_timer_del, swr_v1_timer_add_plain_sec};
 
-    pub(super) fn add(fd: i32, events: i32, task: Parked) -> Option<Watch> {
+    pub(super) fn add(fd: i32, events: i32, task: Registered) -> Option<Watch> {
         let task = task.0.as_ptr().cast();
         // SAFETY: a poll task, the object `poll_ready` takes, which outlives the watch.
         unsafe { Watch::add(fd, FdType::SW_FD_CO_POLL as i32, events, task) }.ok()
@@ -340,7 +326,7 @@ pub(crate) mod native {
         unsafe { resume(co) };
     }
 
-    pub(super) fn timer_add(timeout: f64, task: Parked) -> Option<Timer> {
+    pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {
         let task = task.0.as_ptr().cast();
         // SAFETY: the task outlives the timer, which fires or is deleted first.
         let timer = unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, task) };
@@ -353,7 +339,7 @@ pub(crate) mod native {
     }
 
     /// The deferred wake of a parked poll.
-    struct Completed(Parked);
+    struct Completed(Registered);
 
     impl Deferred for Completed {
         fn run(self) {
@@ -366,7 +352,7 @@ pub(crate) mod native {
         fn dispose(self) {}
     }
 
-    pub(super) fn defer(task: Parked) {
+    pub(super) fn defer(task: Registered) {
         // The task's sockets fired on this thread's reactor, so it has one.
         _ = swoole_event_defer_value(Completed(task));
     }
@@ -382,8 +368,8 @@ mod tests {
         /// Fds the fake reactor refuses, and what fires while parked.
         static REFUSE: Cell<i32> = const { Cell::new(-1) };
         static FIRE: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
-        static DEFERRED: Cell<Option<Parked>> = const { Cell::new(None) };
-        static TASK: Cell<Option<Parked>> = const { Cell::new(None) };
+        static DEFERRED: Cell<Option<Registered>> = const { Cell::new(None) };
+        static TASK: Cell<Option<Registered>> = const { Cell::new(None) };
     }
     fn log(entry: String) {
         LOG.with_borrow_mut(|log| log.push(entry));
@@ -400,7 +386,7 @@ mod tests {
         }
     }
 
-    fn add(fd: i32, events: i32, task: Parked) -> Option<Socket> {
+    fn add(fd: i32, events: i32, task: Registered) -> Option<Socket> {
         log(format!("add {fd} {events}"));
         if fd == REFUSE.get() {
             return None;
@@ -412,7 +398,7 @@ mod tests {
         clippy::unnecessary_wraps,
         reason = "the fake has PollOps::timer_add's type"
     )]
-    fn timer_add(timeout: f64, _: Parked) -> Option<Timer> {
+    fn timer_add(timeout: f64, _: Registered) -> Option<Timer> {
         log(format!("timer {timeout}"));
         Some(Timer(NonNull::dangling()))
     }
@@ -420,7 +406,7 @@ mod tests {
         assert_eq!(timer, NonNull::dangling());
         log("timer_del".into());
     }
-    fn defer(task: Parked) {
+    fn defer(task: Registered) {
         log("defer".into());
         DEFERRED.set(Some(task));
     }
@@ -577,10 +563,7 @@ mod tests {
             entry(9, libc::POLLIN),
             entry(8, libc::POLLIN),
         ];
-        assert_eq!(
-            unsafe { swr_v1_hook_poll(fds.as_mut_ptr(), 3, 2000, &OPS) },
-            1
-        );
+        assert_eq!(swr_v1_hook_poll(&mut fds, 2000, &OPS), 1);
         assert_eq!(fds.map(|polled| polled.revents), [libc::POLLOUT, -1, 0]);
         assert_eq!(
             take(),

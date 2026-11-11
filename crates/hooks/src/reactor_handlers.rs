@@ -3,7 +3,7 @@
 //! (`SW_FD_CO_EVENT`), registered through `set`; a ready waiter's coroutine resumes
 //! through [`wake`], deferred on the thread's reactor.
 use crate::socket_members;
-use crate::wait_event::{ERROR, READ, WRITE, event_ready};
+use crate::wait_event::{ERROR, Parked, READ, WRITE, event_ready};
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_reactor::{Event, Handler, Running};
@@ -32,10 +32,8 @@ extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -
     let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
     let waiter = unsafe { &*waiter.cast::<crate::wait_event::Waiter>() };
-    let co = event_ready(waiter, KIND);
-    if !co.is_null() {
-        // SAFETY: `co` stays parked until the deferred resume runs.
-        unsafe { wake(co) };
+    if let Some(co) = event_ready(waiter, KIND) {
+        wake(co);
     }
     0
 }
@@ -94,45 +92,23 @@ pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
 
 /// `Iouring::callback`.
 #[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
-extern "C" fn iouring_ready(_: Running<'_>, event: &mut Event) -> c_int {
-    let (iouring, _) = fired(event);
-    // SAFETY: a `SW_FD_IOURING` socket, whose object is its instance.
-    unsafe { crate::iouring::ready(iouring) }
+extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
+    crate::iouring::ready()
 }
 
 /// `sw_reactor()->defer([co] { co->resume(); })`.
-///
-/// # Safety
-/// `co` stays parked until the deferred resume runs, on the thread's running loop.
 #[cfg(not(test))]
-unsafe fn defer_resume(co: *mut c_void) {
-    // SAFETY: the coroutine stays parked until this deferred resume runs.
-    unsafe { defer(swoole_rs_coroutine::resume, co, None) };
-}
-
-/// `sw_reactor()->defer(call, data)` on the calling thread's loop; `dispose(data)`
-/// instead if the loop goes first.
-///
-/// # Safety
-/// The thread's reactor loop is running; `call(data)` is sound when it runs.
-#[cfg(not(test))]
-pub(crate) unsafe fn defer(
-    call: swoole_rs_reactor::DeferCall,
-    data: *mut c_void,
-    dispose: Option<swoole_rs_reactor::DeferDispose>,
-) {
+fn defer_resume(co: Parked) {
     // Upstream dereferences the thread's null reactor; abort instead.
-    let Some(reactor) = swoole_rs_reactor::event_api::current_prepared() else {
+    if swoole_rs_reactor::event_api::swoole_event_defer_value(co).is_err() {
         std::process::abort();
-    };
-    // SAFETY: the thread's live loop's fields; the caller vouches for `call(data)`.
-    unsafe { swoole_rs_reactor::defer(reactor.fields, call, data, dispose) };
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wait_event::{EventWaitOps, Parked, swr_v1_hook_wait_event};
+    use crate::wait_event::{EventWaitOps, Registered, swr_v1_hook_wait_event};
     use std::cell::{Cell, RefCell};
     use swoole_rs_reactor::SocketRecord;
 
@@ -147,8 +123,12 @@ mod tests {
     fn set(fd_type: c_int, events: c_int, handler: Handler) {
         HANDLERS.with_borrow_mut(|handlers| handlers.push((fd_type, events, handler)));
     }
-    pub(super) unsafe fn wake(co: *mut c_void) {
-        assert_eq!(co, CO);
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the native wake's signature, which defers it"
+    )]
+    pub(super) fn wake(co: Parked) {
+        assert_eq!(co.co(), CO);
         WOKEN.set(WOKEN.get() + 1);
     }
     fn handler(fd_type: FdType, events: c_int) -> Handler {
@@ -174,7 +154,7 @@ mod tests {
     }
 
     #[expect(clippy::unnecessary_wraps, reason = "EventWaitOps::add's signature")]
-    fn add(fd: i32, _: i32, waiter: Parked) -> Result<Socket, i32> {
+    fn add(fd: i32, _: i32, waiter: Registered) -> Result<Socket, i32> {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
         unsafe { (*socket).fields.object = waiter.as_ptr() };
         SOCKET.set(socket);

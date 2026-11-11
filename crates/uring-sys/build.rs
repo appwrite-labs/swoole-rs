@@ -27,6 +27,7 @@ mod uring {
         bindgen::Builder::default()
             .header("src/shim.h")
             .generate_comments(false)
+            .derive_default(true)
             .clang_args(
                 library
                     .include_paths

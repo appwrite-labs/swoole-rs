@@ -212,17 +212,7 @@ unsafe fn connect(
 
 /// `getsockopt(fd, SOL_SOCKET, SO_ERROR)` into `error`.
 fn so_error(fd: c_int, error: &mut c_int) -> c_int {
-    let mut length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
-    // SAFETY: the caller's int and its size.
-    unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_ERROR,
-            (&raw mut *error).cast(),
-            &raw mut length,
-        )
-    }
+    swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
 }
 
 /// The lifecycle gate's former scenarios, ported: each runs Rust's operation and

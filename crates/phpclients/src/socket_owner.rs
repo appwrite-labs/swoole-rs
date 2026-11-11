@@ -1,37 +1,34 @@
 //! Object and imported-resource custody for Coroutine Socket.
-use super::{SOCKET, Sock, SocketObject};
+use super::{Data, Sock};
 use crate::native::{self, Co, NewSocket};
-use swoole_rs_zend::{Owned, Value, bailout::Bailout, sys as z};
+use swoole_rs_zend::{Owned, Value, bailout::Bailout, new_object, sys as z};
 
 /// Free the length callback, then the owned core socket after releasing any
-/// imported stream reference. Upstream's free leaves the callback to the exit.
-/// Do not call close: shutdown can otherwise resume other coroutines.
-/// # Safety
-/// Zend is freeing this socket object, and no method remains suspended on it.
-pub(super) unsafe fn release(sock: Sock) -> Result<(), Bailout> {
-    let Some(co) = sock.co() else {
+/// imported stream reference (whose destructor's bailout is deferred). Upstream's
+/// free leaves the callback to the exit. Do not call close: shutdown can
+/// otherwise resume other coroutines. The object's drop: nothing else holds it,
+/// and no method remains suspended on it.
+pub(super) fn release(data: &Data) -> Result<(), Bailout> {
+    let Some(co) = data.co() else {
         return Ok(());
     };
     let freed = co.free_length_callable();
-    if sock.has_stream() {
+    if data.has_stream() {
         // The still-owned core socket relinquishes the fd before the stream closes it.
         co.move_fd();
-        // SAFETY: the object owns this stream reference; the leaf contains PHP destructor bailouts.
-        if unsafe { z::swr_zend_try_zval_dtor(sock.stream()) } != 0 {
-            return Err(Bailout);
-        }
+        drop(data.stream.take());
     }
-    // SAFETY: the object's core ownership is transferred exactly once to its native destructor.
+    // SAFETY: the dropping object's socket, which nothing else holds; freed once.
     freed.and(unsafe { swoole_rs_phpruntime::co::free(co.as_ptr()) })
 }
 
 /// Free the length callback, then close an imported stream or the owned core socket.
 pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
     socket.free_length_callable()?;
-    if !sock.has_stream() {
+    if !sock.data().has_stream() {
         return socket.close_trapped().map(drop);
     }
-    let stream_value = sock.stream();
+    let stream_value = sock.data().stream();
     // SAFETY: this is the initialized imported stream zval used by the original no-verify lookup.
     let stream = unsafe { z::swr_zend_stream_from_zval(stream_value) };
     if !stream.is_null() {
@@ -53,14 +50,11 @@ pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// Construct the PHP object over an already allocated core socket, which it owns.
+/// Construct the PHP object over an already allocated core socket, which it
+/// owns: when the allocation bails out, the socket goes with the data.
 pub(super) fn make_object(socket: NewSocket) -> Result<Owned, Bailout> {
-    // SAFETY: the registered class's data layout is zero-initializable.
-    let object = unsafe { SocketObject::try_create(&SOCKET, SOCKET.entry()) }?;
-    // SAFETY: the new object, whose one reference the value takes.
-    let object = unsafe { Owned::object(object) };
-    let sock = Sock::of(&object).unwrap_or_else(|| unreachable!("a socket object"));
-    sock.adopt(socket);
+    let object = new_object(Data::owning(Some(socket.into_co())));
+    Sock::of(&object).ok_or(Bailout)?.publish();
     Ok(object)
 }
 
