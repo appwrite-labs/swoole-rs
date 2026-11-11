@@ -138,10 +138,9 @@ fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> ZSt
         // SAFETY: the live server and connection the caller passed.
         unsafe { swoole_rs_server::local_addr::get_local_addr(server, conn) }
     } else {
-        // SAFETY: as above.
-        let info = unsafe { &raw const (*conn).info };
-        // SAFETY: `Server::get_remote_addr`: the connection's live peer address.
-        unsafe { swr_v1_clients_address_host(info) }
+        // SAFETY: the live connection the caller passed.
+        let info = unsafe { &(*conn).info };
+        swr_v1_clients_address_host(info)
     };
     // SAFETY: the server's NUL-terminated address text.
     ZString::new(unsafe { CStr::from_ptr(text) }.to_bytes())
@@ -268,10 +267,8 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     if route != REQUEST {
         return route;
     }
-    // SAFETY: the connection's own address record.
-    facts.remote_port = i64::from(unsafe { swr_v1_clients_address_port(&raw const conn.info) });
-    // SAFETY: as above.
-    if unsafe { swr_v1_clients_address_loopback(&raw const conn.info) } {
+    facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info));
+    if swr_v1_clients_address_loopback(&conn.info) {
         facts.loopback = if conn.info.kind == SOCK_TCP6 { 6 } else { 4 };
     }
     facts.cache = can_cache(server)
@@ -531,10 +528,8 @@ fn http2_connection(
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
     let conn = server.by_session(fd)?;
-    // SAFETY: the connection's own address record.
-    let remote_port = i64::from(unsafe { swr_v1_clients_address_port(&raw const conn.info) });
-    // SAFETY: as above.
-    let loopback = if unsafe { swr_v1_clients_address_loopback(&raw const conn.info) } {
+    let remote_port = i64::from(swr_v1_clients_address_port(&conn.info));
+    let loopback = if swr_v1_clients_address_loopback(&conn.info) {
         if conn.info.kind == SOCK_TCP6 { 6 } else { 4 }
     } else {
         0

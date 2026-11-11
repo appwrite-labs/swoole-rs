@@ -101,12 +101,12 @@ impl TaskHost for Host {
 
     fn pipe_clean(&mut self) {
         // SAFETY: this worker's live notify pipe.
-        unsafe { socket_pair::clean(self.pipe) };
+        socket_pair::clean(unsafe { &*self.pipe });
     }
 
     fn set_timeout(&mut self, timeout: f64) {
         // SAFETY: as above.
-        unsafe { socket_pair::set_timeout(self.pipe, timeout) };
+        socket_pair::set_timeout(unsafe { &mut *self.pipe }, timeout);
     }
 
     fn read_notify(&mut self) -> isize {

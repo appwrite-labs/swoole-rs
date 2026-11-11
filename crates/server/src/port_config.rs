@@ -124,7 +124,7 @@ impl PortConfig {
             return false;
         }
         // SAFETY: the port's live owner.
-        let fields = unsafe { swr_v1_tls_owner_view(self.ssl_context) }.fields;
+        let fields = swr_v1_tls_owner_view(unsafe { &*self.ssl_context }).fields;
         // SAFETY: the owner's fields live as long as the port's reference.
         let protocols = unsafe { (*fields).protocols };
         protocols & SslVersion::SW_SSL_DTLS as u32 != 0

@@ -241,18 +241,14 @@ pub unsafe extern "C" fn dispatch_sync(
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid.
 ///
 /// # Safety
-/// `pool` is a live, created `ProcessPool`; `worker` a live worker.
+/// `pool` is created.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole11ProcessPool10add_workerEPNS_6WorkerE")
 )]
-pub unsafe extern "C" fn add_worker(pool: *const PoolRecord, worker: *mut WorkerRecord) {
-    // SAFETY: the caller lends a live pool.
-    let registry = unsafe { (*pool).registry };
-    // SAFETY: the caller lends a live worker.
-    let pid = unsafe { Worker::new(worker).pid() };
+pub unsafe extern "C" fn add_worker(pool: &PoolRecord, worker: Worker<'_>) {
     // SAFETY: a created pool's registry is live.
-    unsafe { (*registry).insert(pid, worker.cast(), 0) };
+    unsafe { (*pool.registry).insert(worker.pid(), worker.raw().cast(), 0) };
 }
 
 /// `ProcessPool::del_worker(worker)`: whether the worker's pid was registered.
@@ -264,49 +260,30 @@ pub unsafe extern "C" fn add_worker(pool: *const PoolRecord, worker: *mut Worker
     unsafe(export_name = "_ZNK6swoole11ProcessPool10del_workerEPKNS_6WorkerE")
 )]
 #[must_use]
-pub unsafe extern "C" fn del_worker(pool: *const PoolRecord, worker: *const WorkerRecord) -> bool {
-    // SAFETY: the caller lends a live pool.
-    let registry = unsafe { (*pool).registry };
-    // SAFETY: the caller lends a live worker.
-    let pid = unsafe { Worker::new(worker).pid() };
+pub unsafe extern "C" fn del_worker(pool: &PoolRecord, worker: Worker<'_>) -> bool {
     // SAFETY: a created pool's registry is live.
-    unsafe { (*registry).unregister(pid) }
+    unsafe { (*pool.registry).unregister(worker.pid()) }
 }
 
 /// `ProcessPool::get_worker_by_pid(pid)`: null before `create` or for an unknown pid.
-///
-/// # Safety
-/// `pool` is a live `ProcessPool`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole11ProcessPool17get_worker_by_pidEi")
 )]
 #[must_use]
-pub unsafe extern "C" fn get_worker_by_pid(
-    pool: *const PoolRecord,
-    pid: c_int,
-) -> *mut WorkerRecord {
-    // SAFETY: the caller lends a live pool.
-    let registry = unsafe { (*pool).registry };
+pub extern "C" fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
+    let registry = pool.registry;
     if registry.is_null() {
         return ptr::null_mut();
     }
-    // SAFETY: a non-null registry is live.
+    // SAFETY: a pool's non-null registry is the live one `create` made.
     unsafe { (*registry).lookup(pid) }.cast()
 }
 
 /// `ProcessPool::is_worker_running(worker)`.
-///
-/// # Safety
-/// `pool` is a live `ProcessPool`; `worker` a live worker.
 #[must_use]
-pub unsafe fn is_worker_running(pool: *const PoolRecord, worker: *const WorkerRecord) -> bool {
-    // SAFETY: the caller lends a live pool.
-    let running = unsafe { (*pool).running };
-    // SAFETY: the caller lends a live worker.
-    running
-        && swr_v1_worker_global_get(4) == 0
-        && !unsafe { Worker::new(worker) }.exceeded_max_request()
+pub fn is_worker_running(pool: &PoolRecord, worker: Worker<'_>) -> bool {
+    pool.running && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)`: through its pool's queue or the pipe
@@ -434,8 +411,9 @@ pub unsafe fn listen<T>(
     if socket.is_null() {
         return -1;
     }
-    // SAFETY: as above; the pool now owns the listener.
-    unsafe { swr_v1_process_pool_ipc_set_listener(pool.ipc, socket.cast()) };
+    // SAFETY: a socket pool's IPC state, which nothing else borrows meanwhile; the pool
+    // now owns the listener.
+    swr_v1_process_pool_ipc_set_listener(unsafe { &mut *pool.ipc }, socket.cast());
     0
 }
 
@@ -582,14 +560,9 @@ impl ExitStatus {
 }
 
 /// `Worker::report_error(exit_status)`: the abnormal exit warning.
-///
-/// # Safety
-/// `worker` is a live worker; `exit_status` a live `ExitStatus`.
-pub unsafe fn worker_report_error(worker: *const WorkerRecord, exit_status: *const ExitStatus) {
-    // SAFETY: the caller lends a live worker.
-    let id = unsafe { Worker::new(worker).id() };
-    // SAFETY: the caller lends a live status.
-    let ExitStatus { pid, status } = unsafe { &*exit_status };
+pub fn worker_report_error(worker: Worker<'_>, exit_status: &ExitStatus) {
+    let id = worker.id();
+    let ExitStatus { pid, status } = exit_status;
     let signal = libc::WTERMSIG(*status);
     let report = if signal == libc::SIGSEGV {
         // SAFETY: SwooleG's message, valid until it next changes.
@@ -859,14 +832,14 @@ pub(crate) mod tests {
         assert_eq!(failed, -1, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
-            unsafe { swr_v1_process_pool_ipc_listener(pool.ipc) }.is_null(),
+            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc }).is_null(),
             "none kept"
         );
         // SAFETY: as above.
         let listened = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9501, 8, make) };
         assert_eq!(listened, 0, "listening");
         // SAFETY: the pool's IPC state.
-        let listener = unsafe { swr_v1_process_pool_ipc_listener(pool.ipc) };
+        let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc });
         assert_eq!(
             listener.cast_const(),
             (&raw const LISTENER).cast(),
@@ -995,8 +968,7 @@ pub(crate) mod tests {
             pid: 321,
             status: 3 << 8,
         };
-        // SAFETY: both are live.
-        unsafe { worker_report_error(&raw const worker, &raw const status) };
+        worker_report_error((&mut worker).into(), &status);
         assert_eq!(
             logged("Worker::report_error"),
             [(
@@ -1038,9 +1010,8 @@ pub(crate) mod tests {
     fn worker_lookup_needs_a_created_pool() {
         // SAFETY: a zeroed record is a pool before `create`, with a null registry.
         let pool: PoolRecord = unsafe { std::mem::zeroed() };
-        // SAFETY: the pool is live for the call.
         assert!(
-            unsafe { get_worker_by_pid(&raw const pool, 1) }.is_null(),
+            get_worker_by_pid(&pool, 1).is_null(),
             "no registry, no worker"
         );
     }

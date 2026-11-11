@@ -793,19 +793,14 @@ impl Bus {
 /// depend on this crate.
 ///
 /// # Safety
-/// `bus` is a live bus; `socket` is a live record; `head` is writable; `data`
-/// covers `head.len` bytes or is null.
+/// `socket` is a live record; `data` covers `head.len` bytes or is null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_bus_write(
-    bus: *const Bus,
+    bus: &Bus,
     socket: *mut SocketRecord,
-    head: *mut BusHead,
+    head: &mut BusHead,
     data: *const c_char,
 ) -> bool {
-    // SAFETY: the caller's live bus.
-    let bus = unsafe { &*bus };
-    // SAFETY: the caller's writable head.
-    let head = unsafe { &mut *head };
     // SAFETY: the caller's contract.
     unsafe { bus.send(socket, head, data.cast()) }
 }

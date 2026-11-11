@@ -284,14 +284,12 @@ mod native {
                 let (addr, port) = socket
                     .net(|record| {
                         let peer = &record.info;
-                        // SAFETY: the peer's live address.
-                        let addr = unsafe { swr_v1_clients_address_host(peer) };
+                        let addr = swr_v1_clients_address_host(peer);
                         // SAFETY: NUL-terminated text, unchanged until the next address.
                         let addr = unsafe { CStr::from_ptr(addr) }
                             .to_string_lossy()
                             .into_owned();
-                        // SAFETY: the peer's live address.
-                        (addr, unsafe { swr_v1_clients_address_port(peer) })
+                        (addr, swr_v1_clients_address_port(peer))
                     })
                     .unwrap_or_default();
                 swoole_rs_corebase::log::error_log(

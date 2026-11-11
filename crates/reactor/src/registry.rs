@@ -71,26 +71,18 @@ fn slot(fd: c_int) -> Option<usize> {
 }
 
 /// `Reactor::get_socket`: the socket registered for `fd`, or null.
-///
-/// # Safety
-/// `registry` is null or live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_registry_get(
-    registry: *const Registry,
+pub extern "C" fn swr_v1_reactor_registry_get(
+    registry: Option<&Registry>,
     fd: c_int,
 ) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    unsafe { registry.as_ref() }.map_or(ptr::null_mut(), |registry| registry.get(fd))
+    registry.map_or(ptr::null_mut(), |registry| registry.get(fd))
 }
 
 /// `Reactor::get_event_num`: how many fds are registered.
-///
-/// # Safety
-/// `registry` is null or live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_registry_count(registry: *const Registry) -> usize {
-    // SAFETY: as the caller promises.
-    unsafe { registry.as_ref() }.map_or(0, Registry::count)
+pub extern "C" fn swr_v1_reactor_registry_count(registry: Option<&Registry>) -> usize {
+    registry.map_or(0, Registry::count)
 }
 
 #[cfg(test)]
@@ -104,10 +96,8 @@ mod tests {
     fn registers_and_snapshots() {
         let mut registry = Registry::default();
         let socket = |n: usize| n as *mut c_void;
-        unsafe {
-            assert_eq!(swr_v1_reactor_registry_count(ptr::null()), 0);
-            assert!(swr_v1_reactor_registry_get(ptr::null(), 3).is_null());
-        }
+        assert_eq!(swr_v1_reactor_registry_count(None), 0);
+        assert!(swr_v1_reactor_registry_get(None, 3).is_null());
         assert_eq!(registry.put(3, socket(30), SW_EVENT_READ), 0);
         assert_eq!(registry.put(4, socket(40), SW_EVENT_WRITE), 0);
         assert_eq!(

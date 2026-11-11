@@ -59,7 +59,7 @@ pub(crate) fn new() -> *mut c_void {
 /// `pair` came from operator new and nothing uses it afterwards.
 unsafe fn delete_pair(pair: *mut SocketPair) {
     // SAFETY: as the caller promises.
-    unsafe { socket_pair::drop(pair) };
+    socket_pair::drop(unsafe { &mut *pair });
     // SAFETY: as the caller promises.
     unsafe { operator_delete(pair.cast()) };
 }
@@ -93,9 +93,10 @@ pub(crate) fn set_id(worker: *mut c_void, id: u32) {
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
 pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
     // SAFETY: storage for one pair; a failed operator new throws, which aborts here.
-    let pair = unsafe { operator_new(size_of::<SocketPair>()) }.cast::<SocketPair>();
+    let storage = unsafe { operator_new(size_of::<SocketPair>()) }
+        .cast::<std::mem::MaybeUninit<SocketPair>>();
     // SAFETY: fresh storage for a pair.
-    unsafe { socket_pair::unix_socket_new(pair, true, socket_type) };
+    let pair = socket_pair::unix_socket_new(unsafe { &mut *storage }, true, socket_type);
     // SAFETY: constructed above.
     let pair_ref = unsafe { &*pair };
     let (master, end) = (pair_ref.master_socket, pair_ref.worker_socket);
@@ -208,8 +209,11 @@ pub(crate) unsafe fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
         // SAFETY: as above.
         CLOSE_WRITE => unsafe { libc::shutdown(fd, libc::SHUT_WR) },
         #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-        // SAFETY: as the caller promises.
-        _ => c_int::from(unsafe { socket_pair::close(worker.pipe_object.cast(), which as c_int) }),
+        _ => c_int::from(socket_pair::close(
+            // SAFETY: as the caller promises.
+            unsafe { &mut *worker.pipe_object.cast::<SocketPair>() },
+            which as c_int,
+        )),
     };
     if ret >= 0 && which == 0 {
         // SAFETY: as the caller promises; upstream deletes it even when shared.

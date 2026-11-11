@@ -109,13 +109,16 @@ pub extern "C" fn swoole_api_version_id() -> c_int {
 /// decimal parser, leaving errno as it was, as a successful `std::stoi` does.
 /// Native code retains the throwing path.
 /// # Safety
-/// `input` is a valid NUL-terminated string and `output` is writable and disjoint.
+/// `input` is a valid NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     input: *const c_char,
-    output: *mut c_int,
+    output: Option<&mut c_int>,
 ) -> u8 {
-    if input.is_null() || output.is_null() {
+    let Some(output) = output else {
+        return 0;
+    };
+    if input.is_null() {
         return 0;
     }
     let saved = sys::errno();
@@ -131,8 +134,7 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     let Ok(value) = c_int::try_from(value) else {
         return 0;
     };
-    // SAFETY: `output` is non-null, writable and disjoint from `input`.
-    unsafe { output.write(value) };
+    *output = value;
     1
 }
 
@@ -148,7 +150,7 @@ pub fn get_env(name: &CStr) -> Option<c_int> {
     }
     let mut output = 0;
     // SAFETY: getenv's NUL-terminated value and a live output.
-    if unsafe { swr_v1_corebase_parse_stoi(value, &raw mut output) } == 0 {
+    if unsafe { swr_v1_corebase_parse_stoi(value, Some(&mut output)) } == 0 {
         std::process::abort();
     }
     Some(output)
@@ -368,19 +370,18 @@ pub unsafe fn radix(mut value: c_ulong, radix: u32, output: *mut u8, capacity: u
 
 /// Preserve native prefix, locale, signed-char and `size_t` wrap semantics.
 /// # Safety
-/// Input is a valid NUL-terminated C string; parsed is writable and disjoint.
+/// Input is a valid NUL-terminated C string.
 /// Bytes passed to toupper must satisfy the original host's ctype precondition.
 pub unsafe fn swr_v1_corebase_hex_mode(
     input: *const c_char,
-    parsed: *mut usize,
+    parsed: &mut usize,
     native_char_signed: u8,
 ) -> c_ulong {
     let mut current = input;
     let mut value = 0_usize;
     // `current` walks the caller's NUL-terminated string and stops at the first non-digit
     // (at the latest, the NUL), so every read below is inside it.
-    // SAFETY: `parsed` is writable and disjoint from `input`.
-    unsafe { parsed.write(0) };
+    *parsed = 0;
     // SAFETY: `input` is NUL-terminated, so strncasecmp stops at its end; the literal is too.
     if unsafe { strncasecmp(input, c"0x".as_ptr(), 2) } == 0 {
         current = current.wrapping_add(2);
@@ -413,8 +414,7 @@ pub unsafe fn swr_v1_corebase_hex_mode(
         value = value.wrapping_mul(16).wrapping_add(digit);
         current = current.wrapping_add(1);
     }
-    // SAFETY: `parsed` is writable and disjoint from `input`.
-    unsafe { parsed.write(current.addr() - input.addr()) };
+    *parsed = current.addr() - input.addr();
     value as c_ulong
 }
 
@@ -471,7 +471,7 @@ pub struct MkdirState {
 /// 3=invalid state/storage. Native access/mkdir/logging execute after return.
 /// # Safety
 /// Input is readable for `input_length` bytes. Output is writable for capacity
-/// bytes, disjoint from input and initialized state. State starts zeroed, then
+/// bytes, disjoint from input. State starts zeroed, then
 /// stays unmodified between calls; output stays unchanged by native IO. Stop on
 /// any result other than1. All pointers remain valid during each call only.
 pub unsafe fn swr_v1_corebase_mkdir_next(
@@ -479,13 +479,14 @@ pub unsafe fn swr_v1_corebase_mkdir_next(
     input_length: usize,
     output: *mut u8,
     capacity: usize,
-    state: *mut MkdirState,
+    state: Option<&mut MkdirState>,
 ) -> c_int {
-    if output.is_null() || state.is_null() || capacity == 0 || capacity > isize::MAX as usize {
+    let Some(state) = state else {
+        return 3;
+    };
+    if output.is_null() || capacity == 0 || capacity > isize::MAX as usize {
         return 3;
     }
-    // SAFETY: non-null, initialized state lent exclusively for this call.
-    let state = unsafe { &mut *state };
     let put = |index: usize, byte: u8| {
         // SAFETY: every caller keeps `index < capacity`; `output` lends `capacity` writable
         // bytes disjoint from the input.
@@ -548,8 +549,9 @@ pub unsafe fn swr_v1_corebase_mkdir_complete(
     let mut state = MkdirState::default();
     loop {
         // SAFETY: caller lends stable input and exclusive scratch through prefix iteration.
-        let step =
-            unsafe { swr_v1_corebase_mkdir_next(input, length, scratch, capacity, &raw mut state) };
+        let step = unsafe {
+            swr_v1_corebase_mkdir_next(input, length, scratch, capacity, Some(&mut state))
+        };
         if step != 1 {
             return step;
         }
@@ -580,7 +582,7 @@ mod tests {
                         input.len(),
                         storage.as_mut_ptr().cast(),
                         storage.len(),
-                        &raw mut state,
+                        Some(&mut state),
                     )
                 };
                 if step == 0 {
@@ -653,7 +655,7 @@ mod tests {
             let input = std::ffi::CString::new(text).unwrap();
             let mut output = 0x1357_9bdf;
             assert_eq!(
-                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), &raw mut output) },
+                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
                 1
             );
             assert_eq!(output, expected);
@@ -662,7 +664,7 @@ mod tests {
             let input = std::ffi::CString::new(text).unwrap();
             let mut output = 0x1357_9bdf;
             assert_eq!(
-                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), &raw mut output) },
+                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
                 0
             );
             assert_eq!(output, 0x1357_9bdf);
@@ -674,12 +676,9 @@ mod tests {
     fn native_hex_accepts_non_hex_letters_and_counts_prefix() {
         let mut parsed = 0;
         unsafe {
-            assert_eq!(
-                swoole_hex2dec(c"FFtail".as_ptr(), &raw mut parsed),
-                16_833_333
-            );
+            assert_eq!(swoole_hex2dec(c"FFtail".as_ptr(), &mut parsed), 16_833_333);
             assert_eq!(parsed, 6);
-            assert_eq!(swoole_hex2dec(c"0x".as_ptr(), &raw mut parsed), 0);
+            assert_eq!(swoole_hex2dec(c"0x".as_ptr(), &mut parsed), 0);
             assert_eq!(parsed, 2);
         }
     }

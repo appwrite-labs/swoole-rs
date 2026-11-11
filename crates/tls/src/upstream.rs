@@ -160,30 +160,19 @@ pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketRecord) -> *mut 
     unsafe { SSL_get_peer_cert_chain(ssl.cast()) }
 }
 
-/// `bool Socket::ssl_verify(bool allow_self_signed) const`.
-///
-/// # Safety
-/// `socket` is a live record holding an SSL.
+/// `bool Socket::ssl_verify(bool allow_self_signed) const`, on a socket holding an SSL.
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")
 )]
-pub unsafe extern "C" fn socket_ssl_verify(
-    socket: *const SocketRecord,
-    allow_self_signed: bool,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast_mut()) }) else {
-        return false;
-    };
-    let ssl = socket.read(|record| record.ssl);
+pub extern "C" fn socket_ssl_verify(socket: &SocketRecord, allow_self_signed: bool) -> bool {
     // SAFETY: the record's live SSL.
-    let error = unsafe { swr_v1_socket_ssl_verify(ssl.cast(), allow_self_signed) };
+    let error = unsafe { swr_v1_socket_ssl_verify(socket.ssl.cast(), allow_self_signed) };
     if error == c_long::from(X509_V_OK) {
         return true;
     }
-    let fd = socket.fd();
+    let fd = socket.fd;
     if error == c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
         log::error_log(
             LOG_NOTICE,
@@ -829,20 +818,11 @@ pub fn ssl_get_peer_certificate(socket: &SocketRecord) -> *mut X509 {
 }
 
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
-///
-/// # Safety
-/// `socket` is a live record and `name` NUL-terminated.
 #[must_use]
-pub unsafe fn socket_ssl_check_host(socket: *const SocketRecord, name: *const c_char) -> bool {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast_mut()) }) else {
-        return false;
-    };
-    let cert = socket.read(ssl_get_peer_certificate);
-    // SAFETY: the caller's NUL-terminated name.
-    let length = unsafe { CStr::from_ptr(name) }.count_bytes();
+pub fn socket_ssl_check_host(socket: &SocketRecord, name: &CStr) -> bool {
+    let cert = ssl_get_peer_certificate(socket);
     // SAFETY: the owned certificate (or null) and the name's bytes.
-    match unsafe { swr_v1_socket_ssl_check_host(cert, name, length) } {
+    match unsafe { swr_v1_socket_ssl_check_host(cert, name.as_ptr(), name.count_bytes()) } {
         1 => true,
         2 => {
             log::warning(
@@ -1205,8 +1185,11 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
     // SAFETY: as the caller promises.
     let queue = unsafe { out_queue(socket) };
     let mut front = swoole_rs_buffer::TypedFront::default();
-    // SAFETY: the live queue and a local.
-    buffer_check(unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front) });
+    // SAFETY: the live queue, borrowed for this call.
+    buffer_check(swoole_rs_buffer::swr_v1_buffer_typed_front(
+        unsafe { queue.as_ref() },
+        Some(&mut front),
+    ));
     // SAFETY: the front is a request `socket_sendfile_async` queued, which the queue
     // keeps until the pop below.
     let request = unsafe { &mut *front.token.cast::<SocketFileRequest>() };
@@ -1227,8 +1210,9 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
     }
     if result.pop {
         let mut detached = swoole_rs_buffer::TypedDetached::default();
-        // SAFETY: the live queue and a local.
-        let status = unsafe { swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, &raw mut detached) };
+        // SAFETY: the live queue, borrowed for this call.
+        let queue = unsafe { queue.as_mut() };
+        let status = swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut detached));
         if status != BUFFER_EMPTY {
             buffer_check(status);
             if let Some(dispose) = detached.dispose {
@@ -1267,7 +1251,9 @@ pub unsafe fn socket_sendfile_async(
     let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
     // SAFETY: the socket's output buffer exists now.
     let queue = unsafe { out_queue(socket) };
-    // SAFETY: the live output queue now owns the request.
+    // SAFETY: the live output queue.
+    let queue = unsafe { queue.as_mut() };
+    // SAFETY: the queue now owns the request.
     let status =
         unsafe { swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose) };
     if status != 0 {
@@ -1352,7 +1338,7 @@ pub unsafe fn socket_ssl_create(
     flags: c_int,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let fields = unsafe { crate::swr_v1_tls_owner_view(context) }.fields;
+    let fields = crate::swr_v1_tls_owner_view(unsafe { &*context }).fields;
     // SAFETY: the context's live fields.
     let context = unsafe { (*fields).context };
     // SAFETY: as the caller promises.
@@ -1635,8 +1621,8 @@ mod tests {
     fn peer_certificate_getters_without_ssl() {
         let socket = SocketRecord::new();
         assert!(ssl_get_peer_certificate(&socket).is_null());
+        assert!(!socket_ssl_check_host(&socket, c"localhost"));
         let socket = &raw const socket;
-        assert!(!unsafe { socket_ssl_check_host(socket, c"localhost".as_ptr()) });
         let mut pem = [0 as c_char; 64];
         let n = unsafe { socket_ssl_get_peer_certificate_pem(socket, pem.as_mut_ptr(), 64) };
         assert_eq!(n, -1);
@@ -1738,7 +1724,7 @@ mod tests {
         let (mut left, right) = pair();
         let mut queue: *mut swoole_rs_buffer::Buffer = std::ptr::null_mut();
         assert_eq!(
-            unsafe { swoole_rs_buffer::swr_v1_buffer_typed_create(65536, &raw mut queue) },
+            swoole_rs_buffer::swr_v1_buffer_typed_create(65536, Some(&mut queue)),
             0
         );
         // `Buffer`'s only member is its Rust handle.
@@ -1749,7 +1735,7 @@ mod tests {
         let request = Box::into_raw(file_request(&name, 1, 0).unwrap());
         let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
         let queued = unsafe {
-            swoole_rs_buffer::swr_v1_buffer_typed_push(queue, 1, request.cast(), dispose)
+            swoole_rs_buffer::swr_v1_buffer_typed_push(queue.as_mut(), 1, request.cast(), dispose)
         };
         assert_eq!(queued, 0);
         assert!(
@@ -1759,13 +1745,17 @@ mod tests {
         assert_eq!(unsafe { socket_handle_sendfile(socket) }, 0);
         assert_eq!(read_all(&right, 5), b"bcdef");
         assert_eq!(
-            unsafe { swoole_rs_buffer::swr_v1_buffer_append(queue, b"tail".as_ptr(), 4) },
+            unsafe { swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"tail".as_ptr(), 4) },
             0
         );
         assert_eq!(unsafe { socket_handle_send(socket) }, 0);
         assert_eq!(read_all(&right, 4), b"tail");
         let (mut length, mut count) = (0, 0);
-        unsafe { swoole_rs_buffer::swr_v1_buffer_stats(queue, &raw mut length, &raw mut count) };
+        swoole_rs_buffer::swr_v1_buffer_stats(
+            unsafe { queue.as_ref() },
+            Some(&mut length),
+            Some(&mut count),
+        );
         assert_eq!((length, count), (0, 0), "both chunks popped");
         assert_eq!(unsafe { swoole_rs_buffer::swr_v1_buffer_release(queue) }, 0);
         std::fs::remove_file(path).unwrap();

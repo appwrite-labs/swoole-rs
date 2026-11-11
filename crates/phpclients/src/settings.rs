@@ -188,8 +188,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
     if !mqtt {
         record.protocol.get_package_length = default_length_func as *mut c_void;
     } else if on {
-        // SAFETY: the client's own protocol.
-        unsafe { swoole_rs_protocols_ffi::set_protocol(&raw mut record.protocol) };
+        swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
     }
 }
 
@@ -420,7 +419,7 @@ fn proxy(
 /// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     // SAFETY: a live client.
-    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(cli.0) }
+    let owner = swoole_rs_clients::client::swr_v1_clients_ssl_context(unsafe { &*cli.0 })
         .cast::<tls::OwnedTlsContext>();
     if owner.is_null() {
         return;

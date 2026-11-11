@@ -757,7 +757,7 @@ pub mod co {
         // SAFETY: per the caller, over the live vector.
         let result = unsafe { member(socket, vector) };
         // SAFETY: the live owner.
-        let state = unsafe { swr_v1_reactor_iov_view(owner) };
+        let state = swr_v1_reactor_iov_view(unsafe { &*owner });
         // SAFETY: the owner `prepare` made, released once.
         unsafe { swr_v1_reactor_iov_destroy(owner) };
         (result, state.index, state.offset_bytes)

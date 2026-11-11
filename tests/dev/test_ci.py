@@ -33,10 +33,37 @@ for kind, error in [('flaky', 'HTTP 502: Bad Gateway'), ('limited', 'API rate li
             save()
             sys.stderr.write(error + '\\n')
             sys.exit(1)
-deleted = [branch for branch in data.get('deleted', []) if call.startswith('api repos/{owner}/{repo}/commits/' + branch)]
-if deleted:
-    sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
-    sys.exit(1)
+rev = next((arg[4:] for arg in args if arg.startswith('rev=')), None)
+query = args[-1]
+if args[:3] == ['api', '-i', 'graphql'] and 'object(expression' in query:
+    # A commit by name; a branch auto-merge deleted is no object.
+    found = None
+    if rev not in data.get('deleted', []) and 'checkSuites' not in query:
+        found = {'oid': 'c' * 40}
+    elif 'checkSuites' in query:
+        # Its runs: the next of data['runs'][rev] (id 7), and main's completed runs (history) on it,
+        # each under both workflows, with data['jobs'][run id] and their data['annotations'].
+        queue = data['runs'].get(rev, [])
+        conclusion = queue.pop(0) if len(queue) > 1 else (queue[0] if queue else None)
+        save()
+        runs = ([(7, conclusion, 'u')] if conclusion is not None else []) + [
+            (row['databaseId'], row['conclusion'], row['url']) for row in data.get('history', [])
+            if row.get('headSha', 'h' * 40) == rev and 'databaseId' in row]
+        def job(index, name, conclusion):
+            return {'name': name, 'databaseId': index + 100, 'status': 'COMPLETED' if conclusion else 'IN_PROGRESS',
+                    'conclusion': conclusion.upper() or None, 'startedAt': '2026-10-25T21:00:00Z',
+                    'completedAt': '2026-10-25T21:00:31Z' if conclusion else None,
+                    'annotations': {'nodes': data.get('annotations', {}).get(str(index + 100), [])}}
+        found = {'checkSuites': {'nodes': [
+            {'status': 'IN_PROGRESS' if conclusion == 'running' else 'COMPLETED',
+             'conclusion': None if conclusion == 'running' else conclusion.upper(),
+             'workflowRun': {'databaseId': run, 'url': url, 'workflow': {'resourcePath': '/o/r/actions/workflows/' + workflow}},
+             'checkRuns': {'nodes': [job(index, *row) for index, row in
+                                     enumerate(data.get('jobs', {}).get(str(run), [['rust', 'success']]))]}}
+            for run, conclusion, url in runs for workflow in ('merge.yml', 'pr.yml')]}}
+    print('HTTP/2.0 200 OK')
+    print()
+    print(json.dumps({'data': {'repository': {'object': found}}}))
 elif args[0] == 'api' and args[1].endswith('/pulls'):
     print(json.dumps(data.get('commit_pulls', [])))
 elif args[0] == 'api' and '/pulls?' in args[1]:
@@ -71,7 +98,7 @@ elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
 elif args[0] == 'api':
     print('c' * 40)
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
-    print(json.dumps(data.get('history', [])))
+    print(json.dumps([{'headSha': 'h' * 40, **row} for row in data.get('history', [])]))
 elif args[:2] == ['run', 'download'] and '-n' in args:
     report = Path(args[args.index('-D') + 1]) / data['report']
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +152,7 @@ class Ci(unittest.TestCase):
     def test_wait_defaults_to_the_merge_tier_on_main(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['running', 'success']})
         self.assertEqual((code, result['workflow'], result['state']), (0, 'merge.yml', 'passed'))
-        self.assertIn('api repos/{owner}/{repo}/commits/main -q .sha', self.gh_calls)
+        self.assertTrue(any(' -f rev=main ' in call for call in self.gh_calls))
         self.assertIn('rust: success in 31s', stderr)
 
     def test_wait_follows_the_run_that_replaced_its_commit(self):
@@ -370,19 +397,19 @@ class Ci(unittest.TestCase):
             self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
-        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
+        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'api -i graphql': 3})
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertEqual(stderr.count('HTTP 502: Bad Gateway; retrying'), 3)
 
     def test_an_exhausted_rate_limit_is_waited_out_within_the_deadline_and_named_beyond_it(self):
-        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, limited={'run list': 1}, reset_in=0)
+        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, limited={'api -i graphql': 1}, reset_in=0)
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertIn('API rate limit exceeded; waiting until', stderr)
         # `next` has no deadline: it stops at once and says when the limit resets.
         code, _, stderr = self.ci('next', runs={}, flags=(), limited={'api': 1})
         self.assertEqual(code, 1)
         self.assertRegex(stderr, r'API rate limit exceeded .*; it resets at \d\d:\d\d:\d\d')
-        self.assertIn('api rate_limit --jq .resources.core.reset', self.gh_calls)
+        self.assertIn('api rate_limit --jq .resources.graphql.reset', self.gh_calls)
 
     def test_a_search_call_waits_on_the_search_limit(self):
         sys.path.insert(0, str(ROOT))
@@ -449,8 +476,9 @@ class Ci(unittest.TestCase):
                                   jobs={'7': [['hybrid', 'failure'], ['cares', '']]}, annotations=annotations)
         self.assertEqual((code, result['state']), (2, 'running'))
         self.assertEqual(result['annotations'], {'hybrid': ['PHPT regression: tests/a.phpt (cargo: failed)']})
-        self.assertEqual([call for call in self.gh_calls if '/annotations' in call],
-                         ['api repos/{owner}/{repo}/check-runs/100/annotations?per_page=100'])
+        # They come with the run's jobs, in its one GraphQL query: no call per job.
+        self.assertEqual([call.split(' -F')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
+                         ['api -i graphql', 'api -i graphql'])
 
 
 if __name__ == '__main__':

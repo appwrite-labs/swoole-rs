@@ -251,7 +251,7 @@ impl EventData {
     pub fn dump(&self) {
         let mut buf = [0 as c_char; 1024];
         // SAFETY: a live header; `buf` is writable for its length.
-        unsafe { datahead_dump(&raw const self.head, buf.as_mut_ptr(), buf.len()) };
+        unsafe { datahead_dump(&self.head, buf.as_mut_ptr(), buf.len()) };
         // SAFETY: `dump` NUL-terminated `buf`.
         unsafe { libc::printf(c"%s".as_ptr(), buf.as_ptr()) };
         if self.head.ext_flags & TMPFILE != 0 {

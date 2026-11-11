@@ -225,7 +225,7 @@ fn encode(input: &[u8]) -> Vec<u8> {
     let (mut capacity, mut written) = (0, 0);
     // SAFETY: `input` is initialized for its length; `capacity` is a local.
     let status =
-        unsafe { swr_v1_http_url_capacity(input.as_ptr(), input.len(), &raw mut capacity) };
+        unsafe { swr_v1_http_url_capacity(input.as_ptr(), input.len(), Some(&mut capacity)) };
     assert_eq!(status, 0);
     let mut output = vec![0xa5; capacity];
     // SAFETY: `output` holds `capacity` bytes.
@@ -235,7 +235,7 @@ fn encode(input: &[u8]) -> Vec<u8> {
             input.len(),
             output.as_mut_ptr(),
             capacity,
-            &raw mut written,
+            Some(&mut written),
         )
     };
     assert_eq!((status, written + 1, output[written]), (0, capacity, 0));
@@ -247,7 +247,7 @@ fn decode(input: &[u8]) -> Vec<u8> {
     let (mut data, mut written) = ([input, b"\0"].concat(), 0);
     // SAFETY: `data` holds the input and its NUL.
     let status =
-        unsafe { swr_v1_http_url_decode(data.as_mut_ptr(), input.len(), &raw mut written) };
+        unsafe { swr_v1_http_url_decode(data.as_mut_ptr(), input.len(), Some(&mut written)) };
     assert_eq!((status, data[written]), (0, 0));
     data.truncate(written);
     data
@@ -293,9 +293,9 @@ fn boundaries_match_the_pin() {
                     length: 3,
                 };
                 // SAFETY: `input` is initialized for `length` bytes.
-                let found =
-                    unsafe { swr_v1_http_boundary(input.as_ptr(), length, offset, &raw mut span) }
-                        == 1;
+                let found = unsafe {
+                    swr_v1_http_boundary(input.as_ptr(), length, offset, Some(&mut span))
+                } == 1;
                 let expected = pin::boundary(&input[..length], offset);
                 assert_eq!(
                     found.then_some((span.offset, span.length)),

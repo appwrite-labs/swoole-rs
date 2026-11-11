@@ -77,7 +77,7 @@ pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
         let kq = (ops.native_handle)();
         // SAFETY: a live kqueue and writable result flag; no Rust borrow spans callbacks.
         let previous =
-            unsafe { crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &raw mut failed) };
+            unsafe { crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &mut failed) };
         if failed {
             report(ops, 9, signo, errno());
         }

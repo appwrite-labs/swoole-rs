@@ -120,10 +120,9 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
             // SAFETY: the overflowed socket has a queue.
             let queue = unsafe { out_queue(socket) };
             let (mut queued, mut count) = (0u32, 0usize);
-            // SAFETY: the live queue; both outputs are local.
-            unsafe {
-                swoole_rs_buffer::swr_v1_buffer_stats(queue, &raw mut queued, &raw mut count)
-            };
+            // SAFETY: the live queue.
+            let queue = unsafe { queue.as_ref() };
+            swoole_rs_buffer::swr_v1_buffer_stats(queue, Some(&mut queued), Some(&mut count));
             let (fd, size) = socket.read(|record| (record.fd, record.output.buffer_size));
             log::error_log(
                 log::LOG_WARNING,
@@ -218,8 +217,12 @@ impl FlushEffects for Flush<'_> {
         // SAFETY: the flush's socket has queued output.
         let queue = unsafe { out_queue(self.socket) };
         let mut front = swoole_rs_buffer::TypedFront::default();
-        // SAFETY: the live queue and a local view.
-        buffer_check(unsafe { swoole_rs_buffer::swr_v1_buffer_typed_front(queue, &raw mut front) });
+        // SAFETY: the live queue.
+        let queue = unsafe { queue.as_ref() };
+        buffer_check(swoole_rs_buffer::swr_v1_buffer_typed_front(
+            queue,
+            Some(&mut front),
+        ));
         front.kind.cast_signed()
     }
 

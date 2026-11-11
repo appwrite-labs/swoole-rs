@@ -705,7 +705,7 @@ impl<H: PoolHost> Pool<H> {
     fn start_check(&mut self) -> i64 {
         if self.ipc_mode() == IPC_SOCKET
             // SAFETY: the pool's IPC state.
-            && unsafe { swr_v1_process_pool_ipc_listener(self.ipc()) }.is_null()
+            && swr_v1_process_pool_ipc_listener(unsafe { &*self.ipc() }).is_null()
         {
             self.op(LOG_MUST_LISTEN, 0);
             return SW_ERR;
@@ -950,7 +950,7 @@ impl<H: PoolHost> Pool<H> {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
                 // SAFETY: the pool's IPC state.
-                unsafe { pool_ipc_prepare(self.ipc(), self.max_packet_size()) };
+                pool_ipc_prepare(unsafe { &mut *self.ipc() }, self.max_packet_size());
                 self.op(OP_PIPE_HANDLER, 0);
             } else {
                 self.op(OP_PIPE_HANDLER, 1);
@@ -1094,8 +1094,8 @@ impl<H: PoolHost> Pool<H> {
             // SAFETY: the caller's EventData holds `size` bytes.
             let data = unsafe { std::slice::from_raw_parts(event, size as usize) };
             // SAFETY: a socket pool's IPC state.
-            let sent =
-                unsafe { crate::pool::swr_v1_process_pool_ipc_send(self.ipc(), data, blocking) };
+            let ipc = unsafe { self.ipc().as_ref() };
+            let sent = crate::pool::swr_v1_process_pool_ipc_send(ipc, data, blocking);
             return if sent { SW_OK } else { SW_ERR };
         }
         let p = self.p;

@@ -434,8 +434,9 @@ fn on_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
 
 fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
     let mut parts = UrlParts::default();
-    // SAFETY: llhttp's span and a writable result.
-    if unsafe { swr_v1_httpbindings_request_url(Text { data: at, length }, &raw mut parts) } != 0 {
+    // SAFETY: llhttp's span.
+    if unsafe { swr_v1_httpbindings_request_url(Text { data: at, length }, Some(&mut parts)) } != 0
+    {
         return -1;
     }
     state.request.path = estrndup(at, parts.path_length);
@@ -757,12 +758,12 @@ fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
     }
     if state.mt_parser.is_some() && state.recv_chunked == 0 {
         let mut prefix = 0;
-        // SAFETY: llhttp's span and a writable result.
+        // SAFETY: llhttp's span.
         unsafe {
             swr_v1_httpbindings_body_prefix(
                 Text { data: at, length },
                 u32::from(beginning),
-                &raw mut prefix,
+                Some(&mut prefix),
             )
         };
         if !multipart_parse(state, at.wrapping_add(prefix), length - prefix) {
@@ -785,8 +786,10 @@ fn on_message_complete(state: &mut State) -> c_int {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
         let mut prefix = 0;
-        // SAFETY: the dechunked body and a writable result.
-        unsafe { swr_v1_httpbindings_body_prefix(Text { data: body, length }, 1, &raw mut prefix) };
+        // SAFETY: the dechunked body.
+        unsafe {
+            swr_v1_httpbindings_body_prefix(Text { data: body, length }, 1, Some(&mut prefix))
+        };
         if !multipart_parse(state, body.wrapping_add(prefix), length - prefix) {
             return -1;
         }
@@ -859,30 +862,28 @@ fn multipart_boundary(
 
 /// `Context::get_multipart_boundary`, for the HTTP/2 server.
 /// # Safety
-/// `context` is a live context; `at` spans `length` bytes; the outputs are writable.
+/// `context` is a live context; `at` spans `length` bytes.
 pub(crate) unsafe fn multipart_boundary_of(
     context: *mut c_void,
     at: *const c_char,
     length: usize,
     offset: usize,
-    boundary: *mut *mut c_char,
-    boundary_length: *mut c_int,
+    boundary: &mut *mut c_char,
+    boundary_length: &mut c_int,
 ) -> bool {
     // SAFETY: per the caller.
     let state = unsafe { &mut *context.cast::<State>() };
     let Some((start, len)) = multipart_boundary(state, at.cast(), length, offset) else {
         return false;
     };
-    // SAFETY: per the caller.
-    unsafe { *boundary = start.cast_mut().cast() };
+    *boundary = start.cast_mut().cast();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         reason = "upstream's int boundary length"
     )]
     let len = len as c_int;
-    // SAFETY: per the caller.
-    unsafe { *boundary_length = len };
+    *boundary_length = len;
     true
 }
 
@@ -982,7 +983,8 @@ fn trimmed(text: &[u8], length: usize) -> Box<[u8]> {
     }
     let mut result = Trimmed::default();
     // SAFETY: the buffer holds `length` (< FORM_KEYLEN) writable bytes.
-    if unsafe { swr_v1_httpbindings_trim_quotes(buffer.as_mut_ptr(), length, &raw mut result) } != 0
+    if unsafe { swr_v1_httpbindings_trim_quotes(buffer.as_mut_ptr(), length, Some(&mut result)) }
+        != 0
     {
         result = Trimmed { offset: 0, length };
     }

@@ -68,11 +68,9 @@ pub(crate) struct PacketLength {
 unsafe extern "C" fn fastcgi_length(
     _protocol: *const Protocol,
     _socket: *mut c_void,
-    pl: *mut PacketLength,
+    pl: &PacketLength,
 ) -> isize {
     const HEADER: u32 = 8;
-    // SAFETY: the receive loop passes its live packet view.
-    let pl = unsafe { &*pl };
     if pl.buf_size < HEADER {
         return 0;
     }

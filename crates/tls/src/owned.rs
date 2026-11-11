@@ -105,20 +105,16 @@ pub extern "C" fn swr_v1_tls_owner_new(warn: Warn) -> OwnedTlsPrepared {
     prepared(unsafe { &*Arc::into_raw(owner) })
 }
 /// `owner`'s scalar fields and string slots, valid while a reference is held.
-/// # Safety
-/// owner is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_view(owner: *const OwnedTlsContext) -> OwnedTlsPrepared {
-    // SAFETY: as the caller promises.
-    prepared(unsafe { &*owner })
+pub extern "C" fn swr_v1_tls_owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
+    prepared(owner)
 }
-/// # Safety
-/// owner is live; each returned ownership handle is released once.
+/// Another ownership handle on `owner`, for `swr_v1_tls_owner_free` to release once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_clone(
-    owner: *const OwnedTlsContext,
-) -> *const OwnedTlsContext {
-    // SAFETY: caller holds a live ownership handle throughout this increment.
+pub extern "C" fn swr_v1_tls_owner_clone(owner: &OwnedTlsContext) -> *const OwnedTlsContext {
+    let owner = ptr::from_ref(owner);
+    // SAFETY: every owner lives in the Arc `swr_v1_tls_owner_new` made, and the
+    // borrowed one is live throughout this increment.
     unsafe { Arc::increment_strong_count(owner) };
     owner
 }
@@ -240,7 +236,7 @@ pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
         callback: slot_password,
     };
     // SAFETY: local configuration, stable string slots and a live password binding.
-    let ctx = unsafe { create_context(&raw mut config, Some(password)) };
+    let ctx = unsafe { create_context(&mut config, Some(password)) };
     if !ctx.is_null() {
         // SAFETY: each session registers its canonical network socket before callbacks run.
         unsafe { crate::info::install(ctx) };
@@ -890,7 +886,7 @@ mod tests {
                     assert_eq!(bytes, expected);
                 }
             }
-            let retained = swr_v1_tls_owner_clone(owner);
+            let retained = swr_v1_tls_owner_clone(&*owner);
             swr_v1_tls_owner_free(owner);
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(

@@ -440,21 +440,17 @@ impl Drop for Lock {
 // op: load=0, store=1, add-fetch=2, sub-fetch=3, compare-set=4 (expected last).
 macro_rules! atomic_api {
     ($name:ident, $atomic:ty, $word:ty) => {
-        /// # Safety
-        /// `storage` is null or a live word that is only accessed atomically.
+        /// `storage` is null or a live, aligned word that is only accessed atomically.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            storage: *mut $word,
+        pub extern "C" fn $name(
+            storage: Option<&$atomic>,
             op: u32,
             value: $word,
             expected: $word,
         ) -> $word {
-            if storage.is_null() || !(storage as usize).is_multiple_of(align_of::<$atomic>()) {
+            let Some(a) = storage else {
                 return 0;
-            }
-            // SAFETY: non-null and aligned (checked above); the caller lends a live word
-            // that is only accessed atomically.
-            let a = unsafe { <$atomic>::from_ptr(storage) };
+            };
             match op {
                 0 => a.load(Ordering::Relaxed),
                 1 => {
@@ -564,26 +560,14 @@ pub extern "C" fn barrier_destroy(barrier: &Barrier) {
     let _ = barrier;
 }
 
-// The word functions below take null or a pointer to live u32 storage that is only
-// accessed atomically (process-shared for the futex pair); they reject misalignment.
-unsafe fn word<'a>(word: *mut u32) -> Option<&'a AtomicU32> {
-    if word.is_null() || !(word as usize).is_multiple_of(align_of::<AtomicU32>()) {
-        return None;
-    }
-    // SAFETY: non-null and aligned (checked above); live and atomic-only per this
-    // function's callers, for as long as they use the reference.
-    Some(unsafe { AtomicU32::from_ptr(word) })
-}
-
+// The word functions below take null or a pointer to live, aligned u32 storage that is
+// only accessed atomically (process-shared for the futex pair).
 /// Futex wait on a native atomic word: consume a ready token, otherwise one
 /// `FUTEX_WAIT` syscall. Non-futex builds use upstream's C++ wait registry.
-/// # Safety
-/// Word is aligned, live, process-shared u32 storage accessed only atomically.
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_wait(word: *mut u32, timeout: f64) -> i32 {
-    // SAFETY: the caller lends null or a live, atomic-only word for this call.
-    unsafe { self::word(word) }.map_or(-1, |word| wait(word, timeout))
+pub extern "C" fn swr_v1_locks_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
+    word.map_or(-1, |word| wait(word, timeout))
 }
 
 /// [`swr_v1_locks_wait`] on a word.
@@ -628,13 +612,11 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
         -1
     }
 }
-/// # Safety
-/// Same requirements as [`swr_v1_locks_wait`].
+/// Futex wake on a native atomic word.
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_wakeup(word: *mut u32, n: i32) -> i32 {
-    // SAFETY: the caller lends null or a live, atomic-only word for this call.
-    unsafe { self::word(word) }.map_or(-1, |word| wakeup(word, n))
+pub extern "C" fn swr_v1_locks_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
+    word.map_or(-1, |word| wakeup(word, n))
 }
 
 /// [`swr_v1_locks_wakeup`] on a word.
@@ -666,16 +648,15 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
 
 // 0=reentrant, 1=acquired, 2=busy, 3=wait. Cookie/CID values are copied tokens.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_coroutine_try(
-    word: *mut u32,
+pub extern "C" fn swr_v1_locks_coroutine_try(
+    word: Option<&AtomicU32>,
     held_cookie: usize,
     held_cid: i64,
     current_cookie: usize,
     current_cid: i64,
     blocking: u8,
 ) -> i32 {
-    // SAFETY: the caller lends null or a live, atomic-only word for this call.
-    let Some(a) = (unsafe { self::word(word) }) else {
+    let Some(a) = word else {
         return -1;
     };
     if current_cookie == held_cookie && current_cid == held_cid {
@@ -692,9 +673,8 @@ pub unsafe extern "C" fn swr_v1_locks_coroutine_try(
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_coroutine_release(word: *mut u32) -> i32 {
-    // SAFETY: the caller lends null or a live, atomic-only word for this call.
-    let Some(a) = (unsafe { self::word(word) }) else {
+pub extern "C" fn swr_v1_locks_coroutine_release(word: Option<&AtomicU32>) -> i32 {
+    let Some(a) = word else {
         return -1;
     };
     if a.load(Ordering::Relaxed) == 0 {
