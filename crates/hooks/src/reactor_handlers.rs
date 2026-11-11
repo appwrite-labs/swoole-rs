@@ -17,7 +17,7 @@ use tests::wake;
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
     // SAFETY: the reactor's event names a live socket.
-    let object = unsafe { (*event.socket_ptr().cast::<SocketRecord>()).object };
+    let object = unsafe { (*event.socket_ptr().cast::<SocketRecord>()).fields.object };
     (object, event.fd())
 }
 
@@ -169,7 +169,7 @@ mod tests {
     }
     unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, _: *mut i32) -> *mut c_void {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
-        unsafe { (*socket).object = waiter };
+        unsafe { (*socket).fields.object = waiter };
         SOCKET.set(socket);
         socket.cast()
     }

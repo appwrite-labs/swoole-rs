@@ -16,7 +16,7 @@ use super::{
     swr_v1_core_string_set,
 };
 use crate::{CppString, Event, Hook, Receive};
-use swoole_rs_ports::{lifecycle_native, methods};
+use swoole_rs_ports::{lifecycle, methods};
 use swoole_rs_server::server_methods;
 
 pub(super) const SW_LOG_INFO: c_int = 2;
@@ -451,7 +451,7 @@ pub(crate) unsafe fn swr_case_ssl_server(
     set_ssl_path(port.ssl_context(), KEY_FILE, key);
     tls_fields(port.ssl_context()).http = 1;
     // SAFETY: the live port, with its context.
-    let _ = unsafe { methods::ssl_init(port.0) };
+    let _ = unsafe { lifecycle::ssl_init(port.0) };
     let created = serv.create();
     serv.on_start(on_start);
     serv.on_worker_start(on_worker_start);
@@ -724,10 +724,10 @@ pub(crate) unsafe fn swr_case_ssl_sni(
     let port = Server(serv).get_primary_port();
     // SAFETY: the live port; its context's copy, which `sni_add` takes.
     unsafe {
-        let context = lifecycle_native::context_dup(port.0);
+        let context = lifecycle::context_dup(port.0);
         set_ssl_path(context.cast(), CERT_FILE, cert);
         set_ssl_path(context.cast(), KEY_FILE, key);
-        lifecycle_native::sni_add(port.0, CStr::from_ptr(name).to_bytes(), context);
+        lifecycle::sni_add(port.0, CStr::from_ptr(name).to_bytes(), context);
     }
 }
 
@@ -753,5 +753,5 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
 
 pub(crate) unsafe fn swr_case_ssl_init(serv: *mut c_void) -> bool {
     // SAFETY: the live primary port, with its context.
-    unsafe { methods::ssl_init(Server(serv).get_primary_port().0) }
+    unsafe { lifecycle::ssl_init(Server(serv).get_primary_port().0) }
 }

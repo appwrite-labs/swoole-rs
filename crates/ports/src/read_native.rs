@@ -256,7 +256,7 @@ fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
     match op {
         OP_CATCH => {
             let error = errno();
-            status(c.socket.edit(|s| s.catch_error(error)))
+            status(c.socket.catch_error(error))
         }
         OP_WARN_RECV => {
             let origin: &CStr = if c.kind == ON_READ_HTTP {

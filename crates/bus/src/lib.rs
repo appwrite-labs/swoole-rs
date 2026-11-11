@@ -720,9 +720,7 @@ impl Bus {
             let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
                 return false;
             };
-            socket.edit(|record| {
-                swoole_rs_reactor::catch_pipe_error(error, &mut record.kernel_nobufs)
-            }) == REDUCE_SIZE
+            socket.catch_pipe_error(error) == REDUCE_SIZE
         };
         if let Some(counter) = self.next_id {
             head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
@@ -787,6 +785,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn send_numbers_each_message_from_the_shared_counter() {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);

@@ -153,9 +153,10 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
     }
     // SAFETY: the engine opened.
     let fd = unsafe { &*opened.uring }.fd();
-    let socket = SocketRecord {
-        object: iouring.cast(),
-        ..SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int)
+    let socket = {
+        let mut socket = SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int);
+        socket.object = iouring.cast();
+        socket
     }
     .into_raw();
     // SAFETY: the new instance, not yet shared.

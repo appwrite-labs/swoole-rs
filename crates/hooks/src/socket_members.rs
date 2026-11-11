@@ -24,7 +24,7 @@ use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketRecord,
+    CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketFields, SocketRecord,
     swr_v1_reactor_iov_view, type_is,
 };
 use swoole_rs_tls::owner_fields;
@@ -131,7 +131,7 @@ impl Setup for Accepting {
     fn call(&mut self, _: c_int) -> c_int {
         self.conn = self
             .socket
-            .net(SocketRecord::accept)
+            .net(SocketFields::accept)
             .unwrap_or(core::ptr::null_mut());
         if self.conn.is_null() { -1 } else { 0 }
     }
@@ -548,7 +548,8 @@ impl Co {
         }
         // SAFETY: the address's live length.
         let to_length = unsafe { *length };
-        let call = call!(|s, at, len| libc::sendto((*s).fd, at.cast(), len, 0, to, to_length));
+        let call =
+            call!(|s, at, len| libc::sendto((*s).fields.fd, at.cast(), len, 0, to, to_length));
         // Availability was checked above.
         self.transfer_out(RETRY_INTERRUPTED | CHECKED, buf, call)
     }
@@ -627,7 +628,7 @@ impl Co {
             buf.as_mut_ptr().cast(),
             buf.len()
         ));
-        let call = call!(|s, at, len| libc::read((*s).fd, at.cast(), len));
+        let call = call!(|s, at, len| libc::read((*s).fields.fd, at.cast(), len));
         self.transfer_in(0, buf, call)
     }
 
@@ -640,7 +641,7 @@ impl Co {
             buf.as_ptr().cast_mut().cast(),
             buf.len()
         ));
-        let call = call!(|s, at, len| libc::write((*s).fd, at.cast(), len));
+        let call = call!(|s, at, len| libc::write((*s).fields.fd, at.cast(), len));
         self.transfer_out(0, buf, call)
     }
 
@@ -943,10 +944,10 @@ mod tests {
     }
 
     trait SocketMut {
-        fn socket_mut(&mut self) -> &mut SocketRecord;
+        fn socket_mut(&mut self) -> &mut SocketFields;
     }
     impl SocketMut for CoSocket {
-        fn socket_mut(&mut self) -> &mut SocketRecord {
+        fn socket_mut(&mut self) -> &mut SocketFields {
             unsafe { &mut *self.socket }
         }
     }

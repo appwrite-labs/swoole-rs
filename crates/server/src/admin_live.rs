@@ -14,7 +14,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_add
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{Registry, Socket as Handle, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Registry, Socket as Handle, SocketFields, SocketRecord, reactor_upstream};
 use swoole_rs_timer::{TimerStats, owner_queue, swr_v1_timer_stats_get};
 use swoole_rs_tls::socket_pair::SocketPair;
 
@@ -78,12 +78,12 @@ fn port(info: &SocketAddress) -> i64 {
 }
 
 /// `Socket::get_out_buffer_length()`.
-fn out_buffer_length(socket: &SocketRecord) -> u64 {
+fn out_buffer_length(socket: &SocketFields) -> u64 {
     let length = swoole_rs_buffer::cpp::swr_cpp_buffer_length;
     crate::reactor_ops::out_buffer(socket).map_or(0, |buffer| length(buffer).into())
 }
 
-fn socket(s: &SocketRecord) -> Socket {
+fn socket(s: &SocketFields) -> Socket {
     Socket {
         fd: s.fd.into(),
         events: s.events.into(),
@@ -214,7 +214,7 @@ impl Facts for Live<'_> {
     }
 
     fn socket_name(&mut self, index: u64) {
-        live(nth(&self.sockets, index)).edit(SocketRecord::get_name);
+        live(nth(&self.sockets, index)).edit(SocketFields::get_name);
     }
 
     fn commands(&mut self) -> Vec<Command> {

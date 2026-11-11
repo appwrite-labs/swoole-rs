@@ -664,20 +664,20 @@ pub(crate) mod tests {
 
             // wait_event polls with the timeout in every direction, then restores it.
             let socket = mapped(fd).unwrap().socket();
-            let read = (*socket).timeouts.read;
+            let read = (*socket).fields.timeouts.read;
             TIMER_OK.set(false);
             take();
             assert_eq!(swoole_coroutine_socket_wait_event(fd, 1 << 9, 0.5), -1);
             assert!(take().contains(&"timer:add:0.5".to_owned()));
             TIMER_OK.set(true);
-            assert_eq!((*socket).timeouts.read, read);
+            assert_eq!((*socket).fields.timeouts.read, read);
             assert_eq!(
                 swoole_coroutine_socket_set_timeout(fd, libc::SO_RCVTIMEO, 0.25),
                 0
             );
-            assert_eq!((*socket).timeouts.read, 0.25);
+            assert_eq!((*socket).fields.timeouts.read, 0.25);
             assert_eq!(swoole_coroutine_socket_set_connect_timeout(fd, 2.0), 0);
-            assert_eq!((*socket).timeouts.connect, 2.0);
+            assert_eq!((*socket).fields.timeouts.connect, 2.0);
         });
     }
 

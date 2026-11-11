@@ -206,10 +206,14 @@ pub(crate) fn read_bus(
         event: 0,
     };
     loop {
-        let n = sock.edit(|sock| {
-            // SAFETY: a bus whose buffer is set, and its pipe's descriptor and flag.
-            unsafe { bus.receive(sock.fd, dgram, &mut sock.kernel_nobufs, &mut state) }
-        });
+        // The receive only ever sets `kernel_nobufs`, so it edits the record only then:
+        // in thread mode, other threads read this worker's pipe meanwhile.
+        let mut nobufs = false;
+        // SAFETY: a bus whose buffer is set, and its pipe's descriptor.
+        let n = unsafe { bus.receive(sock.fd(), dgram, &mut nobufs, &mut state) };
+        if nobufs {
+            sock.edit(|sock| sock.kernel_nobufs = true);
+        }
         if state.event != BUS_ALLOCATE {
             return n;
         }
@@ -842,7 +846,7 @@ unsafe extern "C" fn accept(arg: *mut c_void) {
     let listener = listener(c.pool.cast());
     c.socket = socket(listener.cast())
         .map_or(ptr::null_mut(), |listener| {
-            listener.edit(swoole_rs_reactor::SocketRecord::accept)
+            listener.edit(swoole_rs_reactor::SocketFields::accept)
         })
         .cast();
     c.error = errno();

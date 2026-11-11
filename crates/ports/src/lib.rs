@@ -22,7 +22,6 @@ use swoole_rs_server::port_config::{self, PortMethods};
 pub mod framing_recv;
 pub mod http_routes;
 pub mod lifecycle;
-pub mod lifecycle_native;
 pub mod methods;
 pub mod read;
 #[cfg(not(test))]
@@ -107,10 +106,10 @@ pub fn register_methods() {
 }
 
 const METHODS: PortMethods = PortMethods {
-    ssl_context_init: methods::ssl_context_init,
-    ssl_create: methods::ssl_create,
-    import: methods::import,
-    close: methods::close,
+    ssl_context_init: lifecycle::ssl_context_init,
+    ssl_create: lifecycle::ssl_create,
+    import: lifecycle::import,
+    close: lifecycle::close,
     listen: methods::listen,
     create_socket: methods::create_socket,
     close_socket: methods::close_socket,
@@ -118,10 +117,10 @@ const METHODS: PortMethods = PortMethods {
     // SAFETY: the server passes one of its live ports, whose settings it isn't touching.
     init_protocol: |port| methods::init_protocol(unsafe { port_config::of(port) }),
     destroy_http_request: methods::destroy_http_request,
-    tls_free: lifecycle_native::tls_free,
-    dtls_create: lifecycle_native::dtls_create,
-    dtls_session: lifecycle_native::dtls_session,
-    dtls_free: lifecycle_native::dtls_free,
+    tls_free: lifecycle::tls_free,
+    dtls_create: lifecycle::dtls_create,
+    dtls_session: lifecycle::dtls_session,
+    dtls_free: lifecycle::dtls_free,
 };
 
 #[repr(C)]

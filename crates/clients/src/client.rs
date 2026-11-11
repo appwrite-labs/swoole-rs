@@ -30,7 +30,7 @@ use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{Event, Running};
 use swoole_rs_reactor::{
-    Socket, SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
+    Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
     swr_v1_socket_domain_and_type,
 };
 #[cfg(not(test))]
@@ -1763,8 +1763,10 @@ unsafe fn address_of(
     port: c_int,
     resolve: bool,
 ) -> Option<SocketAddress> {
-    let mut address: SocketAddress = SocketAddress::zeroed();
-    address.kind = kind;
+    let mut address = SocketAddress {
+        kind,
+        ..SocketAddress::default()
+    };
     let resolve = resolve
         .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
     // SAFETY: the local record's union and length, and the caller's host.
@@ -2039,7 +2041,7 @@ fn on_read(this: Handle) -> c_int {
     let n = this.recv_once(buf, size);
     if n < 0 {
         let socket = this.socket();
-        return match socket.edit(|socket| catch_error(errno(), &mut socket.kernel_nobufs)) {
+        return match socket.catch_error(errno()) {
             SW_ERROR => {
                 let fd = socket.fd();
                 log::sys_warning(
