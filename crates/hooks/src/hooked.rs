@@ -392,8 +392,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: no pointer arguments.
-        return unsafe { crate::uring::close_fd(ring, fd) };
+        return crate::uring::close_fd(ring, fd);
     }
     swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload))
 }
@@ -423,8 +422,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: `buf`'s slots.
-        return unsafe { crate::uring::read(ring, fd, buf.as_mut_ptr().cast(), buf.len(), -1.0) };
+        return crate::uring::read(ring, fd, buf, -1.0);
     }
     on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
         let mut socket = blocking(fd, false);
@@ -458,8 +456,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: `buf`'s bytes.
-        return unsafe { crate::uring::write(ring, fd, buf.as_ptr().cast(), buf.len(), -1.0) };
+        return crate::uring::write(ring, fd, buf, -1.0);
     }
     on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
         let mut socket = blocking(fd, true);
@@ -570,7 +567,7 @@ pub(crate) mod tests {
     }
     unsafe extern "C" fn free(socket: *mut c_void) {
         let mut socket = unsafe { Box::from_raw(socket.cast::<Fake>()) };
-        unsafe { crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut socket.record) };
+        socket.record.fini();
         call(format!(
             "free {} {}",
             socket.record.sock_fd, socket.network.fd

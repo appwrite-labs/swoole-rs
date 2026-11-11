@@ -21,7 +21,7 @@ pub struct Host {
     /// A timer for the read or the `write` wait that calls `timer_fired`, or null.
     pub timer_add: fn(Co, f64, bool) -> *mut c_void,
     /// Deletes a pending timer `timer_add` returned.
-    pub timer_del: unsafe fn(*mut c_void),
+    pub timer_del: unsafe extern "C-unwind" fn(*mut swoole_rs_timer::TimerNode) -> bool,
     /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
     pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, u32, usize),
     /// `Socket::recv/recv_all` (all selects the latter) into the read String's
@@ -133,7 +133,7 @@ mod native {
 
     pub(super) static HOST: Host = Host {
         timer_add,
-        timer_del,
+        timer_del: swoole_rs_timer::swoole_timer_del,
         read_buffer,
         recv,
         package_length,
@@ -146,36 +146,20 @@ mod native {
         socket.this().map_addr(|addr| addr | usize::from(write))
     }
 
-    /// The record and direction [`tag`] packed.
-    ///
-    /// # Safety
-    /// `data` came from [`tag`] of a record still live.
-    unsafe fn untag(data: *mut c_void) -> (Co, u32) {
-        let event = if data.addr() & 1 == 0 { READ } else { WRITE };
-        // SAFETY: as the caller promises.
-        (unsafe { Co::of(data.map_addr(|addr| addr & !1)) }, event)
-    }
-
     fn timer_add(socket: Co, timeout: f64, write: bool) -> *mut c_void {
         /// # Safety
         /// `data` is the [`tag`] of the record whose timer fired: its wait deletes
         /// the timer before the record goes.
         unsafe extern "C-unwind" fn fired(data: *mut c_void) {
-            // SAFETY: per the caller.
-            let (socket, event) = unsafe { untag(data) };
+            let event = if data.addr() & 1 == 0 { READ } else { WRITE };
+            // SAFETY: per the caller: the tagged live record, its tag bit cleared.
+            let socket = unsafe { Co::of(data.map_addr(|addr| addr & !1)) };
             super::timer_fired(socket, event);
         }
         // SAFETY: `fired` gets the live record's tag, as it asks.
         unsafe {
             swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, fired, tag(socket, write))
         }
-    }
-
-    /// # Safety
-    /// `node` is a pending timer.
-    unsafe fn timer_del(node: *mut c_void) {
-        // SAFETY: per the caller.
-        unsafe { swoole_rs_timer::swoole_timer_del(node.cast()) };
     }
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
@@ -529,7 +513,7 @@ impl Timer {
         }
         if node != SENTINEL {
             // SAFETY: the timer `start` added, still pending: firing clears the slot.
-            unsafe { (host().timer_del)(node) };
+            unsafe { (host().timer_del)(node.cast()) };
         }
         self.set_slot(ptr::null_mut());
     }
@@ -668,8 +652,9 @@ pub(crate) mod test_host {
         NODES.set(NODES.get() + 1);
         ptr::dangling_mut::<u32>().cast()
     }
-    fn timer_del(_: *mut c_void) {
+    unsafe extern "C-unwind" fn timer_del(_: *mut swoole_rs_timer::TimerNode) -> bool {
         log("timer:delete");
+        true
     }
     fn sleep() {
         log("sleep");
