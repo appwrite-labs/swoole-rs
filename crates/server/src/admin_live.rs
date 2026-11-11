@@ -4,10 +4,11 @@ use super::{Command, Connection, Facts, Manager, Port, Socket, Thread, commands,
 use crate::json::Json;
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
-use crate::{CommandFn, CommandReply, MODE_BASE, MODE_PROCESS, ServerConfig};
+use crate::{MODE_BASE, MODE_PROCESS, ServerConfig};
 use crate::{ServerState, view};
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
@@ -41,36 +42,17 @@ pub unsafe extern "C" fn swr_v1_server_admin_register(
     let config = serv.config();
     let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread;
     for (index, (name, types)) in commands(event_workers).enumerate() {
-        let handler = CommandFn {
-            invoke: answer as *const c_void,
-            ctx: core::ptr::without_provenance_mut(index),
-        };
-        let (name, length) = (name.as_ptr().cast(), name.len());
-        // SAFETY: per the caller; `answer` is a command handler.
-        unsafe { crate::swr_v1_server_add_command(serv.raw(), name, length, types, handler) };
+        let handler = Arc::new(
+            move |serv: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
+                reply.extend_from_slice(answer(serv, index, message).as_bytes());
+            },
+        );
+        crate::swr_v1_server_add_command(serv, name.as_bytes(), types, handler);
     }
 }
 
-/// A `commands::Handler`: admin command `ctx`'s answer to `message`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `message` holds `length` bytes (or is null).
-unsafe extern "C" fn answer(
-    ctx: *mut c_void,
-    serv: *mut c_void,
-    message: *const c_char,
-    length: usize,
-    reply: CommandReply,
-    out: *mut c_void,
-) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    let message = if message.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: per the caller.
-        unsafe { core::slice::from_raw_parts(message.cast(), length) }
-    };
+/// Admin command `index`'s answer to `message`.
+fn answer(serv: view::Server<'_>, index: usize, message: &[u8]) -> String {
     let state = serv.state();
     let mut live = Live {
         serv,
@@ -80,9 +62,7 @@ unsafe extern "C" fn answer(
         sockets: Vec::new(),
         connections: Vec::new(),
     };
-    let text = run(&mut live, ctx.addr(), message).dump();
-    // SAFETY: the server's reply writer, with its output.
-    unsafe { reply(out, text.as_ptr().cast(), text.len()) };
+    run(&mut live, index, message).dump()
 }
 
 /// `Address::get_addr()`, which formats into a per-thread buffer.
@@ -99,12 +79,8 @@ fn port(info: &SocketAddress) -> i64 {
 
 /// `Socket::get_out_buffer_length()`.
 fn out_buffer_length(socket: &SocketFields) -> u64 {
-    let buffer = socket.output.out_buffer;
-    if buffer.is_null() {
-        return 0;
-    }
-    // SAFETY: the socket's live output buffer.
-    swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() }).into()
+    let length = swoole_rs_buffer::cpp::swr_cpp_buffer_length;
+    crate::reactor_ops::out_buffer(socket).map_or(0, |buffer| length(buffer).into())
 }
 
 fn socket(s: &SocketFields) -> Socket {
@@ -257,8 +233,7 @@ impl Facts for Live<'_> {
         let gs = self.serv.counters();
         let mode = u64::from(self.config.mode_);
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
-        // SAFETY: this thread's worker record, if it is a worker.
-        let worker = unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker };
+        let worker = crate::worker_methods::current_worker();
         // Server::foreach_connection: each valid connection, max_fd read afresh.
         let mut fd = gs.min_fd;
         while fd <= gs.max_fd {
@@ -291,9 +266,10 @@ impl Facts for Live<'_> {
 
     fn connection(&mut self, index: u64) -> Connection {
         let conn = self.connection_record(index);
-        let listener = self.serv.port_by_server_fd(conn.server_fd);
-        // SAFETY: the connection's live port.
-        let listener = live(unsafe { view::port(listener) }.socket).read(|s| s.info);
+        let config = self.serv.port_of_server_fd(conn.server_fd);
+        // A connection's port is live while a command runs, as `live`'s sockets are.
+        let config = config.unwrap_or_else(|| std::process::abort());
+        let listener = live(config.socket).read(|s| s.info);
         let (received, sent) = live(conn.socket).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
             session_id: conn.session_id,
@@ -340,8 +316,7 @@ impl Facts for Live<'_> {
         let bus = if is_thread {
             self.thread_record().message_bus()
         } else {
-            // SAFETY: the server's live `MessageBus`.
-            unsafe { crate::objects::Bus::of(self.tables.message_bus) }
+            self.serv.state().message_bus()
         };
         let bus_size = bus.rust().memory_size();
         let user_workers = self.serv.user_worker_num();
@@ -388,17 +363,13 @@ impl Facts for Live<'_> {
 
     fn ports(&mut self) -> Vec<Port> {
         let serv = self.serv;
-        let ports = self.tables.ports().iter().copied();
-        ports
-            .map(|listener| {
-                // SAFETY: one of the live server's ports.
-                let config = unsafe { view::port(listener) };
-                let host = config.host();
-                // SAFETY: the host's bytes, which the port keeps.
-                let host = unsafe { core::slice::from_raw_parts(host.data.cast(), host.length) };
+        let tables = self.tables;
+        (0..tables.ports().len())
+            .filter_map(|index| tables.port_config(index))
+            .map(|config| {
+                let host = config.host_bytes();
                 let protocols = (crate::port_config::methods().get_protocols)(config);
-                // SAFETY: as above.
-                let connections = unsafe { serv.port_connection_num(listener) };
+                let connections = serv.port_connections(config);
                 Port {
                     host: Json::utf8(host),
                     protocols: Json::utf8(protocols.to_bytes()),

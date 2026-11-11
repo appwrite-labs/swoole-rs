@@ -6,14 +6,13 @@
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::shutdown::{READ, WRITE};
-use crate::socket_wait::wait;
-use core::ffi::c_void;
+use crate::socket_wait::{wait, wait_barrier};
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_reactor::Socket;
 
 /// The transfer of `length` bytes at `buffer`; sets errno when it fails. A native
 /// call must not throw.
-pub type Call = unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize;
+pub type Call<'a> = &'a mut dyn FnMut(*mut u8, usize) -> isize;
 
 /// `recv_all`/`send_all`: transfer every byte.
 pub const ALL: u32 = 1;
@@ -22,50 +21,25 @@ pub const RETRY_INTERRUPTED: u32 = 2;
 /// The caller checked availability already (`sendto`, after resolving).
 pub const CHECKED: u32 = 4;
 
-#[derive(Clone, Copy)]
-struct Op {
+struct Op<'a> {
     socket: Co,
-    call: Call,
-    context: *mut c_void,
+    call: Call<'a>,
 }
 
-impl Op {
-    fn call(self, buffer: *mut u8, length: usize) -> isize {
-        // SAFETY: the native transfer for the live socket, over the caller's buffer.
-        unsafe { (self.call)(self.context, buffer, length) }
+impl Op<'_> {
+    fn call(&mut self, buffer: *mut u8, length: usize) -> isize {
+        (self.call)(buffer, length)
     }
 
-    fn would_block(self) -> bool {
+    fn would_block(&self) -> bool {
         would_block(self.socket)
     }
-}
-
-struct All {
-    op: Op,
-    buffer: *mut u8,
-    length: usize,
-    total: usize,
-    result: isize,
-}
-
-/// The barrier's retry for `recv_all`/`send_all`: transfer the rest; keep waiting
-/// while it would block or is still short.
-unsafe extern "C" fn rest(state: *mut c_void) -> bool {
-    // SAFETY: `state` is the All that `all` lent to the wait.
-    let all = unsafe { &mut *state.cast::<All>() };
-    all.result = all
-        .op
-        .call(all.buffer.wrapping_add(all.total), all.length - all.total);
-    if all.result > 0 {
-        all.total += all.result.unsigned_abs();
-    }
-    all.result < 0 && all.op.would_block() || all.result > 0 && all.total < all.length
 }
 
 /// `recv_all`/`send_all`: `length` bytes, or fewer at EOF, error or timeout.
 /// Returns the bytes transferred, -1 when none were, or the first call's result
 /// when it finished at once or failed outright.
-fn all(op: Op, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) -> isize {
+fn all(mut op: Op<'_>, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) -> isize {
     let first = op.call(buffer, length);
     if first == 0 || first > 0 && first.unsigned_abs() == length {
         return first;
@@ -74,22 +48,25 @@ fn all(op: Op, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) ->
         set_err(op.socket, errno());
         return first;
     }
-    let mut all = All {
-        op,
-        buffer,
-        length,
-        total: if first > 0 { first.unsigned_abs() } else { 0 },
-        result: -1,
+    let socket = op.socket;
+    let mut total = if first > 0 { first.unsigned_abs() } else { 0 };
+    let mut result = -1;
+    // The barrier's retry: transfer the rest; keep waiting while it would block or
+    // is still short.
+    let mut rest = || {
+        result = op.call(buffer.wrapping_add(total), length - total);
+        if result > 0 {
+            total += result.unsigned_abs();
+        }
+        result < 0 && op.would_block() || result > 0 && total < length
     };
-    let barrier: (crate::vector::Barrier, *mut c_void) = (rest, (&raw mut all).cast());
-    // SAFETY: `all` outlives the wait, which calls `rest` with it.
-    if timer.start() && unsafe { wait(op.socket, event, Some(barrier), core::ptr::null_mut(), 0) } {
-        check(op.socket, all.result);
+    if timer.start() && wait_barrier(socket, event, &mut rest) {
+        check(socket, result);
     }
-    if all.result < 0 && all.total == 0 {
+    if result < 0 && total == 0 {
         -1
     } else {
-        all.total.cast_signed()
+        total.cast_signed()
     }
 }
 
@@ -98,7 +75,14 @@ fn all(op: Op, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) ->
 /// retries send from there (upstream hands its buffer only to `send`, `write`
 /// and `sendto`, which pass one). Returns the last result after
 /// `check_return_value`.
-fn one(op: Op, timer: &mut Timer, event: u32, flags: u32, buffer: *mut u8, length: usize) -> isize {
+fn one(
+    mut op: Op<'_>,
+    timer: &mut Timer,
+    event: u32,
+    flags: u32,
+    buffer: *mut u8,
+    length: usize,
+) -> isize {
     let mut buffer = buffer;
     let slot = if event == WRITE && !buffer.is_null() {
         &raw mut buffer
@@ -115,7 +99,7 @@ fn one(op: Op, timer: &mut Timer, event: u32, flags: u32, buffer: *mut u8, lengt
             break;
         }
         // SAFETY: `slot` is null or `buffer`, live across the wait.
-        if !unsafe { wait(op.socket, event, None, slot, length) } {
+        if !unsafe { wait(op.socket, event, slot, length) } {
             break;
         }
         result = op.call(buffer, length);
@@ -130,27 +114,21 @@ fn one(op: Op, timer: &mut Timer, event: u32, flags: u32, buffer: *mut u8, lengt
 /// [`CHECKED`]. -1 when the socket is not available.
 ///
 /// # Safety
-/// `buffer` holds `length` bytes or is null; `call` with `context` transfers on the
-/// socket.
+/// `buffer` holds `length` bytes or is null; `call` transfers on the socket.
 pub(crate) unsafe fn transfer(
     socket: Co,
     event: u32,
     flags: u32,
     buffer: *mut u8,
     length: usize,
-    call: Call,
-    context: *mut c_void,
+    call: Call<'_>,
 ) -> isize {
     if flags & CHECKED == 0 && !available(socket, event) {
         return -1;
     }
     let event = if event == READ { READ } else { WRITE };
     let mut timer = Timer::new(socket, event, socket.timeout(timeout_kind(event)));
-    let op = Op {
-        socket,
-        call,
-        context,
-    };
+    let op = Op { socket, call };
     let result = if flags & ALL != 0 {
         all(op, &mut timer, event, buffer, length)
     } else {
@@ -225,6 +203,7 @@ mod tests {
     use crate::co_socket::Co;
     use crate::co_socket::TestSocket;
     use crate::socket_wait::ready;
+    use core::ffi::c_void;
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -233,7 +212,7 @@ mod tests {
         static RESULTS: RefCell<VecDeque<isize>> = const { RefCell::new(VecDeque::new()) };
     }
 
-    unsafe extern "C" fn call(_: *mut c_void, at: *mut u8, length: usize) -> isize {
+    fn call(at: *mut u8, length: usize) -> isize {
         let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
         log(format!("io:{length}:{}", !at.is_null()));
         if result < 0 {
@@ -269,7 +248,7 @@ mod tests {
         TIMER_OK.set(failure != 2);
         // A woken wait runs the installed barrier while it keeps waiting.
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
-            while unsafe { ready(socket, event, false) }.is_null() {
+            while ready(socket, event, false).is_null() {
                 log("again");
             }
             if failure == 3 {
@@ -282,17 +261,7 @@ mod tests {
         } else {
             core::ptr::null_mut()
         };
-        let result = unsafe {
-            transfer(
-                socket.co(),
-                event,
-                flags,
-                at,
-                8,
-                call,
-                core::ptr::null_mut(),
-            )
-        };
+        let result = unsafe { transfer(socket.co(), event, flags, at, 8, &mut call) };
         let error = socket.0.err_code;
         socket.0.sock_fd = 100;
         let events = take()
@@ -491,8 +460,7 @@ mod tests {
                 CHECKED,
                 core::ptr::null_mut(),
                 8,
-                call,
-                core::ptr::null_mut(),
+                &mut call,
             )
         };
         assert_eq!(result, -1);

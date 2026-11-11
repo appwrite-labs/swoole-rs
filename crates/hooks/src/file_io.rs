@@ -2,7 +2,7 @@
 //! file, sync and unlock, all on the async pool while the coroutine waits, as upstream's
 //! lambda over a `File` did. Each warning is logged on the pool thread with the
 //! failing call's errno.
-use crate::stdio::{Offload, offloaded};
+use crate::stdio::{Offload, on_pool};
 use libc::{c_char, c_int};
 use std::ffi::CStr;
 use std::fs::File;
@@ -214,8 +214,7 @@ pub unsafe extern "C" fn system_write_file(
 
 fn read_with(file: &CStr, lock: bool, warn: Warn, offload: Option<Offload>) -> Option<Vec<u8>> {
     let job = Job { file, warn };
-    // SAFETY: the job only touches what this frame lends until `offload` returns.
-    unsafe { offloaded(offload, None, || job.read(lock)) }
+    on_pool(offload, None, || job.read(lock))
 }
 
 fn write_with(
@@ -227,8 +226,7 @@ fn write_with(
     offload: Option<Offload>,
 ) -> isize {
     let job = Job { file, warn };
-    // SAFETY: as in `read_with`.
-    unsafe { offloaded(offload, -1, || job.write(data, lock, flags)) }
+    on_pool(offload, -1, || job.write(data, lock, flags))
 }
 
 #[cfg(test)]

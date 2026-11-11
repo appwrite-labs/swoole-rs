@@ -1,7 +1,7 @@
 //! `Process::signal()`: the PHP callable registered for each signal, and the
 //! handler Swoole's signal layer runs for them.
 use crate::{
-    host,
+    host::{self, Callable},
     report::{OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
 };
 use std::{
@@ -9,7 +9,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::{Call, E_ERROR, E_WARNING, bailout, long_zval, message};
+use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, bailout, message};
 
 use swoole_rs_reactor::signal_upstream::swoole_signal_get_handler;
 
@@ -43,14 +43,14 @@ unsafe extern "C" fn on_signal(signo: c_int) {
     let Some(slot) = slot(i64::from(signo)) else {
         return;
     };
-    let callable = slot.load(Ordering::Acquire);
-    if callable.is_null() {
+    // SAFETY: null or the live callable `signal()` stored, which the slot
+    // keeps; borrowed here, not taken.
+    let Some(callable) = (unsafe { Callable::from_raw(slot.load(Ordering::Acquire)) }) else {
         return;
-    }
-    let mut argv = long_zval(i64::from(signo));
+    };
+    let callable = std::mem::ManuallyDrop::new(callable);
     let coroutine = host::enable_coroutine();
-    // SAFETY: a live callable from `signal()`, with one argument.
-    let called = unsafe { host::callable_call(callable, 1, &raw mut argv, coroutine) };
+    let called = callable.call(&[&Owned::long(i64::from(signo))], coroutine);
     if !called && !bailout::pending() {
         fatal(
             E_WARNING,
@@ -71,7 +71,7 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let callback = call.zval_or_null(2);
+    let callback = call.value(2).filter(|value| !value.is_null());
     // SAFETY: C++'s reader of an ini flag.
     if !cli() {
         fatal(
@@ -114,55 +114,55 @@ pub(crate) fn signal(call: &Call) {
             host::signal_set(number, 0, false);
             slot.store(ptr::null_mut(), Ordering::Release);
             // SAFETY: the callable this slot owned.
-            unsafe { host::callable_defer_free(old) };
+            if let Some(old) = unsafe { Callable::from_raw(old) } {
+                host::callable_defer_free(old);
+            }
             listeners(-1);
             call.set_bool(true);
             return;
         }
-        Some(value) if value.as_long() == Some(SIG_IGN) => (ptr::null_mut(), IGNORE),
+        Some(value) if value.as_long() == Some(SIG_IGN) => (None, IGNORE),
         Some(value) => {
-            // SAFETY: a passed argument.
-            let callable = unsafe { host::callable_create(value.as_ptr()) };
-            if callable.is_null() {
+            let Some(callable) = Callable::create(value) else {
                 call.set_bool(false);
                 return;
-            }
-            (callable, ours)
+            };
+            (Some(callable), ours)
         }
     };
     let sync = host::sync_server();
     if !sync {
         host::signal_listen();
     }
-    if !old.is_null() {
-        // The slot lets go first: a destructor that bails out leaves it empty.
+    // SAFETY: null or the previous callable, which the slot lets go of first:
+    // a destructor that bails out leaves it empty.
+    if let Some(old) = unsafe { Callable::from_raw(old) } {
         slot.store(ptr::null_mut(), Ordering::Release);
         if sync {
-            // SAFETY: the previous callable, no longer referenced.
-            unsafe { host::callable_free(old) };
+            drop(old);
         } else {
-            // SAFETY: as above, freed once the loop is past any dispatch using it.
-            unsafe { host::callable_defer_free(old) };
+            // Freed once the loop is past any dispatch using it.
+            host::callable_defer_free(old);
         }
         listeners(-1);
         if bailout::pending() {
-            // Upstream stopped here, installing nothing.
-            if !callable.is_null() {
-                // SAFETY: the callable made above, which nothing holds.
-                unsafe { host::callable_free(callable) };
-            }
+            // Upstream stopped here, installing nothing; the callable made
+            // above drops.
             return;
         }
     }
-    if !callable.is_null() {
+    if callable.is_some() {
         listeners(1);
     }
     // In a sync process the old callable's destructor ran, and may have called
     // signal() for this number: this call's callable replaces the one that stored.
-    let nested = slot.swap(callable, Ordering::AcqRel);
-    if !nested.is_null() {
-        // SAFETY: the nested call's callable, which no slot holds now.
-        unsafe { host::callable_free(nested) };
+    let nested = slot.swap(
+        callable.map_or(ptr::null_mut(), Callable::into_raw),
+        Ordering::AcqRel,
+    );
+    // SAFETY: null or the nested call's callable, which no slot holds now.
+    if let Some(nested) = unsafe { Callable::from_raw(nested) } {
+        drop(nested);
         listeners(-1);
     }
     host::signal_set(number, handler, true);
@@ -192,11 +192,8 @@ pub extern "C" fn php_swoole_process_signal_clean() {
 /// leaves a destructor's bailout pending.
 fn signal_clean() {
     for slot in &CALLABLES {
-        let callable = slot.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !callable.is_null() {
-            // SAFETY: a callable `signal()` created and nothing references now.
-            unsafe { host::callable_free(callable) };
-        }
+        // SAFETY: null or a callable `signal()` stored, which no slot holds now.
+        drop(unsafe { Callable::from_raw(slot.swap(ptr::null_mut(), Ordering::AcqRel)) });
     }
     swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
 }

@@ -16,6 +16,19 @@ use crate::view;
 const SW_LOG_ERROR: c_int = 5;
 const SW_USER_WORKER: u8 = 5;
 
+/// `SwooleWG.worker`: this thread's current worker, or null.
+pub(crate) fn current_worker() -> *mut WorkerRecord {
+    // SAFETY: this thread's live worker globals, read without a whole-record borrow.
+    unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker }
+}
+
+/// `SwooleWG.worker = worker`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) fn set_current_worker(worker: *mut WorkerRecord) {
+    // SAFETY: this thread's live worker globals, written without a whole-record borrow.
+    unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker = worker };
+}
+
 /// `Server::get_worker_by_pid(worker_pid)`: the first event worker with the pid, then
 /// the task pool's, then a user worker's; null for none.
 #[must_use]

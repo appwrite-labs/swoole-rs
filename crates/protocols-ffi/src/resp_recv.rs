@@ -2,7 +2,7 @@
 //! buffered, then hands it to `onPackage`. [`swr_v1_resp_recv`] is the loop over
 //! borrowed effects; the ports crate runs it over the server's own records.
 use core::ffi::{c_int, c_void};
-use swoole_rs_corebase::{log, sw_malloc};
+use swoole_rs_corebase::{log, set_errno, sw_malloc};
 use swoole_rs_protocols::{RespRequest, resp_extend_size, resp_receive_range};
 
 pub(crate) const SW_OK: c_int = 0;
@@ -35,17 +35,6 @@ pub struct RespIo {
     /// `protocol->onPackage` of the buffer's first `length` bytes: negative when it
     /// fails, 1 when the socket was removed meanwhile, else 0.
     pub dispatch: unsafe extern "C" fn(context: *mut c_void, length: usize) -> c_int,
-}
-
-fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
 }
 
 /// `redis::recv_packet`'s loop: receives into `buffer` until the RESP state in

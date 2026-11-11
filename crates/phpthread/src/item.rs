@@ -6,13 +6,11 @@ use crate::{array::Array, barrier, classes, host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
-    Call, Value as ZValue, bailout,
-    string::bytes,
+    Call, Owned, Value as ZValue, ZString, bailout,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
-        IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_is_numeric_string,
-        swr_zend_smart_strcmp, swr_zend_string_init, swr_zend_string_release, swr_zval_stringl,
-        zend_binary_strcmp, zend_double_to_str, zend_throw_error, zend_value, zval,
+        IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING,
+        IS_TRUE, IS_UNDEF, swr_zend_is_numeric_string, swr_zend_smart_strcmp, zend_binary_strcmp,
+        zend_double_to_str, zend_throw_error,
     },
     throw_exception,
 };
@@ -65,8 +63,8 @@ impl Drop for Item {
     /// `ArrayItem::release`.
     fn drop(&mut self) {
         if let Value::Socket { fd, .. } = self.value {
-            // SAFETY: the item owns the duplicated descriptor.
-            unsafe { libc::close(fd) };
+            // The item owns the duplicated descriptor.
+            swoole_rs_corebase::sys::close(fd);
         }
     }
 }
@@ -105,8 +103,7 @@ impl Item {
             },
             IS_TRUE | IS_FALSE | IS_NULL => bare(kind),
             IS_RESOURCE => {
-                // SAFETY: a live resource zval.
-                let fd = unsafe { request::stream_cast(value.as_ptr()) };
+                let fd = request::stream_cast(value);
                 if fd == -1 {
                     socket_error(c"failed to convert to socket fd");
                 }
@@ -134,9 +131,7 @@ impl Item {
     /// The `IS_OBJECT` branch: sockets, containers and thread resources by
     /// reference, anything else serialized.
     fn store_object(object: &ZValue) -> Self {
-        if host::is_co_socket(object) {
-            // SAFETY: a coroutine socket object.
-            let (fd, kind) = unsafe { host::co_socket_cast(object.as_ptr()) };
+        if let Some((fd, kind)) = host::co_socket_cast(object) {
             if fd == -1 {
                 socket_error(c"failed to convert to socket fd");
             }
@@ -175,91 +170,56 @@ impl Item {
 
     /// The default branch: `php_swoole_serialize`, or undef if it failed.
     fn serialize(value: &ZValue) -> Self {
-        // SAFETY: a live zval; a bailout of `__serialize` is deferred.
-        let serialized = unsafe { host::serialize(value.as_ptr()) };
-        if serialized.is_null() {
+        // A bailout of `__serialize` is deferred.
+        let Some(data) = host::serialize(value) else {
             return bare(IS_UNDEF);
-        }
-        // SAFETY: a live persistent string C++ made.
-        let data = unsafe { bytes(serialized) }.into();
-        // SAFETY: ours to release.
-        unsafe { swr_zend_string_release(serialized) };
+        };
         Self {
             kind: IS_SERIALIZED_OBJECT,
             value: Value::Serialized(data),
         }
     }
 
-    /// `ArrayItem::fetch`: whether it wrote `out` (upstream leaves it untouched
-    /// for null, booleans aside, and undef). Nothing runs once a bailout is
-    /// pending: upstream never ran past it.
-    /// # Safety
-    /// In a request; `out` is writable and holds nothing.
-    pub(crate) unsafe fn fetch(&self, out: *mut zval) -> bool {
+    /// `ArrayItem::fetch`: the value, or `None` where upstream leaves the slot
+    /// untouched (null, booleans aside, and undef). Nothing runs once a bailout
+    /// is pending: upstream never ran past it.
+    pub(crate) fn fetch(&self) -> Option<Owned> {
         if bailout::pending() {
-            return false;
+            return None;
         }
-        match &self.value {
-            Value::Long(value) => set(out, IS_LONG, zend_value { lval: *value }),
-            Value::Double(value) => set(out, IS_DOUBLE, zend_value { dval: *value }),
+        Some(match &self.value {
+            Value::Long(value) => Owned::long(*value),
+            Value::Double(value) => Owned::double(*value),
             Value::Bare(_) if self.kind == IS_TRUE || self.kind == IS_FALSE => {
-                set(out, self.kind, zend_value { lval: 0 });
+                Owned::bool(self.kind == IS_TRUE)
             }
-            Value::Bare(_) => return false,
-            // SAFETY: per the caller; Zend copies the bytes.
-            Value::Str(text) => unsafe { swr_zval_stringl(out, text.as_ptr().cast(), text.len()) },
-            // SAFETY: per the caller.
-            Value::Array(array) => unsafe { classes::array_object(out, self.kind, array) },
-            // SAFETY: per the caller.
-            Value::Queue(queue) => unsafe { classes::queue_object(out, queue) },
-            // SAFETY: per the caller.
-            Value::Barrier(shared) => unsafe { barrier::object(out, shared.as_ref()) },
+            Value::Bare(_) => return None,
+            Value::Str(text) => Owned::string(ZString::new(text)),
+            Value::Array(array) => classes::array_object(self.kind, array),
+            Value::Queue(queue) => classes::queue_object(queue),
+            Value::Barrier(shared) => barrier::object(shared.as_ref()),
             Value::Resource(resource) => {
                 let class = match self.kind {
                     IS_LOCK => Shareable::Lock,
                     IS_ATOMIC => Shareable::Atomic,
                     _ => Shareable::Long,
                 };
-                let object = phplocks::shared_object(class, resource.as_ref());
-                // SAFETY: per the caller; `out` takes the new object's reference.
-                unsafe { out.write(object.into_zval()) };
+                phplocks::shared_object(class, resource.as_ref())
             }
             Value::Socket { fd, kind } => match self.kind {
-                // SAFETY: per the caller.
-                IS_STREAM_SOCKET => unsafe { request::stream_create(out, *fd) },
+                IS_STREAM_SOCKET => request::stream_create(*fd),
                 IS_CO_SOCKET => {
-                    let create = |out, fd| {
-                        // SAFETY: the object is made over the duplicate it takes.
-                        unsafe { host::co_socket_create(out, fd, *kind) }
-                    };
-                    // SAFETY: per the caller.
-                    unsafe { request::socket_create(out, *fd, create) };
+                    request::socket_create(*fd, |fd| host::co_socket_create(fd, *kind))?
                 }
-                _ => {
-                    let create = |out, fd| {
-                        // SAFETY: as above.
-                        unsafe { host::php_socket_create(out, fd) }
-                    };
-                    // SAFETY: per the caller.
-                    unsafe { request::socket_create(out, *fd, create) };
-                }
+                _ => request::socket_create(*fd, host::php_socket_create)?,
             },
-            Value::Serialized(data) => {
-                // SAFETY: per the caller; a bailout of `__unserialize` is deferred.
-                unsafe { host::unserialize(data, out) };
-            }
-        }
-        true
+            Value::Serialized(data) => host::unserialize(data),
+        })
     }
 
     /// `fetch`, or null where upstream would leave the slot as it was.
-    /// # Safety
-    /// As `fetch`.
-    pub(crate) unsafe fn fetch_or_null(&self, out: *mut zval) {
-        // SAFETY: per the caller.
-        if !unsafe { self.fetch(out) } {
-            set(out, IS_NULL, zend_value { lval: 0 });
-        }
+    pub(crate) fn fetch_or_null(&self) -> Owned {
+        self.fetch().unwrap_or_else(Owned::null)
     }
 
     /// `ArrayItem::equals`.
@@ -324,7 +284,7 @@ impl Item {
                     return;
                 }
                 *value += delta;
-                set(call.return_value(), IS_DOUBLE, zend_value { dval: *value });
+                call.set_owned(Owned::double(*value));
             }
             Value::Long(value) | Value::Bare(value) => {
                 let delta = delta.long();
@@ -332,14 +292,10 @@ impl Item {
                     return;
                 }
                 *value = value.wrapping_add(delta);
-                set(call.return_value(), IS_LONG, zend_value { lval: *value });
+                call.set_long(*value);
             }
             // Upstream adds to a pointer here; leave the value alone.
-            _ => set(
-                call.return_value(),
-                IS_LONG,
-                zend_value { lval: delta.long() },
-            ),
+            _ => call.set_long(delta.long()),
         }
     }
 
@@ -350,8 +306,9 @@ impl Item {
             Some(value) => Self::double(value),
             None => Self::long(delta.long()),
         };
-        // SAFETY: the call's return slot, which holds nothing yet; an int or float.
-        unsafe { item.fetch(call.return_value()) };
+        if let Some(value) = item.fetch() {
+            call.set_owned(value);
+        }
         item
     }
 
@@ -431,14 +388,6 @@ fn socket_error(message: &std::ffi::CStr) {
     unsafe { throw_exception(host::exception(), message, i64::from(errno)) };
 }
 
-/// `ZVAL_*`: write a scalar.
-pub(crate) fn set(out: *mut zval, kind: u32, value: zend_value) {
-    // SAFETY: callers pass a writable zval.
-    unsafe { (*out).value = value };
-    // SAFETY: as above.
-    unsafe { (*out).u1 = _zval_struct__bindgen_ty_1 { type_info: kind } };
-}
-
 fn sign(ordering: Ordering) -> i32 {
     match ordering {
         Ordering::Less => -1,
@@ -458,28 +407,11 @@ fn normalize(value: f64) -> i32 {
     }
 }
 
-/// A request string holding `text`, released when dropped.
-struct Temporary(*mut swoole_rs_zend::sys::zend_string);
-
-impl Temporary {
-    fn new(text: &[u8]) -> Self {
-        // SAFETY: in a request; Zend copies the bytes.
-        Self(unsafe { swr_zend_string_init(text.as_ptr().cast(), text.len()) })
-    }
-}
-
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        // SAFETY: the reference `new` made.
-        unsafe { swr_zend_string_release(self.0) };
-    }
-}
-
 /// `zendi_smart_strcmp`.
 fn smart_strcmp(a: &[u8], b: &[u8]) -> i32 {
-    let (a, b) = (Temporary::new(a), Temporary::new(b));
+    let (a, b) = (ZString::new(a), ZString::new(b));
     // SAFETY: two live strings.
-    unsafe { swr_zend_smart_strcmp(a.0, b.0) }
+    unsafe { swr_zend_smart_strcmp(a.as_ptr(), b.as_ptr()) }
 }
 
 /// `zend_binary_strcmp`, normalized.
@@ -534,9 +466,10 @@ fn double_to_string(dval: f64, text: &[u8]) -> i32 {
         }
         _ => {
             // SAFETY: in a request; a new string.
-            let string = Temporary(unsafe { zend_double_to_str(dval) });
-            // SAFETY: a live string.
-            binary_strcmp(unsafe { bytes(string.0) }, text)
+            let string = unsafe { zend_double_to_str(dval) };
+            // SAFETY: the reference it carries, released on drop.
+            let string = unsafe { ZString::from_raw(string) };
+            binary_strcmp(string.bytes(), text)
         }
     }
 }

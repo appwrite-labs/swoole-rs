@@ -51,9 +51,7 @@ unsafe extern "C-unwind" {
 
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
 fn current() -> Option<ReactorPrepared> {
-    let reactor = crate::event_api::swr_v1_event_current();
-    // SAFETY: null or a live `Reactor`, which begins with its prepared state.
-    unsafe { reactor.cast::<ReactorPrepared>().as_ref() }.copied()
+    crate::event_api::current_prepared()
 }
 
 fn capabilities() -> u8 {

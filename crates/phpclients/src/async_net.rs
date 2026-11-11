@@ -240,8 +240,7 @@ fn construct(call: &Call) {
     if !check_type(kind) {
         return call.set_bool(false);
     }
-    // SAFETY: from a handler.
-    unsafe { native::swoole_rs_check_reactor() };
+    swoole_rs_phpruntime::check_reactor();
     Obj::this(call).props().long(c"type", kind);
     call.set_bool(true);
 }

@@ -5,40 +5,36 @@
 //! request macros are zend-sys shims.
 use crate::{Arguments, request, thread};
 use std::{
-    cell::{Cell, UnsafeCell},
+    cell::{Cell, RefCell},
     ffi::{CString, c_int, c_void},
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_zend::{
-    Call, Minit, Value, bailout, string,
+    Call, Minit, Owned, OwnedArray, bailout,
     sys::{
-        IS_ARRAY, IS_UNDEF, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_array_init,
         swr_zend_bailout_to, swr_zend_guard_clear, swr_zend_guard_mark, swr_zend_guard_pending,
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
         swr_zend_tsrm_api_name, swr_zend_tsrm_is_main_thread, swr_zend_tsrm_is_shutdown,
-        zend_declare_class_constant_string, zend_string, zval, zval_ptr_dtor,
+        zend_declare_class_constant_string, zval_ptr_dtor,
     },
 };
-
-unsafe extern "C" {
-    // crates/reactor: `SwooleTG.reactor`.
-}
 
 /// PHP threads running, the main thread included.
 static THREADS: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
-    /// The thread's arguments (`Thread::getArguments()`), undef if none.
-    static ARGV: UnsafeCell<zval> = const { UnsafeCell::new(swoole_rs_zend::UNDEF) };
+    /// The thread's arguments (`Thread::getArguments()`), if any, released by
+    /// its RSHUTDOWN.
+    static ARGV: RefCell<Option<Owned>> = const { RefCell::new(None) };
     /// The jump buffer of the thread's `zend_first_try` while its script runs.
     static BAILOUT: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
 }
 
 /// What the script's `zend_first_try` starts with.
 struct Start {
-    argv_serialized: *mut zend_string,
+    argv_serialized: Option<Box<[u8]>>,
     argc: c_int,
     /// The thread's arguments, taken by the prologue.
     argv: Option<Arguments>,
@@ -71,6 +67,7 @@ pub unsafe fn run(
     // SAFETY: a new thread, before anything of PHP's runs on it.
     unsafe { swr_zend_thread_enter() };
     let (path, argc, argv_serialized) = request::main_request();
+    let path = path.as_ref().map_or(ptr::null(), |path| path.as_ptr());
     swoole_rs_corebase::swoole_thread_init(false);
     let mut start = Start {
         argv_serialized,
@@ -105,19 +102,18 @@ pub unsafe fn run(
 unsafe extern "C" fn prologue(start: *mut c_void) {
     // SAFETY: `run`'s `Start`.
     let start = unsafe { &mut *start.cast::<Start>() };
-    if !start.argv_serialized.is_null() {
-        let mut global_argv = swoole_rs_zend::UNDEF;
-        // SAFETY: the main request's string, live until its RSHUTDOWN.
-        let data = unsafe { string::bytes(start.argv_serialized) };
-        // SAFETY: in the request; a bailout is deferred.
-        unsafe { crate::host::unserialize(data, &raw mut global_argv) };
+    if let Some(data) = start.argv_serialized.take() {
+        // A bailout is deferred.
+        let global_argv = crate::host::unserialize(&data);
+        drop(data);
         bailout::finish();
+        let mut global_argv = global_argv.into_zval();
         // SAFETY: the symbol table takes the value.
         unsafe { swr_zend_thread_set_argv(&raw mut global_argv, i64::from(start.argc)) };
     }
     if let Some(argv) = start.argv.take() {
-        // SAFETY: in the thread's request; its slot holds nothing yet.
-        unsafe { argv.0.to_array(ARGV.with(UnsafeCell::get)) };
+        let array = argv.0.to_array();
+        ARGV.set(Some(array));
         drop(argv);
         bailout::finish();
     }
@@ -209,12 +205,17 @@ pub fn thread_minit(minit: &Minit) {
     }
 }
 
+/// `tsrm_is_main_thread()`.
+fn main_thread() -> bool {
+    // SAFETY: no preconditions.
+    unsafe { swr_zend_tsrm_is_main_thread() }
+}
+
 /// RINIT: the main thread keeps its script path and `$argv` for new threads.
 /// # Safety
 /// RINIT.
 pub unsafe extern "C" fn thread_rinit() {
-    // SAFETY: no preconditions.
-    if unsafe { swr_zend_tsrm_is_main_thread() } {
+    if main_thread() {
         // SAFETY: the main thread's RINIT.
         unsafe { request::keep() };
         bailout::finish();
@@ -224,16 +225,12 @@ pub unsafe extern "C" fn thread_rinit() {
 /// RSHUTDOWN: drop the thread's arguments; the main thread exits the process
 /// while other threads run, else releases what RINIT kept.
 pub extern "C" fn thread_rshutdown() {
-    ARGV.with(|argv| {
-        let argv = argv.get();
-        // SAFETY: this thread's slot, undef or a value it owns.
-        unsafe { zval_ptr_dtor(argv) };
-        // SAFETY: as above.
-        let argv = unsafe { &mut *argv };
-        argv.u1.type_info = IS_UNDEF;
-    });
-    // SAFETY: no preconditions.
-    if !unsafe { swr_zend_tsrm_is_main_thread() } {
+    if let Some(argv) = ARGV.take() {
+        let mut argv = argv.into_zval();
+        // SAFETY: the thread's arguments, which this releases.
+        unsafe { zval_ptr_dtor(&raw mut argv) };
+    }
+    if !main_thread() {
         return;
     }
     let running = sw_active_thread_count();
@@ -250,30 +247,20 @@ pub extern "C" fn thread_rshutdown() {
 
 /// `Thread::getArguments()`: the thread's arguments, if it has any.
 pub(crate) fn arguments(call: &Call) {
-    ARGV.with(|argv| {
-        // SAFETY: this thread's slot, which nothing changes while borrowed.
-        let argv = unsafe { Value::from_ptr(argv.get()) };
-        if let Some(argv) = argv.filter(|argv| argv.kind() == IS_ARRAY) {
-            // The return slot takes a reference.
+    ARGV.with_borrow(|argv| {
+        if let Some(argv) = argv {
             call.set_owned(argv.copy());
         }
     });
 }
 
 /// `Thread::getInfo()`.
-pub(crate) fn info(out: *mut zval) {
-    // SAFETY: the return slot.
-    unsafe { swr_zend_array_init(out) };
+pub(crate) fn info() -> Owned {
+    let mut info = OwnedArray::default();
+    info.insert_bool(b"is_main_thread", main_thread());
     // SAFETY: no preconditions.
-    let main = unsafe { swr_zend_tsrm_is_main_thread() };
-    // SAFETY: an array zval; Zend copies the keys.
-    unsafe { add_assoc_bool_ex(out, c"is_main_thread".as_ptr(), 14, main) };
-    // SAFETY: no preconditions.
-    let shutdown = unsafe { swr_zend_tsrm_is_shutdown() };
-    // SAFETY: as above.
-    unsafe { add_assoc_bool_ex(out, c"is_shutdown".as_ptr(), 11, shutdown) };
+    info.insert_bool(b"is_shutdown", unsafe { swr_zend_tsrm_is_shutdown() });
     #[expect(clippy::cast_possible_wrap, reason = "a thread count")]
-    let count = sw_active_thread_count() as i64;
-    // SAFETY: as above.
-    unsafe { add_assoc_long_ex(out, c"thread_num".as_ptr(), 10, count) };
+    info.insert_long(b"thread_num", sw_active_thread_count() as i64);
+    info.into_owned()
 }
