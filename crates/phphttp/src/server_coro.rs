@@ -1245,6 +1245,8 @@ fn http2_request(
             }
             Ok(true) => {}
         }
+    } else {
+        send::state(context).response.status = NOT_FOUND;
     }
     if result.is_ok() {
         context::release_objects(context);
