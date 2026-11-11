@@ -12,6 +12,12 @@ use swoole_rs_corebase::native::{self, LOGGER_NEW, NativeHost};
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_memory::members::pool;
 
+unsafe extern "C-unwind" {
+    // crates/reactor's, on swoole_clean's thread, which owns the signal handlers.
+    #[link_name = "_Z19swoole_signal_clearv"]
+    safe fn swoole_signal_clear();
+}
+
 // src/fatal.c.
 unsafe extern "C" {
     safe fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
@@ -40,7 +46,7 @@ extern "C-unwind" fn swoole_init() {
         delete_buffer: || BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose()),
         delete_pool: pool::delete,
         logger: swoole_rs_process::methods::logger_op,
-        signal_clear: || swoole_rs_reactor::signal_upstream::swoole_signal_clear(),
+        signal_clear: || swoole_signal_clear(),
         timer_free: || swoole_rs_timer::swoole_timer_free(),
         event_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
