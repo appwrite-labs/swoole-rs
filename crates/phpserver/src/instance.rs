@@ -5,6 +5,7 @@
 use crate::RecvData;
 use crate::port::PortProperty;
 use crate::server::{ServerData, THREAD};
+use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::UnsafeCell,
     ffi::{CStr, CString, c_int, c_long, c_void},
@@ -163,10 +164,10 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &mut zval, req: &
 #[must_use]
 pub fn php_swoole_create_dir(path: &[u8]) -> bool {
     let path = path.split(|&b| b == 0).next().unwrap_or_default();
+    // `access(path, F_OK) == 0`: it resolves, symbolic links followed.
+    let exists = std::path::Path::new(std::ffi::OsStr::from_bytes(path)).exists();
     let path = CString::new(path).unwrap_or_default();
     // SAFETY: a NUL-terminated path.
-    let exists = unsafe { libc::access(path.as_ptr(), libc::F_OK) } == 0;
-    // SAFETY: as above.
     exists || unsafe { swr_zend_mkdir_recursive(path.as_ptr()) }
 }
 
