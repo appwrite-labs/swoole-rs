@@ -1077,15 +1077,10 @@ mod tests {
         // SAFETY: a fresh state; the records above outlive every read below.
         let fields = unsafe {
             let config = (*state).config();
-            (*config).gs = swoole_rs_memory::members::Shm::calloc(
-                1,
-                size_of::<crate::shared::ServerCounters>(),
-            );
-            (*config)
-                .gs
-                .as_ptr()
-                .cast::<crate::shared::ServerCounters>()
-                .write(crate::shared::ServerCounters::default());
+            // The whole `serv->gs`, as `ServerObject` maps it: the worker lookup reads its
+            // zeroed event pool, past the counters.
+            (*config).gs =
+                swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
             (*config).workers = naming(&mut workers);
             (*config).worker_num = 4;
             (*config).reactor_num = 2;
