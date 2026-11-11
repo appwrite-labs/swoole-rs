@@ -15,7 +15,7 @@ use openssl_sys::{
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_ulong, c_void};
 use std::ptr::NonNull;
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Socket, SocketFields};
 
 // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds neither.
 unsafe extern "C" {
@@ -75,9 +75,10 @@ impl Ssl {
     /// The SSL of `socket`'s record, or None without one.
     #[must_use]
     pub fn of(socket: Socket<'_>) -> Option<Self> {
-        let ssl = socket.read(|record| record.ssl);
-        // SAFETY: the handle's live record, whose `ssl` is null or the live SSL
-        // `ssl_create` set.
+        let ssl = socket.read(SocketFields::ssl);
+        // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
+        // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
+        // contract) set it, and `ssl_close` takes it before freeing it.
         unsafe { Self::new(ssl.cast()) }
     }
 
@@ -541,36 +542,31 @@ pub fn swr_v1_socket_ssl_shutdown(
     shutdown(tls, ssl, closed, quiet, repaired, &mut OpenSsl)
 }
 
-/// `Socket::ssl_create`: a new SSL from `context` on `fd`, in connect state for
-/// `SW_SSL_CLIENT` or accept state for `SW_SSL_SERVER`, carrying `socket` as its
-/// ex data at `index`, after clearing the want flags. It accepts a write retried from
-/// another buffer: `Socket::ssl_sendfile` reads each try into a new one, where
-/// upstream's stack buffer happens to keep its address. `ssl` is set once made and
-/// the state cleared on success. Returns 0, or 1 when `SSL_new`
-/// failed, 2 when `SSL_set_fd` failed (`error` holds the peeked error) and 3 when
-/// `SSL_set_ex_data` failed; native code warns.
+/// `Socket::ssl_create`: a new SSL from `context` on `record`'s descriptor, in
+/// connect state for `SW_SSL_CLIENT` or accept state for `SW_SSL_SERVER`, carrying
+/// `socket` as its ex data at `index`, after clearing the want flags. It accepts a
+/// write retried from another buffer: `Socket::ssl_sendfile` reads each try into a
+/// new one, where upstream's stack buffer happens to keep its address. The record
+/// owns the SSL once made, and its state is cleared on success. Returns 0, or 1 when
+/// `SSL_new` failed, 2 when `SSL_set_fd` failed (`error` holds the peeked error) and
+/// 3 when `SSL_set_ex_data` failed; native code warns.
 ///
 /// # Safety
 /// `context` is a live `SSL_CTX`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Socket::ssl_create's inputs plus its two out-parameters"
-)]
 pub unsafe fn swr_v1_socket_ssl_new(
-    tls: &mut SocketTls,
+    record: &mut SocketFields,
     context: *mut SSL_CTX,
-    fd: c_int,
     flags: c_int,
     index: c_int,
     socket: *mut c_void,
-    ssl: &mut *mut c_void,
     error: &mut c_ulong,
 ) -> c_int {
-    want(tls, false, false);
+    want(&mut record.tls, false, false);
     clear_errors();
     // SAFETY: the caller's live context.
     let made = unsafe { SSL_new(context) };
-    *ssl = made.cast();
+    // SAFETY: null or the new SSL, which nothing else holds and the record now owns.
+    unsafe { record.set_ssl(made.cast()) };
     if made.is_null() {
         return 1;
     }
@@ -584,7 +580,7 @@ pub unsafe fn swr_v1_socket_ssl_new(
         )
     };
     // SAFETY: the new SSL and the caller's descriptor.
-    if unsafe { SSL_set_fd(made, fd) } == 0 {
+    if unsafe { SSL_set_fd(made, record.fd) } == 0 {
         *error = peek_error();
         return 2;
     }
@@ -599,7 +595,7 @@ pub unsafe fn swr_v1_socket_ssl_new(
     if unsafe { SSL_set_ex_data(made, index, socket) } == 0 {
         return 3;
     }
-    tls.state = 0;
+    record.tls.state = 0;
     0
 }
 
@@ -812,48 +808,45 @@ mod tests {
             );
 
             let context = SSL_CTX_new(TLS_method());
-            let mut ssl = std::ptr::null_mut();
             let mut error = 0;
             let mut socket = 7_u8;
             let index = SSL_get_ex_new_index(0, std::ptr::null_mut(), None, None, None);
-            let mut tls = SocketTls {
+            let mut record = swoole_rs_reactor::SocketRecord::with_fd(3, 0);
+            record.tls = SocketTls {
                 state: STATE_READY,
                 want_read: 1,
                 want_write: 1,
             };
             let made = swr_v1_socket_ssl_new(
-                &mut tls,
+                &mut record,
                 context,
-                3,
                 CLIENT,
                 index,
                 (&raw mut socket).cast(),
-                &mut ssl,
                 &mut error,
             );
             assert_eq!(made, 0);
             assert_eq!(
-                tls,
+                record.tls,
                 SocketTls::default(),
                 "a fresh SSL clears the state group"
             );
-            let made = ssl.cast::<SSL>();
+            let made = record.take_ssl().cast::<SSL>();
             assert_eq!(SSL_is_server(made), 0, "connect state");
             assert_eq!(SSL_get_ex_data(made, index), (&raw mut socket).cast());
             SSL_free(made);
             assert_eq!(
                 swr_v1_socket_ssl_new(
-                    &mut tls,
+                    &mut record,
                     context,
-                    3,
                     SERVER,
                     index,
                     std::ptr::null_mut(),
-                    &mut ssl,
                     &mut error
                 ),
                 0
             );
+            let ssl = record.take_ssl();
             assert_eq!(SSL_is_server(ssl.cast()), 1, "accept state");
             SSL_free(ssl.cast());
             SSL_CTX_free(context);
@@ -1070,20 +1063,18 @@ mod shutdown_tests {
                     }
                     SSL_set_fd(client, fds[1]);
                     // The server end as `Socket::ssl_create` makes it.
-                    let (mut tls, mut server, mut error) =
-                        (SocketTls::default(), ptr::null_mut(), 0);
+                    let mut record = swoole_rs_reactor::SocketRecord::with_fd(fds[0], 0);
+                    let mut error = 0;
                     let made = swr_v1_socket_ssl_new(
-                        &mut tls,
+                        &mut record,
                         server_ctx,
-                        fds[0],
                         SERVER,
                         0,
                         ptr::null_mut(),
-                        &mut server,
                         &mut error,
                     );
                     assert_eq!(made, 0);
-                    server.cast()
+                    record.take_ssl().cast()
                 } else {
                     let server = SSL_new(server_ctx);
                     let (mut left, mut right) = (ptr::null_mut(), ptr::null_mut());

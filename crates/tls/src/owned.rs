@@ -414,7 +414,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
             error: 0,
         };
     };
-    if !record.read(|record| record.ssl).is_null() {
+    if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return OwnedTlsSessionResult {
             status: 0,
             error: 0,
@@ -430,17 +430,15 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
         // SAFETY: the owner's live context; OpenSSL calls nothing back while making the SSL.
         let status = unsafe {
             crate::swr_v1_socket_ssl_new(
-                &mut record.tls,
+                record,
                 fields.context,
-                record.fd,
                 0,
                 index,
                 socket.cast(),
-                &mut record.ssl,
                 &mut error,
             )
         };
-        (status, error, record.ssl.cast::<openssl_sys::SSL>())
+        (status, error, record.ssl().cast::<openssl_sys::SSL>())
     });
     if status != 0 {
         return OwnedTlsSessionResult { status, error };
@@ -730,7 +728,7 @@ mod tests {
                 let result =
                     swr_v1_tls_owner_socket_session(prepared.owner, socket, Arc::as_ptr(&hostname));
                 assert_eq!(result.status, 0);
-                let ssl = (*socket).fields.ssl.cast::<openssl_sys::SSL>();
+                let ssl = (*socket).fields.ssl().cast::<openssl_sys::SSL>();
                 assert_eq!(
                     openssl_sys::SSL_get_ex_data(ssl, crate::swr_v1_tls_connection_index()),
                     socket.cast()

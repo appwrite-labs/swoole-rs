@@ -94,7 +94,7 @@ impl Co {
 fn shutdown(socket: Co, how: c_int, sys: Sys) -> bool {
     set_err(socket, 0);
     let closed = socket.is_closed();
-    let tls = !closed && socket.net(|record| !record.ssl.is_null()) == Some(true);
+    let tls = !closed && socket.net(|record| !record.ssl().is_null()) == Some(true);
     let ssl_shutdown = || (NATIVE.ssl_shutdown)(socket);
     let ssl_shutdown: Option<&dyn Fn()> = tls.then_some(&ssl_shutdown);
     let fd = socket.sock_fd();
@@ -253,7 +253,7 @@ mod tests {
         if !connected || how == libc::SHUT_RD && flags.read || how == libc::SHUT_WR && flags.write {
             error = libc::ENOTCONN;
         } else {
-            if !unsafe { (*s.socket()).fields.ssl.is_null() } {
+            if !unsafe { (*s.socket()).fields.ssl().is_null() } {
                 (NATIVE.ssl_shutdown)(s);
             }
             if unsafe { (sys.shutdown)(s.sock_fd(), how) } < 0 {
@@ -518,8 +518,10 @@ mod tests {
                 set_flags(s, (k / 4) % 2 == 1, (k / 16) % 2 == 1, (k / 32) % 2 == 1);
                 s.0.sock_fd = if (k / 8) % 2 == 1 { -1 } else { 77 };
                 if (k / 64) % 2 == 1 {
-                    unsafe { s.0.record() }.ssl =
-                        core::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+                    unsafe {
+                        s.0.record()
+                            .set_ssl(core::ptr::NonNull::<u8>::dangling().as_ptr().cast());
+                    }
                 }
             };
             let hooks = move || {

@@ -135,7 +135,7 @@ impl Conn {
     pub(crate) fn has_ssl(&self) -> bool {
         self.cli
             .net()
-            .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
+            .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
     }
 }
 

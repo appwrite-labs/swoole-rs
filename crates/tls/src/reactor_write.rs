@@ -180,7 +180,7 @@ pub unsafe extern "C-unwind" fn reactor_writev(
     let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
     };
-    if !socket.read(|record| record.ssl).is_null() {
+    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         log::error_log(
             log::LOG_WARNING,
             SW_ERROR_OPERATION_NOT_SUPPORT,

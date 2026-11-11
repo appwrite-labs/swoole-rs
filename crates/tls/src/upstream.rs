@@ -320,7 +320,7 @@ unsafe fn vector_io(socket: *mut SocketRecord, vector: *const c_void, write: boo
     let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
     };
-    let (fd, ssl) = record.read(|record| (record.fd, record.ssl));
+    let (fd, ssl) = record.read(|record| (record.fd, record.ssl()));
     let io = (!ssl.is_null()).then_some(if write { tls_send } else { tls_recv });
     // SAFETY: the vector's owner and, with an SSL, a TLS call valid for the record.
     unsafe { swr_v1_socket_iov_owned(fd, write, owner, io, socket.cast()) }
@@ -585,7 +585,7 @@ impl SyncEffects for Call<'_> {
             if record.output.nonblock == 0 {
                 socket_set_fd_option(record, 1, -1);
             }
-            if !record.ssl.is_null() {
+            if !record.ssl().is_null() {
                 swr_v1_socket_ssl_clear(&mut record.tls);
             }
         });
@@ -976,7 +976,7 @@ pub unsafe fn sendfile(
     let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
     };
-    let (out, ssl) = socket.read(|record| (record.fd, record.ssl));
+    let (out, ssl) = socket.read(|record| (record.fd, record.ssl()));
     if !ssl.is_null() {
         // SAFETY: as the caller promises.
         return unsafe { ssl_sendfile(socket, fd, offset, length) };
@@ -1326,7 +1326,7 @@ pub fn socket_ssl_close(socket: Socket<'_>) {
     if socket.read(|record| record.ssl_closed) == 0 {
         socket_ssl_shutdown(socket);
     }
-    let ssl = socket.edit(|record| std::mem::replace(&mut record.ssl, std::ptr::null_mut()));
+    let ssl = socket.edit(swoole_rs_reactor::SocketFields::take_ssl);
     // SAFETY: the record's SSL (or null), now released.
     unsafe { openssl_sys::SSL_free(ssl.cast()) };
 }
@@ -1352,16 +1352,7 @@ pub unsafe fn socket_ssl_create(
         let mut error = 0;
         // SAFETY: a live context; OpenSSL calls nothing back while making the SSL.
         let status = unsafe {
-            crate::swr_v1_socket_ssl_new(
-                &mut record.tls,
-                context,
-                record.fd,
-                flags,
-                index,
-                this,
-                &mut record.ssl,
-                &mut error,
-            )
+            crate::swr_v1_socket_ssl_new(record, context, flags, index, this, &mut error)
         };
         (status, error)
     });
@@ -1643,17 +1634,17 @@ mod tests {
             socket.tls.want_read = 1;
             let created = socket_ssl_create(&raw mut socket, owner.owner, 2);
             assert_eq!(created, 0);
-            assert!(!socket.ssl.is_null());
+            assert!(!socket.ssl().is_null());
             assert_eq!(
                 (socket.tls.state, socket.tls.want_read),
                 (0, 0),
                 "state and want flags cleared"
             );
             let index = crate::swr_v1_tls_connection_index();
-            let data = openssl_sys::SSL_get_ex_data(socket.ssl.cast(), index);
+            let data = openssl_sys::SSL_get_ex_data(socket.ssl().cast(), index);
             assert_eq!(data, (&raw mut socket).cast());
             socket_ssl_close(Socket::from_ptr(&raw mut socket).unwrap());
-            assert!(socket.ssl.is_null());
+            assert!(socket.ssl().is_null());
             crate::swr_v1_tls_owner_free(owner.owner);
             libc::close(fds[0]);
             libc::close(fds[1]);

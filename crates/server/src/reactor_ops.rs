@@ -291,7 +291,7 @@ fn read_facts(o: &mut Objects<'_>) -> u64 {
     o.ctx.port = o.port_by_fd(o.event().fd());
     let process = o.mode() == crate::MODE_PROCESS;
     o.read_sock(|sock| {
-        let ssl = !sock.ssl.is_null();
+        let ssl = !sock.ssl().is_null();
         cn::FOUND
             | BUILT_PREQUEUE
             | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
@@ -323,7 +323,7 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
     if conn.active == 0 {
         return 0;
     }
-    let pending = o.read_sock(|sock| !sock.ssl.is_null() && sock.tls.state != SSL_READY);
+    let pending = o.read_sock(|sock| !sock.ssl().is_null() && sock.tls.state != SSL_READY);
     cn::FOUND
         | BUILT_PREQUEUE
         | flag(conn.close_notify != 0, cn::CLOSE_NOTIFY)
@@ -382,7 +382,7 @@ fn close_facts(o: &mut Objects<'_>) -> u64 {
     o.ctx.port = o.port_by_fd(fd);
     let (conn, base) = (o.conn(), o.mode() == crate::MODE_BASE);
     o.read_sock(|sock| {
-        let ssl = !sock.ssl.is_null();
+        let ssl = !sock.ssl().is_null();
         BUILT_PREQUEUE
             | flag(!conn.timer.is_null(), cn::TIMER)
             | flag(!conn.websocket_buffer.is_null(), cn::WEBSOCKET_BUFFER)

@@ -1067,7 +1067,7 @@ fn close(this: Handle) -> c_int {
     let saved = this.socket();
     if this.flag(OPEN_SSL)
         && !this.get().tls.get().is_null()
-        && !saved.read(|socket| socket.ssl.is_null())
+        && !saved.read(|socket| socket.ssl().is_null())
     {
         socket_ssl_close(saved);
     }
@@ -1272,7 +1272,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             return ERR;
         }
     }
-    if this.socket().read(|socket| socket.ssl.is_null()) {
+    if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = 1);
         // SAFETY: the live socket and context.
         if unsafe { socket_ssl_create(this.socket_ptr(), tls, SSL_CLIENT) } < 0 {
@@ -1284,7 +1284,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             // SAFETY: `SSL_set_tlsext_host_name` on the new session; OpenSSL copies the name.
             unsafe {
                 ssl_ctrl(
-                    this.socket().read(|socket| socket.ssl),
+                    this.socket().read(swoole_rs_reactor::SocketFields::ssl),
                     SSL_CTRL_SET_TLSEXT_HOSTNAME,
                     TLSEXT_NAMETYPE_HOST_NAME,
                     name.as_ptr().cast_mut().cast(),

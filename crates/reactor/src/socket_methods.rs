@@ -148,7 +148,7 @@ fn io_of(socket: Socket<'_>, tls: TlsIo) -> (c_int, bool, bool, Option<(TlsIo, *
             record.fd,
             record.output.nonblock != 0,
             record.dont_restart != 0,
-            (!record.ssl.is_null()).then_some((tls, socket.as_ptr().cast())),
+            (!record.ssl().is_null()).then_some((tls, socket.as_ptr().cast())),
         )
     })
 }
@@ -240,7 +240,7 @@ pub unsafe fn socket_record_peek(
 #[must_use]
 pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
     let tls = socket.tls;
-    if !socket.ssl.is_null() && (tls.want_read != 0 || tls.want_write != 0) {
+    if !socket.ssl().is_null() && (tls.want_read != 0 || tls.want_write != 0) {
         use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
         if tls.want_write != 0 {
             SW_EVENT_WRITE as c_int
@@ -261,11 +261,12 @@ mod tests {
     fn native_event_want_preserves_write_priority_and_default() {
         let mut socket: SocketRecord = unsafe { std::mem::zeroed() };
         for ssl in [false, true] {
-            socket.ssl = if ssl {
+            let live = if ssl {
                 std::ptr::dangling_mut()
             } else {
                 std::ptr::null_mut()
             };
+            unsafe { socket.set_ssl(live) };
             for read in [0, 1] {
                 for write in [0, 1] {
                     for default in [-1, 0, 512, 1024] {

@@ -404,7 +404,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     let Some(socket) = (unsafe { socket_of(owner) }) else {
         return false;
     };
-    if !socket.read(|record| record.ssl).is_null() {
+    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return false;
     }
     let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
@@ -418,7 +418,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
     let ssl = socket.edit(|record| {
         record.dtls = 1;
-        record.ssl
+        record.ssl()
     });
     // SAFETY: a BIO of the table above; OpenSSL returns null on failure.
     let bio = unsafe { BIO_new(methods()) };

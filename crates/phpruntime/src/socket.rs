@@ -343,7 +343,7 @@ impl Socket {
 
     /// The connection's `SSL *`, or null.
     pub(crate) fn ssl(&self) -> *mut openssl_sys::SSL {
-        self.with_record(std::ptr::null_mut(), |record| record.ssl.cast())
+        self.with_record(std::ptr::null_mut(), |record| record.ssl().cast())
     }
 
     pub(crate) fn ssl_handshake(&self) -> bool {
