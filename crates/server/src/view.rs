@@ -320,7 +320,12 @@ impl<'a> Server<'a> {
     #[must_use]
     pub unsafe fn port_connection_num(self, port: *mut c_void) -> usize {
         // SAFETY: per the caller.
-        let gs = unsafe { self::port(port) }.gs;
+        self.port_connections(unsafe { self::port(port) })
+    }
+
+    /// `ListenPort::get_connection_num()` of the port whose settings are `config`.
+    pub(crate) fn port_connections(self, config: &PortConfig) -> usize {
+        let gs = config.gs;
         // SAFETY: the port's mapped counters.
         let cells = unsafe { &*gs.cast::<PortCounters>() }.cells();
         let workers = if cells.is_null() {
@@ -486,10 +491,9 @@ impl<'a> Server<'a> {
             .tables_ref()
             .ports()
             .iter()
-            .copied()
-            // SAFETY: the server's own live ports.
-            .find(|&ls| wanted(unsafe { port(ls) }))
-            .unwrap_or(core::ptr::null_mut())
+            .enumerate()
+            .find(|&(index, _)| (self.state().tables_ref().port_config(index)).is_some_and(&wanted))
+            .map_or(core::ptr::null_mut(), |(_, &ls)| ls)
     }
 }
 

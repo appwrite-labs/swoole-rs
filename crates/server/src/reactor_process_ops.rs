@@ -216,10 +216,10 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_ONSTART_CALLED => u64::from(ctx.counters().onstart_called),
         OP_ON_START => {
             ctx.counters().onstart_called = true;
-            if let Some(slot) = ctx.callback_slot(CB_START) {
-                // SAFETY: `onStart` takes the server.
-                unsafe { slot.call_server(serv) };
-            }
+            ctx.server()
+                .state()
+                .callbacks
+                .call_server(CB_START, ctx.server());
             0
         }
         OP_ADD_MASTER_TIMER => {

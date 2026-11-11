@@ -170,9 +170,8 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_ADD => {
-            let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
-            // SAFETY: one of its live ports.
-            let port = unsafe { view::port(port) };
+            let index = usize::try_from(arg).ok()?;
+            let port = ctx.state().tables_ref().port_config(index)?;
             let gs = port.counters()?;
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the worker's slot of them.

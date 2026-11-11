@@ -52,7 +52,7 @@ unsafe fn run_with<'s>(
     operation: impl FnOnce(&mut crate::Native<'s, crate::ServerCall>, u64) -> crate::Effect<i64>,
 ) -> c_int {
     // SAFETY: per the caller.
-    let state = unsafe { state(ctx.serv) };
+    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
     // SAFETY: per the caller.
     let facts = unsafe { facts(ctx, state, which) };
     // SAFETY: per the caller.
@@ -65,15 +65,6 @@ unsafe fn run_with<'s>(
 )]
 fn int(value: i64) -> c_int {
     value as c_int
-}
-
-/// The server's Rust-owned state.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-unsafe fn state<'a>(serv: *mut c_void) -> &'a crate::ServerState {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    unsafe { view::Server::from_raw(serv) }.state()
 }
 
 /// `reactor->ptr`, a reactor thread's server.
@@ -127,7 +118,7 @@ pub extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int
     let mut ctx = context(reactor, event);
     let id = usize::from(crate::reactor_handle::Reactor::running(reactor).fields().id);
     // SAFETY: a server reactor's live server.
-    ctx.thread = thread(unsafe { state(ctx.serv) }, id);
+    ctx.thread = thread(unsafe { view::Server::from_raw(ctx.serv) }.state(), id);
     // SAFETY: a server reactor's live server, and its event.
     int(unsafe { run(RUN_PIPE_READ, 0, &mut ctx) })
 }
@@ -253,7 +244,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     // SAFETY: per the caller; a port's protocol keeps its server.
     let serv = unsafe { (*proto).private_data_2 };
     // SAFETY: per the caller, a live server's.
-    let state = unsafe { state(serv) };
+    let state = unsafe { view::Server::from_raw(serv) }.state();
     // SAFETY: per the caller, a live session socket.
     let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
         return -1;

@@ -108,10 +108,7 @@ impl Context {
     }
     /// The server's `(Server *)` callback `index`, when set.
     fn call_server(&self, index: u32) -> u64 {
-        if let Some(slot) = self.state().callbacks.slot(index) {
-            // SAFETY: the manager and reload callbacks take the server.
-            unsafe { slot.call_server(self.serv) };
-        }
+        self.state().callbacks.call_server(index, self.server());
         0
     }
     /// Runs thread-mode `operation` with `arg` over this context.
@@ -300,12 +297,9 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
     let port = || {
-        let ports = ctx.server().ports();
-        let port = usize::try_from(arg)
-            .ok()
-            .and_then(|i| ports.get(i).copied())?;
-        // SAFETY: one of the server's live ports.
-        Some((port, unsafe { view::port(port) }))
+        let index = usize::try_from(arg).ok()?;
+        let config = ctx.state().tables_ref().port_config(index)?;
+        Some((ctx.server().port_at(index), config))
     };
     Some(match op {
         OP_NEW_REACTOR_THREADS => {

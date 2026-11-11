@@ -105,6 +105,13 @@ impl ServerTables {
         // SAFETY: the live buffer `ServerState::push_port` published with this length.
         unsafe { core::slice::from_raw_parts(items, count as usize) }
     }
+
+    /// The settings of listen port `index`, if there is one.
+    pub(crate) fn port_config(&self, index: usize) -> Option<&crate::port_config::PortConfig> {
+        let &port = self.ports().get(index)?;
+        // SAFETY: a listed port lives as long as the server.
+        Some(unsafe { crate::view::port(port) })
+    }
 }
 
 impl Default for ServerTables {

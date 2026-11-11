@@ -368,17 +368,15 @@ impl Facts for Live<'_> {
 
     fn ports(&mut self) -> Vec<Port> {
         let serv = self.serv;
-        let ports = self.tables.ports().iter().copied();
-        ports
-            .map(|listener| {
-                // SAFETY: one of the live server's ports.
-                let config = unsafe { view::port(listener) };
+        let tables = self.tables;
+        (0..tables.ports().len())
+            .filter_map(|index| tables.port_config(index))
+            .map(|config| {
                 let host = config.host();
                 // SAFETY: the host's bytes, which the port keeps.
                 let host = unsafe { core::slice::from_raw_parts(host.data.cast(), host.length) };
                 let protocols = (crate::port_config::methods().get_protocols)(config);
-                // SAFETY: as above.
-                let connections = unsafe { serv.port_connection_num(listener) };
+                let connections = serv.port_connections(config);
                 Port {
                     host: Json::utf8(host),
                     protocols: Json::utf8(protocols.to_bytes()),

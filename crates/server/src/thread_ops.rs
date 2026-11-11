@@ -603,15 +603,6 @@ unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
     unsafe { run(RUN_CLOSE_REACTOR_CONNECTIONS, 0, &mut ctx) };
 }
 
-/// The server's state.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-unsafe fn state_of<'a>(serv: *mut c_void) -> &'a ServerState {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    unsafe { view::Server::from_raw(serv) }.state()
-}
-
 /// What a reactor thread Rust starts runs.
 unsafe extern "C" fn reactor_thread_entry(serv: *mut c_void, id: u64) {
     swoole_rs_corebase::swoole_thread_init(false);
@@ -627,7 +618,7 @@ unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
     // than on the master's signalfd, and its default action kills the master.
     swoole_rs_corebase::signal_block_all();
     // SAFETY: the live server.
-    let state = unsafe { state_of(serv) };
+    let state = unsafe { view::Server::from_raw(serv) }.state();
     let reactors = state.config_ref().reactor_num;
     // upstream sets THREAD_HEARTBEAT, then overwrites the type with this.
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;
@@ -644,7 +635,10 @@ unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
     let fields = handle.fields();
     let mut ctx = ReactorContext::new(fields.ptr, reactor);
     // SAFETY: the reactor's live server.
-    ctx.thread = thread(unsafe { state_of(fields.ptr) }, usize::from(fields.id));
+    ctx.thread = thread(
+        unsafe { view::Server::from_raw(fields.ptr) }.state(),
+        usize::from(fields.id),
+    );
     // SAFETY: as above.
     unsafe { run(RUN_HEARTBEAT_CHECK, 0, &mut ctx) };
 }

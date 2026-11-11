@@ -1872,10 +1872,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(!node.is_null())
         }
         OP_MASTER_START => {
-            if let Some(slot) = o.state.callbacks.slot(CB_START) {
-                // SAFETY: `onStart` takes the server.
-                unsafe { slot.call_server(serv) };
-            }
+            o.state.callbacks.call_server(CB_START, o.server());
             0
         }
         OP_STORE_LISTEN => {
@@ -1928,8 +1925,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live `MessageBus`.
             let bus = unsafe { crate::objects::Bus::of(o.ctx.object) };
             let id = u16::try_from(arg).unwrap_or(u16::MAX);
-            // SAFETY: the context's live server; `arg` is one of its worker ids.
-            let serv = unsafe { crate::view::Server::from_raw(serv) };
+            let serv = o.server();
             bus.init_pipe_socket(serv.worker_pipe(id, true)?.fd());
             bus.init_pipe_socket(serv.worker_pipe(id, false)?.fd());
             0
@@ -2016,8 +2012,9 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_BEFORE_SHUTDOWN => {
             call_hook(HOOK_BEFORE_SERVER_SHUTDOWN, serv);
-            // SAFETY: onBeforeShutdown's slot and the live server.
-            unsafe { slot(CB_BEFORE_SHUTDOWN)?.call_server(serv) };
+            o.state
+                .callbacks
+                .call_server(CB_BEFORE_SHUTDOWN, o.server());
             0
         }
         OP_SIGNAL_RELOAD => {
@@ -2031,8 +2028,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_SHUTDOWN => {
-            // SAFETY: onShutdown's slot and the live server.
-            unsafe { slot(CB_SHUTDOWN)?.call_server(serv) };
+            o.state.callbacks.call_server(CB_SHUTDOWN, o.server());
             0
         }
         OP_FREE_SERVER => {

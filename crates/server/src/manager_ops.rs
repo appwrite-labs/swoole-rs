@@ -268,12 +268,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
     let (pool, task_pool) = (ctx.workers().event_pool, ctx.workers().task_pool);
-    let callback = |index| {
-        if let Some(slot) = ctx.state().callbacks.slot(index) {
-            // SAFETY: the manager and reload callbacks take the server.
-            unsafe { slot.call_server(serv) };
-        }
-    };
+    let callback = |index| ctx.state().callbacks.call_server(index, ctx.server());
     let registry = ctx.registry();
     match op {
         OP_CREATE_EVENT_WORKERS => {
