@@ -35,6 +35,18 @@ fn sigset() -> libc::sigset_t {
     set
 }
 
+/// `sigprocmask(how, mask, NULL)`.
+fn sigprocmask(how: c_int, mask: &libc::sigset_t) -> c_int {
+    // SAFETY: `mask` is an initialized sigset_t; the old mask is not wanted.
+    unsafe { libc::sigprocmask(how, mask, std::ptr::null_mut()) }
+}
+
+/// `signalfd(fd, mask, FLAGS)`: a new signalfd for -1, else `fd` with the new mask.
+fn signalfd(fd: c_int, mask: &libc::sigset_t) -> c_int {
+    // SAFETY: `mask` is an initialized sigset_t.
+    unsafe { libc::signalfd(fd, mask, FLAGS) }
+}
+
 fn clear_mask() {
     for word in &MASK {
         word.store(0, Relaxed);
@@ -90,10 +102,8 @@ pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
     let fd = FD.load(Relaxed);
     if fd != -1 {
         let mask = sigset();
-        // SAFETY: `mask` is initialized; the old mask is not wanted.
-        unsafe { libc::sigprocmask(libc::SIG_SETMASK, &raw const mask, std::ptr::null_mut()) };
-        // SAFETY: `fd` is this module's signalfd and `mask` is initialized.
-        unsafe { libc::signalfd(fd, &raw const mask, FLAGS) };
+        sigprocmask(libc::SIG_SETMASK, &mask);
+        signalfd(fd, &mask);
     }
     previous
 }
@@ -122,8 +132,7 @@ pub fn signalfd_create() -> Created {
         };
     }
     let mask = sigset();
-    // SAFETY: `mask` is initialized.
-    let fd = unsafe { libc::signalfd(-1, &raw const mask, FLAGS) };
+    let fd = signalfd(-1, &mask);
     if fd < 0 {
         return Created {
             status: 2,
@@ -131,8 +140,7 @@ pub fn signalfd_create() -> Created {
             error: errno(),
         };
     }
-    // SAFETY: as above.
-    if unsafe { libc::sigprocmask(libc::SIG_BLOCK, &raw const mask, std::ptr::null_mut()) } == -1 {
+    if sigprocmask(libc::SIG_BLOCK, &mask) == -1 {
         let error = errno();
         // SAFETY: `fd` was just opened here.
         unsafe { libc::close(fd) };
@@ -165,9 +173,7 @@ pub fn signalfd_close() {
 #[must_use]
 pub fn signalfd_clear() -> bool {
     let mask = sigset();
-    // SAFETY: `mask` is initialized.
-    let result =
-        unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &raw const mask, std::ptr::null_mut()) };
+    let result = sigprocmask(libc::SIG_UNBLOCK, &mask);
     signal_reset();
     clear_mask();
     result >= 0

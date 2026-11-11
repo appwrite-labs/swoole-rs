@@ -29,5 +29,7 @@ that `crates/tls/src/reactor_write.rs`'s `Flush` implements.
 - DATA (0), SENDFILE (1) or CLOSE (2) pick the send; other kinds fall back to
   DATA. The front kind is read only when the original loop would.
 - Each send result is consumed before `close_wait`, then `send_wait`. Once
-  drained, timer deletion precedes a final empty check (asked even with no timer)
-  and write-interest removal.
+  drained, timer deletion precedes a final empty check (the drained queue's, with
+  no timer) and write-interest removal.
+- Both reach the socket's fields and `out_buffer` through its `Socket` handle;
+  the drain stops once the socket is closing or `removed`.

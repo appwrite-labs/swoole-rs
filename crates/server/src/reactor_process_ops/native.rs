@@ -67,9 +67,9 @@ impl Context {
         // SAFETY: the context's (or the thread's) live reactor, on this thread.
         unsafe { Reactor::of(super::reactor(self)) }
     }
-    pub(super) fn worker_record(&self) -> &WorkerRecord {
+    pub(super) fn worker(&self) -> Worker<'_> {
         // SAFETY: the ops reading it run with the context's live worker.
-        unsafe { &*self.worker }
+        unsafe { Worker::new(self.worker) }
     }
     /// `serv->get_worker(id)`.
     fn other(&self, id: u64) -> *mut WorkerRecord {
@@ -124,8 +124,9 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STOP_ASYNC => {
             let worker = ctx.other(u64::from(ctx.reactor_handle().fields().id));
-            // SAFETY: the live server and one of its workers.
-            unsafe { entry::stop_async_worker(ctx.serv, worker.cast()) };
+            // SAFETY: one of the live server's workers.
+            let worker = unsafe { Worker::new(worker) };
+            crate::event_worker_ops::stop_async_worker(ctx.server(), worker);
             0
         }
         OP_COMMAND_REQUEST => {
@@ -164,7 +165,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_ADD => {
             let port = ctx.ports().get(usize::try_from(arg).ok()?)?.config();
             let gs = port.counters()?;
-            let id = ctx.worker_record().id() as usize;
+            let id = ctx.worker().id() as usize;
             // SAFETY: the worker's slot of them.
             unsafe { &*gs.cells().wrapping_add(id) }.store(0, Ordering::Relaxed);
             sign(ctx.reactor_handle().add(socket(port.socket)?, EVENT_READ))
@@ -172,7 +173,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_REACTOR_SETUP => {
             let reactor = ctx.reactor_handle();
             let fields = reactor.fields();
-            fields.id = u16::try_from(ctx.worker_record().id()).unwrap_or(u16::MAX);
+            fields.id = u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX);
             fields.ptr = ctx.serv;
             fields.max_socket = ctx.tables().max_connection;
             fields.close = Some(crate::reactor_entry::close_connection);
@@ -183,9 +184,9 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ADD_PIPES => {
-            let worker = ctx.worker_record();
-            let pipe_worker = socket(worker.pipe_worker)?;
-            let pipe_master = socket(worker.pipe_master)?;
+            let worker = ctx.worker();
+            let pipe_worker = socket(worker.pipe_worker())?;
+            let pipe_master = socket(worker.pipe_master())?;
             set_nonblock(pipe_worker);
             set_nonblock(pipe_master);
             let reactor = ctx.reactor_handle();

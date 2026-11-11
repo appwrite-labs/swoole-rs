@@ -18,10 +18,8 @@ use swoole_rs_corebase::{
     constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
     log,
 };
-use swoole_rs_process::{
-    methods::worker_is_running, worker_globals, worker_record, workers::entry,
-};
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
+use swoole_rs_server::{event_worker_ops, server_methods, view};
 use swoole_rs_zend::{
     Object, bailout, object_of, string,
     sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
@@ -172,8 +170,7 @@ fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
     if swoole_rs_phpcoroutines::in_coroutine()
         && server_methods::has_kernel_nobufs_error(serv, session_id)
     {
-        // SAFETY: in a coroutine.
-        _ = unsafe { swoole_rs_hooks::sleep::system_sleep(0.01) };
+        _ = swoole_rs_hooks::sleep::system_sleep(0.01);
     }
 }
 
@@ -210,19 +207,18 @@ pub extern "C" fn php_swoole_server_rshutdown() {
     if serv.is_null() || worker.is_null() {
         return;
     }
-    // SAFETY: the running server.
-    unsafe { entry::drain_worker_pipe(serv) };
+    // SAFETY: `serv` is the running server here.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    event_worker_ops::drain_worker_pipe(serv);
     let kind = crate::server::worker_type();
-    // SAFETY: `serv` is the live server here.
-    let started = unsafe { view::Server::from_raw(serv) }.is_started();
-    if !started || !worker_is_running() || kind == USER_WORKER {
+    if !serv.is_started() || !worker_is_running() || kind == USER_WORKER {
         return;
     }
     // SAFETY: this thread's current worker.
-    worker_record::swr_v1_worker_shutdown(unsafe { worker_record::Worker::new(worker) });
+    let worker = unsafe { worker_record::Worker::new(worker) };
+    worker_record::swr_v1_worker_shutdown(worker);
     if kind == crate::server::EVENT_WORKER {
-        // SAFETY: the running server and its current worker.
-        unsafe { entry::clean_worker_connections(serv, worker.cast()) };
+        event_worker_ops::clean_worker_connections(serv, worker);
     }
     let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
     // SAFETY: writable outputs; PHP's globals during RSHUTDOWN.

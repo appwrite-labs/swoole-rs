@@ -24,12 +24,6 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `swoole_signal_dispatch`, which a blocking call runs when interrupted.
-#[must_use]
-pub fn signal_dispatch() -> Option<unsafe extern "C" fn()> {
-    Some(swoole_rs_process::signal::swoole_signal_dispatch)
-}
-
 /// `void Socket::clean() const`.
 #[cfg_attr(
     feature = "upstream-symbols",
@@ -60,7 +54,6 @@ pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, event
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
         dont_restart,
-        signal_dispatch(),
     );
     match result.status {
         0 => OK,

@@ -14,7 +14,6 @@ use swoole_rs_process::methods::{
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_pack};
 use swoole_rs_process::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
-use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     LOG_INVALID_SOURCE, LOG_READ_TASK, LOG_RESULT_WRITE, LOG_UNKNOWN_COMMAND, OP_ADD_REQUEST_COUNT,
     OP_ALL_CORE_WORKER_NUM, OP_CREATE_TASK_WORKER, OP_ENABLE_SIGNALFD, OP_EXCEEDED_MAX_REQUEST,
@@ -32,7 +31,9 @@ use swoole_rs_reactor::{Socket, SocketRecord};
 
 use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
 use crate::commands::CommandHandler;
-use crate::event_worker_ops::swr_workers_signal_set;
+use crate::event_worker_ops::{
+    call_worker_stop_callback, swr_workers_signal_set, worker_signal_handler, worker_start_callback,
+};
 use crate::view;
 
 mod native;
@@ -223,7 +224,6 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
 /// The task pool and worker: setup, state and callbacks.
 #[inline(always)]
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv();
     let worker = ctx.worker.map_or(core::ptr::null_mut(), Worker::raw);
     let config = ctx.config();
     match op {
@@ -251,8 +251,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             ctx.worker().set_status(status);
         }
         OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker()),
-        // SAFETY: the context's live server and worker.
-        OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
+        OP_STOP_ASYNC => crate::event_worker_ops::stop_async_worker(ctx.server, ctx.worker()),
         OP_ADD_REQUEST_COUNT => ctx.worker().add_request_count(),
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
@@ -269,11 +268,9 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         // SAFETY: Rust's signal handler for the worker.
-        OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, entry::worker_signal_handler) },
-        // SAFETY: the context's live server and worker.
-        OP_WORKER_START_CALLBACK => unsafe { entry::worker_start_callback(serv, worker.cast()) },
-        // SAFETY: as above.
-        OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
+        OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, worker_signal_handler) },
+        OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server, ctx.worker()),
+        OP_WORKER_STOP_CALLBACK => call_worker_stop_callback(ctx.server, ctx.worker()),
         OP_WORKER_INIT => {
             swr_v1_worker_init(ctx.worker());
             let (max, grace) = ctx

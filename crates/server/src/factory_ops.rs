@@ -456,8 +456,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_START_EVENT_WORKER => {
-            // SAFETY: the context's live server and worker.
-            let _code = unsafe { entry::start_event_worker(serv, worker.cast()) };
+            let _code = crate::event_worker_ops::start_event_worker(ctx.serv, ctx.worker());
         }
         OP_ON_USER_WORKER_START => {
             if let Some(slot) = ctx.slot(CB_USER_WORKER_START) {
@@ -469,8 +468,8 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             worker_report_error(ctx.worker(), ctx.status());
         }
         OP_CALL_WORKER_ERROR => {
-            // SAFETY: the context's live server, worker and exit status.
-            unsafe { entry::call_worker_error_callback(serv, worker.cast(), ctx.status.cast()) };
+            let (worker, status) = (ctx.worker(), ctx.status());
+            crate::event_worker_ops::call_worker_error_callback(ctx.serv, worker, status);
         }
         OP_COUNT_DISPATCH => {
             let count = &raw mut ctx.worker_at(worker_id(arg)).dispatch_count;

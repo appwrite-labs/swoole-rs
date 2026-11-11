@@ -358,8 +358,8 @@ fn treat_data(arg: c_int, bytes: &[u8], array: *mut zval) {
 }
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
-pub(crate) fn init_request_parser(ctx: *mut crate::host::Context) {
-    crate::send::state(ctx).parser = Parser::new(llhttp::REQUEST);
+pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
+    ctx.state().parser = Parser::new(llhttp::REQUEST);
 }
 
 /// `swoole_http_parse_cookie`.
@@ -1083,8 +1083,7 @@ fn part_headers_complete(state: &mut State, upload: &mut *mut libc::FILE) -> c_i
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);
-    // SAFETY: a writable, NUL-terminated template.
-    let fd = unsafe { swoole_rs_ossupport::swoole_tmpfile(path.as_mut_ptr().cast()) };
+    let fd = swoole_rs_ossupport::create_tmpfile(&mut path);
     path.pop();
     if fd < 0 {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);

@@ -212,8 +212,7 @@ pub fn sleep(seconds: f64) -> c_int {
     if current().is_null() {
         return -1;
     }
-    // SAFETY: C++ sleeps the running coroutine, which returns here.
-    unsafe { system_sleep(seconds) }
+    system_sleep(seconds)
 }
 
 pub(crate) fn current_task() -> *mut c_void {

@@ -333,7 +333,9 @@ unsafe extern "C-unwind" fn cycle_task(data: *mut c_void) {
     let slot = unsafe { &*data.cast::<Slot>() };
     slot.running.set(slot.running.get() + 1);
     slot.task.run();
-    // Skipped when `run` bails out: the slot is then kept, never freed.
+    // Skipped when `run` bails out, so the count stays up: `release_cycle_tasks`
+    // frees the slot if the reactor still holds it when freed; once replaced, it is
+    // deferred pass after pass and kept (`Retired`), never freed.
     slot.running.set(slot.running.get() - 1);
 }
 

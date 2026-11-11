@@ -1089,8 +1089,9 @@ fn stop(call: &Call) {
         reason = "Server::kill_worker's int worker id, as upstream"
     )]
     let worker_id = worker_id as c_int;
-    // SAFETY: a live server.
-    call.set_bool(unsafe { swoole_rs_process::workers::entry::kill_worker(serv.raw(), worker_id) });
+    call.set_bool(swoole_rs_server::event_worker_ops::kill_worker(
+        serv, worker_id,
+    ));
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
