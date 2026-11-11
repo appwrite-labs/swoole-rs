@@ -209,12 +209,13 @@ impl Co {
 
     /// The socket frames WebSocket packets from now on.
     pub(crate) fn websocket_protocol(self) {
-        let record = self.record();
-        record.open_length_check = true;
-        record.protocol.package_length_size = WEBSOCKET_HEADER_LEN;
-        record.protocol.package_length_offset = 0;
-        record.protocol.package_body_offset = 0;
-        record.protocol.get_package_length = get_package_length as *mut c_void;
+        self.handle().set_open_length_check(true);
+        self.handle().edit_protocol(|protocol| {
+            protocol.package_length_size = WEBSOCKET_HEADER_LEN;
+            protocol.package_length_offset = 0;
+            protocol.package_body_offset = 0;
+            protocol.get_package_length = get_package_length as *mut c_void;
+        });
     }
 
     /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.

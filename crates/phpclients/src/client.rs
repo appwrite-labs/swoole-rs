@@ -210,15 +210,10 @@ fn type_property(call: &Call) -> i64 {
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
 fn socket_closed(data: &Data) {
-    if let Some(socket) = data.co() {
-        let protocol = &mut socket.record().protocol;
-        if !protocol.private_data_1.is_null() {
-            // The length callable this socket owns.
-            if let Err(bailout) = native::callable_free(protocol.private_data_1) {
-                bailout.defer();
-            }
-            protocol.private_data_1 = ptr::null_mut();
-        }
+    if let Some(socket) = data.co()
+        && let Err(bailout) = socket.free_length_callable()
+    {
+        bailout.defer();
     }
     data.socket.set(ptr::null_mut());
     let props = data.props().own();
@@ -247,7 +242,7 @@ fn create_socket(data: &Data, kind: i64) -> Option<Co> {
     };
     let socket = Sock::of(&created).and_then(Sock::co)?;
     let props = data.props().own();
-    props.long(c"fd", i64::from(socket.record().sock_fd));
+    props.long(c"fd", i64::from(socket.handle().sock_fd()));
     props.value(c"socket", &created);
     data.zsocket.set(created);
     let client = ptr::from_ref(data);
@@ -257,9 +252,8 @@ fn create_socket(data: &Data, kind: i64) -> Option<Co> {
         // the socket first), and its data is only ever shared.
         Box::new(move |_| socket_closed(unsafe { &*client })),
     );
-    let record = socket.record();
     socket.use_zend_strings();
-    record.zero_copy = true;
+    socket.handle().set_zero_copy(true);
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
         report_object(
             Some(data.props()),

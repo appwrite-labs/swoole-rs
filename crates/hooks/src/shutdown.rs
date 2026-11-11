@@ -35,23 +35,18 @@ pub struct SocketState {
 impl SocketState {
     /// A new socket's state: not connected, nothing shut, no coroutine bound.
     #[must_use]
-    pub fn alloc() -> *mut Self {
-        Box::into_raw(Box::new(Self {
-            flags: SocketFlags::default(),
+    pub(crate) const fn new() -> Self {
+        Self {
+            flags: SocketFlags {
+                connected: false,
+                read: false,
+                write: false,
+            },
             read_co: core::ptr::null_mut(),
             write_co: core::ptr::null_mut(),
             want: 0,
             barriers: [None; 2],
             timers: [core::ptr::null_mut(); 2],
-        }))
-    }
-
-    /// # Safety
-    /// `state` is null or came from [`SocketState::alloc`], and is not used afterwards.
-    pub unsafe fn free(state: *mut Self) {
-        if !state.is_null() {
-            // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(state) });
         }
     }
 
@@ -252,7 +247,7 @@ mod tests {
 
     #[test]
     fn binding_follows_get_bound_co_and_event_names() {
-        let state = unsafe { &mut *SocketState::alloc() };
+        let state = &mut SocketState::new();
         let (mut reader, mut writer) = (1u8, 2u8);
         let (r, w) = (
             (&raw mut reader).cast::<c_void>(),
@@ -271,6 +266,5 @@ mod tests {
         assert_eq!(state.event_name(READ), 0);
         state.bind(READ | WRITE, core::ptr::null_mut());
         assert!(state.co(READ).is_null() && state.co(WRITE).is_null());
-        unsafe { SocketState::free(state) };
     }
 }
