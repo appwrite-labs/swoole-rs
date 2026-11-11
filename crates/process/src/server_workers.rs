@@ -40,12 +40,10 @@ pub unsafe fn swr_v1_process_server_workers_start(
     unsafe { (*pool).worker_num = view.event_count };
     // SAFETY: this original event pool uses its pipes rather than a message queue.
     unsafe { (*pool).use_msgqueue = 0 };
-    // SAFETY: the pool published above; nothing else writes it during startup.
-    let published = unsafe { &*pool };
     for index in 0..view.event_count {
-        let Some(worker) = published.worker(index as usize) else {
-            break;
-        };
+        let worker = view.event_workers.wrapping_add(index as usize);
+        // SAFETY: the index is inside the live canonical event array.
+        let worker = unsafe { Worker::new(worker) };
         worker.set_pool(pool.cast());
         worker.set_id(index);
         worker.set_kind(2);
