@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_int;
-use std::mem::MaybeUninit;
 use swoole_rs_corebase::sys;
+use swoole_rs_locks::SharedMutex;
 
 /// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see
 /// `swr_v1_memory_channel_bytes`) outside the header, which only the holder of the
@@ -208,7 +208,7 @@ const NOTIFY: i32 = 4;
 pub struct Record {
     queue: UnsafeCell<Channel>,
     /// Initialized when `flags` has `SW_CHAN_LOCK`.
-    lock: UnsafeCell<MaybeUninit<libc::pthread_mutex_t>>,
+    lock: SharedMutex,
     notify: [c_int; 2],
     flags: i32,
 }
@@ -262,7 +262,7 @@ pub unsafe fn swr_v1_memory_channel_init(
     };
     let fresh = Record {
         queue: UnsafeCell::new(queue),
-        lock: UnsafeCell::new(MaybeUninit::uninit()),
+        lock: SharedMutex::new(),
         notify: [-1, -1],
         flags,
     };
@@ -276,33 +276,11 @@ pub unsafe fn swr_v1_memory_channel_init(
         };
         record.notify = notify;
     }
-    if flags & LOCK != 0 && init_mutex(record.lock.get_mut()) != 0 {
+    if flags & LOCK != 0 && record.lock.init() != 0 {
         record.close_pipe();
         return 2;
     }
     0
-}
-
-/// A process-shared mutex, like upstream's `Mutex(true)`, in fresh storage.
-fn init_mutex(lock: &mut MaybeUninit<libc::pthread_mutex_t>) -> c_int {
-    let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
-    // SAFETY: `attr` is writable attribute storage.
-    let mut result = unsafe { libc::pthread_mutexattr_init(attr.as_mut_ptr()) };
-    if result != 0 {
-        return result;
-    }
-    // SAFETY: `attr` was initialized above.
-    result = unsafe {
-        libc::pthread_mutexattr_setpshared(attr.as_mut_ptr(), libc::PTHREAD_PROCESS_SHARED)
-    };
-    if result == 0 {
-        // SAFETY: `lock` is exclusively borrowed storage that holds no mutex yet (its
-        // type says so: nothing reads it as one before this succeeds); `attr` is initialized.
-        result = unsafe { libc::pthread_mutex_init(lock.as_mut_ptr(), attr.as_ptr()) };
-    }
-    // SAFETY: `attr` is initialized.
-    unsafe { libc::pthread_mutexattr_destroy(attr.as_mut_ptr()) };
-    result
 }
 
 /// `Channel::destroy` before native frees the memory: the mutex and the pipe.
@@ -312,8 +290,8 @@ pub unsafe fn swr_v1_memory_channel_close(record: *mut Record) {
     // SAFETY: as the caller promises.
     let record = unsafe { &mut *record };
     if record.flags & LOCK != 0 {
-        // SAFETY: the mutex `init` made, which nobody holds or uses again.
-        unsafe { libc::pthread_mutex_destroy(record.lock.get_mut().as_mut_ptr()) };
+        // The mutex `init` made, which nobody holds or uses again.
+        record.lock.destroy();
     }
     if record.flags & NOTIFY != 0 {
         record.close_pipe();
@@ -326,8 +304,8 @@ struct Held<'a>(Option<&'a Record>);
 impl Drop for Held<'_> {
     fn drop(&mut self) {
         if let Some(record) = self.0 {
-            // SAFETY: the mutex this thread locked in `hold`.
-            unsafe { libc::pthread_mutex_unlock(record.lock.get().cast()) };
+            // The mutex this thread locked in `hold`.
+            _ = record.lock.unlock();
         }
     }
 }
@@ -347,9 +325,9 @@ impl Record {
         if self.flags & LOCK == 0 {
             return Held(None);
         }
-        // SAFETY: a record made with `SW_CHAN_LOCK` holds the mutex `init` made, which
-        // lives until `close`, after the record's last use.
-        unsafe { libc::pthread_mutex_lock(self.lock.get().cast()) };
+        // A record made with `SW_CHAN_LOCK` holds the mutex `init` made, which lives
+        // until `close`, after the record's last use.
+        _ = self.lock.lock();
         Held(Some(self))
     }
 

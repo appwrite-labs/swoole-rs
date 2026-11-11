@@ -370,10 +370,18 @@ impl<'a> Packed<'a> {
         unsafe { self.raw.cast::<DataHead>().read_unaligned() }
     }
 
-    fn payload(self) -> &'a [u8] {
-        let at = self.raw.wrapping_add(size_of::<DataHead>());
+    /// The task's head and the `len` bytes after it.
+    #[must_use]
+    pub fn bytes(self) -> &'a [u8] {
+        let length = size_of::<DataHead>() + self.head().len as usize;
         // SAFETY: as above, with the head's `len` bytes after it.
-        unsafe { std::slice::from_raw_parts(at, self.head().len as usize) }
+        unsafe { std::slice::from_raw_parts(self.raw, length) }
+    }
+
+    fn payload(self) -> &'a [u8] {
+        self.bytes()
+            .get(size_of::<DataHead>()..)
+            .unwrap_or_default()
     }
 
     /// `Server::task_unpack(task, buffer, &packet)`: the payload's bytes and

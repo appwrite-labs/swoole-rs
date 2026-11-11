@@ -2,6 +2,7 @@
 //! whole Rust operations. Each runs over crates/server's [`PoolNative`] side as its
 //! C++ forward did.
 
+use crate::task_file::Packed;
 use crate::worker_record::Worker;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
@@ -99,8 +100,8 @@ impl Narrow for c_int {
 /// # Safety
 /// `worker` is null or one of the pool's workers.
 unsafe fn run_on<R: Narrow>(pool: PoolRef<'_>, worker: *mut WorkerRecord, op: u32, arg: u64) -> R {
-    // SAFETY: a live pool, and the caller's worker; the side is native's.
-    let result = unsafe { pool_run_op(native(), pool.raw(), worker, op, arg) };
+    // SAFETY: the caller's worker; the side is native's.
+    let result = unsafe { pool_run_op(native(), pool, worker, op, arg) };
     if result == RAISE {
         raise_bailout();
     }
@@ -194,33 +195,36 @@ pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> c_
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
-///
-/// # Safety
-/// `pool` is a live `ProcessPool`; `data` holds `length` bytes.
-pub unsafe fn push_message(
-    pool: *mut PoolRecord,
-    kind: u8,
-    data: *const u8,
-    length: usize,
-) -> c_int {
-    // SAFETY: as the caller guarantees; the side is native's.
-    c_int::narrow(unsafe { swr_v1_process_pool_push(native(), pool, kind, data, length) })
+#[must_use]
+pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> c_int {
+    c_int::narrow(swr_v1_process_pool_push(native(), pool, kind, data))
 }
 
-/// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when `blocking`.
-///
-/// # Safety
-/// `pool` is a live `ProcessPool`; `event` an `EventData`; `worker_id` writable.
-pub unsafe fn dispatch(
-    pool: *mut PoolRecord,
-    event: *mut u8,
-    worker_id: *mut c_int,
+/// `push_message(SW_WORKER_MESSAGE_STOP, WorkerStopMessage { pid, worker_id })`:
+/// the C layout's 4-byte pid, 2-byte id and 2 bytes of padding.
+#[must_use]
+pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> c_int {
+    /// `SW_WORKER_MESSAGE_STOP`.
+    const WORKER_MESSAGE_STOP: u8 = 1;
+    let ([a, b, c, d], [e, f]) = (pid.to_ne_bytes(), worker_id.to_ne_bytes());
+    push_message(pool, WORKER_MESSAGE_STOP, &[a, b, c, d, e, f, 0, 0])
+}
+
+/// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when
+/// `blocking`, of `task`.
+pub fn dispatch(
+    pool: PoolRef<'_>,
+    task: Packed<'_>,
+    worker_id: &mut c_int,
     blocking: bool,
 ) -> c_int {
-    // SAFETY: as the caller guarantees; the side is native's.
-    c_int::narrow(unsafe {
-        swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, blocking)
-    })
+    c_int::narrow(swr_v1_process_pool_dispatch_event(
+        native(),
+        pool,
+        task.bytes(),
+        worker_id,
+        blocking,
+    ))
 }
 
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing
@@ -300,51 +304,44 @@ unsafe extern "C-unwind" {
 }
 
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
-///
-/// # Safety
-/// `pool` is a created `ProcessPool`; `file` a NUL-terminated path.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub unsafe fn listen_unix(pool: *const PoolRecord, file: *const c_char, backlog: c_int) -> c_int {
-    // SAFETY: as the caller guarantees; 5 is SW_SOCK_UNIX_STREAM.
-    unsafe { listen(pool, 5, file, 0, backlog, make_server_socket) }
+pub fn listen_unix(pool: &PoolRecord, file: &CStr, backlog: c_int) -> c_int {
+    // 5 is SW_SOCK_UNIX_STREAM.
+    listen_socket(pool, 5, file, 0, backlog)
 }
 
-/// `ProcessPool::listen(host, port, backlog)`: a TCP listener.
-///
-/// # Safety
-/// `pool` is a created `ProcessPool`; `host` a NUL-terminated address.
+/// `ProcessPool::listen(host, port, backlog)` on a socket of `kind` (`SW_SOCK_*`),
+/// made by `make_server_socket`.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub unsafe fn listen_tcp(
-    pool: *const PoolRecord,
-    host: *const c_char,
+pub fn listen_socket(
+    pool: &PoolRecord,
+    kind: c_int,
+    host: &CStr,
     port: c_int,
     backlog: c_int,
 ) -> c_int {
-    // SAFETY: as the caller guarantees; 1 is SW_SOCK_TCP.
-    unsafe { listen(pool, 1, host, port, backlog, make_server_socket) }
+    // SAFETY: `make_server_socket` returns a native socket or null.
+    unsafe { listen(pool, kind, host, port, backlog, make_server_socket) }
 }
 
 /// Both `listen`s, over `make`: only an `SW_IPC_SOCKET` pool has a stream
 /// listener, which it records with its address.
 ///
 /// # Safety
-/// `pool` is a created `ProcessPool`; `host` a NUL-terminated string; `make`
-/// returns a native socket or null.
+/// `make` returns a native socket or null.
 #[must_use]
 pub unsafe fn listen<T>(
-    pool: *const PoolRecord,
+    pool: &PoolRecord,
     kind: c_int,
-    host: *const c_char,
+    host: &CStr,
     port: c_int,
     backlog: c_int,
     make: MakeServerSocket<T>,
 ) -> c_int {
     /// `SW_IPC_SOCKET`.
     const IPC_SOCKET: u8 = 3;
-    // SAFETY: the caller lends a live pool.
-    let pool = unsafe { &*pool };
     if pool.ipc_mode != IPC_SOCKET {
         // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
@@ -355,26 +352,29 @@ pub unsafe fn listen<T>(
         );
         return -1;
     }
-    // SAFETY: a socket pool's IPC state, which nothing else borrows meanwhile.
-    let ipc = unsafe { &mut *pool.ipc };
-    // SAFETY: the caller's string.
-    swr_v1_process_pool_ipc_address(ipc, unsafe { CStr::from_ptr(host) }, port);
+    if pool
+        .with_ipc(|ipc| swr_v1_process_pool_ipc_address(ipc, host, port))
+        .is_none()
+    {
+        return -1;
+    }
     // SAFETY: as the caller guarantees.
-    let socket = unsafe { make(kind, host, port, backlog) };
+    let socket = unsafe { make(kind, host.as_ptr(), port, backlog) };
     if socket.is_null() {
         return -1;
     }
     // The pool now owns the listener.
-    swr_v1_process_pool_ipc_set_listener(ipc, socket.cast());
+    pool.with_ipc(|ipc| swr_v1_process_pool_ipc_set_listener(ipc, socket.cast()));
     0
 }
 
 /// `ProcessPool::response(data, length)`: append to the stream connection's reply.
 #[must_use]
 pub fn response(pool: &PoolRecord, data: &[u8]) -> c_int {
-    // SAFETY: null, or the pool's IPC state, which nothing else borrows meanwhile.
-    let ipc = unsafe { pool.ipc.as_mut() };
-    if ipc.is_some_and(|ipc| swr_v1_process_pool_ipc_respond(ipc, data)) {
+    if pool
+        .with_ipc(|ipc| swr_v1_process_pool_ipc_respond(ipc, data))
+        .unwrap_or(false)
+    {
         0
     } else {
         // SW_ERROR_INVALID_PARAMS.
@@ -710,7 +710,7 @@ pub(crate) mod tests {
         pool.ipc = pool_ipc_new(true);
         pool.ipc_mode = 1;
         // SAFETY: the pool is live and the host a NUL-terminated string.
-        let refused = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9501, 8, make) };
+        let refused = unsafe { listen(&pool, 1, c"127.0.0.1", 9501, 8, make) };
         assert_eq!(
             refused, -1,
             "an SW_IPC_UNIXSOCK pool has no stream listener"
@@ -727,7 +727,7 @@ pub(crate) mod tests {
         );
         pool.ipc_mode = 3;
         // SAFETY: as above.
-        let failed = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9502, 8, make) };
+        let failed = unsafe { listen(&pool, 1, c"127.0.0.1", 9502, 8, make) };
         assert_eq!(failed, -1, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
@@ -735,7 +735,7 @@ pub(crate) mod tests {
             "none kept"
         );
         // SAFETY: as above.
-        let listened = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9501, 8, make) };
+        let listened = unsafe { listen(&pool, 1, c"127.0.0.1", 9501, 8, make) };
         assert_eq!(listened, 0, "listening");
         // SAFETY: the pool's IPC state.
         let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc });

@@ -17,7 +17,7 @@
 use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
 use std::ffi::c_int;
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 use std::sync::atomic::{
     AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
 };
@@ -372,64 +372,11 @@ fn clamp(key: &[u8]) -> &[u8] {
     key.get(..length.min(KEY_SIZE - 1)).unwrap_or(key)
 }
 
-/// `TableRow::set_value()`: a number's 8 bytes, or a string cut to the
-/// column with a warning.
-/// # Safety
-/// `row` is a locked row of the column's table; `value` holds 8 bytes for a
-/// number, `length` bytes (or is null) for a string.
-pub unsafe fn set_value(
-    row: *mut Row,
-    column: &Column,
-    value: *const u8,
-    mut length: usize,
-    warning: Warning,
-) {
-    let row = Live(row);
-    let target = row.data().wrapping_add(column.index);
-    if column.kind != TYPE_STRING {
-        // SAFETY: per the caller; the column's 8 bytes in the row.
-        unsafe { ptr::copy_nonoverlapping(value, target, 8) };
-        return;
-    }
-    let capacity = (column.width as usize).wrapping_sub(4);
-    if length > capacity {
-        let mut message = b"TableRow::set_value(): [key=".to_vec();
-        message.extend_from_slice(c_str(row.key()));
-        message.extend_from_slice(b",field=");
-        message.extend_from_slice(c_str(column.name()));
-        message.extend_from_slice(b"]string value is too long");
-        warn(warning, &message);
-        length = capacity;
-    }
-    if value.is_null() {
-        length = 0;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream stores the low 4 bytes"
-    )]
-    let stored = length as u32;
-    // SAFETY: per the caller; the column's length word.
-    unsafe { target.cast::<u32>().write_unaligned(stored) };
-    // SAFETY: per the caller; `length` fits the column.
-    unsafe { ptr::copy_nonoverlapping(value, target.wrapping_add(4), length) };
-}
-
-/// `TableColumn::clear()`: an empty string or a zero number.
-/// # Safety
-/// `row` is a locked row of the column's table.
-pub unsafe fn clear_value(row: *mut Row, column: &Column) {
-    let width = if column.kind == TYPE_STRING { 4 } else { 8 };
-    // SAFETY: per the caller; the column's first `width` bytes.
-    unsafe { ptr::write_bytes(Live(row).data().wrapping_add(column.index), 0, width) };
-}
-
 impl Table {
-    /// `Table::make`: an empty, uncreated table in `this`.
-    /// # Safety
-    /// `this` is 8-aligned, writable and `size_of::<Table>()` bytes.
-    pub unsafe fn init(
-        this: *mut Table,
+    /// `Table::make`: an empty, uncreated table in `this`, whose locks are made in
+    /// place.
+    pub fn init(
+        this: &mut MaybeUninit<Table>,
         rows: u32,
         conflict: f32,
         hash: Hash,
@@ -471,10 +418,7 @@ impl Table {
             rows: ptr::null_mut(),
             pool: ptr::null_mut(),
         };
-        // SAFETY: per the caller.
-        unsafe { this.write(table) };
-        // SAFETY: written above.
-        let table = unsafe { &mut *this };
+        let table = this.write(table);
         if table.mutex.init() != 0 {
             return false;
         }
@@ -484,7 +428,8 @@ impl Table {
         }
         table.columns = Box::into_raw(Box::default());
         let columns = table.columns.expose_provenance();
-        private(|tables| tables.push([this.addr(), columns, 0]));
+        let this = ptr::from_mut(table).addr();
+        private(|tables| tables.push([this, columns, 0]));
         true
     }
 
@@ -1067,6 +1012,49 @@ impl Data {
         // SAFETY: at most the column's capacity, inside the row.
         unsafe { slice::from_raw_parts(at.wrapping_add(4), length) }
     }
+
+    /// `TableRow::set_value()`: a number column takes `value`'s 8 bytes; a string
+    /// column `value`, cut to its capacity with a warning naming the row's `key`.
+    fn set(self, column: &Column, value: &[u8], key: &[u8], warning: Warning) {
+        let Some(at) = self.slot(column) else {
+            return;
+        };
+        if column.kind != TYPE_STRING {
+            if let Some(number) = value.first_chunk::<8>() {
+                // SAFETY: the column's 8 bytes inside the row (`slot`), under its lock.
+                unsafe { at.cast::<[u8; 8]>().write_unaligned(*number) };
+            }
+            return;
+        }
+        let capacity = column.width as usize - 4;
+        if value.len() > capacity {
+            let mut message = b"TableRow::set_value(): [key=".to_vec();
+            message.extend_from_slice(c_str(key));
+            message.extend_from_slice(b",field=");
+            message.extend_from_slice(c_str(column.name()));
+            message.extend_from_slice(b"]string value is too long");
+            warn(warning, &message);
+        }
+        let value = value.get(..capacity).unwrap_or(value);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream stores the low 4 bytes"
+        )]
+        let length = value.len() as u32;
+        // SAFETY: the column's length word inside the row (`slot`), under its lock.
+        unsafe { at.cast::<u32>().write_unaligned(length) };
+        // SAFETY: at most the column's capacity after its length word, inside the row.
+        unsafe { ptr::copy_nonoverlapping(value.as_ptr(), at.wrapping_add(4), value.len()) };
+    }
+
+    /// `TableColumn::clear()`: an empty string or a zero number.
+    fn clear(self, column: &Column) {
+        if let Some(at) = self.slot(column) {
+            let width = if column.kind == TYPE_STRING { 4 } else { 8 };
+            // SAFETY: the column's first `width` bytes inside the row (`slot`).
+            unsafe { ptr::write_bytes(at, 0, width) };
+        }
+    }
 }
 
 /// A bucket this process locked, with the key's row in it if there is one
@@ -1091,11 +1079,6 @@ impl Locked<'_> {
         self.flags & NEW_ROW != 0
     }
 
-    /// The row, when the column fits it.
-    fn slot(&self, column: &Column) -> Option<*mut Row> {
-        self.data()?.slot(column).and(self.row.map(|row| row.0))
-    }
-
     fn data(&self) -> Option<Data> {
         self.row.map(|row| Data {
             data: row.data(),
@@ -1117,27 +1100,27 @@ impl Locked<'_> {
 
     /// `TableRow::set_value` of a number column's 8 bytes.
     pub fn set_number(&self, column: &Column, value: u64) {
-        if let Some(row) = self.slot(column) {
-            let bytes = value.to_ne_bytes();
-            // SAFETY: a locked row of this table; the column fits it.
-            unsafe { set_value(row, column, bytes.as_ptr(), 8, self.table.warning) };
-        }
+        self.set(column, &value.to_ne_bytes());
     }
 
     /// `TableRow::set_value` of a string column: cut to it with a warning.
     /// Nothing for a number column.
     pub fn set_bytes(&self, column: &Column, value: &[u8]) {
-        if let Some(row) = self.slot(column).filter(|_| column.kind == TYPE_STRING) {
-            // SAFETY: as above; `value` holds its length, which a string takes.
-            unsafe { set_value(row, column, value.as_ptr(), value.len(), self.table.warning) };
+        if column.kind == TYPE_STRING {
+            self.set(column, value);
+        }
+    }
+
+    fn set(&self, column: &Column, value: &[u8]) {
+        if let (Some(row), Some(data)) = (self.row, self.data()) {
+            data.set(column, value, row.key(), self.table.warning);
         }
     }
 
     /// `TableColumn::clear()`: an empty string or a zero number.
     pub fn clear(&self, column: &Column) {
-        if let Some(row) = self.slot(column) {
-            // SAFETY: as above.
-            unsafe { clear_value(row, column) };
+        if let Some(data) = self.data() {
+            data.clear(column);
         }
     }
 

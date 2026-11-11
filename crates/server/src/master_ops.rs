@@ -2334,8 +2334,9 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_TASK_POOL_LISTEN => {
-            // SAFETY: the created task pool and the NUL-terminated path `arg` lends.
-            sign(unsafe { pool_listen(o.task_pool().cast(), ptr_of(arg), 2048) })
+            // SAFETY: the NUL-terminated path `arg` lends.
+            let file = unsafe { CStr::from_ptr(ptr_of(arg)) };
+            sign(pool_listen(o.task_pool_record(), file, 2048))
         }
         OP_TASK_PIPE => {
             let ready = o.state.push_task_pipe();
@@ -2528,20 +2529,17 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 }
                 let sent = if c.action == TO_TASK_WORKER {
                     let mut dst = c_int::from(process_id);
-                    let (gs, pool) = (o.gs(), o.task_pool());
+                    let (gs, pool) = (o.gs(), o.server().task_pool_ref());
+                    // SAFETY: the packed task, which nothing writes while it is sent.
+                    let task = unsafe {
+                        swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
+                    };
                     swoole_rs_process::task_sync::count_task(
                         &gs.tasking_num,
                         &gs.task_count,
                         || {
-                            // SAFETY: the live task pool and the packed task.
-                            let sent = unsafe {
-                                swoole_rs_process::methods::dispatch(
-                                    pool,
-                                    (&raw mut buf).cast(),
-                                    &raw mut dst,
-                                    false,
-                                )
-                            };
+                            let sent =
+                                swoole_rs_process::methods::dispatch(pool, task, &mut dst, false);
                             Ok(sent == 0)
                         },
                     )

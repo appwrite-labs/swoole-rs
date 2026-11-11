@@ -5,9 +5,10 @@
 use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long, c_void};
 use swoole_rs_corebase::log;
 
-// The XSI message queue calls, declared here because libc omits them on Darwin.
+// SAFETY: the XSI message queue calls, declared here because libc omits them on
+// Darwin, with their C signatures; `msgget` takes no pointer.
 unsafe extern "C" {
-    fn msgget(key: libc::key_t, flags: c_int) -> c_int;
+    safe fn msgget(key: libc::key_t, flags: c_int) -> c_int;
     fn msgsnd(id: c_int, msg: *const c_void, size: usize, flags: c_int) -> c_int;
     fn msgrcv(id: c_int, msg: *mut c_void, size: usize, kind: c_long, flags: c_int) -> isize;
     fn msgctl(id: c_int, cmd: c_int, buf: *mut c_void) -> c_int;
@@ -58,8 +59,7 @@ impl QueueRecord {
     #[must_use]
     pub fn new(key: libc::key_t, blocking: bool, perms: c_int) -> Self {
         let perms = permissions(perms);
-        // SAFETY: msgget has no memory preconditions.
-        let id = unsafe { msgget(key, IPC_CREAT | perms) };
+        let id = msgget(key, IPC_CREAT | perms);
         if id < 0 {
             sys_warning(c"MsgQueue::MsgQueue", format_args!("msgget() failed"));
         }

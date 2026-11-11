@@ -23,7 +23,7 @@ use swoole_rs_locks::SharedMutex;
 use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
-    process_pool::{PoolRecord, SW_IPC_MAX_SIZE},
+    process_pool::{PoolRef, SW_IPC_MAX_SIZE},
     task_file::{self, Packed},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks},
 };
@@ -84,15 +84,16 @@ struct Info {
 
 /// The server's task pool, and this worker's notify pipe and lock.
 struct Host<'a> {
-    pool: *mut PoolRecord,
+    pool: PoolRef<'a>,
     pipe: Option<&'a mut SocketPair>,
     lock: Option<&'static SharedMutex>,
 }
 
 impl TaskHost for Host<'_> {
     fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
-        // SAFETY: the live task pool and a packed task.
-        unsafe { methods::dispatch(self.pool, task, worker_id, blocking) == SW_OK }
+        // SAFETY: a packed task, which nothing writes while it is sent.
+        let task = unsafe { Packed::from_raw(task.cast()) };
+        methods::dispatch(self.pool, task, worker_id, blocking) == SW_OK
     }
 
     fn pipe_clean(&mut self) {
@@ -126,7 +127,7 @@ impl TaskHost for Host<'_> {
 fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host<'_>> {
     let counters = serv.counters();
     let mut host = Host {
-        pool: serv.task_pool(),
+        pool: serv.task_pool_ref(),
         pipe: None,
         lock: None,
     };

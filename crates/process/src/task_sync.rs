@@ -205,17 +205,17 @@ impl<H: TaskHost> Tasks<'_, H> {
     /// then `path` (`swoole_strlcpy`'d).
     fn name_result_file(&mut self, path: &CStr) {
         let path = path.to_bytes_with_nul();
-        let length = path.len().min(TASK_TMP_PATH_SIZE);
+        let path = path.get(..TASK_TMP_PATH_SIZE).unwrap_or(path);
+        // A zero count, then the path, cut to fit and still NUL-terminated.
+        let mut data = vec![0; size_of::<c_int>()];
+        data.extend_from_slice(path.split_last().map_or(path, |(_, name)| name));
+        data.push(0);
         self.host.lock(true);
-        // The slot is an `EventData`, whose data holds the count and a path.
-        let count = self.result.wrapping_add(HEAD);
-        let named = count.wrapping_add(size_of::<c_int>());
-        // SAFETY: as above.
-        unsafe { count.cast::<c_int>().write_unaligned(0) };
-        // SAFETY: as above; `length` is at most `SW_TASK_TMP_PATH_SIZE`.
-        unsafe { ptr::copy_nonoverlapping(path.as_ptr(), named, length) };
-        // SAFETY: as above.
-        unsafe { named.wrapping_add(length - 1).write(0) };
+        // SAFETY: the slot is an `EventData`, whose data holds the count and a path of
+        // at most `SW_TASK_TMP_PATH_SIZE` bytes.
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), self.result.wrapping_add(HEAD), data.len());
+        };
         self.host.lock(false);
     }
 
