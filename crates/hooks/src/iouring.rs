@@ -223,17 +223,13 @@ fn interrupt() {
 }
 
 /// `Iouring::waitpid`.
-///
-/// # Safety
-/// `status` is null or a valid status word.
-unsafe fn waitpid(
+fn waitpid(
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: Option<&mut c_int>,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    // SAFETY: the caller's contract: null or a valid status word.
-    uring::waitpid(&HOST, pid, unsafe { status.as_mut() }, options, timeout)
+    uring::waitpid(&HOST, pid, status, options, timeout)
 }
 
 /// The thread's engine, or none before the first request (`SwooleTG.iouring`).
