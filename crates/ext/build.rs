@@ -15,7 +15,6 @@ fn main() {
 #[cfg(feature = "php")]
 #[expect(
     clippy::expect_used,
-    clippy::panic,
     reason = "a build script reports failure by panicking"
 )]
 mod php {
