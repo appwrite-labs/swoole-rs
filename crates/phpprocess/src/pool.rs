@@ -1,8 +1,8 @@
 //! `Swoole\Process\Pool`: registration, objects, methods and the pool's event
 //! callbacks, over crates/process's `ProcessPool` (`PoolRecord`).
 use crate::{
-    host,
-    process::{entry as process_entry, set_worker_of, worker_pid, worker_view},
+    host::{self, Callable},
+    process::{set_worker_of, worker_pid, worker_view},
     report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
     signal::clean,
 };
@@ -24,14 +24,14 @@ use swoole_rs_process::{
 };
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, class_name, handlers, long_zval, message,
-    object_of, string,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, Value, ZString, handlers, long_zval,
+    message, string,
     sys::{
-        IS_ARRAY, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, object_init_ex,
-        swr_zend_array_init, zend_class_entry, zend_hash_index_find, zend_hash_index_update,
-        zend_object, zend_object_handlers, zend_read_property, zval, zval_ptr_dtor,
+        IS_ARRAY, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_array_init,
+        zend_class_entry, zend_hash_index_update, zend_object, zend_object_handlers,
+        zend_read_property, zval, zval_ptr_dtor,
     },
-    type_of, unset_property_deny, update_property_long, value,
+    type_of, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -67,9 +67,6 @@ struct BusHead {
     allocator: *const c_void,
 }
 
-// `swoole_signal_set(signo, handler, safety)` (crates/reactor).
-use swoole_rs_reactor::signal_upstream::swoole_signal_set;
-
 static POOL: Class = Class::new();
 /// `current_pool` and `current_worker`.
 static CURRENT: AtomicPtr<PoolRecord> = AtomicPtr::new(ptr::null_mut());
@@ -88,13 +85,7 @@ fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
 
 /// `ProcessPool::create` in a zeroed pool that keeps a copy of `$this`'s zval;
 /// on failure, none, with `errno` set.
-fn pool_new(
-    worker_num: u32,
-    key: c_int,
-    ipc: c_int,
-    object: *mut zval,
-    async_: bool,
-) -> Option<Pool> {
+fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: bool) -> Option<Pool> {
     // SAFETY: every `ProcessPool` field is an integer, a bool or a pointer.
     let pool = Box::into_raw(unsafe { Box::<PoolRecord>::new_zeroed().assume_init() });
     // SAFETY: a zeroed pool.
@@ -104,7 +95,7 @@ fn pool_new(
         return None;
     }
     // SAFETY: a live zval, copied without a reference as upstream's `sw_zval_dup`.
-    record(pool).ptr = Box::into_raw(Box::new(unsafe { object.read() })).cast();
+    record(pool).ptr = Box::into_raw(Box::new(unsafe { object.as_ptr().read() })).cast();
     record(pool).is_async = async_;
     Some(pool)
 }
@@ -133,7 +124,7 @@ fn worker_busy(busy: bool) {
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
-fn message_data(pool: Pool, message: *mut c_void, target: *mut zval) {
+fn message_data(pool: Pool, message: *mut c_void) -> Owned {
     // SAFETY: the pool's received message.
     let message = unsafe { &*message.cast::<RecvData>() };
     let (length, data) = (message.info.len as usize, message.data);
@@ -151,20 +142,20 @@ fn message_data(pool: Pool, message: *mut c_void, target: *mut zval) {
         // SAFETY: `length` bytes at `data`.
         string::copy(unsafe { std::slice::from_raw_parts(data, length) })
     };
-    // SAFETY: a writable zval takes the string.
-    unsafe { value::set_str(target, string) };
+    // SAFETY: a live string whose reference the value takes.
+    Owned::string(unsafe { ZString::from_raw(string) })
 }
 
 /// `struct ProcessPoolObject`: the pool, its six callables and two flags.
 #[repr(C)]
 struct PoolObject {
     pool: Pool,
-    on_start: *mut c_void,
-    on_shutdown: *mut c_void,
-    on_worker_start: *mut c_void,
-    on_worker_stop: *mut c_void,
-    on_worker_exit: *mut c_void,
-    on_message: *mut c_void,
+    on_start: Option<Callable>,
+    on_shutdown: Option<Callable>,
+    on_worker_start: Option<Callable>,
+    on_worker_stop: Option<Callable>,
+    on_worker_exit: Option<Callable>,
+    on_message: Option<Callable>,
     enable_coroutine: bool,
     enable_message_bus: bool,
 }
@@ -208,17 +199,14 @@ unsafe extern "C" fn free(object: *mut zend_object) {
         pool_free(pool.pool);
     }
     for callable in [
-        pool.on_worker_start,
-        pool.on_message,
-        pool.on_worker_stop,
-        pool.on_start,
-        pool.on_worker_exit,
-        pool.on_shutdown,
+        pool.on_worker_start.take(),
+        pool.on_message.take(),
+        pool.on_worker_stop.take(),
+        pool.on_start.take(),
+        pool.on_worker_exit.take(),
+        pool.on_shutdown.take(),
     ] {
-        if !callable.is_null() {
-            // SAFETY: the object owns its callables.
-            unsafe { host::callable_free(callable) };
-        }
+        drop(callable);
     }
     // SAFETY: as above.
     unsafe { Object_::dtor(object) };
@@ -293,14 +281,16 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     Object_::install(entry, handlers, create, free);
 }
 
-fn update_bool(object: *mut zend_object, name: &std::ffi::CStr, value: bool) {
-    // SAFETY: a live Pool object.
-    unsafe { swoole_rs_zend::Props::new(POOL.entry(), object) }.bool(name, value);
+fn update_bool(object: &Value, name: &std::ffi::CStr, value: bool) {
+    if let Some(props) = object.props(Some(&POOL)) {
+        props.bool(name, value);
+    }
 }
 
-fn update_long(object: *mut zend_object, name: &std::ffi::CStr, value: i64) {
-    // SAFETY: a live Pool object.
-    unsafe { update_property_long(POOL.entry(), object, name, value) };
+fn update_long(object: &Value, name: &std::ffi::CStr, value: i64) {
+    if let Some(props) = object.props(Some(&POOL)) {
+        props.long(name, value);
+    }
 }
 
 fn getpid() -> i64 {
@@ -310,27 +300,33 @@ fn getpid() -> i64 {
 /// Call a pool callback with `$pool` (and the worker id), as upstream's
 /// `zend::function::call`; warn "%s->onX handler error" on failure.
 fn dispatch(
-    callable: *mut c_void,
-    object: *mut zval,
+    callable: &Callable,
+    object: &Value,
     worker: Option<i64>,
     coroutine: bool,
     event: &str,
 ) {
-    // SAFETY: a live object zval, copied without a reference as upstream does.
-    let mut args = [unsafe { *object }, long_zval(worker.unwrap_or(0))];
-    let argc = if worker.is_some() { 2 } else { 1 };
-    // SAFETY: a live callable and `argc` arguments.
-    let called = unsafe { host::callable_call(callable, argc, args.as_mut_ptr(), coroutine) };
+    let id = Owned::long(worker.unwrap_or(0));
+    let args: &[&Value] = if worker.is_some() {
+        &[object, &id]
+    } else {
+        &[object]
+    };
+    let called = callable.call(args, coroutine);
     if !called && !swoole_rs_zend::bailout::pending() {
-        // SAFETY: a live object zval.
-        let std = unsafe { object_of(object) };
-        // SAFETY: a live object.
-        let name = unsafe { class_name(std) };
-        notice(
-            E_WARNING,
-            &message!("{}->{event} handler error", name.to_string_lossy()),
-        );
+        handler_error(object, event);
     }
+}
+
+/// `php_swoole_error(E_WARNING, "%s->onX handler error")`.
+fn handler_error(object: &Value, event: &str) {
+    notice(
+        E_WARNING,
+        &message!(
+            "{}->{event} handler error",
+            object.value_name().to_string_lossy()
+        ),
+    );
 }
 
 /// `process_pool_signal_handler`.
@@ -348,18 +344,18 @@ fn signal(pool: Pool, signo: c_int) {
     unsafe { methods::signal(pool, signo, CURRENT_WORKER.load(Ordering::Acquire).cast()) };
 }
 
-/// The object a pool callback belongs to.
-fn owner(pool: Pool) -> (*mut zval, *mut zend_object, &'static mut PoolObject) {
-    // The pool's object zval, alive while the pool runs.
-    let object = record(pool).ptr.cast::<zval>();
-    // SAFETY: as above.
-    let std = unsafe { object_of(object) };
+/// The object a pool callback belongs to, and its data.
+fn owner(pool: Pool) -> Option<(&'static Value, &'static mut PoolObject)> {
+    // SAFETY: the pool's copy of its object zval, alive while the pool runs.
+    let object = unsafe { Value::from_ptr(record(pool).ptr.cast()) }?;
     // SAFETY: a Pool object.
-    (object, std, unsafe { data(std) })
+    Some((object, unsafe { data(object.object()?) }))
 }
 
 unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
-    let (object, std, this) = owner(pool);
+    let Some((object, this)) = owner(pool) else {
+        return;
+    };
     clean();
     if swoole_rs_zend::bailout::pending() {
         swoole_rs_zend::bailout::finish();
@@ -368,15 +364,15 @@ unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
     CURRENT.store(pool, Ordering::Release);
     CURRENT_WORKER.store(worker, Ordering::Release);
     let id = i64::from(worker_view(worker).id);
-    update_bool(std, c"running", true);
-    update_bool(std, c"workerRunning", true);
-    update_long(std, c"workerPid", getpid());
-    update_long(std, c"workerId", id);
+    update_bool(object, c"running", true);
+    update_bool(object, c"workerRunning", true);
+    update_long(object, c"workerPid", getpid());
+    update_long(object, c"workerId", id);
     methods::swoole_set_worker_type(WORKER);
     swoole_rs_corebase::swr_v1_core_set_enable_coroutine(this.enable_coroutine);
-    if !this.on_worker_start.is_null() {
+    if let Some(callable) = &this.on_worker_start {
         dispatch(
-            this.on_worker_start,
+            callable,
             object,
             Some(id),
             this.enable_coroutine,
@@ -387,7 +383,7 @@ unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
         swoole_rs_zend::bailout::finish();
         return;
     }
-    let term = !this.on_message.is_null() || this.enable_coroutine;
+    let term = this.on_message.is_some() || this.enable_coroutine;
     worker_signals(term);
     swoole_rs_zend::bailout::finish();
 }
@@ -402,51 +398,45 @@ fn worker_signals(term: bool) {
     let signals = [term.then_some(libc::SIGTERM), Some(libc::SIGWINCH), rtmin];
     for signo in signals.into_iter().flatten() {
         if !swoole_signal_isset(signo) {
-            // SAFETY: a valid signal and handler.
-            _ = unsafe { swoole_signal_set(signo, on_signal as *const () as usize, false) };
+            _ = host::signal_swap(signo, on_signal as *const () as usize, false);
         }
     }
 }
 
 unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
-    let (object, _, this) = owner(pool);
-    // SAFETY: a live object zval, copied without a reference as upstream does.
-    let mut args = [unsafe { *object }, long_zval(0)];
-    message_data(pool, message, &raw mut args[1]);
-    worker_busy(true);
-    // SAFETY: the onMessage callable `start()` required, with two arguments.
-    let called = unsafe {
-        host::callable_call(this.on_message, 2, args.as_mut_ptr(), this.enable_coroutine)
+    let Some((object, this)) = owner(pool) else {
+        return;
     };
+    let data = message_data(pool, message);
+    worker_busy(true);
+    // The onMessage callable `start()` required.
+    let called = this
+        .on_message
+        .as_ref()
+        .is_some_and(|callable| callable.call(&[object, &data], this.enable_coroutine));
     let bailed = swoole_rs_zend::bailout::pending();
     if !called && !bailed {
-        // SAFETY: a live object zval.
-        let std = unsafe { object_of(object) };
-        // SAFETY: a live object.
-        let name = unsafe { class_name(std) };
-        notice(
-            E_WARNING,
-            &message!("{}->onMessage handler error", name.to_string_lossy()),
-        );
+        handler_error(object, "onMessage");
     }
     if !bailed {
         worker_busy(false);
     }
-    // SAFETY: the string argument this callback owns.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
+    drop(data);
     swoole_rs_zend::bailout::finish();
 }
 
 fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
-    let (object, std, this) = owner(pool);
-    update_bool(std, c"running", false);
-    update_bool(std, c"workerRunning", false);
-    let (callable, event) = if exit {
-        (this.on_worker_exit, "onWorkerExit")
-    } else {
-        (this.on_worker_stop, "onWorkerStop")
+    let Some((object, this)) = owner(pool) else {
+        return;
     };
-    if !callable.is_null() {
+    update_bool(object, c"running", false);
+    update_bool(object, c"workerRunning", false);
+    let (callable, event) = if exit {
+        (&this.on_worker_exit, "onWorkerExit")
+    } else {
+        (&this.on_worker_stop, "onWorkerStop")
+    };
+    if let Some(callable) = callable {
         let id = i64::from(worker_view(worker).id);
         dispatch(callable, object, Some(id), false, event);
     }
@@ -463,37 +453,39 @@ unsafe extern "C" fn on_worker_exit(pool: Pool, worker: *mut c_void) {
 }
 
 unsafe extern "C" fn on_start(pool: Pool) {
-    let (object, std, this) = owner(pool);
-    update_long(std, c"master_pid", getpid());
-    update_bool(std, c"running", true);
-    methods::swoole_set_worker_type(MASTER);
-    swoole_rs_corebase::swr_v1_core_set_enable_coroutine(false);
-    if !this.on_start.is_null() {
-        dispatch(this.on_start, object, None, false, "onStart");
+    if let Some((object, this)) = owner(pool) {
+        update_long(object, c"master_pid", getpid());
+        update_bool(object, c"running", true);
+        methods::swoole_set_worker_type(MASTER);
+        swoole_rs_corebase::swr_v1_core_set_enable_coroutine(false);
+        if let Some(callable) = &this.on_start {
+            dispatch(callable, object, None, false, "onStart");
+        }
     }
     swoole_rs_zend::bailout::finish();
 }
 
 unsafe extern "C" fn on_shutdown(pool: Pool) {
-    let (object, std, this) = owner(pool);
-    update_bool(std, c"running", false);
-    update_bool(std, c"workerRunning", false);
-    if !this.on_shutdown.is_null() {
-        dispatch(this.on_shutdown, object, None, false, "onShutdown");
+    if let Some((object, this)) = owner(pool) {
+        update_bool(object, c"running", false);
+        update_bool(object, c"workerRunning", false);
+        if let Some(callable) = &this.on_shutdown {
+            dispatch(callable, object, None, false, "onShutdown");
+        }
     }
     swoole_rs_zend::bailout::finish();
 }
 
 fn construct(call: &Call) {
-    let object = call.this();
     let refuse = |text: String| {
         set_last_error(OPERATION_NOT_SUPPORT);
         call.throw_error(message!("{text}").as_cstr());
         call.set_bool(false);
     };
-    // SAFETY: a live object.
-    let name = unsafe { class_name(object) }.to_string_lossy().into_owned();
-    // SAFETY: C++'s reader of an ini flag.
+    let Some(this_value) = call.this_value() else {
+        return;
+    };
+    let name = this_value.value_name().to_string_lossy().into_owned();
     if !cli() {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
@@ -559,7 +551,7 @@ fn construct(call: &Call) {
         worker_num as u32,
         key as c_int,
         ipc_type as c_int,
-        call.this_zval(),
+        this_value,
         coroutine,
     );
     let Some(made) = made else {
@@ -624,7 +616,10 @@ fn on(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let callback = call.zval(2);
+    let Some(callback) = call.value(2) else {
+        call.set_bool(false);
+        return;
+    };
     let slot = match name.to_ascii_lowercase().as_slice() {
         b"workerstart" => &mut this.on_worker_start,
         b"message" => {
@@ -653,23 +648,16 @@ fn on(call: &Call) {
         }
     };
     // The slot lets go first: a destructor that bails out leaves it empty.
-    let old = std::mem::replace(slot, ptr::null_mut());
-    if !old.is_null() {
-        // SAFETY: the callable this slot owned.
-        unsafe { host::callable_free(old) };
+    if let Some(old) = slot.take() {
+        drop(old);
         if swoole_rs_zend::bailout::pending() {
             return;
         }
     }
-    // SAFETY: a passed argument.
-    let created = unsafe { host::callable_create(callback) };
+    let created = Callable::create(callback);
     // The old callable's destructor may have called on() for this event: this
-    // call's callable replaces the one that stored.
-    let nested = std::mem::replace(slot, created);
-    if !nested.is_null() {
-        // SAFETY: the nested call's callable, which no slot holds now.
-        unsafe { host::callable_free(nested) };
-    }
+    // call's callable replaces the one that stored, which drops.
+    drop(std::mem::replace(slot, created));
     call.set_bool(true);
 }
 
@@ -814,8 +802,7 @@ fn start(call: &Call) {
     let mut previous = [0usize; 6];
     for (signo, old) in signals.iter().zip(previous.iter_mut()) {
         if *signo != 0 {
-            // SAFETY: a valid signal and handler.
-            *old = unsafe { swoole_signal_set(*signo, on_signal as *const () as usize, false) };
+            *old = host::signal_swap(*signo, on_signal as *const () as usize, false);
         }
     }
     if !protocol(pool, this.enable_message_bus) {
@@ -823,7 +810,7 @@ fn start(call: &Call) {
         return;
     }
     let view = view(pool);
-    if this.on_worker_start.is_null() && this.on_message.is_null() {
+    if this.on_worker_start.is_none() && this.on_message.is_none() {
         if view.is_async {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
             call.set_bool(false);
@@ -834,7 +821,7 @@ fn start(call: &Call) {
             return;
         }
     }
-    if !this.on_worker_exit.is_null() && !this.enable_coroutine {
+    if this.on_worker_exit.is_some() && !this.enable_coroutine {
         call.throw(
             exception(),
             c"cannot set `onWorkerExit` without enable_coroutine",
@@ -845,7 +832,7 @@ fn start(call: &Call) {
     }
     CURRENT.store(pool, Ordering::Release);
     let record = record(pool);
-    if this.on_message.is_null() {
+    if this.on_message.is_none() {
         record.main_loop = ptr::null();
     } else {
         record.on_message = on_message as *const c_void;
@@ -854,7 +841,7 @@ fn start(call: &Call) {
     record.on_shutdown = on_shutdown as *const c_void;
     record.on_worker_start = on_worker_start as *const c_void;
     record.on_worker_stop = on_worker_stop as *const c_void;
-    if this.enable_coroutine && !this.on_worker_exit.is_null() {
+    if this.enable_coroutine && this.on_worker_exit.is_some() {
         record.on_worker_exit = on_worker_exit as *const c_void;
     }
     // SAFETY: a created pool; runs the master loop until the pool stops.
@@ -867,8 +854,8 @@ fn start(call: &Call) {
     CURRENT.store(ptr::null_mut(), Ordering::Release);
     for (signo, old) in signals.iter().zip(previous) {
         if *signo != 0 {
-            // SAFETY: restores the handler `start()` replaced.
-            _ = unsafe { swoole_signal_set(*signo, old, false) };
+            // Restores the handler `start()` replaced.
+            _ = host::signal_swap(*signo, old, false);
         }
     }
 }
@@ -923,66 +910,62 @@ fn get_process(call: &Call) {
     if id < 0 {
         id = current_id;
     }
-    let workers = workers_array(call);
-    // SAFETY: a live array zval.
-    let value = unsafe { (*workers).value };
-    // SAFETY: an array zval holds its table.
-    let table = unsafe { value.arr };
+    // SAFETY: `$this`'s array property, which nothing else borrows here.
+    let Some(table) = unsafe { Value::from_ptr(workers_array(call)) }.and_then(Value::array) else {
+        return;
+    };
     let key = id.cast_unsigned();
-    // SAFETY: a live table.
-    let mut found = unsafe { zend_hash_index_find(table, key) };
-    let process_ce = process_entry();
-    // SAFETY: a live element, when found.
-    if found.is_null() || unsafe { type_of(found) } == IS_NULL {
-        let mut object = long_zval(0);
-        // SAFETY: a writable zval and a registered class.
-        unsafe { object_init_ex(&raw mut object, process_ce) };
-        // A worker C++ allocates, as the Process object frees it.
-        let worker = crate::worker::new();
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "a checked worker id"
-        )]
-        // SAFETY: the running pool and its worker `id`; the Process object takes the copy.
-        let pipe = unsafe { worker_record::copy_for_process(pool, id as usize, worker.cast()) };
-        // SAFETY: the new object.
-        let std = unsafe { object_of(&raw const object) };
-        // SAFETY: as above.
-        unsafe { update_property_long(process_ce, std, c"id", current_id) };
-        // SAFETY: as above.
-        unsafe { update_property_long(process_ce, std, c"pid", i64::from(worker_pid(worker))) };
-        if i64::from(view.ipc_mode) == IPC_UNIXSOCK {
-            // SAFETY: as above.
-            unsafe { update_property_long(process_ce, std, c"pipe", i64::from(pipe)) };
+    let class = crate::process::process_class();
+    match table.index(key).filter(|found| !found.is_null()) {
+        None => {
+            let object = class.create_object();
+            // A worker C++ allocates, as the Process object frees it.
+            let worker = crate::worker::new();
+            #[expect(
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation,
+                reason = "a checked worker id"
+            )]
+            // SAFETY: the running pool and its worker `id`; the Process object takes the copy.
+            let pipe = unsafe { worker_record::copy_for_process(pool, id as usize, worker.cast()) };
+            if let Some(props) = object.props(Some(class)) {
+                props.long(c"id", current_id);
+                props.long(c"pid", i64::from(worker_pid(worker)));
+                if i64::from(view.ipc_mode) == IPC_UNIXSOCK {
+                    props.long(c"pipe", i64::from(pipe));
+                }
+            }
+            if let Some(std) = object.object() {
+                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
+                set_worker_of(std, worker, true, c_int::from(view.is_async));
+            }
+            let mut object = object.into_zval();
+            // SAFETY: a live table; it takes the new object's reference.
+            unsafe { zend_hash_index_update(table.as_ptr(), key, &raw mut object) };
         }
-        // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-        set_worker_of(std, worker, true, c_int::from(view.is_async));
-        // SAFETY: the array takes the new object's reference.
-        unsafe {
-            zend_hash_index_update(table, key, &raw mut object);
-        }
-        // SAFETY: as above.
-        found = unsafe { zend_hash_index_find(table, key) };
-    } else {
-        // SAFETY: a Process object.
-        let std = unsafe { object_of(found) };
-        let worker = crate::process::worker_of(std);
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "a checked worker id"
-        )]
-        // SAFETY: the running pool's worker `id`.
-        let pid = unsafe { Worker::new(view.workers.wrapping_add(id as usize)).pid() };
-        if worker_pid(worker) != pid {
-            crate::worker::record(worker).set_pid(pid);
-            // SAFETY: a Process object.
-            unsafe { update_property_long(process_ce, std, c"pid", i64::from(pid)) };
+        Some(found) => {
+            if let Some(std) = found.object() {
+                let worker = crate::process::worker_of(std);
+                #[expect(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    reason = "a checked worker id"
+                )]
+                // SAFETY: the running pool's worker `id`.
+                let pid = unsafe { Worker::new(view.workers.wrapping_add(id as usize)).pid() };
+                if worker_pid(worker) != pid {
+                    crate::worker::record(worker).set_pid(pid);
+                    if let Some(props) = found.props(Some(class)) {
+                        props.long(c"pid", i64::from(pid));
+                    }
+                }
+            }
         }
     }
-    // SAFETY: the live element, which the return value shares (`ZVAL_COPY`).
-    unsafe { call.set_copy(found) };
+    // The return value shares the element (`ZVAL_COPY`).
+    if let Some(found) = table.index(key) {
+        call.set_owned(found.copy());
+    }
 }
 
 /// `sw_zend_read_and_convert_property_array(..., "workers")`.
