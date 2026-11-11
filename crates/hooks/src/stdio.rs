@@ -12,33 +12,42 @@ use libc::{
     ssize_t, stat, statvfs,
 };
 
-/// Runs `job(context)` on the async pool and parks the coroutine until it is done;
-/// false if the pool refused it.
-pub type Offload = unsafe extern "C" fn(unsafe extern "C" fn(*mut c_void), *mut c_void) -> bool;
+/// Runs `job` on the async pool and parks the coroutine until it is done; false if
+/// the pool refused it.
+pub type Offload = fn(&mut (dyn FnMut() + Send)) -> bool;
 
-/// `call()` here without `offload`, else on the pool; `refused` if the pool refuses.
-///
-/// # Safety
-/// `offload` is native's `async`, valid in the current coroutine. `call` runs on a
-/// pool thread while this frame waits, so it may only touch what the caller lent.
-pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T, call: F) -> T {
-    struct Job<F, T> {
-        call: F,
-        result: Option<T>,
-    }
-    unsafe extern "C" fn run<F: FnMut() -> T, T>(job: *mut c_void) {
-        // SAFETY: `offloaded` passes its own `Job<F, T>`, alive until `offload` returns.
-        let job = unsafe { &mut *job.cast::<Job<F, T>>() };
-        job.result = Some((job.call)());
-    }
-    let mut call = call;
+/// `call()` here without `offload`, else on the pool while this frame waits;
+/// `refused` if the pool refuses.
+pub fn on_pool<T: Send>(
+    offload: Option<Offload>,
+    refused: T,
+    mut call: impl FnMut() -> T + Send,
+) -> T {
     let Some(offload) = offload else {
         return call();
     };
-    let mut job = Job { call, result: None };
-    // SAFETY: `run` matches `job`'s type; the caller passes native `async`.
-    unsafe { offload(run::<F, T>, (&raw mut job).cast()) };
-    job.result.unwrap_or(refused)
+    let mut result = None;
+    offload(&mut || result = Some(call()));
+    result.unwrap_or(refused)
+}
+
+/// [`on_pool`] for a `call` or result that isn't `Send`.
+///
+/// # Safety
+/// `call` may run, and make its result, on a pool thread: it only touches what the
+/// caller lent.
+pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T, call: F) -> T {
+    /// A value the caller lets cross to the pool thread.
+    struct Lent<T>(T);
+    // SAFETY: as the caller of `offloaded` promises.
+    unsafe impl<T> Send for Lent<T> {}
+    impl<F: FnMut() -> T, T> Lent<F> {
+        fn run(&mut self) -> Lent<T> {
+            Lent((self.0)())
+        }
+    }
+    let mut call = Lent(call);
+    on_pool(offload, Lent(refused), move || call.run()).0
 }
 
 /// The runtime the hooked functions use.
@@ -239,15 +248,10 @@ hooked! {
 }
 
 /// Hooked `close` of an fd that is no coroutine socket, on the pool (`offload`).
-///
-/// # Safety
-/// `offload` is native `async` or none.
 #[must_use]
-pub unsafe extern "C" fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
+pub fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
     // SAFETY: closing an fd touches no memory.
-    let call = || unsafe { libc::close(fd) };
-    // SAFETY: the caller passes native `async` or none.
-    unsafe { offloaded(offload, -1, call) }
+    on_pool(offload, -1, || unsafe { libc::close(fd) })
 }
 
 /// Hooked `sleep`: `System::sleep` (fatal outside a coroutine, as upstream).
@@ -344,24 +348,18 @@ pub(crate) mod tests {
     fn in_coroutine() -> bool {
         MODE.get() != Mode::Here
     }
-    unsafe extern "C" fn pool(
-        job: unsafe extern "C" fn(*mut c_void),
-        context: *mut c_void,
-    ) -> bool {
+    fn pool(job: &mut (dyn FnMut() + Send)) -> bool {
         OFFLOADED.set(OFFLOADED.get() + 1);
         match MODE.get() {
             Mode::Refuse => return false,
             // Only the resolver offloads outside a coroutine: run it here.
             Mode::Here => {
-                unsafe { job(context) };
+                job();
                 return true;
             }
             Mode::Pool => {}
         }
-        let context = context as usize;
-        std::thread::spawn(move || unsafe { job(context as *mut c_void) })
-            .join()
-            .unwrap();
+        std::thread::scope(|scope| scope.spawn(job).join().unwrap());
         true
     }
     fn sleep(seconds: f64) -> c_int {
