@@ -588,13 +588,9 @@ pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
 }
 
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
-///
-/// # Safety
-/// `conn` is a live connection whose `socket` is null or live.
-pub unsafe fn recv_buffer(conn: &ConnectionRecord) -> *mut c_void {
-    // SAFETY: per the caller.
-    let socket = unsafe { Socket::from_ptr(conn.socket.cast()) };
-    socket.map_or(core::ptr::null_mut(), |socket| {
+#[must_use]
+pub fn recv_buffer(conn: &ConnectionRecord) -> *mut c_void {
+    conn.socket().map_or(core::ptr::null_mut(), |socket| {
         socket.read(|s| s.recv_buffer)
     })
 }

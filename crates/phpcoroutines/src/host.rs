@@ -105,25 +105,6 @@ fn last_error_fatal() -> bool {
     }
 }
 
-/// Queue `f(data)` on the running loop: on its deferred tasks, or (`destroy`)
-/// on the callbacks its free runs.
-fn reactor_push(destroy: bool, f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    let pushed = swoole_rs_reactor::event_api::field_mut(|fields| {
-        let queue = if destroy {
-            &raw mut fields.destroy_callbacks
-        } else {
-            &raw mut fields.defer_tasks
-        };
-        // SAFETY: the loop's live queue; `data` stays with the task.
-        unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) }
-    });
-    // Upstream dereferences `sw_reactor()` here unchecked, and throws std::bad_alloc,
-    // which no frame here could catch.
-    if pushed != Some(0) {
-        std::process::abort();
-    }
-}
-
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 
 /// `php_swoole_fatal_error(level, "%s", message)`. With `E_ERROR` Zend
@@ -179,19 +160,14 @@ pub(crate) fn count() -> usize {
 }
 
 /// `Coroutine::get_current()`: null outside a coroutine.
-#[must_use]
-pub fn current() -> Co {
+pub(crate) fn current() -> Co {
     native(sched().current)
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine it raises a fatal
 /// error and does not return, so the caller's frames must own nothing that
 /// needs a drop.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "some callers want only its fatal error outside a coroutine"
-)]
-pub fn current_safe() -> Co {
+pub(crate) fn current_safe() -> Co {
     let co = current();
     if co.is_null() {
         // SAFETY: Swoole's fatal error hook; the frames own nothing.
@@ -272,9 +248,7 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    if let Some(count) = swoole_rs_reactor::event_api::with_registry(|registry| {
-        swoole_rs_reactor::swr_v1_reactor_registry_count(registry)
-    }) {
+    if let Some(count) = swoole_rs_reactor::event_api::swoole_event_num() {
         stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
     }
     #[cfg(feature = "iouring")]
@@ -343,8 +317,7 @@ pub(crate) fn origin_task(co: Co) -> *mut c_void {
 }
 
 /// `Coroutine::get_cid()` of a live coroutine.
-#[must_use]
-pub fn cid(co: Co) -> c_long {
+pub(crate) fn cid(co: Co) -> c_long {
     live(co).cid
 }
 
@@ -371,7 +344,7 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
 
 /// Switch out of `co`, the running coroutine. The caller's frames must own
 /// nothing that needs a drop, as for [`resume`].
-pub fn yield_(co: Co) {
+pub(crate) fn yield_(co: Co) {
     // SAFETY: this thread's scheduler and its running coroutine.
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler(), state(co)) };
 }
@@ -379,7 +352,7 @@ pub fn yield_(co: Co) {
 /// [`yield_`], cancelable through `cancel(co)`.
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub unsafe fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
+pub(crate) unsafe fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
     // SAFETY: as the caller promises.
     unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel) };
 }
@@ -403,27 +376,6 @@ pub fn counts() -> (usize, u64) {
     (count(), sched().peak_num)
 }
 
-/// `co->is_suspending()`.
-/// # Safety
-/// `co` is a live coroutine.
-pub unsafe fn is_suspending(co: Co) -> bool {
-    live(co).state == swoole_rs_coroutine::STATE_WAITING
-}
-
-/// `co->yield()`, as [`yield_`]: the caller's frames own nothing that needs a drop.
-/// # Safety
-/// `co` is the running coroutine.
-pub unsafe fn suspend(co: Co) {
-    yield_(co);
-}
-
-/// `co->yield_ex(timeout)`, as [`yield_ex`].
-/// # Safety
-/// As [`suspend`].
-pub unsafe fn suspend_for(co: Co, timeout: f64) -> bool {
-    yield_ex(co, timeout)
-}
-
 /// Switch to `co`. The caller's frames must own nothing that needs a drop: a
 /// bailout in the coroutine may longjmp across them on the main stack.
 pub(crate) fn resume(co: Co) {
@@ -431,16 +383,79 @@ pub(crate) fn resume(co: Co) {
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_resume(scheduler(), state(co)) };
 }
 
-/// Wake a parked coroutine: `Coroutine::resume()`, or `cancel()` so its yield
-/// fails. As [`resume`], the caller's frames must own nothing that needs a drop.
-/// # Safety
-/// `co` is a live, parked coroutine.
-pub unsafe fn wake(co: Co, cancel: bool) {
-    if cancel {
-        let _canceled = self::cancel(co);
-    } else {
-        resume(co);
+/// A coroutine by id, the handle other crates hold. A coroutine's record is
+/// freed when its function returns, which no holder controls, so each access
+/// looks the id up: once the coroutine has ended, its handle reads `None` and
+/// wakes nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Coroutine(c_long);
+
+impl Coroutine {
+    /// The running coroutine, `None` outside one.
+    #[must_use]
+    pub fn current() -> Option<Self> {
+        let co = current();
+        (!co.is_null()).then(|| Self(cid(co)))
     }
+
+    /// `Coroutine::get_cid()`.
+    #[must_use]
+    pub const fn cid(self) -> c_long {
+        self.0
+    }
+
+    /// Its record, while it lives.
+    fn live(self) -> Option<Co> {
+        let co = by_cid(self.0);
+        (!co.is_null()).then_some(co)
+    }
+
+    /// `co->is_suspending()`, `None` once it ended.
+    #[must_use]
+    pub fn is_suspending(self) -> Option<bool> {
+        self.live()
+            .map(|co| state_of(co) == swoole_rs_coroutine::STATE_WAITING)
+    }
+
+    /// Wake it from a wait: `Coroutine::resume()`, or `cancel()` so its yield
+    /// fails; nothing once it ended. As [`resume`], the caller's frames must
+    /// own nothing that needs a drop.
+    /// # Safety
+    /// While it lives, it waits in a suspension of the caller's, which
+    /// nothing else wakes.
+    pub unsafe fn wake(self, cancel: bool) {
+        let Some(co) = self.live() else { return };
+        if cancel {
+            let _canceled = self::cancel(co);
+        } else {
+            resume(co);
+        }
+    }
+}
+
+/// `co->yield()` of the running coroutine, until it is woken; nothing outside
+/// one. As [`yield_`], the caller's frames must own nothing that needs a drop.
+pub fn suspend() {
+    let co = current();
+    if !co.is_null() {
+        yield_(co);
+    }
+}
+
+/// `co->yield_ex(timeout)` of the running coroutine, as [`suspend`]: false
+/// when it timed out or was canceled, or outside a coroutine.
+#[must_use]
+pub fn suspend_for(timeout: f64) -> bool {
+    let co = current();
+    !co.is_null() && yield_ex(co, timeout)
+}
+
+/// [`suspend`], with the running coroutine published in `slot` while it
+/// waits.
+pub fn park(slot: &std::cell::Cell<Option<Coroutine>>) {
+    slot.set(Coroutine::current());
+    suspend();
+    slot.set(None);
 }
 
 /// Running in a coroutine (`swoole_coroutine_is_in`).
@@ -449,25 +464,13 @@ pub fn in_coroutine() -> bool {
     !current().is_null()
 }
 
-/// Suspend the running coroutine, published in `slot` while it waits, until
-/// [`wake`]. As [`yield_`], the caller's frames must own nothing that needs a drop.
-/// # Safety
-/// In a coroutine.
-pub unsafe fn park(slot: &std::cell::Cell<Co>) {
-    let co = current();
-    slot.set(co);
-    yield_(co);
-    slot.set(std::ptr::null_mut());
-}
-
 pub(crate) fn cancel(co: Co) -> bool {
     // SAFETY: a live coroutine.
     unsafe { swoole_rs_coroutine::cancel(co.cast()) }
 }
 
 /// `co->is_canceled()` of a live coroutine.
-#[must_use]
-pub fn is_canceled(co: Co) -> bool {
+pub(crate) fn is_canceled(co: Co) -> bool {
     live(co).resume_code == RC_CANCELED
 }
 
@@ -505,10 +508,7 @@ unsafe extern "C" fn main(args: *mut c_void) {
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
 /// main context: the loop stops, then PHP bails out.
 extern "C" fn bail_out(_: *mut c_void) {
-    swoole_rs_reactor::event_api::field_mut(|fields| {
-        fields.running = false;
-        fields.bailout = true;
-    });
+    swoole_rs_reactor::event_api::swoole_event_bail_out();
     bailout::raise(Err(bailout::Bailout));
 }
 
@@ -561,7 +561,11 @@ pub(crate) fn attach(
     on_resume: unsafe extern "C" fn(*mut c_void),
     on_close: unsafe extern "C" fn(*mut c_void),
 ) {
-    reactor_push(true, deactivate_on_free, std::ptr::null_mut());
+    // Upstream dereferences `sw_reactor()` here unchecked.
+    if swoole_rs_reactor::event_api::current_prepared().is_none() {
+        std::process::abort();
+    }
+    swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
     swoole_rs_coroutine::activate();
     set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
@@ -637,7 +641,12 @@ pub(crate) fn absolute_msec() -> c_long {
 
 /// `swoole_event_defer(f, data)`.
 pub(crate) fn defer(f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    reactor_push(false, f, data);
+    // Upstream dereferences `sw_reactor()` here unchecked.
+    let Some(reactor) = swoole_rs_reactor::event_api::current_prepared() else {
+        std::process::abort()
+    };
+    // SAFETY: the loop's live fields; `data` stays with the task.
+    unsafe { swoole_rs_reactor::defer(reactor.fields, f, data, None) };
 }
 
 /// A one-shot timer calling `f(data)` after `timeout` seconds.

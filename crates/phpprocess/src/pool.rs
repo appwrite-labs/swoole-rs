@@ -25,14 +25,10 @@ use swoole_rs_process::{
 };
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
-    long_zval, message,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Props, Value, ZString,
+    handlers, message,
     string::{self, ZBuf},
-    sys::{
-        IS_ARRAY, ZEND_ACC_PUBLIC, swr_zend_array_init, zend_hash_index_update, zend_read_property,
-        zval, zval_ptr_dtor,
-    },
-    type_of,
+    sys::{ZEND_ACC_PUBLIC, zend_hash_index_update, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -927,8 +923,12 @@ fn get_process(call: &Call) {
     if id < 0 {
         id = current_id;
     }
-    // SAFETY: `$this`'s array property, which nothing else borrows here.
-    let Some(table) = unsafe { Value::from_ptr(workers_array(call)) }.and_then(Value::array) else {
+    // SAFETY: `$this`, of the registered class.
+    let props = unsafe { Props::new(POOL.entry(), call.this()) };
+    // SAFETY: nothing else borrows `workers` here.
+    let workers = unsafe { props.array(c"workers") };
+    // Separated: a new worker is added in place.
+    let Some(table) = workers.and_then(|workers| workers.as_mut_ptr().and(workers.array())) else {
         return;
     };
     let key = id.cast_unsigned();
@@ -981,30 +981,6 @@ fn get_process(call: &Call) {
     if let Some(found) = table.index(key) {
         call.set_owned(found.copy());
     }
-}
-
-/// `sw_zend_read_and_convert_property_array(..., "workers")`.
-fn workers_array(call: &Call) -> *mut zval {
-    let mut slot = long_zval(0);
-    // SAFETY: `$this`; the declared property's slot comes back.
-    let property = unsafe {
-        zend_read_property(
-            POOL.entry(),
-            call.this(),
-            c"workers".as_ptr(),
-            7,
-            false,
-            &raw mut slot,
-        )
-    };
-    // SAFETY: a live property.
-    if unsafe { type_of(property) } != IS_ARRAY {
-        // SAFETY: the property's old value, replaced below.
-        unsafe { zval_ptr_dtor(property) };
-        // SAFETY: as above.
-        unsafe { swr_zend_array_init(property) };
-    }
-    property
 }
 
 fn stop(_call: &Call) {

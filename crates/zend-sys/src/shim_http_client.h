@@ -9,13 +9,6 @@
 zval *swr_zend_property_slot(zend_object *object, const char *name, size_t length);
 /* sw_zend_read_property_not_null_ex: the property, or NULL when it is null. */
 zval *swr_zend_property_not_null(zend_object *object, const char *name, size_t length);
-/* sw_zend_read_and_convert_property_array: the property, made an array first
- * when it is not one. */
-zval *swr_zend_property_array(zend_class_entry *ce, zend_object *object, const char *name, size_t length);
-/* The `set()` merge: the `setting` property as an array, separated, with
- * `settings` merged in (php_array_merge). */
-void swr_zend_property_merge(zend_class_entry *ce, zend_object *object, const char *name, size_t length, zval *settings);
-
 /* Swoole's zend::array_add_or_merge: add `element` (taking it over) under `key`,
  * or turn an existing value into a list and append to it. */
 void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zval *element);

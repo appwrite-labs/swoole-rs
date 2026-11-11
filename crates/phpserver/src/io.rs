@@ -6,10 +6,9 @@ use crate::server::{fatal, no_payload, running, server};
 use std::{
     ffi::{CStr, CString, c_int, c_void},
     mem::MaybeUninit,
-    ptr,
 };
 use swoole_rs_clients::address::swr_v1_clients_address_assign;
-use swoole_rs_corebase::{net_types::AddressStorage, swr_v1_clients_gethostbyname};
+use swoole_rs_corebase::{DataHead, net_types::AddressStorage, swr_v1_clients_gethostbyname};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Owned, Value, bailout, message,
@@ -389,7 +388,7 @@ fn finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    finished(call, serv, ptr::null_mut());
+    finished(call, serv, None);
 }
 
 fn task_finish(call: &Call) {
@@ -403,11 +402,11 @@ fn task_finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    finished(call, serv, crate::server::task_info(call));
+    finished(call, serv, Some(&crate::server::task_info(call)));
 }
 
 /// `php_swoole_server_task_finish` of the data argument into the return slot.
-fn finished(call: &Call, serv: view::Server<'_>, req: *mut c_void) {
+fn finished(call: &Call, serv: view::Server<'_>, req: Option<&DataHead>) {
     let Some(data) = call.value(1) else {
         return call.set_bool(false);
     };
