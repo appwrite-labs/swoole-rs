@@ -149,12 +149,12 @@ impl Ctx {
     /// # Safety
     /// `ctx` is null or a live context, which stays live while the handle is used.
     #[inline]
-    unsafe fn of(ctx: *mut c_void) -> Option<Self> {
+    pub(crate) unsafe fn of(ctx: *mut c_void) -> Option<Self> {
         NonNull::new(ctx.cast()).map(Self)
     }
 
     #[inline]
-    fn ptr(self) -> *mut Context {
+    pub(crate) fn ptr(self) -> *mut Context {
         self.0.as_ptr()
     }
 
@@ -345,10 +345,10 @@ pub(crate) unsafe extern "C" fn on_close(arg: *mut c_void) {
     unsafe { swr_zend_efree(ctx.ptr().cast()) };
 }
 
-/// `create_context`, on the new coroutine.
+/// `create_context`, on the new coroutine: its context, live until [`on_close`].
 /// # Safety
 /// `args` is the creator's live `Args`, and this runs on the new coroutine.
-pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
+pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     // SAFETY: per the caller.
     let args = unsafe { &*args.cast::<Args>() };
     let co = host::current();
@@ -366,9 +366,7 @@ pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
     // SAFETY: a write, so the zeroed `defer` is never read or dropped.
     unsafe { defer.write(Vec::new()) };
     // SAFETY: every field now holds a valid value, and the context lives until `on_close`.
-    let Some(this) = (unsafe { Ctx::of(ctx.cast()) }) else {
-        return ptr::null_mut();
-    };
+    let this = unsafe { Ctx::of(ctx.cast()) }?;
     this.set_co(co);
     this.set_pcid(pcid);
     this.set_enable_scheduler(true);
@@ -400,19 +398,13 @@ pub(crate) unsafe fn open(args: *mut c_void) -> *mut c_void {
     }
     // SAFETY: a resolved callable (sw_zend_fci_cache_persist).
     unsafe { swr_zend_callable_hold(call) };
-    ctx.cast()
+    Some(this)
 }
 
-/// The start hook and the fiber switch into the coroutine's function; its
-/// callable, to call (`zend::Function *`).
-/// # Safety
-/// `context` came from `open` on the running coroutine.
-pub(crate) unsafe fn enter(context: *mut c_void) -> *mut swr_zend_callable {
-    // SAFETY: per the caller.
-    let Some(ctx) = (unsafe { Ctx::of(context) }) else {
-        return ptr::null_mut();
-    };
-    host::coro_hook(false, context);
+/// The start hook and the fiber switch into the running coroutine's function;
+/// its callable, to call (`zend::Function *`).
+pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
+    host::coro_hook(false, ctx.ptr().cast());
     let fiber = ctx.fiber();
     // SAFETY: the context's resolved callable; a field read.
     let handler = unsafe { (*ctx.call()).fcc.function_handler };
@@ -436,13 +428,7 @@ pub(crate) unsafe fn enter(context: *mut c_void) -> *mut swr_zend_callable {
 
 /// The next defer task (last in, first out), with the coroutine's return
 /// value as its argument when it has one; null when none are left.
-/// # Safety
-/// `context` came from `open` on the running coroutine.
-pub(crate) unsafe fn defer_next(context: *mut c_void) -> *mut swr_zend_callable {
-    // SAFETY: per the caller.
-    let Some(ctx) = (unsafe { Ctx::of(context) }) else {
-        return ptr::null_mut();
-    };
+pub(crate) fn defer_next(ctx: Ctx) -> *mut swr_zend_callable {
     let Some(task) = ctx.defers(Vec::pop) else {
         return ptr::null_mut();
     };
@@ -459,16 +445,11 @@ pub(crate) unsafe fn defer_next(context: *mut c_void) -> *mut swr_zend_callable 
     task
 }
 
-/// `destroy_context`. The coroutine's bailout address is null here, so a
-/// bailout in a destructor ends the process rather than longjmp.
-/// # Safety
-/// `context` came from `open` on the running, finishing coroutine.
-pub(crate) unsafe fn close(context: *mut c_void) {
-    // SAFETY: per the caller.
-    let Some(ctx) = (unsafe { Ctx::of(context) }) else {
-        return;
-    };
-    host::coro_hook(true, context);
+/// `destroy_context`, on the running, finishing coroutine. Its bailout
+/// address is null here, so a bailout in a destructor ends the process rather
+/// than longjmp.
+pub(crate) fn close(ctx: Ctx) {
+    host::coro_hook(true, ctx.ptr().cast());
     // SAFETY: output state is the coroutine's own.
     unsafe { swr_zend_coroutine_output_reset() };
     // Its defer tasks were kept and are not called.
