@@ -67,7 +67,8 @@ pub unsafe fn property<'a>(object: *mut zend_object, name: &CStr) -> &'a Value {
 
 /// `zend_update_property(scope, object, name, value)`: the property takes a copy.
 /// # Safety
-/// As [`update_property_long`], with a live `value`.
+/// `object` is live and `scope` null or a registered class ([`crate::Props::new`]),
+/// and `value` is live.
 pub unsafe fn update_property(
     scope: *mut zend_class_entry,
     object: *mut zend_object,
