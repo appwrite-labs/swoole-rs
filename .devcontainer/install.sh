@@ -31,7 +31,7 @@ else
     install "$@"
 fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"
-# liburing for --enable-iouring builds and the io_uring crates. Upstream needs >= 2.8
+# liburing for upstream's --enable-iouring build. Upstream needs >= 2.8
 # and Ubuntu 24.04 ships 2.5, so build the release upstream's own CI installs
 # (scripts/install-liburing.sh) into /usr/local, where pkg-config and ld find it.
 if ! pkg-config --atleast-version=2.8 liburing 2>/dev/null; then

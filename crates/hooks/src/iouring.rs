@@ -101,18 +101,6 @@ fn create(reactor: *mut c_void) -> Iouring {
     };
     let origin = c"Iouring::Iouring";
     match opened.status {
-        1 => log::error(
-            origin,
-            format_args!(
-                "unsupported liburing version: Swoole requires liburing {}.{} or later with ABI major {}, but \
-                 liburing {}.{} was loaded at runtime",
-                opened.major,
-                opened.minor,
-                opened.major,
-                opened.runtime_major,
-                opened.runtime_minor
-            ),
-        ),
         2 => {
             log::sys_error(
                 origin,

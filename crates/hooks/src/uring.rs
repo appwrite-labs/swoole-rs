@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/coroutine/iouring.cc (Swoole contributors).
-//! Swoole's `io_uring` engine over liburing: the ring, its submission and
+//! Swoole's `io_uring` engine over the `io-uring` crate: the ring, its submission and
 //! completion queues, the per-request events, the wait queue for a full ring, and
 //! every operation `Iouring` offers. crates/hooks/src/iouring.rs keeps the reactor registration,
 //! the coroutine switches and the log lines, reached through [`Host`].
@@ -9,23 +9,25 @@
 //! operation's frame while the coroutine is suspended, and the completion handler
 //! ([`wakeup`]) writes the result into it before resuming it.
 
-use std::cell::{Cell, RefCell, UnsafeCell};
+use io_uring::types::{Fd, FsyncFlags, Timespec};
+use io_uring::{IoUring, Probe, opcode, squeue};
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::{mem, ptr};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys as os;
 
-use swoole_rs_uring_sys as sys;
-
 /// `SW_IOURING_QUEUE_SIZE`: default ring size and completion batch.
 const QUEUE_SIZE: u32 = 8192;
 /// `SW_IOURING_SQE_BATCH_SIZE`: submissions deferred to the end of the loop below it.
-const SQE_BATCH_SIZE: u32 = 16;
+const SQE_BATCH_SIZE: usize = 16;
 /// User data of a linked timeout's own completion, which is ignored.
 const TIMEOUT_EVENT: u64 = u64::MAX;
-const EVENT_TIMEOUT: c_int = 1;
+/// `IORING_SETUP_SQPOLL`, the one `SwooleG.iouring_flag` the engine honours.
+const SETUP_SQPOLL: u32 = 2;
 /// Upstream's `#define FUTEX2_SIZE_U32` and `FUTEX_BITSET_MATCH_ANY`.
 const FUTEX2_SIZE_U32: u32 = 0x02;
 const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
@@ -59,39 +61,31 @@ pub struct Config {
     pub probe_ftruncate: bool,
 }
 
-/// [`open`]'s outcome. Status 0 ready; 1 the loaded liburing is older
-/// than the one built against (versions in the other fields); 2 the ring could not
-/// be created (errno set, no engine); 3 the opcode probe failed; 4 no futex
-/// opcodes; 5 no ftruncate opcode; 6 the async worker limit failed (errno set).
+/// [`open`]'s outcome. Status 0 ready; 2 the ring could not be created (errno
+/// set, no engine); 3 the opcode probe failed; 4 no futex opcodes; 5 no ftruncate
+/// opcode; 6 the async worker limit failed (errno set).
 pub struct Opened {
     pub uring: Option<Rc<Uring>>,
     pub status: c_int,
-    pub major: c_int,
-    pub minor: c_int,
-    pub runtime_major: c_int,
-    pub runtime_minor: c_int,
 }
 
 struct Event {
     coroutine: *mut c_void,
-    data: sys::io_uring_sqe,
+    data: squeue::Entry,
     result: isize,
-    timeout: sys::__kernel_timespec,
-    flags: c_int,
+    /// The linked timeout, when the operation has one.
+    timeout: Option<Timespec>,
 }
 
 /// The ring and its bookkeeping. Resuming a request's coroutine may start another
 /// request, so the engine is shared and its state sits in cells.
 pub struct Uring {
-    /// liburing's, which only liburing's calls touch.
-    ring: UnsafeCell<sys::io_uring>,
-    fd: c_int,
-    entries: u32,
+    /// Borrowed within one queue operation, never while a coroutine runs.
+    ring: RefCell<IoUring>,
     host: &'static Host,
     task_num: Cell<u32>,
     /// Requests waiting for room in the ring.
     waiting: RefCell<VecDeque<*mut Event>>,
-    cqes: RefCell<Vec<*mut sys::io_uring_cqe>>,
     /// Completed events and their results.
     ready: Cell<Vec<(*mut Event, isize)>>,
 }
@@ -101,7 +95,7 @@ fn errno() -> c_int {
 }
 
 /// Upstream's `DOUBLE_TO_TIMESPEC`.
-fn timespec(seconds: f64) -> sys::__kernel_timespec {
+fn timespec(seconds: f64) -> libc::timespec {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's (__kernel_time64_t) and (long long) casts"
@@ -114,7 +108,18 @@ fn timespec(seconds: f64) -> sys::__kernel_timespec {
         tv_sec += 1;
         tv_nsec = 0;
     }
-    sys::__kernel_timespec { tv_sec, tv_nsec }
+    libc::timespec { tv_sec, tv_nsec }
+}
+
+/// `ts` as the ring takes it. A negative field stays one the kernel refuses.
+fn kernel_timespec(ts: libc::timespec) -> Timespec {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "nanoseconds are below a second's; a negative count stays out of range"
+    )]
+    let nsec = ts.tv_nsec as u32;
+    Timespec::new().sec(ts.tv_sec.cast_unsigned()).nsec(nsec)
 }
 
 /// `SwooleG.iouring_entries` rounded up to a power of two, at least 64.
@@ -168,20 +173,18 @@ fn complete(result: isize) -> isize {
 
 impl Event {
     /// Upstream's `INIT_EVENT`: the current coroutine, or a fatal error outside one.
-    fn new(host: &Host) -> Self {
+    fn new(host: &Host, data: squeue::Entry) -> Self {
         Self {
             coroutine: (host.current)(),
-            data: sys::io_uring_sqe::default(),
+            data,
             result: 0,
-            timeout: sys::__kernel_timespec::default(),
-            flags: 0,
+            timeout: None,
         }
     }
 
     fn with_timeout(mut self, seconds: f64) -> Self {
         if seconds > 0.0 {
-            self.flags |= EVENT_TIMEOUT;
-            self.timeout = timespec(seconds);
+            self.timeout = Some(kernel_timespec(timespec(seconds)));
         }
         self
     }
@@ -203,24 +206,26 @@ impl Event {
 }
 
 impl Uring {
-    fn sq_space_left(&self) -> u32 {
-        // SAFETY: the ring is initialized.
-        unsafe { sys::swr_uring_sq_space_left(self.ring.get()) }
+    /// The submission queue's used slots and its size.
+    fn sq(&self) -> (usize, usize) {
+        let mut ring = self.ring.borrow_mut();
+        let queue = ring.submission();
+        (queue.len(), queue.capacity())
     }
 
-    fn sq_used(&self) -> u32 {
-        self.entries - self.sq_space_left()
+    fn sq_space_left(&self) -> usize {
+        let (used, capacity) = self.sq();
+        capacity - used
     }
 
-    /// Copy `sqe` into a free slot, which the caller saw there is.
-    fn push(&self, sqe: &sys::io_uring_sqe) {
-        // SAFETY: the ring is initialized.
-        let slot = unsafe { sys::swr_uring_get_sqe(self.ring.get()) };
-        if !slot.is_null() {
-            // SAFETY: a free slot of this ring, which nothing else refers to; the sqe
-            // is plain integers, so a bitwise copy is a valid one.
-            unsafe { slot.copy_from_nonoverlapping(sqe, 1) };
-        }
+    /// Queue `entries` together, in the free slots the caller saw there are.
+    fn push(&self, entries: &[squeue::Entry]) {
+        let mut ring = self.ring.borrow_mut();
+        // SAFETY: an event's entry points into its operation's arguments and frame
+        // (`request`'s contract), and its timeout into the event itself: all live
+        // until the completion, which the suspended operation waits for.
+        let pushed = unsafe { ring.submission().push_multiple(entries) };
+        debug_assert!(pushed.is_ok(), "the caller saw the free slots");
     }
 
     /// Queue `event` in the ring, or in the wait queue when the ring is full. Both
@@ -232,25 +237,19 @@ impl Uring {
             self.waiting.borrow_mut().push_back(event);
             return;
         }
-        let timed = event.flags & EVENT_TIMEOUT != 0;
-        if timed && space < 2 {
-            (self.host.timeout_full)(self.fd);
-        }
-        let linked = timed && space >= 2;
-        if linked {
-            event.data.flags |= 1 << sys::io_uring_sqe_flags_bit_IOSQE_IO_LINK_BIT;
+        if event.timeout.is_some() && space < 2 {
+            (self.host.timeout_full)(self.fd());
         }
         // User data identifies the event on completion.
-        event.data.user_data = ptr::from_mut(event) as u64;
-        self.push(&event.data);
-        if linked {
-            let mut timeout = sys::io_uring_sqe::default();
-            // SAFETY: the timeout lives in the event, valid until its completion.
-            unsafe {
-                sys::swr_uring_prep_link_timeout(&raw mut timeout, &raw mut event.timeout, 0);
-            };
-            timeout.user_data = TIMEOUT_EVENT;
-            self.push(&timeout);
+        let entry = event.data.clone().user_data(ptr::from_mut(event) as u64);
+        match &event.timeout {
+            Some(timeout) if space >= 2 => self.push(&[
+                entry.flags(squeue::Flags::IO_LINK),
+                opcode::LinkTimeout::new(timeout)
+                    .build()
+                    .user_data(TIMEOUT_EVENT),
+            ]),
+            _ => self.push(&[entry]),
         }
         let mut ring = self;
         submit(&mut ring, false);
@@ -260,7 +259,7 @@ impl Uring {
 /// The ring's side of a submit, so its order can be tested without one.
 trait Submitter {
     fn event_running(&mut self) -> bool;
-    fn sq_used(&mut self) -> u32;
+    fn sq_used(&mut self) -> usize;
     fn submit(&mut self) -> c_int;
     fn sleep(&mut self);
     fn failed(&mut self);
@@ -271,13 +270,23 @@ impl Submitter for &Uring {
         (self.host.event_running)()
     }
 
-    fn sq_used(&mut self) -> u32 {
-        Uring::sq_used(self)
+    fn sq_used(&mut self) -> usize {
+        self.sq().0
     }
 
     fn submit(&mut self) -> c_int {
-        // SAFETY: the ring is initialized.
-        unsafe { sys::io_uring_submit(self.ring.get()) }
+        let mut ring = self.ring.borrow_mut();
+        let queue = ring.submission();
+        // As liburing's io_uring_submit: nothing to submit or flush, no system call.
+        let idle = queue.is_empty() && !queue.cq_overflow();
+        drop(queue);
+        if idle {
+            return 0;
+        }
+        match ring.submit() {
+            Ok(submitted) => c_int::try_from(submitted).unwrap_or(c_int::MAX),
+            Err(error) => -error.raw_os_error().unwrap_or(0),
+        }
     }
 
     fn sleep(&mut self) {
@@ -312,109 +321,73 @@ fn submit(ring: &mut impl Submitter, immediately: bool) {
     }
 }
 
-/// Create the thread's engine: check the loaded liburing, size and create the
-/// ring, probe the opcodes this build requires, and cap the async workers.
+/// Create the thread's engine: size and create the ring, probe the opcodes this
+/// build requires, and cap the async workers.
 #[must_use]
 pub fn open(config: Config, host: &'static Host) -> Opened {
-    let mut opened = Opened {
-        uring: None,
-        status: 0,
-        major: sys::IO_URING_VERSION_MAJOR.cast_signed(),
-        minor: sys::IO_URING_VERSION_MINOR.cast_signed(),
-        // SAFETY: liburing's version queries have no preconditions.
-        runtime_major: unsafe { sys::io_uring_major_version() },
-        // SAFETY: as above.
-        runtime_minor: unsafe { sys::io_uring_minor_version() },
-    };
-    if opened.runtime_major != opened.major || opened.runtime_minor < opened.minor {
-        opened.status = 1;
-        return opened;
+    let mut builder: io_uring::Builder = IoUring::builder();
+    if config.flag == SETUP_SQPOLL {
+        // No idle time of its own: the kernel's default, as liburing asks for.
+        builder.setup_sqpoll(0);
     }
-    let flags = if config.flag == sys::IORING_SETUP_SQPOLL {
-        sys::IORING_SETUP_SQPOLL
-    } else {
-        0
+    let ring = match builder.build(ring_entries(config.entries)) {
+        Ok(ring) => ring,
+        Err(error) => {
+            set_errno(error.raw_os_error().unwrap_or(0));
+            return Opened {
+                uring: None,
+                status: 2,
+            };
+        }
     };
-    let mut ring = sys::io_uring::default();
-    // SAFETY: `ring` is a ring for liburing to initialize; it holds no pointer to
-    // itself, so it may move once initialized.
-    let ret =
-        unsafe { sys::io_uring_queue_init(ring_entries(config.entries), &raw mut ring, flags) };
-    if ret < 0 {
-        set_errno(-ret);
-        opened.status = 2;
-        return opened;
+    let mut status = probe(&ring, config);
+    if status == 0
+        && config.workers > 0
+        && let Err(error) = ring
+            .submitter()
+            .register_iowq_max_workers(&mut [config.workers; 2])
+    {
+        set_errno(error.raw_os_error().unwrap_or(0));
+        status = 6;
     }
     let engine = Uring {
-        fd: ring.ring_fd,
-        entries: ring.sq.ring_entries,
-        ring: UnsafeCell::new(ring),
+        ring: RefCell::new(ring),
         host,
         task_num: Cell::new(0),
         waiting: RefCell::new(VecDeque::new()),
-        cqes: RefCell::new(vec![ptr::null_mut(); QUEUE_SIZE as usize]),
         ready: Cell::new(Vec::with_capacity(QUEUE_SIZE as usize)),
     };
-    opened.status = probe(&engine, config);
-    if opened.status == 0 && config.workers > 0 {
-        let mut workers = [config.workers, config.workers];
-        // SAFETY: the ring is initialized; `workers` holds the two limits.
-        let ret = unsafe {
-            sys::io_uring_register_iowq_max_workers(engine.ring.get(), workers.as_mut_ptr())
-        };
-        if ret < 0 {
-            set_errno(-ret);
-            opened.status = 6;
-        }
+    Opened {
+        uring: Some(Rc::new(engine)),
+        status,
     }
-    opened.uring = Some(Rc::new(engine));
-    opened
 }
 
 /// Whether the running kernel has the opcodes this build was configured with.
-fn probe(engine: &Uring, config: Config) -> c_int {
+fn probe(ring: &IoUring, config: Config) -> c_int {
     if !config.probe_futex && !config.probe_ftruncate {
         return 0;
     }
-    // SAFETY: the ring is initialized.
-    let probe = unsafe { sys::io_uring_get_probe_ring(engine.ring.get()) };
-    if probe.is_null() {
+    let mut probe = Probe::new();
+    if ring.submitter().register_probe(&mut probe).is_err() {
         return 3;
     }
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "opcode numbers are small enum values"
-    )]
-    // SAFETY: `probe` is the live probe just returned.
-    let supported = |op: u32| unsafe { sys::swr_uring_opcode_supported(probe, op as c_int) } != 0;
-    let status = if config.probe_futex
-        && !(supported(sys::io_uring_op_IORING_OP_FUTEX_WAIT)
-            && supported(sys::io_uring_op_IORING_OP_FUTEX_WAKE))
+    if config.probe_futex
+        && !(probe.is_supported(opcode::FutexWait::CODE)
+            && probe.is_supported(opcode::FutexWake::CODE))
     {
         4
-    } else if config.probe_ftruncate && !supported(sys::io_uring_op_IORING_OP_FTRUNCATE) {
+    } else if config.probe_ftruncate && !probe.is_supported(opcode::Ftruncate::CODE) {
         5
     } else {
         0
-    };
-    // SAFETY: frees the probe returned above, once.
-    unsafe { sys::io_uring_free_probe(probe) };
-    status
-}
-
-impl Drop for Uring {
-    /// The thread drops its engine with the event loop, which runs until no
-    /// request is in flight.
-    fn drop(&mut self) {
-        // SAFETY: the ring `open` initialized, torn down once.
-        unsafe { sys::io_uring_queue_exit(self.ring.get_mut()) };
     }
 }
 
 impl Uring {
     #[must_use]
     pub fn fd(&self) -> c_int {
-        self.fd
+        self.ring.borrow().as_raw_fd()
     }
 
     /// Requests in flight.
@@ -435,7 +408,10 @@ impl Uring {
             clippy::cast_precision_loss,
             reason = "upstream's (float) used / capacity"
         )]
-        let percent = self.sq_used() as f32 / self.entries as f32 * 100.0;
+        let percent = {
+            let (used, capacity) = self.sq();
+            used as f32 / capacity as f32 * 100.0
+        };
         percent
     }
 
@@ -453,27 +429,21 @@ pub fn wakeup(engine: &Uring) -> bool {
         // Resuming coroutines may re-enter the engine, so the ready list is taken
         // out of it, and no cell of it is borrowed while they run.
         let mut ready = engine.ready.take();
+        let mut harvested = false;
+        for cqe in engine
+            .ring
+            .borrow_mut()
+            .completion()
+            .take(QUEUE_SIZE as usize)
         {
-            let mut cqes = engine.cqes.borrow_mut();
-            // SAFETY: the ring is initialized; `cqes` has room for QUEUE_SIZE.
-            let count = unsafe {
-                sys::io_uring_peek_batch_cqe(engine.ring.get(), cqes.as_mut_ptr(), QUEUE_SIZE)
-            };
-            if count == 0 {
-                engine.ready.set(ready);
-                return true;
+            harvested = true;
+            if cqe.user_data() != TIMEOUT_EVENT {
+                ready.push((cqe.user_data() as *mut Event, cqe.result() as isize));
             }
-            for &cqe in cqes.iter().take(count as usize) {
-                // SAFETY: liburing filled the first `count` entries with live cqes.
-                let cqe = unsafe { &*cqe };
-                let (data, res) = (cqe.user_data, cqe.res);
-                if data == TIMEOUT_EVENT {
-                    continue;
-                }
-                ready.push((data as *mut Event, res as isize));
-            }
-            // SAFETY: consumes the `count` cqes read above.
-            unsafe { sys::swr_uring_cq_advance(engine.ring.get(), count) };
+        }
+        if !harvested {
+            engine.ready.set(ready);
+            return true;
         }
         for _ in 0..ready.len() {
             if engine.sq_space_left() == 0 {
@@ -507,23 +477,18 @@ pub fn wakeup(engine: &Uring) -> bool {
 /// Cancel the request whose event is at `event`, as a coroutine cancelling a
 /// suspended one does. The kernel only compares the address with each request's
 /// user data.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "`event` is only a key: the kernel compares it, nothing dereferences it"
-)]
 pub fn cancel(host: &Host, event: *mut c_void) -> bool {
-    let mut cancel = Event::new(host);
-    // SAFETY: a zeroed sqe; `event` is a key, never dereferenced.
-    unsafe { sys::swr_uring_prep_cancel(&raw mut cancel.data, event, 0) };
-    cancel.execute(host) == 0
+    let cancel = opcode::AsyncCancel::new(event.addr() as u64).build();
+    Event::new(host, cancel).execute(host) == 0
 }
 
-/// One `io_uring` request, end to end: `prep` fills the sqe, with pointers that
-/// stay valid until the request completes, which is before this returns.
-fn request(host: &Host, timeout: f64, prep: impl FnOnce(&mut sys::io_uring_sqe)) -> isize {
-    let mut event = Event::new(host).with_timeout(timeout);
-    prep(&mut event.data);
-    event.execute(host)
+/// One `io_uring` request, end to end.
+///
+/// # Safety
+/// The entry's pointers stay valid until the request completes, which is before
+/// this returns.
+unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> isize {
+    Event::new(host, entry).with_timeout(timeout).execute(host)
 }
 
 #[expect(
@@ -537,7 +502,7 @@ fn int(result: isize) -> c_int {
 macro_rules! operations {
     ($(
         $(#[$doc:meta])*
-        fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, |$sqe:ident| $prep:expr, $convert:expr;
+        fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, $entry:expr, $convert:expr;
     )*) => {$(
         $(#[$doc])*
         ///
@@ -545,8 +510,9 @@ macro_rules! operations {
         /// Pointer arguments are valid as for the system call.
         #[must_use]
         pub unsafe fn $name(host: &Host, $($arg: $ty),*) -> $ret {
-            // SAFETY: the caller's contract covers every pointer the sqe carries.
-            let result = request(host, $timeout, |$sqe| unsafe { $prep });
+            let entry = $entry.build();
+            // SAFETY: the caller's contract covers every pointer the entry carries.
+            let result = unsafe { request(host, $timeout, entry) };
             $convert(result)
         }
     )*};
@@ -554,52 +520,55 @@ macro_rules! operations {
 
 operations! {
     fn open_file(pathname: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_open(sqe, pathname, flags | libc::O_CLOEXEC, mode), int;
+        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname).flags(flags | libc::O_CLOEXEC).mode(mode), int;
     fn connect(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t, timeout: f64) -> c_int,
-        timeout timeout, |sqe| sys::swr_uring_prep_connect(sqe, fd, addr.cast(), len), int;
+        timeout timeout, opcode::Connect::new(Fd(fd), addr, len), int;
     fn accept(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t, flags: c_int, timeout: f64) -> c_int,
-        timeout timeout, |sqe| sys::swr_uring_prep_accept(sqe, fd, addr.cast(), len, flags), int;
+        timeout timeout, opcode::Accept::new(Fd(fd), addr, len).flags(flags), int;
+    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
     fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_recv(sqe, fd, buf, len, flags), std::convert::identity;
+        timeout timeout, opcode::Recv::new(Fd(fd), buf.cast(), len as u32).flags(flags), std::convert::identity;
+    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
     fn send(fd: c_int, buf: *const c_void, len: usize, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_send(sqe, fd, buf, len, flags), std::convert::identity;
+        timeout timeout, opcode::Send::new(Fd(fd), buf.cast(), len as u32).flags(flags), std::convert::identity;
     fn recvmsg(fd: c_int, message: *mut libc::msghdr, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_recvmsg(sqe, fd, message.cast(), flags.cast_unsigned()), std::convert::identity;
+        timeout timeout, opcode::RecvMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
     fn sendmsg(fd: c_int, message: *const libc::msghdr, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_sendmsg(sqe, fd, message.cast(), flags.cast_unsigned()), std::convert::identity;
+        timeout timeout, opcode::SendMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
     #[expect(clippy::too_many_arguments, reason = "sendto(2)'s six, the timeout and the ring's host")]
+    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
     fn sendto(fd: c_int, buf: *const c_void, n: usize, flags: c_int, addr: *const libc::sockaddr, len: libc::socklen_t, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_sendto(sqe, fd, buf, n, flags, addr.cast(), len), std::convert::identity;
+        timeout timeout, opcode::Send::new(Fd(fd), buf.cast(), n as u32).flags(flags).dest_addr(addr).dest_addr_len(len), std::convert::identity;
     fn readv(fd: c_int, iov: *const libc::iovec, count: c_int, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_readv(sqe, fd, iov.cast(), count.cast_unsigned(), u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Readv::new(Fd(fd), iov, count.cast_unsigned()).offset(u64::MAX), std::convert::identity;
     fn writev(fd: c_int, iov: *const libc::iovec, count: c_int, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_writev(sqe, fd, iov.cast(), count.cast_unsigned(), u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Writev::new(Fd(fd), iov, count.cast_unsigned()).offset(u64::MAX), std::convert::identity;
     fn close_fd(fd: c_int) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_close(sqe, fd), int;
+        timeout -1.0, opcode::Close::new(Fd(fd)), int;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
     fn read(fd: c_int, buf: *mut c_void, size: usize, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_read(sqe, fd, buf, size as c_uint, u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Read::new(Fd(fd), buf.cast(), size as c_uint).offset(u64::MAX), std::convert::identity;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
     fn write(fd: c_int, buf: *const c_void, size: usize, timeout: f64) -> isize,
-        timeout timeout, |sqe| sys::swr_uring_prep_write(sqe, fd, buf, size as c_uint, u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Write::new(Fd(fd), buf.cast(), size as c_uint).offset(u64::MAX), std::convert::identity;
     fn rename(oldpath: *const c_char, newpath: *const c_char) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_rename(sqe, oldpath, newpath), int;
+        timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath, Fd(libc::AT_FDCWD), newpath), int;
     fn mkdir(pathname: *const c_char, mode: libc::mode_t) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_mkdir(sqe, pathname, mode), int;
+        timeout -1.0, opcode::MkDirAt::new(Fd(libc::AT_FDCWD), pathname).mode(mode), int;
     fn unlink(pathname: *const c_char) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_unlink(sqe, pathname, 0), int;
+        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname), int;
     fn rmdir(pathname: *const c_char) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_unlink(sqe, pathname, libc::AT_REMOVEDIR), int;
+        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname).flags(libc::AT_REMOVEDIR), int;
     fn fsync(fd: c_int) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_fsync(sqe, fd, 0), int;
+        timeout -1.0, opcode::Fsync::new(Fd(fd)), int;
     fn fdatasync(fd: c_int) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_fsync(sqe, fd, sys::IORING_FSYNC_DATASYNC), int;
+        timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), int;
     fn ftruncate(fd: c_int, length: libc::off_t) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_ftruncate(sqe, fd, length), int;
+        timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), int;
     fn futex_wait(futex: *mut u32) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_futex_wait(sqe, futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32, 0), int;
+        timeout -1.0, opcode::FutexWait::new(futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
     fn futex_wakeup(futex: *mut u32) -> c_int,
-        timeout -1.0, |sqe| sys::swr_uring_prep_futex_wake(sqe, futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32, 0), int;
+        timeout -1.0, opcode::FutexWake::new(futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
 }
 
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
@@ -609,11 +578,11 @@ pub fn sleep(host: &Host, seconds: f64) -> c_int {
 }
 
 /// Upstream's `sleep(tv_sec, tv_nsec)`, which `sleep(seconds)` converts to.
-fn sleep_timespec(host: &Host, mut ts: sys::__kernel_timespec) -> c_int {
+fn sleep_timespec(host: &Host, ts: libc::timespec) -> c_int {
+    let ts = kernel_timespec(ts);
+    let timeout = opcode::Timeout::new(&raw const ts).build();
     // SAFETY: `ts` outlives the request.
-    request(host, -1.0, |sqe| unsafe {
-        sys::swr_uring_prep_timeout(sqe, &raw mut ts, 0, 0);
-    });
+    unsafe { request(host, -1.0, timeout) };
     if errno() == libc::ETIME { 0 } else { -1 }
 }
 
@@ -667,15 +636,10 @@ pub fn sendfile(
     };
     let start = offset.as_deref().copied();
     let mut total_sent = 0_usize;
-    let mut event = Event::new(host).with_timeout(timeout);
-    // Each splice completes before the next.
-    let mut splice = |fd_in, off_in, fd_out, nbytes| {
-        event.data = sys::io_uring_sqe::default();
-        // SAFETY: the event's own sqe; a splice carries no pointers.
-        unsafe {
-            sys::swr_uring_prep_splice(&raw mut event.data, fd_in, off_in, fd_out, -1, nbytes, 0);
-        };
-        event.execute(host)
+    // Each splice completes before the next, and carries no pointers.
+    let splice = |fd_in, off_in, fd_out, nbytes| {
+        let splice = opcode::Splice::new(Fd(fd_in), off_in, Fd(fd_out), -1, nbytes).build();
+        Event::new(host, splice).with_timeout(timeout).execute(host)
     };
     while total_sent < size {
         let to_send = (size - total_sent).min(pipe_size);
@@ -757,10 +721,12 @@ fn statx_to_stat(statx: &libc::statx, stat: &mut libc::stat) {
 fn statx(host: &Host, dfd: c_int, path: &CStr, flags: c_int, stat: &mut libc::stat) -> c_int {
     let mut buf: libc::statx = swoole_rs_corebase::sys::zeroed();
     let mask = libc::STATX_BASIC_STATS | libc::STATX_BTIME;
+    let statx = opcode::Statx::new(Fd(dfd), path.as_ptr(), (&raw mut buf).cast())
+        .flags(flags)
+        .mask(mask)
+        .build();
     // SAFETY: `buf` and `path` outlive the request.
-    let ret = request(host, -1.0, |sqe| unsafe {
-        sys::swr_uring_prep_statx(sqe, dfd, path.as_ptr(), flags, mask, (&raw mut buf).cast());
-    });
+    let ret = unsafe { request(host, -1.0, statx) };
     if ret == 0 {
         statx_to_stat(&buf, stat);
     }
@@ -797,10 +763,11 @@ pub fn waitpid(
         (libc::P_ALL, 0)
     };
     let options = if options == 0 { libc::WEXITED } else { options };
+    let waitid = opcode::WaitId::new(idtype, id, options)
+        .infop(&raw mut info)
+        .build();
     // SAFETY: `info` outlives the request.
-    let rc = int(request(host, timeout, |sqe| unsafe {
-        sys::swr_uring_prep_waitid(sqe, idtype, id, (&raw mut info).cast(), options, 0);
-    }));
+    let rc = int(unsafe { request(host, timeout, waitid) });
     if rc == -1 {
         return rc;
     }
@@ -819,10 +786,9 @@ pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
         return os::poll(core::slice::from_mut(pollfd), timeout);
     }
     let (descriptor, events) = (pollfd.fd, pollfd.events);
+    let poll = opcode::PollAdd::new(Fd(descriptor), events.cast_unsigned().into()).build();
     // SAFETY: the request carries no pointers.
-    let rc = int(request(host, f64::from(timeout) / 1000.0, |sqe| unsafe {
-        sys::swr_uring_prep_poll_add(sqe, descriptor, events.cast_unsigned().into());
-    }));
+    let rc = int(unsafe { request(host, f64::from(timeout) / 1000.0, poll) });
     if rc > 0 {
         #[expect(clippy::cast_possible_truncation, reason = "upstream's revents = rc")]
         let revents = rc as libc::c_short;
@@ -855,17 +821,7 @@ pub(crate) mod testing {
         let engine = instance().expect("a test engine");
         engine.submit_queued();
         while engine.task_num() > 0 {
-            let mut cqe = ptr::null_mut();
-            // SAFETY: the test engine's initialized ring.
-            unsafe {
-                sys::io_uring_wait_cqes(
-                    engine.ring.get(),
-                    &raw mut cqe,
-                    1,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                );
-            }
+            let _waited = engine.ring.borrow().submit_and_wait(1);
             wakeup(&engine);
         }
     }
@@ -906,7 +862,7 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         running: bool,
-        used: u32,
+        used: usize,
         results: Vec<c_int>,
         trace: Vec<String>,
     }
@@ -916,7 +872,7 @@ mod tests {
             self.trace.push("running".into());
             self.running
         }
-        fn sq_used(&mut self) -> u32 {
+        fn sq_used(&mut self) -> usize {
             self.trace.push("sq:used".into());
             self.used
         }
@@ -932,7 +888,7 @@ mod tests {
         }
     }
 
-    fn submitted(running: bool, used: u32, results: &[c_int], immediately: bool) -> Vec<String> {
+    fn submitted(running: bool, used: usize, results: &[c_int], immediately: bool) -> Vec<String> {
         let mut ring = Recorder {
             running,
             used,
