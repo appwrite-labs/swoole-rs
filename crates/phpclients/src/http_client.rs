@@ -1496,11 +1496,12 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 }
 
 unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees a client object.
-    drop(unsafe { ClientObject::data(std) }.client.take());
-    // SAFETY: as above.
-    unsafe { ClientObject::dtor(std) };
-    bailout::finish();
+    bailout::finish_after(|| {
+        // SAFETY: Zend frees a client object.
+        drop(unsafe { ClientObject::data(std) }.client.take());
+        // SAFETY: as above.
+        unsafe { ClientObject::dtor(std) };
+    });
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
