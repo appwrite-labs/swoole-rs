@@ -111,10 +111,10 @@ jobs:
               echo "$variant"
             fi
           done > variants <<'EOF'
-          iouring native/hooks/|crates/(hooks|uring[^/]*)/|\.devcontainer/install\.sh$
+          iouring native/hooks/|crates/(hooks|phpcoroutines|phplocks|uring[^/]*)/|\.devcontainer/install\.sh$
           cares crates/(clients|corebase|cares-sys)/
           zts crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
-          threadcontext native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|phpevents|process)/
+          threadcontext native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|phpevents|process)/|crates/ext/build\.rs$|crates/hooks/src/wait_signal\.rs$|crates/reactor/src/wait_upstream\.rs$
           EOF
           echo "variants=$(jq -Rnc '[inputs]' variants)" >> "$GITHUB_OUTPUT"
           if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then

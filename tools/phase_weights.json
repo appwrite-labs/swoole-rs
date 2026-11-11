@@ -94,7 +94,6 @@
  "syscalls": 3,
  "timer-bailout": 6,
  "timer-fork-active": 1,
- "timer-native": 5,
  "timer-unit": 3,
  "tls-constants": 2,
  "tls-unit": 3,

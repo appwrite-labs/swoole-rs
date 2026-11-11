@@ -19,19 +19,20 @@ const WAIT: c_int = 2;
 /// `String`, `recv`, the `Protocol` callback and the packet diagnostics. The
 /// runtime's table is installed when native registers the hooks host; tests set
 /// theirs per thread. Each takes a live record.
-#[repr(C)]
 pub struct Host {
     /// A timer for the read or the `write` wait that calls `timer_fired`, or null.
-    pub timer_add: extern "C" fn(Co, f64, bool) -> *mut c_void,
-    pub timer_del: extern "C" fn(*mut c_void),
+    pub timer_add: fn(Co, f64, bool) -> *mut c_void,
+    pub timer_del: fn(*mut c_void),
     /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
-    pub read_buffer: extern "C" fn(Co, *mut crate::packet::ReadBuffer, u32, usize),
-    /// `Socket::recv/recv_all` (all selects the latter).
-    pub recv: extern "C" fn(Co, *mut u8, usize, bool) -> isize,
-    /// The protocol's `get_package_length` over the read buffer's first bytes.
-    pub package_length: extern "C" fn(Co, u32, *mut u32) -> isize,
+    pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, u32, usize),
+    /// `Socket::recv/recv_all` (all selects the latter) into the read String's
+    /// free space.
+    pub recv: fn(Co, &mut [u8], bool) -> isize,
+    /// The protocol's `get_package_length` over the read buffer's first bytes;
+    /// writes the header length.
+    pub package_length: fn(Co, u32, &mut u32) -> isize,
     /// Packet error diagnostics, with the same kinds as the packet receive.
-    pub packet_fail: extern "C" fn(Co, u32, isize),
+    pub packet_fail: fn(Co, u32, isize),
 }
 
 #[cfg(not(test))]
@@ -161,7 +162,7 @@ mod native {
         (unsafe { Co::of(data.map_addr(|addr| addr & !1)) }, event)
     }
 
-    extern "C" fn timer_add(socket: Co, timeout: f64, write: bool) -> *mut c_void {
+    fn timer_add(socket: Co, timeout: f64, write: bool) -> *mut c_void {
         extern "C-unwind" fn fired(data: *mut c_void) {
             // SAFETY: the record whose timer fired: its wait deletes the timer before
             // the record goes.
@@ -171,7 +172,7 @@ mod native {
         crate::poll::native::timer_add_with(timeout, fired, tag(socket, write))
     }
 
-    extern "C" fn timer_del(node: *mut c_void) {
+    fn timer_del(node: *mut c_void) {
         crate::poll::native::timer_del(node);
     }
 
@@ -206,9 +207,7 @@ mod native {
         });
     }
 
-    extern "C" fn read_buffer(socket: Co, view: *mut ReadBuffer, action: u32, size: usize) {
-        // SAFETY: the operation's live view.
-        let view = unsafe { &mut *view };
+    fn read_buffer(socket: Co, view: &mut ReadBuffer, action: u32, size: usize) {
         socket.with_buffer(false, |string| {
             if action != 0 {
                 string.length = view.length;
@@ -228,9 +227,7 @@ mod native {
         });
     }
 
-    extern "C" fn recv(socket: Co, at: *mut u8, length: usize, all: bool) -> isize {
-        // SAFETY: `length` free bytes of the live record's read buffer at `at`.
-        let buf = unsafe { core::slice::from_raw_parts_mut(at, length) };
+    fn recv(socket: Co, buf: &mut [u8], all: bool) -> isize {
         if all {
             socket.recv_all(buf)
         } else {
@@ -250,7 +247,7 @@ mod native {
     type LengthFunc =
         unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut PacketLength) -> isize;
 
-    extern "C" fn package_length(socket: Co, size: u32, header: *mut u32) -> isize {
+    fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
         // SAFETY: the live record's read String, which the packet receive fills.
         let buf = unsafe { (*socket.read_buffer().cast::<CppString>()).str };
         let mut packet = PacketLength {
@@ -268,8 +265,7 @@ mod native {
         let call = unsafe { core::mem::transmute::<*mut c_void, LengthFunc>(callback) };
         // SAFETY: the record's protocol and network socket, and `size` bytes at `buf`.
         let length = unsafe { call(protocol, socket.socket(), &raw mut packet) };
-        // SAFETY: the caller's header length.
-        unsafe { *header = packet.header_len };
+        *header = packet.header_len;
         length
     }
 
@@ -279,7 +275,7 @@ mod native {
     const NOT_FOUND: c_int = 1202;
     const LOG_WARNING: c_int = 4;
 
-    extern "C" fn packet_fail(socket: Co, kind: u32, length: isize) {
+    fn packet_fail(socket: Co, kind: u32, length: isize) {
         let (error, message) = match kind {
             0 => (NOT_FOUND, c"get package length failed".as_ptr()),
             1 => {
@@ -690,7 +686,7 @@ pub(crate) mod test_host {
             ON_BOUND.set(Some(hook));
         }
     }
-    extern "C" fn timer_add(_: Co, timeout: f64, _: bool) -> *mut c_void {
+    fn timer_add(_: Co, timeout: f64, _: bool) -> *mut c_void {
         log(format!("timer:add:{timeout}"));
         if !TIMER_OK.get() {
             return ptr::null_mut();
@@ -698,7 +694,7 @@ pub(crate) mod test_host {
         NODES.set(NODES.get() + 1);
         ptr::dangling_mut::<u32>().cast()
     }
-    extern "C" fn timer_del(_: *mut c_void) {
+    fn timer_del(_: *mut c_void) {
         log("timer:delete");
     }
     fn sleep() {

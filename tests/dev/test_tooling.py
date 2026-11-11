@@ -558,7 +558,7 @@ class Lanes(unittest.TestCase):
                          jobs=4, test=None, case=None, benchmark=False, compare=False)
         commands = dict(dev.plan(args, ROOT / 'target/reports/test-plan'))
         self.assertNotIn('phpt', commands)  # the merge tier's phpt-* jobs run every PHPT
-        self.assertIn('--build-manifest', commands['timer-native'])
+        self.assertIn('timer-bailout', commands)
 
 
 class ChangedModules(unittest.TestCase):

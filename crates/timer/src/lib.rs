@@ -18,10 +18,7 @@ mod owner;
 #[cfg(feature = "upstream-symbols")]
 mod wrapper;
 #[cfg(feature = "upstream-symbols")]
-pub use owner::{
-    Owner, TimerNode, swr_v1_timer_owner_queue, swr_v1_timer_owner_reactor,
-    swr_v1_timer_owner_reinit,
-};
+pub use owner::{Owner, TimerNode, owner_queue, owner_reactor, owner_reinit};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
