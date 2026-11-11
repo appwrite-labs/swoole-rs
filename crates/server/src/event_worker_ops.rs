@@ -9,7 +9,7 @@ use swoole_rs_process::methods::{
     push_message, swoole_get_worker_id, swoole_get_worker_type, swoole_set_worker_id,
     swoole_set_worker_type,
 };
-use swoole_rs_process::worker_globals::{thread_globals, worker_global_detach};
+use swoole_rs_process::worker_globals::worker_global_detach;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -156,8 +156,7 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
         OP_ON_WORKER_START => (CB_WORKER_START, ctx.worker.cast()),
         OP_ON_WORKER_STOP => (CB_WORKER_STOP, ctx.worker.cast()),
         OP_ON_WORKER_EXIT => {
-            // SAFETY: this thread's worker globals.
-            let current = unsafe { (*thread_globals()).worker };
+            let current = swoole_rs_process::worker_globals::current_worker();
             (CB_WORKER_EXIT, current.cast())
         }
         OP_ON_BEFORE_SHUTDOWN => (CB_BEFORE_SHUTDOWN, core::ptr::null_mut()),

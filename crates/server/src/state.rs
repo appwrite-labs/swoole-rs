@@ -119,10 +119,10 @@ impl ServerState {
         &self,
         worker: &mut swoole_rs_process::worker_record::WorkerRecord,
     ) -> bool {
-        let mut storage = Box::new(core::mem::MaybeUninit::<SocketPair>::uninit());
-        swoole_rs_tls::socket_pair::unix_socket_new(&mut storage, true, libc::SOCK_DGRAM);
-        // SAFETY: the constructor initialised it.
-        let mut pair = unsafe { storage.assume_init() };
+        let mut pair = Box::new(swoole_rs_tls::socket_pair::unix_socket(
+            true,
+            libc::SOCK_DGRAM,
+        ));
         let (master, end) = (pair.master_socket, pair.worker_socket);
         if master.is_null() || end.is_null() {
             swoole_rs_tls::socket_pair::drop(&mut pair);

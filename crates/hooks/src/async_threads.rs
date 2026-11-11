@@ -7,7 +7,6 @@
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
 use std::ffi::{c_int, c_void};
-use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
@@ -19,7 +18,7 @@ use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del, swr_v1_event_current};
 use swoole_rs_reactor::reactor_upstream::prepared;
 use swoole_rs_reactor::{Event, Running, SocketRecord, swr_v1_reactor_deferred_push};
-use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket_new};
+use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use swoole_rs_tls::upstream::socket_write_sync;
 
 /// `SW_FD_AIO`, `SW_EVENT_READ` and `Reactor::EXIT_CONDITION_AIO_TASK`.
@@ -214,12 +213,9 @@ fn create() -> *mut AsyncThreads {
         log::set_last_error(WRONG_OPERATION);
         return ptr::null_mut();
     }
-    let mut pipe = MaybeUninit::uninit();
-    unix_socket_new(&mut pipe, false, libc::SOCK_STREAM);
     let mut threads = Box::new(AsyncThreads {
         task_num: 0,
-        // SAFETY: the constructor initialised it.
-        pipe: unsafe { pipe.assume_init() },
+        pipe: unix_socket(false, libc::SOCK_STREAM),
         pool: None,
     });
     let pipe = &threads.pipe;

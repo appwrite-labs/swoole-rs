@@ -212,15 +212,7 @@ unsafe fn remaining(vector: *const c_void) -> usize {
     usize::try_from(count).unwrap_or(0)
 }
 
-/// libc's `strerror(error)`.
-fn strerror(error: c_int) -> String {
-    // SAFETY: strerror returns a NUL-terminated message for any code.
-    let message = unsafe { libc::strerror(error) };
-    // SAFETY: as above.
-    unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned()
-}
+use swoole_rs_corebase::sys::strerror;
 
 /// A descriptor `Socket::sendfile` opened, closed when it goes.
 struct OpenFile(c_int);

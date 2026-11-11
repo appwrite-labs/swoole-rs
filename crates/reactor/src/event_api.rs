@@ -255,6 +255,15 @@ pub fn swoole_event_set_once(once: bool) {
     field_mut(|fields| fields.once = once);
 }
 
+/// `sw_reactor()->running = false; sw_reactor()->bailout = true`, when there is
+/// a reactor: the loop stops as after a bailout.
+pub fn swoole_event_bail_out() {
+    field_mut(|fields| {
+        fields.running = false;
+        fields.bailout = true;
+    });
+}
+
 /// `sw_reactor()->bailout`: false without a reactor.
 #[must_use]
 pub fn swoole_event_bailed_out() -> bool {

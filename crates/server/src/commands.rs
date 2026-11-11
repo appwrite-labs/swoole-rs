@@ -309,8 +309,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         .named
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
-    // SAFETY: this thread's worker globals; only the field is read.
-    let worker = unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker };
+    let worker = swoole_rs_process::worker_globals::current_worker();
     let input = CommandInput {
         started,
         found: found.is_some(),
