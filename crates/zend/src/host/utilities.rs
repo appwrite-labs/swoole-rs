@@ -1,6 +1,6 @@
 //! Class-alias registration for the native SDK.
+use crate::{bailout, sys as z};
 use std::ffi::{c_char, c_int};
-use swoole_rs_zend::{bailout, sys as z};
 
 /// Register the native SDK's lowercase persistent class alias.
 /// # Safety
@@ -12,7 +12,7 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_class_alias(
     entry: *mut z::zend_class_entry,
 ) -> c_int {
     // SAFETY: the SDK supplies its original alias and registered CE.
-    let result = unsafe { swoole_rs_zend::registration::class_alias(name, length, entry, true) };
+    let result = unsafe { crate::registration::class_alias(name, length, entry, true) };
     match result {
         Ok(value) => value,
         Err(error) => {

@@ -21,10 +21,10 @@ use std::{
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
-use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
+use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString, bailout, handlers,
     method_table, string,

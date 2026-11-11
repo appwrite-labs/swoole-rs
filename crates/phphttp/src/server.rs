@@ -329,7 +329,7 @@ fn enable_coroutine(server: *mut c_void) -> bool {
     }
 }
 
-pub(crate) use swoole_rs_phphelpers::callable::Callable;
+pub(crate) use swoole_rs_zend::host::callable::Callable;
 
 /// `zend::function::call(callable, args.len(), args, nullptr, coroutine)`:
 /// whether the handler was called.
@@ -341,11 +341,11 @@ pub(crate) fn call_handler(
     coroutine: bool,
 ) -> Result<bool, bailout::Bailout> {
     // SAFETY: a live handle.
-    let cache = unsafe { swoole_rs_phphelpers::callable::cache(callable) };
+    let cache = unsafe { swoole_rs_zend::host::callable::cache(callable) };
     // SAFETY: a resolved cache and the two arguments; the coroutine leaf and
     // the reporter run inside C traps.
     let called = unsafe {
-        swoole_rs_phphelpers::function_call(
+        swoole_rs_zend::host::function_call(
             cache,
             u32::try_from(args.len()).unwrap_or(0),
             args.as_mut_ptr(),

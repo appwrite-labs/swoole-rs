@@ -816,8 +816,8 @@
         "M06"
       ],
       "owned_paths": [
-        "crates/phphelpers/",
         "crates/phpstdext/",
+        "crates/zend/src/host/",
         "native/phphelpers/",
         "tests/modules/phphelpers/"
       ],

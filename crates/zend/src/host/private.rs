@@ -1,12 +1,12 @@
 //! Shared object/property and callback custody operations for native PHP callers.
-use std::{
-    ffi::{c_char, c_int, c_long, c_void},
-    ptr,
-};
-use swoole_rs_zend::{
+use crate::{
     bailout,
     sys::{self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
     type_of,
+};
+use std::{
+    ffi::{c_char, c_int, c_long, c_void},
+    ptr,
 };
 
 fn bailed(code: c_int) -> bool {
@@ -68,7 +68,7 @@ unsafe fn array_property(
     name: *const c_char,
     length: usize,
 ) -> *mut zval {
-    let mut value = swoole_rs_zend::UNDEF;
+    let mut value = crate::UNDEF;
     // SAFETY: construct a request array in an initialized writable slot.
     if bailed(unsafe { sys::swr_zend_try_facade_array_init(&raw mut value) }) {
         return ptr::null_mut();
@@ -121,8 +121,8 @@ unsafe fn property(
     array: bool,
 ) -> *mut zval {
     // SAFETY: the source holds a live object.
-    let object = unsafe { swoole_rs_zend::value::obj_of(value) };
-    let mut temporary = swoole_rs_zend::UNDEF;
+    let object = unsafe { crate::value::obj_of(value) };
+    let mut temporary = crate::UNDEF;
     // SAFETY: caller guarantees an object-owned declared property result.
     let mut property = unsafe { read(scope, object, name, length, silent, &raw mut temporary) };
     if !bailout::pending() {
@@ -172,7 +172,7 @@ unsafe fn closure(cache: *const zend_fcall_info_cache) -> *mut zend_object {
 
 /// # Safety
 /// A resolved cache owns the references Zend added when resolving it; each release may execute PHP.
-pub unsafe fn swr_v1_phphelpers_cache_free(cache: *mut zend_fcall_info_cache) {
+pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
     // SAFETY: read the initialized cache without keeping a Rust borrow across PHP.
     let object = unsafe { (*cache).object };
     if !object.is_null() {
@@ -213,8 +213,8 @@ unsafe fn direct_call(
     retval: *mut zval,
     report: unsafe extern "C" fn(*const c_char),
 ) -> c_int {
-    let mut call = swoole_rs_zend::EMPTY_FCI;
-    let mut temporary = swoole_rs_zend::UNDEF;
+    let mut call = crate::EMPTY_FCI;
+    let mut temporary = crate::UNDEF;
     // SAFETY: a non-null cache is initialized by the caller.
     let uncached = cache.is_null() || unsafe { (*cache).function_handler }.is_null();
     if uncached {
@@ -275,11 +275,8 @@ pub unsafe extern "C" fn swr_v1_phphelpers_call(
 
 /// # Safety
 /// Live callable frame/cache; caller accepts the frame's upstream temporary-return convention.
-pub unsafe fn swr_v1_phphelpers_call_anyway(
-    frame: *mut zend_fcall_info,
-    cache: *mut zend_fcall_info_cache,
-) -> c_int {
-    let mut temporary = swoole_rs_zend::UNDEF;
+pub unsafe fn call_anyway(frame: *mut zend_fcall_info, cache: *mut zend_fcall_info_cache) -> c_int {
+    let mut temporary = crate::UNDEF;
     // SAFETY: the frame is initialized and exclusively configured before invocation.
     if unsafe { (*frame).retval }.is_null() {
         // SAFETY: the temporary remains live through the call and destruction below.
@@ -363,11 +360,17 @@ pub unsafe fn function_call(
 }
 
 /// `zend::function::call(name, argc, argv)` into `retval`, a bailout left
-/// pending.
+/// pending: the caller finishes or relays it.
 /// # Safety
 /// A borrowed binary function-name span, argument slots and writable owned return value.
-unsafe fn named(name: *const c_char, length: usize, argc: u32, argv: *mut zval, retval: *mut zval) {
-    let mut function = swoole_rs_zend::UNDEF;
+pub unsafe fn named_call_into(
+    name: *const c_char,
+    length: usize,
+    argc: u32,
+    argv: *mut zval,
+    retval: *mut zval,
+) {
+    let mut function = crate::UNDEF;
     // SAFETY: Zend copies the complete binary function name into its request string.
     bailed(unsafe { sys::swr_zend_try_facade_value_string(&raw mut function, name, length) });
     if bailout::pending() {
@@ -396,20 +399,6 @@ unsafe fn named(name: *const c_char, length: usize, argc: u32, argv: *mut zval, 
     }
 }
 
-/// # Safety
-/// As [`named`].
-pub unsafe fn swr_v1_phphelpers_named_call(
-    name: *const c_char,
-    length: usize,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-) {
-    // SAFETY: per the caller.
-    unsafe { named(name, length, argc, argv, retval) };
-    bailout::finish();
-}
-
 /// `zend::function::call(name, args)`, its result discarded as upstream's
 /// temporary `Variable` is.
 /// # Errors
@@ -419,10 +408,10 @@ pub unsafe fn swr_v1_phphelpers_named_call(
 pub unsafe fn named_call(name: &[u8], args: &mut [zval]) -> Result<(), bailout::Bailout> {
     #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
     let argc = args.len() as u32;
-    let mut retval = swoole_rs_zend::UNDEF;
+    let mut retval = crate::UNDEF;
     // SAFETY: the name's bytes, live arguments and a writable result.
     unsafe {
-        named(
+        named_call_into(
             name.as_ptr().cast(),
             name.len(),
             argc,

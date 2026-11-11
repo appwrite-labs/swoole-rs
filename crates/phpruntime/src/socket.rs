@@ -507,7 +507,7 @@ unsafe extern "C" fn x509_read_body(call: *mut c_void) {
     let name = c"openssl_x509_read";
     // SAFETY: one live argument and the caller's writable result.
     unsafe {
-        swoole_rs_phphelpers::swr_v1_phphelpers_named_call(
+        swoole_rs_zend::host::named_call_into(
             name.as_ptr(),
             name.count_bytes(),
             1,
@@ -515,6 +515,7 @@ unsafe extern "C" fn x509_read_body(call: *mut c_void) {
             call.retval,
         );
     }
+    swoole_rs_zend::bailout::finish();
     // SAFETY: the string this body made.
     unsafe { zval_ptr_dtor(&raw mut pem) };
 }

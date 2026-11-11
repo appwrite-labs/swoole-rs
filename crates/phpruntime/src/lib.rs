@@ -44,8 +44,8 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::{Switch, built_with};
-use swoole_rs_phphelpers::callable as handle;
 use swoole_rs_phpstubs::runtime;
+use swoole_rs_zend::host::callable as handle;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message, Minit,
     bailout::{self, Bailout},
@@ -112,7 +112,7 @@ fn main_thread() -> bool {
     unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
 }
 
-/// `sw_callable_create(value)`: a crates/phphelpers callable, or null after a
+/// `sw_callable_create(value)`: a `swoole_rs_zend::host` callable, or null after a
 /// warning. Null with a bailout pending (the warning's handler bailed out) is
 /// one the caller stops on, leaving the raise to its handler's last step.
 /// # Safety
@@ -178,7 +178,7 @@ unsafe extern "C" fn invoke(call: *mut c_void) {
         let cache = unsafe { handle::cache(callable) };
         // SAFETY: per the caller; the reporter is C.
         let called = unsafe {
-            swoole_rs_phphelpers::swr_v1_phphelpers_call(
+            swoole_rs_zend::host::swr_v1_phphelpers_call(
                 std::ptr::null_mut(),
                 cache,
                 call.argc,
