@@ -157,8 +157,10 @@ struct Connection {
 }
 
 /// `php_swoole_server_get_and_check_server(object)`: `None` after the
-/// `E_ERROR` of a server object never constructed.
-pub(crate) fn server_of<'a>(object: *mut zval) -> Option<view::Server<'a>> {
+/// `E_ERROR` of a server object never constructed. The view lives while
+/// `_held`, which holds the object (the method's frame, or the value), is
+/// borrowed.
+pub(crate) fn server_of<T: ?Sized>(object: *mut zval, _held: &T) -> Option<view::Server<'_>> {
     // SAFETY: a `Swoole\Server` object.
     let server = unsafe { php_swoole_server_get_ptr(object) };
     if server.is_null() {
@@ -822,7 +824,7 @@ fn unpack(call: &Call) {
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
 fn server(call: &Call) -> Option<view::Server<'_>> {
-    let server = server_of(call.this_zval())?;
+    let server = server_of(call.this_zval(), call)?;
     if !server.is_started() {
         host::fatal("server is not running");
         return None;

@@ -308,7 +308,8 @@ impl Ctx {
     #[must_use]
     pub fn server_context(server: view::Server<'_>, fd: i64) -> Self {
         let ctx = context::alloc();
-        context::init(ctx, server);
+        // SAFETY: the new context.
+        unsafe { context::init(ctx, server) };
         let state = send::state(ctx);
         state.fd = fd;
         state.http2 = 1;

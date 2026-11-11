@@ -1077,7 +1077,9 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 send::state(context).response.status = ENTITY_TOO_LARGE;
                 break;
             }
-            if parse_request(context, conn.data(0, header_length)) != header_length {
+            // SAFETY: the loop's live context, whose parser `context` initialised.
+            let parsed = unsafe { parse_request(context, conn.data(0, header_length)) };
+            if parsed != header_length {
                 send::state(context).response.status = BAD_REQUEST;
                 break;
             }
@@ -1111,7 +1113,8 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 length = length.min(max - offset);
             }
             // `offset + length` lies within the buffer.
-            let parsed = parse_request(context, conn.data(offset, offset + length));
+            // SAFETY: as above.
+            let parsed = unsafe { parse_request(context, conn.data(offset, offset + length)) };
             let buffer = conn.buffer();
             buffer.set_offset(buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX));
             let error = send::state(context).parser.error;

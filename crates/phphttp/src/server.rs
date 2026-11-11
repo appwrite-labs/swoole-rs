@@ -272,7 +272,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         .flatten();
     facts.coroutine = enable_coroutine(server);
     let ctx = context::context_new(session);
-    context::init(ctx, server);
+    // SAFETY: the new context.
+    unsafe { context::init(ctx, server) };
     let state = state(ctx);
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
@@ -431,7 +432,8 @@ fn handle(
     let data = unsafe { value::str_of(zdata) };
     // SAFETY: as above.
     let data = unsafe { string::bytes(data) };
-    let parsed = parse_request(ctx, data);
+    // SAFETY: a live context, whose parser `receive` initialised.
+    let parsed = unsafe { parse_request(ctx, data) };
     if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
         context::send(ctx, BAD_REQUEST);
         context::close(ctx);

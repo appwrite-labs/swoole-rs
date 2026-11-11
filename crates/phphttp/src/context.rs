@@ -141,7 +141,9 @@ pub(crate) fn alloc() -> *mut Context {
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
-pub(crate) fn init(ctx: *mut Context, server: view::Server<'_>) {
+/// # Safety
+/// `ctx` is a live context.
+pub(crate) unsafe fn init(ctx: *mut Context, server: view::Server<'_>) {
     let config = server.config();
     let state = send::state(ctx);
     state.parse_cookie = u8::from(config.http_parse_cookie);
@@ -152,7 +154,8 @@ pub(crate) fn init(ctx: *mut Context, server: view::Server<'_>) {
         state.compression_level = i8::from_ne_bytes([config.http_compression_level]);
         state.compression_min_length = config.compression_min_length;
     }
-    bind_server(ctx, server);
+    // SAFETY: per the caller.
+    unsafe { bind_server(ctx, server) };
 }
 
 /// The server a context not bound to a coroutine socket answers through.
@@ -235,7 +238,9 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
 }
 
 /// `Context::bind(Server *)`: the context sends through the server.
-pub(crate) fn bind_server(ctx: *mut Context, server: view::Server<'_>) {
+/// # Safety
+/// `ctx` is a live context.
+pub(crate) unsafe fn bind_server(ctx: *mut Context, server: view::Server<'_>) {
     let state = send::state(ctx);
     state.private_data = server.raw();
     // A server's context holds no socket.

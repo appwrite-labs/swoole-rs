@@ -723,7 +723,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         let server_ce = swoole_rs_phpserver::server_class_entry();
         let socket_ce = swoole_rs_phpclients::socket_class();
         if instance_of(object, server_ce) {
-            let Some(checked) = websocket::server_of(object.as_ptr()) else {
+            let Some(checked) = websocket::server_of(object.as_ptr(), object) else {
                 return;
             };
             server = Some(checked);
@@ -763,7 +763,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         let ctx = context::alloc();
         send::state(ctx).keepalive = 1;
         if let Some(server) = server {
-            context::init(ctx, server);
+            // SAFETY: the new context.
+            unsafe { context::init(ctx, server) };
         } else {
             crate::parse::init_request_parser(ctx);
             // `Context::init(zval *)`.
@@ -781,7 +782,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         ctx
     };
     if let Some(server) = server {
-        context::bind_server(ctx, server);
+        // SAFETY: a live context.
+        unsafe { context::bind_server(ctx, server) };
     } else {
         // SAFETY: a live context and the socket.
         unsafe { context::bind(ctx, socket) };

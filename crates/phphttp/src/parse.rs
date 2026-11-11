@@ -389,9 +389,10 @@ fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
     parser.error_pos()
 }
 
-/// `Context::parse`: the bytes parsed, from a context whose parser is
-/// initialised.
-pub(crate) fn parse_request(context: *mut c_void, data: &[u8]) -> usize {
+/// `Context::parse`: the bytes parsed.
+/// # Safety
+/// `context` is a live `swoole::http::Context` whose parser is initialised.
+pub(crate) unsafe fn parse_request(context: *mut c_void, data: &[u8]) -> usize {
     execute(crate::send::state(context), false, data)
 }
 
