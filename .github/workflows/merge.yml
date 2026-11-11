@@ -322,9 +322,7 @@ jobs:
     uses: ./.github/workflows/variant.yml
     with:
       variant: ${{ matrix.variant }}
-      # On main only until main has saved the variants' apt cache with valgrind in it: a queue
-      # group that has to fetch valgrind hangs when the runners' mirror is down (#3181).
-      callgrind: ${{ github.event_name != 'merge_group' }}
+      callgrind: true
 
   # HTTP/2 conformance: h2spec on upstream and the Cargo build.
   h2spec:
