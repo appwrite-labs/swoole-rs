@@ -29,7 +29,7 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
 
-static RESPONSE: Class = Class::new();
+pub(crate) static RESPONSE: Class = Class::new();
 
 /// `WebSocket::OPCODE_TEXT` and `WebSocket::CLOSE_NORMAL` (RFC 6455).
 const OPCODE_TEXT: i64 = 1;
@@ -591,23 +591,16 @@ fn recv(call: &Call) {
         let ctx = websocket(call)?;
         let timeout = call.arity(0, 1).and_then(|()| call.double(1, 0.0)).ok()?;
         let state = send::state(ctx);
-        let return_value = call.return_value();
         let (settings, socket) = (u32::from(state.websocket_settings), state.private_data);
-        websocket::recv(
-            settings,
-            &mut state.ws_buffer,
-            socket,
-            return_value,
-            timeout,
-        );
-        // SAFETY: the frame, or the failure, `recv` left in the return slot.
-        match unsafe { type_of(return_value) } {
+        let frame = websocket::recv(settings, &mut state.ws_buffer, socket, timeout);
+        match frame.kind() {
             // `""`: the peer closed.
             IS_STRING => {
                 context::close(ctx);
+                call.set_owned(frame);
             }
             IS_NULL => call.set_bool(false),
-            _ => {}
+            _ => call.set_owned(frame),
         }
         Some(())
     };
@@ -786,17 +779,16 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         // SAFETY: a `Swoole\Coroutine\Socket`.
         unsafe { context::bind(send::state(ctx), socket) };
     }
-    let ce = RESPONSE.entry();
     let state = send::state(ctx);
     state.fd = fd;
     let slot = &mut state.response.zobject;
-    let made = context::new_object(slot, context::Kind::Response, ctx);
+    let _made = context::new_object(slot, context::Kind::Response, ctx);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it.
     unsafe { call.set_value(slot.value) };
-    let Some(std) = made else { return };
-    // SAFETY: the Response just created, under its class.
-    let props = unsafe { Props::new(ce, std) };
+    let Some(props) = slot.get().and_then(|value| value.props(Some(&RESPONSE))) else {
+        return;
+    };
     props.long(c"fd", fd);
     // The property takes its own reference.
     if let Some(socket) = socket {

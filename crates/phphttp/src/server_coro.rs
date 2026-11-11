@@ -428,10 +428,9 @@ fn server_of(call: &Call) -> *mut HttpServer {
     unsafe { *Holder::data(call.this()) }
 }
 
-/// Writes on a server method's `$this`, under the class.
-fn props(call: &Call) -> Props<'_> {
-    // SAFETY: the methods are non-static, so `$this` is a live server object.
-    unsafe { Props::new(SERVER.entry(), call.this()) }
+/// Writes on a server method's `$this`, under the class; None in a static call.
+fn props(call: &Call) -> Option<Props<'_>> {
+    call.props(Some(&SERVER))
 }
 
 /// `http_server_coro_set_error`: the socket's error into `errCode`/`errMsg`.
@@ -463,8 +462,9 @@ fn construct(call: &Call) {
             call.throw_constructed_twice();
             return None;
         }
-        props(call).bytes(c"host", host);
-        props(call).bool(c"ssl", ssl);
+        let props = props(call)?;
+        props.bytes(c"host", host);
+        props.bool(c"ssl", ssl);
         if host.is_empty() {
             exception(call, EINVAL, "host is empty");
             return None;
@@ -485,7 +485,7 @@ fn construct(call: &Call) {
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
         if !socket.bind(host, port as c_int) {
-            let code = set_error(props(call), socket);
+            let code = set_error(props, socket);
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
             let port = port as i32;
             exception(
@@ -511,14 +511,14 @@ fn construct(call: &Call) {
             let _enabled = socket.enable_ssl();
         }
         if !socket.listen(0) {
-            let code = set_error(props(call), socket);
+            let code = set_error(props, socket);
             exception(call, code, "listen() failed");
             return None;
         }
         let fd = socket.sock_fd();
         let (_, bound) = address(socket);
-        props(call).long(c"fd", zend_long::from(fd));
-        props(call).long(c"port", zend_long::from(bound));
+        props.long(c"fd", zend_long::from(fd));
+        props.long(c"port", zend_long::from(bound));
         Some(())
     };
     if run().is_none() {
@@ -607,15 +607,18 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
+    let Some(props) = props(call) else {
+        return Ok(None);
+    };
     // SAFETY: a live object; the shim converts `settings` to an array.
     let settings =
         unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
     // SAFETY: a live socket and the settings array.
     if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings) } {
-        props(call).long(c"errCode", EINVAL);
+        props.long(c"errCode", EINVAL);
         #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
         let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
-        props(call).bytes(c"errMsg", message.to_bytes());
+        props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
         return Ok(Some(false));
     }
@@ -659,7 +662,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         canceled: libc::ECANCELED,
     };
     let mut start = Start {
-        props: props(call),
+        props,
         server,
         socket,
         accept: &mut accept,

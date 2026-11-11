@@ -19,7 +19,7 @@ use std::{
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, OwnedArray,
     bailout::{self, Bailout},
-    init_object, set_object,
+    set_object,
     sys::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
@@ -500,9 +500,13 @@ fn get_context(call: &Call) {
         return;
     }
     let object = if object.is_null() {
-        // SAFETY: the return slot, with Swoole's registered context class.
-        let object = unsafe { init_object(call.return_value(), classes::context_class()) };
+        let created = classes::CONTEXT.create_object();
+        let Some(object) = created.object() else {
+            call.set_null();
+            return;
+        };
         // The context takes the object's first reference.
+        let _kept = created.into_zval();
         ctx.set_context(object);
         object
     } else {
