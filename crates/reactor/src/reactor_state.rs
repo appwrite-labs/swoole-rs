@@ -352,7 +352,7 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// `new Reactor(max_event, type)`: the state [`ReactorState::open`] makes and, once
+/// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
 /// ready, upstream's write, writev, close and default write handler, the create hook
 /// and then the built-in end callbacks and exit conditions. The write functions are
 /// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
