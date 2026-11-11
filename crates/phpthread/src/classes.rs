@@ -478,8 +478,7 @@ fn map_count(call: &Call) {
 
 fn map_keys(call: &Call) {
     if let Some(map) = constructed::<Array>(call, false) {
-        // SAFETY: the return slot.
-        unsafe { map.keys(call.return_value()) };
+        call.set_owned(map.keys().into_owned());
     }
 }
 
