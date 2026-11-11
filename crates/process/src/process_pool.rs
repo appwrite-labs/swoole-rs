@@ -2,10 +2,10 @@
 //! stop, detach, reload, the manager's wait and shutdown, destroy and the
 //! worker-side entry into the loops of [`crate::pool`]. Rust reads and writes
 //! the pool's fields in place through [`PoolRecord`], `ProcessPool`'s layout
-//! (native locks it with `static_assert`s), and owns its registry, IPC state and
-//! reload. Native code keeps the objects (queue, pipes, channel, message bus,
-//! timers, reactor, fork) and the callbacks, and does each effect when Rust
-//! asks through [`PoolNative::call`].
+//! (the C++ view takes its fields from it), and owns its registry, IPC state and
+//! reload. `crates/server/src/pool_native.rs` keeps the objects (queue, pipes,
+//! channel, message bus, timers, reactor, fork) and the callbacks, and does each
+//! effect when this crate asks through [`PoolNative::call`].
 //!
 //! A callback that can reach PHP runs through [`PoolNative::callback`] inside
 //! the bailout trap; when it bails out, the export returns [`RAISE`] and its
@@ -25,8 +25,8 @@ use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
 use crate::worker_registry::WorkerRegistry;
 
-/// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the patch's
-/// `static_assert`s lock the C++ struct to `swr_v1_pool_record`, its C mirror.
+/// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
+/// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
 #[repr(C)]
 pub struct PoolRecord {
     pub running: bool,
