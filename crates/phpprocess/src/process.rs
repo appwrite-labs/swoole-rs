@@ -16,15 +16,14 @@ use std::{
 use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Value, bailout, handlers, message,
-    set_object,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Props, Value, bailout, handlers,
+    message, set_object,
     string::ZBuf,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zend_object_addref,
         swr_zend_object_release, zend_class_entry, zend_get_executed_filename, zend_object,
         zend_read_property, zend_string, zval,
     },
-    update_property_long,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -681,7 +680,7 @@ fn start(call: &Call) {
         std::cmp::Ordering::Greater => {
             let server = host::server_class();
             // SAFETY: `$this`; upstream names Server as the scope of the public property.
-            unsafe { update_property_long(server, call.this(), c"pid", i64::from(pid)) };
+            unsafe { Props::new(server, call.this()) }.long(c"pid", i64::from(pid));
             call.set_long(i64::from(pid));
         }
         std::cmp::Ordering::Equal => {

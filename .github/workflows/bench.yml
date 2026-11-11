@@ -57,10 +57,12 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: wall
           path: target/wall/
       - uses: actions/upload-artifact@v7
         if: always()
         with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: memory
           path: target/memory/
