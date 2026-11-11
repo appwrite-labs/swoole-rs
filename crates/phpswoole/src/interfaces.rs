@@ -22,12 +22,9 @@ pub fn sys_warning(what: &[u8]) {
     if !crate::module::display_errors() {
         return;
     }
-    // SAFETY: libc's message table.
-    let reason = unsafe { libc::strerror(code) };
-    // SAFETY: a NUL-terminated message.
-    let reason = unsafe { CStr::from_ptr(reason) };
+    let reason = swoole_rs_corebase::sys::strerror(code);
     let mut text = what.to_vec();
-    text.extend_from_slice(format!(", Error: {}[{code}]", reason.to_string_lossy()).as_bytes());
+    text.extend_from_slice(format!(", Error: {reason}[{code}]").as_bytes());
     // printf's %s stops at the first NUL.
     text.truncate(
         text.iter()

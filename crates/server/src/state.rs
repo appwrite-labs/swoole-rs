@@ -403,9 +403,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
         OP_LC_UNLINK_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
-                let file = c_path(file);
-                // SAFETY: a terminated path.
-                unsafe { libc::unlink(file.as_ptr()) };
+                swoole_rs_corebase::sys::unlink(&c_path(file));
             }
         }
         _ => return None,

@@ -385,10 +385,7 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
         );
     } else if result.log == 2 {
         let code = errno();
-        // SAFETY: strerror has no memory preconditions.
-        let message = unsafe { libc::strerror(code) };
-        // SAFETY: strerror's NUL-terminated text.
-        let message = unsafe { text(message) };
+        let message = swoole_rs_corebase::sys::strerror(code);
         log::warning(
             c"Socket::ssl_accept",
             format_args!(
