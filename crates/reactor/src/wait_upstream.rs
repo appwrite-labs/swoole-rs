@@ -67,7 +67,7 @@ mod registry {
 
     /// SIGCHLD reaps into the registry while the loop runs; the loop waits for the
     /// coroutines that wait, and forgets the handler when it is destroyed.
-    unsafe extern "C" fn signal_init() {
+    fn signal_init() {
         if SIGNAL_READY.load(Ordering::Relaxed) {
             return;
         }
@@ -88,29 +88,31 @@ mod registry {
     }
 
     /// The current coroutine while the thread has a loop.
-    extern "C" fn current() -> *mut c_void {
+    fn current() -> *mut c_void {
         if crate::event_api::swr_v1_event_current().is_null() {
             return ptr::null_mut();
         }
         swoole_rs_coroutine::current().cast()
     }
 
-    unsafe extern "C" fn yield_for(co: *mut c_void, timeout: f64) {
-        // SAFETY: the current coroutine.
-        let _ = unsafe { swoole_rs_coroutine::yield_ex(co, timeout) };
+    fn yield_for(timeout: f64) {
+        let co = swoole_rs_coroutine::current();
+        if !co.is_null() {
+            // SAFETY: the running coroutine.
+            let _ = unsafe { swoole_rs_coroutine::yield_ex(co.cast(), timeout) };
+        }
     }
 
-    unsafe extern "C" fn timed_out(co: *mut c_void) -> bool {
-        // SAFETY: the coroutine that just resumed, live.
-        let code = unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).resume_code };
-        code == swoole_rs_coroutine::RC_TIMEDOUT
+    fn timed_out() -> bool {
+        // SAFETY: the running coroutine, or null.
+        unsafe { swoole_rs_coroutine::current().as_ref() }
+            .is_some_and(|co| co.resume_code == swoole_rs_coroutine::RC_TIMEDOUT)
     }
 
     pub(super) static COROUTINES: Coroutines = Coroutines {
         current,
         signal_init,
         yield_for,
-        resume,
         timed_out,
     };
 }
