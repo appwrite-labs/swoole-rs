@@ -146,6 +146,20 @@ impl Class {
         Ok(object)
     }
 
+    /// `object_init_ex` of this class, with no constructor run: the new object.
+    /// # Panics
+    /// The class is not registered.
+    #[must_use]
+    pub fn create_object(&self) -> crate::Owned {
+        let entry = self.entry();
+        assert!(!entry.is_null(), "create an object of a registered class");
+        let object = crate::Owned::default();
+        // SAFETY: a slot this owns and a registered class; Zend refuses one it
+        // cannot instantiate, leaving no object.
+        unsafe { crate::init_object(object.as_ptr(), entry) };
+        object
+    }
+
     /// `zend_throw_exception(this class, message, code)`, from a handler.
     /// # Panics
     /// The class is not registered.

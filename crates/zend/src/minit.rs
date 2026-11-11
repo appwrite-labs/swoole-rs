@@ -4,10 +4,10 @@ use crate::{
     Class,
     bailout::Bailout,
     sys::{
-        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, zend_ce_countable, zend_ce_error,
-        zend_ce_exception, zend_ce_iterator, zend_class_entry, zend_class_implements,
-        zend_function_entry, zend_long, zend_object_handlers, zend_register_bool_constant,
-        zend_register_string_constant,
+        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, zend_ce_arrayaccess, zend_ce_countable,
+        zend_ce_error, zend_ce_exception, zend_ce_iterator, zend_class_entry,
+        zend_class_implements, zend_function_entry, zend_long, zend_object_handlers,
+        zend_register_bool_constant, zend_register_string_constant,
     },
 };
 use std::{
@@ -273,6 +273,13 @@ impl Minit {
     pub fn iterator(&self) -> Parent {
         // SAFETY: Zend registers its interfaces before any extension's MINIT.
         Parent(unsafe { zend_ce_iterator })
+    }
+
+    /// Zend's `ArrayAccess`.
+    #[must_use]
+    pub fn array_access(&self) -> Parent {
+        // SAFETY: Zend registers its interfaces before any extension's MINIT.
+        Parent(unsafe { zend_ce_arrayaccess })
     }
 
     /// Zend's `Countable`.
