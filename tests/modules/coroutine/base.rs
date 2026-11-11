@@ -45,7 +45,7 @@ const SEEK_CUR: c_int = 1;
 /// `swr_v1_coroutine` (96 bytes), then the `swr_v1_context` fields before `end` (64).
 const FACADE_END: usize = 96 + 64;
 
-type SwapCallback = Option<extern "C" fn(*mut c_void)>;
+type SwapCallback = swoole_rs_coroutine::SwapCallback;
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
 type Callback = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -80,12 +80,8 @@ unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swr_v1_coroutine_bail(fn_: Callback, data: *mut c_void);
-    fn swr_v1_coroutine_get(s: *const Scheduler, cid: c_long) -> *mut Co;
-    fn swr_v1_coroutine_count(s: *const Scheduler) -> usize;
     fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Co);
     fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Co);
-    fn swr_v1_coroutine_set_task(co: *mut Co, task: *mut c_void);
-    fn swr_v1_coroutine_set_callback(s: *mut Scheduler, slot: u32, function: SwapCallback);
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn yield_ex(co: *mut Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine10print_listEv"]
@@ -198,14 +194,12 @@ fn get_current_task() -> *mut c_void {
 
 /// `Coroutine::get_by_cid(cid)`.
 fn get_by_cid(cid: c_long) -> *mut Co {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_get(scheduler(), cid) }
+    swoole_rs_coroutine::coroutine_get(cid).cast()
 }
 
 /// `Coroutine::count()`.
 fn count() -> usize {
-    // SAFETY: as above.
-    unsafe { swr_v1_coroutine_count(scheduler()) }
+    swoole_rs_coroutine::coroutine_count()
 }
 
 /// `Timer::get_absolute_msec()`: the steady clock in milliseconds.
@@ -217,8 +211,7 @@ fn absolute_msec() -> c_long {
 }
 
 fn set_callback(slot: u32, function: SwapCallback) {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_set_callback(scheduler(), slot, function) };
+    swoole_rs_coroutine::set_callback(slot, function);
 }
 
 /// A live coroutine's facade, read and driven as its C++ members do.
@@ -247,8 +240,8 @@ impl View {
         self.co().task
     }
     fn set_task(&self, task: *mut c_void) {
-        // SAFETY: the live record.
-        unsafe { swr_v1_coroutine_set_task(self.0, task) };
+        // SAFETY: the live record, which the case holds.
+        unsafe { (*self.0).task = task };
     }
     fn get_origin(&self) -> *mut Co {
         // SAFETY: a non-null origin is live.
@@ -355,14 +348,14 @@ fn get_init_msec() {
     });
 }
 
-extern "C" fn yield_resume_on_yield(_: *mut c_void) {
+unsafe extern "C" fn yield_resume_on_yield(_: *mut c_void) {
     let task = get_current_task().cast::<c_long>();
     assert!(!task.is_null());
     // SAFETY: the task is the case's live `cid2`.
     assert_eq!(unsafe { *task }, get_current_cid());
 }
 
-extern "C" fn yield_resume_on_resume(_: *mut c_void) {
+unsafe extern "C" fn yield_resume_on_resume(_: *mut c_void) {
     assert!(get_current().is_null());
 }
 
