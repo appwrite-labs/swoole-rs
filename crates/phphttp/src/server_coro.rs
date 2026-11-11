@@ -20,7 +20,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
-use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
+use swoole_rs_phpclients::{Co, get_socket, is_socket_closed, php_swoole_socket_set_protocol};
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
@@ -47,7 +47,7 @@ type Holder = Object<*mut HttpServer>;
 /// share it, so every field that changes is a cell.
 struct HttpServer {
     /// The listening coroutine socket.
-    socket: Socket,
+    listener: Co,
     /// `handlers`, by pattern, in the order they were first set. Upstream's
     /// `std::unordered_map` leaves the order among overlapping prefixes to
     /// the standard library's hashing; registration order is ours.
@@ -76,9 +76,9 @@ const Z_BEST_SPEED: i8 = 1;
 const COMPRESSION_MIN_LENGTH_DEFAULT: u32 = 20;
 
 impl HttpServer {
-    fn new(socket: Socket) -> Self {
+    fn new(listener: Co) -> Self {
         Self {
-            socket,
+            listener,
             handlers: RefCell::new(Vec::new()),
             default_handler: Cell::new(ptr::null_mut()),
             running: Cell::new(true),
@@ -219,12 +219,10 @@ impl Drop for HttpServer {
             // SAFETY: a handler `handle` made, released once.
             bailout::defer(unsafe { callable::release(handle) });
         }
-        // SAFETY: the listening socket `__construct` made, live until the free below.
-        let listener = unsafe { swoole_rs_phpclients::Co::new(self.socket) };
         // Each connection frees its own copy (`Co::accept`); the listener owns the original.
-        bailout::defer(listener.free_length_callable());
+        bailout::defer(self.listener.free_length_callable());
         // SAFETY: the listening socket `__construct` made, freed once.
-        bailout::defer(unsafe { co::free(self.socket) });
+        bailout::defer(unsafe { co::free(self.listener.as_ptr()) });
     }
 }
 
@@ -481,7 +479,8 @@ fn construct(call: &Call) {
             bailout::Bailout.defer();
             return None;
         };
-        let server = Box::into_raw(Box::new(HttpServer::new(socket)));
+        // SAFETY: the new listening socket, which the server frees in its drop.
+        let server = Box::into_raw(Box::new(HttpServer::new(unsafe { Co::new(socket) })));
         // SAFETY: as above.
         unsafe { *Holder::data(object) = server };
         if reuse_port {
@@ -611,7 +610,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     };
     let object = call.this();
     let server = server(server_of(call));
-    let socket = server.socket;
+    let socket = server.listener.as_ptr();
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
@@ -669,7 +668,6 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let mut start = Start {
         props: props(call),
         server,
-        socket,
         accept: &mut accept,
         bailed: false,
     };
@@ -748,7 +746,6 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
 struct Start<'a> {
     props: Props<'a>,
     server: &'a HttpServer,
-    socket: Socket,
     accept: &'a mut Accept,
     /// Creating an `onAccept` coroutine bailed out (#913): the loop stops and
     /// `start` re-raises it once the Rust frames are done.
@@ -763,10 +760,9 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     /// Accept a connection and serve it with `onAccept` in a new coroutine: its
     /// id, or 0.
     fn accept(&mut self) -> Option<i64> {
-        // SAFETY: the live listener, in `start`'s coroutine. Its accept gives the
-        // connection its own copy of the listener's length callable, which the
-        // connection's object frees.
-        let conn = unsafe { swoole_rs_phpclients::Co::new(self.socket) }.accept(0.0);
+        // The listener's accept, in `start`'s coroutine, gives the connection its own
+        // copy of the listener's length callable, which the connection's object frees.
+        let conn = self.server.listener.accept(0.0);
         if conn.is_null() {
             return None;
         }
@@ -802,7 +798,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     }
 
     fn error(&mut self) -> (c_int, &CStr) {
-        socket_error(self.socket)
+        socket_error(self.server.listener.as_ptr())
     }
 
     fn sleep(&mut self) {
@@ -811,7 +807,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     }
 
     fn set_error(&mut self) {
-        set_error(self.props, self.socket);
+        set_error(self.props, self.server.listener.as_ptr());
     }
 
     fn fail(&mut self, warning: &str) {
@@ -906,7 +902,7 @@ fn shutdown(call: &Call) {
     let server = self::server(server);
     server.running.set(false);
     // SAFETY: its live listening socket.
-    unsafe { co::cancel(server.socket, EVENT_READ) };
+    unsafe { co::cancel(server.listener.as_ptr(), EVENT_READ) };
     // Connections waiting for their next request stop waiting.
     let clients = server.clients();
     let mut waiting: Vec<(z::zend_ulong, Socket)> = Vec::new();
@@ -1018,7 +1014,7 @@ fn on_accept(call: &Call) {
         remote_addr,
         server_addr: ZString::new(server_addr.to_bytes()),
         remote_port,
-        server_port: address(server.socket).1,
+        server_port: address(server.listener.as_ptr()).1,
     };
     let conn = Connection {
         server,
