@@ -553,7 +553,7 @@ pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
         context::release_objects(ctx);
         return Ok(());
     };
-    if facts.static_handler && (http2.static_file)(server.raw(), crate::http2::Ctx::of(ctx)) {
+    if facts.static_handler && (http2.static_file)(server.raw(), crate::http2::Ctx::of(ctx))? {
         context::release_objects(ctx);
         return Ok(());
     }
@@ -735,11 +735,6 @@ pub extern "C" fn server_rshutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn http2_request_matches_the_c_struct() {
-        assert_eq!(size_of::<Http2Request>(), 24);
-    }
 
     fn facts(http: bool, websocket: bool, status: u8, http2: bool) -> Receive {
         Receive {

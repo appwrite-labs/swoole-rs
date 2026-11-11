@@ -63,8 +63,9 @@ pub struct Server {
     /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
     /// connection, with the session's connection.
     pub on_receive: for<'a> fn(view::Server<'a>, &ConnectionRecord, &RecvData) -> c_int,
-    /// The static file handler for the live server: true once it answered.
-    pub static_file: fn(*mut c_void, Ctx) -> bool,
+    /// The static file handler for the live server: true once it answered,
+    /// or the bailout its work left pending.
+    pub static_file: fn(*mut c_void, Ctx) -> Result<bool, Bailout>,
     /// `Response::end`: the stream's last frames.
     pub respond: fn(Ctx, &[u8]) -> bool,
     /// `Response::write`: a DATA frame.
