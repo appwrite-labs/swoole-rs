@@ -44,7 +44,7 @@ fn with<T>(run: impl FnOnce(&mut Script) -> T) -> T {
     SCRIPT.with_borrow_mut(run)
 }
 
-extern "C" fn timer_add(_: Co, _: f64, _: bool) -> *mut c_void {
+fn timer_add(_: Co, _: f64, _: bool) -> *mut c_void {
     with(|s| {
         s.trace.push("timer:start".into());
         if s.timer_ok {
@@ -55,9 +55,9 @@ extern "C" fn timer_add(_: Co, _: f64, _: bool) -> *mut c_void {
     })
 }
 
-extern "C" fn timer_del(_: *mut c_void) {}
+fn timer_del(_: *mut c_void) {}
 
-extern "C" fn read_buffer(_: Co, view: *mut ReadBuffer, action: u32, size: usize) {
+fn read_buffer(_: Co, view: &mut ReadBuffer, action: u32, size: usize) {
     with(|s| {
         if action == 0 {
             s.trace.push("buffer:get".into());
@@ -71,7 +71,6 @@ extern "C" fn read_buffer(_: Co, view: *mut ReadBuffer, action: u32, size: usize
             }
         }
         let buffer = s.buffer.as_mut().unwrap();
-        let view = unsafe { &mut *view };
         if action != 0 {
             buffer.length = view.length;
             buffer.offset = usize::try_from(view.offset).unwrap();
@@ -97,7 +96,8 @@ extern "C" fn read_buffer(_: Co, view: *mut ReadBuffer, action: u32, size: usize
     });
 }
 
-extern "C" fn recv(_: Co, at: *mut u8, n: usize, all: bool) -> isize {
+fn recv(_: Co, buf: &mut [u8], all: bool) -> isize {
+    let n = buf.len();
     with(|s| {
         let Script {
             trace,
@@ -105,12 +105,9 @@ extern "C" fn recv(_: Co, at: *mut u8, n: usize, all: bool) -> isize {
             consumed,
             reads,
             read,
-            buffer,
             ..
         } = s;
         trace.push(format!("{}:{n}", if all { "recv-all" } else { "recv" }));
-        let buffer = buffer.as_mut().unwrap();
-        let at = at.addr() - buffer.bytes.as_ptr().addr();
         let mut total = 0;
         loop {
             let requested = reads.get(*read).copied().unwrap_or(0);
@@ -130,8 +127,7 @@ extern "C" fn recv(_: Co, at: *mut u8, n: usize, all: bool) -> isize {
             if count == 0 {
                 break;
             }
-            buffer.bytes[at + total..at + total + count]
-                .copy_from_slice(&input[*consumed..*consumed + count]);
+            buf[total..total + count].copy_from_slice(&input[*consumed..*consumed + count]);
             *consumed += count;
             total += count;
             if !all || total >= n {
@@ -142,10 +138,10 @@ extern "C" fn recv(_: Co, at: *mut u8, n: usize, all: bool) -> isize {
     })
 }
 
-extern "C" fn package_length(_: Co, n: u32, header: *mut u32) -> isize {
+fn package_length(_: Co, n: u32, header: &mut u32) -> isize {
     with(|s| {
         s.trace.push(format!("parse:{n}"));
-        unsafe { *header = 4 };
+        *header = 4;
         let length = s.lengths[s.parsed.min(s.lengths.len() - 1)];
         s.parsed += 1;
         s.trace.push(format!("trace:{length}:{n}"));
@@ -153,7 +149,7 @@ extern "C" fn package_length(_: Co, n: u32, header: *mut u32) -> isize {
     })
 }
 
-extern "C" fn packet_fail(_: Co, kind: u32, length: isize) {
+fn packet_fail(_: Co, kind: u32, length: isize) {
     with(|s| {
         let (error, message) = match kind {
             0 => (1781, "get package length failed"),
