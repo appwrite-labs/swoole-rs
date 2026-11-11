@@ -138,7 +138,12 @@ mod tests {
     /// descriptor first, and a second `close` fails.
     #[test]
     fn file_open_twice() {
-        let fname = c"/tmp/swoole_file_open_twice.txt";
+        // Upstream's fixed /tmp name, made unique per process so parallel runs
+        // each create and remove their own file.
+        let path =
+            std::env::temp_dir().join(format!("swoole_file_open_twice.{}.txt", std::process::id()));
+        let fname = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let fname = fname.as_c_str();
         let mut file1 = FileRecord::empty();
         file1.open(fname, libc::O_WRONLY | libc::O_CREAT, 0);
         assert!(file1.ready());
@@ -148,7 +153,7 @@ mod tests {
         assert!(file1.close());
         assert!(!file1.close());
 
-        std::fs::remove_file("/tmp/swoole_file_open_twice.txt").unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
