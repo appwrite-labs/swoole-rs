@@ -60,9 +60,16 @@ mod registry {
         };
     }
 
-    extern "C-unwind" fn register_deferred(_data: *mut c_void) {
-        register();
-        signal_handler(libc::SIGCHLD);
+    /// SIGCHLD's registration, deferred to the loop's thread.
+    struct Register;
+
+    impl crate::event_api::Deferred for Register {
+        fn run(self) {
+            register();
+            signal_handler(libc::SIGCHLD);
+        }
+
+        fn dispose(self) {}
     }
 
     /// SIGCHLD reaps into the registry while the loop runs; the loop waits for the
@@ -71,14 +78,11 @@ mod registry {
         if SIGNAL_READY.load(Ordering::Relaxed) {
             return;
         }
-        // A coroutine runs, so the thread has a live loop.
-        let fields = crate::event_api::current_prepared()
-            .map_or(ptr::null_mut(), |prepared| prepared.fields);
         if swoole_rs_coroutine::thread_context_active() {
             // Coroutine threads block every signal: register SIGCHLD on the loop's
-            // thread, then reap the children that exited before it ran.
-            // SAFETY: the live loop's fields.
-            unsafe { crate::deferred::defer(fields, register_deferred, ptr::null_mut(), None) };
+            // thread, then reap the children that exited before it ran. A coroutine
+            // runs, so the thread has a live loop.
+            _ = crate::event_api::swoole_event_defer_value(Register);
         } else {
             register();
         }
