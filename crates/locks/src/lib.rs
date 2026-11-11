@@ -395,8 +395,9 @@ impl Lock {
 
     /// A process-shared lock (`new Mutex(true)`) in `storage`, which it keeps:
     /// None when `storage` is too small for `kind`, or the lock can't be made.
+    /// The storage is exclusive, so no other lock re-initializes it while held.
     #[must_use]
-    pub fn shared(kind: i32, storage: &'static [AtomicU64]) -> Option<Self> {
+    pub fn shared(kind: i32, storage: &'static mut [AtomicU64]) -> Option<Self> {
         Self::new(kind, Storage::Shared(storage), 1)
     }
 
