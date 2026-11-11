@@ -387,7 +387,7 @@ pub unsafe fn copy_for_process(
         worker.pipe_current = core::ptr::null_mut();
         worker.pipe_object = core::ptr::null_mut();
     }
-    if pool.ipc_mode == IPC_MSGQUEUE && pool.on_message.is_null() {
+    if pool.ipc_mode == IPC_MSGQUEUE && pool.on_message.is_none() {
         worker.queue = pool.queue;
         worker.msgqueue_mode = MSGQUEUE_BALANCE;
     }
@@ -424,6 +424,11 @@ mod tests {
     // the right field.
     #[test]
     fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
+        extern "C-unwind" fn on_message(
+            _: crate::process_pool::PoolRef<'_>,
+            _: &crate::process_pool::RecvData,
+        ) {
+        }
         let mut fds = [7 as c_int, 9];
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         workers[1].id = u32::MAX;
@@ -459,7 +464,7 @@ mod tests {
             -1
         );
         assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue, 2));
-        pool.on_message = 4 as *const c_void;
+        pool.on_message = Some(on_message);
         assert_eq!(
             unsafe { copy_for_process(&raw const pool, 1, &raw mut copy) },
             -1

@@ -52,19 +52,19 @@ pub struct PoolRecord {
     pub max_request_grace: u32,
     pub scheduler_warning: u8,
     pub warning_time: i64,
-    pub on_start: *const c_void,
-    pub on_shutdown: *const c_void,
-    pub on_before_reload: *const c_void,
-    pub on_after_reload: *const c_void,
-    pub on_task: *const c_void,
-    pub on_worker_start: *const c_void,
-    pub on_message: *const c_void,
-    pub on_worker_exit: *const c_void,
-    pub on_worker_stop: *const c_void,
-    pub on_worker_error: *const c_void,
-    pub on_worker_message: *const c_void,
-    pub on_worker_not_found: *const c_void,
-    pub main_loop: *const c_void,
+    pub on_start: Option<PoolFn>,
+    pub on_shutdown: Option<PoolFn>,
+    pub on_before_reload: Option<PoolFn>,
+    pub on_after_reload: Option<PoolFn>,
+    pub on_task: Option<TaskFn>,
+    pub on_worker_start: Option<WorkerFn>,
+    pub on_message: Option<MessageFn>,
+    pub on_worker_exit: Option<WorkerFn>,
+    pub on_worker_stop: Option<WorkerFn>,
+    pub on_worker_error: Option<ErrorFn>,
+    pub on_worker_message: Option<EventFn>,
+    pub on_worker_not_found: Option<NotFoundFn>,
+    pub main_loop: Option<MainLoopFn>,
     pub round_id: u32,
     pub workers: *mut WorkerRecord,
     pub pipes: *mut c_void,
@@ -76,6 +76,84 @@ pub struct PoolRecord {
     pub reload_task: *mut ReloadTask,
     pub ptr: *mut c_void,
 }
+
+/// A live pool, as the pool passes one to its callbacks. Like [`Worker`], it reads
+/// and writes through the pointer and makes no lasting reference to the record,
+/// which the pool's own code and signal handlers write while a callback runs.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct PoolRef<'a> {
+    raw: *mut PoolRecord,
+    live: core::marker::PhantomData<&'a PoolRecord>,
+}
+
+impl<'a> From<&'a mut PoolRecord> for PoolRef<'a> {
+    /// The record a unique borrow keeps live for `'a`.
+    fn from(record: &'a mut PoolRecord) -> Self {
+        Self {
+            raw: record,
+            live: core::marker::PhantomData,
+        }
+    }
+}
+
+impl PoolRef<'_> {
+    /// The pool at `raw`.
+    ///
+    /// # Safety
+    /// `raw` is a live pool for `'a`.
+    #[must_use]
+    pub unsafe fn new(raw: *mut PoolRecord) -> Self {
+        Self {
+            raw,
+            live: core::marker::PhantomData,
+        }
+    }
+
+    /// The pool's address.
+    #[must_use]
+    pub fn raw(self) -> *mut PoolRecord {
+        self.raw
+    }
+
+    /// The pool's `ptr`: the object its owner hangs on it.
+    #[must_use]
+    pub fn ptr(self) -> *mut c_void {
+        // SAFETY: `new`'s contract: a live pool; only the field is read.
+        unsafe { (*self.raw).ptr }
+    }
+}
+
+/// `swoole::RecvData`: a message's head and its data.
+#[repr(C)]
+pub struct RecvData {
+    pub info: swoole_rs_corebase::DataHead,
+    pub data: *const core::ffi::c_char,
+}
+
+/// The pool's callbacks, in `ProcessPool`'s C layout (`swoole_rs_process_views.h`).
+/// Each takes the live pool and the objects of the event, which the pool lends for
+/// the call. `C-unwind`, as a PHP bailout longjmps over them.
+pub type PoolFn = extern "C-unwind" fn(PoolRef<'_>);
+/// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
+pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
+/// `main_loop`: the worker's loop, and its exit code.
+pub type MainLoopFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
+/// `onTask`: an `EventData` the worker read, whose head is followed by the
+/// payload its `len` counts.
+pub type TaskFn =
+    extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &mut swoole_rs_corebase::DataHead) -> c_int;
+/// `onMessage`.
+pub type MessageFn = extern "C-unwind" fn(PoolRef<'_>, &RecvData);
+/// `onWorkerMessage`: an `EventData` the master popped.
+///
+/// # Safety
+/// The message is a live `EventData` for the call.
+pub type EventFn = unsafe extern "C-unwind" fn(PoolRef<'_>, *mut c_void);
+/// `onWorkerError`.
+pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
+/// `onWorkerNotFound`: 1 when the pid was handled.
+pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
 
 /// What every export runs over (`crates/server/src/pool_native.rs`): the pool's
 /// native objects, which this crate can't depend on, and its callbacks. Each takes
@@ -477,17 +555,17 @@ getters!(
     use_socket: u8,
     max_packet_size: u32,
     worker_num: u32,
-    on_start: *const c_void,
-    on_shutdown: *const c_void,
-    on_before_reload: *const c_void,
-    on_after_reload: *const c_void,
-    on_message: *const c_void,
-    on_worker_start: *const c_void,
-    on_worker_stop: *const c_void,
-    on_worker_exit: *const c_void,
-    on_worker_message: *const c_void,
-    on_worker_not_found: *const c_void,
-    main_loop: *const c_void,
+    on_start: Option<PoolFn>,
+    on_shutdown: Option<PoolFn>,
+    on_before_reload: Option<PoolFn>,
+    on_after_reload: Option<PoolFn>,
+    on_message: Option<MessageFn>,
+    on_worker_start: Option<WorkerFn>,
+    on_worker_stop: Option<WorkerFn>,
+    on_worker_exit: Option<WorkerFn>,
+    on_worker_message: Option<EventFn>,
+    on_worker_not_found: Option<NotFoundFn>,
+    main_loop: Option<MainLoopFn>,
     workers: *mut WorkerRecord,
     pipes: *mut c_void,
     registry: *mut WorkerRegistry,
@@ -720,7 +798,7 @@ impl<H: PoolHost> Pool<H> {
         if self.start_check() < 0 {
             return Ok(SW_ERR);
         }
-        if !self.on_start().is_null() {
+        if self.on_start().is_some() {
             self.h.callback(CB_START, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
@@ -758,14 +836,14 @@ impl<H: PoolHost> Pool<H> {
             // exit(3), as upstream.
             std::process::exit(254);
         }
-        if !self.on_worker_start().is_null() {
+        if self.on_worker_start().is_some() {
             self.h.callback(CB_WORKER_START, worker.cast())?;
         }
         let mut code = 0;
-        if !self.main_loop().is_null() {
+        if self.main_loop().is_some() {
             code = c_int::try_from(self.h.callback(CB_MAIN_LOOP, worker.cast())?).unwrap_or(-1);
         }
-        if !self.on_worker_stop().is_null() {
+        if self.on_worker_stop().is_some() {
             self.h.callback(CB_WORKER_STOP, worker.cast())?;
         }
         // exit(3), as upstream.
@@ -779,7 +857,7 @@ impl<H: PoolHost> Pool<H> {
             return;
         }
         self.on(worker, OP_REMOVE_PIPE, 1);
-        if !self.on_worker_exit().is_null() {
+        if self.on_worker_exit().is_some() {
             self.on(worker, OP_EXIT_CALLBACK, 0);
         }
     }
@@ -852,7 +930,7 @@ impl<H: PoolHost> Pool<H> {
         if !self.reload_task().is_null() {
             return Ok(false);
         }
-        if !self.on_before_reload().is_null() {
+        if self.on_before_reload().is_some() {
             self.h.callback(CB_BEFORE_RELOAD, ptr::null_mut())?;
         }
         self.set_reload_task(Box::into_raw(Box::<ReloadTask>::default()));
@@ -930,7 +1008,7 @@ impl<H: PoolHost> Pool<H> {
 
     /// `ProcessPool::run_async`.
     fn run_async(&mut self, worker: *mut WorkerRecord) -> i64 {
-        if self.ipc_mode() == IPC_UNIXSOCK && !self.on_message().is_null() {
+        if self.ipc_mode() == IPC_UNIXSOCK && self.on_message().is_some() {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
                 // SAFETY: the pool's IPC state.
@@ -962,7 +1040,7 @@ impl<H: PoolHost> Pool<H> {
             }
             // SAFETY: the type byte of the EventData just popped.
             let kind = unsafe { message.wrapping_add(EVENT_TYPE).read() };
-            if kind != WORKER_MESSAGE_STOP && !self.on_worker_message().is_null() {
+            if kind != WORKER_MESSAGE_STOP && self.on_worker_message().is_some() {
                 self.op(OP_ON_WORKER_MESSAGE, 0);
                 continue;
             }
@@ -992,7 +1070,7 @@ impl<H: PoolHost> Pool<H> {
     fn reap(&mut self, pid: c_int, status: c_int) -> bool {
         let worker = self.worker_by_pid(pid);
         if worker.is_null() {
-            if !self.on_worker_not_found().is_null() {
+            if self.on_worker_not_found().is_some() {
                 self.op(OP_ON_WORKER_NOT_FOUND, exited(pid, status));
             // SAFETY: the pool's registry.
             } else if !unsafe { (*self.registry()).reap_detached(pid) } {
@@ -1017,7 +1095,7 @@ impl<H: PoolHost> Pool<H> {
 
         self.set_running(false);
         self.drop_reload_task();
-        if !self.on_shutdown().is_null() {
+        if self.on_shutdown().is_some() {
             self.h.callback(CB_SHUTDOWN, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
@@ -1195,7 +1273,7 @@ impl<H: PoolHost> Reap for Pool<H> {
 
     fn finish_reload(&mut self) {
         self.drop_reload_task();
-        if !self.on_after_reload().is_null() {
+        if self.on_after_reload().is_some() {
             self.op(OP_ON_AFTER_RELOAD, 0);
         }
     }
@@ -1579,13 +1657,14 @@ mod tests {
 
     #[test]
     fn a_bailout_in_on_start_spawns_nothing() {
+        extern "C-unwind" fn on_start(_: PoolRef<'_>) {}
         let mut fixture = Fixture::new(2);
         let script = Script {
             bail: Some(CB_START),
             ..Script::default()
         };
         let mut pool = fixture.pool(script);
-        record(&mut pool).on_start = ptr::dangling();
+        record(&mut pool).on_start = Some(on_start);
         assert!(pool.start().is_err());
         assert!(!ops(&pool).contains(&OP_FORK));
     }
@@ -1644,11 +1723,12 @@ mod tests {
 
     #[test]
     fn stop_outside_an_event_loop_only_shuts_down() {
+        extern "C-unwind" fn on_worker_exit(_: PoolRef<'_>, _: Worker<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(OP_EVENT_AVAILABLE, 0);
         let mut pool = fixture.pool(script);
-        record(&mut pool).on_worker_exit = ptr::dangling();
+        record(&mut pool).on_worker_exit = Some(on_worker_exit);
         pool.stop(pool.worker(0));
         assert_eq!(ops(&pool), [OP_WORKER_SHUTDOWN, OP_EVENT_AVAILABLE]);
     }
