@@ -3,7 +3,7 @@
 //! ([`Data`]); the callbacks are callables by slot, and the events the
 //! client raises arrive through `async_event`.
 use crate::{
-    native::{self, ErrorKind, Run, callable_free},
+    native::{self, ErrorKind, Run},
     net::{
         self, CONNECT_TIMEOUT, Conn, INVALID_PARAMS, Obj, SOCK_TCP, SOCK_TCP6, bailed, check_type,
         destructing, errno, last_error, report, set_err_code, set_last_error, socket_type,
@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use libc::{c_char, c_int, c_void};
-use std::{ffi::CStr, ptr};
+use std::{ffi::CStr, ptr, rc::Rc};
 use swoole_rs_clients::client::{
     self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op,
     SSL_STATE_WAIT_STREAM,
@@ -21,6 +21,7 @@ use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, Minit,
     bailout::{self, Bailout},
+    host::callable::Callable,
     set_object, string,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers, zval,
@@ -111,27 +112,26 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 
-fn callbacks<'a>(data: &net::Data) -> Option<&'a mut [*mut c_void; 7]> {
-    // SAFETY: the object owns its callbacks while it holds them.
-    unsafe { data.callbacks.get().as_mut() }
+/// A reference to the callback in `slot`, which keeps it through the call even
+/// if the call replaces it.
+fn callback(data: &net::Data, slot: usize) -> Option<Rc<Callable>> {
+    let cell = data.callbacks.get(slot)?;
+    let callable = cell.take();
+    cell.set(callable.clone());
+    callable
 }
 
 /// `php_swoole_client_async_free_object`: free every callback, all of them
-/// even when a destructor bails out.
-pub(crate) fn free_callbacks(object: Obj) -> Result<(), Bailout> {
-    let data = object.data();
-    let slots = data.callbacks.replace(ptr::null_mut());
-    // SAFETY: allocated by `on()` as a box, released once.
-    let slots = unsafe { Box::from_raw(slots) };
-    for callable in slots.iter().copied().filter(|callable| !callable.is_null()) {
-        bailout::defer(callable_free(callable));
+/// even when a destructor bails out (each drop defers its bailout).
+pub(crate) fn free_callbacks(object: Obj) {
+    for slot in &object.data().callbacks {
+        drop(slot.take());
     }
-    bailout::outcome(())
 }
 
 /// Call `callable` with `argv`: whether the call succeeded.
-fn invoke(callable: *mut c_void, argv: &mut [zval]) -> Result<bool, Bailout> {
-    native::invoke(callable, argv, ptr::null_mut())
+fn invoke(callable: &Callable, argv: &mut [zval]) -> Result<bool, Bailout> {
+    native::call(callable, argv, ptr::null_mut(), true)
 }
 
 fn object_zval(object: Obj) -> zval {
@@ -145,14 +145,11 @@ fn object_zval(object: Obj) -> zval {
 fn execute(object: Obj, slot: usize) -> Result<(), Bailout> {
     let class = object.class_name().to_string_lossy();
     let name = NAMES.get(slot).copied().unwrap_or(c"").to_string_lossy();
-    let callable = callbacks(object.data())
-        .and_then(|slots| slots.get(slot).copied())
-        .unwrap_or(ptr::null_mut());
-    if callable.is_null() {
+    let Some(callable) = callback(object.data(), slot) else {
         warn(ErrorKind::Fatal, &format!("{class} has no {name} callback"));
         return Ok(());
-    }
-    if !invoke(callable, &mut [object_zval(object)])? {
+    };
+    if !invoke(&callable, &mut [object_zval(object)])? {
         warn(ErrorKind::Fatal, &format!("{class}->{name} handler error"));
     }
     Ok(())
@@ -183,14 +180,14 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
             execute(object, CONNECT)
         }
         ON_RECEIVE => {
-            let callable = callbacks(object.data()).map_or(ptr::null_mut(), |slots| slots[RECEIVE]);
+            let callable = callback(object.data(), RECEIVE);
             // SAFETY: the client lends `length` bytes for the call.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
             let mut payload = swoole_rs_zend::long_zval(0);
             // SAFETY: a fresh string; the zval takes its reference.
             unsafe { value::set_str(&raw mut payload, string::copy(bytes)) };
             let mut argv = [object_zval(object), payload];
-            let called = invoke(callable, &mut argv);
+            let called = callable.map_or(Ok(false), |callable| invoke(&callable, &mut argv));
             // SAFETY: our reference to the payload.
             unsafe { zval_ptr_dtor(&raw mut argv[1]) };
             if !called? {
@@ -324,7 +321,7 @@ fn connect(call: &Call) {
         );
         return call.set_bool(false);
     }
-    if data.callbacks.get().is_null() {
+    if !data.listening.get() {
         warn(ErrorKind::Fatal, "async client is not initialized");
         return call.set_bool(false);
     }
@@ -338,10 +335,8 @@ fn connect(call: &Call) {
     {
         return call.set_bool(false);
     }
-    let Some(slots) = callbacks(net::this(call)).map(|slots| *slots) else {
-        return call.set_bool(false);
-    };
-    let set = |slot: usize| slots.get(slot).is_some_and(|callable| !callable.is_null());
+    let data = net::this(call);
+    let set = |slot: usize| callback(data, slot).is_some();
     if !set(RECEIVE) {
         report(
             ErrorKind::Fatal,
@@ -447,17 +442,16 @@ fn on(call: &Call) {
     };
     let zcallback = call.zval(2);
     let object = Obj::this(call);
-    let Some(callable) = bailed(native::callable(zcallback)) else {
+    let Some(callable) = call
+        .value(2)
+        .and_then(|value| bailed(native::owned_callable(value)))
+    else {
         return call.set_bool(false);
     };
-    if callable.is_null() {
+    let Some(callable) = callable else {
         return call.set_null();
-    }
-    let data = net::this(call);
-    if data.callbacks.get().is_null() {
-        data.callbacks
-            .set(Box::into_raw(Box::new([ptr::null_mut(); 7])));
-    }
+    };
+    net::this(call).listening.set(true);
     let name = name.split(|&b| b == 0).next().unwrap_or_default();
     let found = event_slot(name).and_then(|slot| Some((slot, *NAMES.get(slot)?)));
     let Some((slot, property)) = found else {
@@ -466,7 +460,7 @@ fn on(call: &Call) {
             String::from_utf8_lossy(name)
         );
         warn(ErrorKind::Fatal, &message);
-        bailed(callable_free(callable));
+        drop(callable);
         return call.set_bool(false);
     };
     // SAFETY: `$this` is live; Zend copies the value.
@@ -488,13 +482,9 @@ fn event_slot(name: &[u8]) -> Option<usize> {
 }
 
 /// Put `callable` in `slot`, freeing what was there.
-fn replace(object: Obj, slot: usize, callable: *mut c_void) {
-    let Some(entry) = callbacks(object.data()).and_then(|slots| slots.get_mut(slot)) else {
-        return;
-    };
-    let previous = std::mem::replace(entry, callable);
-    if !previous.is_null() {
-        bailed(callable_free(previous));
+fn replace(object: Obj, slot: usize, callable: Rc<Callable>) {
+    if let Some(entry) = object.data().callbacks.get(slot) {
+        drop(entry.replace(Some(callable)));
     }
 }
 
@@ -538,18 +528,16 @@ fn enable_ssl(call: &Call) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);
-    let previous = callbacks(net::this(call)).map_or(ptr::null_mut(), |slots| {
-        std::mem::replace(&mut slots[SSL_READY], ptr::null_mut())
-    });
-    if !previous.is_null() && bailed(callable_free(previous)).is_none() {
+    drop(net::this(call).callbacks[SSL_READY].take());
+    if bailout::pending() {
         return call.set_bool(false);
     }
-    let Some(callable) = bailed(native::callable(zcallback)) else {
+    let created = call
+        .value(1)
+        .and_then(|value| bailed(native::owned_callable(value)));
+    let Some(Some(callable)) = created else {
         return call.set_bool(false);
     };
-    if callable.is_null() {
-        return call.set_bool(false);
-    }
     // SAFETY: `$this` is live; Zend copies the value.
     unsafe { update_property(ASYNC.entry(), object.as_ptr(), c"onSSLReady", zcallback) };
     replace(object, SSL_READY, callable);

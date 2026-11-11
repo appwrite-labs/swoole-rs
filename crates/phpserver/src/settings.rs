@@ -320,8 +320,7 @@ fn set(call: &Call) {
         return call.set_bool(false);
     }
     if s.fact(field::STARTED) != 0 {
-        // SAFETY: `$this` is live.
-        let name = unsafe { swoole_rs_zend::class_name(call.this()) };
+        let name = call.class_name().unwrap_or_default();
         let text = message!(
             "server is running, unable to execute {}->set",
             name.to_string_lossy()

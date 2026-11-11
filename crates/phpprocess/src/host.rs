@@ -12,6 +12,7 @@ use swoole_rs_corebase::{
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
+use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
@@ -88,11 +89,9 @@ thread_local! {
     static USER_WORKER_ID: Cell<u32> = const { Cell::new(0) };
 }
 
-/// In a server worker thread, `worker` becomes a copy of its server worker
+/// In a server worker thread, `process` becomes a copy of its server worker
 /// (shared); false elsewhere.
-/// # Safety
-/// `worker` is a writable `Worker`.
-pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
+pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
     let Some(serv) = server().filter(|&serv| serv.is_worker_thread()) else {
         return false;
     };
@@ -110,11 +109,8 @@ pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
         reason = "Server::get_worker takes a uint16_t"
     )]
     let source = serv.worker(id as u16);
-    let process = worker.cast::<WorkerRecord>();
-    // SAFETY: two live, distinct worker records.
-    unsafe { ptr::copy_nonoverlapping(source, process, 1) };
-    // SAFETY: the record just written.
-    let process = unsafe { &mut *process };
+    // SAFETY: the server's live worker record, distinct from `process`.
+    *process = unsafe { source.read() };
     process.pipe_current = if user {
         process.pipe_worker
     } else {
@@ -242,27 +238,27 @@ impl Drop for Callable {
     }
 }
 
-/// The deferred `sw_callable_free`, the outermost Rust frame of its call.
-unsafe extern "C-unwind" fn deferred_free(callable: *mut c_void) {
-    // SAFETY: the callable `callable_defer_free` gave up.
-    drop(unsafe { Callable::from_raw(callable) });
-    bailout::finish();
+/// A callable `swoole_event_defer(sw_callable_free, ...)` frees once the loop
+/// is past any dispatch using it.
+struct DeferredFree(Callable);
+
+impl Deferred for DeferredFree {
+    /// The outermost Rust frame of its call.
+    fn run(self) {
+        drop(self.0);
+        bailout::finish();
+    }
+
+    /// A loop freed first leaks it, as upstream's defer does.
+    fn dispose(self) {
+        std::mem::forget(self.0);
+    }
 }
 
-/// `swoole_event_defer(sw_callable_free, callable)`, with an event loop on
-/// this thread.
+/// `swoole_event_defer(sw_callable_free, callable)` on this thread's loop;
+/// freed now without one.
 pub(crate) fn callable_defer_free(callable: Callable) {
-    defer(deferred_free, callable.into_raw());
-}
-
-/// `Reactor::defer(call, data)` on this thread's loop.
-fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    let reactor = swoole_rs_reactor::event_api::swr_v1_event_current()
-        .cast::<swoole_rs_reactor::ReactorPrepared>();
-    // SAFETY: the live loop, which begins with its prepared state.
-    let fields = unsafe { (*reactor).fields };
-    // SAFETY: the loop's live fields.
-    unsafe { swoole_rs_reactor::defer(fields, call, data, None) };
+    _ = swoole_event_defer_value(DeferredFree(callable));
 }
 
 /// `php_swoole_is_enable_coroutine()`: the running server's
@@ -298,20 +294,24 @@ fn set_signal(signo: c_int, handler: Handler, safety: bool) {
     _ = signal_swap(signo, handler, safety);
 }
 
-unsafe extern "C-unwind" fn deferred_signal(data: *mut c_void) {
-    // SAFETY: the box `signal_set` handed over.
-    let (signo, handler, safety) = *unsafe { Box::from_raw(data.cast::<(c_int, Handler, bool)>()) };
-    set_signal(signo, handler, safety);
+/// A `swoole_signal_set` the loop runs.
+struct DeferredSignal(c_int, Handler, bool);
+
+impl Deferred for DeferredSignal {
+    fn run(self) {
+        set_signal(self.0, self.1, self.2);
+    }
+
+    fn dispose(self) {}
 }
 
 /// `swoole_signal_set(signo, handler, safety)`, deferred to the event loop
 /// under the thread context.
 pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
     if built_with(Switch::ThreadContext) {
-        defer(
-            deferred_signal,
-            Box::into_raw(Box::new((signo, handler, safety))).cast(),
-        );
+        if let Err(signal) = swoole_event_defer_value(DeferredSignal(signo, handler, safety)) {
+            signal.run();
+        }
     } else {
         set_signal(signo, handler, safety);
     }

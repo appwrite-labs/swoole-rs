@@ -13,7 +13,7 @@ use crate::{
 use std::{
     cell::{Cell, RefCell},
     ffi::{c_long, c_void},
-    mem, ptr,
+    ptr,
     rc::Rc,
 };
 use swoole_rs_zend::{
@@ -23,7 +23,7 @@ use swoole_rs_zend::{
     sys::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
-        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
+        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_class_entry,
         zend_exception_set_previous, zend_fetch_debug_backtrace, zend_objects_new,
         zend_throw_exception_object, zval,
     },
@@ -258,39 +258,41 @@ fn join(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let mut join = Join {
-        pending: Vec::new(),
-        co,
-        canceled: Rc::new(Cell::new(false)),
-    };
     let own = host::cid(co);
-    let mut failed = false;
+    let mut pending = Vec::new();
     for (_, value) in cids.entries() {
         let cid = value.long();
         if cid == own {
             host::error_ex(E_WARNING, SW_ERROR_WRONG_OPERATION, c"can not join self");
-            failed = true;
-            break;
+            call.set_bool(false);
+            return;
         }
         let Some(ctx) = context::by_cid(cid) else {
             continue;
         };
-        if !ctx.join().is_null() {
+        // Another join's, or this one's for a repeated id.
+        if !ctx.join().is_null() || pending.contains(&ctx) {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
-            failed = true;
-            break;
+            call.set_bool(false);
+            return;
         }
-        ctx.set_join(&raw mut join);
-        join.pending.push(ctx);
+        pending.push(ctx);
     }
-    if failed || join.pending.is_empty() {
-        // Unregister the contexts this call registered.
-        join.forget();
-        if !failed {
-            host::set_last_error(SW_ERROR_INVALID_PARAMS);
-        }
+    if pending.is_empty() {
+        host::set_last_error(SW_ERROR_INVALID_PARAMS);
         call.set_bool(false);
         return;
+    }
+    let mut join = Join {
+        pending,
+        co,
+        canceled: Rc::new(Cell::new(false)),
+    };
+    // Registered only once `pending` is complete: `Join::closed` writes
+    // through this pointer, which a later write to `join` would invalidate.
+    let this = &raw mut join;
+    for ctx in &join.pending {
+        ctx.set_join(this);
     }
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.
@@ -650,25 +652,9 @@ fn list(call: &Call) {
     }
     let ids = ids.into_owned();
     drop(cids);
-    let iterator = classes::iterator();
-    // SAFETY: the return slot, with Swoole's registered iterator class.
-    let object = unsafe { init_object(call.return_value(), iterator) };
-    let constructor = iterator
-        .wrapping_byte_add(mem::offset_of!(zend_class_entry, constructor))
-        .cast();
-    // SAFETY: ArrayIterator's internal constructor, with one array argument.
-    unsafe {
-        zend_call_method(
-            object,
-            iterator,
-            constructor,
-            c"__construct".as_ptr(),
-            11,
-            ptr::null_mut(),
-            1,
-            ids.as_ptr(),
-            ptr::null_mut(),
-        );
+    match classes::iterator().instantiate(&[&ids]) {
+        Ok(iterator) => call.set_owned(iterator),
+        Err(bailed) => bailed.defer(),
     }
 }
 

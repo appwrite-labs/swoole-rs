@@ -1,5 +1,4 @@
 //! Swoole's PHP error macros (`php_swoole_private.h`).
-use std::ffi::CStr;
 use swoole_rs_zend::{E_ERROR, Message, bailout, report};
 
 pub(crate) const PHP_FATAL_ERROR: i32 = 503;
@@ -35,10 +34,7 @@ pub(crate) fn sys(level: i32, text: &Message) {
     set_last_error(error);
     let mut full = *text;
     full.push(b", Error: ");
-    // SAFETY: strerror has no preconditions.
-    let reason = unsafe { libc::strerror(error) };
-    // SAFETY: strerror returns a NUL-terminated message, as upstream reads it.
-    full.push(unsafe { CStr::from_ptr(reason) }.to_bytes());
+    full.push(swoole_rs_corebase::sys::strerror(error).as_bytes());
     full.push(format!("[{error}]").as_bytes());
     displayed(level, &full);
 }

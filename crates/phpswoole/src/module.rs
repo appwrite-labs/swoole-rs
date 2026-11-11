@@ -160,7 +160,7 @@ pub struct Families {
     pub redis_minit: Minit,
     pub redis_rshutdown: Hook,
     /// `php_swoole_tracer_minit(threshold, blocking, profile, leaks)`, at MINIT, once.
-    pub tracer_minit: unsafe fn(i64, bool, bool, bool),
+    pub tracer_minit: fn(&swoole_rs_zend::Minit, i64, bool, bool, bool),
     /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
     /// queue's, map's and list's, each at MINIT before any PHP thread starts.
     pub thread_minit: fn(&swoole_rs_zend::Minit),
@@ -202,8 +202,8 @@ pub struct Families {
     pub socket_settings: unsafe extern "C" fn(*mut c_void, *const zval, c_int) -> bool,
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
-    pub name_resolver_add: unsafe fn(*mut zval) -> bool,
-    pub name_resolver_remove: unsafe fn(*mut zval) -> *mut zval,
+    pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,
+    pub name_resolver_remove: fn(Option<&swoole_rs_zend::Value>) -> *mut zval,
     /// `swoole_socket_coro_ce` and `swoole_client_ce`, for `Swoole\Event`
     /// (crates/phpevents).
     pub socket_class: fn() -> &'static Class,
@@ -337,13 +337,15 @@ pub(crate) fn startup(module_number: c_int) {
 
 /// `php_swoole_tracer_minit`: blocking detection and the profiler need the
 /// fiber mock.
-extern "C" fn tracer_minit(_module_number: c_int) {
+extern "C" fn tracer_minit(module_number: c_int) {
     let g = globals();
     let (blocking, profile) = (g.blocking_detection.get(), g.profile.get());
     let (threshold, leaks) = (g.blocking_threshold.get(), g.leak_detection.get());
     if let Some(families) = families() {
-        // SAFETY: Rust's MINIT, once.
-        unsafe { (families.tracer_minit)(threshold, blocking, profile, leaks) };
+        // SAFETY: Zend runs this module's MINIT on this thread; the token goes
+        // before it returns.
+        let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
+        (families.tracer_minit)(&minit, threshold, blocking, profile, leaks);
     }
     if blocking || profile {
         g.enable_fiber_mock.set(true);

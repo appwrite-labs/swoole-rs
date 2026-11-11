@@ -31,8 +31,8 @@ static EXIT: Class = Class::new();
 static CANCELED: Class = Class::new();
 static TIMEOUT: Class = Class::new();
 
-pub(crate) fn iterator() -> *mut zend_class_entry {
-    ITERATOR.entry()
+pub(crate) fn iterator() -> &'static Class {
+    &ITERATOR
 }
 
 pub(crate) fn context_class() -> *mut zend_class_entry {

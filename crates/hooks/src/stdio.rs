@@ -219,12 +219,12 @@ hooked! {
     swoole_coroutine_open(pathname: *const c_char, flags: c_int, mode: mode_t) -> c_int, refused -1,
         ring |_| true => open_file(pathname, flags, mode) => libc::open(pathname, flags, c_uint::from(mode));
     swoole_coroutine_fstat(fd: c_int, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => fstat(fd, statbuf) => libc::fstat(fd, statbuf);
+        ring |host| host.uring_statx => fstat(fd, &mut *statbuf) => libc::fstat(fd, statbuf);
     swoole_coroutine_stat(path: *const c_char, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => stat(path, statbuf) => libc::stat(path, statbuf);
+        ring |host| host.uring_statx => stat(std::ffi::CStr::from_ptr(path), &mut *statbuf) => libc::stat(path, statbuf);
     // Upstream's io_uring lstat is its stat.
     swoole_coroutine_lstat(path: *const c_char, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => stat(path, statbuf) => libc::lstat(path, statbuf);
+        ring |host| host.uring_statx => stat(std::ffi::CStr::from_ptr(path), &mut *statbuf) => libc::lstat(path, statbuf);
     swoole_coroutine_unlink(pathname: *const c_char) -> c_int, refused -1,
         ring |_| true => unlink(pathname) => libc::unlink(pathname);
     swoole_coroutine_mkdir(pathname: *const c_char, mode: mode_t) -> c_int, refused -1,

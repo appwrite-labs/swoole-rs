@@ -4,7 +4,6 @@
 use std::ffi::{c_int, c_void};
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
-    worker_globals::thread_globals,
     worker_record::WorkerRecord,
 };
 use swoole_rs_reactor::{
@@ -84,10 +83,7 @@ pub(crate) fn set_id(worker: *mut c_void, id: u32) {
 
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
 pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
-    let mut storage = Box::new_uninit();
-    socket_pair::unix_socket_new(&mut storage, true, socket_type);
-    // SAFETY: the constructor initialised it.
-    let mut built: Box<SocketPair> = unsafe { storage.assume_init() };
+    let mut built = Box::new(socket_pair::unix_socket(true, socket_type));
     let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
@@ -142,8 +138,7 @@ pub(crate) fn child_enter(worker: *mut c_void) {
     process.set_pid(pid);
     swoole_set_worker_id(process.id());
     swoole_set_worker_pid(pid);
-    // SAFETY: this thread's worker globals; the Process object keeps the worker alive.
-    unsafe { (*thread_globals()).worker = worker.cast() };
+    swoole_rs_process::worker_globals::set_current_worker(worker.cast());
 }
 
 /// Read up to `buffer`'s capacity from the pipe: the length read, or -1.

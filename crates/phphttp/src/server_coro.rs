@@ -27,14 +27,14 @@ use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
-    Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString, bailout, handlers,
-    method_table, string,
+    Array, Call, Class, Key as ArrayKey, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
+    bailout, handlers, method_table, string,
     sys::{
-        self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
+        self as z, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
         zval,
     },
-    type_of, unset_property_deny,
+    unset_property_deny,
 };
 
 static SERVER: Class = Class::new();
@@ -194,13 +194,13 @@ impl HttpServer {
         let context = context::context_new(i64::from(socket.sock_fd()));
         crate::parse::init_request_parser(context);
         // SAFETY: the live connection object.
-        if let Some(zconn) = unsafe { Value::from_ptr(zconn) }
-            && let Some(response) = send::state(context).response.zobject.props()
-        {
-            response.value(c"socket", zconn);
+        if let Some(zconn) = unsafe { Value::from_ptr(zconn) } {
+            if let Some(response) = send::state(context).response.zobject.props() {
+                response.value(c"socket", zconn);
+            }
+            // SAFETY: a coroutine socket object.
+            unsafe { context::bind(send::state(context), zconn) };
         }
-        // SAFETY: a new context and the live connection object.
-        unsafe { context::bind(context, zconn) };
         let state = send::state(context);
         state
             .compression_types
@@ -895,31 +895,25 @@ fn shutdown(call: &Call) {
     // Connections waiting for their next request stop waiting.
     let clients = server.clients();
     let mut waiting: Vec<(z::zend_ulong, Co)> = Vec::new();
-    // SAFETY: a live array; the callback only reads.
-    unsafe { z::swr_zend_hash_foreach_kv(clients, Some(collect), (&raw mut waiting).cast()) };
+    if let Some(connections) = server.clients.array() {
+        connections.for_each(|key, connection| {
+            let ArrayKey::Index(index) = key else { return };
+            // SAFETY: a socket object in the server's array.
+            let socket = unsafe { get_socket(connection.as_ptr()) };
+            // SAFETY: the object's live socket.
+            let socket = unsafe { Co::of(socket) };
+            let waiting_now =
+                socket.with_network(|network| network.read(|record| record.recv_wait != 0));
+            if waiting_now == Some(true) {
+                waiting.push((index, socket));
+            }
+        });
+    }
     for (index, socket) in waiting {
         // The array's connection objects keep their sockets live.
         socket.cancel(EVENT_READ);
         // SAFETY: the live array and one of its keys.
         unsafe { z::zend_hash_index_del(clients, index) };
-    }
-}
-
-/// `shutdown`'s scan: the connections whose socket waits for a request.
-unsafe extern "C" fn collect(
-    _: *mut z::zend_string,
-    index: z::zend_ulong,
-    connection: *mut zval,
-    out: *mut c_void,
-) {
-    // SAFETY: a socket object in the server's array.
-    let socket = unsafe { get_socket(connection) };
-    // SAFETY: the object's live socket.
-    let socket = unsafe { Co::of(socket) };
-    let waiting = socket.with_network(|network| network.read(|record| record.recv_wait != 0));
-    if waiting == Some(true) {
-        // SAFETY: `shutdown`'s vector, borrowed for the scan.
-        unsafe { (*out.cast::<Vec<(z::zend_ulong, Co)>>()).push((index, socket)) };
     }
 }
 
@@ -1039,10 +1033,10 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         if matches!(step, Step::Recv) {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
-            let (length, size) = (buffer.len(), buffer.size());
-            let free = buffer.as_mut_ptr().wrapping_add(length).cast();
-            // SAFETY: a live socket and its buffer's free space.
-            let received = unsafe { co::recv(conn.socket.this(), free, size - length) };
+            let length = buffer.len();
+            let free = std::ptr::from_mut(buffer.spare()) as *mut [u8];
+            // SAFETY: the buffer's free space, which the receive only writes.
+            let received = conn.socket.recv(unsafe { &mut *free });
             if received <= 0 {
                 break;
             }
@@ -1072,8 +1066,8 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 send::state(context).response.status = ENTITY_TOO_LARGE;
                 break;
             }
-            // SAFETY: the loop's live context, whose parser `context` initialised.
-            let parsed = unsafe { parse_request(context, conn.data(0, header_length)) };
+            // The parser `context` initialised.
+            let parsed = parse_request(send::state(context), conn.data(0, header_length));
             if parsed != header_length {
                 send::state(context).response.status = BAD_REQUEST;
                 break;
@@ -1108,8 +1102,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 length = length.min(max - offset);
             }
             // `offset + length` lies within the buffer.
-            // SAFETY: as above.
-            let parsed = unsafe { parse_request(context, conn.data(offset, offset + length)) };
+            let parsed = parse_request(send::state(context), conn.data(offset, offset + length));
             let buffer = conn.buffer();
             buffer.set_offset(buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX));
             let error = send::state(context).parser.error;
@@ -1187,18 +1180,16 @@ fn http2(conn: &Connection, context: *mut Context) {
     )]
     let max_body_size = conn.package_max_length() as u32;
     if let Some(server) = crate::http2::server() {
-        // SAFETY: the context outlives the session, freed below; the handler
-        // gets the server, which outlives the connection.
-        unsafe {
-            (server.session_new)(
-                fd,
-                crate::http2::Ctx::of(context),
-                max_body_size,
-                true,
-                http2_request_handler,
-                ptr::from_ref(conn.server).cast_mut().cast(),
-            );
-        };
+        // The server outlives the connection, and the context the session,
+        // freed below.
+        let http = ptr::from_ref(conn.server);
+        (server.session_new)(
+            fd,
+            crate::http2::Ctx::of(context),
+            max_body_size,
+            true,
+            Box::new(move |ctx, http1| http2_request(ctx.raw(), http1.raw(), self::server(http))),
+        );
         loop {
             // The frame stays in the read buffer.
             let retval = recv_packet(conn.socket, 0.0);
@@ -1240,26 +1231,8 @@ handlers! {
     zim_swoole_http_server_coro_start => start;
 }
 
-/// A finished HTTP/2 request (`SessionRequest`: the stream's context, the
-/// session's default context and the server).
-#[repr(C)]
-struct Http2Request {
-    ctx: *mut Context,
-    default_ctx: *mut Context,
-    server: *const HttpServer,
-}
-
 /// `http2_server_onRequest`: an HTTP/2 stream's request, with the HTTP/1
 /// request's `$server` and `SERVER_PROTOCOL` `HTTP/2`.
-/// # Safety
-/// The session lends a live `SessionRequest`.
-unsafe extern "C" fn http2_request_handler(request: *mut c_void) {
-    // SAFETY: per the caller.
-    let request = unsafe { &*request.cast::<Http2Request>() };
-    let result = http2_request(request.ctx, request.default_ctx, server(request.server));
-    bailout::raise(result);
-}
-
 fn http2_request(
     context: *mut Context,
     http1: *mut Context,
@@ -1270,17 +1243,15 @@ fn http2_request(
         .zserver
         .get()
         .and_then(Value::array);
-    let target = send::state(context)
-        .request
-        .zserver
-        .get()
-        .and_then(Value::array);
-    if let (Some(source), Some(target)) = (source, target) {
-        // SAFETY: both contexts' live `$server` arrays; each entry is added
-        // with its own reference.
-        unsafe {
-            z::swr_zend_hash_foreach_kv(source.as_ptr(), Some(copy_entry), target.as_ptr().cast());
-        };
+    if let (Some(source), Some(target)) = (source, send::state(context).request.zserver.array_mut())
+    {
+        // `http_server_add_server_array(ht, key, value)`: each entry with a
+        // reference of its own.
+        source.for_each(|key, entry| {
+            if let ArrayKey::Name(key) = key {
+                target.add_new(&ZString::new(key), entry.copy());
+            }
+        });
     }
     add_protocol(send::state(context), Key::Http2);
     let callable = server.handler(context);
@@ -1306,22 +1277,6 @@ fn http2_request(
         context::release_objects(context);
     }
     result
-}
-
-/// `http_server_add_server_array(ht, key, value)` and the string's addref.
-unsafe extern "C" fn copy_entry(
-    key: *mut z::zend_string,
-    _: z::zend_ulong,
-    entry: *mut zval,
-    table: *mut c_void,
-) {
-    // SAFETY: a live array entry and the target table.
-    unsafe { z::zend_hash_add_new(table.cast(), key, entry) };
-    // SAFETY: as above.
-    if unsafe { type_of(entry) } == IS_STRING {
-        // SAFETY: a refcounted or interned string.
-        unsafe { z::swr_zval_try_addref(entry) };
-    }
 }
 
 #[cfg(test)]
