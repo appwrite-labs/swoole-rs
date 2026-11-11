@@ -55,8 +55,8 @@ over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
 arbitrary server replies, each against the Rust candidate.
 
 For packet framing (`open_length_check`), `framing_unpack` compares
-`swr_v1_framing_unpack` with `swoole_unpack` for every length type, and
-`framing_length` compares `swr_v1_framing_default` with
+`swoole_rs_framing::unpack` with `swoole_unpack` for every length type, and
+`framing_length` compares `swoole_rs_framing::default_length` with
 `Protocol::default_length_func` over a length type, field offset, body offset and
 any received bytes. Outside the compared domain, Rust's -1 only has to match an upstream error.
 `framing_stream` runs the receive loops (`recv_with_length_protocol`,
