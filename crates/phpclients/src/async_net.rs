@@ -162,9 +162,22 @@ fn execute_and_release(object: Obj, slot: usize) -> Result<(), Bailout> {
     if let Some(conn) = object.data().conn() {
         net::release(object, conn)?;
     }
-    // SAFETY: `zval_delref_p`: the reference `connect()` took.
-    unsafe { (*object.as_ptr()).gc.refcount -= 1 };
+    unhold(object);
     Ok(())
+}
+
+/// `zval_addref_p`: the client holds its object from `connect()` until its
+/// connection is released.
+fn hold(object: Obj) {
+    // SAFETY: a live object's refcount, which only this thread touches.
+    unsafe { (*object.as_ptr()).gc.refcount += 1 };
+}
+
+/// `zval_delref_p`: drop [`hold`]'s reference without destroying the object,
+/// as upstream does.
+fn unhold(object: Obj) {
+    // SAFETY: a live object's refcount, which [`hold`] raised.
+    unsafe { (*object.as_ptr()).gc.refcount -= 1 };
 }
 
 fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result<(), Bailout> {
@@ -364,8 +377,7 @@ fn connect(call: &Call) {
     }
     state::swr_v1_clients_listen(fresh.cli.get(), object.as_ptr().cast(), events, async_event);
     net::this(call).set_conn(Some(fresh.clone()));
-    // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
-    unsafe { (*object.as_ptr()).gc.refcount += 1 };
+    hold(object);
 
     let connect = Op::Connect {
         host: &native::c_text(host),
@@ -407,8 +419,7 @@ fn connect(call: &Call) {
         && events & bit(ON_ERROR) == 0
         && bailed(net::release(object, remaining)).is_some()
     {
-        // SAFETY: the reference taken above.
-        unsafe { (*object.as_ptr()).gc.refcount -= 1 };
+        unhold(object);
     }
     call.set_bool(false);
 }

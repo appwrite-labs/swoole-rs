@@ -1115,8 +1115,8 @@ fn close(this: Handle) -> c_int {
     else {
         return OK;
     };
-    // SAFETY: closes the client's descriptor once; -1 marks it closed.
-    unsafe { libc::close(fd) }
+    // Once: -1 marks the client's descriptor closed.
+    swoole_rs_corebase::sys::close(fd)
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
