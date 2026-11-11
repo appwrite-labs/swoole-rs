@@ -219,6 +219,10 @@ impl Drop for HttpServer {
             // SAFETY: a handler `handle` made, released once.
             bailout::defer(unsafe { callable::release(handle) });
         }
+        // SAFETY: the listening socket `__construct` made, live until the free below.
+        let listener = unsafe { swoole_rs_phpclients::Co::new(self.socket) };
+        // Each connection frees its own copy (`Co::accept`); the listener owns the original.
+        bailout::defer(listener.free_length_callable());
         // SAFETY: the listening socket `__construct` made, freed once.
         bailout::defer(unsafe { co::free(self.socket) });
     }
