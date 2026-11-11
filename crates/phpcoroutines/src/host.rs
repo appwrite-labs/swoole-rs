@@ -1,6 +1,7 @@
 //! What PHP coroutines ask of the rest of Swoole: the coroutine core's
 //! scheduler and records (crates/coroutine), the module host, the runtime
 //! hooks, the event loop and the server.
+use crate::context::Ctx;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_coroutine::{RC_CANCELED, Scheduler};
 use swoole_rs_zend::{
@@ -36,8 +37,8 @@ use swoole_rs_hooks::sleep::system_sleep;
 unsafe extern "C" {
     // crates/phpevents, crates/phpclients and PHP.
     fn php_write(buf: *const c_void, size: usize) -> usize;
-    fn php_swoole_reactor_init() -> i32;
-    fn swr_v1_phpevents_wait();
+    safe fn php_swoole_reactor_init() -> i32;
+    safe fn swr_v1_phpevents_wait();
 }
 
 /// The globals, server state and build switches [`flag`] reads.
@@ -78,27 +79,17 @@ pub(crate) fn flag(bit: u32) -> bool {
         // SAFETY: the process's server, read once here.
         SERVER_STARTED => unsafe { swoole_rs_server::view::Server::current() }
             .is_some_and(swoole_rs_server::view::Server::is_started),
-        FATAL => last_error_fatal() || swoole_rs_reactor::event_api::swoole_event_bailed_out(),
+        FATAL => {
+            swoole_rs_zend::last_fatal_error()
+                || swoole_rs_reactor::event_api::swoole_event_bailed_out()
+        }
         // `sw_is_main_thread()`.
         // SAFETY: no preconditions.
         MAIN_THREAD => !cfg!(zts) || unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() },
         // Only SW_CORO_TIME builds give the scheduler a clock.
-        CORO_TIME => sched().hooks.clock.is_some(),
+        CORO_TIME => swoole_rs_coroutine::counters().timed,
         THREAD => swoole_rs_phpswoole::built_with(swoole_rs_phpswoole::Switch::Thread),
         _ => false,
-    }
-}
-
-/// `php_swoole_is_fatal_error()`: the last PHP error was fatal.
-fn last_error_fatal() -> bool {
-    let (mut message, mut file, mut line) = (std::ptr::null(), std::ptr::null(), 0);
-    // SAFETY: writable out-parameters.
-    unsafe {
-        swoole_rs_zend::sys::swr_zend_last_fatal_error(
-            &raw mut message,
-            &raw mut file,
-            &raw mut line,
-        )
     }
 }
 
@@ -127,12 +118,6 @@ pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
 
 fn scheduler() -> *mut Scheduler {
     swoole_rs_coroutine::scheduler()
-}
-
-/// This thread's scheduler, borrowed for one read.
-fn sched() -> &'static Scheduler {
-    // SAFETY: this thread's scheduler, which lives as long as the thread.
-    unsafe { &*scheduler() }
 }
 
 /// The Rust state `co` starts with.
@@ -165,7 +150,7 @@ pub(crate) fn count() -> usize {
 
 /// `Coroutine::get_current()`: null outside a coroutine.
 pub(crate) fn current() -> Co {
-    native(sched().current)
+    swoole_rs_coroutine::current_native()
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine it raises a fatal
@@ -195,7 +180,7 @@ pub fn sleep(seconds: f64) -> c_int {
     system_sleep(seconds)
 }
 
-pub(crate) fn current_task() -> *mut c_void {
+pub(crate) fn current_task() -> Option<Ctx> {
     task(current())
 }
 
@@ -208,12 +193,15 @@ pub(crate) fn by_cid(cid: c_long) -> Co {
     swoole_rs_coroutine::coroutine_get(cid)
 }
 
-/// The task of `co`, null for none.
-fn task(co: Co) -> *mut c_void {
-    live_or_none(state(co)).map_or(std::ptr::null_mut(), |co| co.task)
+/// The context of `co`, none for none.
+fn task(co: Co) -> Option<Ctx> {
+    let task = live_or_none(state(co))?.task;
+    // SAFETY: a coroutine's task is null or its context, set by `context::open`
+    // and live until `context::on_close`, which runs as the coroutine ends.
+    unsafe { Ctx::of(task) }
 }
 
-pub(crate) fn task_by_cid(cid: c_long) -> *mut c_void {
+pub(crate) fn task_by_cid(cid: c_long) -> Option<Ctx> {
     task(by_cid(cid))
 }
 
@@ -262,7 +250,7 @@ pub(crate) fn stats(stats: &mut Stats) {
     // crates/reactor counts this thread's listeners.
     stats.signal_listener_num =
         i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
-    let s = sched();
+    let s = swoole_rs_coroutine::counters();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);
     stats.coroutine_peak_num = i64::try_from(s.peak_num).unwrap_or(i64::MAX);
@@ -307,13 +295,8 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
 }
 
-pub(crate) fn set_task(co: Co, task: *mut c_void) {
-    // SAFETY: a live coroutine.
-    unsafe { (*state(co)).task = task };
-}
-
-/// The task of `co`'s origin, null for the main context.
-pub(crate) fn origin_task(co: Co) -> *mut c_void {
+/// The context of `co`'s origin, none for the main context.
+pub(crate) fn origin_task(co: Co) -> Option<Ctx> {
     task(native(live(co).origin))
 }
 
@@ -323,9 +306,7 @@ pub(crate) fn cid(co: Co) -> c_long {
 }
 
 pub(crate) fn origin_cid(co: Co) -> c_long {
-    let origin = live(co).origin;
-    // SAFETY: its origin is live or null.
-    unsafe { origin.as_ref() }.map_or(-1, |origin| origin.cid)
+    live_or_none(live(co).origin).map_or(-1, |origin| origin.cid)
 }
 
 pub(crate) fn state_of(co: Co) -> c_int {
@@ -343,19 +324,14 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
     (stack.cast(), size)
 }
 
-/// Switch out of `co`, the running coroutine. The caller's frames must own
-/// nothing that needs a drop, as for [`resume`].
+/// Switch out of `co`, the running coroutine.
 pub(crate) fn yield_(co: Co) {
-    // SAFETY: this thread's scheduler and its running coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler(), state(co)) };
+    swoole_rs_coroutine::suspend(co);
 }
 
 /// [`yield_`], cancelable through `cancel(co)`.
-/// # Safety
-/// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub(crate) unsafe fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
-    // SAFETY: as the caller promises.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel) };
+pub(crate) fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
+    swoole_rs_coroutine::yield_with_cancel(co, cancel);
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -366,15 +342,13 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 /// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
 /// `RC_CANCELED` or another when resumed).
 pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
-    // SAFETY: callers pass the running coroutine, and their frames own nothing
-    // that needs a drop (as for `yield_`).
-    unsafe { swoole_rs_coroutine::yield_timed(co, timeout) }
+    swoole_rs_coroutine::yield_timed(co, timeout)
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
 #[must_use]
 pub fn counts() -> (usize, u64) {
-    (count(), sched().peak_num)
+    (count(), swoole_rs_coroutine::counters().peak_num)
 }
 
 /// Switch to `co`. The caller's frames must own nothing that needs a drop: a
@@ -513,15 +487,14 @@ extern "C" fn bail_out(_: *mut c_void) {
     bailout::raise(Err(bailout::Bailout));
 }
 
-unsafe extern "C" fn enter(context: *mut c_void) -> *mut swr_zend_callable {
-    // SAFETY: `main` passes the running coroutine's context.
-    unsafe { crate::context::Ctx::of(context) }.map_or(std::ptr::null_mut(), crate::context::enter)
+/// The running coroutine's entry, whose `context` `main` passes.
+extern "C" fn enter(_context: *mut c_void) -> *mut swr_zend_callable {
+    current_task().map_or(std::ptr::null_mut(), crate::context::enter)
 }
 
 /// The defer tasks, last in first out; an exception bails out to the trap.
-unsafe extern "C" fn defers(context: *mut c_void) {
-    // SAFETY: `main` passes the running coroutine's context.
-    let Some(ctx) = (unsafe { crate::context::Ctx::of(context) }) else {
+extern "C" fn defers(_context: *mut c_void) {
+    let Some(ctx) = current_task() else {
         return;
     };
     loop {
@@ -558,9 +531,9 @@ pub(crate) fn check_reactor() {
 /// Activation: the reactor's destroy callback, `Coroutine::activate` and the
 /// switch callbacks.
 pub(crate) fn attach(
-    on_yield: unsafe extern "C" fn(*mut c_void),
-    on_resume: unsafe extern "C" fn(*mut c_void),
-    on_close: unsafe extern "C" fn(*mut c_void),
+    on_yield: swoole_rs_coroutine::Routine,
+    on_resume: swoole_rs_coroutine::Routine,
+    on_close: swoole_rs_coroutine::Routine,
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {
@@ -640,35 +613,12 @@ pub(crate) fn absolute_msec() -> c_long {
     now_us() / 1000
 }
 
-/// `swoole_event_defer(f, data)`.
-pub(crate) fn defer(f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
+/// `swoole_event_defer` of `value`.
+pub(crate) fn defer(value: impl swoole_rs_reactor::event_api::Deferred) {
     // Upstream dereferences `sw_reactor()` here unchecked.
-    let Some(reactor) = swoole_rs_reactor::event_api::current_prepared() else {
-        std::process::abort()
-    };
-    // SAFETY: the loop's live fields; `data` stays with the task.
-    unsafe { swoole_rs_reactor::defer(reactor.fields, f, data, None) };
-}
-
-/// A one-shot timer calling `f(data)` after `timeout` seconds.
-/// # Safety
-/// `f` accepts `data` when the timer fires.
-#[must_use]
-pub unsafe fn timer_add(
-    timeout: f64,
-    data: *mut c_void,
-    f: unsafe extern "C-unwind" fn(*mut c_void),
-) -> *mut c_void {
-    // SAFETY: per the caller, `f` accepts `data` when the timer fires.
-    unsafe { swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, f, data) }
-}
-
-/// `swoole_timer_del`.
-/// # Safety
-/// `timer` is live.
-pub unsafe fn timer_del(timer: *mut c_void) {
-    // SAFETY: a live timer.
-    unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
+    if swoole_rs_reactor::event_api::swoole_event_defer_value(value).is_err() {
+        std::process::abort();
+    }
 }
 
 /// PHP 8.4+ `exit()`: the original handler, false if there is none.
@@ -696,13 +646,11 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
 }
 
 pub(crate) fn reactor_init() -> i32 {
-    // SAFETY: crates/phpevents starts the loop.
-    unsafe { php_swoole_reactor_init() }
+    php_swoole_reactor_init()
 }
 
 pub(crate) fn event_wait() {
-    // SAFETY: crates/phpevents runs the loop.
-    unsafe { swr_v1_phpevents_wait() };
+    swr_v1_phpevents_wait();
 }
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.

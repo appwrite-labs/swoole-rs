@@ -94,8 +94,7 @@ mod registry {
     fn yield_for(timeout: f64) {
         let co = swoole_rs_coroutine::current();
         if !co.is_null() {
-            // SAFETY: the running coroutine.
-            let _ = unsafe { swoole_rs_coroutine::yield_ex(co.cast(), timeout) };
+            let _ = swoole_rs_coroutine::yield_ex(co.cast(), timeout);
         }
     }
 
