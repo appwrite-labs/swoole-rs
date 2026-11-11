@@ -384,6 +384,8 @@ def plan(args, reports):
         pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
                '--archive', archive, '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
+    if 'http2' in modules:
+        pytest('http2-client', 'tests/modules/http2/test_client.py', *php, '--engine', f'cargo={cargo}')
     if 'websocket' in modules:
         pytest('websocket-codec', 'tests/modules/websocket/test_codec.py', '--archive', archive, '--sanitize')
         pytest('websocket-differential', 'tests/modules/websocket/test_differential.py', *php,

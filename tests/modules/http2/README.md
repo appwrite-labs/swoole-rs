@@ -32,6 +32,12 @@ step by step.
 `http_server.get_package_length` is a Rust case in `tests/modules/http/server`
 (`http-server-rust`), packing its settings frame with crates/http2's codec.
 
+## Client
+
+`test_client.py` (the `http2-client` gate, Cargo build only) runs
+`Swoole\Coroutine\Http2\Client` against a server that writes raw frames: the
+client's PING ACK must carry the PING's own payload (RFC 9113 6.7).
+
 ## Conformance
 
 `h2spec.py` runs h2spec (pinned release and SHA256, strict cases included) against
