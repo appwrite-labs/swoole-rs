@@ -107,17 +107,17 @@ fn uninitialized<'a>() -> Option<&'a Value> {
 /// `SEPARATE_ARRAY(container)`, carrying the definition to a copy.
 /// # Safety
 /// `container` holds `source`, which nothing uses afterwards.
-unsafe fn separate(container: &Value, source: Typed) -> Result<*mut z::HashTable, Bailout> {
-    // SAFETY: Zend separates this exact live array slot under a native allocation trap.
-    leaf(unsafe { z::swr_zend_try_stdext_separate(container.as_ptr()) })?;
+unsafe fn separate(container: &Value, source: Typed) -> *mut z::HashTable {
+    // SAFETY: Zend separates this exact live array slot.
+    unsafe { z::swr_zend_separate_array(container.as_ptr()) };
     // SAFETY: successful separation leaves the container holding an initialized array.
     let current = unsafe { table(container.as_ptr()) };
     if source.table() != current {
         // SAFETY: source remains shared/immutable; current is the fresh unshared copy.
-        unsafe { typed::copy_type(container.as_ptr(), source) }?;
+        unsafe { typed::copy_type(container.as_ptr(), source) };
     }
     // SAFETY: copying type metadata may have replaced the header allocation.
-    Ok(unsafe { table(container.as_ptr()) })
+    unsafe { table(container.as_ptr()) }
 }
 
 /// Whether the active function declares `strict_types`.
@@ -142,11 +142,11 @@ unsafe fn assign(
     value: &Value,
 ) -> Result<(), Bailout> {
     // SAFETY: per the caller.
-    let ht = unsafe { separate(container, source) }?;
+    let ht = unsafe { separate(container, source) };
     let mut slot = ptr::null_mut();
     if key.kind() == z::IS_NULL {
         // SAFETY: the table takes the original operand reference on successful insertion.
-        leaf(unsafe { z::swr_zend_try_stdext_append(ht, value.as_ptr(), &raw mut slot) })?;
+        slot = unsafe { z::zend_hash_next_index_insert(ht, value.as_ptr()) };
         if slot.is_null() {
             // SAFETY: preserve Zend's exact occupied-next-index error, below a native trap.
             leaf(unsafe { z::swr_zend_try_stdext_cannot_add() })?;

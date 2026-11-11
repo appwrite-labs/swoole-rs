@@ -31,8 +31,6 @@ void swr_zend_treat_string(char *text, zval *array);
 void swr_zend_hash_foreach_key(const HashTable *table,
                                bool (*each)(zend_ulong index, zend_string *key, zval *value, void *context),
                                void *context);
-int swr_zend_try_stdext_separate(zval *);
-int swr_zend_try_stdext_append(HashTable *, zval *, zval **);
 int swr_zend_try_stdext_nogc_dtor(zval *);
 int swr_zend_try_stdext_cannot_add(void);
 #endif
