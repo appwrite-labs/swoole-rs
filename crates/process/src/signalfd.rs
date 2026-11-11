@@ -142,8 +142,8 @@ pub fn signalfd_create() -> Created {
     }
     if sigprocmask(libc::SIG_BLOCK, &mask) == -1 {
         let error = errno();
-        // SAFETY: `fd` was just opened here.
-        unsafe { libc::close(fd) };
+        // `fd` was just opened here.
+        swoole_rs_corebase::sys::close(fd);
         return Created {
             status: 3,
             fd,
@@ -163,8 +163,8 @@ pub fn signalfd_create() -> Created {
 pub fn signalfd_close() {
     let fd = FD.swap(-1, Relaxed);
     if fd != -1 {
-        // SAFETY: `fd` was this module's signalfd.
-        unsafe { libc::close(fd) };
+        // `fd` was this module's signalfd.
+        swoole_rs_corebase::sys::close(fd);
     }
 }
 

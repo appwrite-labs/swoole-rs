@@ -720,8 +720,7 @@ pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: impl FnOnce(*mut c_void)) 
         && !stream.socket.is_null()
     {
         if let Some(file) = &stream.file {
-            // SAFETY: a NUL-terminated path.
-            unsafe { libc::unlink(file.as_ptr()) };
+            swoole_rs_corebase::sys::unlink(file);
         }
         // The listener, freed once.
         close(stream.socket);
@@ -730,20 +729,11 @@ pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: impl FnOnce(*mut c_void)) 
 
 /// Record a stream listener's address before it is created: false when the pool
 /// has no stream socket.
-///
-/// # Safety
-/// `ipc` is a live handle; `host` is a NUL-terminated string.
-pub(crate) unsafe fn swr_v1_process_pool_ipc_address(
-    ipc: *mut PoolIpc,
-    host: *const c_char,
-    port: c_int,
-) -> bool {
-    // SAFETY: the caller's live handle.
-    let Some(stream) = (unsafe { &mut *ipc }).stream.as_mut() else {
+pub(crate) fn swr_v1_process_pool_ipc_address(ipc: &mut PoolIpc, host: &CStr, port: c_int) -> bool {
+    let Some(stream) = ipc.stream.as_mut() else {
         return false;
     };
-    // SAFETY: the caller's string.
-    stream.file = Some(unsafe { CStr::from_ptr(host) }.to_owned());
+    stream.file = Some(host.to_owned());
     stream.port = port;
     true
 }
@@ -860,26 +850,17 @@ pub fn pool_ipc_connection(ipc: &PoolIpc) -> *mut c_void {
 
 /// `ProcessPool::response`: append to the reply; false (`SW_ERROR_INVALID_PARAMS`
 /// for the caller) when there is nothing to send or no connection to reply to.
-///
-/// # Safety
-/// `ipc` is a live handle; `data` is null or `length` readable bytes.
-pub(crate) unsafe fn swr_v1_process_pool_ipc_respond(
-    ipc: *mut PoolIpc,
-    data: *const u8,
-    length: u32,
-) -> bool {
-    // SAFETY: the caller's live handle.
-    let Some(stream) = (unsafe { &mut *ipc }).stream.as_mut() else {
+pub(crate) fn swr_v1_process_pool_ipc_respond(ipc: &mut PoolIpc, data: &[u8]) -> bool {
+    let Some(stream) = ipc.stream.as_mut() else {
         return false;
     };
-    if data.is_null() || length == 0 || stream.connection.is_null() {
+    if data.is_empty() || stream.connection.is_null() {
         return false;
     }
     let Some(response) = stream.response.as_mut() else {
         return false;
     };
-    // SAFETY: the caller's bytes.
-    response.extend_from_slice(unsafe { std::slice::from_raw_parts(data, length as usize) });
+    response.extend_from_slice(data);
     true
 }
 
@@ -1103,13 +1084,12 @@ mod tests {
         let ipc = pool_ipc_new(true);
         // SAFETY: a live handle.
         unsafe {
-            assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 1));
+            assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b"x"));
             pool_ipc_prepare(&mut *ipc, 16);
-            assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 1));
+            assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b"x"));
             (*ipc).stream.as_mut().unwrap().connection = ptr::dangling_mut();
-            assert!(!swr_v1_process_pool_ipc_respond(ipc, ptr::null(), 1));
-            assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 0));
-            assert!(swr_v1_process_pool_ipc_respond(ipc, b"ab".as_ptr(), 2));
+            assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b""));
+            assert!(swr_v1_process_pool_ipc_respond(&mut *ipc, b"ab"));
             assert_eq!(
                 (*ipc).stream.as_ref().unwrap().response.as_deref(),
                 Some(&b"ab"[..])
@@ -1125,7 +1105,7 @@ mod tests {
         let mut port = 7;
         // SAFETY: a live handle.
         unsafe {
-            assert!(!swr_v1_process_pool_ipc_address(ipc, c"/tmp/x".as_ptr(), 1));
+            assert!(!swr_v1_process_pool_ipc_address(&mut *ipc, c"/tmp/x", 1));
             assert!(swr_v1_process_pool_ipc_address_of(ipc, &raw mut port).is_null());
             assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
             pool_ipc_free(ipc, |_| {});
@@ -1297,13 +1277,7 @@ mod tests {
             });
             if !respond.is_empty() {
                 // SAFETY: the test's handle.
-                let responded = unsafe {
-                    swr_v1_process_pool_ipc_respond(
-                        ipc,
-                        respond.as_ptr(),
-                        u32::try_from(respond.len()).unwrap(),
-                    )
-                };
+                let responded = swr_v1_process_pool_ipc_respond(unsafe { &mut *ipc }, &respond);
                 assert!(responded);
             }
         }
