@@ -142,7 +142,9 @@ mod tests {
         // each create and remove their own file.
         let path =
             std::env::temp_dir().join(format!("swoole_file_open_twice.{}.txt", std::process::id()));
-        let fname = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let fname =
+            std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
+                .unwrap();
         let fname = fname.as_c_str();
         let mut file1 = FileRecord::empty();
         file1.open(fname, libc::O_WRONLY | libc::O_CREAT, 0);
