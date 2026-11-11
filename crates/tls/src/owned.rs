@@ -3,7 +3,7 @@
 //! scalar fields and string slots through `swr_v1_tls_owner_view`; OpenSSL
 //! operations read the authoritative Rust owner.
 use crate::context::{PasswordBinding, copy_password, create_context};
-use crate::{TlsConfig, TlsStr, Warn};
+use crate::{TlsConfig, Warn};
 use openssl_sys::{SSL_CTX, SSL_CTX_free};
 use std::{
     cell::UnsafeCell,
@@ -72,16 +72,7 @@ const _: () = assert!(
     "native swr_v1_tls_owner_fields' layout"
 );
 /// `SSLContext`'s warnings, `function(): message` at warning level.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "a `Warn`, which owners call only with NUL-terminated text"
-)]
-pub extern "C" fn swr_v1_tls_warning(function: *const c_char, message: *const c_char) {
-    // SAFETY: the owner's callers pass NUL-terminated names.
-    let function = unsafe { CStr::from_ptr(function) };
-    // SAFETY: and NUL-terminated messages.
-    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+pub fn tls_warning(function: &CStr, message: &str) {
     swoole_rs_corebase::log::warning(function, format_args!("{message}"));
 }
 fn prepared(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
@@ -91,10 +82,14 @@ fn prepared(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
         strings: owner.strings.each_ref().map(Arc::as_ptr),
     }
 }
-/// A new owner, holding one reference, and its view.
-/// warn is a nonthrowing native logging leaf that outlives the shared owner.
+/// A new owner that warns through [`tls_warning`], holding one reference, and its view.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_owner_new(warn: Warn) -> OwnedTlsPrepared {
+pub extern "C" fn swr_v1_tls_owner_new() -> OwnedTlsPrepared {
+    owner_new(tls_warning)
+}
+/// A new owner that warns through `warn`, holding one reference, and its view.
+#[must_use]
+pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
     let owner = Arc::new(OwnedTlsContext {
         fields: UnsafeCell::new(OwnedTlsFields::default()),
         strings: std::array::from_fn(|_| StringSlot::empty()),
@@ -196,16 +191,7 @@ unsafe fn configuration(owner: *const OwnedTlsContext) -> TlsConfig {
         disable_compress: fields.disable_compress != 0,
         verify_peer: fields.verify_peer != 0,
         warn: owner.warn,
-        owner: ptr::from_ref(owner).cast(),
-        passphrase_of: passphrase_view,
     }
-}
-extern "C" fn passphrase_view(owner: *const c_void) -> TlsStr {
-    // SAFETY: used only with the live Rust owner placed in the local configuration view.
-    let owner = unsafe { &*owner.cast::<OwnedTlsContext>() };
-    // SAFETY: the owner's passphrase slot remains live and externally synchronized.
-    unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[PASSPHRASE])) }
-        .into()
 }
 extern "C" fn slot_password(
     buffer: *mut c_char,
@@ -654,7 +640,7 @@ pub unsafe fn verify_without_ca(owner: *const OwnedTlsContext) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    extern "C" fn warning(_function: *const c_char, _message: *const c_char) {
+    fn warning(_function: &CStr, _message: &str) {
         panic!("unexpected TLS warning");
     }
     unsafe extern "C" {
@@ -676,7 +662,7 @@ mod tests {
     #[test]
     fn client_settings_write_the_owner() {
         unsafe {
-            let prepared = swr_v1_tls_owner_new(warning);
+            let prepared = owner_new(warning);
             let owner = prepared.owner;
             let text = |index: usize| {
                 let view = swoole_rs_corebase::swr_v1_core_string_view(prepared.strings[index]);
@@ -726,7 +712,7 @@ mod tests {
                 ),
                 ("", false, "", None),
             ] {
-                let prepared = swr_v1_tls_owner_new(warning);
+                let prepared = owner_new(warning);
                 assert_eq!(
                     swoole_rs_corebase::swr_v1_core_string_set(
                         prepared.strings[8],
@@ -790,8 +776,8 @@ mod tests {
     #[test]
     fn copied_ready_context_retains_independent_configuration_and_live_password() {
         unsafe {
-            let source = swr_v1_tls_owner_new(warning);
-            let destination = swr_v1_tls_owner_new(warning);
+            let source = owner_new(warning);
+            let destination = owner_new(warning);
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
                     source.strings[PASSPHRASE],
@@ -841,7 +827,7 @@ mod tests {
     #[test]
     fn shared_context_reads_the_live_passphrase_after_the_first_reference_goes() {
         unsafe {
-            let prepared = swr_v1_tls_owner_new(warning);
+            let prepared = owner_new(warning);
             let owner = prepared.owner;
             let slot = prepared.strings[PASSPHRASE].cast_mut().cast();
             assert_eq!(

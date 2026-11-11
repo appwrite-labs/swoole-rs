@@ -43,7 +43,7 @@ use swoole_rs_tls::upstream::{
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
-    swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view, swr_v1_tls_warning,
+    swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view,
 };
 #[cfg(test)]
 use tests::{
@@ -698,14 +698,14 @@ struct RecvData {
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close.
-extern "C" fn on_package(
+/// # Safety
+/// `conn` is a client's socket record (or null), whose free is deferred past the call.
+unsafe extern "C" fn on_package(
     _: *const Protocol,
     conn: *mut SocketRecord,
-    rdata: *const RecvData,
+    package: &RecvData,
 ) -> c_int {
-    // SAFETY: the receive loop's package, live for the call.
-    let package = unsafe { &*rdata };
-    // SAFETY: the client's socket record, whose free is deferred past the callback.
+    // SAFETY: per the caller.
     let Some(socket) = (unsafe { Socket::from_ptr(conn) }) else {
         return ERR;
     };
@@ -1164,7 +1164,7 @@ fn enable_ssl(this: Handle) -> c_int {
         return ERR;
     }
     // A new context and the client's reference to it.
-    let tls = swr_v1_tls_owner_new(swr_v1_tls_warning);
+    let tls = swr_v1_tls_owner_new();
     this.get().tls.set(tls.owner);
     this.set(OPEN_SSL, true);
     if is_dgram(this.socket_type()) {
@@ -1640,8 +1640,7 @@ fn udp_connect(
 /// address kept in the socket's `info` for the unlink on close; warns on failure.
 fn bind_unix(this: Handle) -> c_int {
     let socket = this.socket();
-    // SAFETY: getpid(2) has no preconditions.
-    let pid = unsafe { libc::getpid() };
+    let pid = std::process::id();
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
     let ret = socket.edit(|socket| {
         // SAFETY: the address union's Unix member, which this socket's family uses.

@@ -158,13 +158,18 @@ mod native {
     }
 
     fn timer_add(socket: Co, timeout: f64, write: bool) -> *mut c_void {
-        extern "C-unwind" fn fired(data: *mut c_void) {
-            // SAFETY: the record whose timer fired: its wait deletes the timer before
-            // the record goes.
+        /// # Safety
+        /// `data` is the [`tag`] of the record whose timer fired: its wait deletes
+        /// the timer before the record goes.
+        unsafe extern "C-unwind" fn fired(data: *mut c_void) {
+            // SAFETY: per the caller.
             let (socket, event) = unsafe { untag(data) };
             super::timer_fired(socket, event);
         }
-        crate::poll::native::timer_add_with(timeout, fired, tag(socket, write))
+        // SAFETY: `fired` gets the live record's tag, as it asks.
+        unsafe {
+            swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, fired, tag(socket, write))
+        }
     }
 
     fn timer_del(node: *mut c_void) {
@@ -173,8 +178,10 @@ mod native {
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
     pub(super) fn suspend(socket: Co, co: *mut c_void, event: u32) {
-        extern "C-unwind" fn cancel(_: *mut c_void, data: *mut c_void) -> bool {
-            // SAFETY: the record whose wait the coroutine is suspended in.
+        /// # Safety
+        /// `data` is the [`tag`] of the record whose wait the coroutine is suspended in.
+        unsafe extern "C-unwind" fn cancel(_: *mut c_void, data: *mut c_void) -> bool {
+            // SAFETY: per the caller.
             let (socket, event) = unsafe { untag(data) };
             socket.cancel(event)
         }

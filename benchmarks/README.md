@@ -70,7 +70,9 @@ run (0.99 each); the ratchet lowers them once two merge runs beat them.
 Three measure `Swoole\Server` without HTTP (#2650), each echoing 1 KiB on one
 connection: `tcp-length` (length-prefixed frames, `07-tcp-framing`), `tcp-eof`
 (`open_eof_split` on `\r\n`) and `udp` (a datagram listener), both against
-`benchmarks/framing`. Their records started 5% above an arm64 Linux run
+`benchmarks/framing`. The `udp` client waits 2 ms after each reply, so the server's
+read loop always ends on EAGAIN and waits on the reactor once per datagram; otherwise
+whether the next datagram beat that last read moved the count by up to 10% (#2899). Their records started 5% above an arm64 Linux run
 (0.97, 0.52 and 1.04); the ratchet lowers them once two merge runs beat them.
 
 Two measure TLS against `benchmarks/tls` (#2648), which serves the pin's test
@@ -125,6 +127,14 @@ resolver `callgrind.py` serves answers. They need both engines built with
 would shift every other workload's record, so they run on a second pair, and
 `--append` adds their results to the main pair's `--output`, which stays the one
 result the ratchet reads.
+
+Two run only on a build variant (#2683), against `benchmarks/variants`. `uring-file`
+reads a file with `Coroutine\System::readFile`, which the `--enable-iouring` build
+does through io_uring, and `thread` starts and joins a `Swoole\Thread`, which needs
+the ZTS PHP and `--enable-swoole-thread`. The merge tier's `variant.yml` counts each
+one on the pair its variant already builds (release profile, not `release-lto`), so
+their records compare only with themselves. Their results go in the variant's
+`phpt-<variant>` artifact, which the ratchet doesn't read: lower those records by hand.
 
 ```sh
 python3 tools/build_ext.py --profile release-lto

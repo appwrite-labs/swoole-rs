@@ -228,6 +228,10 @@ impl Worker<'_> {
         id, set_id, id: u32
     );
     field!(
+        /// The worker's mutex.
+        lock, set_lock, lock: *mut c_void
+    );
+    field!(
         /// The worker's process (or thread) id.
         pid, set_pid, pid: c_int
     );

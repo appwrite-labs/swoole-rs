@@ -1641,7 +1641,7 @@ mod tests {
     #[test]
     fn ssl_create_then_close_frees_the_ssl() {
         unsafe {
-            let owner = crate::swr_v1_tls_owner_new(crate::swr_v1_tls_warning);
+            let owner = crate::swr_v1_tls_owner_new();
             (*owner.fields).context = openssl_sys::SSL_CTX_new(openssl_sys::TLS_method());
             let mut fds = [0; 2];
             assert_eq!(

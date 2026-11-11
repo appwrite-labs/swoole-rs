@@ -9,22 +9,20 @@ use openssl_sys::{
     SSL_CTRL_SET_GROUPS_LIST, SSL_CTX, SSL_CTX_check_private_key, SSL_CTX_clear_options,
     SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_new,
     SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_cipher_list,
-    SSL_CTX_set_client_CA_list, SSL_CTX_set_cookie_generate_cb, SSL_CTX_set_cookie_verify_cb,
-    SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode, SSL_CTX_set_options,
-    SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode, SSL_CTX_set_session_id_context,
-    SSL_CTX_set_verify, SSL_CTX_set_verify_depth, SSL_CTX_use_PrivateKey_file,
-    SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file, SSL_FILETYPE_PEM,
-    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
-    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
-    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
-    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
-    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
+    SSL_CTX_set_client_CA_list, SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode,
+    SSL_CTX_set_options, SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode,
+    SSL_CTX_set_session_id_context, SSL_CTX_set_verify, SSL_CTX_set_verify_depth,
+    SSL_CTX_use_PrivateKey_file, SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file,
+    SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
+    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
+    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
+    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
     SSL_select_next_proto, TLS_method, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::log;
 
@@ -37,7 +35,7 @@ unsafe extern "C" {
     fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
     fn PEM_read_bio_Parameters(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
     fn ERR_print_errors_cb(
-        callback: extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
+        callback: unsafe extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
         user: *mut c_void,
     );
     fn HMAC(
@@ -110,10 +108,7 @@ impl TlsStr {
 }
 
 /// Logs `"<function>(): <message>"` at warning level.
-pub type Warn = extern "C" fn(function: *const c_char, message: *const c_char);
-
-/// Reads an owner's current passphrase.
-pub type PassphraseOf = extern "C" fn(owner: *const c_void) -> TlsStr;
+pub type Warn = fn(function: &CStr, message: &str);
 
 /// A view of `swoole::SSLContext`'s configuration, built by native code for one call.
 #[repr(C)]
@@ -137,9 +132,6 @@ pub struct TlsConfig {
     pub disable_compress: bool,
     pub verify_peer: bool,
     pub warn: Warn,
-    /// The native `SSLContext`, which the password callback reads through `passphrase_of`.
-    pub owner: *const c_void,
-    pub passphrase_of: PassphraseOf,
 }
 
 /// One upstream method: its log name and the configuration it reads.
@@ -158,9 +150,8 @@ struct Method<'a> {
 
 impl Method<'_> {
     fn warn(&self, message: &[u8]) {
-        let mut text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
-        text.push(0);
-        (self.config.warn)(self.function.as_ptr(), text.as_ptr().cast());
+        let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
+        (self.config.warn)(self.function, &String::from_utf8_lossy(&text));
     }
 
     /// Upstream's `ssl_error`: pops one error and appends its reason and code.
@@ -379,14 +370,10 @@ impl Method<'_> {
         // SAFETY: as above.
         unsafe { SSL_CTX_set_read_ahead(ctx, 1) };
 
-        if !config.passphrase.is_empty() {
-            let binding = self.password.unwrap_or_else(|| {
-                PASSPHRASE_OF.get_or_init(|| config.passphrase_of);
-                PasswordBinding {
-                    userdata: config.owner.cast_mut(),
-                    callback: password_callback,
-                }
-            });
+        // The owner's binding reads its live passphrase slot (crates/tls's owned.rs).
+        if !config.passphrase.is_empty()
+            && let Some(binding) = self.password
+        {
             // SAFETY: a live context; the binding's owner outlives the borrowed context.
             unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, binding.userdata) };
             // SAFETY: a live context; a plain callback with the binding's userdata.
@@ -424,9 +411,9 @@ impl Method<'_> {
         }
         if protocols & DTLS != 0 {
             // SAFETY: a live context; plain functions.
-            unsafe { SSL_CTX_set_cookie_generate_cb(ctx, Some(generate_cookie)) };
+            unsafe { set_cookie_generate_cb(ctx, Some(generate_cookie)) };
             // SAFETY: as above.
-            unsafe { SSL_CTX_set_cookie_verify_cb(ctx, Some(verify_cookie)) };
+            unsafe { set_cookie_verify_cb(ctx, Some(verify_cookie)) };
         }
         let capath = self.with(c"SSLContext::set_capath").set_capath();
         if config.verify_peer {
@@ -525,24 +512,7 @@ extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int 
     1
 }
 
-/// Native code's passphrase reader, the same function for every context.
-static PASSPHRASE_OF: OnceLock<PassphraseOf> = OnceLock::new();
-
-/// Copies the owner's current passphrase when it fits with a spare byte, else reports none.
-extern "C" fn password_callback(
-    buffer: *mut c_char,
-    capacity: c_int,
-    _verify: c_int,
-    owner: *mut c_void,
-) -> c_int {
-    let Some(passphrase_of) = PASSPHRASE_OF.get() else {
-        return 0;
-    };
-    let passphrase = passphrase_of(owner.cast_const());
-    // SAFETY: OpenSSL lends the buffer; the reader lends the live passphrase bytes.
-    unsafe { copy_password(buffer, capacity, passphrase) }
-}
-
+/// Copies the passphrase when it fits with a spare byte, else reports none.
 /// # Safety
 /// Passphrase bytes remain live; buffer holds capacity writable bytes when positive.
 pub(crate) unsafe fn copy_password(
@@ -565,41 +535,62 @@ pub(crate) unsafe fn copy_password(
     length
 }
 
+type GenerateCookie = unsafe extern "C" fn(*mut SSL, *mut c_uchar, *mut c_uint) -> c_int;
+type VerifyCookie = unsafe extern "C" fn(*mut SSL, *const c_uchar, c_uint) -> c_int;
+
+// SAFETY: libssl's declarations, retyped so the callbacks can be `unsafe fn`s;
+// openssl-sys types them safe.
+unsafe extern "C" {
+    #[link_name = "SSL_CTX_set_cookie_generate_cb"]
+    fn set_cookie_generate_cb(ctx: *mut SSL_CTX, callback: Option<GenerateCookie>);
+    #[link_name = "SSL_CTX_set_cookie_verify_cb"]
+    fn set_cookie_verify_cb(ctx: *mut SSL_CTX, callback: Option<VerifyCookie>);
+}
+
+/// Copies `N` bytes of `bytes` at `at`.
+fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
+    bytes
+        .get(at..at + N)
+        .and_then(|field| field.try_into().ok())
+        .unwrap_or([0; N])
+}
+
 /// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address.
-extern "C" fn generate_cookie(
+/// # Safety
+/// OpenSSL's cookie callback: `ssl` is live, `cookie` holds `DTLS1_COOKIE_LENGTH`
+/// (255) bytes and `cookie_length` is writable.
+unsafe extern "C" fn generate_cookie(
     ssl: *mut SSL,
     cookie: *mut c_uchar,
     cookie_length: *mut c_uint,
 ) -> c_int {
     let secret = [(ssl as c_long).to_ne_bytes(); 32 / size_of::<c_long>()].concat();
-    // SAFETY: zero is a valid sockaddr_storage.
-    let mut peer: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer = [0u8; size_of::<libc::sockaddr_storage>()];
     // SAFETY: OpenSSL's live SSL, in its cookie callback.
     let wbio = unsafe { SSL_get_wbio(ssl) };
     // SAFETY: `BIO_dgram_get_peer`, which copies at most a sockaddr_storage.
-    unsafe { BIO_ctrl(wbio, BIO_CTRL_DGRAM_GET_PEER, 0, (&raw mut peer).cast()) };
-    let mut data = Vec::with_capacity(18);
-    match c_int::from(peer.ss_family) {
-        libc::AF_INET => {
-            // SAFETY: an AF_INET peer is a sockaddr_in.
-            let v4 = unsafe { &*(&raw const peer).cast::<libc::sockaddr_in>() };
-            data.extend_from_slice(&v4.sin_port.to_ne_bytes());
-            data.extend_from_slice(&v4.sin_addr.s_addr.to_ne_bytes());
-        }
-        libc::AF_INET6 => {
-            // SAFETY: an AF_INET6 peer is a sockaddr_in6.
-            let v6 = unsafe { &*(&raw const peer).cast::<libc::sockaddr_in6>() };
-            data.extend_from_slice(&v6.sin6_port.to_ne_bytes());
-            data.extend_from_slice(&v6.sin6_addr.s6_addr);
-        }
+    unsafe { BIO_ctrl(wbio, BIO_CTRL_DGRAM_GET_PEER, 0, peer.as_mut_ptr().cast()) };
+    let family = libc::sa_family_t::from_ne_bytes(field(
+        &peer,
+        std::mem::offset_of!(libc::sockaddr_storage, ss_family),
+    ));
+    let (port, address) = match c_int::from(family) {
+        libc::AF_INET => (
+            field::<2>(&peer, std::mem::offset_of!(libc::sockaddr_in, sin_port)),
+            &field::<4>(&peer, std::mem::offset_of!(libc::sockaddr_in, sin_addr))[..],
+        ),
+        libc::AF_INET6 => (
+            field::<2>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_port)),
+            &field::<16>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_addr))[..],
+        ),
         // Upstream's OPENSSL_assert(0).
         _ => std::process::abort(),
-    }
-    let mut result = [0u8; 64];
-    let mut length: c_uint = 0;
+    };
+    let data = [&port[..], address].concat();
     // SAFETY: a static digest.
     let sha1 = unsafe { EVP_sha1() };
-    // SAFETY: `HMAC` over local buffers; `result` holds EVP_MAX_MD_SIZE bytes.
+    // SAFETY: `HMAC` over local buffers into OpenSSL's cookie buffer, which holds
+    // more than EVP_MAX_MD_SIZE bytes, and its length slot.
     let digest = unsafe {
         HMAC(
             sha1,
@@ -607,24 +598,24 @@ extern "C" fn generate_cookie(
             32,
             data.as_ptr(),
             data.len(),
-            result.as_mut_ptr(),
-            &raw mut length,
+            cookie,
+            cookie_length,
         )
     };
-    if digest.is_null() {
-        return 0;
-    }
-    // SAFETY: OpenSSL's cookie buffer holds DTLS1_COOKIE_LENGTH (255) bytes.
-    unsafe { ptr::copy_nonoverlapping(result.as_ptr(), cookie, length as usize) };
-    // SAFETY: OpenSSL's length slot.
-    unsafe { cookie_length.write(length) };
-    1
+    c_int::from(!digest.is_null())
 }
 
-extern "C" fn verify_cookie(ssl: *mut SSL, cookie: *const c_uchar, cookie_length: c_uint) -> c_int {
-    let mut expected = [0u8; 64];
+/// # Safety
+/// OpenSSL's cookie callback: `ssl` is live and `cookie` holds `cookie_length` bytes.
+unsafe extern "C" fn verify_cookie(
+    ssl: *mut SSL,
+    cookie: *const c_uchar,
+    cookie_length: c_uint,
+) -> c_int {
+    let mut expected = [0u8; 255];
     let mut length: c_uint = 0;
-    generate_cookie(ssl, expected.as_mut_ptr(), &raw mut length);
+    // SAFETY: the caller's live SSL; a local 255-byte buffer and length.
+    unsafe { generate_cookie(ssl, expected.as_mut_ptr(), &raw mut length) };
     if cookie_length != length {
         return 0;
     }
@@ -708,8 +699,14 @@ thread_local! {
     static ERROR_TEXT: RefCell<Vec<u8>> = RefCell::new(vec![0]);
 }
 
-extern "C" fn keep_last_line(line: *const c_char, length: usize, _user: *mut c_void) -> c_int {
-    // SAFETY: OpenSSL lends `length` bytes of the line.
+/// # Safety
+/// `line` holds `length` bytes, as `ERR_print_errors_cb` lends them.
+unsafe extern "C" fn keep_last_line(
+    line: *const c_char,
+    length: usize,
+    _user: *mut c_void,
+) -> c_int {
+    // SAFETY: per the caller.
     let line = unsafe { std::slice::from_raw_parts(line.cast::<u8>(), length) };
     ERROR_TEXT.with_borrow_mut(|text| {
         text.clear();
@@ -733,16 +730,6 @@ pub extern "C" fn swr_v1_tls_error() -> *const c_char {
     // SAFETY: the callback only touches this thread's buffer.
     unsafe { ERR_print_errors_cb(keep_last_line, ptr::null_mut()) };
     ERROR_TEXT.with_borrow(|text| text.as_ptr().cast())
-}
-
-/// `SSLContext::create`: a configured context, or null after logging why. Writes
-/// the normalized protocol mask back to `config.protocols`.
-///
-/// # Safety
-/// `config`'s strings are NUL-terminated and outlive the call.
-pub unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> *mut SSL_CTX {
-    // SAFETY: forwards the caller's live configuration view.
-    unsafe { create_context(config, None) }
 }
 
 /// # Safety
@@ -781,51 +768,56 @@ pub(crate) unsafe fn create_context(
     ptr::null_mut()
 }
 
-macro_rules! method {
-    ($name:ident, $function:literal, $body:ident) => {
-        /// The `SSLContext` method of the same name, on an existing context.
-        ///
-        /// # Safety
-        /// `ctx` is a live context and `config`'s strings are NUL-terminated and
-        /// outlive the call.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(ctx: *mut SSL_CTX, config: &TlsConfig) -> bool {
-            Method {
-                config,
-                ctx,
-                function: $function,
-                password: None,
-            }
-            .$body()
-        }
-    };
-}
-
-method!(swr_v1_tls_set_capath, c"SSLContext::set_capath", set_capath);
-method!(
-    swr_v1_tls_set_ciphers,
-    c"SSLContext::set_ciphers",
-    set_ciphers
-);
-method!(
-    swr_v1_tls_set_client_certificate,
-    c"SSLContext::set_client_certificate",
-    set_client_certificate
-);
-method!(
-    swr_v1_tls_set_ecdh_curve,
-    c"SSLContext::set_ecdh_curve",
-    set_ecdh_curve
-);
-method!(
-    swr_v1_tls_set_dhparam,
-    c"SSLContext::set_dhparam",
-    set_dhparam
-);
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `SSLContext::create`: a configured context, or null after logging why. Writes
+    /// the normalized protocol mask back to `config.protocols`.
+    ///
+    /// # Safety
+    /// `config`'s strings are NUL-terminated and outlive the call.
+    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> *mut SSL_CTX {
+        // SAFETY: forwards the caller's live configuration view.
+        unsafe { create_context(config, None) }
+    }
+
+    macro_rules! method {
+        ($name:ident, $function:literal, $body:ident) => {
+            /// The `SSLContext` method of the same name, on an existing context.
+            ///
+            /// # Safety
+            /// `ctx` is a live context and `config`'s strings are NUL-terminated and
+            /// outlive the call.
+            unsafe fn $name(ctx: *mut SSL_CTX, config: &TlsConfig) -> bool {
+                Method {
+                    config,
+                    ctx,
+                    function: $function,
+                    password: None,
+                }
+                .$body()
+            }
+        };
+    }
+
+    method!(swr_v1_tls_set_capath, c"SSLContext::set_capath", set_capath);
+    method!(
+        swr_v1_tls_set_client_certificate,
+        c"SSLContext::set_client_certificate",
+        set_client_certificate
+    );
+    method!(
+        swr_v1_tls_set_ecdh_curve,
+        c"SSLContext::set_ecdh_curve",
+        set_ecdh_curve
+    );
+    method!(
+        swr_v1_tls_set_dhparam,
+        c"SSLContext::set_dhparam",
+        set_dhparam
+    );
+
     use openssl_sys::{SSL_CTX_get_options, SSL_CTX_get_verify_mode};
 
     unsafe extern "C" {
@@ -836,21 +828,10 @@ mod tests {
 
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    extern "C" fn record(function: *const c_char, message: *const c_char) {
-        // SAFETY: the NUL-terminated strings `Method::warn` passes.
-        let (function, message) = unsafe { (CStr::from_ptr(function), CStr::from_ptr(message)) };
-        LOG.lock().unwrap().push(format!(
-            "{}(): {}",
-            function.to_string_lossy(),
-            message.to_string_lossy()
-        ));
-    }
-
-    extern "C" fn no_passphrase(_owner: *const c_void) -> TlsStr {
-        TlsStr {
-            data: c"".as_ptr(),
-            length: 0,
-        }
+    fn record(function: &CStr, message: &str) {
+        LOG.lock()
+            .unwrap()
+            .push(format!("{}(): {message}", function.to_string_lossy()));
     }
 
     struct Owned(Vec<CString>);
@@ -886,8 +867,6 @@ mod tests {
                 disable_compress: false,
                 verify_peer: false,
                 warn: record,
-                owner: ptr::null(),
-                passphrase_of: no_passphrase,
             }
         }
     }
@@ -1005,35 +984,21 @@ mod tests {
 
     #[test]
     fn password_copies_when_it_fits() {
-        extern "C" fn read(owner: *const c_void) -> TlsStr {
-            // SAFETY: the test's CString.
-            let owner = unsafe { &*owner.cast::<CString>() };
-            TlsStr {
-                data: owner.as_ptr(),
-                length: owner.as_bytes().len(),
-            }
-        }
-        PASSPHRASE_OF.get_or_init(|| read);
-        let mut passphrase = CString::new("swoole").unwrap();
-        let owner: *mut c_void = (&raw mut passphrase).cast();
+        let view = |text: &CString| TlsStr {
+            data: text.as_ptr(),
+            length: text.as_bytes().len(),
+        };
+        let passphrase = CString::new("swoole").unwrap();
         let mut buffer = [0x55u8; 8];
-        assert_eq!(
-            password_callback(buffer.as_mut_ptr().cast(), 8, 0, owner),
-            6
-        );
+        let copy = |buffer: &mut [u8; 8], capacity, text: &CString| unsafe {
+            copy_password(buffer.as_mut_ptr().cast(), capacity, view(text))
+        };
+        assert_eq!(copy(&mut buffer, 8, &passphrase), 6);
         assert_eq!(&buffer[..7], b"swoole\0");
         for capacity in [c_int::MIN, -1, 0, 7] {
-            assert_eq!(
-                password_callback(buffer.as_mut_ptr().cast(), capacity, 0, owner),
-                0
-            );
+            assert_eq!(copy(&mut buffer, capacity, &passphrase), 0);
         }
-        *unsafe { &mut *owner.cast::<CString>() } = CString::new("xy").unwrap();
-        assert_eq!(
-            password_callback(buffer.as_mut_ptr().cast(), 8, 0, owner),
-            2,
-            "reads the live value"
-        );
+        assert_eq!(copy(&mut buffer, 8, &CString::new("xy").unwrap()), 2);
     }
 
     #[test]

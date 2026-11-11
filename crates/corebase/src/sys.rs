@@ -92,8 +92,8 @@ pub fn unlink(path: &CStr) -> c_int {
 /// `getpid(2)`.
 #[must_use]
 pub fn getpid() -> pid_t {
-    // SAFETY: getpid(2) has no preconditions.
-    unsafe { libc::getpid() }
+    // A pid fits pid_t; std calls getpid(2), which has no preconditions.
+    std::process::id().cast_signed()
 }
 
 /// `clock_gettime(2)`: the clock's time, or `None` with errno set.

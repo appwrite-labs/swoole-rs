@@ -25,7 +25,7 @@ use swoole_rs_tls::{
     DtlsSession, OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslVersion, Text, has_files,
     set_text, ssl_context_create, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init, swr_v1_tls_dtls_new,
     swr_v1_tls_owner_clone, swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view,
-    swr_v1_tls_port_index, swr_v1_tls_warning,
+    swr_v1_tls_port_index,
 };
 
 use crate::lifecycle::{
@@ -100,10 +100,11 @@ pub(crate) fn tls_free(config: &mut PortConfig) {
 ///
 /// # Safety
 /// `port` is a live `ListenPort` with a context.
+#[must_use]
 pub unsafe fn context_dup(port: *const c_void) -> *const OwnedTlsContext {
     // SAFETY: as the caller guarantees; only read.
     let source = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
-    let copy = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+    let copy = swr_v1_tls_owner_new().owner;
     // SAFETY: two live owners; no native view caches either's strings.
     if unsafe { swoole_rs_tls::swr_v1_tls_owner_assign(copy, source) }.status != 0 {
         std::process::abort();
@@ -378,7 +379,7 @@ fn create_op(run: &mut Run, op: u32) -> u64 {
 fn context_op(run: &mut Run, op: u32, arg: u64) -> u64 {
     match op {
         OP_CONTEXT_NEW => {
-            let context = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+            let context = swr_v1_tls_owner_new().owner;
             let previous = core::mem::replace(&mut run.config().ssl_context, context);
             // SAFETY: the replaced reference (or null), released once.
             unsafe { swr_v1_tls_owner_free(previous) };
