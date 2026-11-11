@@ -133,7 +133,10 @@ extern "C" {
 int swr_oracle_clients_url(const char *data, size_t length, bool accept, int *type, int *port, char *host,
                            size_t *host_length, int *log_count) {
     Address address;
-    address.type = static_cast<SocketType>(87);
+    // A sentinel no SocketType holds, copied as bytes: loading it as the enum is UB.
+    const int unset = 87;
+    static_assert(sizeof(address.type) == sizeof(unset));
+    memcpy(&address.type, &unset, sizeof unset);
     address.accept = accept;
     logs = 0;
     int result;
@@ -144,7 +147,7 @@ int swr_oracle_clients_url(const char *data, size_t length, bool accept, int *ty
     } catch (const std::invalid_argument &) {
         result = -2;
     }
-    *type = address.type;
+    memcpy(type, &address.type, sizeof *type);
     *port = address.seen_port;
     *host_length = address.seen_host.size();
     memcpy(host, address.seen_host.data(), address.seen_host.size());

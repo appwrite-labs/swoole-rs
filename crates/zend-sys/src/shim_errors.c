@@ -79,3 +79,15 @@ int swr_zend_try_hash_update(HashTable *table, zend_string *key, zval *value) {
     if (zend_hash_add(table, key, value)) return 0;
     SWR_TRAP(zend_hash_update(table, key, value));
 }
+
+int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value) {
+    /* add_assoc_zval_ex; as above, only a key already there needs the trap. */
+    zend_ulong index;
+    HashTable *table = Z_ARRVAL_P(array);
+    if (ZEND_HANDLE_NUMERIC_STR(key, length, index)) {
+        if (zend_hash_index_add(table, index, value)) return 0;
+        SWR_TRAP(zend_hash_index_update(table, index, value));
+    }
+    if (zend_hash_str_add(table, key, length, value)) return 0;
+    SWR_TRAP(zend_hash_str_update(table, key, length, value));
+}

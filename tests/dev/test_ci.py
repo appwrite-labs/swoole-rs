@@ -180,7 +180,7 @@ class Ci(unittest.TestCase):
                 search={'http-native': [40, 41]})
         self.assertIn('new failures: http-native (open: #40, #41), ports-added (no open issue); fixed: timer-model',
                       self.out)
-        self.assertIn('search/issues?q=%22ports-added%22%20is:issue%20is:open%20repo:{owner}/{repo} '
+        self.assertIn('search/issues?q=%22ports-added%22%20is:issue%20is:open%20-label:kind:goal%20repo:{owner}/{repo} '
                       '--jq [.items[].number]', ' '.join(self.gh_calls))
         self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'))
         self.assertIn('http-native (issue search failed), ports-added (issue search failed)', self.out)

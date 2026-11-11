@@ -47,8 +47,9 @@ pub struct ServerState {
     /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in `TEXT_*`
     /// order; native views them as `RustStringView`s.
     texts: [StringSlot; TEXT_COUNT],
-    /// `Server::lock_`, the connection list's fd range lock: whether it is held.
-    locked: (std::sync::Mutex<bool>, std::sync::Condvar),
+    /// `Server::lock_`, the connection list's fd range lock: whether it is held,
+    /// and how many threads wait for it.
+    locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
     /// The interface addresses `Server::create` read (`local_addr`); null before.
@@ -102,7 +103,7 @@ impl ServerState {
             callbacks: crate::callbacks::ServerCallbacks::new(),
             upload_tmp_dir: std::sync::Mutex::new(None),
             texts: [const { StringSlot::new() }; TEXT_COUNT],
-            locked: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+            locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: AtomicPtr::new(core::ptr::null_mut()),
             task_pipes: std::sync::Mutex::new(Vec::new()),
@@ -212,25 +213,32 @@ impl ServerState {
 
     /// `Server::lock()`: blocks until this thread holds the lock.
     pub(crate) fn lock(&self) {
-        let (held, released) = &self.locked;
-        let mut held = held
+        let (lock, released) = &self.locked;
+        let mut lock = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *held {
-            held = released
-                .wait(held)
+        while lock.0 {
+            lock.1 += 1;
+            lock = released
+                .wait(lock)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lock.1 -= 1;
         }
-        *held = true;
+        lock.0 = true;
     }
 
-    /// `Server::unlock()`, by the thread holding the lock.
+    /// `Server::unlock()`, by the thread holding the lock. std's condvar makes a
+    /// futex syscall on every notify, so only a waiter is woken: `add` and
+    /// `close_connection` unlock once each a connection (#2964).
     pub(crate) fn unlock(&self) {
-        let (held, released) = &self.locked;
-        *held
+        let (lock, released) = &self.locked;
+        let mut lock = lock
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
-        released.notify_one();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lock.0 = false;
+        if lock.1 > 0 {
+            released.notify_one();
+        }
     }
 
     /// Starts a thread running `entry(serv, arg)`, which `take_thread(arg)` hands back.
@@ -899,17 +907,27 @@ mod tests {
 
         let state = std::sync::Arc::new(state);
         assert_eq!(unsafe { native_fact(&state, OP_LOCK, 0) }, Some(0));
-        let waiter = {
-            let state = std::sync::Arc::clone(&state);
-            std::thread::spawn(move || {
-                state.lock();
-                state.unlock();
+        // Two waiters: the unlock wakes one, whose unlock wakes the other.
+        let waiters: Vec<_> = (0..2)
+            .map(|_| {
+                let state = std::sync::Arc::clone(&state);
+                std::thread::spawn(move || {
+                    state.lock();
+                    state.unlock();
+                })
             })
-        };
+            .collect();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        assert!(!waiter.is_finished(), "the lock is held");
+        assert!(!waiters[0].is_finished(), "the lock is held");
         assert_eq!(unsafe { native_fact(&state, OP_UNLOCK, 0) }, Some(0));
-        waiter.join().unwrap();
+        for waiter in waiters {
+            waiter.join().unwrap();
+        }
+        assert_eq!(
+            *state.locked.0.lock().unwrap(),
+            (false, 0),
+            "free, no waiters"
+        );
     }
 
     #[test]

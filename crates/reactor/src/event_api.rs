@@ -374,8 +374,15 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
     }
 }
 
-/// Put `data` (or nothing) in a cycle slot, and hand back the task it held. Only
-/// [`swoole_event_cycle`] fills the slots, so a set one holds its `Rc<Slot>`.
+thread_local! {
+    /// The slots [`swoole_event_cycle`] put in this thread's reactors and that are
+    /// still there. Native code may set a cycle task of its own, so a slot's data is
+    /// an `Rc<Slot>` only when it is listed here.
+    static GIVEN: std::cell::RefCell<Vec<*const Slot>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Put `data` (or nothing) in a cycle slot, and hand back the task it held if
+/// [`swoole_event_cycle`] put it there; any other task is left to its owner.
 fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Option<Retired> {
     let replaced = std::mem::replace(
         task,
@@ -384,21 +391,23 @@ fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Optio
             data: data.map_or(std::ptr::null_mut(), <*mut Slot>::cast),
         },
     );
-    replaced.callback?;
-    // SAFETY: a set slot's data is the `Rc<Slot>` `swoole_event_cycle` gave up,
-    // which the slot no longer names.
-    Some(Retired(unsafe {
-        Rc::from_raw(replaced.data.cast::<Slot>())
-    }))
+    let old = replaced.data.cast::<Slot>().cast_const();
+    let ours = GIVEN.with_borrow_mut(|given| {
+        given.extend(data.map(<*mut Slot>::cast_const));
+        let at = given.iter().position(|&slot| slot == old)?;
+        Some(given.swap_remove(at))
+    })?;
+    // SAFETY: a listed slot is the `Rc<Slot>` `swoole_event_cycle` gave up, which
+    // the reactor no longer names and the list no longer holds.
+    Some(Retired(unsafe { Rc::from_raw(ours) }))
 }
 
-/// The reactor is being freed: release the cycle tasks [`swoole_event_cycle`] gave
-/// it, as a replaced task is released when the reactor goes first.
+/// The reactor is being freed: drop the cycle tasks [`swoole_event_cycle`] gave it.
+/// No pass of a reactor is under way while it is freed, so a run still counted
+/// was left by a bailout (`exit()` in the callback) and borrows nothing now.
 pub(crate) fn release_cycle_tasks(fields: &mut crate::ReactorFields) {
     for task in [&mut fields.idle_task, &mut fields.future_task] {
-        if let Some(retired) = replace_slot(task, None) {
-            retired.dispose();
-        }
+        drop(replace_slot(task, None));
     }
 }
 
@@ -553,6 +562,19 @@ mod tests {
         swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor_state::tests::free(state.owner) };
         assert_eq!(take(), ["idle", "future"]);
+    }
+
+    #[test]
+    fn freeing_the_reactor_drops_a_cycle_task_its_bailout_left_running() {
+        let state = crate::reactor_state::tests::state(3, 1);
+        swoole_rs_corebase::set_thread_reactor(state.owner.cast());
+        swoole_event_cycle(false, Some(Box::new(Dropped("idle"))));
+        // A run that bailed out: counted, never finished.
+        let slot = unsafe { &*(*state.fields).idle_task.data.cast::<Slot>() };
+        slot.running.set(1);
+        swoole_rs_corebase::set_thread_reactor(std::ptr::null_mut());
+        unsafe { crate::reactor_state::tests::free(state.owner) };
+        assert_eq!(take(), ["idle"]);
     }
 
     #[test]
