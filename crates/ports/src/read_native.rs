@@ -339,9 +339,8 @@ fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
             let request = conn().object.cast::<HttpRequest>();
             let dir = server(c).upload_tmp_dir();
             let max = config(c).upload_max_filesize;
-            // SAFETY: the connection's live request, with a form.
-            let ok =
-                unsafe { swoole_rs_http_ffi::init_multipart_parser(request, dir.as_bytes(), max) };
+            // SAFETY: the connection's live request, which nothing else uses during the call.
+            let ok = unsafe { &mut *request }.init_multipart_parser(dir.as_bytes(), max);
             // SAFETY: as above.
             c.shared.buffer = unsafe { (*request).buffer };
             u64::from(ok)

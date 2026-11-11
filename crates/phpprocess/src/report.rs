@@ -11,25 +11,9 @@ pub(crate) fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// Set `errno` (to 0 before a call whose -1 result is ambiguous).
-pub(crate) fn set_errno(value: i32) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // SAFETY: the calling thread's errno slot.
-        let slot = unsafe { libc::__errno_location() };
-        // SAFETY: as above.
-        unsafe { *slot = value };
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        // SAFETY: the calling thread's errno slot.
-        let slot = unsafe { libc::__error() };
-        // SAFETY: as above.
-        unsafe { *slot = value };
-    }
-}
-
 pub(crate) use swoole_rs_corebase::log::set_last_error;
+/// Set `errno` (to 0 before a call whose -1 result is ambiguous).
+pub(crate) use swoole_rs_corebase::set_errno;
 
 /// `SWOOLE_G(cli)`.
 pub(crate) fn cli() -> bool {
