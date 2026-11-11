@@ -5,7 +5,7 @@
 //! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Slot, State};
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
@@ -389,11 +389,9 @@ fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
     parser.error_pos()
 }
 
-/// `Context::parse`: the bytes parsed.
-/// # Safety
-/// `context` is a live `swoole::http::Context` whose parser is initialised.
-pub(crate) unsafe fn parse_request(context: *mut c_void, data: &[u8]) -> usize {
-    execute(crate::send::state(context), false, data)
+/// `Context::parse`: the bytes parsed, by the context's initialised parser.
+pub(crate) fn parse_request(state: &mut State, data: &[u8]) -> usize {
+    execute(state, false, data)
 }
 
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
@@ -775,11 +773,7 @@ fn multipart_free(state: &mut State) {
 }
 
 /// `Context::free`'s share: what the parser still holds.
-/// # Safety
-/// `context` is a live `swoole::http::Context`, about to be deleted.
-pub(crate) unsafe fn parse_free(context: *mut c_void) {
-    // SAFETY: per the caller.
-    let state = unsafe { &mut *context.cast::<State>() };
+pub(crate) fn parse_free(state: &mut State) {
     multipart_free(state);
     state.parse.form_data = None;
     state.parse.chunked_body = None;
@@ -1184,10 +1178,7 @@ fn part_data_end(state: &mut State, upload: &mut *mut libc::FILE) -> c_int {
 }
 
 /// `getContent()`: the body received so far.
-pub(crate) fn body(state: *mut State) -> Option<&'static [u8]> {
-    // SAFETY: a live context, which owns its data and buffers while the
-    // request object lives.
-    let state: &'static State = unsafe { &*state };
+pub(crate) fn body(state: &State) -> Option<&[u8]> {
     let length = state.request.body_length;
     if length > 0 {
         let data = state.request.zdata.bytes()?;
@@ -1206,9 +1197,8 @@ pub(crate) fn body(state: *mut State) -> Option<&'static [u8]> {
 }
 
 /// `llhttp_method_name(parser.method)`.
-pub(crate) fn method_name(state: *const State) -> &'static str {
-    // SAFETY: a live context.
-    llhttp::method_name(unsafe { (*state).parser.method })
+pub(crate) fn method_name(state: &State) -> &'static str {
+    llhttp::method_name(state.parser.method)
 }
 
 #[cfg(test)]

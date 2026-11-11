@@ -48,6 +48,7 @@ pub(crate) fn uring() -> Option<&'static UringOps> {
 /// live socket record for as long as the event is, so only the wait loop and
 /// [`Event::new`]'s callers, who promise that, make one.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Event {
     fd: c_int,
     reactor_id: i16,
@@ -124,9 +125,8 @@ struct Loop<'a> {
     sockets: *const *mut c_void,
     reactor_id: i16,
     handlers: *const Handlers,
-    /// The event each handler is lent, refilled for each ready entry; a nested wait has
-    /// its own.
-    event: Event,
+    /// The event the loop prepared for the ready socket's handlers.
+    event: std::cell::Cell<Event>,
 }
 
 const SW_EVENT_ONCE: c_int = 1 << 12;
@@ -157,11 +157,12 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
 pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let reactor = ops.reactor;
     // SAFETY: the state is live and no native effect is active, so nothing else borrows
-    // it; the borrow ends here. The backend's arrays stay put until the state closes it.
+    // it; this borrow ends before the first effect.
     let state = unsafe { &mut *owner };
+    // The backend's arrays stay put until the state closes it.
     let view = state.backend_view();
-    let id = state.fields.id;
     before_wait(&mut state.fields);
+    let id = state.fields.id;
     // The state's fields and handler tables live as long as it does; their
     // addresses are taken without a borrow.
     let fields = owner
@@ -178,7 +179,9 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let once = fields
         .wrapping_byte_add(std::mem::offset_of!(ReactorFields, once))
         .cast::<bool>();
-    let mut run = Loop {
+    // SAFETY: a single field read of the live state, which effects may change between reads.
+    let once = || unsafe { once.read() };
+    let run = Loop {
         ops,
         owner,
         backend: view.backend,
@@ -190,7 +193,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
         )]
         reactor_id: id as i16,
         handlers,
-        event: Event::empty(),
+        event: std::cell::Cell::new(Event::empty()),
     };
     // SAFETY: single field reads; effects may change the field between them.
     while unsafe { running.read() } {
@@ -216,8 +219,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
             }
             core::cmp::Ordering::Equal => {
                 (ops.end)(reactor, true);
-                // SAFETY: a single field read.
-                if unsafe { once.read() } {
+                if once() {
                     break;
                 }
                 continue;
@@ -226,13 +228,12 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
                 let count = if run.backend == POLL { entries } else { ready };
                 for index in 0..count.unsigned_abs() as usize {
                     // SAFETY: the kernel filled the first `count` entries of `events`.
-                    unsafe { entry(&mut run, index) };
+                    unsafe { entry(&run, index) };
                 }
             }
         }
         (ops.end)(reactor, false);
-        // SAFETY: a single field read.
-        if unsafe { once.read() } {
+        if once() {
             break;
         }
     }
@@ -242,7 +243,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
 /// Decode and dispatch entry `index`.
 /// # Safety
 /// `index` is below the count the kernel wait reported.
-unsafe fn entry(ops: &mut Loop<'_>, index: usize) {
+unsafe fn entry(ops: &Loop<'_>, index: usize) {
     let (socket, fd, mask) = match ops.backend {
         POLL => {
             let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
@@ -301,7 +302,7 @@ unsafe fn entry(ops: &mut Loop<'_>, index: usize) {
 }
 
 /// poll and epoll: read, write, error (unless read or write already ran), then a oneshot removal.
-fn ready(ops: &mut Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
+fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(socket);
     for (kind, bit) in [(0, READ), (1, WRITE)] {
@@ -329,7 +330,7 @@ fn ready(ops: &mut Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
-fn kqueue(ops: &mut Loop<'_>, udata: *mut c_void, filter: c_int) {
+fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
     if udata.is_null() {
         return;
     }
@@ -463,7 +464,7 @@ fn wait_failed(ops: &Loop<'_>, entries: c_int) {
 
 /// Warns that the read (0), write (1) or error (2) handler failed for the prepared event.
 fn handler_failed(ops: &Loop<'_>, kind: u32) {
-    let event = &ops.event;
+    let event = ops.event.get();
     let fd = event.fd;
     let name = |names: [&'static str; 3]| names.get(kind as usize).copied().unwrap_or_default();
     match ops.backend {
@@ -496,7 +497,7 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
 /// Runs the prepared event's read (0), write (1) or error (2) handler, as upstream's
 /// `get_handler`/`get_error_handler`; a missing handler fails like one returning
 /// `SW_ERR` rather than calling null.
-fn handle(ops: &mut Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
+fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
     let kind = match kind {
         0 => handlers::READ,
         1 => handlers::WRITE,
@@ -508,12 +509,17 @@ fn handle(ops: &mut Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
     };
     // SAFETY: the live reactor running this wait, on its thread.
     let reactor = unsafe { handlers::Running::new(ops.ops.reactor) };
-    handler(reactor, &mut ops.event)
+    // The handler may change the event, which the next handler of this socket sees; a
+    // nested wait prepares its own.
+    let mut event = ops.event.get();
+    let result = handler(reactor, &mut event);
+    ops.event.set(event);
+    result
 }
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
 /// fd (-1: the socket's own), and `hangup` marks `event_hup`. Returns the fd type.
-fn prepare(ops: &mut Loop<'_>, socket: Socket<'_>, fd: c_int, hangup: bool) -> c_int {
+fn prepare(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, hangup: bool) -> c_int {
     let (fd_type, own) = socket.read(|record| (record.fd_type, record.fd));
     let event = Event {
         fd: if fd < 0 { own } else { fd },
@@ -521,7 +527,7 @@ fn prepare(ops: &mut Loop<'_>, socket: Socket<'_>, fd: c_int, hangup: bool) -> c
         fd_type,
         socket: socket.as_ptr().cast(),
     };
-    ops.event = event;
+    ops.event.set(event);
     if hangup {
         socket.edit(|record| record.event_hup = 1);
     }

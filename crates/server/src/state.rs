@@ -656,7 +656,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// The operations of `swr_v1_server_run` this module runs.
+/// The operations of `crate::run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,

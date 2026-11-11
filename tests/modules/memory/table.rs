@@ -519,7 +519,7 @@ impl Upstream {
         assert!(this.add_column(b"name", TYPE_STRING, 32));
         assert!(this.add_column(b"score", TYPE_FLOAT, 0));
         assert!(
-            crate::members::swr_table_create(unsafe { &mut *table }),
+            unsafe { crate::members::swr_table_create(&mut *table) },
             "create failed"
         );
         Upstream(table)
@@ -622,10 +622,9 @@ const TEST_JPG_MD5SUM: &str = "64a42b4c0f3c65a14c23b60d3880a917";
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_create() {
     let table = Upstream::new(1024);
+    assert!(!unsafe { crate::members::swr_table_create(&mut *table.0) }); // create again should fail
     let ptr = table.ptr();
     assert!(ptr.memory_size() > ptr.size() * ptr.column_size());
-    assert!(!crate::members::swr_table_create(unsafe { &mut *table.0 })); // create again should fail
-    let ptr = table.ptr();
     assert!(table.set("php", &row(b"php", 1, 1.245)));
     assert!(table.set("java", &row(b"java", 2, JAVA_SCORE)));
     assert!(table.set("c++", &row(b"c++", 3, 4.888)));

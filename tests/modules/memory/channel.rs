@@ -25,19 +25,15 @@ fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
         seed ^= seed << 17;
         if seed & 3 != 0 {
             let bytes = vec![seed as u8; (seed % 25) as usize];
-            if unsafe {
-                swr_v1_memory_channel_in(&raw mut c, bytes.as_ptr().cast(), bytes.len() as i32)
-            } == 0
-            {
+            if swr_v1_memory_channel_in(&mut c, &bytes) == 0 {
                 model.push_back(bytes);
             }
         } else {
             let mut output = [0u8; 24];
             let consume = ((seed >> 2) & 1) as u32;
             let capacity = if seed & 32 != 0 { 24 } else { 0 };
-            let status = unsafe {
-                swr_v1_memory_channel_out(&raw mut c, output.as_mut_ptr().cast(), capacity, consume)
-            };
+            let status =
+                swr_v1_memory_channel_out(&mut c, &mut output[..capacity as usize], consume != 0);
             if let Some(front) = model.front() {
                 if front.len() <= capacity as usize {
                     assert_eq!(status, front.len() as i32);
@@ -83,10 +79,7 @@ fn invalid_wrap_tags_reject_push_peek_and_pop_without_writes() {
             };
             let before = state(&c);
             let byte = 42u8;
-            assert_eq!(
-                unsafe { swr_v1_memory_channel_in(&raw mut c, ptr::from_ref(&byte).cast(), 1) },
-                -1
-            );
+            assert_eq!(swr_v1_memory_channel_in(&mut c, &[byte]), -1);
             assert_eq!(state(&c), before);
             assert_eq!(memory, [0xab; 16]);
 
@@ -100,19 +93,9 @@ fn invalid_wrap_tags_reject_push_peek_and_pop_without_writes() {
             memory[11] = byte;
             let before_memory = memory;
             let before = state(&c);
-            for consume in [0, 1] {
+            for consume in [false, true] {
                 let mut output = [0xcdu8; 4];
-                assert_eq!(
-                    unsafe {
-                        swr_v1_memory_channel_out(
-                            &raw mut c,
-                            output.as_mut_ptr().cast(),
-                            4,
-                            consume,
-                        )
-                    },
-                    -1
-                );
+                assert_eq!(swr_v1_memory_channel_out(&mut c, &mut output, consume), -1);
                 assert_eq!(state(&c), before);
                 assert_eq!(memory, before_memory);
                 assert_eq!(output, [0xcd; 4]);
@@ -159,16 +142,14 @@ fn invalid_configuration_is_rejected_before_accessing_queue_storage() {
         let before = (c.head, c.tail, c.head_tag, c.tail_tag, c.num, c.bytes);
         let input = 42u8;
         assert_eq!(
-            unsafe { swr_v1_memory_channel_in(&raw mut c, ptr::from_ref(&input).cast(), 1) },
+            swr_v1_memory_channel_in(&mut c, &[input]),
             -1,
             "push boundary {case}"
         );
-        for consume in [0, 1] {
+        for consume in [false, true] {
             let mut output = [0xcdu8; 4];
             assert_eq!(
-                unsafe {
-                    swr_v1_memory_channel_out(&raw mut c, output.as_mut_ptr().cast(), 4, consume)
-                },
+                swr_v1_memory_channel_out(&mut c, &mut output, consume),
                 -1,
                 "output boundary {case}"
             );
@@ -216,12 +197,7 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
                 c.mem = memory.as_mut_ptr();
             }
             let start = c.tail as usize;
-            assert_eq!(
-                unsafe {
-                    swr_v1_memory_channel_in(&raw mut c, input.as_ptr().cast(), length as i32)
-                },
-                0
-            );
+            assert_eq!(swr_v1_memory_channel_in(&mut c, &input), 0);
             assert_eq!(&memory[..start], vec![0xab; start]);
             assert_eq!(&memory[start + 4..start + 4 + length], input);
             assert!(
@@ -230,21 +206,14 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
                     .all(|byte| *byte == 0xab)
             );
             let before = (c.head, c.tail, c.head_tag, c.tail_tag, c.num, c.bytes);
-            for consume in [0, 1] {
+            for consume in [false, true] {
                 let mut output = vec![0xcdu8; length];
                 assert_eq!(
-                    unsafe {
-                        swr_v1_memory_channel_out(
-                            &raw mut c,
-                            output.as_mut_ptr().cast(),
-                            length as i32,
-                            consume,
-                        )
-                    },
+                    swr_v1_memory_channel_out(&mut c, &mut output, consume),
                     length as i32
                 );
                 assert_eq!(output, input);
-                if consume == 0 {
+                if !consume {
                     assert_eq!(
                         (c.head, c.tail, c.head_tag, c.tail_tag, c.num, c.bytes),
                         before
@@ -271,39 +240,16 @@ fn record_locks_signals_and_prints_like_native_channel() {
             unsafe { swr_v1_memory_channel_init(record, 128, 32, flags) },
             0
         );
-        let queue = record.cast::<Channel>();
-        assert_eq!(unsafe { (*queue).mem }, record.wrapping_add(1).cast());
-        if flags & LOCK != 0 {
-            unsafe { swr_v1_memory_channel_lock(record, true) };
-        }
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_in(queue, b"life".as_ptr().cast(), 4) },
-            0
-        );
-        if flags & LOCK != 0 {
-            unsafe { swr_v1_memory_channel_lock(record, false) };
-        }
+        let live = unsafe { &*record };
+        assert_eq!(live.queue(|queue| queue.mem), record.wrapping_add(1).cast());
+        assert_eq!(live.push(b"life"), 0);
         let mut output = [0u8; 32];
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_out(queue, output.as_mut_ptr().cast(), 32, 0) },
-            4
-        );
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_out(queue, output.as_mut_ptr().cast(), 32, 1) },
-            4
-        );
+        assert_eq!(live.pop(&mut output, false), 4);
+        assert_eq!(live.pop(&mut output, true), 4);
         assert_eq!(&output[..4], b"life");
         if flags & NOTIFY != 0 {
-            assert_eq!(
-                unsafe { swr_v1_memory_channel_signal(record, true) },
-                0,
-                "notify"
-            );
-            assert_eq!(
-                unsafe { swr_v1_memory_channel_signal(record, false) },
-                0,
-                "wait"
-            );
+            assert_eq!(live.signal(true), 0, "notify");
+            assert_eq!(live.signal(false), 0, "wait");
         }
         unsafe { swr_v1_memory_channel_close(record) };
     }
@@ -368,41 +314,21 @@ impl Native {
     fn record(&self) -> *mut Record {
         self.0.as_ptr().cast::<Record>().cast_mut()
     }
+    fn live(&self) -> &Record {
+        unsafe { &*self.record() }
+    }
     fn push(&self, data: &[u8]) -> i32 {
-        unsafe {
-            swr_v1_memory_channel_lock(self.record(), true);
-            let status = swr_v1_memory_channel_in(
-                self.record().cast(),
-                data.as_ptr().cast(),
-                data.len() as i32,
-            );
-            swr_v1_memory_channel_lock(self.record(), false);
-            status
-        }
+        self.live().push(data)
     }
     /// `pop` (`consume`) or `peek`: -1 (`SW_ERR`) when empty.
     fn take(&self, buf: &mut [u8], consume: u32) -> i32 {
-        unsafe {
-            swr_v1_memory_channel_lock(self.record(), true);
-            let n = if (*self.record()).queue.num == 0 {
-                -1
-            } else {
-                swr_v1_memory_channel_out(
-                    self.record().cast(),
-                    buf.as_mut_ptr().cast(),
-                    buf.len() as i32,
-                    consume,
-                )
-            };
-            swr_v1_memory_channel_lock(self.record(), false);
-            n
-        }
+        self.live().pop(buf, consume != 0)
     }
     fn wait(&self) -> i32 {
-        unsafe { swr_v1_memory_channel_signal(self.record(), false) }
+        self.live().signal(false)
     }
     fn notify(&self) -> i32 {
-        unsafe { swr_v1_memory_channel_signal(self.record(), true) }
+        self.live().signal(true)
     }
 }
 
@@ -500,5 +426,5 @@ fn channel_notify() {
             }
         });
     });
-    unsafe { swr_v1_memory_channel_print(c.record()) };
+    c.live().print();
 }

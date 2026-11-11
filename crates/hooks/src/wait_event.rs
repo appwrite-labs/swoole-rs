@@ -26,7 +26,7 @@ pub struct EventWaitOps {
         error: *mut i32,
     ) -> *mut c_void,
     /// `co->yield_ex(timeout)`: 0, or the last error if it timed out or was cancelled.
-    pub park: unsafe extern "C" fn(co: *mut c_void, timeout: f64) -> i32,
+    pub park: fn(timeout: f64) -> i32,
     /// Take the socket off the reactor and release it, not its fd.
     pub remove: unsafe extern "C" fn(socket: *mut c_void),
 }
@@ -68,8 +68,7 @@ unsafe fn park(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps) -> Result
     if socket.is_null() {
         return Err(error);
     }
-    // SAFETY: native code's, in the current coroutine.
-    let park = |timeout| unsafe { (ops.park)(co, timeout) };
+    let park = ops.park;
     let error = park(timeout);
     if error != 0 && waiter.revents != 0 {
         // An event fired in the loop pass that timed out or cancelled the
@@ -226,9 +225,8 @@ pub(crate) mod native {
         socket.cast()
     }
 
-    pub(super) unsafe extern "C" fn park(co: *mut c_void, timeout: f64) -> i32 {
-        // SAFETY: the current coroutine.
-        if unsafe { coroutine_yield_ex(co.cast(), timeout) } {
+    pub(super) fn park(timeout: f64) -> i32 {
+        if crate::resolve::park_for(timeout) {
             0
         } else {
             log::last_error()
@@ -249,7 +247,7 @@ pub(crate) mod native {
 /// # Safety
 /// `ops` is callable in the current coroutine.
 #[must_use]
-pub unsafe extern "C" fn swr_v1_hook_wait_event(
+pub unsafe fn swr_v1_hook_wait_event(
     fd: i32,
     events: i32,
     timeout: f64,
@@ -333,15 +331,15 @@ mod tests {
         ADDED.set(ADDED.get() - 1);
     }
     /// The reactor fires an error then a read before the deferred resume runs.
-    unsafe extern "C" fn fires_error(co: *mut c_void, _: f64) -> i32 {
-        assert_eq!(unsafe { event_ready(WAITER.get(), ERROR) }, co);
+    fn fires_error(_: f64) -> i32 {
+        assert_eq!(unsafe { event_ready(WAITER.get(), ERROR) }, CO);
         assert!(unsafe { event_ready(WAITER.get(), READ) }.is_null());
         0
     }
-    unsafe extern "C" fn times_out(_: *mut c_void, _: f64) -> i32 {
+    fn times_out(_: f64) -> i32 {
         libc::ETIMEDOUT
     }
-    unsafe extern "C" fn unused(_: *mut c_void, _: f64) -> i32 {
+    fn unused(_: f64) -> i32 {
         unreachable!()
     }
     thread_local! {
@@ -349,13 +347,13 @@ mod tests {
     }
     /// A read fires, then the timer times the wait out before the deferred
     /// resume runs; the second park takes that resume.
-    unsafe extern "C" fn fires_then_times_out(co: *mut c_void, timeout: f64) -> i32 {
+    fn fires_then_times_out(timeout: f64) -> i32 {
         PARKS.set(PARKS.get() + 1);
         if PARKS.get() == 2 {
             assert_eq!(timeout, 0.0);
             return 0;
         }
-        assert_eq!(unsafe { event_ready(WAITER.get(), READ) }, co);
+        assert_eq!(unsafe { event_ready(WAITER.get(), READ) }, CO);
         libc::ETIMEDOUT
     }
 
@@ -369,12 +367,7 @@ mod tests {
         assert_eq!(ADDED.get(), 0);
     }
 
-    fn wait(
-        fd: i32,
-        events: i32,
-        timeout: f64,
-        park: unsafe extern "C" fn(*mut c_void, f64) -> i32,
-    ) -> WaitEvent {
+    fn wait(fd: i32, events: i32, timeout: f64, park: fn(f64) -> i32) -> WaitEvent {
         let ops = EventWaitOps {
             current,
             add,

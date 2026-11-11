@@ -22,7 +22,7 @@ use swoole_rs_zend::{
         swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_array_dup,
         zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval, zval_ptr_dtor,
     },
-    value::{table, update_string},
+    value::table,
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -80,12 +80,9 @@ pub(crate) fn worker(object: ServerObject, serv: view::Server<'_>) -> Option<Res
 }
 
 fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
-    let mut zserv = crate::dispatch::undef();
-    // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
-    unsafe { swoole_rs_zend::set_object(&raw mut zserv, object.raw()) };
     // SAFETY: the Server object and its class, which declares `setting`.
     let setting = unsafe {
-        swoole_rs_zend::host::array_property_of(object.class(), &raw mut zserv, c"setting")
+        swoole_rs_zend::host::array_property_of(object.class(), object.raw(), c"setting")
     }?;
     // SAFETY: the property's array, replaced below.
     unsafe { zval_ptr_dtor(setting) };
@@ -130,8 +127,7 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
         if !path.is_null() {
             // SAFETY: the request's NUL-terminated script.
             let path = unsafe { CStr::from_ptr(path) };
-            // SAFETY: the object and its class.
-            unsafe { update_string(object.class(), object.raw(), c"bootstrap", path) };
+            crate::lifecycle::Props::own(object).bytes(c"bootstrap", path.to_bytes());
         }
     }
     let script = string_of(slot);

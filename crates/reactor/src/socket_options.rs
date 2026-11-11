@@ -33,7 +33,7 @@ pub fn swr_v1_socket_reset_on_close(fd: c_int) -> bool {
 /// `fcntl(fd, command[, argument])`, retried on `EINTR`.
 fn fcntl(fd: c_int, command: c_int, argument: Option<c_int>) -> c_int {
     loop {
-        // F_GETFL/F_GETFD ignore the argument; F_SETFL/F_SETFD take it.
+        // F_GETFL/F_GETFD ignore the argument.
         let result = swoole_rs_corebase::sys::fcntl(fd, command, argument.unwrap_or(0));
         if result >= 0 || Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return result;

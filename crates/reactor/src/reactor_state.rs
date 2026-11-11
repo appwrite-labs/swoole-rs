@@ -617,7 +617,6 @@ impl ReactorState {
 
     pub(crate) fn close_backend(&mut self) {
         if self.backend_fd >= 0 {
-            // This state owns the descriptor and invalidates ownership immediately.
             swoole_rs_corebase::sys::close(self.backend_fd);
             self.backend_fd = -1;
         }

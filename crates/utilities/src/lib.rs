@@ -9,7 +9,7 @@
 mod frontdoor;
 pub use frontdoor::*;
 mod helpers;
-pub use helpers::{swr_v1_utils_strlchr, timezone};
+pub use helpers::timezone;
 mod logger;
 mod sni;
 pub use sni::sni_wildcard_matches;
@@ -276,27 +276,46 @@ pub extern "C" fn swr_v1_utils_log_label(level: i32) -> *const std::ffi::c_char 
     log_label(level).as_ptr()
 }
 
-/// Static rotation date format; unknown modes preserve the native daily fallback.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_log_rotation(rotation: i32) -> *const std::ffi::c_char {
+/// The rotation date format; unknown modes preserve the native daily fallback.
+fn log_rotation(rotation: i32) -> &'static std::ffi::CStr {
     match rotation {
         1 => c"%Y%m",
         3 => c"%Y%m%d%H",
         4 => c"%Y%m%d%H%M",
         _ => c"%Y%m%d",
     }
-    .as_ptr()
 }
 
-struct LogSink<'a> {
-    bytes: &'a mut [MaybeUninit<u8>],
+/// Static rotation date format; unknown modes preserve the native daily fallback.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_utils_log_rotation(rotation: i32) -> *const std::ffi::c_char {
+    log_rotation(rotation).as_ptr()
+}
+
+/// A byte the line formatters write: a Rust buffer's, or a C caller's not yet written.
+pub(crate) trait Slot {
+    fn set(&mut self, byte: u8);
+}
+impl Slot for u8 {
+    fn set(&mut self, byte: u8) {
+        *self = byte;
+    }
+}
+impl Slot for MaybeUninit<u8> {
+    fn set(&mut self, byte: u8) {
+        self.write(byte);
+    }
+}
+
+struct LogSink<'a, T> {
+    bytes: &'a mut [T],
     required: usize,
 }
-impl LogSink<'_> {
+impl<T: Slot> LogSink<'_, T> {
     fn finish(self) -> usize {
         if self.required > i32::MAX as usize {
             if let Some(first) = self.bytes.first_mut() {
-                first.write(0);
+                first.set(0);
             }
             return usize::MAX;
         }
@@ -304,19 +323,19 @@ impl LogSink<'_> {
         let Some(terminator) = self.bytes.get_mut(written) else {
             return self.required;
         };
-        terminator.write(0);
+        terminator.set(0);
         written
     }
     fn append(&mut self, bytes: &[u8]) {
         let start = self.required.min(self.bytes.len().saturating_sub(1));
         let count = bytes.len().min(self.bytes.len().saturating_sub(1) - start);
         for (output, byte) in self.bytes.iter_mut().skip(start).take(count).zip(bytes) {
-            output.write(*byte);
+            output.set(*byte);
         }
         self.required = self.required.saturating_add(bytes.len());
     }
 }
-impl std::fmt::Write for LogSink<'_> {
+impl<T: Slot> std::fmt::Write for LogSink<'_, T> {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
         self.append(value.as_bytes());
         Ok(())
@@ -324,7 +343,7 @@ impl std::fmt::Write for LogSink<'_> {
 }
 
 // printf precision is a signed int: negative means read through the terminator.
-unsafe fn log_bytes<'a>(data: *const u8, precision: i32) -> &'a [u8] {
+pub(crate) unsafe fn log_bytes<'a>(data: *const u8, precision: i32) -> &'a [u8] {
     if precision == 0 {
         return &[];
     }
@@ -360,27 +379,62 @@ pub unsafe extern "C" fn swr_v1_utils_log_line(
     content: *const u8,
     content_precision: i32,
 ) -> usize {
-    use std::fmt::Write;
-    if capacity > i32::MAX as usize || (capacity != 0 && output.is_null()) {
+    // SAFETY: per the contract.
+    let Some(bytes) = (unsafe { log_output(output, capacity) }) else {
         return 0;
-    }
+    };
     if (date.is_null() && date_precision != 0) || (content.is_null() && content_precision != 0) {
-        if capacity != 0 {
-            // SAFETY: non-null when `capacity != 0` (checked above), writable.
-            unsafe { output.write(0) };
+        if let Some(first) = bytes.first_mut() {
+            first.write(0);
         }
         return 0;
     }
-    let bytes = if capacity == 0 {
-        &mut []
-    } else {
-        // SAFETY: non-null, `capacity <= i32::MAX` (checked above), writable and disjoint.
-        unsafe { std::slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), capacity) }
-    };
-    let mut sink = LogSink { bytes, required: 0 };
-    sink.append(b"[");
     // SAFETY: `date` is readable through its NUL or precision (null only at precision 0).
-    sink.append(unsafe { log_bytes(date, date_precision) });
+    let date = unsafe { log_bytes(date, date_precision) };
+    // SAFETY: as for `date`.
+    let content = unsafe { log_bytes(content, content_precision) };
+    log_line(bytes, date, symbol, pid, worker, level, content)
+}
+
+/// The buffer a C caller lends for a line; `None` when it breaks the contract.
+/// # Safety
+/// `output` is writable for `capacity` bytes and disjoint from the inputs, and
+/// null only for zero capacity.
+unsafe fn log_output<'a>(output: *mut u8, capacity: usize) -> Option<&'a mut [MaybeUninit<u8>]> {
+    if capacity > i32::MAX as usize || (capacity != 0 && output.is_null()) {
+        return None;
+    }
+    if capacity == 0 {
+        return Some(&mut []);
+    }
+    // SAFETY: non-null, `capacity <= i32::MAX` (checked above), writable and disjoint.
+    Some(unsafe { std::slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), capacity) })
+}
+
+/// `bytes` through its first NUL, as printf's `%.*s` reads it.
+fn through_nul(bytes: &[u8]) -> &[u8] {
+    memchr::memchr(0, bytes).map_or(bytes, |end| bytes.get(..end).unwrap_or_default())
+}
+
+/// The pinned `Logger::put` line in `output`, NUL-terminated and clamped, with
+/// `date` and `content` read through their first NUL: the full length, or
+/// `usize::MAX` once it no longer fits an `int`.
+pub(crate) fn log_line(
+    output: &mut [impl Slot],
+    date: &[u8],
+    symbol: u8,
+    pid: i32,
+    worker: i32,
+    level: i32,
+    content: &[u8],
+) -> usize {
+    use std::fmt::Write;
+    let mut sink = LogSink {
+        bytes: output,
+        required: 0,
+    };
+    sink.append(b"[");
+    sink.append(through_nul(date));
     sink.append(&[b' ', symbol]);
     #[expect(
         clippy::let_underscore_must_use,
@@ -389,9 +443,23 @@ pub unsafe extern "C" fn swr_v1_utils_log_line(
     let _ = write!(sink, "{pid}.{worker}]\t");
     sink.append(log_label(level).to_bytes());
     sink.append(b"\t");
-    // SAFETY: as for `date`.
-    sink.append(unsafe { log_bytes(content, content_precision) });
+    sink.append(through_nul(content));
     sink.append(b"\n");
+    sink.finish()
+}
+
+/// The logger's `<.microseconds>` suffix in `output`, as [`log_line`] writes a line.
+pub(crate) fn log_micros(output: &mut [impl Slot], microseconds: i64) -> usize {
+    use std::fmt::Write;
+    let mut sink = LogSink {
+        bytes: output,
+        required: 0,
+    };
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "integer Display has no fallible callbacks and this sink never returns Err"
+    )]
+    let _ = write!(sink, "<.{microseconds}>");
     sink.finish()
 }
 
@@ -405,23 +473,8 @@ pub unsafe extern "C" fn swr_v1_utils_log_micros(
     capacity: usize,
     microseconds: i64,
 ) -> usize {
-    use std::fmt::Write;
-    if capacity > i32::MAX as usize || (capacity != 0 && output.is_null()) {
-        return 0;
-    }
-    let bytes = if capacity == 0 {
-        &mut []
-    } else {
-        // SAFETY: non-null, `capacity <= i32::MAX` (checked above), writable and disjoint.
-        unsafe { std::slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), capacity) }
-    };
-    let mut sink = LogSink { bytes, required: 0 };
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "integer Display has no fallible callbacks and this sink never returns Err"
-    )]
-    let _ = write!(sink, "<.{microseconds}>");
-    sink.finish()
+    // SAFETY: per the contract.
+    unsafe { log_output(output, capacity) }.map_or(0, |bytes| log_micros(bytes, microseconds))
 }
 
 #[cfg(test)]
