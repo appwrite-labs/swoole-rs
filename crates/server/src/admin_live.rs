@@ -367,9 +367,7 @@ impl Facts for Live<'_> {
         (0..tables.ports().len())
             .filter_map(|index| tables.port_config(index))
             .map(|config| {
-                let host = config.host();
-                // SAFETY: the host's bytes, which the port keeps.
-                let host = unsafe { core::slice::from_raw_parts(host.data.cast(), host.length) };
+                let host = config.host_bytes();
                 let protocols = (crate::port_config::methods().get_protocols)(config);
                 let connections = serv.port_connections(config);
                 Port {

@@ -14,7 +14,7 @@ use swoole_rs_hooks::stdio::{
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
 use swoole_rs_websocket_ffi::frame_api::get_package_length;
 use swoole_rs_zend::{
-    Array, Call, Value, bailout, set_object, string,
+    Array, Call, Owned, Value, bailout, set_object, string,
     sys::{zend_object, zval, zval_ptr_dtor},
     value,
 };
@@ -66,14 +66,17 @@ const WEBSOCKET_HEADER_LEN: u8 = 2;
 
 /// `php_swoole_check_reactor()`, then a `Coroutine\Socket` of `kind`, or
 /// `errno`.
-pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<*mut zend_object, c_int> {
+pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, c_int> {
     swoole_rs_phpruntime::check_reactor();
     #[expect(clippy::cast_possible_truncation, reason = "a swSocketType")]
-    let object = crate::socket::create_socket(kind as i32);
-    if object.is_null() {
-        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    match crate::socket::owner::create_kind(kind as i32) {
+        Ok(Some(object)) => Ok(object),
+        Ok(None) => Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
+        Err(bailout) => {
+            bailout.defer();
+            Err(0)
+        }
     }
-    Ok(object)
 }
 
 /// The close hook: hands the popped write buffer to the client's conn.

@@ -33,7 +33,7 @@ pub use async_net::*;
 pub use client::*;
 pub use http_client::*;
 pub use http_native::{WebSocket, register_websocket, websocket_protocol};
-pub use native::Co;
+pub use native::{Co, NewSocket};
 pub use net::*;
 pub use resolver::*;
 pub use select::*;

@@ -117,6 +117,14 @@ impl PortConfig {
         unsafe { swr_v1_core_string_view(&raw const *self.host) }
     }
 
+    /// The host's bytes, without the NUL.
+    #[must_use]
+    pub fn host_bytes(&self) -> &[u8] {
+        let host = self.host();
+        // SAFETY: the slot's view covers its length while `self` is borrowed.
+        unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) }
+    }
+
     /// `ListenPort::is_dtls()`: the port's context speaks DTLS.
     #[must_use]
     pub fn is_dtls(&self) -> bool {
