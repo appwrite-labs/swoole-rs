@@ -2301,16 +2301,17 @@ fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
 /// the task notify pipes; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::factory_ops as process;
     use crate::ops::{
         OP_DESTROY_TASK_WORKERS, OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY,
         OP_PIPE_TO_WORKER, OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
         OP_TASK_POOL_SETUP,
     };
     use core::ptr::{null, null_mut};
+    use swoole_rs_process::methods as pool;
     use swoole_rs_process::workers::ops::{
         RUN_CREATE_PROCESS_FACTORY, RUN_DESTROY_PROCESS_FACTORY,
     };
-    use swoole_rs_process::{methods as pool, workers::factory_methods as process};
     /// `SW_IPC_MSGQUEUE`, `SW_TASK_WORKER` and `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
     const IPC_MSGQUEUE: u64 = 2;
     const SW_TASK_WORKER: c_int = 4;
