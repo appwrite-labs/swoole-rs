@@ -153,12 +153,14 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
         data.property.serv = ptr::null_mut();
     }
     if !data.port.is_null() {
-        // SAFETY: a bound port, which outlives this call.
-        free_callable(take(
-            &mut unsafe { port_config::of(data.port) }
-                .protocol
-                .private_data_1,
-        ));
+        if crate::lifecycle::owns_shared() {
+            // SAFETY: a bound port, which outlives this call, on the thread that owns its slots.
+            free_callable(take(
+                &mut unsafe { port_config::of(data.port) }
+                    .protocol
+                    .private_data_1,
+            ));
+        }
         data.port = ptr::null_mut();
     }
 }

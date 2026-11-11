@@ -775,6 +775,7 @@ name = "swoole-rs-phpevents"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
  "swoole-rs-phpprocess",

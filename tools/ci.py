@@ -70,7 +70,8 @@ def gh(*args):
         # Every agent shares one account's hourly API limit (and every job the Actions token's):
         # wait for the reset when the deadline allows, else say when it comes.
         if 'API rate limit exceeded' in result.stderr:
-            bucket = 'search' if len(args) > 1 and args[1].startswith('search/') else 'core'  # their own limits
+            bucket = ('search' if len(args) > 1 and args[1].startswith('search/')  # their own limits
+                      else 'graphql' if 'graphql' in args else 'core')
             reset = subprocess.run(['gh', 'api', 'rate_limit', '--jq', f'.resources.{bucket}.reset'],
                                    capture_output=True, text=True).stdout.strip()
             wait = int(reset) - time.time() + 1 if reset.isdigit() else None
@@ -96,15 +97,16 @@ def say(message):
 
 
 def resolve(commit):
-    try:
-        return gh('api', 'repos/{owner}/{repo}/commits/' + (commit or 'main'), '-q', '.sha').strip()
-    except subprocess.CalledProcessError:
-        # Auto-merge deletes a PR's branch: resolve it through that PR's head.
-        head = gh('api', f'repos/{{owner}}/{{repo}}/pulls?state=all&head={{owner}}:{commit or "main"}',
-                  '-q', '.[0].head.sha // ""').strip()
-        if not head:
-            raise
-        return head
+    rev = commit or 'main'
+    found = graphql(RESOLVE_QUERY, rev=rev)[0]['object']
+    if found:
+        return found['oid']
+    # Auto-merge deletes a PR's branch: resolve it through that PR's head.
+    head = gh('api', f'repos/{{owner}}/{{repo}}/pulls?state=all&head={{owner}}:{rev}',
+              '-q', '.[0].head.sha // ""').strip()
+    if not head:
+        raise subprocess.CalledProcessError(1, ['gh', 'resolve', rev], '', f'no commit or PR branch named {rev}')
+    return head
 
 
 def seconds(job):
@@ -114,22 +116,26 @@ def seconds(job):
     return int((completed - started).total_seconds()) if started and completed else None
 
 
-def status(workflow, sha):
-    runs = json.loads(gh('run', 'list', '--workflow', workflow, '--commit', sha, '--limit', '1',
-                         '--json', 'databaseId,status,conclusion,url'))
-    if not runs:
+def status(workflow, sha, run=None):
+    """The newest `workflow` run on sha (or run `run`), with its jobs and their annotations: one
+    GraphQL query over the commit's check suites, where REST took a run list, a job list and a call
+    per failed job's annotations."""
+    commit = graphql(RUNS_QUERY, rev=sha)[0]['object'] or {'checkSuites': {'nodes': []}}
+    suites = [suite for suite in commit['checkSuites']['nodes'] if suite['workflowRun']
+              and suite['workflowRun']['workflow']['resourcePath'].endswith('/' + workflow)
+              and run in (None, suite['workflowRun']['databaseId'])]
+    if not suites:
         return {'workflow': workflow, 'commit': sha, 'state': 'none'}
-    return run_status(workflow, sha, runs[0])
-
-
-def run_status(workflow, sha, run):
-    state = ('running' if run['status'] != 'completed' else 'passed' if run['conclusion'] == 'success'
-             else 'cancelled' if run['conclusion'] == 'cancelled' else 'failed')
-    jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--json', 'jobs'))['jobs']
-    return {'workflow': workflow, 'commit': sha, 'state': state, 'run': run['databaseId'], 'url': run['url'],
-            'jobs': [{'name': job['name'], 'id': job.get('databaseId'),
-                      'state': job['conclusion'] or job['status'], 'seconds': seconds(job)}
-                     for job in jobs]}
+    suite = max(suites, key=lambda suite: suite['workflowRun']['databaseId'])
+    state = ('running' if suite['status'] != 'COMPLETED' else 'passed' if suite['conclusion'] == 'SUCCESS'
+             else 'cancelled' if suite['conclusion'] == 'CANCELLED' else 'failed')
+    return {'workflow': workflow, 'commit': sha, 'state': state, 'run': suite['workflowRun']['databaseId'],
+            'url': suite['workflowRun']['url'],
+            'jobs': [{'name': job['name'], 'id': job['databaseId'], 'state': (job['conclusion'] or job['status']).lower(),
+                      'seconds': seconds(job),
+                      'annotations': [f"{row['title']}: {row['message']}" if row.get('title') else row['message']
+                                      for row in job['annotations']['nodes']]}
+                     for job in suite['checkRuns']['nodes']]}
 
 
 def successor(workflow, sha):
@@ -179,21 +185,9 @@ def wait(workflow, sha, deadline, poll):
         time.sleep(poll)
 
 
-def annotations(job_id):
-    """A job's annotations as 'title: message' lines: what failed, without its log."""
-    rows = json.loads(gh('api', f'repos/{{owner}}/{{repo}}/check-runs/{job_id}/annotations?per_page=100') or '[]')
-    return [f"{row['title']}: {row['message']}" if row.get('title') else row['message'] for row in rows]
-
-
 def failure_annotations(result):
     """Each failed job's annotations, even while its siblings still run."""
-    found = {}
-    for job in result.get('jobs', []):
-        if job['state'] == 'failure' and job.get('id'):
-            try:
-                found[job['name']] = annotations(job['id'])
-            except subprocess.CalledProcessError as error:
-                found[job['name']] = ['Annotations unavailable: ' + error.stderr.strip()]
+    found = {job['name']: job['annotations'] for job in result.get('jobs', []) if job['state'] == 'failure'}
     return {**result, 'annotations': found} if found else result
 
 
@@ -218,14 +212,25 @@ def phases(run, tails=None):
         return passed
 
 
+def completed(workflow):
+    """main's 30 newest completed `workflow` runs, newest first, listed once per invocation."""
+    if workflow not in COMPLETED:
+        COMPLETED[workflow] = json.loads(gh('run', 'list', '--workflow', workflow, '--branch', 'main', '--status',
+                                            'completed', '--limit', '30', '--json', 'databaseId,conclusion,url,headSha'))
+    return COMPLETED[workflow]
+
+
+COMPLETED = {}
+
+
 def job_conclusions(run):
     return {job['name']: job['conclusion'] for job in json.loads(gh('run', 'view', str(run), '--json', 'jobs'))['jobs']}
 
 
-def gate_regressions(job_id):
+def gate_regressions(job):
     """The PHPTs the gate job annotated as regressions (pass on upstream, fail here)."""
     prefix = REGRESSION + ': '
-    return [line[len(prefix):].split(' (')[0] for line in annotations(job_id) if line.startswith(prefix)]
+    return [line[len(prefix):].split(' (')[0] for line in job['annotations'] if line.startswith(prefix)]
 
 
 def phase_changes(result):
@@ -235,9 +240,7 @@ def phase_changes(result):
     if current is None:
         return result
     result = {**result, 'failed_phases': sorted(name for name, passed in current.items() if not passed)}
-    runs = json.loads(gh('run', 'list', '--workflow', result['workflow'], '--branch', 'main', '--status', 'completed',
-                         '--limit', '30', '--json', 'databaseId,conclusion,url'))
-    for run in runs:
+    for run in completed(result['workflow']):
         previous = run['databaseId'] < result['run'] and run['conclusion'] in ('success', 'failure') and phases(run['databaseId'])
         if previous:
             # A phase the previous run didn't have is new too: it was added and fails on its first run.
@@ -245,12 +248,13 @@ def phase_changes(result):
             # A job with no phases of its own (phpt-gate) fails without any failed phase.
             # Like a phase, it's new unless it already failed in the previous run; the
             # full-gates shards are left out, since their phases speak for them.
-            before = job_conclusions(run['databaseId'])
+            before = {job['name']: job['state']
+                      for job in status(result['workflow'], run['headSha'], run['databaseId']).get('jobs', [])}
             for job in sorted((job for job in result.get('jobs', []) if job['state'] == 'failure'),
                               key=lambda job: job['name']):
                 name = job['name']
                 if name.split(' (')[0] != PHASES_JOB and before.get(name) != 'failure':
-                    regressed = gate_regressions(job['id']) if name == GATE_JOB and job.get('id') else []
+                    regressed = gate_regressions(job) if name == GATE_JOB else []
                     new.append(f"{name} job" + (f" ({', '.join(regressed)})" if regressed else ''))
             return {**result, 'previous_run': run['url'], 'new_failures': new,
                     'fixed': sorted(name for name, passed in current.items() if passed and previous.get(name) is False),
@@ -285,11 +289,9 @@ def filed(failure):
 
 def completed_main():
     """Newest completed success/failure, skipping replaced/cancelled pending runs."""
-    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
-                         '--limit', '30', '--json', 'databaseId,conclusion,status,url,headSha'))
-    for run in runs:
+    for run in completed('merge.yml'):
         if run.get('conclusion') in ('success', 'failure'):
-            return diagnostics(run_status('merge.yml', run['headSha'], run))
+            return diagnostics(status('merge.yml', run['headSha'], run['databaseId']))
     return None
 
 
@@ -338,17 +340,26 @@ def report(result, as_json):
 WORKFLOW_SCOPE = re.compile(r'needs (?:a token with )?workflow scope')
 
 
-def graphql(query):
+def graphql(query, **variables):
     """A query over this repository and the token's scopes: (data, scopes, or None when the
     token is fine-grained or an app's and lists none). GraphQL has its own budget, which the
     REST one every agent shares can't spare (#2508); -i adds the response headers."""
-    text = gh('api', '-i', 'graphql', '-F', 'owner={owner}', '-F', 'repo={repo}', '-f', 'query=' + query)
+    text = gh('api', '-i', 'graphql', '-F', 'owner={owner}', '-F', 'repo={repo}',
+              *(arg for name, value in variables.items() for arg in ('-f', f'{name}={value}')), '-f', 'query=' + query)
     head, body = re.split(r'\r?\n\r?\n', text, maxsplit=1)
     scopes = next((value for name, _, value in (line.partition(':') for line in head.splitlines())
                    if name.lower() == 'x-oauth-scopes'), None)
     return json.loads(body)['data']['repository'], scopes
 
 
+RESOLVE_QUERY = '''query($owner: String!, $repo: String!, $rev: String!) { repository(owner: $owner, name: $repo) {
+  object(expression: $rev) { oid } } }'''
+# A commit's workflow runs (check suites), each with its jobs and their annotations.
+RUNS_QUERY = '''query($owner: String!, $repo: String!, $rev: String!) { repository(owner: $owner, name: $repo) {
+  object(expression: $rev) { ... on Commit { checkSuites(first: 20) { nodes {
+    status conclusion workflowRun { databaseId url workflow { resourcePath } }
+    checkRuns(first: 100) { nodes { name databaseId status conclusion startedAt completedAt
+      annotations(first: 50) { nodes { title message } } } } } } } } } }'''
 READY_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {
   issues(states: OPEN, labels: ["status:ready"], first: 100) { nodes {
     number title createdAt labels(first: 20) { nodes { name } } issueDependenciesSummary { blockedBy } } } } }'''
