@@ -635,8 +635,8 @@ impl Co {
     }
 
     /// `Socket::read(buf, n)`.
-    pub fn read(self, buf: &mut [u8]) -> isize {
-        let (buf, n) = (buf.as_mut_ptr(), buf.len());
+    pub fn read(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
+        let (buf, n) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
         uring!(self, |ops| ring::plain(ops, ring::READ, buf.cast(), n));
         let call = call!(|s, at, len| libc::read((*s).fd, at.cast(), len));
         // SAFETY: each try reads into the caller's buffer.

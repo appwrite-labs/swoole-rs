@@ -8,6 +8,20 @@
 )]
 use libc::{c_int, off_t, pid_t};
 use std::ffi::CStr;
+use std::mem::MaybeUninit;
+
+/// A byte a read may overwrite with any value: `u8`, or one not yet written
+/// (`CppString::spare`). Readers only write their buffer, so they take either.
+pub trait ReadSlot: sealed::Sealed {}
+impl ReadSlot for u8 {}
+impl ReadSlot for MaybeUninit<u8> {}
+
+mod sealed {
+    /// Only one-byte types every bit pattern initializes.
+    pub trait Sealed {}
+    impl Sealed for u8 {}
+    impl Sealed for std::mem::MaybeUninit<u8> {}
+}
 
 /// This thread's errno.
 #[must_use]
@@ -28,7 +42,7 @@ pub fn set_errno(value: c_int) {
 }
 
 /// `read(2)` into `buf`.
-pub fn read(fd: c_int, buf: &mut [u8]) -> isize {
+pub fn read(fd: c_int, buf: &mut [impl ReadSlot]) -> isize {
     // SAFETY: `buf` is writable for its length.
     unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }
 }
@@ -40,7 +54,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> isize {
 }
 
 /// `pread(2)` into `buf` at `offset`.
-pub fn pread(fd: c_int, buf: &mut [u8], offset: off_t) -> isize {
+pub fn pread(fd: c_int, buf: &mut [impl ReadSlot], offset: off_t) -> isize {
     // SAFETY: `buf` is writable for its length.
     unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) }
 }
