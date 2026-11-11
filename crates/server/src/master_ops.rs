@@ -392,7 +392,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_EVENT_FD => sign(o.ctx.server_fd),
         OP_CONN_RESET => {
             let fd = o.edit_sock(|s| s.fd);
-            let conn = core::ptr::from_mut(o.tables().connection_at(fd)?);
+            let conn = o.tables().connection_slot(fd)?;
             o.ctx.conn = conn.cast();
             #[expect(
                 clippy::cast_possible_truncation,
@@ -640,9 +640,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         LOG_MANAGER_EXIT => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let status = arg as c_int;
-            let signal = swoole_rs_process::signal::swoole_signal_to_str(libc::WTERMSIG(status));
-            // SAFETY: the static text `swoole_signal_to_str` just wrote.
-            let signal = unsafe { text(signal) };
+            let signal = swoole_rs_process::signal::signal_name(libc::WTERMSIG(status));
+            let signal = signal.as_cstr().to_string_lossy();
             let exit = libc::WEXITSTATUS(status);
             let m =
                 format_args!("Fatal Error: manager process exit. status={exit}, signal=[{signal}]");
@@ -2841,24 +2840,26 @@ mod tests {
     fn config_ops_read_and_write_the_config() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        // SAFETY: a fresh state owns its config; the ops below touch only it.
+        // SAFETY: a fresh state owns its config; the ops below touch only it. The test
+        // reads it through the state's pointer, as the ops do, so no reference of its
+        // own outlives an op.
         unsafe {
-            let config = &mut *(*state).config();
-            config.send_timeout = 2.5;
-            config.worker_num = 6;
+            let config = (*state).config();
+            (*config).send_timeout = 2.5;
+            (*config).worker_num = 6;
             assert_eq!(
                 answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT, 0),
                 Some(2.5f64.to_bits())
             );
             answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT_MIN, 0);
-            assert_eq!(config.send_timeout, 0.001);
+            assert_eq!((*config).send_timeout, 0.001);
             answer(&raw mut ctx, &*state, OP_CLEAR_SEND_YIELD, 0);
-            assert!(!config.send_yield);
+            assert!(!(*config).send_yield);
             answer(&raw mut ctx, &*state, OP_BASE_REACTORS, 0);
-            assert_eq!(config.reactor_num, 6);
-            config.scheduler_warning = true;
+            assert_eq!((*config).reactor_num, 6);
+            (*config).scheduler_warning = true;
             answer(&raw mut ctx, &*state, OP_WARNING_RESET, 7 << 1);
-            assert!(!config.scheduler_warning);
+            assert!(!(*config).scheduler_warning);
             assert_eq!(answer(&raw mut ctx, &*state, OP_WARNING_TIME, 0), Some(7));
             crate::swr_v1_server_state_free(state);
         }
@@ -2922,6 +2923,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn allocation_ops_fill_the_config_tables_and_counters() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
@@ -2978,7 +2980,7 @@ mod tests {
         ctx.port = (&raw mut port).cast();
         ctx.data = data.as_ptr().cast();
         ctx.length = 3;
-        let socket = (&raw const sock).addr() as u64;
+        let socket = (&raw const sock).expose_provenance() as u64;
         // SAFETY: the context's records are live above.
         unsafe {
             assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(1));

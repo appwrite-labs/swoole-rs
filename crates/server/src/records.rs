@@ -108,9 +108,13 @@ impl ServerTables {
         reason = "a slot of the connection table, written under the server's own synchronization"
     )]
     pub(crate) fn connection_at(&self, fd: c_int) -> Option<&mut ConnectionRecord> {
-        let slot = self.connections().get(usize::try_from(fd).ok()?)?;
         // SAFETY: a slot of the live table; the server's own synchronization orders writes.
-        Some(unsafe { &mut *slot.get() })
+        Some(unsafe { &mut *self.connection_slot(fd)? })
+    }
+
+    /// The slot of `fd` as the table's own pointer, or `None` when `fd` is outside it.
+    pub(crate) fn connection_slot(&self, fd: c_int) -> Option<*mut ConnectionRecord> {
+        Some(self.connections().get(usize::try_from(fd).ok()?)?.get())
     }
 
     /// The session slots, or null before they're mapped.
@@ -177,14 +181,25 @@ impl crate::ServerState {
         unsafe { sessions.wrapping_add(index).as_mut() }
     }
 
-    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`, or null.
-    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: u32) -> *mut ConnectionRecord {
-        self.connection(key, kind)
-            .map_or(core::ptr::null_mut(), core::ptr::from_mut)
+    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "a slot of the connection table, written under the server's own synchronization"
+    )]
+    pub(crate) fn connection(&self, key: libc::c_long, kind: u32) -> Option<&mut ConnectionRecord> {
+        // SAFETY: null or a slot of the live table.
+        unsafe { self.connection_ptr(key, kind).as_mut() }
     }
 
-    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`.
-    pub(crate) fn connection(&self, key: libc::c_long, kind: u32) -> Option<&mut ConnectionRecord> {
+    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`, or null.
+    /// The pointer is the table's own, not one taken from a reference, so a
+    /// later lookup of the slot (onClose's `exist()` during the close holding
+    /// this one) leaves it valid.
+    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: u32) -> *mut ConnectionRecord {
+        self.lookup(key, kind).unwrap_or(core::ptr::null_mut())
+    }
+
+    fn lookup(&self, key: libc::c_long, kind: u32) -> Option<*mut ConnectionRecord> {
         let tables = self.tables_ref();
         let mut session_id = 0;
         let fd = if matches!(kind, BY_SESSION..=VERIFIED_TLS) {
@@ -200,7 +215,9 @@ impl crate::ServerState {
                     .to_ne_bytes(),
             )
         };
-        let value = tables.connection_at(fd)?;
+        let slot = tables.connection_slot(fd)?;
+        // SAFETY: a slot of the live table.
+        let value = unsafe { &*slot };
         let found = match kind {
             BY_FD | BY_SESSION => true,
             _ if value.active == 0 => false,
@@ -209,7 +226,7 @@ impl crate::ServerState {
             VERIFIED_TLS | ITERATED => value.ssl == 0 || value.ssl_ready != 0,
             _ => true,
         };
-        found.then_some(value)
+        found.then_some(slot)
     }
 
     /// Retire a dead base-mode worker's sessions, preserving IDs and reserved bits.
@@ -253,12 +270,20 @@ pub(crate) mod tests {
     /// A table field naming a test's own records, so several states can share them as
     /// processes share a mapping. Nothing frees it: the test owns `items`.
     pub(crate) fn naming<T>(items: &mut [T]) -> Shm {
+        naming_at(items.as_mut_ptr())
+    }
+
+    /// [`naming`] at `items`, for a test that goes on reaching the records itself: it
+    /// does so through `items` (or a `Vec::as_mut_ptr`, which takes no reference), since a
+    /// fresh reference to the whole table would end the state's pointer into it.
+    pub(crate) fn naming_at<T>(items: *mut T) -> Shm {
         // SAFETY: `Shm` is `repr(transparent)` over its payload pointer, and no code under
         // test frees these tables.
-        unsafe { core::mem::transmute::<*mut c_void, Shm>(items.as_mut_ptr().cast()) }
+        unsafe { core::mem::transmute::<*mut c_void, Shm>(items.cast()) }
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "a million-session table takes Miri over 15 minutes")]
     fn retirement_scans_table_edges_without_truncating_worker_identity() {
         let state = swr_v1_server_state_new();
         let mut sessions: Vec<_> = (0..1_048_576)
@@ -304,16 +329,17 @@ pub(crate) mod tests {
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
         connections[2].active = 1;
         connections[2].session_id = 1;
+        let (session_at, connection_at) = (
+            (&raw mut sessions).cast::<SessionRecord>(),
+            (&raw mut connections).cast::<ConnectionRecord>(),
+        );
         unsafe {
             let tables = &mut *(*state).tables();
-            tables.session_list = naming(&mut sessions);
-            tables.connection_list = naming(&mut connections);
+            tables.session_list = naming_at(session_at);
+            tables.connection_list = naming_at(connection_at);
             tables.max_connection = 3;
-            assert_eq!(
-                swr_v1_server_session(&*state, 1),
-                sessions.as_mut_ptr().add(1)
-            );
-            let expected = connections.as_mut_ptr().add(2);
+            assert_eq!(swr_v1_server_session(&*state, 1), session_at.add(1));
+            let expected = connection_at.add(2);
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
             assert!(swr_v1_server_connection(&*state, 1_048_577, 2).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
@@ -321,16 +347,16 @@ pub(crate) mod tests {
             assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
             // fd == max_connection is one past the table.
             assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
-            connections[2].ssl = 1;
+            (*expected).ssl = 1;
             assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
-            connections[2].ssl_ready = 1;
+            (*expected).ssl_ready = 1;
             assert_eq!(swr_v1_server_connection(&*state, 1, 3), expected);
-            connections[2]
+            (*expected)
                 .closed
                 .store(1, core::sync::atomic::Ordering::Relaxed);
             assert!(swr_v1_server_connection(&*state, 2, 4).is_null());
-            connections[2]
+            (*expected)
                 .closed
                 .store(0, core::sync::atomic::Ordering::Relaxed);
             assert_eq!(swr_v1_server_connection(&*state, 2, 4), expected);

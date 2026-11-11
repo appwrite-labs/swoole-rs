@@ -3,7 +3,7 @@
 use crate::session::IdMap;
 use libc::{c_char, c_int};
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
     ffi::CStr,
     marker::PhantomData,
@@ -90,10 +90,17 @@ static EXCEPTION: Class = Class::new();
 static REQUEST: CustomClass<Plain<0>> = CustomClass::new();
 static RESPONSE: CustomClass<Plain<1>> = CustomClass::new();
 
-/// `struct Http2ClientObject { Client *client; zend_object std; }`.
+/// `Http2ClientObject`, holding the client itself rather than a pointer to it.
 pub(crate) struct Data {
-    /// The constructor's client (null before it), dropped with the object.
-    client: Cell<*mut Client>,
+    /// The constructor's client (unset before it), dropped with the object.
+    client: OnceCell<Client>,
+}
+
+/// The client is taken out before it closes, as upstream clears the pointer first.
+impl Drop for Data {
+    fn drop(&mut self) {
+        drop(self.client.take());
+    }
 }
 
 impl Custom for Data {
@@ -103,17 +110,7 @@ impl Custom for Data {
 
     fn new() -> Self {
         Self {
-            client: Cell::new(ptr::null_mut()),
-        }
-    }
-}
-
-impl Drop for Data {
-    fn drop(&mut self) {
-        let client = self.client.replace(ptr::null_mut());
-        if !client.is_null() {
-            // SAFETY: the client the constructor boxed, dropped once.
-            drop(unsafe { Box::from_raw(client) });
+            client: OnceCell::new(),
         }
     }
 }
@@ -198,23 +195,28 @@ enum Frame {
     Fail,
 }
 
+/// The object's client. Coroutines share it: a method that yields (on socket
+/// IO) or runs PHP code lets another coroutine call methods on the same object,
+/// so it is only borrowed shared, its state is in cells, and no `RefCell`
+/// borrow is held across a yield or a call into PHP.
 struct Client {
     object: *mut zend_object,
     conn: Rc<Conn>,
-    host: Vec<u8>,
+    host: RefCell<Vec<u8>>,
     port: i64,
     ssl: bool,
-    stream_id: u32,
-    last_stream_id: u32,
+    stream_id: Cell<u32>,
+    last_stream_id: Cell<u32>,
     local: Http2Settings,
-    remote: Http2Settings,
-    remote_window: u32,
-    local_window: u32,
-    streams: Streams,
-    headers: Headers,
-    queue: VecDeque<Vec<u8>>,
+    remote: Cell<Http2Settings>,
+    remote_window: Cell<u32>,
+    local_window: Cell<u32>,
+    streams: RefCell<Streams>,
+    /// The request header arena, taken out while a request is built.
+    headers: Cell<Headers>,
+    queue: RefCell<VecDeque<Vec<u8>>>,
     /// The connection's HPACK codecs, while connected.
-    hpack: Option<(Decoder, Encoder)>,
+    hpack: RefCell<Option<(Decoder, Encoder)>>,
 }
 
 fn strerror<'a>(code: c_int) -> &'a CStr {
@@ -314,7 +316,7 @@ fn socket_closed(conn: &Conn) {
 }
 
 impl Client {
-    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Box<Self> {
+    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Self {
         let conn = Rc::new(Conn {
             object,
             socket: Cell::new(None),
@@ -322,23 +324,23 @@ impl Client {
             closed: Cell::new(false),
         });
         let local = sw_rs_http2_default_settings();
-        Box::new(Self {
+        Self {
             object,
             conn,
-            host: host.to_vec(),
+            host: RefCell::new(host.to_vec()),
             port,
             ssl,
-            stream_id: 0,
-            last_stream_id: 0,
+            stream_id: Cell::new(0),
+            last_stream_id: Cell::new(0),
             local,
-            remote: Http2Settings::default(),
-            remote_window: 0,
-            local_window: local.init_window_size,
-            streams: Streams::default(),
-            headers: Headers::default(),
-            queue: VecDeque::new(),
-            hpack: None,
-        })
+            remote: Cell::default(),
+            remote_window: Cell::new(0),
+            local_window: Cell::new(local.init_window_size),
+            streams: RefCell::default(),
+            headers: Cell::default(),
+            queue: RefCell::default(),
+            hpack: RefCell::new(None),
+        }
     }
 
     /// The live socket, read fresh: the close hook may have cleared it.
@@ -358,13 +360,13 @@ impl Client {
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
-    fn reap(&mut self) {
+    fn reap(&self) {
         if !self.conn.closed.replace(false) {
             return;
         }
-        self.queue.clear();
-        self.streams.clear();
-        self.hpack = None;
+        self.queue.take();
+        self.streams.take();
+        self.hpack.take();
     }
 
     /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
@@ -395,15 +397,19 @@ impl Client {
         true
     }
 
-    fn connect(&mut self) -> bool {
+    fn connect(&self) -> bool {
         self.reap();
         if self.socket().is_some() {
             self.update_error(libc::EISCONN, strerror(libc::EISCONN).to_bytes());
             return false;
         }
         // `php_swoole_create_socket(convert_to_type(host))`.
-        let kind = host_type(&self.host);
-        self.host.drain(..kind.erase.min(self.host.len()));
+        let kind = host_type(&self.host.borrow());
+        {
+            let mut host = self.host.borrow_mut();
+            let erase = kind.erase.min(host.len());
+            host.drain(..erase);
+        }
         let object = swoole_rs_phpclients::create_socket(kind.socket_type);
         if object.is_null() {
             if !swoole_rs_zend::bailout::pending() {
@@ -440,17 +446,18 @@ impl Client {
         apply(socket, unsafe {
             swoole_rs_zend::property(self.object, c"setting")
         });
-        let host = self.host.clone();
+        let host = self.host.borrow().clone();
         if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
             return self.connect_failed(socket);
         }
-        self.stream_id = 1;
-        self.remote = sw_rs_http2_default_settings();
-        self.remote_window = self.remote.init_window_size;
-        self.hpack = Some((
+        self.stream_id.set(1);
+        let remote = sw_rs_http2_default_settings();
+        self.remote.set(remote);
+        self.remote_window.set(remote.init_window_size);
+        self.hpack.replace(Some((
             Decoder::default(),
             Encoder::new(self.local.header_table_size),
-        ));
+        )));
         if !self.send(PREFACE) || !self.send_setting() {
             self.close();
             return false;
@@ -462,13 +469,13 @@ impl Client {
         true
     }
 
-    fn connect_failed(&mut self, socket: Co) -> bool {
+    fn connect_failed(&self, socket: Co) -> bool {
         self.io_error(socket);
         self.close();
         false
     }
 
-    fn close(&mut self) -> bool {
+    fn close(&self) -> bool {
         let Some(socket) = self.socket() else {
             self.update_error(libc::EBADF, strerror(libc::EBADF).to_bytes());
             return false;
@@ -484,13 +491,16 @@ impl Client {
     }
 
     /// `send`: directly, or queued behind a coroutine writing already.
-    fn send(&mut self, data: &[u8]) -> bool {
+    fn send(&self, data: &[u8]) -> bool {
         let Some(socket) = self.socket() else {
             return false;
         };
         let bound = socket.has_bound(WRITE);
         let (queued, limit) = if bound {
-            (self.queue.len(), self.remote.max_concurrent_streams)
+            (
+                self.queue.borrow().len(),
+                self.remote.get().max_concurrent_streams,
+            )
         } else {
             (0, 0)
         };
@@ -504,7 +514,7 @@ impl Client {
                 return false;
             }
             _ => {
-                self.queue.push_back(data.to_vec());
+                self.queue.borrow_mut().push_back(data.to_vec());
                 return true;
             }
         }
@@ -512,14 +522,16 @@ impl Client {
             self.io_error(socket);
             return false;
         }
-        while let Some(frame) = self.queue.front() {
-            let frame = frame.clone();
+        // Each frame is copied out: sending yields, and the queue's borrow ends first.
+        loop {
+            let next = self.queue.borrow().front().cloned();
+            let Some(frame) = next else { break };
             if !Self::send_all(socket, &frame) {
                 self.io_error(socket);
                 EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
                 return false;
             }
-            self.queue.pop_front();
+            self.queue.borrow_mut().pop_front();
         }
         true
     }
@@ -528,31 +540,31 @@ impl Client {
         sw_rs_http2_send_complete(socket.send_all(data), data.len()) != 0
     }
 
-    fn send_setting(&mut self) -> bool {
+    fn send_setting(&self) -> bool {
         let mut frame = [0_u8; SETTING_FRAME];
         let length = sw_rs_http2_pack_settings(&mut frame, &self.local, false);
         self.send(frame.get(..length).unwrap_or(&frame))
     }
 
-    fn send_window_update(&mut self, stream: u32, size: u32) -> bool {
+    fn send_window_update(&self, stream: u32, size: u32) -> bool {
         let mut frame = frame_header(TYPE_WINDOW_UPDATE, WINDOW_UPDATE_SIZE, 0, stream).to_vec();
         frame.extend_from_slice(&size.to_be_bytes());
         self.send(&frame)
     }
 
-    fn send_ping(&mut self) -> bool {
+    fn send_ping(&self) -> bool {
         let mut frame = frame_header(TYPE_PING, PING_PAYLOAD, 0, 0).to_vec();
         frame.extend_from_slice(&[0; PING_PAYLOAD]);
         self.send(&frame)
     }
 
     /// DATA frames within the peer's frame size; one empty frame for no data.
-    fn send_data(&mut self, stream: u32, mut data: &[u8], flag: u32) -> bool {
+    fn send_data(&self, stream: u32, mut data: &[u8], flag: u32) -> bool {
         if data.is_empty() {
             return self.send(&frame_header(TYPE_DATA, 0, flag, stream));
         }
         while !data.is_empty() {
-            let max_frame_size = send_frame_size(self.remote.max_frame_size);
+            let max_frame_size = send_frame_size(self.remote.get().max_frame_size);
             let chunk = sw_rs_http2_chunk(data.len(), max_frame_size, flag);
             let (part, rest) = data.split_at(chunk.length.min(data.len()));
             if !self.send(&frame_header(TYPE_DATA, part.len(), chunk.flags, stream))
@@ -565,7 +577,7 @@ impl Client {
         true
     }
 
-    fn send_goaway(&mut self, error_code: i64, debug: &[u8]) -> bool {
+    fn send_goaway(&self, error_code: i64, debug: &[u8]) -> bool {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -574,7 +586,7 @@ impl Client {
         let code = error_code as u32;
         let mut frame =
             frame_header(TYPE_GOAWAY, GOAWAY_SIZE + debug.len(), code & 0xff, 0).to_vec();
-        frame.extend_from_slice(&self.last_stream_id.to_be_bytes());
+        frame.extend_from_slice(&self.last_stream_id.get().to_be_bytes());
         frame.extend_from_slice(&code.to_be_bytes());
         frame.extend_from_slice(debug);
         self.send(&frame)
@@ -582,12 +594,13 @@ impl Client {
 
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block.
-    fn build_header(&mut self, request: Request<'_>) -> Vec<u8> {
+    fn build_header(&self, request: Request<'_>) -> Vec<u8> {
         let property = |name| request.property(name);
         let text = |name| property(name).bytes().filter(|text| !text.is_empty());
         let (method, path) = (text(c"method"), text(c"path"));
         let (headers, cookies) = (property(c"headers"), property(c"cookies"));
-        let mut set = std::mem::take(&mut self.headers);
+        // Converting a header value can run PHP code, which may build another request.
+        let mut set = self.headers.take();
         set.clear();
         set.add(b":method", &[method.unwrap_or(b"GET")]);
         set.add(b":path", &[path.unwrap_or(b"/")]);
@@ -611,9 +624,10 @@ impl Client {
         }
         if !host {
             let authority = if self.port == if self.ssl { 443 } else { 80 } {
-                self.host.clone()
+                self.host.borrow().clone()
             } else {
-                let host = self.host.split(|&b| b == 0).next().unwrap_or_default();
+                let host = self.host.borrow();
+                let host = host.split(|&b| b == 0).next().unwrap_or_default();
                 [host, format!(":{}", self.port).as_bytes()].concat()
             };
             set.set(AUTHORITY, b":authority", &authority);
@@ -637,15 +651,15 @@ impl Client {
             }
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
-        if let Some((_, encoder)) = &mut self.hpack {
+        if let Some((_, encoder)) = self.hpack.borrow_mut().as_mut() {
             encoder.encode(set.list(), &mut frame);
         }
-        self.headers = set;
+        self.headers.set(set);
         frame
     }
 
     /// `send_request`: the new stream's id, or 0.
-    fn send_request(&mut self, request: Request<'_>) -> u32 {
+    fn send_request(&self, request: Request<'_>) -> u32 {
         // SAFETY: a live request object, which declares `headers`.
         let headers = unsafe {
             z::swr_zend_property_array(REQUEST.entry(), request.0, c"headers".as_ptr(), 7)
@@ -674,50 +688,50 @@ impl Client {
         }
         let mut frame = self.build_header(request);
         let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
-        let id = self.stream_id;
+        // The id is taken before a send yields or the body's conversion runs PHP
+        // code, so an overlapping send gets the next one. A failed send gives it
+        // back unless a later send has taken one since.
+        let id = self.stream_id.get();
+        self.stream_id.set(id + 2);
         self.create_stream(id, flags);
         let header_flags = sw_rs_http2_headers_flags(u32::from(empty), 1, flags);
         let header = frame_header(TYPE_HEADERS, frame.len() - FRAME_HEADER, header_flags, id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
         }
-        if !self.send(&frame) {
+        let flag = if flags & STREAM_PIPELINE_REQUEST != 0 {
+            0
+        } else {
+            FLAG_END_STREAM
+        };
+        let sent = self.send(&frame)
+            && (empty
+                || body_bytes(data).is_some_and(|body| self.send_data(id, body.bytes(), flag)));
+        if !sent {
+            if self.stream_id.get() == id + 2 {
+                self.stream_id.set(id);
+            }
             return 0;
         }
-        if !empty {
-            let flag = if flags & STREAM_PIPELINE_REQUEST != 0 {
-                0
-            } else {
-                FLAG_END_STREAM
-            };
-            let Some(body) = body_bytes(data) else {
-                return 0;
-            };
-            if !self.send_data(id, body.bytes(), flag) {
-                return 0;
-            }
-        }
-        self.stream_id += 2;
         id
     }
 
-    fn create_stream(&mut self, id: u32, flags: u32) {
-        self.streams.insert(
-            id,
-            Stream {
-                flags,
-                buffer: Vec::new(),
-                gzip: None,
-                response: Response::new(id),
-                remote_window: self.remote.init_window_size,
-                local_window: self.local.init_window_size,
-            },
-        );
+    fn create_stream(&self, id: u32, flags: u32) {
+        let stream = Stream {
+            flags,
+            buffer: Vec::new(),
+            gzip: None,
+            response: Response::new(id),
+            remote_window: self.remote.get().init_window_size,
+            local_window: self.local.init_window_size,
+        };
+        let replaced = self.streams.borrow_mut().insert(id, stream);
+        drop(replaced);
     }
 
     /// `write_data`: more of a pipeline request's body.
-    fn write_data(&mut self, id: u32, data: Option<&Value>, end: bool) -> bool {
-        let flags = self.streams.get(&id).map(|stream| stream.flags);
+    fn write_data(&self, id: u32, data: Option<&Value>, end: bool) -> bool {
+        let flags = self.streams.borrow().get(&id).map(|stream| stream.flags);
         if sw_rs_http2_write_allowed(u32::from(flags.is_some()), flags.unwrap_or(0)) == 0 {
             let message = format!("unable to found active pipeline stream#{id}");
             self.update_error(libc::EINVAL, message.as_bytes());
@@ -730,14 +744,14 @@ impl Client {
         if !self.send_data(id, body.bytes(), flag) {
             return false;
         }
-        if let Some(stream) = self.streams.get_mut(&id) {
+        if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
             stream.flags = sw_rs_http2_stream_update(stream.flags, u32::from(end), 0);
         }
         true
     }
 
     /// `recv_packet` then `parse_frame`, until a response is ready.
-    fn recv(&mut self, call: &Call, timeout: f64, pipeline_read: bool) {
+    fn recv(&self, call: &Call, timeout: f64, pipeline_read: bool) {
         loop {
             self.reap();
             let Some(socket) = self.socket().filter(|_| self.is_available()) else {
@@ -758,19 +772,20 @@ impl Client {
         }
     }
 
-    fn parse_frame(&mut self, call: &Call, socket: Co, pipeline_read: bool) -> Frame {
+    fn parse_frame(&self, call: &Call, socket: Co, pipeline_read: bool) -> Frame {
         // A received packet left the read buffer allocated, holding one whole frame.
         let buffer = socket.with_buffer(false, |buffer| buffer.as_ptr());
         // SAFETY: the buffer holds at least the frame header.
         let head = unsafe { std::slice::from_raw_parts(buffer, FRAME_HEADER) };
-        let facts = sw_rs_http2_decode_frame(head, self.last_stream_id, 1).unwrap_or_default();
+        let facts =
+            sw_rs_http2_decode_frame(head, self.last_stream_id.get(), 1).unwrap_or_default();
         let length = facts.length as usize;
         // SAFETY: the packet holds the header and `length` payload bytes.
         let payload =
             unsafe { std::slice::from_raw_parts(buffer.wrapping_add(FRAME_HEADER), length) };
         let id = facts.stream_id;
         if facts.publish_last_id != 0 {
-            self.last_stream_id = id;
+            self.last_stream_id.set(id);
         }
         match facts.action {
             ACTION_SETTINGS_ACK | ACTION_PING_ACK | ACTION_IGNORE_PUSH => return Frame::Continue,
@@ -792,8 +807,9 @@ impl Client {
             ACTION_WINDOW_UPDATE => {
                 let credit = read_u32(payload);
                 if id == 0 {
-                    self.remote_window = window(self.remote_window, credit as usize, 0, true).value;
-                } else if let Some(stream) = self.streams.get_mut(&id) {
+                    let plan = window(self.remote_window.get(), credit as usize, 0, true);
+                    self.remote_window.set(plan.value);
+                } else if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
                     stream.remote_window =
                         window(stream.remote_window, credit as usize, 0, true).value;
                 }
@@ -825,12 +841,13 @@ impl Client {
                 return Frame::Fail;
             }
             ACTION_RESET => {
-                self.streams.remove(&id);
+                let reset = self.streams.borrow_mut().remove(&id);
+                drop(reset);
                 return Frame::Continue;
             }
             _ => {}
         }
-        if !self.streams.contains_key(&id) {
+        if !self.streams.borrow().contains_key(&id) {
             // Upstream's "%d" of the unsigned stream id.
             #[expect(clippy::cast_possible_wrap, reason = "printf's %d of a uint32_t")]
             let id = id as i32;
@@ -846,55 +863,59 @@ impl Client {
         {
             return frame;
         }
-        let Some(stream) = self.streams.get_mut(&id) else {
-            return Frame::Continue;
-        };
-        let plan = sw_rs_http2_response(
-            facts.kind,
-            facts.flags,
-            stream.flags,
-            u32::from(pipeline_read),
-        );
-        if plan.ready == 0 {
-            return Frame::Continue;
-        }
-        let end = plan.end != 0;
-        if let Some(response) = stream.response.props() {
-            if facts.kind == TYPE_RST_STREAM {
-                response.own().long(c"statusCode", SERVER_RESET);
-                // A reset deletes its stream above, so upstream's stream_error is 0 here.
-                response.own().long(c"errCode", 0);
+        let ready = {
+            let mut streams = self.streams.borrow_mut();
+            let Some(stream) = streams.get_mut(&id) else {
+                return Frame::Continue;
+            };
+            let plan = sw_rs_http2_response(
+                facts.kind,
+                facts.flags,
+                stream.flags,
+                u32::from(pipeline_read),
+            );
+            if plan.ready == 0 {
+                return Frame::Continue;
             }
-            if !stream.buffer.is_empty() {
-                response.bytes(c"data", &stream.buffer);
-            }
-        }
-        stream.buffer.clear();
-        // The return value takes the stream's response; a pipeline stream
-        // goes on with a fresh one.
-        if end {
-            if let Some(stream) = self.streams.remove(&id) {
-                call.set_owned(stream.response.zval);
-            }
-        } else {
+            // Only this client has seen the response so far: no user code runs
+            // on these writes.
             if let Some(response) = stream.response.props() {
-                response.bool(c"pipeline", true);
+                if facts.kind == TYPE_RST_STREAM {
+                    response.own().long(c"statusCode", SERVER_RESET);
+                    // A reset deletes its stream above, so upstream's stream_error is 0 here.
+                    response.own().long(c"errCode", 0);
+                }
+                if !stream.buffer.is_empty() {
+                    response.bytes(c"data", &stream.buffer);
+                }
             }
-            let done = std::mem::replace(&mut stream.response, Response::new(id));
-            call.set_owned(done.zval);
+            stream.buffer.clear();
+            // The return value takes the stream's response; a pipeline stream
+            // goes on with a fresh one.
+            if plan.end != 0 {
+                streams.remove(&id).map(|stream| stream.response.zval)
+            } else {
+                if let Some(response) = stream.response.props() {
+                    response.bool(c"pipeline", true);
+                }
+                Some(std::mem::replace(&mut stream.response, Response::new(id)).zval)
+            }
+        };
+        if let Some(response) = ready {
+            call.set_owned(response);
         }
         Frame::Ready
     }
 
-    fn apply_remote_setting(&mut self, key: u16, number: u32) {
+    fn apply_remote_setting(&self, key: u16, number: u32) {
+        let mut remote = self.remote.get();
         let old = match key {
-            SETTING_HEADER_TABLE_SIZE => self.remote.header_table_size,
-            SETTING_MAX_HEADER_LIST_SIZE => self.remote.max_header_list_size,
+            SETTING_HEADER_TABLE_SIZE => remote.header_table_size,
+            SETTING_MAX_HEADER_LIST_SIZE => remote.max_header_list_size,
             _ => 0,
         };
         let plan = sw_rs_http2_setting_plan(u32::from(key), number, old, 0, 0);
         if plan.set_value != 0 {
-            let remote = &mut self.remote;
             let field = match plan.field {
                 0 => &mut remote.header_table_size,
                 1 => &mut remote.enable_push,
@@ -904,54 +925,63 @@ impl Client {
                 _ => &mut remote.max_header_list_size,
             };
             *field = number;
+            self.remote.set(remote);
         }
         if plan.set_window != 0 {
-            self.remote_window = number;
+            self.remote_window.set(number);
         }
         if plan.change_deflater != 0
-            && let Some((_, encoder)) = &mut self.hpack
+            && let Some((_, encoder)) = self.hpack.borrow_mut().as_mut()
         {
             encoder.set_table_size(number);
         }
     }
 
     /// A DATA frame: buffer (inflating gzip) and replenish the windows.
-    fn receive_data(&mut self, id: u32, flags: u32, payload: &[u8]) -> Result<(), Frame> {
+    fn receive_data(&self, id: u32, flags: u32, payload: &[u8]) -> Result<(), Frame> {
         let initial = self.local.init_window_size;
-        let Some(stream) = self.streams.get_mut(&id) else {
-            return Ok(());
-        };
-        stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM, 1);
-        if payload.is_empty() {
-            return Ok(());
-        }
-        if let Some(gzip) = &mut stream.gzip {
-            let Some(output) = gzip.decode(payload) else {
-                swoole_rs_corebase::log::warning(
-                    c"Client::parse_frame",
-                    format_args!("decompress failed"),
-                );
-                return Err(Frame::Fail);
+        // The stream's borrow ends before the warning and the window updates.
+        let stream_window = {
+            let mut streams = self.streams.borrow_mut();
+            let Some(stream) = streams.get_mut(&id) else {
+                return Ok(());
             };
-            stream.buffer.extend_from_slice(output);
-        } else {
-            stream.buffer.extend_from_slice(payload);
-        }
-        let connection = window(self.local_window, payload.len(), initial, false);
-        self.local_window = connection.value;
-        stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
-        let stream_window = window(stream.local_window, 0, initial, false);
+            stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM, 1);
+            if payload.is_empty() {
+                return Ok(());
+            }
+            let buffered = if let Some(gzip) = &mut stream.gzip {
+                gzip.decode(payload)
+                    .map(|output| stream.buffer.extend_from_slice(output))
+            } else {
+                stream.buffer.extend_from_slice(payload);
+                Some(())
+            };
+            buffered.map(|()| {
+                stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
+                window(stream.local_window, 0, initial, false)
+            })
+        };
+        let Some(stream_window) = stream_window else {
+            swoole_rs_corebase::log::warning(
+                c"Client::parse_frame",
+                format_args!("decompress failed"),
+            );
+            return Err(Frame::Fail);
+        };
+        let connection = window(self.local_window.get(), payload.len(), initial, false);
+        self.local_window.set(connection.value);
         if connection.increment != 0 {
             if !self.send_window_update(0, connection.increment) {
                 return Err(Frame::Fail);
             }
-            self.local_window = initial;
+            self.local_window.set(initial);
         }
         if stream_window.increment != 0 {
             if !self.send_window_update(id, stream_window.increment) {
                 return Err(Frame::Fail);
             }
-            if let Some(stream) = self.streams.get_mut(&id) {
+            if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
                 stream.local_window = initial;
             }
         }
@@ -959,14 +989,18 @@ impl Client {
     }
 
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
-    fn parse_header(&mut self, id: u32, flags: u32, mut input: &[u8]) {
+    fn parse_header(&self, id: u32, flags: u32, mut input: &[u8]) {
         if flags & FLAG_PRIORITY != 0 {
             input = input.get(5..).unwrap_or_default();
         }
-        let Some(stream) = self.streams.get_mut(&id) else {
+        let Some(response) = self
+            .streams
+            .borrow()
+            .get(&id)
+            .map(|stream| stream.response.object)
+        else {
             return;
         };
-        let response = stream.response.object;
         let property = |name: &CStr| {
             // SAFETY: a live response object, which declares `name`.
             unsafe {
@@ -983,17 +1017,17 @@ impl Client {
             property(c"cookies"),
             property(c"set_cookie_headers"),
         );
-        let Some((decoder, _)) = &mut self.hpack else {
+        // Nothing in the loop yields or runs user code: the response is this
+        // client's alone until a receive returns it. A failure is reported once
+        // the codecs' borrow ends.
+        let mut hpack = self.hpack.borrow_mut();
+        let Some((decoder, _)) = hpack.as_mut() else {
             return;
         };
-        loop {
+        let failed = loop {
             let step = match decoder.decode(input, true) {
                 Ok(step) => step,
-                Err(error) => {
-                    let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
-                    self.update_error(Error::CODE, text.as_bytes());
-                    return;
-                }
+                Err(error) => break Some(error),
             };
             input = input.get(step.read..).unwrap_or_default();
             let flags = step.flags();
@@ -1001,17 +1035,16 @@ impl Client {
                 let kind = header_kind(RESPONSE_HEADERS, name);
                 if name.first() == Some(&b':') {
                     if kind == HEADER_STATUS
-                        && let Some(stream) = self.streams.get(&id)
+                        && let Some(stream) = self.streams.borrow().get(&id)
                         && let Some(props) = stream.response.props()
                     {
                         props.own().long(c"statusCode", atol(text));
                     }
                 } else {
-                    let Some(stream) = self.streams.get_mut(&id) else {
-                        return;
-                    };
                     if kind == HEADER_CONTENT_ENCODING && media_kind(text) == MEDIA_GZIP {
-                        stream.gzip = Some(Inflate::gzip_only());
+                        if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
+                            stream.gzip = Some(Inflate::gzip_only());
+                        }
                     } else if kind == HEADER_SET_COOKIE {
                         // SAFETY: a live array property nothing else borrows
                         // while parsing.
@@ -1038,8 +1071,13 @@ impl Client {
             // block and refuses the next block's table size update).
             if step.end_headers != 0 || step.finish != 0 {
                 decoder.end_headers();
-                return;
+                break None;
             }
+        };
+        drop(hpack);
+        if let Some(error) = failed {
+            let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
+            self.update_error(Error::CODE, text.as_bytes());
         }
     }
 }
@@ -1050,7 +1088,7 @@ impl Drop for Client {
             self.close();
         }
         self.reap();
-        self.streams.clear();
+        self.streams.get_mut().clear();
         // Emptied first, as the close hook does, in case releasing it runs the hook.
         let zsocket = self.conn.zsocket.take();
         drop(zsocket);
@@ -1227,16 +1265,14 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
     Ok(())
 }
 
-/// `$this`'s client, null before its constructor.
-fn this(call: &Call) -> *mut Client {
-    call.custom::<Data>()
-        .map_or(ptr::null_mut(), |data| data.client.get())
+/// `$this`'s client, none before its constructor.
+fn this(call: &Call) -> Option<&Client> {
+    call.custom::<Data>()?.client.get()
 }
 
 /// `http2_client_coro_get_client`: the constructed client; a fatal error if not.
-fn client<'a>(call: &Call) -> &'a mut Client {
-    let client = this(call);
-    if client.is_null() {
+fn client(call: &Call) -> Option<&Client> {
+    let Some(client) = this(call) else {
         // SAFETY: a fatal error; the frames it may longjmp across own nothing.
         unsafe {
             swoole_rs_corebase::fatal_error(
@@ -1244,11 +1280,10 @@ fn client<'a>(call: &Call) -> &'a mut Client {
                 c"must call constructor first",
             );
         };
-    }
-    // SAFETY: a constructed client lives as long as its object.
-    let client = unsafe { &mut *client };
+        return None;
+    };
     client.reap();
-    client
+    Some(client)
 }
 
 /// `__construct(string $host, int $port = 80, bool $ssl = false)`.
@@ -1264,7 +1299,7 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     let object = call.this();
-    if !this(call).is_null() {
+    if this(call).is_some() {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
@@ -1277,8 +1312,10 @@ fn construct(call: &Call) {
     props.bytes(c"host", host);
     props.long(c"port", port);
     props.bool(c"ssl", ssl);
-    if let Some(data) = call.custom::<Data>() {
-        data.client.set(Box::into_raw(client));
+    if let Some(data) = call.custom::<Data>()
+        && data.client.set(client).is_err()
+    {
+        call.throw_constructed_twice();
     }
 }
 
@@ -1286,7 +1323,7 @@ fn destruct(_call: &Call) {}
 
 /// `set(array $settings): bool`.
 fn set(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
@@ -1301,12 +1338,13 @@ fn set(call: &Call) {
 }
 
 fn connect(call: &Call) {
-    let result = client(call).connect();
+    let Some(client) = client(call) else { return };
+    let result = client.connect();
     call.set_bool(result);
 }
 
 fn close(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     let _hold = client.hold_socket();
     let result = client.close();
     call.set_bool(result);
@@ -1347,7 +1385,7 @@ fn class_name_of(ce: *mut zend_class_entry) -> *const c_char {
 
 /// `send(Swoole\Http2\Request $request): int|false`.
 fn send(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -1363,7 +1401,7 @@ fn send(call: &Call) {
 
 /// `recv(float $timeout = 0)` and `read(float $timeout = 0)`.
 fn receive(call: &Call, pipeline_read: bool) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     let Ok(timeout) = call.arity(0, 1).and_then(|()| call.double(1, 0.0)) else {
         return call.set_bool(false);
     };
@@ -1382,7 +1420,7 @@ fn read(call: &Call) {
 
 /// `write(int $streamId, mixed $data, bool $end = false): bool`.
 fn write(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -1403,7 +1441,7 @@ fn write(call: &Call) {
 }
 
 fn ping(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -1413,7 +1451,7 @@ fn ping(call: &Call) {
 
 /// `goaway(int $error_code = NO_ERROR, string $debug_data = ''): bool`.
 fn goaway(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -1436,14 +1474,14 @@ fn is_stream_exist(call: &Call) {
     if id < 0 {
         return call.set_bool(false);
     }
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     if client.socket().is_none() {
         return call.set_bool(false);
     }
     if id == 0 {
         return call.set_bool(true);
     }
-    let exists = u32::try_from(id).is_ok_and(|id| client.streams.contains_key(&id));
+    let exists = u32::try_from(id).is_ok_and(|id| client.streams.borrow().contains_key(&id));
     call.set_bool(exists);
 }
 
@@ -1463,27 +1501,29 @@ fn settings_array(settings: &Http2Settings) -> Owned {
 
 /// `stats(string $key = ''): array|int`.
 fn stats(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else { return };
     let Ok(key) = call.arity(0, 1).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    let active = i64::try_from(client.streams.len()).unwrap_or(i64::MAX);
+    let active = i64::try_from(client.streams.borrow().len()).unwrap_or(i64::MAX);
+    let (stream_id, last_stream_id) = (client.stream_id.get(), client.last_stream_id.get());
+    let remote = client.remote.get();
     if !key.is_empty() {
         match key {
-            b"current_stream_id" => call.set_long(i64::from(client.stream_id)),
-            b"last_stream_id" => call.set_long(i64::from(client.last_stream_id)),
+            b"current_stream_id" => call.set_long(i64::from(stream_id)),
+            b"last_stream_id" => call.set_long(i64::from(last_stream_id)),
             b"local_settings" => call.set_owned(settings_array(&client.local)),
-            b"remote_settings" => call.set_owned(settings_array(&client.remote)),
+            b"remote_settings" => call.set_owned(settings_array(&remote)),
             b"active_stream_num" => call.set_long(active),
             _ => {}
         }
         return;
     }
     let mut array = OwnedArray::default();
-    array.insert_long(b"current_stream_id", i64::from(client.stream_id));
-    array.insert_long(b"last_stream_id", i64::from(client.last_stream_id));
+    array.insert_long(b"current_stream_id", i64::from(stream_id));
+    array.insert_long(b"last_stream_id", i64::from(last_stream_id));
     array.insert(b"local_settings", settings_array(&client.local));
-    array.insert(b"remote_settings", settings_array(&client.remote));
+    array.insert(b"remote_settings", settings_array(&remote));
     array.insert_long(b"active_stream_num", active);
     call.set_owned(array.into_owned());
 }

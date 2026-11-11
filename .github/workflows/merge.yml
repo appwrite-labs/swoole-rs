@@ -152,106 +152,9 @@ jobs:
           read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --saved baseline-cache --php "$(php -r 'echo PHP_VERSION;')" || true)"
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
-  # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
-  # (fat LTO, as release builds ship) over upstream may not rise more than 2% above
-  # benchmarks/callgrind_limits.
-  # plaintext covers the bridge, echo-1k buffer, json the router app and service-health the
-  # SQLite service's dispatch (php -n: PDO is dynamic).
-  # echo-1k, not echo-64k: a 64 KiB body arrives split differently on each runner, and
-  # upstream's per-byte Expect scan of whatever is buffered then decides the ratio (#338).
-  # websocket (frame codec) and timer (add/clear churn) exercise those two modules most;
-  # they ride the same ratchet so the merge tier measures graduation criterion 3 (#117,
-  # #118). The fixed +5% graduation ceiling itself moves to Phase 6 (#430).
-  # app is benchmarks/app, an application-shaped request with a Redis pool (#1907).
-  # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
-  # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
-  # http-client, client and socket are benchmarks/clients' outbound coroutine clients (#2647).
-  # gzip and websocket-deflate are benchmarks/compression (#2649).
-  # tcp-length, tcp-eof and udp are Swoole\Server without HTTP (#2650).
-  # connect is plaintext on a new connection per request (#2651).
-  # https and wss are benchmarks/tls (#2648).
-  # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
-  # http2-concurrent, websocket-64k, websocket-fragmented, upload and static are
-  # benchmarks/traffic (#2652).
-  # Three shards of ten workloads, each about 6 minutes, so the job stays off a queue group's
-  # longest chain (the PHPTs, about 10) and a regression is dropped before it lands. The fourth
-  # is benchmarks/hooks (pgsql, sqlite, curl, dns; #2653) on a pair built with those hooks, which
-  # would shift every other workload's ratio.
+  # Instruction counts against benchmarks/callgrind_limits (callgrind.yml).
   callgrind:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: 1
-            workloads: --workload plaintext --workload echo-1k --workload json --workload service-health --workload websocket --workload timer --workload app --workload http2 --workload table --workload channel
-          - shard: 2
-            workloads: --workload task --workload mysql --workload http-client --workload client --workload socket --workload gzip --workload websocket-deflate --workload tcp-length --workload tcp-eof --workload udp
-          - shard: 3
-            workloads: --workload connect --workload https --workload wss --workload atomic --workload process-mode --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented --workload upload --workload static
-          - shard: 4
-            workloads: --workload pgsql --workload sqlite --workload curl --workload dns
-            configure: --configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite --configure=--enable-swoole-curl --configure=--enable-cares
-            # The swoole-pgsql build registers its own PDO pgsql driver, so PHP's pdo_pgsql stays out.
-            extensions: --php-extension pdo --php-extension pdo_sqlite --php-extension curl
-    runs-on: gcrunner=${{ github.run_id }}/runner=steady
-    timeout-minutes: 40
-    services:
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: test
-        ports: ['3306:3306']
-        options: --health-cmd "mysqladmin ping -proot" --health-interval 2s --health-retries 60
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: root
-          POSTGRES_DB: test
-        ports: ['5432:5432']
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
-      redis:
-        image: redis:7.4
-        ports: ['6379:6379']
-        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/install
-        with:
-          packages: valgrind php-mysql
-      - uses: actions/cache/restore@v6
-        with:
-          path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - name: Build upstream
-        if: hashFiles('target/upstream/src/modules/swoole.so') == ''
-        run: python3 tools/build_upstream.py
-      - name: Fetch crates
-        run: cargo fetch --locked
-      - name: Build configured upstream
-        if: matrix.configure
-        run: |
-          python3 tools/build_upstream.py ${{ matrix.configure }} | tee upstream.log
-          echo "UPSTREAM=$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" >> "$GITHUB_ENV"
-      - name: Build cargo engine
-        run: python3 tools/build_ext.py --profile release-lto ${{ matrix.configure }}
-      - name: Run callgrind workloads
-        run: >
-          python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits
-          ${{ matrix.workloads }}
-          ${{ matrix.extensions || '--php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql' }}
-          --engine cargo=target/ext/swoole.so
-          --engine upstream=${UPSTREAM:-target/upstream/src/modules/swoole.so}
-          --profiles target/callgrind/profiles --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
-          name: callgrind-${{ matrix.shard }}
-          path: |
-            callgrind.json
-            target/callgrind/profiles/
+    uses: ./.github/workflows/callgrind.yml
 
   # swoole_stdext needs the experimental --stdext build, which changes PHP itself
   # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
@@ -322,9 +225,7 @@ jobs:
     uses: ./.github/workflows/variant.yml
     with:
       variant: ${{ matrix.variant }}
-      # On main only until main has saved the variants' apt cache with valgrind in it: a queue
-      # group that has to fetch valgrind hangs when the runners' mirror is down (#3181).
-      callgrind: ${{ github.event_name != 'merge_group' }}
+      callgrind: true
 
   # HTTP/2 conformance: h2spec on upstream and the Cargo build.
   h2spec:

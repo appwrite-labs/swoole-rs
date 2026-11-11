@@ -134,5 +134,6 @@ trips a container-overflow false positive against the system libc++.
 ClusterFuzzLite (`.clusterfuzzlite/`) builds every target. On PRs touching a crate
 the targets link, `fuzz/` or `.clusterfuzzlite/`, it fuzzes the targets the change
 reaches for two minutes (`cflite_pr.yml`). Nightly it fuzzes all targets for an hour
-and then prunes its stored corpus (`cflite_batch.yml`). A crash fails the run,
+and then prunes its stored corpus (`cflite_batch.yml`), kept on the `cflite` branch.
+A crash fails the run,
 and the minimised input is uploaded as `cflite-crashes`.
