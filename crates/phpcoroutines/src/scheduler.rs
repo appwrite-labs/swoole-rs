@@ -2,19 +2,21 @@
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
-use std::{cell::Cell, collections::VecDeque, mem, ptr};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    ptr,
+};
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray, Parsed,
+    Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, OwnedArray, Parsed,
     bailout::{self, Bailout},
     kind, message,
     sys::{
-        IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_array,
-        zend_array_destroy, zend_array_dup, zend_class_entry, zend_hash_merge, zend_object,
-        zend_object_handlers, zval, zval_add_ref,
+        IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, zend_array, zend_array_destroy,
+        zend_array_dup, zend_hash_merge, zval, zval_add_ref,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -31,20 +33,39 @@ struct Task {
     count: i64,
 }
 
-/// `SchedulerObject`: the queued tasks (none until the first) and whether
-/// `start()` is running. All-zero is a fresh scheduler.
+/// `SchedulerObject`: the queued tasks and whether `start()` is running. Each
+/// borrow of the queue ends before PHP code runs.
+#[derive(Default)]
 struct Scheduler {
-    #[expect(
-        clippy::box_collection,
-        reason = "Zend zeroes the object: a null Box is None, while an empty queue is not all-zero"
-    )]
-    list: Option<Box<VecDeque<Task>>>,
-    started: bool,
+    list: RefCell<VecDeque<Task>>,
+    started: Cell<bool>,
 }
 
-type SchedulerObject = Object<Scheduler>;
+static SCHEDULER: CustomClass<Scheduler> = CustomClass::new();
 
-static SCHEDULER: Class = Class::new();
+impl Custom for Scheduler {
+    fn class() -> &'static CustomClass<Self> {
+        &SCHEDULER
+    }
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Scheduler {
+    /// The next task, its borrow of the queue ended.
+    fn pop(&self) -> Option<Task> {
+        self.list.borrow_mut().pop_front()
+    }
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        for task in self.list.get_mut().drain(..) {
+            bailout::defer(task.callable.release());
+        }
+    }
+}
 
 method_table! {
     static METHODS = [
@@ -61,42 +82,11 @@ swoole_rs_zend::minit!(php_swoole_coroutine_scheduler_minit => register);
 /// MINIT: `Swoole\Coroutine\Scheduler` (`Co\Scheduler`), final, not
 /// serializable, clone and unset denied.
 fn register(minit: &Minit) -> Result<(), Bailout> {
-    minit.register(
-        &SCHEDULER,
-        c"Swoole\\Coroutine\\Scheduler",
-        &METHODS.0,
-        configure,
-    );
+    minit.register_object::<Scheduler>(c"Swoole\\Coroutine\\Scheduler", &METHODS.0, ZEND_ACC_FINAL);
     if host::flag(host::SHORTNAME) {
         minit.alias(&SCHEDULER, c"Co\\Scheduler")?;
     }
     Ok(())
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    SchedulerObject::install(entry, handlers, create, free);
-    entry.ce_flags |= ZEND_ACC_FINAL;
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates an object of the scheduler class.
-    unsafe { SchedulerObject::create(&SCHEDULER, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees one of our objects.
-    let list = mem::take(&mut unsafe { SchedulerObject::data(std) }.list);
-    if let Some(tasks) = list {
-        for task in *tasks {
-            bailout::defer(task.callable.release());
-        }
-    }
-    // SAFETY: as above.
-    unsafe { SchedulerObject::dtor(std) };
-    bailout::finish();
 }
 
 swoole_rs_zend::handlers! {
@@ -105,11 +95,6 @@ swoole_rs_zend::handlers! {
     zim_swoole_coroutine_scheduler_start => start;
     zim_swoole_coroutine_scheduler_set => set;
     zim_swoole_coroutine_scheduler_getOptions => get_options;
-}
-
-fn this(call: &Call) -> &'static mut Scheduler {
-    // SAFETY: Scheduler's instance methods run on one of our objects.
-    unsafe { SchedulerObject::data(call.this()) }
 }
 
 /// The "scheduler is running/started, unable to execute %s->%s" warning.
@@ -124,17 +109,20 @@ fn refuse(call: &Call, state: &str, method: &str) {
 }
 
 /// Queue a task with its callable kept past the call.
-fn queue(scheduler: &mut Scheduler, callable: Parsed, count: i64) {
+fn queue(scheduler: &Scheduler, callable: Parsed, count: i64) {
     let callable = callable.keep(None);
     scheduler
         .list
-        .get_or_insert_default()
+        .borrow_mut()
         .push_back(Task { callable, count });
 }
 
 /// `add(callable $func, mixed ...$params)`.
 fn add(call: &Call) {
-    if this(call).started {
+    let Some(scheduler) = call.custom::<Scheduler>() else {
+        return;
+    };
+    if scheduler.started.get() {
         refuse(call, "running", "add");
         return;
     }
@@ -145,12 +133,15 @@ fn add(call: &Call) {
         call.set_bool(false);
         return;
     };
-    queue(this(call), callable, 1);
+    queue(scheduler, callable, 1);
 }
 
 /// `parallel(int $n, callable $func, mixed ...$params)`.
 fn parallel(call: &Call) {
-    if this(call).started {
+    let Some(scheduler) = call.custom::<Scheduler>() else {
+        return;
+    };
+    if scheduler.started.get() {
         refuse(call, "running", "parallel");
         return;
     }
@@ -161,13 +152,16 @@ fn parallel(call: &Call) {
         call.set_bool(false);
         return;
     };
-    queue(this(call), callable, count);
+    queue(scheduler, callable, count);
 }
 
 /// `start()`: create every task's coroutines in order, then run the event
 /// loop until they finish.
 fn start(call: &Call) {
-    if this(call).started {
+    let Some(scheduler) = call.custom::<Scheduler>() else {
+        return;
+    };
+    if scheduler.started.get() {
         refuse(call, "started", "start");
         return;
     }
@@ -175,15 +169,17 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    this(call).started = true;
-    if this(call).list.is_none() {
+    scheduler.started.set(true);
+    // Upstream's list is null before the first task and after a start, when
+    // this queue is empty.
+    if scheduler.list.borrow().is_empty() {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
     // Each step pops before creating, so no frame here owns a task while a
     // coroutine runs.
-    while let Some(task) = this(call).list.as_mut().and_then(|list| list.pop_front()) {
+    while let Some(task) = scheduler.pop() {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
             if runtime::create(fcc, argc, argv, name).is_err() {
@@ -197,9 +193,7 @@ fn start(call: &Call) {
         }
     }
     host::event_wait();
-    let scheduler = this(call);
-    scheduler.list = None;
-    scheduler.started = false;
+    scheduler.started.set(false);
     call.set_bool(true);
 }
 

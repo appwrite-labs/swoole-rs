@@ -224,18 +224,17 @@ pub(crate) fn seconds(time: *const timeval) -> f64 {
     swoole_rs_hooks::timeval(seconds, micros)
 }
 
-/// A context option of the stream, if set, borrowed for one operation, which
-/// sets no option.
-fn context_option<'a>(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<&'a Value> {
+/// A copy of the stream's context option, if set.
+fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<Owned> {
     // SAFETY: a live stream; Zend copies nothing.
     let value = unsafe { swr_zend_stream_option(stream, wrapper.as_ptr(), name.as_ptr()) };
-    // SAFETY: null or the context's live option.
-    unsafe { Value::from_ptr(value) }
+    // SAFETY: null or the context's live option, copied before any PHP runs.
+    unsafe { Value::from_ptr(value) }.map(Value::copy)
 }
 
 /// `zval_is_true` of a context option, false when unset.
 fn option_true(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> bool {
-    context_option(stream, wrapper, name).is_some_and(Value::truthy)
+    context_option(stream, wrapper, name).is_some_and(|value| value.truthy())
 }
 
 /// Bytes up to the first NUL, as C reads a string.
@@ -244,8 +243,8 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 }
 
 /// `parse_ip_address_ex`: host and port of `name`, else the error text when
-/// `error` wants it.
-fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(CString, i32)> {
+/// `param` wants it.
+fn parse_address(name: &[u8], param: &mut php_stream_xport_param) -> Option<(CString, i32)> {
     let plan = swoole_rs_hooks::address::parse(name);
     if plan.status != 0 {
         let what = if plan.status == 1 {
@@ -255,7 +254,7 @@ fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(C
         };
         let name = String::from_utf8_lossy(c_str(name));
         set_error(
-            error,
+            param,
             format!("Failed to parse {what} \"{name}\"").as_bytes(),
         );
         return None;
@@ -265,11 +264,10 @@ fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(C
     Some((CString::new(host).unwrap_or_default(), plan.port))
 }
 
-/// A copy of `text` in Zend's error text slot, when the caller wants one.
-fn set_error(error: Option<*mut *mut zend_string>, text: &[u8]) {
-    if let Some(error) = error {
-        // SAFETY: the transport parameter's output slot, lent for the operation.
-        unsafe { *error = string::copy(text) };
+/// A copy of `text` in the transport parameter's error text, when it wants one.
+fn set_error(param: &mut php_stream_xport_param, text: &[u8]) {
+    if param.want_errortext() != 0 {
+        param.outputs.error_text = string::copy(text);
     }
 }
 
@@ -553,23 +551,21 @@ fn crypto(ssl: *mut openssl_sys::SSL) -> OwnedArray {
     // SAFETY: a live connection; OpenSSL takes a null cipher below.
     let cipher = unsafe { openssl_sys::SSL_get_current_cipher(ssl) };
     // SAFETY: as above.
-    let name = text(unsafe { openssl_sys::SSL_CIPHER_get_name(cipher) });
-    // SAFETY: as above.
     let bits = unsafe { openssl_sys::SSL_CIPHER_get_bits(cipher, ptr::null_mut()) };
     // SAFETY: as above.
-    let version = text(unsafe { openssl_sys::SSL_CIPHER_get_version(cipher) });
+    let name = unsafe { openssl_sys::SSL_CIPHER_get_name(cipher) };
+    // SAFETY: as above.
+    let version = unsafe { openssl_sys::SSL_CIPHER_get_version(cipher) };
+    // SAFETY: OpenSSL's cipher names and versions are static and NUL-terminated.
+    let name = unsafe { CStr::from_ptr(name) };
+    // SAFETY: as above.
+    let version = unsafe { CStr::from_ptr(version) };
     let mut crypto = OwnedArray::default();
     crypto.insert_bytes(b"protocol", Some(protocol));
-    crypto.insert_bytes(b"cipher_name", Some(name));
+    crypto.insert_bytes(b"cipher_name", Some(name.to_bytes()));
     crypto.insert_long(b"cipher_bits", bits.into());
-    crypto.insert_bytes(b"cipher_version", Some(version));
+    crypto.insert_bytes(b"cipher_version", Some(version.to_bytes()));
     crypto
-}
-
-/// The bytes of OpenSSL's static cipher text.
-fn text(text: *const c_char) -> &'static [u8] {
-    // SAFETY: OpenSSL's cipher names and versions are static and NUL-terminated.
-    unsafe { CStr::from_ptr(text) }.to_bytes()
 }
 
 /// `PHP_STREAM_OPTION_XPORT_API`.
@@ -582,7 +578,6 @@ fn xport_api(
     let p = unsafe { &mut *param };
     let want_addr = p.want_addr() != 0;
     let want_textaddr = p.want_textaddr() != 0;
-    let want_errortext = p.want_errortext() != 0;
     let textaddr = if want_textaddr {
         &raw mut p.outputs.textaddr
     } else {
@@ -593,7 +588,6 @@ fn xport_api(
     } else {
         (ptr::null_mut(), ptr::null_mut())
     };
-    let error_text = want_errortext.then_some(&raw mut p.outputs.error_text);
     let (buf, buflen) = (p.inputs.buf, p.inputs.buflen);
     // SAFETY: Zend lends `buflen` bytes at `buf`, writable unless it sends.
     let io = |op| unsafe { socket.io(op, buf, buflen) };
@@ -606,7 +600,7 @@ fn xport_api(
             }
         }
         xport::CONNECT | xport::CONNECT_ASYNC => {
-            let mut code = connect(stream, socket, p, error_text);
+            let mut code = connect(stream, socket, p);
             if code == 0 && socket.ssl_enabled() && enable_crypto(stream, socket, true)? < 0 {
                 code = -1;
             }
@@ -629,10 +623,10 @@ fn xport_api(
                     socket.set_option(libc::SOL_SOCKET, libc::SO_BROADCAST, 1, true);
                 }
             }
-            p.outputs.returncode = bind(socket, p, error_text);
+            p.outputs.returncode = bind(socket, p);
         }
         xport::ACCEPT => {
-            p.outputs.returncode = accept(stream, socket, p, textaddr, addr, addrlen, error_text)?;
+            p.outputs.returncode = accept(stream, socket, p, textaddr, addr, addrlen)?;
         }
         xport::GET_NAME => {
             // SAFETY: the output slots Zend asked for.
@@ -719,17 +713,12 @@ fn oob(param: &mut php_stream_xport_param) -> Result<(), Bailout> {
 }
 
 /// `socket_connect`: 0, or -1 with the error.
-fn connect(
-    stream: *mut php_stream,
-    socket: &Socket,
-    param: &mut php_stream_xport_param,
-    error: Option<*mut *mut zend_string>,
-) -> c_int {
+fn connect(stream: *mut php_stream, socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
     if socket.fd() < 0 {
         return FAILURE;
     }
     let inet = socket.is_inet();
-    let parsed = target(inet, param, error);
+    let parsed = target(inet, param);
     if inet && socket.socket_type() == libc::SOCK_STREAM {
         socket.set_nodelay(1);
     }
@@ -738,10 +727,10 @@ fn connect(
     };
     if let Some(bindto) = context_option(stream, c"socket", c"bindto") {
         let Some(name) = bindto.bytes() else {
-            set_error(error, b"local_addr context option is not a string.");
+            set_error(param, b"local_addr context option is not a string.");
             return FAILURE;
         };
-        let Some((local, local_port)) = parse_address(name, error) else {
+        let Some((local, local_port)) = parse_address(name, param) else {
             return FAILURE;
         };
         let local = match local.as_bytes() {
@@ -766,18 +755,14 @@ fn connect(
 }
 
 /// The transport parameter's name: on an `inet` socket the host and port it
-/// parses to (else none, with `error`), on another the NUL-terminated path.
-fn target(
-    inet: bool,
-    param: &php_stream_xport_param,
-    error: Option<*mut *mut zend_string>,
-) -> Option<(CString, i32)> {
+/// parses to (else none, with the error text), on another the NUL-terminated path.
+fn target(inet: bool, param: &mut php_stream_xport_param) -> Option<(CString, i32)> {
     if inet {
         // SAFETY: Zend lends `namelen` bytes at `name`.
         let name = unsafe {
             std::slice::from_raw_parts(param.inputs.name.cast::<u8>(), param.inputs.namelen)
         };
-        parse_address(name, error)
+        parse_address(name, param)
     } else if param.inputs.name.is_null() {
         None
     } else {
@@ -787,12 +772,8 @@ fn target(
 }
 
 /// `socket_bind`: 0, or -1.
-fn bind(
-    socket: &Socket,
-    param: &php_stream_xport_param,
-    error: Option<*mut *mut zend_string>,
-) -> c_int {
-    let Some((host, port)) = target(socket.is_inet(), param, error) else {
+fn bind(socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
+    let Some((host, port)) = target(socket.is_inet(), param) else {
         socket.set_error(libc::EINVAL);
         return -1;
     };
@@ -807,7 +788,6 @@ fn accept(
     textaddr: *mut *mut zend_string,
     addr: *mut *mut sockaddr,
     addrlen: *mut socklen_t,
-    error: Option<*mut *mut zend_string>,
 ) -> Result<c_int, Bailout> {
     param.outputs.client = ptr::null_mut();
     let nodelay = option_true(stream, c"socket", c"tcp_nodelay");
@@ -825,11 +805,9 @@ fn accept(
     let Some(client) = client else {
         let code = socket.error();
         param.outputs.error_code = code;
-        if let Some(error) = error {
+        if param.want_errortext() != 0 {
             // SAFETY: Zend formats the error.
-            let text = unsafe { php_socket_error_str(code.into()) };
-            // SAFETY: the caller's output slot.
-            unsafe { *error = text };
+            param.outputs.error_text = unsafe { php_socket_error_str(code.into()) };
         }
         return Ok(FAILURE);
     };
