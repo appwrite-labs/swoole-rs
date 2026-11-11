@@ -61,8 +61,7 @@ pub struct Waited {
 pub fn wait_child(nonblock: bool) -> Waited {
     let mut status = 0;
     let pid = if nonblock {
-        // SAFETY: waitpid(2) into a local.
-        unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) }
+        swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), libc::WNOHANG)
     } else {
         // SAFETY: wait(2) into a local.
         unsafe { libc::wait(&raw mut status) }

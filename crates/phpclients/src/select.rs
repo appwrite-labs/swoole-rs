@@ -4,7 +4,7 @@ use crate::{
     native::ErrorKind,
     net::{CONNECT_TIMEOUT, bailed, errno, warn, warn_sys},
 };
-use libc::{POLLHUP, POLLIN, POLLOUT, c_int, c_short, nfds_t, pollfd};
+use libc::{POLLHUP, POLLIN, POLLOUT, c_int, c_short, pollfd};
 use swoole_rs_zend::{Array, Call, Owned, OwnedArray, Value};
 
 /// The arrays by argument number, with the event each is polled for.
@@ -128,10 +128,8 @@ fn select(call: &Call) {
         reason = "upstream's (int) (timeout * 1000)"
     )]
     let wait = (timeout * 1000.0) as c_int;
-    let polled = nfds_t::try_from(count).unwrap_or(nfds_t::MAX);
     let ready = loop {
-        // SAFETY: `fds` holds at least `count` entries.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), polled, wait) };
+        let ready = swoole_rs_corebase::sys::poll(fds.get_mut(..count).unwrap_or_default(), wait);
         if !(ready < 0 && errno() == libc::EINTR) {
             break ready;
         }
