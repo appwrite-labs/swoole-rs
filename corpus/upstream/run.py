@@ -218,7 +218,11 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_coroutine_lock/lock.phpt':
         "its three concurrent requests land on different SWOOLE_PROCESS workers, and when request "
         "2's worker takes the shared lock before request 1's, the output is lock2, value 3, lock1 "
-        'on both engines (Docker, 150 runs each: upstream 20, cargo 19, #2923)'}
+        'on both engines (Docker, 150 runs each: upstream 20, cargo 19, #2923)',
+        'tests/swoole_http_server/sendfile_client_reset.phpt':
+        "the server sometimes stops sending the file before the client has read 2 MiB, so the "
+        "client's recv() loop asserts on empty reads until the runner's timeout, on both engines "
+        '(Docker, 24 runs each: upstream 3, cargo 3, #2815)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
