@@ -579,7 +579,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use core::ffi::{CStr, c_char, c_void};
+    use core::ffi::{CStr, c_void};
     use std::collections::VecDeque;
 
     /// The effects a [`Fake`] records.
@@ -878,20 +878,14 @@ pub(crate) mod tests {
     }
 
     /// The crate's test log host; methods.rs's tests install it too.
-    pub(crate) unsafe extern "C" fn record(
-        kind: c_int,
-        level: c_int,
-        code: c_int,
-        origin: *const c_char,
-        message: *const c_char,
-    ) {
+    pub(crate) fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
         // As crates/utilities' host, the production one, does.
         if matches!(kind, log::LOG_SYS_WARNING | log::LOG_ERROR) {
             log::set_last_error(code);
         }
         // The log host is process-wide and other tests' threads log through it too, so this
         // only records; `logged` checks the origin on the thread that ran the case.
-        let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        let text = |s: &CStr| s.to_string_lossy().into_owned();
         LOGGED.with_borrow_mut(|logged| logged.push((text(origin), level, code, text(message))));
     }
 

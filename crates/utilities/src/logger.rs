@@ -593,20 +593,9 @@ pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
 /// corebase's `LOG_*` `kind` (crates/corebase/src/log.rs): the last error, the level
 /// check, the line formatted into `sw_error`, the put and, for the errors, the exit.
 /// `swoole_init` registers it as corebase's log host.
-///
-/// # Safety
-/// `origin` and `message` are NUL-terminated.
-pub unsafe extern "C" fn swr_v1_utils_log(
-    kind: c_int,
-    level: c_int,
-    code: c_int,
-    origin: *const c_char,
-    message: *const c_char,
-) {
-    // SAFETY: per the contract.
-    let origin = unsafe { CStr::from_ptr(origin) }.to_bytes();
-    // SAFETY: as above.
-    let message = unsafe { CStr::from_ptr(message) }.to_bytes();
+pub fn swr_v1_utils_log(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    let origin = origin.to_bytes();
+    let message = message.to_bytes();
     let threshold = swoole_get_log_level();
     let failed = || {
         // SAFETY: swoole_strerror returns a NUL-terminated message.
@@ -665,14 +654,8 @@ pub(crate) mod tests {
         static HOST: RefCell<Vec<Logged>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C" fn logged(
-        kind: c_int,
-        level: c_int,
-        code: c_int,
-        origin: *const c_char,
-        message: *const c_char,
-    ) {
-        let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+    fn logged(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+        let text = |s: &CStr| s.to_string_lossy().into_owned();
         let entry = (kind, level, code, text(origin), text(message));
         HOST.with(|host| host.borrow_mut().push(entry));
     }
@@ -705,10 +688,11 @@ pub(crate) mod tests {
         (CString::new(dir.to_str().unwrap()).unwrap(), dir)
     }
 
-    fn file(logger: *const Logger, real: bool) -> String {
-        unsafe { CStr::from_ptr(swr_v1_logger_file(&*logger, real)) }
-            .to_string_lossy()
-            .into_owned()
+    /// `Logger::get_file` (or `get_real_file`), copied.
+    pub(crate) fn file(logger: *const Logger, real: bool) -> String {
+        let state = unsafe { &*logger }.lock();
+        let file = if real { &state.real_file } else { &state.file };
+        file.to_string_lossy().into_owned()
     }
 
     #[test]
@@ -907,8 +891,8 @@ pub(crate) mod tests {
     fn rust_logs_run_the_macros_last_error_and_sw_error() {
         let last = || unsafe { CStr::from_ptr(swoole_rs_error::swoole_get_last_error_msg()) };
         // No logger: the level is SW_LOG_NONE, which only a level-6 error_log reaches.
-        let run = |kind, level, code, origin: &CStr| unsafe {
-            swr_v1_utils_log(kind, level, code, origin.as_ptr(), c"x".as_ptr());
+        let run = |kind, level, code, origin: &CStr| {
+            swr_v1_utils_log(kind, level, code, origin, c"x");
         };
         run(log::LOG_ERROR, 6, 1015, c"Socket::ssl_verify");
         assert_eq!(log::last_error(), 1015);

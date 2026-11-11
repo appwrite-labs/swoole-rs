@@ -279,13 +279,7 @@ mod tests {
     // `Socks5Proxy::create(SW_SOCK_TCP, "127.0.0.1", 1080, "", "")`, then a 255- and a
     // 256-byte target host through the tunnel.
     /// Native's `swoole_error_log`, as far as the case observes it: it sets the last error.
-    unsafe extern "C" fn error_log(
-        kind: c_int,
-        _: c_int,
-        code: c_int,
-        _: *const c_char,
-        _: *const c_char,
-    ) {
+    fn error_log(kind: c_int, _: c_int, code: c_int, _: &CStr, _: &CStr) {
         if kind == log::LOG_ERROR {
             log::set_last_error(code);
         }

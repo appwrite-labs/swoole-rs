@@ -714,14 +714,29 @@ unsafe extern "C" fn keep_last_line(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z20swoole_ssl_get_errorv")
 )]
+#[must_use]
 pub extern "C" fn swr_v1_tls_error() -> *const c_char {
+    drain_errors();
+    ERROR_TEXT.with_borrow(|text| text.as_ptr().cast())
+}
+
+/// `swoole_ssl_get_error()`'s line, copied.
+#[must_use]
+pub fn error_line() -> String {
+    drain_errors();
+    ERROR_TEXT.with_borrow(|text| {
+        String::from_utf8_lossy(text.split_last().map_or(&[], |(_, line)| line)).into_owned()
+    })
+}
+
+/// Drains this thread's error queue, keeping its last line.
+fn drain_errors() {
     ERROR_TEXT.with_borrow_mut(|text| {
         text.clear();
         text.push(0);
     });
     // SAFETY: the callback only touches this thread's buffer.
     unsafe { ERR_print_errors_cb(keep_last_line, ptr::null_mut()) };
-    ERROR_TEXT.with_borrow(|text| text.as_ptr().cast())
 }
 
 /// # Safety
@@ -1035,7 +1050,6 @@ mod tests {
         assert!(swr_v1_tls_connection_index() >= 0);
         assert_ne!(swr_v1_tls_connection_index(), swr_v1_tls_port_index());
         unsafe { ERR_clear_error() };
-        let text = unsafe { CStr::from_ptr(swr_v1_tls_error()) };
-        assert_eq!(text.to_bytes(), b"");
+        assert_eq!(error_line(), "");
     }
 }

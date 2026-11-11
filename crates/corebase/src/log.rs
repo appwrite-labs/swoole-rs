@@ -7,7 +7,7 @@
 //! function upstream's `__SW_FUNC__` did and corebase links without utilities.
 
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, CString, c_int};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -56,13 +56,7 @@ pub const LOG_FATAL: c_int = 6;
 
 /// Native's log macros: `kind` is a `LOG_*`, `level` and `code` are what that
 /// macro takes, and `message` is the formatted text after `__SW_FUNC__`'s part.
-pub type LogHost = unsafe extern "C" fn(
-    kind: c_int,
-    level: c_int,
-    code: c_int,
-    origin: *const c_char,
-    message: *const c_char,
-);
+pub type LogHost = fn(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr);
 
 static HOST: OnceLock<LogHost> = OnceLock::new();
 
@@ -80,9 +74,13 @@ fn emit(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: fmt::Arg
     // printf's %s stops at the first NUL, so the message does too.
     let mut text = message.to_string();
     text.truncate(text.find('\0').unwrap_or(text.len()));
-    text.push('\0');
-    // SAFETY: both strings are NUL-terminated and outlive the call.
-    unsafe { host(kind, level, code, origin.as_ptr(), text.as_ptr().cast()) };
+    host(
+        kind,
+        level,
+        code,
+        origin,
+        &CString::new(text).unwrap_or_default(),
+    );
 }
 
 /// `swoole_sys_warning` from `origin`, with this thread's errno as on entry.
@@ -134,14 +132,8 @@ mod tests {
     type Seen = (c_int, c_int, c_int, String, String);
     static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
-    unsafe extern "C" fn record(
-        kind: c_int,
-        level: c_int,
-        code: c_int,
-        origin: *const c_char,
-        message: *const c_char,
-    ) {
-        let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+    fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+        let text = |s: &CStr| s.to_string_lossy().into_owned();
         SEEN.lock()
             .unwrap()
             .push((kind, level, code, text(origin), text(message)));

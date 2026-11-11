@@ -1383,13 +1383,9 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
     let conn = serv.get_connection_by_session_id(session);
-    // SAFETY: the running server and its live connection, laid out as the crate's record.
-    let addr = unsafe {
-        CStr::from_ptr(swoole_rs_server::local_addr::get_local_addr(
-            serv.0,
-            ptr::from_ref(conn).cast(),
-        ))
-    };
+    // SAFETY: the running server's live connection, laid out as the crate's record.
+    let conn = unsafe { &*ptr::from_ref(conn).cast::<swoole_rs_server::ConnectionRecord>() };
+    let addr = swoole_rs_server::local_addr::get_local_addr(serv.view(), conn);
     expect(addr != c"unknown", "serv->get_local_addr(conn) != unknown");
 
     let resp = server_response();

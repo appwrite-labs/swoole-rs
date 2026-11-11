@@ -44,11 +44,7 @@ pub trait Effects: StaticEffects + Calendar {}
 pub struct Native;
 impl StaticEffects for Native {
     fn mime(&self, filename: &[u8]) -> Vec<u8> {
-        let kind = swoole_rs_framing::mime::get(filename);
-        // SAFETY: the table's NUL-terminated type, copied before it can change.
-        unsafe { core::ffi::CStr::from_ptr(kind) }
-            .to_bytes()
-            .to_vec()
+        swoole_rs_framing::mime::get(filename)
     }
     fn mime_exists(&self, filename: &[u8]) -> bool {
         swoole_rs_framing::mime::exists(filename)

@@ -1223,7 +1223,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     }
     let (host, port) = native::address(&address);
-    address_array(call, port, host);
+    address_array(call, port, &host);
 }
 
 /// `getSocket()`: the client's socket as an ext/sockets `Socket`.

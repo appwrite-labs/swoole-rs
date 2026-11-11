@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
 use swoole_rs_clients::address::{
-    swr_v1_clients_address_assign, swr_v1_clients_address_port, swr_v1_clients_address_type,
+    swr_v1_clients_address_assign, swr_v1_clients_address_port, type_name,
 };
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::{
@@ -152,8 +152,7 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
 
 /// The host as `host.c_str()` prints it.
 fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
-    // SAFETY: a slot's view is NUL-terminated and lives while `config` is borrowed.
-    unsafe { CStr::from_ptr(config.host().data) }.to_string_lossy()
+    config.host_c_str().to_string_lossy()
 }
 
 /// An int option set to 1; 0 or -1 as setsockopt(2).
@@ -215,29 +214,29 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
         return fail();
     }
-    let host = config.host();
+    let host = config.host_bytes();
     let mut address = SocketAddress {
         // SAFETY: the sockaddr union is plain data.
         addr: unsafe { std::mem::zeroed() },
         len: 0,
         kind,
     };
-    // SAFETY: the union and its length, and the host's NUL-terminated bytes.
+    // SAFETY: the union and its length, and the host's bytes, which its slot keeps
+    // NUL-terminated.
     let error = unsafe {
         swr_v1_clients_address_assign(
             (&raw mut address.addr).cast(),
             &raw mut address.len,
             kind,
-            host.data,
-            host.length,
+            host.as_ptr().cast(),
+            host.len(),
             config.port,
             Some(swr_v1_clients_gethostbyname),
         )
     };
     if error != 0 {
         log::set_last_error(error);
-        // SAFETY: a static NUL-terminated name.
-        let name = unsafe { CStr::from_ptr(swr_v1_clients_address_type(kind)) };
+        let name = type_name(kind);
         log::warning(
             c"ListenPort::create_socket",
             format_args!(

@@ -1913,17 +1913,18 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.socket_type = port.r#type;
             conn.object = ls;
             conn.info.kind = port.r#type;
-            let host = port.host();
+            let host = port.host_bytes();
             let info = &mut conn.info;
             let resolve: Resolve = swoole_rs_corebase::swr_v1_clients_gethostbyname;
-            // SAFETY: the connection's address storage and the port's host.
+            // SAFETY: the connection's address storage and the port's host, which
+            // its slot keeps NUL-terminated.
             let error = unsafe {
                 swr_v1_clients_address_assign(
                     (&raw mut info.addr).cast(),
                     &raw mut info.len,
                     port.r#type,
-                    host.data,
-                    host.length,
+                    host.as_ptr().cast(),
+                    host.len(),
                     port.port,
                     Some(resolve),
                 )

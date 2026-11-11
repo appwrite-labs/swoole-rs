@@ -2,9 +2,9 @@
 use core::ffi::{CStr, c_int, c_void};
 use std::sync::OnceLock;
 
+use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::Protocol;
-use swoole_rs_corebase::{CoreStringView, StringSlot, swr_v1_core_string_view};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_tls::{DtlsSession, OwnedTlsContext, SslVersion, swr_v1_tls_owner_view};
 
@@ -111,19 +111,16 @@ pub struct PortConfig {
 }
 
 impl PortConfig {
-    /// The host: its NUL-terminated bytes and their length.
-    #[must_use]
-    pub fn host(&self) -> CoreStringView {
-        // SAFETY: the slot lives as long as `self`, and `&self` keeps writers out.
-        unsafe { swr_v1_core_string_view(&raw const *self.host) }
-    }
-
-    /// The host's bytes, without the NUL.
+    /// The host's bytes, embedded NULs included; the slot keeps a NUL after them.
     #[must_use]
     pub fn host_bytes(&self) -> &[u8] {
-        let host = self.host();
-        // SAFETY: the slot's view covers its length while `self` is borrowed.
-        unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) }
+        self.host.bytes()
+    }
+
+    /// The host up to its first NUL, as `host.c_str()` reads it.
+    #[must_use]
+    pub fn host_c_str(&self) -> &CStr {
+        self.host.c_str()
     }
 
     /// `ListenPort::is_dtls()`: the port's context speaks DTLS.

@@ -819,25 +819,11 @@ pub extern "C" fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void
         .map_or(ptr::null_mut(), |stream| stream.socket)
 }
 
-/// The listener's address (null without one) and port.
-///
-/// # Safety
-/// `ipc` is a live handle; `port` is writable.
+/// The listener's address and port, none without one.
 #[cfg(test)]
-pub(crate) unsafe fn swr_v1_process_pool_ipc_address_of(
-    ipc: *const PoolIpc,
-    port: *mut c_int,
-) -> *const c_char {
-    // SAFETY: the caller's live handle.
-    let Some(stream) = (unsafe { &*ipc }).stream.as_ref() else {
-        return ptr::null();
-    };
-    // SAFETY: the caller's out-pointer.
-    unsafe { *port = stream.port };
-    stream
-        .file
-        .as_ref()
-        .map_or(ptr::null(), |file| file.as_ptr())
+pub(crate) fn pool_ipc_address(ipc: &PoolIpc) -> Option<(&CStr, c_int)> {
+    let stream = ipc.stream.as_ref()?;
+    Some((stream.file.as_deref()?, stream.port))
 }
 
 /// The connection being served (`stream_info_->last_connection`), or null.
@@ -1102,15 +1088,13 @@ mod tests {
     #[test]
     fn a_pool_without_a_listener_has_no_address() {
         let ipc = pool_ipc_new(false);
-        let mut port = 7;
         // SAFETY: a live handle.
         unsafe {
             assert!(!swr_v1_process_pool_ipc_address(&mut *ipc, c"/tmp/x", 1));
-            assert!(swr_v1_process_pool_ipc_address_of(ipc, &raw mut port).is_null());
+            assert!(pool_ipc_address(&*ipc).is_none());
             assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
             pool_ipc_free(ipc, |_| {});
         }
-        assert_eq!(port, 7);
     }
 
     #[test]

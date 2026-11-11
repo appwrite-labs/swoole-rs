@@ -79,7 +79,7 @@ fn file_type(mut ctx: Ctx, file: *mut zend_string) {
     // SAFETY: a live file name.
     let path = unsafe { bytes(file) };
     let mime = swoole_rs_phpswoole::mime_type(path);
-    header.insert_bytes(key, Some(mime.to_bytes()));
+    header.insert_bytes(key, Some(&mime));
 }
 
 /// Send a header without borrowing context state across the IO.

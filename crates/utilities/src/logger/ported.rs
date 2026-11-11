@@ -73,9 +73,7 @@ fn open(logger: &Logger, file: &CStr) -> bool {
 }
 
 fn real_file(logger: &Logger) -> String {
-    // SAFETY: the logger's NUL-terminated path, read before it changes.
-    let file = unsafe { CStr::from_ptr(swr_v1_logger_file(logger, true)) };
-    file.to_string_lossy().into_owned()
+    super::tests::file(logger, true)
 }
 
 /// `file_get_contents`: none for a missing or empty file.
@@ -302,14 +300,8 @@ fn ignore_error() {
     swoole_rs_error_ffi::swoole_ignore_error(ignored_errcode);
 
     // swoole_error_log(SW_LOG_WARNING, code, ...)
-    let error_log = |code, message: &CStr| unsafe {
-        swr_v1_utils_log(
-            log::LOG_ERROR,
-            LOG_WARNING,
-            code,
-            c"ignore_error".as_ptr(),
-            message.as_ptr(),
-        );
+    let error_log = |code, message: &CStr| {
+        swr_v1_utils_log(log::LOG_ERROR, LOG_WARNING, code, c"ignore_error", message);
     };
     error_log(ignored_errcode, c"error 1");
     error_log(errcode, c"error 2");

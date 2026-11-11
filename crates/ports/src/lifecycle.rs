@@ -15,9 +15,9 @@ use openssl_sys::{
     SSL, SSL_CTX_set_tlsext_servername_callback__fixed_rust, SSL_get_ex_data, SSL_get_servername,
     SSL_set_SSL_CTX, SSL_set_ex_data, TLSEXT_NAMETYPE_host_name,
 };
-use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
-use swoole_rs_corebase::{log, swr_v1_core_string_set, sys};
+use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
@@ -384,11 +384,7 @@ pub(crate) fn import(port: *mut c_void, fd: c_int) -> bool {
     let config = unsafe { port_config::of(port) };
     config.socket = socket.into_raw().cast();
     config.r#type = kind;
-    let host = swr_v1_clients_address_host(&info);
-    // SAFETY: a NUL-terminated string.
-    let length = unsafe { libc::strlen(host) };
-    // SAFETY: the port's host slot and `length` readable bytes.
-    if unsafe { swr_v1_core_string_set(&raw const *config.host, host, length) } != 0 {
+    if with_host(&info, |host| config.host.set(host.to_bytes())) != 0 {
         std::process::abort();
     }
     config.port = swr_v1_clients_address_port(&info);

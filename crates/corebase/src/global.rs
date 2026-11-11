@@ -246,14 +246,11 @@ pub fn swr_v1_core_dns_tries() -> c_int {
     RECORD.dns_tries.load(Ordering::Relaxed)
 }
 
-/// `SwooleG.bug_report_message.c_str()`: valid until the message next changes.
+/// `SwooleG.bug_report_message`, copied.
 #[must_use]
-pub fn swr_v1_core_bug_report_message() -> *const c_char {
+pub fn bug_report_message() -> String {
     let message = bug_report();
-    if message.is_empty() {
-        return c"".as_ptr();
-    }
-    message.as_ptr().cast()
+    String::from_utf8_lossy(message.split_last().map_or(&[], |(_, text)| text)).into_owned()
 }
 
 unsafe extern "C" {
@@ -359,7 +356,6 @@ pub fn time_now() -> libc::time_t {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CStr;
 
     /// Upstream's `time.get_seconds`: the wall clock's seconds against the C library's.
     /// glibc's `time(NULL)` reads `CLOCK_REALTIME_COARSE`, which trails the precise clock
@@ -418,10 +414,7 @@ mod tests {
 
         bug_report_lines(c"Banner", c"cc 1", c"SSL\n");
         bug_report_append(b"PHP_VERSION : 8\n");
-        // SAFETY: the message is NUL-terminated and unchanged while read.
-        let message = unsafe { CStr::from_ptr(swr_v1_core_bug_report_message()) }
-            .to_str()
-            .unwrap();
+        let message = bug_report_message();
         assert!(message.starts_with("\nBanner\nOS: "), "{message}");
         assert!(
             message.ends_with("\nGCC_VERSION: cc 1\nSSL\nPHP_VERSION : 8\n"),
@@ -435,8 +428,7 @@ mod tests {
         assert!(swr_v1_core_stdout().is_null() && swr_v1_core_logger().is_null());
         assert_eq!(swr_v1_core_signal_fd(), 0);
         assert_eq!(swr_v1_core_aio_max_wait_time().to_bits(), 0);
-        // SAFETY: the empty message is a static NUL-terminated string.
-        assert!(unsafe { CStr::from_ptr(swr_v1_core_bug_report_message()) }.is_empty());
+        assert_eq!(bug_report_message(), "");
     }
 
     #[test]
