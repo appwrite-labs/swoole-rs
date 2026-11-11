@@ -69,8 +69,7 @@ fn to_fd_set(
     let mut entries = array.entries();
     while let Some((key, index, value)) = entries.next_stored() {
         let value = value.dereferenced();
-        // SAFETY: a live element.
-        let fd = unsafe { convert_to_fd(value.as_ptr()) }?;
+        let fd = convert_to_fd(value)?;
         if fd < 0 {
             continue;
         }
