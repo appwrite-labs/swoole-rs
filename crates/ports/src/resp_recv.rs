@@ -37,7 +37,7 @@ unsafe extern "C" fn connection_recv(context: *mut c_void, at: *mut u8, n: usize
         return received;
     }
     let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    match c.socket.edit(|s| s.catch_error(error)) {
+    match c.socket.catch_error(error) {
         ERROR => {
             log::sys_warning(ORIGIN, format_args!("recv from socket#{} failed", c.fd));
             RESP_RECV_DONE

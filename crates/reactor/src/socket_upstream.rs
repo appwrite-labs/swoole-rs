@@ -5,7 +5,7 @@
 //! `upstream-symbols` (the hybrid's reactor build) they are defined under their
 //! upstream (Itanium) symbols and `socket.cc` no longer defines them.
 use crate::socket_sync::set_errno;
-use crate::{SocketAddress, SocketRecord};
+use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::log;
 
@@ -35,7 +35,7 @@ pub fn signal_dispatch() -> Option<unsafe extern "C" fn()> {
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket5cleanEv")
 )]
-pub extern "C" fn socket_clean(socket: &SocketRecord) {
+pub extern "C" fn socket_clean(socket: &SocketFields) {
     crate::fd_clean(socket.fd);
 }
 
@@ -46,7 +46,7 @@ pub extern "C" fn socket_clean(socket: &SocketRecord) {
     unsafe(export_name = "_ZNK6swoole7network6Socket10wait_eventEii")
 )]
 pub extern "C" fn socket_wait_event(
-    socket: &SocketRecord,
+    socket: &SocketFields,
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
@@ -78,7 +78,7 @@ pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, event
 }
 
 /// `swReturnCode Socket::connect_async(const Address &sa)`.
-pub fn socket_connect_async(socket: &mut SocketRecord, address: &SocketAddress) -> c_int {
+pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) -> c_int {
     socket_set_fd_option(socket, 1, -1);
     let result = crate::fd_connect(socket.fd, address);
     match result.status {
@@ -157,7 +157,7 @@ pub extern "C" fn socket_has_timedout(_socket: *const SocketRecord) -> bool {
     unsafe(export_name = "_ZN6swoole7network6Socket13set_fd_optionEii")
 )]
 pub extern "C" fn socket_set_fd_option(
-    socket: &mut SocketRecord,
+    socket: &mut SocketFields,
     nonblock: c_int,
     cloexec: c_int,
 ) -> bool {
@@ -180,7 +180,7 @@ pub extern "C" fn socket_set_fd_option(
 }
 
 /// `_set_timeout` and the timeout it records: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`.
-fn set_kernel_timeout(socket: &mut SocketRecord, send: bool, timeout: f64) -> bool {
+fn set_kernel_timeout(socket: &mut SocketFields, send: bool, timeout: f64) -> bool {
     if socket.set_kernel_timeout(send, timeout) {
         return true;
     }
@@ -197,7 +197,7 @@ fn set_kernel_timeout(socket: &mut SocketRecord, send: bool, timeout: f64) -> bo
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket23set_kernel_read_timeoutEd")
 )]
-pub extern "C" fn socket_set_kernel_read_timeout(socket: &mut SocketRecord, timeout: f64) -> bool {
+pub extern "C" fn socket_set_kernel_read_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
     set_kernel_timeout(socket, true, timeout)
 }
 
@@ -206,12 +206,12 @@ pub extern "C" fn socket_set_kernel_read_timeout(socket: &mut SocketRecord, time
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket24set_kernel_write_timeoutEd")
 )]
-pub extern "C" fn socket_set_kernel_write_timeout(socket: &mut SocketRecord, timeout: f64) -> bool {
+pub extern "C" fn socket_set_kernel_write_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
     set_kernel_timeout(socket, false, timeout)
 }
 
 /// `cork` or `uncork`: the TCP flags in and out of the record, and the warnings.
-fn cork_as(socket: &mut SocketRecord, cork: bool) -> bool {
+fn cork_as(socket: &mut SocketFields, cork: bool) -> bool {
     let mut state = crate::CorkState {
         tcp_nopush: socket.tcp_nopush,
         tcp_nodelay: socket.tcp_nodelay,
@@ -249,7 +249,7 @@ fn cork_as(socket: &mut SocketRecord, cork: bool) -> bool {
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket4corkEv")
 )]
-pub extern "C" fn socket_cork(socket: &mut SocketRecord) -> bool {
+pub extern "C" fn socket_cork(socket: &mut SocketFields) -> bool {
     cork_as(socket, true)
 }
 
@@ -258,7 +258,7 @@ pub extern "C" fn socket_cork(socket: &mut SocketRecord) -> bool {
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket6uncorkEv")
 )]
-pub extern "C" fn socket_uncork(socket: &mut SocketRecord) -> bool {
+pub extern "C" fn socket_uncork(socket: &mut SocketFields) -> bool {
     cork_as(socket, false)
 }
 
@@ -383,7 +383,7 @@ mod tests {
 /// the core-tests port (tests/modules/hooks/system), which links them.
 #[cfg(feature = "upstream-symbols")]
 mod members {
-    use crate::{SocketAddress, SocketRecord};
+    use crate::{SocketAddress, SocketFields, SocketRecord};
     use std::ffi::c_int;
 
     /// Each member as `extern "C" fn(this, args...)`: C++ passes `this` and reference
@@ -391,7 +391,7 @@ mod members {
     macro_rules! members {
         ($($symbol:literal fn $name:ident($this:ident $(, $arg:ident: $ty:ty)*) -> $ret:ty $body:block)*) => {$(
             #[unsafe(export_name = $symbol)]
-            extern "C" fn $name($this: &mut SocketRecord $(, $arg: $ty)*) -> $ret $body
+            extern "C" fn $name($this: &mut SocketFields $(, $arg: $ty)*) -> $ret $body
         )*};
     }
 

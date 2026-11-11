@@ -55,8 +55,8 @@ over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
 arbitrary server replies, each against the Rust candidate.
 
 For packet framing (`open_length_check`), `framing_unpack` compares
-`swr_v1_framing_unpack` with `swoole_unpack` for every length type, and
-`framing_length` compares `swr_v1_framing_default` with
+`swoole_rs_framing::unpack` with `swoole_unpack` for every length type, and
+`framing_length` compares `swoole_rs_framing::default_length` with
 `Protocol::default_length_func` over a length type, field offset, body offset and
 any received bytes. Outside the compared domain, Rust's -1 only has to match an upstream error.
 `framing_stream` runs the receive loops (`recv_with_length_protocol`,
@@ -102,6 +102,13 @@ to a URL (pattern, replacement and URL split at NUL): compiling and matching end
 pattern of letters, digits and `/` replaces each occurrence as literal text. ClusterFuzzLite
 links libc++, not the libstdc++ upstream's `std::regex` comes from, so the comparison with
 upstream is the `http-rewrites` gate's (`tests/modules/http/rewrite_gate.cc`).
+`ws_inflate` hands any bytes to `swoole_rs_inflate::message` (permessage-deflate,
+RFC 7692), then deflates the rest with `swoole_rs_deflate::message` at the level the
+first byte picks: inflating that gives the rest back. `http_inflate` compresses a body
+as gzip, zlib or raw deflate and feeds it to `Inflate::decode` (or the HTTP/2 client's
+`Inflate::gzip_only`) in fuzzer-chosen chunks: one call and the chunks both give the body
+back, except where a raw stream's first chunk can't trigger upstream's first-chunk raw
+retry. The uncompressed body, whole and in the same chunks, decodes without a panic.
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in

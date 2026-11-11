@@ -4,7 +4,7 @@ use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
 use std::{ffi::CStr, ptr::NonNull};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::SocketFields;
 use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR,
@@ -203,7 +203,7 @@ impl Socket {
 
     /// The network record can change during reinitialization; read its pointer on each use.
     /// The closure performs only immediate operations and never suspends or invokes PHP.
-    fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketRecord) -> T) -> T {
+    fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketFields) -> T) -> T {
         self.co().net(f).unwrap_or(absent)
     }
 

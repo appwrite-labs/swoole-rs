@@ -357,7 +357,7 @@ mod tests {
                 0
             );
             // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
-            let hooks = hooks(socket.cast(), &raw mut (*socket).kernel_nobufs);
+            let hooks = hooks(socket.cast(), &raw mut (*socket).fields.kernel_nobufs);
             let handle = crate::Socket::from_ptr(socket).unwrap();
             reset(2, 0, false);
             let sent = handle_send_owned(handle, queue, &hooks);
@@ -365,7 +365,7 @@ mod tests {
                 (sent.status, sent.result.code, sent.result.offset),
                 (0, -1, 2)
             );
-            assert_eq!((*socket).output.send_wait, 1);
+            assert_eq!((*socket).fields.output.send_wait, 1);
             let mut front = swoole_rs_buffer::TypedFront::default();
             assert_eq!(
                 swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
@@ -378,7 +378,7 @@ mod tests {
                 (
                     closed.status,
                     closed.result.code,
-                    (*socket).output.close_wait
+                    (*socket).fields.output.close_wait
                 ),
                 (0, -1, 1)
             );

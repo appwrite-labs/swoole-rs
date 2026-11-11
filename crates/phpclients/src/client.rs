@@ -12,7 +12,7 @@ use libc::{c_char, c_int};
 use std::{ffi::CStr, ptr};
 use swoole_rs_error::strerror_with;
 use swoole_rs_phpstubs::client_coro;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
     bailout::Bailout,
@@ -381,7 +381,8 @@ fn connect(call: &Call) {
             call.long(4, 0)?,
         ))
     });
-    let Ok((host, port, timeout, flags)) = parsed else {
+    // The coroutine socket's connect ignores `$sock_flag`, as upstream's does.
+    let Ok((host, port, timeout, _flags)) = parsed else {
         return call.set_bool(false);
     };
     if host.is_empty() {
@@ -391,7 +392,7 @@ fn connect(call: &Call) {
     let Some(socket) = socket_for_connect(call, port) else {
         return call.set_bool(false);
     };
-    if !socket.connect_host(host, port, timeout, flags) {
+    if !socket.connect_host(host, port, timeout) {
         report_socket(call, socket);
         socket.close();
         return call.set_bool(false);
@@ -443,7 +444,7 @@ fn sendto(call: &Call) {
     };
     if socket
         .net()
-        .is_some_and(|net| net.read(SocketRecord::is_tcp))
+        .is_some_and(|net| net.read(SocketFields::is_tcp))
         && !verify_port(port)
     {
         warn(true, "The port is invalid");

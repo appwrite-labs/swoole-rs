@@ -12,7 +12,7 @@ use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::{net_types::AddressStorage, swr_v1_clients_gethostbyname};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Value, bailout, message,
+    Call, E_ERROR, E_WARNING, Value, bailout, kind, message,
     string::bytes,
     sys::{IS_NULL, IS_STRING, IS_TRUE, swr_zval_copy, zend_read_property, zval},
     to_long, type_of,
@@ -89,8 +89,7 @@ fn on(call: &Call) {
         let mut retval = crate::dispatch::undef();
         port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
-        // SAFETY: Zend wrote the method's result.
-        return call.set_bool(unsafe { type_of(&raw const retval) } == IS_TRUE);
+        return call.set_bool(kind(&retval) == IS_TRUE);
     };
     let object = crate::lifecycle::ServerObject::this(call);
     let set = call.value(2).is_some_and(|cb| {

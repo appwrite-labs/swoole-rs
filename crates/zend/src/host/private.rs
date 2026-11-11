@@ -24,20 +24,15 @@ unsafe fn destroy(value: *mut zval) {
 }
 
 /// # Safety
-/// The returned request allocation is uninitialized; null carries a deferred bailout.
-unsafe fn alloc_request(size: usize) -> *mut c_void {
-    let mut result = ptr::null_mut();
-    // SAFETY: the C leaf allocates aligned request storage and traps allocation failure.
-    bailed(unsafe { sys::swr_zend_try_facade_alloc(size, &raw mut result) });
-    result
-}
-
-/// # Safety
 /// A live source zval. This intentionally copies only the slot, without retaining its payload.
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -> *mut zval {
-    // SAFETY: one fresh request allocation, not a reference-count operation.
-    let dest = unsafe { alloc_request(size_of::<zval>()) }.cast::<zval>();
+    let mut dest = ptr::null_mut::<c_void>();
+    // SAFETY: the C leaf allocates aligned, uninitialized request storage, not
+    // a reference-count operation, and traps allocation failure (leaving null
+    // and a deferred bailout).
+    bailed(unsafe { sys::swr_zend_try_facade_alloc(size_of::<zval>(), &raw mut dest) });
+    let dest = dest.cast::<zval>();
     bailout::finish();
     // SAFETY: the source is initialized and independent of the allocation.
     let value = unsafe { value.read() };
@@ -155,21 +150,6 @@ unsafe fn property(
     property
 }
 
-unsafe fn closure(cache: *const zend_fcall_info_cache) -> *mut zend_object {
-    // SAFETY: a resolved cache holds a live function handler.
-    let handler = unsafe { (*cache).function_handler };
-    // SAFETY: every Zend function initializes its common flags.
-    let function = unsafe { handler.read() };
-    // SAFETY: every Zend function has an initialized common prefix.
-    let common = unsafe { function.common };
-    if common.fn_flags & sys::ZEND_ACC_CLOSURE == 0 {
-        ptr::null_mut()
-    } else {
-        // SAFETY: the closure flag makes Zend's version-dependent closure object projection valid.
-        unsafe { sys::swr_zend_facade_closure(handler) }
-    }
-}
-
 /// # Safety
 /// A resolved cache owns the references Zend added when resolving it; each release may execute PHP.
 pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
@@ -182,9 +162,17 @@ pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
         });
     }
     if !bailout::pending() {
-        // SAFETY: reread the function after releasing the object, as the original does.
-        let closure = unsafe { closure(cache) };
-        if !closure.is_null() {
+        // SAFETY: reread the function after releasing the object, as the
+        // original does; a resolved cache holds a live function handler.
+        let handler = unsafe { (*cache).function_handler };
+        // SAFETY: every Zend function initializes its common prefix.
+        let function = unsafe { handler.read() };
+        // SAFETY: as above.
+        let common = unsafe { function.common };
+        if common.fn_flags & sys::ZEND_ACC_CLOSURE != 0 {
+            // SAFETY: the closure flag makes Zend's version-dependent closure
+            // object projection valid.
+            let closure = unsafe { sys::swr_zend_facade_closure(handler) };
             // SAFETY: release the separately held closure reference inside the C trap.
             bailout::defer(unsafe {
                 bailout::trap(sys::swr_zend_facade_object_release, closure.cast())

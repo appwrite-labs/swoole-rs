@@ -446,6 +446,14 @@ mod tests {
         (outcome, buffer)
     }
 
+    /// Upstream's `file.tmp_file`, second half: `make_tmpfile` with `task_tmpfile`
+    /// in a missing directory (core-tests sets the template directly) makes no file.
+    #[test]
+    fn make_tmpfile_in_a_missing_directory() {
+        let mut path = [0; super::TASK_TMP_PATH_SIZE];
+        assert!(super::make_tmpfile(c"/tmp/not-exists-dir/test.XXXXXX", &mut path) < 0);
+    }
+
     #[test]
     fn packed_bytes_hold_their_head_and_the_payload_it_counts() {
         let head = size_of::<swoole_rs_corebase::DataHead>();
