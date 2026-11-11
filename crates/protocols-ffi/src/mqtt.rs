@@ -22,13 +22,8 @@ pub struct PacketLength {
 }
 
 /// `swoole::mqtt::set_protocol(protocol)`.
-///
-/// # Safety
-/// `protocol` is a live, writable `swoole::Protocol`.
 #[unsafe(export_name = "_ZN6swoole4mqtt12set_protocolEPNS_8ProtocolE")]
-pub unsafe extern "C" fn set_protocol(protocol: *mut swoole_rs_corebase::net_types::Protocol) {
-    // SAFETY: as the caller promises.
-    let protocol = unsafe { &mut *protocol };
+pub extern "C" fn set_protocol(protocol: &mut swoole_rs_corebase::net_types::Protocol) {
     protocol.package_length_size = MAX_LENGTH_SIZE;
     protocol.package_length_offset = 1;
     protocol.package_body_offset = 0;
@@ -40,15 +35,13 @@ pub unsafe extern "C" fn set_protocol(protocol: *mut swoole_rs_corebase::net_typ
 /// length bytes.
 ///
 /// # Safety
-/// `pl` is valid and its `buf` addresses `buf_size` initialized bytes.
+/// `pl.buf` addresses `pl.buf_size` initialized bytes.
 #[unsafe(export_name = "_ZN6swoole4mqtt18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
 pub unsafe extern "C" fn get_package_length(
     _protocol: *const core::ffi::c_void,
     _socket: *mut core::ffi::c_void,
-    pl: *const PacketLength,
+    pl: &PacketLength,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let pl = unsafe { &*pl };
     // SAFETY: `buf` addresses `buf_size` initialized bytes.
     let length = unsafe { swr_v1_mqtt_frame_length(pl.buf, pl.buf_size as usize) };
     if length < 0 {
@@ -69,7 +62,7 @@ mod tests {
     #[test]
     fn upstream_symbols_set_the_protocol_and_measure_packets() {
         let mut protocol: swoole_rs_corebase::net_types::Protocol = unsafe { core::mem::zeroed() };
-        unsafe { set_protocol(&raw mut protocol) };
+        set_protocol(&mut protocol);
         assert_eq!(
             (
                 protocol.package_length_size,
@@ -85,9 +78,8 @@ mod tests {
                 buf_size: u32::try_from(bytes.len()).unwrap(),
                 header_len: 99,
             };
-            let length = unsafe {
-                get_package_length(core::ptr::null(), core::ptr::null_mut(), &raw const pl)
-            };
+            let length =
+                unsafe { get_package_length(core::ptr::null(), core::ptr::null_mut(), &pl) };
             assert_eq!(pl.header_len, 99);
             length
         };

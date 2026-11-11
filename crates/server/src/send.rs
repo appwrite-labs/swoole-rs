@@ -64,10 +64,9 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 /// the connection's `last_send_time`.
 ///
 /// # Safety
-/// `state` is null or live; `send` lends `info.len` readable bytes at `data`.
-pub(crate) unsafe fn send_now(state: *const ServerState, send: &SendData) -> Option<i64> {
-    // SAFETY: as the caller guarantees.
-    let state = unsafe { state.as_ref() }?;
+/// `send` lends `info.len` readable bytes at `data`.
+pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> Option<i64> {
+    let state = state?;
     let conn = state.connection(send.info.fd, VERIFIED_TLS)?;
     // SAFETY: a live connection's socket record.
     let socket = unsafe { Socket::from_ptr(conn.socket.cast()) }?;

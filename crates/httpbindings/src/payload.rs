@@ -90,16 +90,18 @@ pub fn swr_v1_httpbindings_form_source(flags: u32) -> i32 {
 
 /// Leading CR/LF accepted only at the original first multipart-body fragment.
 /// # Safety
-/// Body is an initialized readable span; output points to one writable usize.
+/// Body is an initialized readable span.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers may ignore the status: a rejected span leaves the prefix as it was"
+)]
 pub unsafe fn swr_v1_httpbindings_body_prefix(
     body: Text,
     beginning: u32,
-    output: *mut usize,
+    output: Option<&mut usize>,
 ) -> i32 {
     // SAFETY: `body` spans `length` initialized bytes (null only when empty) for this call.
     let body = unsafe { bytes(body) };
-    // SAFETY: `output` is null or aligned, writable and exclusively lent for this call.
-    let output = unsafe { output.as_mut() };
     let (Some(body), Some(output)) = (body, output) else {
         return -1;
     };

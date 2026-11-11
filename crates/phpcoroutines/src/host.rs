@@ -311,7 +311,7 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 pub(crate) fn stats(stats: &mut Stats) {
     if let Some((_, registry)) = reactor() {
         // SAFETY: the live loop's registry.
-        let count = unsafe { swoole_rs_reactor::swr_v1_reactor_registry_count(registry) };
+        let count = swoole_rs_reactor::swr_v1_reactor_registry_count(unsafe { registry.as_ref() });
         stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
     }
     #[cfg(feature = "iouring")]

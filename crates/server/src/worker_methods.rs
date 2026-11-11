@@ -23,7 +23,7 @@ pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecor
     let workers = serv.workers();
     let registry = serv.config().worker_registry;
     // SAFETY: the server's live arrays and registry.
-    unsafe { swr_v1_process_server_worker_by_pid(&raw const workers, registry.cast(), pid) }
+    unsafe { swr_v1_process_server_worker_by_pid(&workers, registry.cast(), pid) }
 }
 
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
@@ -37,7 +37,7 @@ pub(crate) fn workers_start(serv: view::Server<'_>) {
             .as_ptr()
     };
     // SAFETY: the server's live arrays and its pending user workers.
-    unsafe { swr_v1_process_server_workers_start(&raw const workers, serv.raw(), pending.cast()) };
+    unsafe { swr_v1_process_server_workers_start(&workers, serv.raw(), pending.cast()) };
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.
@@ -91,7 +91,7 @@ pub fn abort_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `worker` is the current process's worker.
 pub unsafe fn init_event_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
     // SAFETY: per the caller.
-    unsafe { swr_v1_worker_init(worker) };
+    swr_v1_worker_init(unsafe { swoole_rs_process::worker_record::Worker::new(worker) });
     let config = serv.config();
     swoole_rs_process::methods::worker_set_max_request(
         worker,

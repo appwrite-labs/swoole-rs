@@ -10,7 +10,7 @@
 //! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and
 //! the casts are upstream's C casts.
 use std::ffi::{c_char, c_int, c_void};
-use std::mem::offset_of;
+use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
 
 /// `swoole::Allocator`.
@@ -474,263 +474,188 @@ impl CppString {
     }
 }
 
-/// # Safety
-/// `this` is a live String that only the caller uses.
-unsafe fn of<'a>(this: *mut CppString) -> &'a mut CppString {
-    // SAFETY: as the caller promises.
-    unsafe { &mut *this }
-}
-
-/// # Safety
-/// `this` is a live String.
-unsafe fn read<'a>(this: *const CppString) -> &'a CppString {
-    // SAFETY: as the caller promises.
-    unsafe { &*this }
-}
-
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
 // elsewhere the caller ignores it. Each has a complete (C1/D1) and base (C2/D2) symbol.
+// A constructor's `this` is uninitialized storage; every other `this` is a live String.
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
     /// `String(size_t, const Allocator *)`.
-    /// # Safety
-    /// `this` is writable; `with` is null or live.
-    pub unsafe extern "C" fn swr_string_new(this: *mut CppString, size: usize, with: *const Allocator) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.alloc(size, with);
-        this
+    pub extern "C" fn swr_string_new(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&Allocator>) -> *mut CppString {
+        let string = this.write(CppString::EMPTY);
+        string.alloc(size, with.map_or(ptr::null(), ptr::from_ref));
+        string
     }
     "_ZN6swoole6StringC2EmPKNS_9AllocatorE", "_ZN6swoole6StringC2EmPKNS_9AllocatorE" =>
-    /// # Safety
-    /// As `swr_string_new`.
-    pub unsafe extern "C" fn swr_string_new_base(this: *mut CppString, size: usize, with: *const Allocator) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { swr_string_new(this, size, with) }
+    pub extern "C" fn swr_string_new_base(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&Allocator>) -> *mut CppString {
+        swr_string_new(this, size, with)
     }
     "_ZN6swoole6StringC1EPKcm", "_ZN6swoole6StringC1EPKcm" =>
     /// `String(const char *, size_t)`: a NUL-terminated copy.
     /// # Safety
-    /// `this` is writable; `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_from(this: *mut CppString, data: *const u8, length: usize) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
+    /// `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_from(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
+        let string = this.write(CppString::EMPTY);
         string.alloc(length.wrapping_add(1), ptr::null());
         // SAFETY: the allocation holds `length + 1` bytes; `data` is readable.
         unsafe { ptr::copy_nonoverlapping(data, string.str, length) };
         // SAFETY: as above.
         unsafe { string.str.wrapping_add(length).write(0) };
         string.length = length;
-        this
+        string
     }
     "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
     /// # Safety
     /// As `swr_string_from`.
-    pub unsafe extern "C" fn swr_string_from_base(this: *mut CppString, data: *const u8, length: usize) -> *mut CppString {
+    pub unsafe extern "C" fn swr_string_from_base(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
         // SAFETY: as the caller promises.
         unsafe { swr_string_from(this, data, length) }
     }
     "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
     /// `String(const String &)`.
-    /// # Safety
-    /// `this` is writable; `source` is live.
-    pub unsafe extern "C" fn swr_string_copy(this: *mut CppString, source: *const CppString) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        let source = unsafe { read(source) };
-        // SAFETY: as above.
-        unsafe { of(this) }.copy_from(source);
-        this
+    pub extern "C" fn swr_string_copy(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
+        let string = this.write(CppString::EMPTY);
+        string.copy_from(source);
+        string
     }
     "_ZN6swoole6StringC2ERKS0_", "_ZN6swoole6StringC2ERKS0_" =>
-    /// # Safety
-    /// As `swr_string_copy`.
-    pub unsafe extern "C" fn swr_string_copy_base(this: *mut CppString, source: *const CppString) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { swr_string_copy(this, source) }
+    pub extern "C" fn swr_string_copy_base(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
+        swr_string_copy(this, source)
     }
     "_ZN6swoole6StringC1EOS0_", "_ZN6swoole6StringC1EOS0_" =>
     /// `String(String &&)`.
-    /// # Safety
-    /// `this` is writable; `source` is another live String.
-    pub unsafe extern "C" fn swr_string_move(this: *mut CppString, source: *mut CppString) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        let source = unsafe { of(source) };
-        // SAFETY: as above.
-        unsafe { of(this) }.move_from(source);
-        this
+    pub extern "C" fn swr_string_move(this: &mut MaybeUninit<CppString>, source: &mut CppString) -> *mut CppString {
+        let string = this.write(CppString::EMPTY);
+        string.move_from(source);
+        string
     }
     "_ZN6swoole6StringC2EOS0_", "_ZN6swoole6StringC2EOS0_" =>
-    /// # Safety
-    /// As `swr_string_move`.
-    pub unsafe extern "C" fn swr_string_move_base(this: *mut CppString, source: *mut CppString) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { swr_string_move(this, source) }
+    pub extern "C" fn swr_string_move_base(this: &mut MaybeUninit<CppString>, source: &mut CppString) -> *mut CppString {
+        swr_string_move(this, source)
     }
     "_ZN6swoole6StringD1Ev", "_ZN6swoole6StringD1Ev" =>
     /// `~String()`.
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_drop(this: *mut CppString) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.dispose();
+    pub extern "C" fn swr_string_drop(this: &mut CppString) -> *mut CppString {
+        this.dispose();
         this
     }
     "_ZN6swoole6StringD2Ev", "_ZN6swoole6StringD2Ev" =>
-    /// # Safety
-    /// As `swr_string_drop`.
-    pub unsafe extern "C" fn swr_string_drop_base(this: *mut CppString) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { swr_string_drop(this) }
+    pub extern "C" fn swr_string_drop_base(this: &mut CppString) -> *mut CppString {
+        swr_string_drop(this)
     }
     "_ZN6swoole6StringaSERKS0_", "_ZN6swoole6StringaSERKS0_" =>
-    /// `String &operator=(const String &)`.
+    /// `String &operator=(const String &)`, where `source` may be `this`.
     /// # Safety
     /// Both are live.
     pub unsafe extern "C" fn swr_string_assign_copy(this: *mut CppString, source: *const CppString) -> *mut CppString {
         if !ptr::eq(this, source) {
             // SAFETY: as the caller promises, and they differ.
-            let string = unsafe { of(this) };
+            let string = unsafe { &mut *this };
             string.dispose();
             // SAFETY: as above.
-            string.copy_from(unsafe { read(source) });
+            string.copy_from(unsafe { &*source });
         }
         this
     }
     "_ZN6swoole6StringaSEOS0_", "_ZN6swoole6StringaSEOS0_" =>
-    /// `String &operator=(String &&)`.
+    /// `String &operator=(String &&)`, where `source` may be `this`.
     /// # Safety
     /// Both are live.
     pub unsafe extern "C" fn swr_string_assign_move(this: *mut CppString, source: *mut CppString) -> *mut CppString {
         if !ptr::eq(this, source) {
             // SAFETY: as the caller promises, and they differ.
-            let string = unsafe { of(this) };
+            let string = unsafe { &mut *this };
             string.dispose();
             // SAFETY: as above.
-            string.move_from(unsafe { of(source) });
+            string.move_from(unsafe { &mut *source });
         }
         this
     }
     "_ZNK6swoole6String8containsEPKcm", "_ZNK6swoole6String8containsEPKcm" =>
     /// # Safety
-    /// `this` is live; `needle` holds `length > 0` bytes.
+    /// `needle` holds `length > 0` bytes.
     #[must_use]
-    pub unsafe extern "C" fn swr_string_contains(this: *const CppString, needle: *const u8, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        let string = unsafe { read(this) };
-        // SAFETY: as above.
-        unsafe { strnstr(string.str, string.length, needle, length) }.is_some()
+    pub unsafe extern "C" fn swr_string_contains(this: &CppString, needle: *const u8, length: usize) -> bool {
+        // SAFETY: `str` holds `length` bytes; the caller's needle is readable.
+        unsafe { strnstr(this.str, this.length, needle, length) }.is_some()
     }
     "_ZNK6swoole6String11starts_withEPKcm", "_ZNK6swoole6String11starts_withEPKcm" =>
     /// # Safety
-    /// `this` is live; `needle` holds `length` bytes.
+    /// `needle` holds `length` bytes.
     #[must_use]
-    pub unsafe extern "C" fn swr_string_starts_with(this: *const CppString, needle: *const u8, length: usize) -> bool {
+    pub unsafe extern "C" fn swr_string_starts_with(this: &CppString, needle: *const u8, length: usize) -> bool {
         // SAFETY: as the caller promises.
-        let needle = unsafe { bytes(needle, length) };
-        // SAFETY: as above.
-        unsafe { read(this) }.view().starts_with(needle)
+        this.view().starts_with(unsafe { bytes(needle, length) })
     }
     "_ZNK6swoole6String9ends_withEPKcm", "_ZNK6swoole6String9ends_withEPKcm" =>
     /// # Safety
-    /// `this` is live; `needle` holds `length` bytes.
+    /// `needle` holds `length` bytes.
     #[must_use]
-    pub unsafe extern "C" fn swr_string_ends_with(this: *const CppString, needle: *const u8, length: usize) -> bool {
+    pub unsafe extern "C" fn swr_string_ends_with(this: &CppString, needle: *const u8, length: usize) -> bool {
         // SAFETY: as the caller promises.
-        let needle = unsafe { bytes(needle, length) };
-        // SAFETY: as above.
-        unsafe { read(this) }.view().ends_with(needle)
+        this.view().ends_with(unsafe { bytes(needle, length) })
     }
     "_ZNK6swoole6String6equalsEPKcm", "_ZNK6swoole6String6equalsEPKcm" =>
     /// # Safety
-    /// `this` is live; `data` holds `length` bytes.
+    /// `data` holds `length` bytes.
     #[must_use]
-    pub unsafe extern "C" fn swr_string_equals(this: *const CppString, data: *const u8, length: usize) -> bool {
+    pub unsafe extern "C" fn swr_string_equals(this: &CppString, data: *const u8, length: usize) -> bool {
         // SAFETY: as the caller promises.
-        let data = unsafe { bytes(data, length) };
-        // SAFETY: as above.
-        unsafe { read(this) }.view() == data
+        this.view() == unsafe { bytes(data, length) }
     }
     "_ZN6swoole6String4growEm", "_ZN6swoole6String4growEm" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_grow(this: *mut CppString, increment: usize) {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.grow(increment);
+    pub extern "C" fn swr_string_grow(this: &mut CppString, increment: usize) {
+        this.grow(increment);
     }
     "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
     /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a
     /// destructor in caller memory (`sret`), as C does a 40-byte struct.
-    /// # Safety
-    /// `this` is live.
     #[must_use]
-    pub unsafe extern "C" fn swr_string_substr(this: *const CppString, offset: usize, length: usize) -> CppString {
-        // SAFETY: as the caller promises.
-        let string = unsafe { read(this) };
+    pub extern "C" fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
         let mut result = CppString::EMPTY;
-        if offset.wrapping_add(length) <= string.length {
+        if offset.wrapping_add(length) <= this.length {
             result.alloc(length, ptr::null());
             // SAFETY: the range lies inside `str`.
-            unsafe { result.append(string.str.wrapping_add(offset), length) };
+            unsafe { result.append(this.str.wrapping_add(offset), length) };
         }
         result
     }
     "_ZN6swoole6String6extendEv", "_ZN6swoole6String6extendEv" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_extend_double(this: *mut CppString) {
-        // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
-        string.extend(string.size.wrapping_mul(2));
+    pub extern "C" fn swr_string_extend_double(this: &mut CppString) {
+        this.extend(this.size.wrapping_mul(2));
     }
     "_ZN6swoole6String6extendEm", "_ZN6swoole6String6extendEm" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_extend(this: *mut CppString, new_size: usize) {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.extend(new_size);
+    pub extern "C" fn swr_string_extend(this: &mut CppString, new_size: usize) {
+        this.extend(new_size);
     }
     "_ZN6swoole6String7reserveEm", "_ZN6swoole6String7reserveEm" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_reserve(this: *mut CppString, new_size: usize) {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.reserve(new_size);
+    pub extern "C" fn swr_string_reserve(this: &mut CppString, new_size: usize) {
+        this.reserve(new_size);
     }
     "_ZN6swoole6String7releaseEv", "_ZN6swoole6String7releaseEv" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_release(this: *mut CppString) -> *mut u8 {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.release()
+    pub extern "C" fn swr_string_release(this: &mut CppString) -> *mut u8 {
+        this.release()
     }
     "_ZN6swoole6String6repeatEPKcmm", "_ZN6swoole6String6repeatEPKcmm" =>
     /// # Safety
-    /// `this` is live; `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_repeat(this: *mut CppString, data: *const u8, length: usize, count: usize) {
+    /// `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_repeat(this: &mut CppString, data: *const u8, length: usize, count: usize) {
         // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
-        // SAFETY: as above.
-        unsafe { string.repeat(data, length, count) };
+        unsafe { this.repeat(data, length, count) };
     }
     "_ZN6swoole6String6appendEPKcm", "_ZN6swoole6String6appendEPKcm" =>
     /// # Safety
-    /// `this` is live; `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_append(this: *mut CppString, data: *const u8, length: usize) {
+    /// `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_append(this: &mut CppString, data: *const u8, length: usize) {
         // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
-        // SAFETY: as above.
-        unsafe { string.append(data, length) };
+        unsafe { this.append(data, length) };
     }
     "_ZN6swoole6String6appendEi", "_ZN6swoole6String6appendEi" =>
     /// `append(int)`: its decimal text.
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_append_int(this: *mut CppString, value: c_int) {
+    pub extern "C" fn swr_string_append_int(this: &mut CppString, value: c_int) {
         let mut buffer = itoa::Buffer::new();
         let text = buffer.format(value);
-        // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
         // SAFETY: `text` is local.
-        unsafe { string.append(text.as_ptr(), text.len()) };
+        unsafe { this.append(text.as_ptr(), text.len()) };
     }
     "_ZN6swoole6String6appendERKS0_", "_ZN6swoole6String6appendERKS0_" =>
     /// `append(const String &)`, which may be `this`.
@@ -738,9 +663,9 @@ upstream! {
     /// Both are live.
     pub unsafe extern "C" fn swr_string_append_string(this: *mut CppString, source: *const CppString) {
         // SAFETY: as the caller promises.
-        let length = unsafe { read(source) }.length;
+        let length = unsafe { &*source }.length;
         // SAFETY: as above; `source` is read again only when it isn't `this`.
-        let string = unsafe { of(this) };
+        let string = unsafe { &mut *this };
         let new_size = string.length.wrapping_add(length);
         if new_size > string.size {
             string.reserve(new_size);
@@ -751,69 +676,46 @@ upstream! {
             string.str
         } else {
             // SAFETY: as the caller promises; distinct from `string`.
-            unsafe { read(source) }.str
+            unsafe { &*source }.str
         };
         // SAFETY: the buffer holds `new_size` bytes; `source` holds `length`.
         unsafe { ptr::copy(data, string.str.wrapping_add(string.length), length) };
         string.length = new_size;
     }
     "_ZN6swoole6String19append_random_bytesEmb", "_ZN6swoole6String19append_random_bytesEmb" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_append_random_bytes(this: *mut CppString, length: usize, base64: bool) -> bool {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.append_random_bytes(length, base64)
+    pub extern "C" fn swr_string_append_random_bytes(this: &mut CppString, length: usize, base64: bool) -> bool {
+        this.append_random_bytes(length, base64)
     }
     "_ZN6swoole6String5writeElRKS0_", "_ZN6swoole6String5writeExRKS0_" =>
-    /// # Safety
-    /// Both are live.
-    pub unsafe extern "C" fn swr_string_write_string(this: *mut CppString, offset: i64, source: *const CppString) {
-        // SAFETY: as the caller promises.
-        let source = unsafe { read(source) };
-        // SAFETY: as above.
-        let string = unsafe { of(this) };
+    pub extern "C" fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
         // SAFETY: `source` holds `length` bytes.
-        unsafe { string.write(offset, source.str, source.length) };
+        unsafe { this.write(offset, source.str, source.length) };
     }
     "_ZN6swoole6String5writeElPKcm", "_ZN6swoole6String5writeExPKcm" =>
     /// # Safety
-    /// `this` is live; `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_write(this: *mut CppString, offset: i64, data: *const u8, length: usize) {
+    /// `data` holds `length` bytes.
+    pub unsafe extern "C" fn swr_string_write(this: &mut CppString, offset: i64, data: *const u8, length: usize) {
         // SAFETY: as the caller promises.
-        let string = unsafe { of(this) };
-        // SAFETY: as above.
-        unsafe { string.write(offset, data, length) };
+        unsafe { this.write(offset, data, length) };
     }
     "_ZN6swoole6String19set_null_terminatedEv", "_ZN6swoole6String19set_null_terminatedEv" =>
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_set_null_terminated(this: *mut CppString) {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.set_null_terminated();
+    pub extern "C" fn swr_string_set_null_terminated(this: &mut CppString) {
+        this.set_null_terminated();
     }
     "_ZNK6swoole6String5printEb", "_ZNK6swoole6String5printEb" =>
     /// `print(bool)`, through C's stdout as upstream.
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_print(this: *const CppString, value: bool) {
-        // SAFETY: as the caller promises.
-        unsafe { read(this) }.print(value);
+    pub extern "C" fn swr_string_print(this: &CppString, value: bool) {
+        this.print(value);
     }
     "_ZN6swoole6String3popEm", "_ZN6swoole6String3popEm" =>
     /// `pop(size_t)`: hands over the buffer and keeps the bytes after `offset` in a new one.
-    /// # Safety
-    /// `this` is live with an allocator.
-    pub unsafe extern "C" fn swr_string_pop(this: *mut CppString, init_size: usize) -> *mut u8 {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.pop(init_size)
+    pub extern "C" fn swr_string_pop(this: &mut CppString, init_size: usize) -> *mut u8 {
+        this.pop(init_size)
     }
     "_ZN6swoole6String6reduceEl", "_ZN6swoole6String6reduceEx" =>
     /// `reduce(off_t)`: moves the bytes after `offset` to the head.
-    /// # Safety
-    /// `this` is live.
-    pub unsafe extern "C" fn swr_string_reduce(this: *mut CppString, offset: i64) {
-        // SAFETY: as the caller promises.
-        unsafe { of(this) }.reduce(offset);
+    pub extern "C" fn swr_string_reduce(this: &mut CppString, offset: i64) {
+        this.reduce(offset);
     }
 }
 
@@ -830,7 +732,7 @@ pub unsafe extern "C" fn swr_v1_string_split(
     handler: *const c_void,
 ) -> isize {
     // SAFETY: as the caller promises.
-    let string = unsafe { of(this) };
+    let string = unsafe { &mut *this };
     // SAFETY: as above.
     unsafe { string.split(delimiter, delimiter_length, call, handler) }
 }
@@ -843,28 +745,28 @@ unsafe extern "C" {
     fn operator_delete(storage: *mut c_void);
 }
 
+/// Fresh `operator new` storage for one String: C++ `delete` frees it.
+fn new_storage() -> &'static mut MaybeUninit<CppString> {
+    // SAFETY: `new String`'s storage; a failed operator new aborts at this frame.
+    let storage = unsafe { operator_new(size_of::<CppString>()) };
+    // SAFETY: a fresh, aligned allocation for one String, owned by nothing else.
+    unsafe { &mut *storage.cast::<MaybeUninit<CppString>>() }
+}
+
 /// `new String(data, length)`: operator new's storage, so C++ `delete` frees it.
 ///
 /// # Safety
 /// `data` holds `length` readable bytes.
 #[must_use]
 pub unsafe fn new_string(data: *const u8, length: usize) -> *mut CppString {
-    // SAFETY: `new String`'s storage; a failed operator new aborts at this frame.
-    let storage = unsafe { operator_new(size_of::<CppString>()) }.cast::<CppString>();
-    // SAFETY: fresh storage for one String, and the caller's bytes.
-    unsafe { swr_string_from(storage, data, length) }
+    // SAFETY: the caller's bytes.
+    unsafe { swr_string_from(new_storage(), data, length) }
 }
 
 /// `new String(size, with)`: operator new's storage, so C++ `delete` frees it.
-///
-/// # Safety
-/// `with` is null or a live allocator.
 #[must_use]
-pub unsafe fn new_sized_string(size: usize, with: *const Allocator) -> *mut CppString {
-    // SAFETY: `new String`'s storage; a failed operator new aborts at this frame.
-    let storage = unsafe { operator_new(size_of::<CppString>()) }.cast::<CppString>();
-    // SAFETY: fresh storage for one String, and the caller's allocator.
-    unsafe { swr_string_new(storage, size, with) }
+pub fn new_sized_string(size: usize, with: Option<&Allocator>) -> *mut CppString {
+    swr_string_new(new_storage(), size, with)
 }
 
 /// `delete string`.
@@ -873,7 +775,7 @@ pub unsafe fn new_sized_string(size: usize, with: *const Allocator) -> *mut CppS
 /// `string` came from `new String` (C++ or [`new_string`]) and is not used again.
 pub unsafe fn delete_string(string: *mut CppString) {
     // SAFETY: as the caller promises.
-    unsafe { of(string) }.dispose();
+    unsafe { &mut *string }.dispose();
     // SAFETY: operator new's storage, destroyed above.
     unsafe { operator_delete(string.cast()) };
 }
@@ -883,18 +785,18 @@ mod tests {
     use super::*;
 
     fn new(text: &[u8]) -> CppString {
-        let mut s = CppString::EMPTY;
-        unsafe { swr_string_from(&raw mut s, text.as_ptr(), text.len()) };
-        s
+        let mut s = MaybeUninit::uninit();
+        unsafe { swr_string_from(&mut s, text.as_ptr(), text.len()) };
+        unsafe { s.assume_init() }
     }
 
     #[test]
     fn append_grows_and_reduce_moves() {
         let mut s = new(b"abc");
         assert_eq!((s.length, s.size), (3, 8));
-        unsafe { swr_string_append(&raw mut s, b"defghijkl".as_ptr(), 9) };
+        unsafe { swr_string_append(&mut s, b"defghijkl".as_ptr(), 9) };
         assert_eq!((s.view(), s.size), (&b"abcdefghijkl"[..], 16));
-        unsafe { swr_string_append_int(&raw mut s, -42) };
+        swr_string_append_int(&mut s, -42);
         s.reduce(3);
         assert_eq!(s.view(), b"defghijkl-42");
         unsafe { swr_string_append_string(&raw mut s, &raw const s) };
@@ -933,20 +835,16 @@ mod tests {
     #[test]
     fn substr_copy_move_and_release() {
         let mut s = new(b"hello world");
-        let mut sub = unsafe { swr_string_substr(&raw const s, 6, 5) };
+        let mut sub = swr_string_substr(&s, 6, 5);
         assert_eq!(sub.view(), b"world");
-        assert!(
-            unsafe { swr_string_substr(&raw const s, 6, 6) }
-                .str
-                .is_null()
-        );
+        assert!(swr_string_substr(&s, 6, 6).str.is_null());
         let mut moved = CppString::EMPTY;
         moved.move_from(&mut sub);
         assert!(sub.str.is_null() && moved.view() == b"world");
         let mut copied = CppString::EMPTY;
         copied.copy_from(&moved);
-        assert!(unsafe { swr_string_contains(&raw const copied, b"orl".as_ptr(), 3) });
-        assert!(unsafe { swr_string_ends_with(&raw const copied, b"ld".as_ptr(), 2) });
+        assert!(unsafe { swr_string_contains(&copied, b"orl".as_ptr(), 3) });
+        assert!(unsafe { swr_string_ends_with(&copied, b"ld".as_ptr(), 2) });
         unsafe { libc::free(moved.release().cast()) };
         copied.dispose();
         s.dispose();

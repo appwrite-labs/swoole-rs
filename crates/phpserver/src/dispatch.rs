@@ -842,8 +842,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: *mut c_v
         address: (!address.is_null()).then(|| unsafe { CStr::from_ptr(address) }),
         port,
         server_port: server.at(c_int::from(info.server_fd)).map_or(-1, |sock| {
-            // SAFETY: the listening socket's own address record.
-            i64::from(unsafe { swr_v1_clients_address_port(&raw const sock.info) })
+            i64::from(swr_v1_clients_address_port(&sock.info))
         }),
     };
     relay(on_packet(

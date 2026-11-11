@@ -739,20 +739,18 @@ pub extern "C" fn swr_v1_tls_error() -> *const c_char {
 /// the normalized protocol mask back to `config.protocols`.
 ///
 /// # Safety
-/// `config` is a live view whose strings are NUL-terminated and outlive the call.
-pub unsafe fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *mut SSL_CTX {
+/// `config`'s strings are NUL-terminated and outlive the call.
+pub unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> *mut SSL_CTX {
     // SAFETY: forwards the caller's live configuration view.
     unsafe { create_context(config, None) }
 }
 
 /// # Safety
-/// Config and any password binding remain live throughout the borrowed context.
+/// Config's strings and any password binding remain live throughout the borrowed context.
 pub(crate) unsafe fn create_context(
-    config: *mut TlsConfig,
+    config: &mut TlsConfig,
     password: Option<PasswordBinding>,
 ) -> *mut SSL_CTX {
-    // SAFETY: the caller's live view.
-    let config = unsafe { &mut *config };
     let method = if config.protocols & DTLS != 0 {
         // SAFETY: a static method table.
         unsafe { DTLS_method() }
@@ -788,13 +786,12 @@ macro_rules! method {
         /// The `SSLContext` method of the same name, on an existing context.
         ///
         /// # Safety
-        /// `ctx` is a live context and `config` a live view whose strings are
-        /// NUL-terminated and outlive the call.
+        /// `ctx` is a live context and `config`'s strings are NUL-terminated and
+        /// outlive the call.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(ctx: *mut SSL_CTX, config: *const TlsConfig) -> bool {
+        pub unsafe extern "C" fn $name(ctx: *mut SSL_CTX, config: &TlsConfig) -> bool {
             Method {
-                // SAFETY: the caller's live view.
-                config: unsafe { &*config },
+                config,
                 ctx,
                 function: $function,
                 password: None,
@@ -905,7 +902,7 @@ mod tests {
         let mut owned = Owned(Vec::new());
         let mut config = owned.config();
         unsafe {
-            let ctx = swr_v1_tls_context_create(&raw mut config);
+            let ctx = swr_v1_tls_context_create(&mut config);
             assert!(!ctx.is_null());
             assert_eq!(config.protocols, ALL, "zero means every version");
             let options = SSL_CTX_get_options(ctx);
@@ -915,7 +912,7 @@ mod tests {
 
             config.protocols = TLSV1_3 | DTLS;
             config.disable_compress = true;
-            let ctx = swr_v1_tls_context_create(&raw mut config);
+            let ctx = swr_v1_tls_context_create(&mut config);
             let options = SSL_CTX_get_options(ctx);
             assert_ne!(options & SSL_OP_NO_TLSv1_1, 0);
             assert_eq!(options & SSL_OP_NO_TLSv1_2, 0, "DTLS keeps 1.2");
@@ -936,7 +933,7 @@ mod tests {
         let mut config = owned.config();
         config.cert_file = owned.str("/nonexistent/m21.pem");
         unsafe { ERR_clear_error() };
-        let ctx = unsafe { swr_v1_tls_context_create(&raw mut config) };
+        let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
         assert!(ctx.is_null());
         let log = take_log();
         assert_eq!(log.len(), 1);
@@ -949,7 +946,7 @@ mod tests {
 
         let mut config = owned.config();
         config.ciphers = owned.str("M21-nonexistent-cipher");
-        let ctx = unsafe { swr_v1_tls_context_create(&raw mut config) };
+        let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
         assert!(ctx.is_null());
         let log = take_log();
         assert_eq!(log.len(), 2, "{log:?}");
@@ -968,11 +965,11 @@ mod tests {
         unsafe {
             let ctx = SSL_CTX_new(TLS_method());
             config.ecdh_curve = owned.str("auto");
-            assert!(swr_v1_tls_set_ecdh_curve(ctx, &raw const config));
+            assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
             config.ecdh_curve = owned.str("prime256v1");
-            assert!(swr_v1_tls_set_ecdh_curve(ctx, &raw const config));
+            assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
             config.ecdh_curve = owned.str("M21-nonexistent-curve");
-            assert!(!swr_v1_tls_set_ecdh_curve(ctx, &raw const config));
+            assert!(!swr_v1_tls_set_ecdh_curve(ctx, &config));
             assert_eq!(
                 take_log(),
                 [
@@ -981,7 +978,7 @@ mod tests {
             );
 
             config.dhparam = owned.str("/nonexistent/m21-dh.pem");
-            assert!(!swr_v1_tls_set_dhparam(ctx, &raw const config));
+            assert!(!swr_v1_tls_set_dhparam(ctx, &config));
             let log = take_log();
             assert!(log[0].starts_with(
                 "SSLContext::set_dhparam(): BIO_new_file(/nonexistent/m21-dh.pem) failed"
@@ -989,13 +986,13 @@ mod tests {
 
             config.client_cert_file = owned.str("/nonexistent/m21-ca.pem");
             config.verify_depth = 3;
-            assert!(!swr_v1_tls_set_client_certificate(ctx, &raw const config));
+            assert!(!swr_v1_tls_set_client_certificate(ctx, &config));
             assert_eq!(SSL_CTX_get_verify_mode(ctx), SSL_VERIFY_PEER);
             assert_eq!(SSL_CTX_get_verify_depth(ctx), 3);
             take_log();
 
             config.cafile = owned.str("/nonexistent/m21-ca.pem");
-            assert!(!swr_v1_tls_set_capath(ctx, &raw const config));
+            assert!(!swr_v1_tls_set_capath(ctx, &config));
             assert_eq!(
                 take_log(),
                 Vec::<String>::new(),

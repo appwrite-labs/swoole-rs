@@ -258,11 +258,11 @@ pub(super) fn socket_ssl_connect(_: Socket<'_>) -> c_int {
     }
     OK
 }
-pub(super) unsafe fn socket_ssl_verify(_: *const SocketRecord, allow_self_signed: bool) -> bool {
+pub(super) fn socket_ssl_verify(_: &SocketRecord, allow_self_signed: bool) -> bool {
     log(format!("ssl verify {allow_self_signed}"));
     true
 }
-pub(super) unsafe fn socket_ssl_check_host(_: *const SocketRecord, _: *const c_char) -> bool {
+pub(super) fn socket_ssl_check_host(_: &SocketRecord, _: &CStr) -> bool {
     log("ssl host");
     true
 }
@@ -333,7 +333,12 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     let client = new_client(kind, is_async);
     if callbacks {
         // SAFETY: a live state.
-        unsafe { swr_v1_clients_listen(client, core::ptr::null_mut(), 0b111_1110, listener) };
+        swr_v1_clients_listen(
+            unsafe { &*client },
+            core::ptr::null_mut(),
+            0b111_1110,
+            listener,
+        );
     }
     taken();
     client
@@ -345,7 +350,7 @@ fn free(client: *mut Client) {
 
 fn flag(client: *mut Client, name: u32) -> bool {
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_flag(client, name) }
+    swr_v1_clients_flag(unsafe { &*client }, name)
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
@@ -538,14 +543,13 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
 fn async_send_raises_buffer_full_at_the_high_watermark() {
     let client = client(1, true, true);
     // Ten bytes queued on the socket.
-    let queue = Box::into_raw(Box::new(core::mem::MaybeUninit::<CppBuffer>::uninit())).cast();
-    unsafe {
-        swr_cpp_buffer_new(queue, 1024);
-        swr_cpp_buffer_append(queue, [0_u8; 10].as_ptr(), 10);
-    }
+    let mut storage = Box::new(core::mem::MaybeUninit::<CppBuffer>::uninit());
+    swr_cpp_buffer_new(&mut storage, 1024);
+    let queue = Box::into_raw(storage).cast::<CppBuffer>();
+    unsafe { swr_cpp_buffer_append(&*queue, [0_u8; 10].as_ptr(), 10) };
     sock().output.out_buffer = queue.cast();
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_watermark(client, true).write(8) };
+    unsafe { swr_v1_clients_watermark(&*client, true).write(8) };
     assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), 4);
     assert_eq!(taken(), ["write 4", "call 5 0"]);
     // Already high: no second call.
@@ -561,7 +565,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     let client = client(1, true, true);
     set_proxy(client, false);
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_watermark(client, true).write(100) };
+    unsafe { swr_v1_clients_watermark(&*client, true).write(100) };
     let result = on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(result, 3);
     assert_eq!(taken(), ["event 1 512", "write 3"]);

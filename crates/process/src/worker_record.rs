@@ -147,8 +147,10 @@ pub unsafe fn swr_v1_worker_array_lookup(
 
 /// A live worker record: the only way to reach one's fields. Each read and write
 /// goes through the pointer to that one field and makes no reference to the whole
-/// record, which other processes write in shared memory.
+/// record, which other processes write in shared memory. Native code passes one
+/// as a `Worker *`.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Worker<'a> {
     raw: *mut WorkerRecord,
     life: core::marker::PhantomData<&'a WorkerRecord>,
@@ -394,29 +396,21 @@ pub unsafe fn copy_for_process(
 }
 
 /// `Worker::init()` for the native symbol.
-///
-/// # Safety
-/// As [`Worker::new`].
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole6Worker4initEv")
 )]
-pub unsafe extern "C" fn swr_v1_worker_init(worker: *mut WorkerRecord) {
-    // SAFETY: as the caller guarantees.
-    unsafe { Worker::new(worker) }.init();
+pub extern "C" fn swr_v1_worker_init(worker: Worker<'_>) {
+    worker.init();
 }
 
 /// `Worker::shutdown()` for the native symbol.
-///
-/// # Safety
-/// As [`Worker::new`].
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole6Worker8shutdownEv")
 )]
-pub unsafe extern "C" fn swr_v1_worker_shutdown(worker: *mut WorkerRecord) {
-    // SAFETY: as the caller guarantees.
-    unsafe { Worker::new(worker) }.shutdown();
+pub extern "C" fn swr_v1_worker_shutdown(worker: Worker<'_>) {
+    worker.shutdown();
 }
 
 #[cfg(test)]

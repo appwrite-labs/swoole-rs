@@ -81,8 +81,9 @@ fn failed(outcome: i32, status: i32) -> WriteResult {
 /// `buffer` is a live Rust buffer handle.
 unsafe fn length(buffer: *mut Buffer) -> Result<u32, i32> {
     let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises; both outputs are local.
-    match unsafe { swr_v1_buffer_stats(buffer, &raw mut length, &raw mut count) } {
+    // SAFETY: as the caller promises.
+    let buffer = unsafe { buffer.as_ref() };
+    match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
         0 => Ok(if count == 0 { 0 } else { length }),
         status => Err(status),
     }
@@ -97,8 +98,9 @@ unsafe fn empty(buffer: *mut Buffer) -> Result<bool, i32> {
         return Ok(true);
     }
     let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises; both outputs are local.
-    match unsafe { swr_v1_buffer_stats(buffer, &raw mut length, &raw mut count) } {
+    // SAFETY: as the caller promises.
+    let buffer = unsafe { buffer.as_ref() };
+    match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
         0 => Ok(count == 0),
         status => Err(status),
     }
@@ -179,6 +181,8 @@ pub unsafe fn swr_v1_reactor_write(
         ops.watch_writable();
     }
     let offset = sent.max(0).unsigned_abs();
+    // SAFETY: a live, exclusive handle.
+    let buffer = unsafe { buffer.as_mut() };
     let status = if payload.iov.is_null() {
         let rest = length.saturating_sub(offset);
         // SAFETY: `data` holds `length` bytes, and `offset` of them were sent.
@@ -251,7 +255,7 @@ mod tests {
         errno: c_int,
     ) -> (WriteResult, Vec<&'static str>, u32) {
         let mut fresh = std::ptr::null_mut();
-        assert_eq!(unsafe { swr_v1_buffer_typed_create(0, &raw mut fresh) }, 0);
+        assert_eq!(swr_v1_buffer_typed_create(0, Some(&mut fresh)), 0);
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
                 sends,
@@ -371,12 +375,9 @@ mod tests {
             failed(1, 0)
         );
         let mut held_buffer = std::ptr::null_mut();
+        assert_eq!(swr_v1_buffer_typed_create(0, Some(&mut held_buffer)), 0);
         assert_eq!(
-            unsafe { swr_v1_buffer_typed_create(0, &raw mut held_buffer) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_append(held_buffer, b"12345".as_ptr(), 5) },
+            unsafe { swr_v1_buffer_append(held_buffer.as_mut(), b"12345".as_ptr(), 5) },
             0
         );
         let mut s = SocketOutput {

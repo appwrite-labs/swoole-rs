@@ -46,7 +46,7 @@ pub extern "C" fn get_method_string(method: c_int) -> *const c_char {
 /// the outputs are written only when a boundary is found.
 ///
 /// # Safety
-/// `at` is readable for `length` bytes; the outputs are writable.
+/// `at` is readable for `length` bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole11http_server24parse_multipart_boundaryEPKcmmPPcPi")
@@ -55,20 +55,18 @@ pub unsafe extern "C" fn parse_multipart_boundary(
     at: *const c_char,
     length: usize,
     offset: usize,
-    out_boundary_str: *mut *mut c_char,
-    out_boundary_len: *mut c_int,
+    out_boundary_str: &mut *mut c_char,
+    out_boundary_len: &mut c_int,
 ) -> bool {
     let mut span = HttpSpan::default();
     // SAFETY: as the caller guarantees; `span` is a live local.
-    if unsafe { swr_v1_http_boundary(at.cast(), length, offset, &raw mut span) } != 1 {
+    if unsafe { swr_v1_http_boundary(at.cast(), length, offset, Some(&mut span)) } != 1 {
         return false;
     }
-    // SAFETY: the outputs are writable, as the caller guarantees.
-    unsafe { out_boundary_str.write(at.wrapping_add(span.offset).cast_mut()) };
+    *out_boundary_str = at.wrapping_add(span.offset).cast_mut();
     // A boundary inside a header line is far shorter than `int`.
     let boundary_len = c_int::try_from(span.length).unwrap_or(c_int::MAX);
-    // SAFETY: as above.
-    unsafe { out_boundary_len.write(boundary_len) };
+    *out_boundary_len = boundary_len;
     true
 }
 
@@ -83,7 +81,7 @@ pub unsafe extern "C" fn parse_multipart_boundary(
 pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
     let mut written = 0;
     // SAFETY: as the caller guarantees; `written` is a live local.
-    if unsafe { swr_v1_http_url_decode(str.cast(), len, &raw mut written) } != 0 {
+    if unsafe { swr_v1_http_url_decode(str.cast(), len, Some(&mut written)) } != 0 {
         // A null buffer: upstream's loop writes through it.
         std::process::abort();
     }
@@ -104,7 +102,7 @@ pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
 pub unsafe extern "C" fn url_encode(str: *const c_char, len: usize) -> *mut c_char {
     let (mut capacity, mut written) = (0, 0);
     // SAFETY: as the caller guarantees; `capacity` is a live local.
-    if unsafe { swr_v1_http_url_capacity(str.cast(), len, &raw mut capacity) } != 0 {
+    if unsafe { swr_v1_http_url_capacity(str.cast(), len, Some(&mut capacity)) } != 0 {
         std::process::abort();
     }
     let result = swoole_rs_corebase::sw_malloc(capacity).cast::<u8>();
@@ -112,7 +110,8 @@ pub unsafe extern "C" fn url_encode(str: *const c_char, len: usize) -> *mut c_ch
         std::process::abort();
     }
     // SAFETY: `result` holds `capacity` bytes, disjoint from the input.
-    if unsafe { swr_v1_http_url_encode(str.cast(), len, result, capacity, &raw mut written) } != 0 {
+    if unsafe { swr_v1_http_url_encode(str.cast(), len, result, capacity, Some(&mut written)) } != 0
+    {
         std::process::abort();
     }
     result.cast()
@@ -202,8 +201,8 @@ mod tests {
                     input.as_ptr().cast(),
                     input.len(),
                     offset,
-                    &raw mut at,
-                    &raw mut length,
+                    &mut at,
+                    &mut length,
                 )
             };
             // SAFETY: a boundary found now or before lies inside its static input.
@@ -281,8 +280,8 @@ mod tests {
                 header.as_ptr().cast(),
                 header.len(),
                 19,
-                &raw mut at,
-                &raw mut length,
+                &mut at,
+                &mut length,
             )
         };
         assert!(!found);

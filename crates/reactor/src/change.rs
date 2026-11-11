@@ -456,7 +456,10 @@ mod tests {
                 ),
                 0
             );
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 1);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                1
+            );
             assert_eq!(logged().len(), 0);
             // Closed before removal: one warning, and the registry entry goes.
             libc::close(fds[0]);
@@ -465,7 +468,10 @@ mod tests {
                 0
             );
             assert_eq!(socket.removed, 1);
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                0
+            );
             let removal = logged();
             assert_ne!(removal.len(), 0);
             assert!(removal.iter().all(|(origin, code, message)| origin
@@ -526,7 +532,10 @@ mod tests {
             assert_eq!(interest(&mut missing, 3, 0), -1);
             assert_eq!(missing.events, SW_EVENT_READ | SW_EVENT_WRITE);
             assert_eq!(logged()[0].0, "ReactorPoll::set");
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                0
+            );
             crate::reactor_state::tests::free(state.owner);
         }
     }

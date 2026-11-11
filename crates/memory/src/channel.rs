@@ -411,12 +411,10 @@ pub struct CapacityState {
     tail_tag: u8,
 }
 #[must_use]
-pub unsafe fn swr_v1_memory_channel_full(state: *const CapacityState) -> i32 {
-    if state.is_null() {
+pub fn swr_v1_memory_channel_full(state: Option<&CapacityState>) -> i32 {
+    let Some(state) = state else {
         return -1;
-    }
-    // SAFETY: `state` is non-null (checked above), aligned and initialized per the caller contract.
-    let state = unsafe { &*state };
+    };
     #[expect(
         clippy::cast_sign_loss,
         reason = "native size_t arithmetic on the int record count"
