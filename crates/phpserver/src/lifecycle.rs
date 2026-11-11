@@ -307,11 +307,6 @@ extern "C" fn php_memory() -> usize {
     unsafe { swoole_rs_zend::sys::zend_memory_usage(true) }
 }
 
-/// `swoole_process_ce`.
-pub(crate) fn process_class() -> *mut zend_class_entry {
-    swoole_rs_phpprocess::process_class().entry()
-}
-
 /// A live Server object, which `create` made, for as long as the handle is used:
 /// its `ServerData` and the `Property` `create` boxed. Each method borrows them
 /// only for its own body, and `property`'s closures call nothing that reaches them.
