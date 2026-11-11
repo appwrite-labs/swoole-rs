@@ -9,43 +9,11 @@ use std::ffi::c_char;
 
 const HANDSHAKE_FAILED: i32 = 7103;
 
-/// The bytes of the owner's string slot `index`.
-///
-/// # Safety
-/// No one changes the slot while the bytes are borrowed.
-unsafe fn slot(owner: &ProxyState, index: usize) -> &[u8] {
-    // SAFETY: the slot is stable, as the caller guarantees.
-    let view = unsafe { owner.string(index) };
-    // SAFETY: a slot's view names `length` initialized bytes.
-    unsafe { crate::bytes(view.data.cast(), view.length) }.unwrap_or_default()
-}
-
-/// `HttpProxy::get_auth_str()`'s Base64 credentials into 512 bytes at `output`,
-/// NUL-terminated: 1 when they were cut to fit (errno EOVERFLOW), else 0.
-/// # Safety
-/// owner's string slots are stable; output lends 512 bytes disjoint from the rest.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_proxy_owned_authorization(
-    owner: &ProxyState,
-    output: *mut u8,
-    written: Option<&mut usize>,
-) -> i32 {
-    let Some(written) = written else {
-        return crate::INVALID;
-    };
-    if output.is_null() {
-        return crate::INVALID;
-    }
-    // SAFETY: the username is stable through the bounded codec.
-    let user = unsafe { slot(owner, 1) };
-    // SAFETY: the password is stable through the bounded codec.
-    let password = unsafe { slot(owner, 2) };
-    let mut encoded = [0u8; 512];
-    let (status, length) = proxy_authorization(user, password, &mut encoded);
-    // SAFETY: `length + 1 <= 512` bytes into the caller's 512, disjoint from `encoded`.
-    unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), output, length + 1) };
-    *written = length;
-    status
+/// `HttpProxy::get_auth_str()`'s Base64 credentials into `output`, NUL-terminated:
+/// the status (1 when they were cut to fit) and their length.
+#[must_use]
+pub fn owned_authorization(owner: &ProxyState, output: &mut [u8; 512]) -> (i32, usize) {
+    proxy_authorization(&owner.string(1), &owner.string(2), output)
 }
 
 /// `HttpProxy::create`'s assignments on a fresh owner: the host and port, then the
@@ -85,11 +53,8 @@ pub unsafe fn swr_v1_http_proxy_configure(
 /// `HttpProxy::get_auth_str()`: the Base64 credentials, empty on failure, errno
 /// EOVERFLOW when they were cut to fit.
 fn authorization(owner: &ProxyState) -> Vec<u8> {
-    let (mut output, mut written) = ([0u8; 512], 0);
-    // SAFETY: the live owner, 512 writable bytes and the length slot.
-    let status = unsafe {
-        swr_v1_http_proxy_owned_authorization(owner, output.as_mut_ptr(), Some(&mut written))
-    };
+    let mut output = [0u8; 512];
+    let (status, written) = owned_authorization(owner, &mut output);
     if status < 0 {
         return Vec::new();
     }
@@ -108,7 +73,7 @@ fn authorization(owner: &ProxyState) -> Vec<u8> {
 /// the authorization when the proxy has a password. Returns the bytes written (the
 /// whole length for a zero capacity).
 /// # Safety
-/// owner's slots are stable; host lends its bytes; output is `capacity` writable bytes
+/// host lends its bytes; output is `capacity` writable bytes
 /// disjoint from both.
 pub unsafe fn swr_v1_http_proxy_connect(
     state: &ProxyState,
@@ -117,8 +82,7 @@ pub unsafe fn swr_v1_http_proxy_connect(
     output: *mut u8,
     capacity: usize,
 ) -> usize {
-    // SAFETY: the live owner's password slot.
-    let authenticated = !unsafe { slot(state, 2) }.is_empty();
+    let authenticated = !state.string(2).is_empty();
     let auth = if authenticated {
         authorization(state)
     } else {
@@ -126,15 +90,14 @@ pub unsafe fn swr_v1_http_proxy_connect(
     };
     // SAFETY: the pinned version, a static string.
     let version = unsafe { std::ffi::CStr::from_ptr(swoole_version()) }.to_bytes();
-    // SAFETY: leaf scalar snapshot before formatting.
-    let fields = unsafe { *state.fields.get() };
+    let fields = state.fields.get();
     // SAFETY: the caller lends `host_length` bytes at `host`.
     let Ok(host) = (unsafe { crate::bytes(host, host_length) }) else {
         return 0;
     };
+    let target = state.string(3);
     let request = HttpProxyRequest {
-        // SAFETY: the target bytes remain stable throughout formatting.
-        target: unsafe { slot(state, 3) },
+        target: &target,
         host,
         version,
         authorization: &auth,
