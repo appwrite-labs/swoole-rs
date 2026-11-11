@@ -34,7 +34,7 @@ pub mod value;
 mod zval;
 
 pub use access::{key_ptr, set_key, string_of};
-pub use call::{Call, Invalid, type_of};
+pub use call::{Call, Invalid, kind, type_of};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, class_name, unset_property_deny};
 pub use descriptor::{contain, last_fatal_error, pause_shutdown, restore_shutdown};

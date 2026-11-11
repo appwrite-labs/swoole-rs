@@ -1,6 +1,6 @@
 //! Long-lived callbacks own their zval, callable cache and diagnostic name together.
 use crate::{
-    bailout, string,
+    bailout, kind, string,
     sys::{self, zend_fcall_info_cache, zend_string, zval},
     type_of,
 };
@@ -99,7 +99,7 @@ impl Callable {
 /// and finish only from the outermost C-facing handler or export.
 /// # Safety
 /// `value` is a live callable candidate. `report` is C/C++ and may report a PHP warning.
-pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, bailout::Bailout> {
+unsafe fn create(value: *mut zval, report: Report) -> Result<Box<Callable>, bailout::Bailout> {
     let mut state = Box::new(Callable {
         value: crate::UNDEF,
         cache: crate::EMPTY_FCC,
@@ -145,7 +145,7 @@ pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, 
         drop(state);
         return Err(bailout::Bailout);
     }
-    Ok(Box::into_raw(state))
+    Ok(state)
 }
 
 /// # Errors
@@ -164,19 +164,6 @@ pub unsafe fn release(handle: *mut Callable) -> Result<(), bailout::Bailout> {
 pub unsafe fn cache(handle: *mut Callable) -> *mut zend_fcall_info_cache {
     // SAFETY: a live stable Box; no Rust reference escapes this operation.
     unsafe { &raw mut (*handle).cache }
-}
-
-/// # Safety
-/// A live initialized handle.
-#[must_use]
-pub unsafe fn ready(handle: *const Callable) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-    // SAFETY: the owned value is initialized, even for a failed resolution.
-    let value = unsafe { &raw const (*handle).value };
-    // SAFETY: the live handle contains an initialized zval.
-    unsafe { type_of(value) != sys::IS_UNDEF }
 }
 
 /// # Safety
@@ -276,12 +263,13 @@ pub unsafe fn factory(
     }
     // SAFETY: the candidate and native reporter satisfy callable_new's contract.
     let handle = unsafe { create(value, report) }?;
-    // SAFETY: callable_new returned a live initialized handle.
-    if unsafe { ready(handle) } {
-        return Ok(handle);
+    // The owned value is initialized, even for a failed resolution.
+    if kind(&handle.value) != sys::IS_UNDEF {
+        return Ok(Box::into_raw(handle));
     }
-    // SAFETY: release the failed candidate as the original factory does.
-    unsafe { release(handle) }?;
+    // Release the failed candidate as the original factory does.
+    drop(handle);
+    bailout::outcome(())?;
     if !name.is_null() {
         // SAFETY: the caller supplies a NUL-terminated argument name.
         let name = unsafe { CStr::from_ptr(name) }.to_bytes();

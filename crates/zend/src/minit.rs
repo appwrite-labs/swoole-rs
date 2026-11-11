@@ -3,10 +3,14 @@
 use crate::{
     Class,
     bailout::Bailout,
+    function::{arg_info, deny},
     sys::{
-        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, zend_ce_countable, zend_ce_error,
-        zend_ce_exception, zend_ce_iterator, zend_class_entry, zend_class_implements,
-        zend_function_entry, zend_long, zend_object_handlers, zend_register_bool_constant,
+        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_facade_compiler_functions,
+        zend_ce_countable, zend_ce_error, zend_ce_exception, zend_ce_iterator, zend_class_entry,
+        zend_class_implements, zend_declare_class_constant_long, zend_declare_property_bool,
+        zend_declare_property_double, zend_declare_property_long, zend_declare_property_null,
+        zend_declare_property_string, zend_function_entry, zend_long, zend_object_handlers,
+        zend_register_bool_constant, zend_register_double_constant, zend_register_long_constant,
         zend_register_string_constant,
     },
 };
@@ -46,14 +50,30 @@ impl Minit {
 
     /// `SW_REGISTER_LONG_CONSTANT`.
     pub fn long_constant(&self, name: &CStr, value: zend_long) {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { crate::class::register_long_constant(name, value, self.module) };
+        // SAFETY: MINIT, with the module's number; Zend copies the name.
+        unsafe {
+            zend_register_long_constant(
+                name.as_ptr(),
+                name.count_bytes(),
+                value,
+                persistent(),
+                self.module,
+            );
+        }
     }
 
     /// `SW_REGISTER_DOUBLE_CONSTANT`.
     pub fn double_constant(&self, name: &CStr, value: f64) {
-        // SAFETY: MINIT, with the module's number.
-        unsafe { crate::class::register_double_constant(name, value, self.module) };
+        // SAFETY: MINIT, with the module's number; Zend copies the name.
+        unsafe {
+            zend_register_double_constant(
+                name.as_ptr(),
+                name.count_bytes(),
+                value,
+                persistent(),
+                self.module,
+            );
+        }
     }
 
     /// `REGISTER_BOOL_CONSTANT`, persistent.
@@ -100,8 +120,10 @@ impl Minit {
         name: &CStr,
         methods: &'static [zend_function_entry],
     ) {
+        let class = plain(class);
+        let methods = terminated(methods);
         // SAFETY: MINIT, with a plain class and a static, terminated table.
-        unsafe { plain(class).register_static(name, terminated(methods)) };
+        unsafe { class.register_child(name, methods, ptr::null_mut(), deny) };
     }
 
     /// `SW_FUNCTION_ALIAS` of each `(method, alias)` of `class`, registered with
@@ -116,9 +138,30 @@ impl Minit {
         methods: &'static [zend_function_entry],
         aliases: &[(&CStr, &CStr)],
     ) -> Result<(), Bailout> {
-        registered(class);
-        // SAFETY: MINIT, after registering the class; the table is static and terminated.
-        unsafe { class.function_aliases(terminated(methods), aliases) }
+        let entry = registered(class);
+        terminated(methods);
+        // SAFETY: a registered class lives for the process. Project the raw table
+        // pointer without holding a mutable Rust reference across registration.
+        let source = unsafe { &raw mut (*entry).function_table };
+        // SAFETY: Zend initializes the compiler's table before module startup.
+        let target = unsafe { swr_zend_facade_compiler_functions() };
+        for (method, alias) in aliases {
+            // SAFETY: MINIT; the names live through the call and the arginfo,
+            // from the static table, for the process.
+            unsafe {
+                crate::registration::function_alias(
+                    source,
+                    method.as_ptr(),
+                    method.count_bytes(),
+                    target,
+                    alias.as_ptr(),
+                    alias.count_bytes(),
+                    arg_info(methods, method),
+                    None,
+                )
+            }?;
+        }
+        Ok(())
     }
 
     /// Register `name` with `methods` (none when empty), then let `configure`
@@ -162,9 +205,16 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn alias(&self, class: &Class, name: &CStr) -> Result<(), Bailout> {
-        registered(class);
-        // SAFETY: MINIT, after registration.
-        unsafe { class.alias(name) }
+        // SAFETY: MINIT; a NUL-terminated name and a registered class.
+        unsafe {
+            crate::registration::class_alias(
+                name.as_ptr(),
+                name.count_bytes(),
+                registered(class),
+                false,
+            )
+        }
+        .map(|_| ())
     }
 
     /// Register `T`'s class as `name` with `methods` and `flags` added to its
@@ -186,57 +236,103 @@ impl Minit {
             entry.ce_flags |= flags | ZEND_ACC_NOT_SERIALIZABLE;
             crate::object::install_custom::<T>(entry, handlers);
         };
-        // SAFETY: MINIT, with a static, terminated table.
-        unsafe { class.register(name, table, configure) };
+        // SAFETY: MINIT, with a static, terminated table; `configure` gives the
+        // class `T`'s handlers.
+        unsafe { class.register_child(name, table, ptr::null_mut(), configure) };
     }
 
     /// `zend_declare_class_constant_long` on a registered class.
     /// # Panics
     /// `class` is not registered.
     pub fn class_constant_long(&self, class: &Class, name: &CStr, value: zend_long) {
-        registered(class);
-        // SAFETY: MINIT, after registration.
-        unsafe { class.constant_long(name, value) };
+        // SAFETY: MINIT, with a registered class; Zend copies the name.
+        unsafe {
+            zend_declare_class_constant_long(
+                registered(class),
+                name.as_ptr(),
+                name.count_bytes(),
+                value,
+            );
+        }
     }
 
     /// `zend_declare_property_long` with `access` (`ZEND_ACC_*`) flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long, access: u32) {
-        // SAFETY: MINIT, with a registered class.
-        unsafe { crate::class::declare_long(registered(class), name, value, access) };
+        // SAFETY: MINIT, with a registered class; Zend copies the name.
+        unsafe {
+            zend_declare_property_long(
+                registered(class),
+                name.as_ptr(),
+                name.count_bytes(),
+                value,
+                flags(access),
+            );
+        }
     }
 
     /// `zend_declare_property_double` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_double(&self, class: &Class, name: &CStr, value: f64, access: u32) {
-        // SAFETY: MINIT, with a registered class.
-        unsafe { crate::class::declare_double(registered(class), name, value, access) };
+        // SAFETY: MINIT, with a registered class; Zend copies the name.
+        unsafe {
+            zend_declare_property_double(
+                registered(class),
+                name.as_ptr(),
+                name.count_bytes(),
+                value,
+                flags(access),
+            );
+        }
     }
 
     /// `zend_declare_property_bool` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_bool(&self, class: &Class, name: &CStr, value: bool, access: u32) {
-        // SAFETY: MINIT, with a registered class.
-        unsafe { crate::class::declare_bool(registered(class), name, value, access) };
+        // SAFETY: MINIT, with a registered class; Zend copies the name.
+        unsafe {
+            zend_declare_property_bool(
+                registered(class),
+                name.as_ptr(),
+                name.count_bytes(),
+                zend_long::from(value),
+                flags(access),
+            );
+        }
     }
 
     /// `zend_declare_property_string` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_string(&self, class: &Class, name: &CStr, value: &CStr, access: u32) {
-        // SAFETY: MINIT, with a registered class.
-        unsafe { crate::class::declare_string(registered(class), name, value, access) };
+        // SAFETY: MINIT, with a registered class; Zend copies the name and value.
+        unsafe {
+            zend_declare_property_string(
+                registered(class),
+                name.as_ptr(),
+                name.count_bytes(),
+                value.as_ptr(),
+                flags(access),
+            );
+        }
     }
 
     /// `zend_declare_property_null` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_null(&self, class: &Class, name: &CStr, access: u32) {
-        // SAFETY: MINIT, with a registered class.
-        unsafe { crate::class::declare_null(registered(class), name, access) };
+        // SAFETY: MINIT, with a registered class; Zend copies the name.
+        unsafe {
+            zend_declare_property_null(
+                registered(class),
+                name.as_ptr(),
+                name.count_bytes(),
+                flags(access),
+            );
+        }
     }
 
     /// A registered class, to extend.
@@ -301,6 +397,11 @@ impl Minit {
 /// `CONST_PERSISTENT` as the `int` the register functions take.
 fn persistent() -> c_int {
     c_int::try_from(CONST_PERSISTENT).unwrap_or(c_int::MAX)
+}
+
+/// `ZEND_ACC_*` flags as the `int` the declare functions take.
+fn flags(value: u32) -> c_int {
+    c_int::try_from(value).unwrap_or(c_int::MAX)
 }
 
 /// `class`, checking it is no [`CustomClass`](crate::CustomClass)'s: registered

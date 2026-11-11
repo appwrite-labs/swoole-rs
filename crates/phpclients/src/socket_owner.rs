@@ -22,7 +22,7 @@ pub(super) unsafe fn release(object: *mut z::zend_object) -> Result<(), Bailout>
     }
     // SAFETY: the object's live core socket.
     let co = unsafe { Co::new(socket) };
-    let freed = free_length_callable(co);
+    let freed = co.free_length_callable();
     // SAFETY: the embedded initialized zval outlives the native destructor leaf.
     let stream = unsafe { &raw mut (*state).stream };
     // SAFETY: this embedded slot is an initialized zval.
@@ -38,19 +38,6 @@ pub(super) unsafe fn release(object: *mut z::zend_object) -> Result<(), Bailout>
     freed.and(unsafe { native::free_socket(socket) })
 }
 
-/// `sw_callable_free(protocol.private_data_1)`: upstream's ordering publishes null
-/// only after the callback's destruction returns, which frees it even when it bails out.
-fn free_length_callable(socket: Co) -> Result<(), Bailout> {
-    // Copy the owned callback pointer without borrowing the protocol across PHP.
-    let callable = socket.record().protocol.private_data_1;
-    if callable.is_null() {
-        return Ok(());
-    }
-    let freed = native::callable_free(callable);
-    socket.record().protocol.private_data_1 = ptr::null_mut();
-    freed
-}
-
 /// Free the length callback, then close an imported stream or the owned core socket.
 /// # Safety
 /// This is an open, owned socket object held live by the current PHP method.
@@ -60,7 +47,7 @@ pub(super) unsafe fn close(object: *mut z::zend_object) -> Result<(), Bailout> {
     let socket = unsafe { (*state).socket };
     // SAFETY: the open core socket of the live object.
     let socket = unsafe { Co::new(socket) };
-    free_length_callable(socket)?;
+    socket.free_length_callable()?;
     // SAFETY: the live object's embedded stream slot stays allocated through the close leaf.
     let stream_value = unsafe { &raw mut (*state).stream };
     // SAFETY: the embedded zval was initialized when this object was created.

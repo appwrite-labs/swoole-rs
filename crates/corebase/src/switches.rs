@@ -1,7 +1,8 @@
-//! The build's configure switches, one bit each in `swr_cpp_switches`
+//! The build's switches, one bit each in `swr_cpp_switches`
 //! (native/corebase/switches.cc, which `tools/headers.sh` generates from
-//! [`SWITCHES`]). Cargo builds the Rust archive before configure runs, so only
-//! a configured C++ compile sees them.
+//! [`SWITCHES`]). Some are crates/ext's build.rs defines, but the TLS library's
+//! (`TLS1_3_VERSION`, `OPENSSL_IS_BORINGSSL`, `SW_SUPPORT_DTLS`) are header
+//! macros, which only a C++ compile of those headers sees.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Switch {

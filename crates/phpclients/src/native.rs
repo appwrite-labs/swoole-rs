@@ -220,6 +220,22 @@ impl Co {
         unsafe { co::listen(self.0, backlog as c_int) }
     }
 
+    /// `sw_callable_free(protocol.private_data_1)`, the `package_length_func` the socket
+    /// owns: upstream's ordering publishes null only after the callback's destruction
+    /// returns, which frees it even when it bails out.
+    /// # Errors
+    /// The callable's destructor bailed out; the bailout stays pending.
+    pub fn free_length_callable(self) -> Result<(), Bailout> {
+        // Copy the owned callback pointer without borrowing the protocol across PHP.
+        let callable = self.record().protocol.private_data_1;
+        if callable.is_null() {
+            return Ok(());
+        }
+        let freed = callable_free(callable);
+        self.record().protocol.private_data_1 = ptr::null_mut();
+        freed
+    }
+
     /// `accept(timeout)`: the new connection, owned by the caller, or null. It
     /// copies the listener's length callable, so closing it leaves the listener's.
     #[must_use]
