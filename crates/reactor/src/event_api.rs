@@ -374,8 +374,15 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
     }
 }
 
-/// Put `data` (or nothing) in a cycle slot, and hand back the task it held. Only
-/// [`swoole_event_cycle`] fills the slots, so a set one holds its `Rc<Slot>`.
+thread_local! {
+    /// The slots [`swoole_event_cycle`] put in this thread's reactors and that are
+    /// still there. Native code may set a cycle task of its own, so a slot's data is
+    /// an `Rc<Slot>` only when it is listed here.
+    static GIVEN: std::cell::RefCell<Vec<*const Slot>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Put `data` (or nothing) in a cycle slot, and hand back the task it held if
+/// [`swoole_event_cycle`] put it there; any other task is left to its owner.
 fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Option<Retired> {
     let replaced = std::mem::replace(
         task,
@@ -384,12 +391,15 @@ fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Optio
             data: data.map_or(std::ptr::null_mut(), <*mut Slot>::cast),
         },
     );
-    replaced.callback?;
-    // SAFETY: a set slot's data is the `Rc<Slot>` `swoole_event_cycle` gave up,
-    // which the slot no longer names.
-    Some(Retired(unsafe {
-        Rc::from_raw(replaced.data.cast::<Slot>())
-    }))
+    let old = replaced.data.cast::<Slot>().cast_const();
+    let ours = GIVEN.with_borrow_mut(|given| {
+        given.extend(data.map(<*mut Slot>::cast_const));
+        let at = given.iter().position(|&slot| slot == old)?;
+        Some(given.swap_remove(at))
+    })?;
+    // SAFETY: a listed slot is the `Rc<Slot>` `swoole_event_cycle` gave up, which
+    // the reactor no longer names and the list no longer holds.
+    Some(Retired(unsafe { Rc::from_raw(ours) }))
 }
 
 /// The reactor is being freed: drop the cycle tasks [`swoole_event_cycle`] gave it.
