@@ -30,4 +30,3 @@ mod session;
 
 pub use client::*;
 pub use server::*;
-pub use session::*;
