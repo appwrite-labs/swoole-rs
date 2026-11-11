@@ -17,7 +17,7 @@ use swoole_rs_zend::{
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
         swr_zend_tsrm_api_name, swr_zend_tsrm_is_main_thread, swr_zend_tsrm_is_shutdown,
-        zend_declare_class_constant_string, zval_ptr_dtor,
+        zend_declare_class_constant_string,
     },
 };
 
@@ -228,11 +228,7 @@ pub unsafe extern "C" fn thread_rinit() {
 /// RSHUTDOWN: drop the thread's arguments; the main thread exits the process
 /// while other threads run, else releases what RINIT kept.
 pub extern "C" fn thread_rshutdown() {
-    if let Some(argv) = ARGV.take() {
-        let mut argv = argv.into_zval();
-        // SAFETY: the thread's arguments, which this releases.
-        unsafe { zval_ptr_dtor(&raw mut argv) };
-    }
+    drop(ARGV.take());
     if !main_thread() {
         return;
     }

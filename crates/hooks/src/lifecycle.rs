@@ -48,7 +48,9 @@ impl Co {
             return false;
         }
         set_err(self, libc::ECANCELED);
-        (NATIVE.resume)(self.with_state(|state| state.co(event)));
+        let co = self.with_state(|state| state.co(event));
+        // SAFETY: the coroutine bound for `event`, parked in its wait on this socket.
+        unsafe { (NATIVE.resume)(co) };
         true
     }
 
@@ -275,7 +277,8 @@ mod tests {
         }
         if event == READ || event == WRITE {
             set_err(s, libc::ECANCELED);
-            (NATIVE.resume)(state(s).co(event));
+            // SAFETY: the coroutine bound for `event`, parked in its wait on `s`.
+            unsafe { (NATIVE.resume)(state(s).co(event)) };
             true
         } else {
             set_err(s, libc::EINVAL);

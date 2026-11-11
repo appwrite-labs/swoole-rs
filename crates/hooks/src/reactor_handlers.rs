@@ -108,7 +108,7 @@ fn defer_resume(co: Parked) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wait_event::{EventWaitOps, swr_v1_hook_wait_event};
+    use crate::wait_event::{EventWaitOps, Registered, swr_v1_hook_wait_event};
     use std::cell::{Cell, RefCell};
     use swoole_rs_reactor::SocketRecord;
 
@@ -154,9 +154,9 @@ mod tests {
     }
 
     #[expect(clippy::unnecessary_wraps, reason = "EventWaitOps::add's signature")]
-    fn add(fd: i32, _: i32, waiter: *mut c_void) -> Result<Socket, i32> {
+    fn add(fd: i32, _: i32, waiter: Registered) -> Result<Socket, i32> {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
-        unsafe { (*socket).fields.object = waiter };
+        unsafe { (*socket).fields.object = waiter.as_ptr() };
         SOCKET.set(socket);
         Ok(Socket(socket))
     }
