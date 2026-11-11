@@ -630,9 +630,7 @@ struct Worker {
 /// server worker.
 fn worker() -> Option<Worker> {
     let server = swoole_rs_corebase::swr_v1_core_server();
-    let current = swoole_rs_process::worker_globals::thread_globals();
-    // SAFETY: this thread's worker record.
-    let current = unsafe { (*current).worker };
+    let current = swoole_rs_process::worker_globals::current_worker();
     if server.is_null() || current.is_null() {
         return None;
     }

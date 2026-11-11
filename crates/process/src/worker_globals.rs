@@ -1,45 +1,49 @@
 //! The current worker's per-thread/process record and lifecycle, owned by Rust.
 use crate::worker_record::WorkerRecord;
-use core::cell::UnsafeCell;
+use core::cell::Cell;
 use core::ffi::c_int;
 
 /// The compatibility view of the current worker; pointer fields are native loans,
-/// except `worker_copy`, whose local record allocation is owned here.
+/// except `worker_copy`, whose local record allocation is owned here. Each field is
+/// a `Cell`, read and written one at a time, as native code and signal handlers
+/// write single fields of the same record.
 #[repr(C)]
 pub struct WorkerGlobalRecord {
-    pub id: u32,
-    pub kind: u8,
-    pub pid: c_int,
-    pub shutdown: bool,
-    pub running: bool,
-    pub max_request: u32,
-    pub worker: *mut WorkerRecord,
-    pub worker_copy: *mut WorkerRecord,
-    pub exit_time: libc::time_t,
+    pub id: Cell<u32>,
+    pub kind: Cell<u8>,
+    pub pid: Cell<c_int>,
+    pub shutdown: Cell<bool>,
+    pub running: Cell<bool>,
+    pub max_request: Cell<u32>,
+    pub worker: Cell<*mut WorkerRecord>,
+    worker_copy: Cell<*mut WorkerRecord>,
+    pub exit_time: Cell<libc::time_t>,
 }
 
-const INIT: WorkerGlobalRecord = WorkerGlobalRecord {
-    id: 0,
-    kind: 0,
-    pid: 0,
-    shutdown: false,
-    running: false,
-    max_request: 0,
-    worker: core::ptr::null_mut(),
-    worker_copy: core::ptr::null_mut(),
-    exit_time: 0,
-};
+const fn init() -> WorkerGlobalRecord {
+    WorkerGlobalRecord {
+        id: Cell::new(0),
+        kind: Cell::new(0),
+        pid: Cell::new(0),
+        shutdown: Cell::new(false),
+        running: Cell::new(false),
+        max_request: Cell::new(0),
+        worker: Cell::new(core::ptr::null_mut()),
+        worker_copy: Cell::new(core::ptr::null_mut()),
+        exit_time: Cell::new(0),
+    }
+}
 
 // `SwooleWG` is `SW_THREAD_LOCAL`: thread-local on a thread-safe PHP, one process
 // record otherwise, which saves a TLS lookup per access on the request path.
 // Tests (which unwind) keep it per thread, as they run in parallel.
 #[cfg(any(zts, panic = "unwind"))]
 std::thread_local! {
-    static GLOBAL: UnsafeCell<WorkerGlobalRecord> = const { UnsafeCell::new(INIT) };
+    static GLOBAL: WorkerGlobalRecord = const { init() };
 }
 
 #[cfg(not(any(zts, panic = "unwind")))]
-struct Process(UnsafeCell<WorkerGlobalRecord>);
+struct Process(WorkerGlobalRecord);
 
 // SAFETY: as upstream's non-thread-safe `SwooleWG`, one record the process's
 // threads share; callers access single fields, never a whole-record borrow.
@@ -47,78 +51,67 @@ struct Process(UnsafeCell<WorkerGlobalRecord>);
 unsafe impl Sync for Process {}
 
 #[cfg(not(any(zts, panic = "unwind")))]
-static GLOBAL: Process = Process(UnsafeCell::new(INIT));
+static GLOBAL: Process = Process(init());
 
-/// Borrows the original native field view for this thread. It has no TLS destructor
-/// and remains available during native thread teardown, as the original POD did.
+/// `f` over this thread's record (`SwooleWG`). It has no TLS destructor and stays
+/// available during native thread teardown, as the original POD did.
+pub fn with_globals<R>(f: impl FnOnce(&WorkerGlobalRecord) -> R) -> R {
+    #[cfg(any(zts, panic = "unwind"))]
+    return GLOBAL.with(f);
+    #[cfg(not(any(zts, panic = "unwind")))]
+    f(&GLOBAL.0)
+}
+
+/// The original native field view for this thread.
 /// The process-pool case fixture (tests/modules/hooks/system) reads it as `SwooleWG`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "swr_v1_worker_globals")
 )]
+#[must_use]
 pub extern "C" fn thread_globals() -> *mut WorkerGlobalRecord {
-    #[cfg(any(zts, panic = "unwind"))]
-    return GLOBAL.with(UnsafeCell::get);
-    #[cfg(not(any(zts, panic = "unwind")))]
-    GLOBAL.0.get()
+    with_globals(|globals| core::ptr::from_ref(globals).cast_mut())
 }
 
 /// `SwooleWG.worker`: this thread's current worker, or null.
 #[must_use]
 pub fn current_worker() -> *mut WorkerRecord {
-    // SAFETY: one field of this thread's live record, without a whole-record borrow.
-    unsafe { (*thread_globals()).worker }
+    with_globals(|globals| globals.worker.get())
 }
 
 /// `SwooleWG.worker = worker`.
 pub fn set_current_worker(worker: *mut WorkerRecord) {
-    // SAFETY: as [`current_worker`], a write.
-    unsafe { (*thread_globals()).worker = worker };
+    with_globals(|globals| globals.worker.set(worker));
 }
 
 /// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.
 #[must_use]
 pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
-    let global = thread_globals();
-    macro_rules! read {
-        ($field:ident) => {{
-            // SAFETY: the live TLS record is loaned to this thread; no whole-record borrow crosses native signals.
-            unsafe { (*global).$field }
-        }};
-    }
-    match field {
-        0 => i64::from(read!(id)),
-        1 => i64::from(read!(pid)),
-        2 => i64::from(read!(kind)),
-        3 => i64::from(read!(running)),
-        4 => i64::from(read!(shutdown)),
-        5 => i64::from(read!(max_request)),
+    with_globals(|globals| match field {
+        0 => i64::from(globals.id.get()),
+        1 => i64::from(globals.pid.get()),
+        2 => i64::from(globals.kind.get()),
+        3 => i64::from(globals.running.get()),
+        4 => i64::from(globals.shutdown.get()),
+        5 => i64::from(globals.max_request.get()),
         _ => 0,
-    }
+    })
 }
 
 /// Updates the current worker's identity, preserving native integer narrowing.
 pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
-    let global = thread_globals();
-    macro_rules! write {
-        ($field:ident,$value:expr) => {{
-            // SAFETY: this leaf updates one field of this thread's live TLS view, without a whole-record borrow.
-            unsafe { (*global).$field = $value };
-        }};
-    }
     let low = u32::try_from(value.cast_unsigned() & u64::from(u32::MAX)).unwrap_or_default();
-    match field {
-        0 => write!(id, low),
-        1 => write!(pid, c_int::from_ne_bytes(low.to_ne_bytes())),
-        2 => write!(
-            kind,
-            u8::try_from(low & u32::from(u8::MAX)).unwrap_or_default()
-        ),
-        3 => write!(running, value != 0),
-        4 => write!(shutdown, value != 0),
-        5 => write!(max_request, low),
+    with_globals(|globals| match field {
+        0 => globals.id.set(low),
+        1 => globals.pid.set(c_int::from_ne_bytes(low.to_ne_bytes())),
+        2 => globals
+            .kind
+            .set(u8::try_from(low & u32::from(u8::MAX)).unwrap_or_default()),
+        3 => globals.running.set(value != 0),
+        4 => globals.shutdown.set(value != 0),
+        5 => globals.max_request.set(low),
         _ => {}
-    }
+    });
 }
 
 /// Grace randomization calls the existing native wrapper so its assertion and
@@ -146,25 +139,25 @@ pub unsafe fn worker_global_detach(worker: *mut WorkerRecord) {
     // SAFETY: the native transition lends the initialized worker for this value copy.
     let copy = unsafe { worker.read() };
     let copy = Box::into_raw(Box::new(copy));
-    let global = thread_globals();
-    // SAFETY: this thread exclusively owns its current worker/copy fields.
-    unsafe { (*global).worker_copy = copy };
+    with_globals(|globals| globals.worker_copy.set(copy));
     set_current_worker(worker);
 }
 
 /// Stops the current worker and releases its local detached copy.
 pub fn worker_global_stopped() {
-    let global = thread_globals();
-    // SAFETY: the current thread owns the leaf running-state update.
-    unsafe { (*global).running = false };
-    // SAFETY: the TLS record's copy slot is live and this thread owns its updates.
-    let copy = unsafe { (*global).worker_copy };
+    let copy = with_globals(|globals| {
+        globals.running.set(false);
+        // The owning slot is cleared before its allocation is released.
+        let copy = globals.worker_copy.replace(core::ptr::null_mut());
+        if !copy.is_null() {
+            // The shared worker is a loan, no longer current once this copy is released.
+            globals.worker.set(core::ptr::null_mut());
+        }
+        copy
+    });
     if !copy.is_null() {
-        // SAFETY: clear the owning slot before releasing its local allocation.
-        unsafe { (*global).worker_copy = core::ptr::null_mut() };
-        // SAFETY: the shared worker is a loan, no longer current once this copy is released.
-        unsafe { (*global).worker = core::ptr::null_mut() };
-        // SAFETY: detach transferred this unique local record box into the TLS slot.
+        // SAFETY: detach transferred this unique local record box into the slot just
+        // cleared.
         drop(unsafe { Box::from_raw(copy) });
     }
 }
@@ -187,7 +180,7 @@ mod tests {
         swr_v1_worker_global_set(2, -1);
         assert_eq!(swr_v1_worker_global_get(2), 255);
         let native_view = thread_globals();
-        unsafe { (*native_view).pid = 123 };
+        unsafe { (*native_view).pid.set(123) };
         assert_eq!(swr_v1_worker_global_get(1), 123);
         std::thread::spawn(|| {
             assert_eq!(swr_v1_worker_global_get(0), 0);
@@ -219,7 +212,7 @@ mod tests {
             Worker::new(&raw mut worker).add_request_count();
             assert!(Worker::new(&raw const worker).exceeded_max_request());
             worker_global_detach(&raw mut worker);
-            let copy = (*thread_globals()).worker_copy;
+            let copy = (*thread_globals()).worker_copy.get();
             assert_ne!(copy, &raw mut worker);
             assert_eq!(Worker::new(copy).id(), 11);
             assert_eq!(Worker::new(copy).pid(), 1234);
@@ -228,8 +221,8 @@ mod tests {
             assert_eq!(swr_v1_worker_global_get(4), 1);
             worker_global_stopped();
             assert_eq!(swr_v1_worker_global_get(3), 0);
-            assert!((*thread_globals()).worker_copy.is_null());
-            assert!((*thread_globals()).worker.is_null());
+            assert!((*thread_globals()).worker_copy.get().is_null());
+            assert!((*thread_globals()).worker.get().is_null());
         }
     }
 

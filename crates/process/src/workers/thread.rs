@@ -469,7 +469,7 @@ fn thread_main<H: Host>(h: &mut H, arg: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worker_globals::thread_globals;
+    use crate::worker_globals::with_globals;
     use crate::workers::script::Script;
 
     #[test]
@@ -520,9 +520,9 @@ mod tests {
                         (OP_GET_WORKER, address),
                     ]);
                     run_op(&mut h, RUN_THREAD_BODY, thread_arg(6, TASK_WORKER));
-                    let g = thread_globals();
-                    // SAFETY (test): this thread's record.
-                    let globals = unsafe { ((*g).id, (*g).kind, (*g).pid, (*g).worker as u64) };
+                    let globals = with_globals(|g| {
+                        (g.id.get(), g.kind.get(), g.pid.get(), g.worker.get() as u64)
+                    });
                     (h, globals)
                 })
                 .join()

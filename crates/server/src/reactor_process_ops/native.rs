@@ -105,9 +105,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event pool, which has a worker.
             let worker = unsafe { (*pool).workers };
-            let globals = swoole_rs_process::worker_globals::thread_globals();
-            // SAFETY: this thread's worker globals.
-            unsafe { (*globals).worker = worker };
+            swoole_rs_process::worker_globals::set_current_worker(worker);
             // SAFETY: the pool and its first worker.
             sign(unsafe { entry::reactor_process_main_loop(pool.cast(), worker.cast()) })
         }

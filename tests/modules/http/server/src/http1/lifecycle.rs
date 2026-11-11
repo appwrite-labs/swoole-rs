@@ -1001,8 +1001,7 @@ fn unlock() {
 
 /// `sw_worker()`: this thread's worker, or null.
 fn current_worker() -> *mut WorkerRecord {
-    // SAFETY: this thread's worker globals.
-    unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker }
+    swoole_rs_process::worker_globals::current_worker()
 }
 
 fn kill_worker(serv: Server, worker_id: c_int) -> bool {
