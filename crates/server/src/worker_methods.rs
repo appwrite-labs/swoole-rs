@@ -276,7 +276,9 @@ mod tests {
             .collect();
         sessions[0].reactor_bits = 0x5a12_3400 | 1;
         sessions[last].reactor_bits = 0x5a12_3400 | 1;
-        unsafe { (*serv.state().tables()).session_list = sessions.as_mut_ptr() };
+        unsafe {
+            (*serv.state().tables()).session_list = crate::records::tests::naming(&mut sessions);
+        };
         abort_worker(serv, worker);
         assert_eq!(worker.counters(), [0, 0, 0, 0]);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 4);
@@ -293,7 +295,7 @@ mod tests {
         assert_eq!(worker.counters()[3], 0);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
-        unsafe { (*serv.state().tables()).session_list = core::ptr::null_mut() };
+        unsafe { (*serv.state().tables()).session_list = swoole_rs_memory::members::Shm::NULL };
         unsafe { serv.config_mut() }.workers.free();
         unsafe { serv.config_mut() }.gs.free();
         unsafe { crate::swr_v1_server_state_free(state) };

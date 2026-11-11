@@ -1,11 +1,13 @@
 //! Rust-owned shared server and port counters in the existing shared-memory arena.
 use core::sync::atomic::{AtomicU32, AtomicU64};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::Worker;
 #[derive(Default)]
 #[repr(C)]
 pub struct PortCounters {
     pub connection_num: AtomicU32,
-    pub connection_nums: *mut AtomicU32,
+    /// An `AtomicU32` per worker.
+    pub connection_nums: Shm,
     pub abort_count: AtomicU64,
     pub accept_count: AtomicU64,
     pub close_count: AtomicU64,
@@ -15,6 +17,25 @@ pub struct PortCounters {
     pub total_recv_bytes: AtomicU64,
     pub total_send_bytes: AtomicU64,
 }
+/// `connection_nums`' cells, or null when there are none.
+fn cells(nums: &Shm) -> *mut AtomicU32 {
+    nums.as_ptr().cast()
+}
+
+impl PortCounters {
+    /// The per-worker connection counts, or null.
+    pub(crate) fn cells(&self) -> *mut AtomicU32 {
+        cells(&self.connection_nums)
+    }
+}
+
+impl ServerCounters {
+    /// The per-worker connection counts, or null.
+    pub(crate) fn cells(&self) -> *mut AtomicU32 {
+        cells(&self.connection_nums)
+    }
+}
+
 #[derive(Default)]
 #[repr(C)]
 pub struct ServerCounters {
@@ -28,7 +49,8 @@ pub struct ServerCounters {
     pub onstart_called: bool,
     pub start_time: libc::time_t,
     pub connection_num: AtomicU32,
-    pub connection_nums: *mut AtomicU32,
+    /// An `AtomicU32` per worker.
+    pub connection_nums: Shm,
     pub tasking_num: AtomicU32,
     pub max_concurrency: u32,
     pub concurrency: AtomicU32,
@@ -247,7 +269,7 @@ pub unsafe fn swr_v1_server_port_connections(
 ) -> usize {
     let counters = storage.cast::<PortCounters>();
     // SAFETY: the caller lends the live port counter record.
-    let cells = unsafe { (*counters).connection_nums };
+    let cells = unsafe { (*counters).cells() };
     if cells.is_null() {
         // SAFETY: the record's aligned atomic count is live for the call.
         return unsafe {
@@ -307,8 +329,8 @@ mod tests {
         unsafe {
             (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::NULL);
             *(*state).tables() = ServerTables {
-                connection_list: connections.as_mut_ptr(),
-                session_list: sessions.as_mut_ptr(),
+                connection_list: crate::records::tests::naming(&mut connections),
+                session_list: crate::records::tests::naming(&mut sessions),
                 max_connection: 2,
                 ..ServerTables::default()
             };
@@ -373,7 +395,7 @@ mod tests {
         let storage = core::ptr::from_ref(&counters).cast();
         assert_eq!(unsafe { swr_v1_server_port_connections(storage, 2) }, 99);
         let mut cells = [AtomicU32::new(3), AtomicU32::new(5)];
-        counters.connection_nums = cells.as_mut_ptr();
+        counters.connection_nums = crate::records::tests::naming(&mut cells);
         let storage = core::ptr::from_ref(&counters).cast();
         assert_eq!(unsafe { swr_v1_server_port_connections(storage, 2) }, 8);
         assert_eq!(unsafe { swr_v1_server_port_connections(storage, 0) }, 0);

@@ -3,6 +3,7 @@
 //! [`swr_v1_factory_call`] answers.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI64, Ordering};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::Worker;
 
 use swoole_rs_corebase::{DataHead, log};
@@ -495,10 +496,8 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_ALLOC_CONNECTIONS => {
             let size = size_of::<ConnectionRecord>();
-            let list =
-                swoole_rs_memory::members::sw_shm_calloc(tables.max_connection as usize, size);
-            tables.connection_list = list.cast();
-            u64::from(!list.is_null())
+            tables.connection_list = Shm::calloc(tables.max_connection as usize, size);
+            u64::from(!tables.connection_list.is_null())
         }
         LOG_ALLOC_CONNECTIONS => {
             let (max, size) = (tables.max_connection, size_of::<ConnectionRecord>());
@@ -507,7 +506,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_FREE_CONNECTIONS => {
-            swoole_rs_memory::members::sw_shm_free(tables.connection_list.cast());
+            tables.connection_list.free();
             0
         }
         OP_SET_REACTOR_PIPE_NUM => {

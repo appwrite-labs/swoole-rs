@@ -258,9 +258,9 @@ pub(crate) unsafe fn answer(
             } else {
                 let id = usize::from(reactor_id());
                 // SAFETY: base mode's per-reactor counts, one per reactor.
-                unsafe { (*gs.connection_nums.wrapping_add(id)).fetch_sub(1, SeqCst) };
+                unsafe { (*gs.cells().wrapping_add(id)).fetch_sub(1, SeqCst) };
                 // SAFETY: as above.
-                unsafe { (*port.connection_nums.wrapping_add(id)).fetch_sub(1, SeqCst) };
+                unsafe { (*port.cells().wrapping_add(id)).fetch_sub(1, SeqCst) };
             }
             0
         }

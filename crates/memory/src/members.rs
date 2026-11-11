@@ -43,7 +43,7 @@ pub(crate) fn arena(shared: bool, size: usize) -> *mut c_void {
 /// `memory` is live and came from `arena(shared, ..)`.
 pub(crate) unsafe fn release(shared: bool, memory: *mut c_void) {
     if shared {
-        sw_shm_free(memory);
+        Shm(memory).free();
     } else {
         // SAFETY: as the caller promises.
         unsafe { sw_free(memory) };
@@ -387,21 +387,44 @@ unsafe fn extent(payload: *mut c_void) -> (*mut c_void, usize) {
     (base.cast(), unsafe { base.read() })
 }
 
-/// A field holding an `sw_shm_calloc` mapping, or null. Only [`Shm::calloc`]
-/// fills it, so [`Shm::free`] unmaps exactly what it mapped, once. Native code
-/// reads it as the payload pointer.
+/// A field holding a mapping `map` made (`sw_shm_malloc`'s, or a private one), or
+/// null. Only its constructors fill it, so [`Shm::free`] unmaps exactly what they
+/// mapped, once. Native code reads it as the payload pointer.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Shm(*mut c_void);
+
+impl Default for Shm {
+    fn default() -> Self {
+        Self::NULL
+    }
+}
 
 impl Shm {
     /// No mapping.
     pub const NULL: Self = Self(ptr::null_mut());
 
+    /// `sw_shm_malloc(size)`: null when it fails.
+    #[must_use]
+    pub fn malloc(size: usize) -> Self {
+        Self(sw_shm_malloc(size))
+    }
+
     /// `sw_shm_calloc(count, size)`: null when it fails.
     #[must_use]
     pub fn calloc(count: usize, size: usize) -> Self {
         Self(sw_shm_calloc(count, size))
+    }
+
+    /// As [`Shm::calloc`], but a fork copies the mapping rather than sharing it, as
+    /// it would `sw_calloc`'s memory.
+    #[must_use]
+    pub fn calloc_private(count: usize, size: usize) -> Self {
+        Self(
+            count
+                .checked_mul(size)
+                .map_or(ptr::null_mut(), |size| map(size, libc::MAP_PRIVATE)),
+        )
     }
 
     /// The payload, or null.
@@ -415,26 +438,74 @@ impl Shm {
         self.0.is_null()
     }
 
-    /// Unmaps the mapping, if any, and leaves the field null.
+    /// `SharedMemory::protect`: `mprotect`s the whole mapping; -1 without one.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "upstream's Server::worker_start_callback ignores mprotect's result"
+    )]
+    pub fn protect(&self, flags: c_int) -> c_int {
+        if self.0.is_null() {
+            return -1;
+        }
+        // SAFETY: only `map` filled the field, so its header precedes the payload.
+        let (base, total) = unsafe { extent(self.0) };
+        // SAFETY: the mapping its header describes.
+        unsafe { libc::mprotect(base, total, flags) }
+    }
+
+    /// The payload, for an owner that frees it with `sw_shm_free`.
+    #[must_use]
+    pub fn into_raw(self) -> *mut c_void {
+        self.0
+    }
+
+    /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the field null.
     pub fn free(&mut self) {
         let payload = core::mem::replace(&mut self.0, ptr::null_mut());
-        if !payload.is_null() {
-            unmap(payload);
+        if payload.is_null() {
+            return;
+        }
+        // SAFETY: only `map` filled the field, so its header precedes the payload.
+        let (base, total) = unsafe { extent(payload) };
+        // SAFETY: the mapping its header describes, unmapped once: the field is null now.
+        if unsafe { libc::munmap(base, total) } < 0 {
+            log::sys_warning(
+                c"SharedMemory::free",
+                format_args!("munmap({base:p}, {total}) failed"),
+            );
         }
     }
 }
 
-/// `SharedMemory::free`: unmaps the mapping `payload` heads.
-fn unmap(payload: *mut c_void) {
-    // SAFETY: the caller passes a live mapping's payload.
-    let (base, total) = unsafe { extent(payload) };
-    // SAFETY: the mapping its header describes.
-    if unsafe { libc::munmap(base, total) } < 0 {
-        log::sys_warning(
-            c"SharedMemory::free",
-            format_args!("munmap({base:p}, {total}) failed"),
-        );
+/// An anonymous mapping (`sharing`: `MAP_SHARED` or `MAP_PRIVATE`) of `size` bytes,
+/// zeroed, whose size heads it, or null.
+fn map(size: usize, sharing: c_int) -> *mut c_void {
+    let Some(total) = size
+        .checked_add(7)
+        .and_then(|n| (n & !7).checked_add(8))
+        .filter(|&n| isize::try_from(n).is_ok())
+    else {
+        return ptr::null_mut();
+    };
+    let flags = sharing | libc::MAP_ANONYMOUS;
+    // SAFETY: a fresh anonymous mapping.
+    let memory = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            total,
+            libc::PROT_READ | libc::PROT_WRITE,
+            flags,
+            -1,
+            0,
+        )
+    };
+    if memory == libc::MAP_FAILED {
+        log::sys_warning(c"SharedMemory::alloc", format_args!("mmap({total}) failed"));
+        return ptr::null_mut();
     }
+    // SAFETY: `memory` is a fresh, page-aligned mapping of `total >= 8` bytes.
+    unsafe { memory.cast::<usize>().write(total) };
+    memory.wrapping_byte_add(8)
 }
 
 upstream! {
@@ -442,23 +513,7 @@ upstream! {
     /// `void *sw_shm_malloc(size_t size)`: an anonymous shared mapping whose size heads it.
     #[must_use]
     pub extern "C" fn sw_shm_malloc(size: usize) -> *mut c_void {
-        let Some(total) = size
-            .checked_add(7)
-            .and_then(|n| (n & !7).checked_add(8))
-            .filter(|&n| isize::try_from(n).is_ok())
-        else {
-            return ptr::null_mut();
-        };
-        let flags = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
-        // SAFETY: a fresh anonymous mapping.
-        let memory = unsafe { libc::mmap(ptr::null_mut(), total, libc::PROT_READ | libc::PROT_WRITE, flags, -1, 0) };
-        if memory == libc::MAP_FAILED {
-            log::sys_warning(c"SharedMemory::alloc", format_args!("mmap({total}) failed"));
-            return ptr::null_mut();
-        }
-        // SAFETY: `memory` is a fresh, page-aligned mapping of `total >= 8` bytes.
-        unsafe { memory.cast::<usize>().write(total) };
-        memory.wrapping_byte_add(8)
+        map(size, libc::MAP_SHARED)
     }
     "_Z13sw_shm_callocmm", "_Z13sw_shm_callocmm" =>
     /// `void *sw_shm_calloc(size_t num, size_t size)`: mappings start zeroed.
@@ -467,9 +522,12 @@ upstream! {
         count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
     }
     "_Z11sw_shm_freePv", "_Z11sw_shm_freePv" =>
-    /// `void sw_shm_free(void *ptr)`.
-    pub extern "C" fn sw_shm_free(payload: *mut c_void) {
-        unmap(payload);
+    /// `void sw_shm_free(void *ptr)`, for native code: Rust holds a mapping as [`Shm`].
+    ///
+    /// # Safety
+    /// `payload` is null or a live `sw_shm_malloc` payload, freed once.
+    pub unsafe extern "C" fn sw_shm_free(payload: *mut c_void) {
+        Shm(payload).free();
     }
     "_Z14sw_shm_protectPvi", "_Z14sw_shm_protectPvi" =>
     /// `int sw_shm_protect(void *ptr, int flags)`.
@@ -477,10 +535,7 @@ upstream! {
     /// # Safety
     /// `payload` is a live `sw_shm_malloc` payload.
     pub unsafe extern "C" fn sw_shm_protect(payload: *mut c_void, flags: c_int) -> c_int {
-        // SAFETY: per the caller.
-        let (base, total) = unsafe { extent(payload) };
-        // SAFETY: the mapping its header describes.
-        unsafe { libc::mprotect(base, total, flags) }
+        Shm(payload).protect(flags)
     }
 }
 
@@ -632,7 +687,7 @@ pub unsafe fn swr_table_create(this: *mut Table) -> bool {
     }
     // SAFETY: a fresh arena of `size` bytes.
     if unsafe { !table.create(arena.cast()) } {
-        sw_shm_free(arena);
+        Shm(arena).free();
         return false;
     }
     true
@@ -645,9 +700,7 @@ pub unsafe fn swr_table_create(this: *mut Table) -> bool {
 pub unsafe fn swr_table_destroy(this: *mut Table) {
     // SAFETY: as the caller promises.
     let arena = unsafe { Table::destroy(this) };
-    if !arena.is_null() {
-        sw_shm_free(arena.cast());
-    }
+    Shm(arena.cast()).free();
 }
 
 /// A table [`swr_table_make`] made, owned by this process: its header lives as

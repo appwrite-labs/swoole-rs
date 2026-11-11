@@ -264,13 +264,13 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn connection_num(self) -> usize {
         let gs = self.counters();
-        if gs.connection_nums.is_null() {
+        if gs.cells().is_null() {
             return gs.connection_num.load(Ordering::Relaxed) as usize;
         }
         let workers = self.config().worker_num as usize;
         (0..workers)
             .map(|i| {
-                let cell = gs.connection_nums.wrapping_add(i);
+                let cell = gs.cells().wrapping_add(i);
                 // SAFETY: one cell per event worker, allocated with the counters.
                 let cell = unsafe { &*cell };
                 cell.load(Ordering::Relaxed) as usize
@@ -322,7 +322,7 @@ impl<'a> Server<'a> {
         // SAFETY: per the caller.
         let gs = unsafe { self::port(port) }.gs;
         // SAFETY: the port's mapped counters.
-        let cells = unsafe { &*gs.cast::<PortCounters>() }.connection_nums;
+        let cells = unsafe { &*gs.cast::<PortCounters>() }.cells();
         let workers = if cells.is_null() {
             0
         } else {
