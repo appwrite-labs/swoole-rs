@@ -473,7 +473,7 @@ pub(crate) unsafe fn swr_v1_hook_uring_connect(
     }
     ops.socket.with_state(|state| state.flags.connected = true);
     // A failure is ignored, as upstream does.
-    ops.socket.net(swoole_rs_reactor::SocketRecord::get_name);
+    ops.socket.net(swoole_rs_reactor::SocketFields::get_name);
     (ops.set_err)(ops.socket, 0);
     true
 }
@@ -691,6 +691,9 @@ pub(crate) unsafe fn tls_step(socket: Co) -> c_int {
     };
     if ops.tls.perform(rc, function) { 0 } else { -1 }
 }
+
+#[cfg(test)]
+mod ported;
 
 #[cfg(test)]
 mod tests {

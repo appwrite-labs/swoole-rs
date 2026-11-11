@@ -20,6 +20,14 @@ pub struct SocketAddress {
     pub kind: c_int,
 }
 
+impl Default for SocketAddress {
+    /// The empty address, `network::Address{}`.
+    fn default() -> Self {
+        // SAFETY: plain integers and C address structs, for which all-zero bytes are valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
 /// `swoole::Protocol`, whole (`split_by_eof` is a C++ `bool`).
 #[repr(C)]
 #[derive(Clone, Copy)]

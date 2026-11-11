@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use swoole_rs_zend::{
-    Array as ZArray, Call, Key as ZKey, Value as ZValue, bailout,
+    Array as ZArray, Call, Key as ZKey, OwnedArray, Value as ZValue, bailout,
     sys::{
         IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zval_stringl, zend_hash_index_add,
         zend_hash_next_index_insert_new, zend_hash_str_add, zend_sort, zend_ulong, zend_value,
@@ -221,26 +221,15 @@ impl Array {
     }
 
     /// `keys`.
-    /// # Safety
-    /// `out` is the return slot.
-    pub(crate) unsafe fn keys(&self, out: *mut zval) {
-        let table = self.read();
-        // SAFETY: per the caller.
-        unsafe { swr_zend_array_init(out) };
-        // SAFETY: an array zval.
-        let array = unsafe { value::table(out) };
-        for (key, _) in table.iter() {
-            let mut value = zval_null();
+    pub(crate) fn keys(&self) -> OwnedArray {
+        let mut array = OwnedArray::default();
+        for (key, _) in self.read().iter() {
             match key {
-                Key::Int(index) => set(&raw mut value, IS_LONG, zend_value { lval: *index }),
-                // SAFETY: Zend copies the bytes.
-                Key::Str(name) => unsafe {
-                    swr_zval_stringl(&raw mut value, name.as_ptr().cast(), name.len());
-                },
+                Key::Int(index) => array.push_long(*index),
+                Key::Str(name) => array.push_bytes(name),
             }
-            // SAFETY: an array zval; the array takes the value.
-            unsafe { zend_hash_next_index_insert_new(array, &raw mut value) };
         }
+        array
     }
 
     /// `values`.

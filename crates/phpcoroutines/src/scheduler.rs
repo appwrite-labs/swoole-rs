@@ -8,13 +8,13 @@ use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
     Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray, Parsed,
     bailout::{self, Bailout},
-    class_name, message,
+    class_name, kind, message,
     sys::{
         IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         swr_zend_callable, zend_array, zend_array_destroy, zend_array_dup, zend_class_entry,
         zend_hash_merge, zend_object, zend_object_handlers, zval, zval_add_ref,
     },
-    type_of, unset_property_deny, value,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -290,9 +290,12 @@ pub fn set_hook_flags(flags: u32) {
     let array = array.into_owned();
     let current = OPTIONS.with(Cell::get);
     if current.is_null() {
-        let array = array.into_zval();
-        // SAFETY: an array zval, whose table the options now own.
-        OPTIONS.with(|o| o.set(unsafe { value::table(&raw const array) }));
+        let table = array
+            .array()
+            .map_or(ptr::null_mut(), swoole_rs_zend::Array::as_ptr);
+        // The options now own the table.
+        let _kept = array.into_zval();
+        OPTIONS.with(|o| o.set(table));
     } else if let Some(table) = array.array() {
         // SAFETY: two live arrays; ours is released after the merge.
         unsafe { zend_hash_merge(current, table.as_ptr(), None, true) };
@@ -399,8 +402,7 @@ fn can_exit() -> Result<bool, Bailout> {
         // SAFETY: zend_exception_error(EG(exception), E_ERROR), inside a trap.
         unsafe { bailout::trap(z::swr_zend_facade_exception_error, exception.cast()) }?;
     }
-    // SAFETY: the callable's result.
-    Ok(unsafe { type_of(&raw const retval) } != IS_FALSE)
+    Ok(kind(&retval) != IS_FALSE)
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.

@@ -1,16 +1,14 @@
 //! The server's `Worker` record, whose layout Rust owns (`#[repr(C)]`) so the
-//! `sw_shm`-backed worker array every process maps is defined here, and the scalar
-//! process fields (pid/status/type/id) move behind accessors one at a time. The C++
-//! `swoole::Worker` keeps its methods and pointer/atomic fields; a `static_assert`
-//! in the patch locks `sizeof`/`offsetof` to this layout, so a mismatch fails the
-//! build rather than corrupting shared memory. See #629.
+//! `sw_shm`-backed worker array every process maps is defined here. The C++
+//! `swoole::Worker` the native test fixtures compile takes its fields from this
+//! struct: `tools/process_records.py` writes them into
+//! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
+//! fails when that header is stale. See #629.
 
 use std::ffi::{c_int, c_void};
 
-/// Byte-exact mirror of `swoole::Worker` (`native/process/swoole_rs_process_pool.h`). Field order,
-/// types and padding match the pinned C++ struct; the pointer and atomic fields are
-/// opaque storage here (owned by C++ for now). Only the scalar process fields are
-/// migrated behind the accessors below.
+/// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
+/// pointer and atomic fields are opaque storage here.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct WorkerRecord {
@@ -421,10 +419,9 @@ mod tests {
     use super::*;
     use std::mem::align_of;
 
-    // The exact offsets/size are locked C++-side: the patch's `static_assert`s compare
-    // `swoole::Worker` against the `swr_v1_worker_record` mirror in swoole_rs_process.h,
-    // which has these same `#[repr(C)]` fields. Here just sanity-check the Rust record's
-    // alignment and that the accessors read/write the right field.
+    // The C++ view takes its fields from this struct (tools/process_records.py). Here
+    // just sanity-check the Rust record's alignment and that the accessors read/write
+    // the right field.
     #[test]
     fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
         let mut fds = [7 as c_int, 9];

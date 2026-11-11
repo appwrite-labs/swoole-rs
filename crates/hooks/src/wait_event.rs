@@ -195,7 +195,7 @@ pub(crate) mod native {
     /// Releases the record, not its fd: the waiter doesn't own it.
     pub(crate) unsafe fn release(socket: *mut SocketRecord) {
         // SAFETY: a live record of this module's.
-        unsafe { (*socket).fd = -1 };
+        unsafe { (*socket).fields.fd = -1 };
         // SAFETY: as above; nothing uses it afterwards.
         unsafe { swoole_rs_tls::upstream::socket_free(socket) };
     }
@@ -209,9 +209,10 @@ pub(crate) mod native {
         object: *mut c_void,
         error: *mut i32,
     ) -> *mut c_void {
-        let socket = SocketRecord {
-            object,
-            ..SocketRecord::with_fd(fd, FD_TYPE)
+        let socket = {
+            let mut socket = SocketRecord::with_fd(fd, FD_TYPE);
+            socket.object = object;
+            socket
         }
         .into_raw();
         // SAFETY: the new record, on the running reactor.

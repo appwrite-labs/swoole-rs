@@ -775,8 +775,7 @@ fn send_file(call: &Call) {
         return call.set_bool(false);
     }
     let Some(socket) = open(call) else { return };
-    // SAFETY: a string argument's bytes are NUL-terminated.
-    if unsafe { socket.sendfile(file.as_ptr().cast(), offset, length) } {
+    if socket.sendfile(file, offset, length) {
         call.set_bool(true);
     } else {
         sync(call, socket);

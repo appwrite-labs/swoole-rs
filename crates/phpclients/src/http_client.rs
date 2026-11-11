@@ -855,10 +855,8 @@ impl Client {
     }
 
     fn sendfile(&self, path: &[u8], offset: i64, size: i64) -> bool {
-        let path = c_bytes(path);
-        // SAFETY: a NUL-terminated path.
         self.co()
-            .is_some_and(|socket| unsafe { socket.sendfile(path.as_ptr(), offset, size) })
+            .is_some_and(|socket| socket.sendfile(path, offset, size))
     }
 
     fn send_failed(&mut self) -> bool {
@@ -1730,10 +1728,8 @@ fn set_array_property(call: &Call, name: &CStr) {
         return call.set_bool(false);
     };
     // SAFETY: an array argument the frame owns.
-    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array) };
-    if let Some(array) = call.value(1) {
-        props::this(call).value(name, array);
-    }
+    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array.as_ptr()) };
+    props::this(call).value(name, array);
     call.set_bool(true);
 }
 

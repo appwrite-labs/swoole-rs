@@ -11,16 +11,15 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_zend::{
-    Minit, bailout, string,
+    Call, Minit, Value, bailout, string,
     sys::{
         IS_ARRAY, IS_UNDEF, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_array_init,
         swr_zend_bailout_to, swr_zend_guard_clear, swr_zend_guard_mark, swr_zend_guard_pending,
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
         swr_zend_tsrm_api_name, swr_zend_tsrm_is_main_thread, swr_zend_tsrm_is_shutdown,
-        swr_zval_try_addref, zend_declare_class_constant_string, zend_string, zval, zval_ptr_dtor,
+        zend_declare_class_constant_string, zend_string, zval, zval_ptr_dtor,
     },
-    type_of,
 };
 
 unsafe extern "C" {
@@ -250,17 +249,13 @@ pub extern "C" fn thread_rshutdown() {
 }
 
 /// `Thread::getArguments()`: the thread's arguments, if it has any.
-pub(crate) fn arguments(out: *mut zval) {
+pub(crate) fn arguments(call: &Call) {
     ARGV.with(|argv| {
-        let argv = argv.get();
-        // SAFETY: this thread's slot.
-        if unsafe { type_of(argv) } == IS_ARRAY {
-            // SAFETY: this thread's slot, an array.
-            let value = unsafe { *argv };
-            // SAFETY: the return slot takes a reference.
-            unsafe { *out = value };
-            // SAFETY: as above.
-            unsafe { swr_zval_try_addref(out) };
+        // SAFETY: this thread's slot, which nothing changes while borrowed.
+        let argv = unsafe { Value::from_ptr(argv.get()) };
+        if let Some(argv) = argv.filter(|argv| argv.kind() == IS_ARRAY) {
+            // The return slot takes a reference.
+            call.set_owned(argv.copy());
         }
     });
 }

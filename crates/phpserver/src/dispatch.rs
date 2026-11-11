@@ -25,15 +25,14 @@ use swoole_rs_server::callbacks::{
 };
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
-    E_WARNING, OwnedArray,
+    E_WARNING, OwnedArray, Value,
     bailout::{self, Bailout},
     class_name, long_zval, message, object_of, report, string,
     sys::{
-        IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
+        ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
     },
-    type_of,
-    value::{get_long, set_str},
+    value::set_str,
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -1169,10 +1168,8 @@ extern "C" fn on_dispatch(
                 Bailout.defer();
             }
         }
-        // SAFETY: the call's return value.
-        Ok(true) if unsafe { type_of(&raw const retval) } != IS_NULL => {
-            // SAFETY: as above.
-            let id = unsafe { get_long(&raw const retval) };
+        Ok(true) if !Value::of(&mut retval).is_null() => {
+            let id = Value::of(&mut retval).long();
             if id >= i64::from(config.worker_num) {
                 let text = message!("invalid target worker-id[{id}]");
                 crate::server::fatal(E_WARNING, text.as_cstr());
@@ -1226,8 +1223,7 @@ pub(crate) unsafe extern "C" fn length_func(
     match call_unlimited(cache, std::slice::from_mut(&mut data), &mut retval) {
         Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
         Ok(true) => {
-            // SAFETY: the call's return value.
-            let value = unsafe { get_long(&raw const retval) };
+            let value = Value::of(&mut retval).long();
             result = isize::try_from(value).unwrap_or(-1);
             dtor(&mut retval);
         }
