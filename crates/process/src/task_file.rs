@@ -4,6 +4,8 @@
 //! another error) and unlinks the file unless the task is only peeked;
 //! `Server::task_dump` prints it.
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::marker::PhantomData;
+use std::mem::offset_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
@@ -113,7 +115,9 @@ impl PacketTask {
             length: 0,
             tmpfile: [0; TASK_TMP_PATH_SIZE],
         };
-        let (length, name) = from.split_at(size_of::<usize>());
+        let (length, name) = from
+            .split_at_checked(size_of::<usize>())
+            .unwrap_or((from, &[]));
         if let Ok(length) = length.try_into() {
             pkg.length = usize::from_ne_bytes(length);
         }
@@ -226,13 +230,6 @@ pub struct EventData {
     data: [u8; IPC_PAYLOAD],
 }
 
-/// `swoole::PacketPtr`.
-#[repr(C)]
-pub struct PacketPtr {
-    length: usize,
-    data: *mut c_char,
-}
-
 /// `SwooleG.task_tmpfile`, the template of a task's temporary file, which each
 /// caller copies at once.
 pub(crate) fn task_tmpfile() -> &'static CStr {
@@ -311,18 +308,91 @@ impl EventData {
         }
         true
     }
+}
 
-    /// `Server::task_unpack`: the task's payload, read into `buffer` from its
-    /// temporary file if it has one; `None` (warned) if that can't be read.
-    pub fn unpack(&mut self, buffer: &mut CppString) -> Option<PacketPtr> {
-        let flags = self.head.ext_flags;
-        if flags & TMPFILE == 0 {
-            return Some(PacketPtr {
-                length: self.head.len as usize,
-                data: self.data.as_mut_ptr().cast(),
-            });
+/// [`EventData::pack`] into the task at `task`.
+///
+/// # Safety
+/// `task` is a writable `EventData`; `data` lends `length` readable bytes.
+pub unsafe fn task_pack(task: *mut EventHead, data: *const c_void, length: usize) -> bool {
+    let data = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
+    };
+    // SAFETY: as the caller promises.
+    unsafe { &mut *task.cast::<EventData>() }.pack(data)
+}
+
+/// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
+/// bytes it counts (the payload, or a temporary file's `PacketTask`).
+/// [`Packed::from_raw`] is the one unsafe step. It is laid out as the pointer, so a
+/// server slot fn takes one where native code passes its `EventData *`.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Packed<'a> {
+    raw: *const u8,
+    life: PhantomData<&'a [u8]>,
+}
+
+impl<'a> Packed<'a> {
+    /// The task at `raw`.
+    ///
+    /// # Safety
+    /// `raw` holds a `DataHead` and then its `len` bytes, readable for `'a`; nothing
+    /// writes them while a method of this handle reads them.
+    #[must_use]
+    pub unsafe fn from_raw(raw: *const c_void) -> Self {
+        Self {
+            raw: raw.cast(),
+            life: PhantomData,
         }
-        let pkg = PacketTask::read(&self.data);
+    }
+
+    /// The task at the start of `bytes`; `None` when they are too short for its
+    /// head and the `len` bytes it counts.
+    #[must_use]
+    pub fn from_bytes(bytes: &'a [u8]) -> Option<Self> {
+        let len = bytes
+            .get(offset_of!(DataHead, len)..)
+            .and_then(<[u8]>::first_chunk)
+            .map(|len| u32::from_ne_bytes(*len) as usize)?;
+        (bytes.len().saturating_sub(size_of::<DataHead>()) >= len).then_some(Self {
+            raw: bytes.as_ptr(),
+            life: PhantomData,
+        })
+    }
+
+    /// The task's address, for the native-shaped calls that still take it.
+    #[must_use]
+    pub fn as_ptr(self) -> *const c_void {
+        self.raw.cast()
+    }
+
+    /// The task's head.
+    #[must_use]
+    pub fn head(self) -> DataHead {
+        // SAFETY: a head, per `from_raw`'s contract or `from_bytes`'s check; a
+        // record in a result file's bytes may be unaligned.
+        unsafe { self.raw.cast::<DataHead>().read_unaligned() }
+    }
+
+    fn payload(self) -> &'a [u8] {
+        let at = self.raw.wrapping_add(size_of::<DataHead>());
+        // SAFETY: as above, with the head's `len` bytes after it.
+        unsafe { std::slice::from_raw_parts(at, self.head().len as usize) }
+    }
+
+    /// `Server::task_unpack(task, buffer, &packet)`: the payload's bytes and
+    /// length, read into `buffer` from its temporary file if it has one, and the
+    /// task's `ext_flags`; `None` (warned) if that file can't be read.
+    pub fn unpack(self, buffer: &mut CppString) -> Option<(*const c_char, usize, u16)> {
+        let (payload, flags) = (self.payload(), self.head().ext_flags);
+        if flags & TMPFILE == 0 {
+            return Some((payload.as_ptr().cast(), payload.len(), flags));
+        }
+        let pkg = PacketTask::read(payload);
         if buffer.size < pkg.length {
             buffer.extend(pkg.length);
         }
@@ -355,42 +425,8 @@ impl EventData {
             return None;
         }
         buffer.length = pkg.length;
-        Some(PacketPtr {
-            length: pkg.length,
-            data: str.cast(),
-        })
+        Some((str.cast_const().cast(), pkg.length, flags))
     }
-}
-
-/// [`EventData::pack`] into the task at `task`.
-///
-/// # Safety
-/// `task` is a writable `EventData`; `data` lends `length` readable bytes.
-pub unsafe fn task_pack(task: *mut EventHead, data: *const c_void, length: usize) -> bool {
-    let data = if length == 0 {
-        &[]
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
-    };
-    // SAFETY: as the caller promises.
-    unsafe { &mut *task.cast::<EventData>() }.pack(data)
-}
-
-/// `Server::task_unpack(task, sw_tg_buffer(), &packet)`: the payload's bytes
-/// and length, and the task's `ext_flags`; `None` if its temporary file can't be read.
-///
-/// # Safety
-/// `task` is a live `EventData` and `buffer` this thread's live `String`.
-pub unsafe fn unpack(
-    task: *mut c_void,
-    buffer: *mut c_void,
-) -> Option<(*const c_char, usize, u16)> {
-    // SAFETY: per the caller.
-    let task = unsafe { &mut *task.cast::<EventData>() };
-    // SAFETY: as above.
-    let packet = task.unpack(unsafe { &mut *buffer.cast::<CppString>() })?;
-    Some((packet.data, packet.length, task.head.ext_flags))
 }
 
 #[cfg(test)]
@@ -403,6 +439,25 @@ mod tests {
         let mut buffer = vec![0; length];
         let outcome = read_file(path, &mut buffer, peek);
         (outcome, buffer)
+    }
+
+    #[test]
+    fn packed_bytes_hold_their_head_and_the_payload_it_counts() {
+        let head = size_of::<swoole_rs_corebase::DataHead>();
+        // One byte ahead, so the head is unaligned.
+        let mut bytes = vec![0u8; 1 + head + 3];
+        bytes[1..9].copy_from_slice(&7i64.to_ne_bytes());
+        let len = 1 + std::mem::offset_of!(swoole_rs_corebase::DataHead, len);
+        bytes[len..len + 4].copy_from_slice(&3u32.to_ne_bytes());
+        bytes[1 + head..].copy_from_slice(b"abc");
+        let task = super::Packed::from_bytes(&bytes[1..]).unwrap();
+        assert_eq!((task.head().fd, task.head().len), (7, 3));
+        let mut string = swoole_rs_buffer::string::CppString::EMPTY;
+        let (data, length, flags) = task.unpack(&mut string).unwrap();
+        let payload = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+        assert_eq!((payload, flags), (&b"abc"[..], 0));
+        assert!(super::Packed::from_bytes(&bytes[1..bytes.len() - 1]).is_none());
+        assert!(super::Packed::from_bytes(&bytes[1..17]).is_none());
     }
 
     #[test]
@@ -569,9 +624,11 @@ mod tests {
             assert!(head.time > 0.0);
             assert_eq!(swr_v1_core_current_task_id(), 42);
             let mut string = empty_string();
-            let packet = unsafe { &mut *event }.unpack(&mut string).unwrap();
-            assert_eq!(packet.length, 5);
-            assert_eq!(packet.data, unsafe { (*event).data.as_mut_ptr() }.cast());
+            let (data, length, _) = unsafe { Packed::from_raw(event.cast()) }
+                .unpack(&mut string)
+                .unwrap();
+            assert_eq!(length, 5);
+            assert_eq!(data, unsafe { (*event).data.as_ptr() }.cast());
             assert!(string.str.is_null());
         }
 
@@ -594,17 +651,20 @@ mod tests {
             let path = pkg.path().to_str().unwrap().to_owned();
             assert!(path.starts_with("/tmp/swoole.task."));
             let mut string = empty_string();
-            let packet = unsafe { &mut *event }.unpack(&mut string).unwrap();
-            assert_eq!(
-                (string.length, string.size, packet.length),
-                (9000, 9000, 9000)
-            );
-            assert_eq!(packet.data, string.str.cast());
-            let read = unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), 9000) };
+            let (bytes, length, _) = unsafe { Packed::from_raw(event.cast()) }
+                .unpack(&mut string)
+                .unwrap();
+            assert_eq!((string.length, string.size, length), (9000, 9000, 9000));
+            assert_eq!(bytes, string.str.cast_const().cast());
+            let read = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), 9000) };
             assert_eq!(read, data.as_slice());
             assert!(!std::path::Path::new(&path).exists());
             // A second unpack finds no file.
-            assert!(unsafe { &mut *event }.unpack(&mut string).is_none());
+            assert!(
+                unsafe { Packed::from_raw(event.cast()) }
+                    .unpack(&mut string)
+                    .is_none()
+            );
         }
     }
 }

@@ -16,7 +16,7 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{self, EventHead, task_pack};
+use swoole_rs_process::task_file::{self, EventHead, Packed, task_pack};
 use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::{methods as pool, workers::entry};
@@ -836,11 +836,10 @@ fn task_worker4() {
 }
 
 /// `Server::task_unpack(task, &buffer, &packet)` into a 32 KiB `String`: the bytes.
-fn unpack(task: *mut c_void) -> Option<Vec<u8>> {
+fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
     let mut buffer = CppString::EMPTY;
     buffer.alloc(32 * 1024, ptr::null());
-    // SAFETY: a live task and a live String.
-    let unpacked = unsafe { task_file::unpack(task, ptr::from_mut(&mut buffer).cast()) };
+    let unpacked = task.unpack(&mut buffer);
     let bytes = unpacked.map(|(data, length, _)| {
         // SAFETY: the unpacked payload, live while `buffer` or the task is.
         unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }.to_vec()
@@ -854,7 +853,7 @@ unsafe extern "C" fn task_sync_multi_on_task(
     serv: *mut c_void,
     task: *mut c_void,
 ) -> c_int {
-    let Some(packet) = unpack(task) else {
+    let Some(packet) = unpack(unsafe { Packed::from_raw(task) }) else {
         return -1;
     };
     // SAFETY: the live task.
@@ -900,8 +899,8 @@ impl MultiTask for Multi<'_> {
         }
     }
 
-    fn unpack(&mut self, index: u16, result: *mut u8) -> Result<(), Bailed> {
-        if let Some(packet) = unpack(result.cast()) {
+    fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {
+        if let Some(packet) = unpack(result) {
             self.results[usize::from(index)] = packet;
         }
         Ok(())
