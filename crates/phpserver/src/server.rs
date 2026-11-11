@@ -707,7 +707,7 @@ fn stats(call: &Call) {
     }
     let pool = serv.task_pool();
     // SAFETY: its live task pool.
-    let queue = unsafe { (*pool).queue };
+    let queue = unsafe { (*pool).queue() };
     if config.task_ipc_mode > TASK_IPC_UNIXSOCK && !queue.is_null() {
         // SAFETY: the pool's live queue.
         if let Some((num, bytes)) = unsafe { &*queue.cast::<QueueRecord>() }.stat() {

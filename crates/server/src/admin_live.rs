@@ -175,7 +175,7 @@ impl Facts for Live<'_> {
     }
 
     fn pipe_socket(&mut self, task: bool, index: u64, master: bool) -> Socket {
-        let workers = self.pool(task).workers;
+        let workers = self.pool(task).workers();
         let index = usize::try_from(index).unwrap_or(usize::MAX);
         // SAFETY: one of the pool's live workers, `index` below its count.
         let worker: &WorkerRecord = unsafe { &*workers.wrapping_add(index) };

@@ -2374,25 +2374,23 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 0
             };
             #[expect(clippy::cast_possible_truncation, reason = "an swIPCMode")]
-            // SAFETY: the reset pool.
-            let created =
-                unsafe { pool::create(task_pool, config.task_worker_num, key, arg as c_int) };
+            let created = pool::create(
+                o.server().task_pool_ref(),
+                config.task_worker_num,
+                key,
+                arg as c_int,
+            );
             u64::from(created >= 0)
         }
         OP_TASK_POOL_SETUP => {
-            let task_pool = o.task_pool();
-            // SAFETY: the created task pool, for each call.
-            unsafe {
-                pool::set_max_request(
-                    task_pool,
-                    config.task_max_request,
-                    config.task_max_request_grace,
-                );
-            };
-            // SAFETY: as above.
-            unsafe { pool::set_start_id(task_pool, config.worker_num.cast_signed()) };
-            // SAFETY: as above.
-            unsafe { pool::set_type(task_pool, SW_TASK_WORKER) };
+            let task_pool = o.server().task_pool_ref();
+            pool::set_max_request(
+                task_pool,
+                config.task_max_request,
+                config.task_max_request_grace,
+            );
+            pool::set_start_id(task_pool, config.worker_num.cast_signed());
+            pool::set_type(task_pool, SW_TASK_WORKER);
             0
         }
         OP_TASK_POOL_LISTEN => {
@@ -2617,8 +2615,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     )
                     .unwrap_or(false)
                 } else {
-                    let pool = core::ptr::from_mut(o.event_pool());
-                    // SAFETY: the live event pool and the message.
+                    let pool = o.server().event_pool_ref();
+                    // SAFETY: the message.
                     unsafe {
                         swoole_rs_process::methods::push_event(pool, (&raw const buf).cast()) >= 0
                     }

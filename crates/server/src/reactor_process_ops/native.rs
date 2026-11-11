@@ -104,7 +104,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_RUN_SINGLE_WORKER => {
             let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event pool, which has a worker.
-            let worker = unsafe { (*pool).workers };
+            let worker = unsafe { (*pool).workers() };
             swoole_rs_process::worker_globals::set_current_worker(worker);
             let mut ctx = over(ctx.serv, worker);
             sign(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN))
@@ -196,7 +196,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_PIPE_NONBLOCK => {
             let pool = ctx.server().task_pool();
             // SAFETY: its live task pool, whose worker `arg` is.
-            let worker = unsafe { (*pool).workers }.wrapping_add(usize::try_from(arg).ok()?);
+            let worker = unsafe { (*pool).workers() }.wrapping_add(usize::try_from(arg).ok()?);
             // SAFETY: as above.
             set_nonblock(socket(unsafe { (*worker).pipe_master })?);
             0
@@ -241,14 +241,15 @@ fn create_pool(ctx: &Context) -> u64 {
     let pool = workers.event_pool;
     // SAFETY: the server's event pool, reset to zero as `*pool = {}` did.
     unsafe { pool.write_bytes(0, 1) };
-    let create = swoole_rs_process::methods::create;
-    // SAFETY: as above.
-    if unsafe { create(pool, config.worker_num, 0, IPC_UNIXSOCK) } < 0 {
+    let pool_ref = ctx.server().event_pool_ref();
+    if swoole_rs_process::methods::create(pool_ref, config.worker_num, 0, IPC_UNIXSOCK) < 0 {
         return SW_ERR;
     }
-    let set_max_request = swoole_rs_process::methods::set_max_request;
-    // SAFETY: the pool just created.
-    unsafe { set_max_request(pool, config.max_request, config.max_request_grace) };
+    swoole_rs_process::methods::set_max_request(
+        pool_ref,
+        config.max_request,
+        config.max_request_grace,
+    );
     // SAFETY: as above.
     let record = unsafe { &mut *pool };
     record.ptr = ctx.serv;
@@ -258,10 +259,12 @@ fn create_pool(ctx: &Context) -> u64 {
     record.on_worker_not_found = Some(worker_not_found);
     let count = config.worker_num as usize;
     // SAFETY: the pool's and the server's worker arrays, `count` records each.
-    unsafe { core::ptr::copy_nonoverlapping(record.workers, workers.event_workers, count) };
-    record.workers = workers.event_workers;
+    unsafe { core::ptr::copy_nonoverlapping(record.workers(), workers.event_workers, count) };
+    // SAFETY: the server's `count` (`worker_num`) event worker records, which live
+    // as long as the server and so its event pool.
+    unsafe { record.set_workers(workers.event_workers) };
     // SAFETY: as above.
-    let workers = unsafe { core::slice::from_raw_parts_mut(record.workers, count) };
+    let workers = unsafe { core::slice::from_raw_parts_mut(record.workers(), count) };
     for (id, worker) in (0u32..).zip(workers) {
         worker.place(pool.cast(), id, SW_WORKER);
     }
