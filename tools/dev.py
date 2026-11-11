@@ -204,6 +204,7 @@ def plan(args, reports):
                    '--archive', archive, *report(name))
         pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
+        pytest('http-header-reentry', 'tests/modules/http/test_header_reentry.py', *php, '--engine', f'cargo={cargo}')
     if 'locks' in modules:
         script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, '--sanitize', *report('locks-native'))
