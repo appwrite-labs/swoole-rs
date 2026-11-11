@@ -6,6 +6,7 @@
 //!
 //! ```text
 //!            Copyright Oliver Kowalke 2009.
+//!       Copyright Edward Nevill + Oliver Kowalke 2015 (aarch64).
 //!   Distributed under the Boost Software License, Version 1.0.
 //!
 //! Boost Software License - Version 1.0 - August 17th, 2003
@@ -38,6 +39,9 @@ use core::ffi::c_void;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("coroutine: no fcontext switch for this architecture (x86_64 and aarch64 only)");
+// x32 packs the Transfer into RAX (boost's `_ILP32` path), which this switch doesn't.
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "32"))]
+compile_error!("coroutine: no fcontext switch for x86_64 with 32-bit pointers (x32)");
 
 /// What a jump hands the context it lands in: the context it left, and its data.
 #[repr(C)]
