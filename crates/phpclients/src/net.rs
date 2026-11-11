@@ -64,7 +64,8 @@ pub(crate) const INVALID_PARAMS: c_int = 505;
 ///
 /// The object shares it (`Rc`, cells), so PHP code a method runs can re-enter
 /// the object and [`release`] the connection while the method still holds it:
-/// the native client then lives until the last holder drops it.
+/// the native client then lives until the last holder drops it. `close()` never
+/// pools a connection a method holds, so the pool's copy is never in use.
 pub(crate) struct Conn {
     pub(crate) cli: Cli,
     /// [`release`] ran while a method held it: the last drop destroys `cli`.
@@ -1275,8 +1276,10 @@ fn close(call: &Call) {
         warn(ErrorKind::Error, "client socket is closed");
         return call.set_bool(false);
     }
-    // Only a live connection with no shutdown direction returns to the pool.
+    // Only a live connection with no shutdown direction, which no method that
+    // re-entered PHP holds (the object and this call hold two), returns to the pool.
     if force
+        || Rc::strong_count(&conn) > 2
         || !conn.keep
         || conn.flag(state::SHUTDOWN_READ)
         || conn.flag(state::SHUTDOWN_WRITE)
