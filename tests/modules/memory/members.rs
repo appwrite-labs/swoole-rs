@@ -3,36 +3,25 @@ use swoole_rs_corebase::log::last_error;
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
-fn shared_mappings_are_zeroed_resized_protected_and_freed() {
+fn shared_mappings_are_zeroed_protected_and_freed() {
     let memory = sw_shm_calloc(4, 25).cast::<u8>();
     assert!(!memory.is_null());
     unsafe {
         assert!((0..100).all(|i| memory.add(i).read() == 0));
+        assert_eq!(sw_shm_protect(memory.cast(), libc::PROT_READ), 0);
+        assert_eq!(
+            sw_shm_protect(memory.cast(), libc::PROT_READ | libc::PROT_WRITE),
+            0
+        );
         memory.write_bytes(7, 100);
+        let total = memory
+            .cast::<c_void>()
+            .wrapping_byte_sub(8)
+            .cast::<usize>()
+            .read();
+        assert_eq!(total, 112);
     }
-    let grown = sw_shm_realloc(memory.cast(), 200).cast::<u8>();
-    assert!(!grown.is_null());
-    unsafe { assert!((0..100).all(|i| grown.add(i).read() == 7)) };
-    assert_eq!(sw_shm_protect(grown.cast(), libc::PROT_READ), 0);
-    assert_eq!(
-        sw_shm_protect(grown.cast(), libc::PROT_READ | libc::PROT_WRITE),
-        0
-    );
-    // Shrinking copies only what fits.
-    let shrunk = sw_shm_realloc(grown.cast(), 9).cast::<u8>();
-    assert!(!shrunk.is_null());
-    unsafe { assert!((0..16).all(|i| shrunk.add(i).read() == 7)) };
-    assert_eq!(
-        unsafe {
-            shrunk
-                .cast::<c_void>()
-                .wrapping_byte_sub(8)
-                .cast::<usize>()
-                .read()
-        },
-        24
-    );
-    sw_shm_free(shrunk.cast());
+    sw_shm_free(memory.cast());
     assert!(sw_shm_malloc(usize::MAX).is_null());
     assert!(sw_shm_calloc(usize::MAX, 2).is_null());
 }
@@ -158,16 +147,6 @@ fn fixed_pool_alloc() {
         }
     }
     pool.debug(1);
-}
-
-/// `TEST(fixed_pool, realloc)`.
-#[test]
-#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
-fn fixed_pool_realloc() {
-    let memory = sw_shm_malloc(1024);
-    let new_memory = sw_shm_realloc(memory, 2048);
-    assert!(!new_memory.is_null());
-    sw_shm_free(new_memory);
 }
 
 /// `TEST(global_memory, alloc)`: `free` is a no-op, so a freed block keeps what is

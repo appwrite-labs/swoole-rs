@@ -18,7 +18,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@v6
       with:
         path: target/upstream
         key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -29,7 +29,7 @@ runs:
         ARGS: ${{ inputs.args }} ${{ inputs.php }}
       run: echo "key=upstream-build-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-$(sha256sum <<< "$ARGS" | cut -c1-16)" >> "$GITHUB_OUTPUT"
     - id: cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: |
           target/upstream-builds/*/build.json
@@ -43,7 +43,7 @@ runs:
         python3 tools/build_upstream.py --no-ccache ${{ inputs.args }} | tee upstream.log
         echo "library=$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" >> "$GITHUB_OUTPUT"
     - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: |
           target/upstream-builds/*/build.json

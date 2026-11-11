@@ -87,15 +87,7 @@ pub mod exports {
     /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
     const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
 
-    unsafe extern "C" {
-        /// `Server::dispatch_task`.
-        #[link_name = "_ZN6swoole6Server13dispatch_taskEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"]
-        pub fn dispatch_task(
-            proto: *const c_void,
-            socket: *mut SocketRecord,
-            rdata: *const c_void,
-        ) -> c_int;
-    }
+    pub use swoole_rs_server::reactor_entry::dispatch_task;
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
@@ -225,7 +217,7 @@ pub mod exports {
         };
         let dispatch_task = |dispatch: &RecvData| {
             // SAFETY: upstream's arguments, with this frame's payload or whole message.
-            unsafe { dispatch_task(proto, socket, (&raw const *dispatch).cast()) }
+            unsafe { dispatch_task(proto.cast(), socket, (&raw const *dispatch).cast()) }
         };
         match decision.action {
             Action::Reject => return -1,
@@ -355,7 +347,7 @@ pub mod exports {
             return -1;
         }
         // SAFETY: upstream's arguments, forwarded.
-        unsafe { dispatch_task(proto, socket, rdata) }
+        unsafe { dispatch_task(proto.cast(), socket, rdata.cast()) }
     }
 
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
@@ -405,7 +397,7 @@ pub mod exports {
             // SAFETY: upstream's arguments, forwarded.
             || unsafe { websocket_dispatch_frame(proto, socket, rdata) },
             // SAFETY: as above.
-            || unsafe { dispatch_task(proto, socket, rdata) },
+            || unsafe { dispatch_task(proto.cast(), socket, rdata.cast()) },
             -1,
         )
     }

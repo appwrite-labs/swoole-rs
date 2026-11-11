@@ -23,7 +23,7 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: libgmp-dev firebird-dev libaio1t64
@@ -37,12 +37,12 @@ jobs:
       - name: Clear cached builds
         run: rm -rf target/ext target/upstream target/upstream-builds target/thirdparty
       # Restored only: the pinned reference is rebuilt against the debug PHP below, never saved.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       # Saved here, restored by the shards and the gate. Keyed on this file too: it holds the options.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
@@ -67,7 +67,7 @@ jobs:
           "$php/php" -v | grep DEBUG
           for engine in upstream cargo; do "$php/php" -n -d "extension=$PWD/target/phpt/$engine.so" --ri swoole | grep -E '^Version '; done
       # phpt-env downloads it under this name.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: phpt-engines
           path: target/phpt/
@@ -83,7 +83,7 @@ jobs:
         index: [1, 2, 3, 4, 5, 6]
         engine: [upstream, cargo]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: List services
         id: services
         run: echo "names=$(python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
@@ -92,7 +92,7 @@ jobs:
         with:
           php: ''
           services: ${{ steps.services.outputs.names }}
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
@@ -105,7 +105,7 @@ jobs:
           python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 --external-network
           --php "$PWD/target/php-debug/bin/php" --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
           --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: debug-phpt-${{ matrix.engine }}-${{ matrix.index }}
@@ -117,8 +117,8 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: debug-phpt-*
           merge-multiple: true
@@ -140,7 +140,7 @@ jobs:
           php: ''
           services: ${{ steps.services.outputs.names }}
       - if: steps.flagged.outputs.rerun == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
@@ -156,7 +156,7 @@ jobs:
           set -- shards/*.json
           if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-debug.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-debug

@@ -29,7 +29,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       # The newest finished merge-tier run on main with a gate result (a gate missing a shard
@@ -62,7 +62,10 @@ jobs:
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
             dir=cg
             [ -f cg/callgrind.json ] && dir=cg-previous
-            if ! gh run download "$run" -n callgrind -D "$dir" 2>/dev/null || [ ! -f "$dir/callgrind.json" ]; then
+            # Each shard's callgrind-N artifact holds its own callgrind.json; merge the workloads.
+            gh run download "$run" -p 'callgrind-*' -D "$dir" 2>/dev/null \
+              && jq -s '.[0] + {instructions_per_request: (map(.instructions_per_request) | add)}' "$dir"/callgrind-*/callgrind.json > "$dir/callgrind.json" 2>/dev/null
+            if [ ! -s "$dir/callgrind.json" ]; then
               rm -rf "$dir"
             elif [ "$dir" = cg ]; then
               echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"

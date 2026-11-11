@@ -6,7 +6,7 @@ use crate::{
     run,
 };
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     ptr,
     sync::{
         Arc,
@@ -38,24 +38,12 @@ struct State {
 }
 
 /// Upstream's `PhpThread`.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct PhpThread {
-    /// The joinable OS thread, as `std::thread` holds it.
-    handle: Option<libc::pthread_t>,
+    /// The OS thread, as `std::thread` holds it.
+    thread: swoole_rs_corebase::Thread,
     state: Arc<State>,
     constructed: bool,
-}
-
-impl PhpThread {
-    /// `PhpThread::join`: false when not joinable.
-    fn join(&mut self) -> bool {
-        let Some(handle) = self.handle.take() else {
-            return false;
-        };
-        // SAFETY: a joinable thread this object started and nobody joined.
-        unsafe { libc::pthread_join(handle, ptr::null_mut()) };
-        true
-    }
 }
 
 type ThreadObject = Object<*mut PhpThread>;
@@ -73,8 +61,8 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     let thread = std::mem::replace(unsafe { ThreadObject::data(std) }, ptr::null_mut());
     if !thread.is_null() {
         // SAFETY: the object owned it since `create`.
-        let mut thread = unsafe { Box::from_raw(thread) };
-        thread.join();
+        let thread = unsafe { Box::from_raw(thread) };
+        thread.thread.join().ok();
     }
     // SAFETY: as above.
     unsafe { ThreadObject::dtor(std) };
@@ -125,32 +113,6 @@ fn this(call: &Call) -> &'static mut PhpThread {
     unsafe { &mut *thread }
 }
 
-/// What a new thread takes: `construct` boxes it, the thread frees it.
-struct Start {
-    file: Vec<u8>,
-    argv: Option<Arguments>,
-    state: Arc<State>,
-}
-
-/// The OS thread's entry, as `std::thread` would run upstream's lambda: straight
-/// into the thread's body, which marks the thread alive before anything allocates (a
-/// new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
-extern "C" fn start(start: *mut c_void) -> *mut c_void {
-    // SAFETY: `construct` boxed it for this thread alone.
-    let Start { file, argv, state } = *unsafe { Box::from_raw(start.cast::<Start>()) };
-    let enter = || {
-        state.exit_status.store(0, Ordering::Release);
-        state.living.store(true, Ordering::Release);
-    };
-    let exit = |status| {
-        state.exit_status.store(status, Ordering::Release);
-        state.living.store(false, Ordering::Release);
-    };
-    // SAFETY: the new OS thread, before anything of PHP's.
-    unsafe { run::run(&file, argv, enter, exit) };
-    ptr::null_mut()
-}
-
 /// `__construct(string $script_file, mixed ...$args)`.
 fn construct(call: &Call) {
     let Ok(file) = call.arity(1, u32::MAX).and_then(|()| call.string(1, b"")) else {
@@ -181,34 +143,36 @@ fn construct(call: &Call) {
     } else {
         None
     };
-    let boxed = Box::into_raw(Box::new(Start {
-        file: file.to_vec(),
-        argv,
-        state: Arc::clone(&thread.state),
-    }));
-    let mut handle = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
-    // The thread inherits a fully blocked mask (upstream's `Thread::start`).
-    let errno = swoole_rs_corebase::with_signals_blocked(|| {
-        // SAFETY: default attributes, as `std::thread`'s; `start` owns `boxed`.
-        unsafe { libc::pthread_create(handle.as_mut_ptr(), ptr::null(), start, boxed.cast()) }
+    let (file, state) = (file.to_vec(), Arc::clone(&thread.state));
+    // The OS thread's body, as `std::thread` would run upstream's lambda: straight
+    // into the thread's body, which marks the thread alive before anything allocates
+    // (a new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
+    let started = thread.thread.start(move || {
+        let enter = || {
+            state.exit_status.store(0, Ordering::Release);
+            state.living.store(true, Ordering::Release);
+        };
+        let exit = |status| {
+            state.exit_status.store(status, Ordering::Release);
+            state.living.store(false, Ordering::Release);
+        };
+        // SAFETY: the new OS thread, before anything of PHP's.
+        unsafe { run::run(&file, argv, enter, exit) };
     });
-    if errno != 0 {
-        // SAFETY: the thread never started, so the box is still ours.
-        drop(unsafe { Box::from_raw(boxed) });
+    if let Err(errno) = started {
         // `std::system_error::what()`: the OS message.
         let text = std::ffi::CString::new(strerror(errno)).unwrap_or_default();
         call.throw(swoole_rs_phpswoole::exception(), &text, SYSTEM_CALL_FAIL);
         return;
     }
-    // SAFETY: `pthread_create` succeeded, so it wrote the id.
-    let handle = unsafe { handle.assume_init() };
-    thread.handle = Some(handle);
     thread.constructed = true;
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream's (zend_long) pthread_t"
-    )]
-    call.update_property_long(Some(&THREAD), c"id", handle as i64);
+    if let Some(id) = thread.thread.id() {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "upstream's (zend_long) pthread_t"
+        )]
+        call.update_property_long(Some(&THREAD), c"id", id as i64);
+    }
 }
 
 fn strerror(errno: i32) -> String {
@@ -225,21 +189,15 @@ fn is_alive(call: &Call) {
 }
 
 fn join(call: &Call) {
-    call.set_bool(this(call).join());
+    call.set_bool(this(call).thread.join().is_ok());
 }
 
 fn joinable(call: &Call) {
-    call.set_bool(this(call).handle.is_some());
+    call.set_bool(this(call).thread.joinable());
 }
 
 fn detach(call: &Call) {
-    let Some(handle) = this(call).handle.take() else {
-        call.set_bool(false);
-        return;
-    };
-    // SAFETY: a joinable thread this object started.
-    unsafe { libc::pthread_detach(handle) };
-    call.set_bool(true);
+    call.set_bool(this(call).thread.detach());
 }
 
 fn get_exit_status(call: &Call) {

@@ -276,6 +276,11 @@ def send(port, workload, count):
                     body += chunk
                 if body != expected:
                     raise RuntimeError(f'unexpected {method} reply: {body[:80]!r}')
+                if method == 'UDP':
+                    # The server reads datagrams until recvfrom() would block. Without a pause
+                    # the next one sometimes beats that last read and saves a reactor wake-up,
+                    # so the count followed timing (#2899); now every datagram costs one.
+                    time.sleep(0.002)
         return
     if method == 'TLS':
         conn = http.client.HTTPSConnection('127.0.0.1', port, timeout=60, context=TLS)
