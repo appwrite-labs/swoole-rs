@@ -376,12 +376,6 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     if ready { 0 } else { -1 }
 }
 
-/// `Socket::close()` of a native socket from the map.
-unsafe extern "C" fn close_socket(socket: *mut c_void) -> bool {
-    // SAFETY: the map's live socket.
-    unsafe { Co::of(socket) }.close()
-}
-
 /// Hooked `close(2)`: a coroutine socket closes and leaves the map; any other fd
 /// closes on the pool or the ring.
 #[unsafe(no_mangle)]
@@ -390,8 +384,13 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
         // SAFETY: closing an fd touches no memory.
         return unsafe { libc::close(fd) };
     }
-    // SAFETY: both act on live sockets from the map.
-    let result = unsafe { socket_map::close(fd, close_socket, SOCKETS.free) };
+    let result = socket_map::close(
+        fd,
+        // SAFETY: the map's live socket.
+        |socket| unsafe { Co::of(socket) }.close(),
+        // SAFETY: a socket removed from the map, which nothing uses any more.
+        |socket| unsafe { (SOCKETS.free)(socket) },
+    );
     if result <= 0 {
         return result;
     }

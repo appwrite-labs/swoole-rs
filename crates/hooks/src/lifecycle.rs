@@ -440,7 +440,10 @@ mod tests {
         operation: &dyn Fn(Co) -> bool,
     ) -> Outcome {
         let mut socket = TestSocket::new();
-        unsafe { crate::socket_extra::set_close_hook(socket.co(), release, core::ptr::null_mut()) };
+        crate::socket_extra::set_close_hook(
+            socket.co(),
+            Box::new(|owner| unsafe { release(core::ptr::null_mut(), owner) }),
+        );
         unsafe { socket.0.record() }.timeouts.connect = 1.0;
         socket.0.err_code = 9;
         let mut ids: [Box<c_long>; 3] = [Box::new(5), Box::new(7), Box::new(11)];
