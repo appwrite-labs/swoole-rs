@@ -274,12 +274,12 @@ def search_terms(failure):
 
 
 def filed(failure):
-    """Open issues mentioning the first SEARCH_TERMS of a new failure's search_terms, so Red main's
-    p0 is filed once; None when the search fails."""
+    """Open non-goal issues (a goal's history names old failures) mentioning the first SEARCH_TERMS
+    of a new failure's search_terms, so Red main's p0 is filed once; None when the search fails."""
     found = []
     try:
         for term in search_terms(failure)[:SEARCH_TERMS]:
-            query = urllib.parse.quote(f'"{term}" is:issue is:open repo:', safe=':')
+            query = urllib.parse.quote(f'"{term}" is:issue is:open -label:kind:goal repo:', safe=':')
             found += [number for number in json.loads(gh('api', f'search/issues?q={query}{{owner}}/{{repo}}',
                                                          '--jq', '[.items[].number]')) if number not in found]
     except subprocess.CalledProcessError:

@@ -554,7 +554,7 @@ pub mod pool {
     /// and `Swoole\Lock`'s. The pool counts a user that never leaves, so [`delete`]
     /// keeps the pages these words sit in mapped.
     #[must_use]
-    pub fn words<W: Word>(count: usize) -> Option<&'static [W]> {
+    pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
         POOL.users.fetch_add(1, SeqCst);
         let block = alloc(size).cast::<W>();
@@ -564,7 +564,7 @@ pub mod pool {
         }
         // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each
         // `Word`), which the pool gives no one else.
-        Some(unsafe { slice::from_raw_parts(block, count) })
+        Some(unsafe { slice::from_raw_parts_mut(block, count) })
     }
 }
 
