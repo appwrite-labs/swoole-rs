@@ -8,7 +8,6 @@
 
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 5 are done and nothing is
 compiled from upstream; open are [dropping upstream from the build](https://github.com/appwrite-labs/swoole-rs/issues/1921),
-[every applicable PHPT passing](https://github.com/appwrite-labs/swoole-rs/issues/1957),
 [faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
 [a hardened runtime](https://github.com/appwrite-labs/swoole-rs/issues/1893). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): the PHPT badge counts tests the Cargo build
