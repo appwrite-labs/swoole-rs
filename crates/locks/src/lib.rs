@@ -296,6 +296,11 @@ pub unsafe extern "C" fn swr_v1_locks_lock(
         _ => EINVAL,
     }
 }
+/// Marks its caller's path unlikely: `std::hint::cold_path`, which the fuzz toolchain
+/// doesn't have yet.
+#[cold]
+const fn cold() {}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_locks_unlock(storage: *mut c_void, kind: i32) -> i32 {
     if kind == 3 && holds::<Mutex>(storage) {
@@ -303,7 +308,7 @@ pub unsafe extern "C" fn swr_v1_locks_unlock(storage: *mut c_void, kind: i32) ->
         return unsafe { pthread_mutex_unlock(mutex(storage).0) };
     }
     // After the mutex every Table row, task lock and default `Lock` is.
-    std::hint::cold_path();
+    cold();
     match kind {
         // SAFETY: an initialized rwlock that this thread holds.
         1 if holds::<RwLock>(storage) => unsafe { pthread_rwlock_unlock(rwlock(storage).0) },
