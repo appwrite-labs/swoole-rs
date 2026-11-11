@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 # The CI mirror sometimes throttles one connection for minutes; give up on a
 # stalled download quickly and retry instead of waiting out apt's long default.
 APT='-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=5'
-# In apt.conf.d, so a job's later bare apt-get (variant.yml's valgrind) reads these indexes too (#2958).
+# In apt.conf.d, so a job's later bare apt-get (bench.yml's linux-tools) reads these indexes too (#2958).
 if [ -n "$APT_CACHE" ]; then
     mkdir -p "$APT_CACHE/archives/partial" "$APT_CACHE/lists/partial"
     printf 'Dir::Cache::Archives "%s/archives";\nDir::State::Lists "%s/lists";\n' "$APT_CACHE" "$APT_CACHE" > /etc/apt/apt.conf.d/50apt-cache
