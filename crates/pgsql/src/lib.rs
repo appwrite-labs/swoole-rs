@@ -203,9 +203,8 @@ fn socket_poll(conn: Conn, event: c_int) -> c_int {
             result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
         return if interrupted { 0 } else { result };
     }
-    // SAFETY: the hook is on, so a coroutine runs the request, as upstream
-    // requires, with the thread's reactor running.
-    if unsafe { swoole_rs_hooks::wait_event::system_wait_event(fd, event, POLL_TIMEOUT) } >= 0 {
+    // The hook is on, so a coroutine runs the request, as upstream requires.
+    if swoole_rs_hooks::wait_event::system_wait_event(fd, event, POLL_TIMEOUT) >= 0 {
         return 1;
     }
     let code = swoole_rs_corebase::log::last_error();
