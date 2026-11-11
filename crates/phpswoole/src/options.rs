@@ -6,7 +6,7 @@ use crate::{
     module::{PHP_FATAL_ERROR, globals},
 };
 use std::{
-    ffi::{CStr, CString, c_char, c_int},
+    ffi::{CStr, CString, c_int},
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::{
@@ -32,7 +32,7 @@ const HTTP2_MAX_FRAME_SIZE: u32 = 5;
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 6;
 
 // crates/clients' resolver address (`dns_server`).
-use swoole_rs_clients::dns::swr_v1_clients_set_dns_server;
+use swoole_rs_clients::dns::set_dns_server;
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
 /// Nothing is found once a bailout is pending: upstream's setters stopped at
@@ -114,10 +114,9 @@ fn option<T>(options: &Array, key: &CStr, convert: impl FnOnce(&Value) -> T, set
 
 /// The option under `key`, if set, as a NUL-terminated string (`zend::String`)
 /// with its length, for `set`.
-fn text_option(options: &Array, key: &CStr, set: impl FnOnce(*const c_char, usize)) {
+fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&[u8])) {
     if let Some(value) = get(options, key) {
-        let text = value.string();
-        set(text.bytes().as_ptr().cast(), text.bytes().len());
+        set(value.string().bytes());
     }
 }
 
@@ -171,15 +170,15 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     flag(c"enable_kqueue", &|on| swr_v1_core_set_enable_kqueue(on));
     // [Logger]: the process logger, live from MINIT on.
     number(c"trace_flags", &|flags| swr_v1_core_set_trace_flags(flags));
-    text_option(options, c"log_file", |file, _| {
-        // SAFETY: a NUL-terminated path.
-        unsafe { swoole_set_log_file(file) };
+    text_option(options, c"log_file", |file| {
+        // SAFETY: a NUL-terminated path (a Zend string's bytes).
+        unsafe { swoole_set_log_file(file.as_ptr().cast()) };
     });
     number(c"log_level", &|level| swoole_set_log_level(int(level)));
-    text_option(options, c"log_date_format", |format, _| {
+    text_option(options, c"log_date_format", |format| {
         if let Some(logger) = process_logger() {
-            // SAFETY: a NUL-terminated format.
-            unsafe { swr_v1_logger_set_date_format(logger, format) };
+            // SAFETY: a NUL-terminated format (a Zend string's bytes).
+            unsafe { swr_v1_logger_set_date_format(logger, format.as_ptr().cast()) };
         }
     });
     flag(c"log_date_with_microseconds", &|on| {
@@ -210,10 +209,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         }
     });
     // [DNS]
-    text_option(options, c"dns_server", |server, length| {
-        // SAFETY: a string that lives for the call.
-        unsafe { swr_v1_clients_set_dns_server(server.cast(), length) };
-    });
+    text_option(options, c"dns_server", set_dns_server);
     // [Socket]
     if let Some(dns) = get(options, c"socket_dns_timeout").and_then(timeout) {
         timeouts.dns = dns;
