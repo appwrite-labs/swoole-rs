@@ -88,15 +88,22 @@ impl Callbacks for Server<'_> {
     }
 
     fn on_url(&mut self, data: &[u8]) -> c_int {
-        on_url(self.0, data.as_ptr().cast(), data.len())
+        url(self.0, data)
     }
 
     fn on_header_field(&mut self, data: &[u8]) -> c_int {
-        on_header_field(self.0, data.as_ptr().cast(), data.len())
+        // A request's trailer fields are ignored.
+        if self.0.parser.flags & TRAILING != 0 {
+            return 0;
+        }
+        header_field(self.0, data.as_ptr(), data.len())
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> c_int {
-        on_header_value(self.0, data.as_ptr().cast(), data.len())
+        if self.0.parser.flags & TRAILING != 0 {
+            return 0;
+        }
+        header_value(self.0, data)
     }
 
     fn on_headers_complete(&mut self) -> c_int {
@@ -104,7 +111,7 @@ impl Callbacks for Server<'_> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> c_int {
-        on_body(self.0, data.as_ptr().cast(), data.len())
+        on_body(self.0, data)
     }
 
     fn on_message_complete(&mut self) -> c_int {
@@ -134,7 +141,7 @@ impl Callbacks for Pieces<'_> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> c_int {
-        on_body(self.0, data.as_ptr().cast(), data.len())
+        on_body(self.0, data)
     }
 
     fn on_message_complete(&mut self) -> c_int {
@@ -326,23 +333,20 @@ pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
     }
 }
 
-/// A new string of the `length` bytes at `bytes`.
-fn stringl(bytes: *const u8, length: usize) -> Owned {
-    // SAFETY: `bytes` spans `length` readable bytes, per every caller.
-    Owned::string(ZString::new(unsafe {
-        std::slice::from_raw_parts(bytes, length)
-    }))
+/// A new string of the bytes.
+fn stringl(bytes: &[u8]) -> Owned {
+    Owned::string(ZString::new(bytes))
 }
 
-fn estrndup(bytes: *const u8, length: usize) -> *mut c_char {
-    // SAFETY: `bytes` spans `length` readable bytes, per every caller.
-    unsafe { swr_zend_http_estrndup(bytes.cast(), length) }
+fn estrndup(bytes: &[u8]) -> *mut c_char {
+    // SAFETY: the bytes, copied into request memory.
+    unsafe { swr_zend_http_estrndup(bytes.as_ptr().cast(), bytes.len()) }
 }
 
 /// `swoole_php_treat_data(arg, estrndup(bytes), array)`, which frees the copy.
-fn treat_data(arg: c_int, bytes: *const u8, length: usize, array: *mut zval) {
+fn treat_data(arg: c_int, bytes: &[u8], array: *mut zval) {
     // SAFETY: a fresh request-memory string and a live array.
-    if !unsafe { swr_zend_http_treat_data(arg, estrndup(bytes, length), array) } {
+    if !unsafe { swr_zend_http_treat_data(arg, estrndup(bytes), array) } {
         // SAFETY: reads an INI value.
         let limit = unsafe { swr_zend_http_max_input_vars() };
         log::warning(
@@ -360,29 +364,21 @@ pub(crate) fn init_request_parser(ctx: *mut crate::host::Context) {
 }
 
 /// `swoole_http_parse_cookie`.
-pub(crate) fn parse_cookie(array: *mut zval, bytes: *const u8, length: usize) {
-    if length != 0 {
-        treat_data(PARSE_COOKIE, bytes, length, array);
+pub(crate) fn parse_cookie(array: *mut zval, bytes: &[u8]) {
+    if !bytes.is_empty() {
+        treat_data(PARSE_COOKIE, bytes, array);
     }
 }
 
 /// `swoole_llhttp_parser_execute`.
-fn execute(state: *mut State, pieces: bool, data: *const c_char, length: usize) -> usize {
-    // SAFETY: a live context, which the parse and its callbacks borrow alone.
-    let state = unsafe { &mut *state };
-    let input = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: `length` readable bytes, which the callbacks do not write.
-        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
-    };
+fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
     let result = if pieces {
         llhttp::execute(&mut Pieces(state), input)
     } else {
         llhttp::execute(&mut Server(state), input)
     };
     if result == 0 {
-        return length;
+        return input.len();
     }
     let parser = &mut state.parser;
     match result {
@@ -393,31 +389,24 @@ fn execute(state: *mut State, pieces: bool, data: *const c_char, length: usize) 
     parser.error_pos()
 }
 
-/// `Context::parse`.
+/// `Context::parse`: the bytes parsed.
 /// # Safety
 /// `context` is a live `swoole::http::Context` whose parser is initialised.
-pub(crate) unsafe fn parse_request(
-    context: *mut c_void,
-    data: *const c_char,
-    length: usize,
-) -> usize {
-    execute(context.cast(), false, data, length)
+pub(crate) unsafe fn parse_request(context: *mut c_void, data: &[u8]) -> usize {
+    execute(crate::send::state(context), false, data)
 }
 
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
-pub(crate) fn parse_piece(state: *mut State, data: &[u8]) -> usize {
-    // SAFETY: a live context.
-    let zdata = unsafe { &mut (*state).request.zdata };
+pub(crate) fn parse_piece(state: &mut State, data: &[u8]) -> usize {
+    let zdata = &mut state.request.zdata;
     let joined = [zdata.bytes().unwrap_or_default(), data].concat();
     *zdata = Owned::string(ZString::new(&joined));
-    // SAFETY: as above.
-    let (start, length) = zdata_span(unsafe { &*state });
-    execute(
-        state,
-        true,
-        start.wrapping_add(length - data.len()).cast(),
-        data.len(),
-    )
+    let (start, length) = zdata_span(state);
+    // SAFETY: the appended bytes, the end of `zdata`, which the callbacks
+    // read but neither write nor replace.
+    let appended =
+        unsafe { std::slice::from_raw_parts(start.wrapping_add(length - data.len()), data.len()) };
+    execute(state, true, appended)
 }
 
 /// `request.zdata`'s bytes.
@@ -426,14 +415,9 @@ fn zdata_span(state: &State) -> (*const u8, usize) {
     (bytes.as_ptr(), bytes.len())
 }
 
-fn on_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
-    url(state, at.cast(), length)
-}
-
-fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
-    // SAFETY: llhttp's span.
-    let (path, query) = request_url(unsafe { std::slice::from_raw_parts(at, length) });
-    state.request.path = estrndup(path.as_ptr(), path.len());
+fn url(state: &mut State, span: &[u8]) -> c_int {
+    let (path, query) = request_url(span);
+    state.request.path = estrndup(path);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Request::path_len is uint32_t"
@@ -443,22 +427,10 @@ fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
     if query.is_empty() {
         return 0;
     }
-    add_server(
-        state,
-        Key::QueryString,
-        stringl(query.as_ptr(), query.len()),
-    );
+    add_server(state, Key::QueryString, stringl(query));
     let get = property(state, Property::Get);
-    treat_data(PARSE_STRING, query.as_ptr(), query.len(), get);
+    treat_data(PARSE_STRING, query, get);
     0
-}
-
-fn on_header_field(state: &mut State, at: *const c_char, length: usize) -> c_int {
-    // A request's trailer fields are ignored.
-    if state.parser.flags & TRAILING != 0 {
-        return 0;
-    }
-    header_field(state, at.cast(), length)
 }
 
 fn header_field(state: &mut State, at: *const u8, length: usize) -> c_int {
@@ -476,11 +448,14 @@ fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
         return 0;
     }
     let url_length = state.parse.url_length;
-    url(
-        state,
-        at.wrapping_add(length).wrapping_sub(url_length).cast(),
-        url_length,
-    )
+    // SAFETY: the URL's pieces so far end at this one, inside `zdata`.
+    let span = unsafe {
+        std::slice::from_raw_parts(
+            at.wrapping_add(length).wrapping_sub(url_length).cast(),
+            url_length,
+        )
+    };
+    url(state, span)
 }
 
 fn on_piece_header_field(state: &mut State, at: *const c_char, length: usize) -> c_int {
@@ -507,21 +482,17 @@ fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) ->
     let name = start.wrapping_add(state.parse.header_name_offset);
     header_field(state, name, state.parse.header_name_length);
     let value_length = state.parse.header_value_length;
-    let result = header_value(
-        state,
-        at.wrapping_add(length).wrapping_sub(value_length).cast(),
-        value_length,
-    );
+    // SAFETY: the value's pieces so far end at this one, inside `zdata`.
+    let value = unsafe {
+        std::slice::from_raw_parts(
+            at.wrapping_add(length).wrapping_sub(value_length).cast(),
+            value_length,
+        )
+    };
+    let result = header_value(state, value);
     state.parse.header_name_length = 0;
     state.parse.header_value_length = 0;
     result
-}
-
-fn on_header_value(state: &mut State, at: *const c_char, length: usize) -> c_int {
-    if state.parser.flags & TRAILING != 0 {
-        return 0;
-    }
-    header_value(state, at.cast(), length)
 }
 
 fn set_error_reason(state: &mut State, reason: &'static &'static str) {
@@ -560,12 +531,11 @@ fn websocket_connection(state: &State) -> bool {
 /// `WebSocket::STATUS_CONNECTION`.
 const STATUS_CONNECTION: u8 = 1;
 
-fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
+fn header_value(state: &mut State, value_: &[u8]) -> c_int {
+    let length = value_.len();
     // SAFETY: the current header's name, inside llhttp's input.
     let name =
         unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
-    // SAFETY: llhttp's value span.
-    let value_ = unsafe { std::slice::from_raw_parts(at, length) };
     let compression =
         CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression != 0;
     let action = request_header(
@@ -578,7 +548,7 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
     match action {
         RequestHeader::Cookie => {
             let cookie = property(state, Property::Cookie);
-            parse_cookie(cookie, at, length);
+            parse_cookie(cookie, value_);
             return 0;
         }
         RequestHeader::Upgrade => {
@@ -612,17 +582,14 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
         }
         RequestHeader::Form => state.request.post_form_urlencoded = 1,
         RequestHeader::Multipart => {
-            let Some((boundary, boundary_len)) =
-                multipart_boundary(state, at, length, b"multipart/form-data".len())
-            else {
+            if !multipart_start(state, value_) {
                 return -1;
-            };
-            multipart_init(state, boundary, boundary_len);
+            }
         }
         RequestHeader::Compression => compression_method(state, value_),
         RequestHeader::Append => {}
     }
-    let value_ = stringl(at, length);
+    let value_ = stringl(value_);
     // The request's `header` array, created with the request.
     let Some(header) = state.request.zheader.array_mut() else {
         return 0;
@@ -718,11 +685,11 @@ fn microtime() -> f64 {
     seconds
 }
 
-fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
+fn on_body(state: &mut State, span: &[u8]) -> c_int {
+    let (at, length) = (span.as_ptr(), span.len());
     if length == 0 {
         return 0;
     }
-    let at = at.cast::<u8>();
     let received = state
         .parse
         .chunked_body
@@ -730,8 +697,6 @@ fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
         .map_or(state.request.body_length, |body| body.len());
     let beginning = received == 0;
     if state.recv_chunked != 0 {
-        // SAFETY: llhttp's span.
-        let span = unsafe { std::slice::from_raw_parts(at, length) };
         state
             .parse
             .chunked_body
@@ -742,9 +707,8 @@ fn on_body(state: &mut State, at: *const c_char, length: usize) -> c_int {
         state.request.body_length += length;
     }
     if state.mt_parser.is_some() && state.recv_chunked == 0 {
-        // SAFETY: llhttp's span.
-        let prefix = body_prefix(unsafe { std::slice::from_raw_parts(at, length) }, beginning);
-        if !multipart_parse(state, at.wrapping_add(prefix), length - prefix) {
+        let prefix = body_prefix(span, beginning);
+        if !multipart_parse(state, span.get(prefix..).unwrap_or_default()) {
             return -1;
         }
     }
@@ -763,9 +727,10 @@ fn on_message_complete(state: &mut State) -> c_int {
     {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
-        // SAFETY: the dechunked body.
-        let prefix = body_prefix(unsafe { std::slice::from_raw_parts(body, length) }, true);
-        if !multipart_parse(state, body.wrapping_add(prefix), length - prefix) {
+        // SAFETY: the dechunked body, which the multipart callbacks leave alone.
+        let body = unsafe { std::slice::from_raw_parts(body, length) };
+        let prefix = body_prefix(body, true);
+        if !multipart_parse(state, body.get(prefix..).unwrap_or_default()) {
             return -1;
         }
     }
@@ -779,12 +744,22 @@ fn on_message_complete(state: &mut State) -> c_int {
     match (form_source, chunked) {
         (1, Some((body, _))) => {
             let post = property(state, Property::Post);
-            treat_data(PARSE_STRING, body, content_length, post);
+            // SAFETY: the dechunked body.
+            treat_data(
+                PARSE_STRING,
+                unsafe { std::slice::from_raw_parts(body, content_length) },
+                post,
+            );
         }
         (2, _) => {
             let post = property(state, Property::Post);
             let body = state.request.body_at.cast();
-            treat_data(PARSE_STRING, body, state.request.body_length, post);
+            // SAFETY: the body's span of the input, which is live until the request completes.
+            treat_data(
+                PARSE_STRING,
+                unsafe { std::slice::from_raw_parts(body, state.request.body_length) },
+                post,
+            );
         }
         _ => {}
     }
@@ -812,63 +787,20 @@ pub(crate) unsafe fn parse_free(context: *mut c_void) {
     state.parse.input_name = None;
 }
 
-/// `Context::get_multipart_boundary`.
-fn multipart_boundary(
-    state: &mut State,
-    at: *const u8,
-    length: usize,
-    offset: usize,
-) -> Option<(*const u8, usize)> {
-    let input = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: the header value's span.
-        unsafe { core::slice::from_raw_parts(at, length) }
-    };
-    let Ok(Some(span)) = swoole_rs_http::boundary(input, offset) else {
+/// `Context::get_multipart_boundary` of a `multipart/form-data` content
+/// type, then `Context::init_multipart_parser`; false when it has no boundary.
+pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
+    let offset = b"multipart/form-data".len();
+    let boundary = swoole_rs_http::boundary(content_type, offset)
+        .ok()
+        .flatten()
+        .and_then(|span| content_type.get(span.offset..span.offset + span.length));
+    let Some(boundary) = boundary else {
         let message = format!("boundary of multipart/form-data not found, fd:{}", state.fd);
         host::log(0, 0, c"Context::get_multipart_boundary", message);
         /* make it same with protocol error */
         state.parser.error = INVALID_HEADER_TOKEN;
-        return None;
-    };
-    Some((at.wrapping_add(span.offset), span.length))
-}
-
-/// `Context::get_multipart_boundary`, for the HTTP/2 server.
-/// # Safety
-/// `context` is a live context; `at` spans `length` bytes.
-pub(crate) unsafe fn multipart_boundary_of(
-    context: *mut c_void,
-    at: *const c_char,
-    length: usize,
-    offset: usize,
-    boundary: &mut *mut c_char,
-    boundary_length: &mut c_int,
-) -> bool {
-    // SAFETY: per the caller.
-    let state = unsafe { &mut *context.cast::<State>() };
-    let Some((start, len)) = multipart_boundary(state, at.cast(), length, offset) else {
         return false;
-    };
-    *boundary = start.cast_mut().cast();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "upstream's int boundary length"
-    )]
-    let len = len as c_int;
-    *boundary_length = len;
-    true
-}
-
-/// `Context::init_multipart_parser`.
-fn multipart_init(state: &mut State, boundary: *const u8, length: usize) -> bool {
-    let boundary = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: the boundary's span.
-        unsafe { std::slice::from_raw_parts(boundary, length) }
     };
     state.mt_parser = Some(Box::new(Multipart {
         parser: MultipartParser::new(boundary),
@@ -878,31 +810,11 @@ fn multipart_init(state: &mut State, boundary: *const u8, length: usize) -> bool
     true
 }
 
-/// `Context::init_multipart_parser`, for the HTTP/2 server.
-/// # Safety
-/// `context` is a live context and `boundary` spans `length` bytes.
-pub(crate) unsafe fn init_multipart(
-    context: *mut c_void,
-    boundary: *const c_char,
-    length: c_int,
-) -> bool {
-    // SAFETY: per the caller.
-    let state = unsafe { &mut *context.cast::<State>() };
-    #[expect(clippy::cast_sign_loss, reason = "upstream passes int to size_t")]
-    let length = length as usize;
-    multipart_init(state, boundary.cast(), length)
-}
-
 /// `Context::parse_multipart_data`.
-pub(crate) fn multipart_parse(state: &mut State, at: *const u8, length: usize) -> bool {
+pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
+    let length = data.len();
     let Some(mut multipart) = state.mt_parser.take() else {
         return false;
-    };
-    let data = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: `length` readable bytes, which the callbacks do not touch.
-        unsafe { std::slice::from_raw_parts(at, length) }
     };
     let Multipart { parser, fp } = &mut *multipart;
     let parsed = parser.execute(&mut Parts { state, fp }, data);
@@ -1008,11 +920,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
         };
         // Released on every return, which upstream's early ones leak.
         let fields = OwnedArray::default().into_owned();
-        parse_cookie(
-            fields.as_ptr(),
-            value_.as_ptr().wrapping_add(offset),
-            length - offset,
-        );
+        parse_cookie(fields.as_ptr(), value_.get(offset..).unwrap_or_default());
         let field = |key: &[u8]| fields.array().and_then(|fields| fields.find(key));
 
         let Some((form_name, form_name_len)) = field(b"name").and_then(string_value) else {

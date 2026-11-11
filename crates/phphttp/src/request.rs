@@ -11,7 +11,7 @@ use swoole_rs_httpbindings::request_option;
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Key, Minit, Value, handlers, init_object,
+    Call, Class, Key, Value, handlers, init_object,
     sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -59,11 +59,8 @@ method_table! {
 }
 
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
-/// # Safety
-/// Called once, at MINIT.
-pub unsafe fn request_minit(args: &MinitArgs) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
+pub fn request_minit(args: &MinitArgs) {
+    let minit = &args.minit;
     minit.register(
         &REQUEST,
         c"Swoole\\Http\\Request",
@@ -203,7 +200,7 @@ fn parse(call: &Call) {
     let Ok(Some(data)) = call.arity(1, 1).and_then(|()| call.string_opt(1)) else {
         return call.set_bool(false);
     };
-    let parsed = parse::parse_piece(ctx.cast(), data);
+    let parsed = parse::parse_piece(crate::send::state(ctx), data);
     call.set_long(i64::try_from(parsed).unwrap_or(i64::MAX));
 }
 
