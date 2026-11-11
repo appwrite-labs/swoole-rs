@@ -17,7 +17,7 @@ use swoole_rs_corebase::{
 };
 
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_ossupport::{fd_write_all, swoole_tmpfile};
+use swoole_rs_ossupport::fd_write_all;
 
 use crate::process_pool::SW_IPC_MAX_SIZE;
 use crate::worker_globals::swr_v1_worker_global_get;
@@ -161,8 +161,7 @@ pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE])
     {
         *byte = pattern;
     }
-    // SAFETY: `path` is a writable NUL-terminated template.
-    unsafe { swoole_tmpfile(path.as_mut_ptr().cast()) }
+    swoole_rs_ossupport::create_tmpfile(path)
 }
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an

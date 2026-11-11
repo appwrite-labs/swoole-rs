@@ -13,7 +13,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
+use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Props, Value, bailout, handlers,
@@ -84,27 +84,6 @@ impl Drop for Process {
     }
 }
 
-/// A `SysV` message, `struct { long type; char data[SW_MSGMAX]; }`, on the heap.
-struct QueueMessage(Vec<c_long>);
-
-impl QueueMessage {
-    fn new(kind: c_long) -> Self {
-        let mut words = vec![0; MSGMAX / size_of::<c_long>()];
-        words.insert(0, kind);
-        Self(words)
-    }
-
-    fn as_ptr(&mut self) -> *mut c_void {
-        self.0.as_mut_ptr().cast()
-    }
-
-    fn data(&mut self) -> &mut [u8] {
-        let data = self.0.as_mut_ptr().wrapping_add(1).cast::<u8>();
-        // SAFETY: the words after the type hold MSGMAX bytes.
-        unsafe { std::slice::from_raw_parts_mut(data, MSGMAX) }
-    }
-}
-
 pub(crate) fn entry() -> *mut zend_class_entry {
     PROCESS.entry()
 }
@@ -160,6 +139,13 @@ pub(crate) fn worker_view(worker: *mut c_void) -> WorkerView {
 /// A live worker's queue, or null.
 fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
     worker::record(worker).queue().cast()
+}
+
+/// `f` over a live worker's queue, or `None` when it has none.
+fn with_queue<R>(worker: *mut c_void, f: impl FnOnce(&QueueRecord) -> R) -> Option<R> {
+    // SAFETY: null, or the worker's boxed queue, which lives until `freeQueue` or the
+    // object's drop, neither of which runs during `f`.
+    unsafe { queue_of(worker).as_ref() }.map(f)
 }
 
 fn view(worker: *mut c_void) -> WorkerView {
@@ -563,16 +549,15 @@ fn use_queue(call: &Call) {
 
 fn stat_queue(call: &Call) {
     let worker = checked(this(call));
-    if queue_of(worker).is_null() {
+    let Some(stat) = with_queue(worker, QueueRecord::stat) else {
         fatal(
             E_WARNING,
             &message!("no queue, can't get stats of the queue"),
         );
         call.set_bool(false);
         return;
-    }
-    // SAFETY: a worker with a queue.
-    let Some((num, bytes)) = unsafe { &*queue_of(worker) }.stat() else {
+    };
+    let Some((num, bytes)) = stat else {
         call.set_bool(false);
         return;
     };
@@ -805,19 +790,14 @@ fn push(call: &Call) {
         return;
     }
     let worker = checked(this(call));
-    let view = view(worker);
-    if queue_of(worker).is_null() {
+    // `QueueNode`: the type, then the payload.
+    let mut node = (c_long::from(view(worker).id) + 1).to_ne_bytes().to_vec();
+    node.extend_from_slice(data);
+    let Some(pushed) = with_queue(worker, |queue| queue.push(&node)) else {
         fatal(E_WARNING, &message!("no msgqueue, cannot use push()"));
         call.set_bool(false);
         return;
-    }
-    let mut message = QueueMessage::new(c_long::from(view.id) + 1);
-    if let Some(payload) = message.data().get_mut(..data.len()) {
-        payload.copy_from_slice(data);
-    }
-    // SAFETY: a worker with a queue, and a message with `data.len()` payload bytes.
-    let pushed =
-        unsafe { swr_v1_os_msg_queue_push(queue_of(worker), message.as_ptr(), data.len()) };
+    };
     call.set_bool(pushed);
 }
 
@@ -831,25 +811,25 @@ fn pop(call: &Call) {
         .filter(|size| (1..=MSGMAX).contains(size))
         .unwrap_or(MSGMAX);
     let worker = checked(this(call));
-    let view = view(worker);
-    if queue_of(worker).is_null() {
+    let balance = i64::from(worker::record(worker).msgqueue_mode()) == MSGQUEUE_BALANCE;
+    let kind: c_long = if balance {
+        0
+    } else {
+        c_long::from(view(worker).id) + 1
+    };
+    // `QueueNode`: the type, then room for `size` payload bytes.
+    let mut node = kind.to_ne_bytes().to_vec();
+    node.resize(node.len() + size, 0);
+    let Some(received) = with_queue(worker, |queue| queue.pop(&mut node)) else {
         fatal(E_WARNING, &message!("no msgqueue, cannot use pop()"));
         call.set_bool(false);
         return;
-    }
-    let balance = i64::from(worker::record(worker).msgqueue_mode()) == MSGQUEUE_BALANCE;
-    let mut message = QueueMessage::new(if balance {
-        0
-    } else {
-        c_long::from(view.id) + 1
-    });
-    // SAFETY: a worker with a queue, and room for `size` payload bytes.
-    let received = unsafe { swr_v1_os_msg_queue_pop(queue_of(worker), message.as_ptr(), size) };
+    };
     let Ok(length) = usize::try_from(received) else {
         call.set_bool(false);
         return;
     };
-    let data = message.data();
+    let data = node.get(size_of::<c_long>()..).unwrap_or_default();
     call.set_bytes(data.get(..length).unwrap_or(data));
 }
 
