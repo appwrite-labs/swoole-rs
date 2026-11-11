@@ -852,7 +852,7 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 /// `conn` is the session's connection.
 unsafe fn on_receive(view: view::Server<'_>, conn: *mut c_void, request: &RecvData) -> c_int {
     let server = view.raw();
-    let session_id = request.info.fd;
+    let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         // SAFETY: the live server.
         let default_ctx = unsafe { Ctx::server_context(server, session_id) };

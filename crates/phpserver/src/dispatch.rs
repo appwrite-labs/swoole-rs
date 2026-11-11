@@ -592,11 +592,20 @@ const UNIX_DGRAM: c_int = 6;
 const WEBSOCKET_ACTIVE: u8 = 3;
 
 /// `RecvData`: the event's head, then its payload. Native code lends each
-/// receive slot its request for the call.
+/// receive slot its request for the call; private fields, so safe code can't
+/// make one whose payload pointer and length disagree.
 #[repr(C)]
 pub struct RecvData {
-    pub info: DataHead,
-    pub data: *const c_char,
+    pub(crate) info: DataHead,
+    pub(crate) data: *const c_char,
+}
+
+impl RecvData {
+    /// The event's head.
+    #[must_use]
+    pub fn info(&self) -> &DataHead {
+        &self.info
+    }
 }
 
 /// `DgramPacket`'s head; the datagram follows.

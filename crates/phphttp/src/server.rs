@@ -212,7 +212,7 @@ pub unsafe fn http_server_on_receive(server: *mut c_void, request: *mut c_void) 
     let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: per the caller, the receive loop's `RecvData` for the call.
     let request = unsafe { &*request.cast::<RecvData>() };
-    let info = &request.info;
+    let info = request.info();
     match receive(server, request) {
         CLOSED => -1,
         TCP => php_swoole_server_on_receive(server, request),
@@ -232,7 +232,7 @@ pub unsafe fn http_server_on_receive(server: *mut c_void, request: *mut c_void) 
 }
 
 fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
-    let info = &request.info;
+    let info = request.info();
     let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
     let Some(conn) = server.verified(session) else {
         host::log(

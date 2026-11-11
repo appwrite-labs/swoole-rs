@@ -1021,7 +1021,7 @@ pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> c_int 
 }
 
 fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout::Bailout> {
-    let info = &request.info;
+    let info = request.info();
     let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
     let server = view.raw();
     let Some(settings) = port_frames(server, fd) else {
