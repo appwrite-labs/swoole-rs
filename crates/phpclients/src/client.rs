@@ -506,8 +506,7 @@ fn sendfile(call: &Call) {
         props.bytes(c"errMsg", b"dgram socket cannot use sendfile");
         return call.set_bool(false);
     }
-    // SAFETY: a string argument's bytes are NUL-terminated.
-    if unsafe { socket.sendfile(file.as_ptr().cast(), offset, length) } {
+    if socket.sendfile(file, offset, length) {
         call.set_bool(true);
     } else {
         report_socket(call, socket);

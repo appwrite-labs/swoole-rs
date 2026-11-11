@@ -110,8 +110,7 @@ impl Co {
         if !self.ssl_context().is_null() {
             return None;
         }
-        // SAFETY: a live socket.
-        let proxy = unsafe { co::http_proxy(self.as_ptr()) }.cast::<ProxyState>();
+        let proxy = self.0.http_proxy().cast::<ProxyState>();
         // SAFETY: the socket owns its proxy state, if any.
         unsafe { proxy.as_ref() }
     }
@@ -182,15 +181,13 @@ impl Co {
 
     /// `connect(host, port)` under the timeout `configure_http` set.
     pub(crate) fn connect_http(self, host: &[u8], port: c_int) -> bool {
-        // SAFETY: a live socket and the host's bytes.
-        unsafe { co::connect(self.as_ptr(), host.as_ptr().cast(), host.len(), port, 0) }
+        self.0.connect_host(host, port)
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
     #[expect(clippy::cast_sign_loss, reason = "an event bit")]
     pub(crate) fn check_bound(self, event: c_int) {
-        // SAFETY: a live socket.
-        unsafe { co::check_bound(self.as_ptr(), event as u32) };
+        self.0.check_bound(event as u32);
     }
 
     /// The write buffer becomes `data`, then `send_all` of it: whether all went.
@@ -199,16 +196,13 @@ impl Co {
         buffer.clear();
         // SAFETY: the caller's bytes.
         unsafe { buffer.append(data.as_ptr(), data.len()) };
-        let (data, length) = (buffer.as_ptr(), buffer.len());
-        // SAFETY: the buffer's bytes, which the send only reads.
-        unsafe { co::send_all(self.as_ptr(), data.cast(), length) }.cast_unsigned() == length
+        let length = buffer.len();
+        self.0.send_all(buffer.view()).cast_unsigned() == length
     }
 
     /// `send_all(data)`: whether all went.
     pub(crate) fn send_all(self, data: &[u8]) -> bool {
-        // SAFETY: a live socket and the caller's bytes.
-        unsafe { co::send_all(self.as_ptr(), data.as_ptr().cast(), data.len()) }.cast_unsigned()
-            == data.len()
+        self.0.send_all(data).cast_unsigned() == data.len()
     }
 
     /// `get_write_buffer()`, made on first use.
@@ -229,11 +223,9 @@ impl Co {
 
     /// `recv` into the read buffer's room past its length.
     pub(crate) fn recv_input(self) -> isize {
-        let buffer = self.input();
-        let room = buffer.size() - buffer.len();
-        let at = buffer.as_mut_ptr().wrapping_add(buffer.len());
-        // SAFETY: a live socket and the buffer's `room` writable bytes at `at`.
-        unsafe { co::recv(self.as_ptr(), at.cast(), room) }
+        let room = std::ptr::from_mut(self.input().spare()) as *mut [u8];
+        // SAFETY: the read buffer's spare bytes, which the receive only writes.
+        self.0.recv(unsafe { &mut *room })
     }
 
     /// A read `TimeoutController` (0: the default read timeout).
@@ -259,8 +251,7 @@ impl Co {
 
     /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.
     pub(crate) fn peer_cert_pem(self) -> Vec<u8> {
-        // SAFETY: a live socket.
-        unsafe { co::peer_cert(self.as_ptr()) }
+        self.0.peer_cert()
     }
 }
 

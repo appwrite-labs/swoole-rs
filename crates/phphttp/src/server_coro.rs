@@ -282,6 +282,12 @@ fn record<'a>(socket: Socket) -> &'a mut co::CoSocket {
     unsafe { co::record(socket) }
 }
 
+/// A live socket's handle: the listener, or a connection the loop serves.
+fn co_of(socket: Socket) -> co::Co {
+    // SAFETY: the server's sockets outlive their use here.
+    unsafe { co::Co::of(socket) }
+}
+
 /// A live socket's network socket, while it is open.
 fn network<'a>(socket: Socket) -> Option<swoole_rs_reactor::Socket<'a>> {
     // SAFETY: a live socket's network socket: null or as live.
@@ -487,8 +493,7 @@ fn construct(call: &Call) {
             set_reuse_port(network(socket).map_or(-1, swoole_rs_reactor::Socket::fd));
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-        // SAFETY: a live socket and the host's bytes.
-        let bound = unsafe { co::bind(socket, host.as_ptr().cast(), host.len(), port as c_int) };
+        let bound = co_of(socket).bind(host, port as c_int);
         if !bound {
             let code = set_error(props(call), socket);
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
@@ -513,11 +518,9 @@ fn construct(call: &Call) {
             unsafe { z::add_assoc_bool_ex(settings, c"open_ssl".as_ptr(), 8, true) };
         }
         if ssl {
-            // SAFETY: a live socket.
-            unsafe { co::enable_ssl(socket) };
+            _ = co_of(socket).enable_ssl();
         }
-        // SAFETY: a live socket.
-        if !unsafe { co::listen(socket, 0) } {
+        if !co_of(socket).listen(0) {
             let code = set_error(props(call), socket);
             exception(call, code, "listen() failed");
             return None;
@@ -901,16 +904,14 @@ fn shutdown(call: &Call) {
     }
     let server = self::server(server);
     server.running.set(false);
-    // SAFETY: its live listening socket.
-    unsafe { co::cancel(server.listener.as_ptr(), EVENT_READ) };
+    server.listener.handle().cancel(EVENT_READ);
     // Connections waiting for their next request stop waiting.
     let clients = server.clients();
     let mut waiting: Vec<(z::zend_ulong, Socket)> = Vec::new();
     // SAFETY: a live array; the callback only reads.
     unsafe { z::swr_zend_hash_foreach_kv(clients, Some(collect), (&raw mut waiting).cast()) };
     for (index, socket) in waiting {
-        // SAFETY: a live connection socket.
-        unsafe { co::cancel(socket, EVENT_READ) };
+        co_of(socket).cancel(EVENT_READ);
         // SAFETY: the live array and one of its keys.
         unsafe { z::zend_hash_index_del(clients, index) };
     }
@@ -990,11 +991,7 @@ fn on_accept(call: &Call) {
     // SAFETY: a live socket.
     let buffer =
         unsafe { swoole_rs_hooks::socket_members::get_read_buffer(socket.cast()) }.cast::<Buffer>();
-    // SAFETY: as above.
-    let handshake = unsafe { co::ssl_enabled(socket) } && {
-        // SAFETY: as above.
-        !unsafe { co::ssl_handshake(socket) }
-    };
+    let handshake = !co_of(socket).tls_owner().is_null() && !co_of(socket).ssl_handshake();
     if handshake {
         call.set_null();
         return;
@@ -1007,8 +1004,7 @@ fn on_accept(call: &Call) {
     let (remote_addr, remote_port) = address(socket);
     let remote_addr = ZString::new(remote_addr.to_bytes());
     // The network socket's address becomes the local one.
-    // SAFETY: a live socket.
-    unsafe { co::getsockname(socket) };
+    _ = co_of(socket).getsockname();
     let (server_addr, _) = address(socket);
     let peer = Peer {
         remote_addr,
@@ -1054,10 +1050,10 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         if matches!(step, Step::Recv) {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
-            let (length, size) = (buffer.len(), buffer.size());
-            let free = buffer.as_mut_ptr().wrapping_add(length).cast();
-            // SAFETY: a live socket and its buffer's free space.
-            let received = unsafe { co::recv(conn.socket, free, size - length) };
+            let length = buffer.len();
+            let free = std::ptr::from_mut(buffer.spare()) as *mut [u8];
+            // SAFETY: the buffer's free space, which the receive only writes.
+            let received = co_of(conn.socket).recv(unsafe { &mut *free });
             if received <= 0 {
                 break;
             }
@@ -1106,8 +1102,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             let state = send::state(context);
             if state.completed == 0 && state.request.version == 101 && expects_continue(context) {
                 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
-                // SAFETY: a live socket and the interim response.
-                unsafe { co::send_all(conn.socket, CONTINUE.as_ptr().cast(), CONTINUE.len()) };
+                _ = co_of(conn.socket).send_all(CONTINUE);
             }
         }
         if send::state(context).completed == 0 {
@@ -1217,8 +1212,8 @@ fn http2(conn: &Connection, context: *mut Context) {
             );
         };
         loop {
-            // SAFETY: a live socket; the frame stays in its read buffer.
-            let retval = unsafe { co::recv_packet(conn.socket, 0.0) };
+            // The frame stays in the socket's read buffer.
+            let retval = co::recv_packet(co_of(conn.socket), 0.0);
             let frame = conn.buffer().as_mut_ptr();
             // SAFETY: a whole frame.
             if retval <= 0 || unsafe { (server.session_receive)(fd, frame) } == SW_ERR {

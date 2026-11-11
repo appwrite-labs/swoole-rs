@@ -182,9 +182,12 @@ pub(crate) fn send_raw(ctx: *mut Context, data: *const c_char, length: usize) ->
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and `length` bytes; true once
+        // SAFETY: the context's live socket.
+        let socket = unsafe { co::Co::of(target) };
+        // SAFETY: `length` bytes at `data`, which a send only reads; true once
         // every byte is sent.
-        unsafe { co::send_all(target, data, length) }.cast_unsigned() == length
+        unsafe { co::io(socket, co::Io::SendAll, data.cast_mut(), length) }.cast_unsigned()
+            == length
     } else {
         // SAFETY: the context's live server and `length` bytes.
         unsafe { server_send(target, fd, data, length) }
@@ -228,15 +231,11 @@ pub(crate) fn sendfile(
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and a live, NUL-terminated file name.
-        unsafe {
-            co::sendfile(
-                target,
-                string::val(file).cast(),
-                offset,
-                i64::try_from(length).unwrap_or(i64::MAX),
-            )
-        }
+        // SAFETY: the context's live socket.
+        let socket = unsafe { co::Co::of(target) };
+        // SAFETY: a live, NUL-terminated file name.
+        let file = unsafe { std::ffi::CStr::from_ptr(string::val(file).cast()) };
+        socket.sendfile(file, offset, length)
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
@@ -257,7 +256,7 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
         // SAFETY: the context's live socket.
-        unsafe { co::close(target) }
+        unsafe { co::Co::of(target) }.close()
     } else {
         // SAFETY: the context's live server.
         server_methods::close(unsafe { view::Server::from_raw(target) }, fd, false)

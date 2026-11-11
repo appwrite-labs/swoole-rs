@@ -1376,9 +1376,7 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         }
         pack(&frame).map_or(1, |packed| {
             let packed = packed.bytes();
-            // SAFETY: the live socket and the packed bytes.
-            let written =
-                unsafe { co::send_all(socket.as_ptr(), packed.as_ptr().cast(), packed.len()) };
+            let written = socket.handle().send_all(packed);
             if usize::try_from(written).is_ok_and(|written| written == packed.len()) {
                 0
             } else {
@@ -1412,7 +1410,7 @@ const DEFAULT_BUFFER: usize = 4096;
 /// read buffer's bytes.
 fn sock_recv(sock: *mut c_void, timeout: f64) -> (isize, *mut u8, usize) {
     // SAFETY: a live `SocketImpl *`, in a coroutine.
-    let received = unsafe { co::recv_packet(sock, timeout) };
+    let received = co::recv_packet(unsafe { co::Co::of(sock) }, timeout);
     if received <= 0 {
         return (received, ptr::null_mut(), 0);
     }
@@ -1449,8 +1447,8 @@ fn reply(settings: u32, sock: *mut c_void, opcode: u8, payload: &[u8]) {
     };
     if let Some(frame) = encode(payload, opcode, flags) {
         let frame = frame.bytes();
-        // SAFETY: the live socket and the encoded frame.
-        unsafe { co::send(sock, frame.as_ptr().cast(), frame.len()) };
+        // SAFETY: the live socket.
+        _ = unsafe { co::Co::of(sock) }.send(frame);
     }
 }
 

@@ -43,14 +43,16 @@ unsafe extern "C" fn socket_closed(conn: *mut c_void, _: *mut c_void) {
 /// The close hook (`socket_dtor(conn)`) and zero copy.
 pub(crate) unsafe fn swoole_http2_client_coro_setup(socket: Socket, conn: *mut c_void) {
     // SAFETY: per the caller.
-    unsafe { co::close_hook(socket, socket_closed, conn) };
+    let handle = unsafe { co::Co::of(socket) };
+    // SAFETY: per the caller.
+    unsafe { co::close_hook(handle, socket_closed, conn) };
     // SAFETY: as above.
     unsafe { co::record(socket) }.zero_copy = true;
 }
 
 pub(crate) unsafe fn swoole_http2_client_coro_enable_ssl(socket: Socket) -> bool {
     // SAFETY: per the caller.
-    unsafe { co::enable_ssl(socket) }
+    unsafe { co::Co::of(socket) }.enable_ssl()
 }
 
 /// HTTP/2 framing on the socket, then `apply_setting(settings)`.
@@ -84,24 +86,26 @@ pub(crate) unsafe fn swoole_http2_client_coro_connect(
     length: size_t,
     port: c_int,
 ) -> bool {
+    // SAFETY: per the caller; copied before any effect.
+    let host = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
     // SAFETY: per the caller.
-    unsafe { co::connect(socket, host, length, port, 0) }
+    unsafe { co::Co::of(socket) }.connect_host(&host, port)
 }
 
 pub(crate) unsafe fn swoole_http2_client_coro_close(socket: Socket) -> bool {
     // SAFETY: per the caller.
-    unsafe { co::close(socket) }
+    unsafe { co::Co::of(socket) }.close()
 }
 
 pub(crate) unsafe fn swoole_http2_client_coro_is_connected(socket: Socket) -> bool {
     // SAFETY: per the caller.
-    unsafe { co::is_connected(socket) }
+    unsafe { co::Co::of(socket) }.is_connected()
 }
 
 /// `has_bound(SW_EVENT_WRITE)`.
 pub(crate) unsafe fn swoole_http2_client_coro_write_bound(socket: Socket) -> bool {
     // SAFETY: per the caller.
-    unsafe { co::has_bound(socket, co::WRITE) }
+    unsafe { co::Co::of(socket) }.has_bound(co::WRITE)
 }
 
 pub(crate) unsafe fn swoole_http2_client_coro_send_all(
@@ -110,7 +114,9 @@ pub(crate) unsafe fn swoole_http2_client_coro_send_all(
     length: size_t,
 ) -> ssize_t {
     // SAFETY: per the caller.
-    unsafe { co::send_all(socket, data, length) }
+    let socket = unsafe { co::Co::of(socket) };
+    // SAFETY: per the caller; a send only reads the bytes.
+    unsafe { co::io(socket, co::Io::SendAll, data.cast_mut(), length) }
 }
 
 /// `errCode`, with `errMsg` in `message`.
@@ -137,7 +143,7 @@ pub(crate) unsafe fn swoole_http2_client_coro_set_error(
 
 pub(crate) unsafe fn swoole_http2_client_coro_recv_packet(socket: Socket, timeout: f64) -> ssize_t {
     // SAFETY: per the caller.
-    unsafe { co::recv_packet(socket, timeout) }
+    co::recv_packet(unsafe { co::Co::of(socket) }, timeout)
 }
 
 /// The read buffer's bytes, after `recv_packet` returned a packet.
