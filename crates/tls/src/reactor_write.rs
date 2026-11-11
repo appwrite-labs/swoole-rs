@@ -6,7 +6,6 @@
 //! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
 use crate::upstream::{socket_free, socket_handle_send, socket_handle_sendfile, socket_send};
 use std::ffi::{c_int, c_void};
-use swoole_rs_buffer::cpp::{swr_cpp_buffer_length, swr_cpp_buffer_typed_front};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
@@ -97,13 +96,8 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
             format_args!("data packet is too large, cannot exceed the socket buffer size"),
         ),
         2 => {
-            let (fd, size, queued) = socket.read(|record| {
-                let queued = record
-                    .output
-                    .buffer()
-                    .map_or(0, |buffer| swr_cpp_buffer_length(buffer));
-                (record.fd, record.output.buffer_size, queued)
-            });
+            let queued = result.value;
+            let (fd, size) = socket.read(|record| (record.fd, record.output.buffer_size));
             log::error_log(
                 log::LOG_WARNING,
                 SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
@@ -192,17 +186,6 @@ pub unsafe extern "C-unwind" fn reactor_writev(
 }
 
 impl FlushEffects for Flush<'_> {
-    fn front_kind(&self) -> c_int {
-        // The flush asks only while output is queued.
-        let kind = self.socket.read(|record| {
-            record
-                .output
-                .buffer()
-                .map(|buffer| swr_cpp_buffer_typed_front(buffer).kind)
-        });
-        kind.map_or_else(|| std::process::abort(), u32::cast_signed)
-    }
-
     fn handle_send(&self) -> c_int {
         // SAFETY: the flush's live socket.
         unsafe { socket_handle_send(self.socket.as_ptr()) }

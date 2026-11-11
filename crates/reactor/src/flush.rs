@@ -3,6 +3,7 @@
 //! `crates/tls`'s `reactor_write.rs` supplies the effects.
 use crate::Socket;
 use std::ffi::c_int;
+use swoole_rs_buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
 
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -12,8 +13,6 @@ const CLOSE: c_int = 2;
 
 /// The flush's effects (`crates/tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
-    /// The front entry's kind (`typed_front().kind` or `front()->type`).
-    fn front_kind(&self) -> c_int;
     fn handle_send(&self) -> c_int;
     fn handle_sendfile(&self) -> c_int;
     /// `reactor->close(reactor, socket)` and `reactor->trigger_close_event(event)`.
@@ -29,14 +28,21 @@ pub trait FlushEffects {
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
 /// can't proceed, then drop the send timer and, once empty, write interest.
 pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_int {
-    // The read that finds the queue empty also takes the timer.
+    // One read per pass: the front entry's kind (`typed_front().kind`), or the timer
+    // once the queue is empty.
     let timer = loop {
-        let (empty, timer) =
-            socket.read(|record| (record.output.empty(), record.output.send_timer));
-        if empty {
+        let (kind, timer) = socket.read(|record| {
+            let kind = record
+                .output
+                .buffer()
+                .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
+                .map(|buffer| swr_cpp_buffer_typed_front(buffer).kind.cast_signed());
+            (kind, record.output.send_timer)
+        });
+        let Some(kind) = kind else {
             break timer;
-        }
-        let result = match ops.front_kind() {
+        };
+        let result = match kind {
             CLOSE => return ops.close(),
             SENDFILE => ops.handle_sendfile(),
             _ => ops.handle_send(),
@@ -88,11 +94,38 @@ mod tests {
     use std::ffi::c_void;
     use swoole_rs_buffer::cpp::{
         CppBuffer, delete_buffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_pop,
+        swr_cpp_buffer_typed_close,
     };
+
+    /// A buffer holding one entry of each kind: a byte of data, an empty sendfile
+    /// request or a close marker.
+    fn queue(kinds: &[c_int]) -> *mut CppBuffer {
+        let buffer = new_buffer(1);
+        for &kind in kinds {
+            match kind {
+                CLOSE => swr_cpp_buffer_typed_close(unsafe { &*buffer }),
+                SENDFILE => {
+                    unsafe extern "C" fn keep(_: *mut c_void) {}
+                    // `Buffer`'s first member is its Rust queue handle.
+                    let handle = unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() };
+                    let status = unsafe {
+                        swoole_rs_buffer::swr_v1_buffer_typed_push(
+                            handle.as_mut(),
+                            1,
+                            std::ptr::dangling_mut(),
+                            Some(keep),
+                        )
+                    };
+                    assert_eq!(status, 0);
+                }
+                _ => unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) },
+            }
+        }
+        buffer
+    }
 
     #[derive(Default)]
     struct Native {
-        kinds: Vec<c_int>,
         sends: Vec<c_int>,
         trace: Vec<&'static str>,
         buffer: usize,
@@ -106,9 +139,6 @@ mod tests {
     }
     struct Ops;
     impl FlushEffects for Ops {
-        fn front_kind(&self) -> c_int {
-            NATIVE.with_borrow_mut(|n| n.kinds.remove(0))
-        }
         fn handle_send(&self) -> c_int {
             record("send");
             let (result, buffer, close_wait, record) = NATIVE
@@ -162,15 +192,11 @@ mod tests {
 
     fn run(
         output: &mut SocketOutput,
-        entries: usize,
-        kinds: Vec<c_int>,
+        kinds: &[c_int],
         sends: Vec<c_int>,
         close_wait: bool,
     ) -> (c_int, Vec<&'static str>) {
-        let buffer = new_buffer(1);
-        for _ in 0..entries {
-            unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) };
-        }
+        let buffer = queue(kinds);
         let mut record = SocketRecord::new();
         record.output = SocketOutput {
             out_buffer: buffer.cast(),
@@ -179,7 +205,6 @@ mod tests {
         let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
-                kinds,
                 sends,
                 buffer: buffer as usize,
                 close_wait_on_fail: close_wait,
@@ -198,7 +223,7 @@ mod tests {
     #[test]
     fn upstream_writable_callback_order() {
         // Two data entries sent, then the timer and write interest go.
-        let (r, trace) = run(&mut block(true), 2, vec![0, 0], vec![1, 1], false);
+        let (r, trace) = run(&mut block(true), &[0, 0], vec![1, 1], false);
         assert_eq!(
             (r, trace),
             (
@@ -208,12 +233,12 @@ mod tests {
         );
         // A queued close closes at once.
         assert_eq!(
-            run(&mut block(true), 1, vec![CLOSE], vec![], false),
+            run(&mut block(true), &[CLOSE], vec![], false),
             (7, vec!["close"])
         );
         // A failed send while closing triggers the close event.
         assert_eq!(
-            run(&mut block(false), 1, vec![0], vec![-1], true),
+            run(&mut block(false), &[0], vec![-1], true),
             (8, vec!["send", "trigger_close"])
         );
         // A failed send while send_wait stops there, timer and interest untouched.
@@ -221,13 +246,10 @@ mod tests {
             send_wait: 1,
             ..block(true)
         };
-        assert_eq!(
-            run(&mut waiting, 1, vec![0], vec![-1], false),
-            (0, vec!["send"])
-        );
+        assert_eq!(run(&mut waiting, &[0], vec![-1], false), (0, vec!["send"]));
         // An empty queue only drops interest; a sendfile entry goes to handle_sendfile.
         assert_eq!(
-            run(&mut block(false), 0, vec![], vec![], false),
+            run(&mut block(false), &[], vec![], false),
             (0, vec!["remove_write_event"])
         );
         let mut waiting = SocketOutput {
@@ -235,7 +257,7 @@ mod tests {
             ..block(false)
         };
         assert_eq!(
-            run(&mut waiting, 1, vec![SENDFILE], vec![], false),
+            run(&mut waiting, &[SENDFILE], vec![], false),
             (0, vec!["sendfile"])
         );
     }
@@ -250,8 +272,7 @@ mod tests {
         use std::collections::VecDeque;
         use std::ffi::c_void;
         use swoole_rs_buffer::cpp::{
-            CppBuffer, delete_buffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_count,
-            swr_cpp_buffer_pop,
+            CppBuffer, delete_buffer, swr_cpp_buffer_count, swr_cpp_buffer_pop,
         };
 
         #[derive(Default)]
@@ -277,9 +298,6 @@ mod tests {
         }
         struct Ops;
         impl FlushEffects for Ops {
-            fn front_kind(&self) -> c_int {
-                FACADE.with_borrow(|f| f.kinds[0])
-            }
             fn handle_send(&self) -> c_int {
                 effect("data");
                 pop();
@@ -317,10 +335,7 @@ mod tests {
         }
 
         fn run(kinds: &[c_int], timer: bool, drain: bool) -> Vec<String> {
-            let buffer = new_buffer(1);
-            for _ in kinds {
-                unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) };
-            }
+            let buffer = super::queue(kinds);
             let mut record = SocketRecord::new();
             record.output = SocketOutput {
                 out_buffer: buffer.cast(),

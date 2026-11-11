@@ -17,7 +17,8 @@ const SW_WAIT: c_int = 2;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SocketOutput {
-    /// `Buffer *out_buffer`, created and owned natively.
+    /// `Buffer *out_buffer`: null or the live `Buffer` the socket owns, which only
+    /// this crate reads (`buffer`).
     pub out_buffer: *mut c_void,
     /// `TimerNode *send_timer`.
     pub send_timer: *mut c_void,
@@ -29,16 +30,16 @@ pub struct SocketOutput {
 }
 
 impl SocketOutput {
-    /// `out_buffer`, or `None` without one.
-    #[must_use]
-    pub fn buffer(&self) -> Option<&CppBuffer> {
-        // SAFETY: a socket's output buffer is null or the live `Buffer` it owns.
+    /// `out_buffer`, or `None` without one. Crate-private: a block built outside a
+    /// socket record could hold any pointer.
+    pub(crate) fn buffer(&self) -> Option<&CppBuffer> {
+        // SAFETY: only called on a socket record's block, whose output buffer is null
+        // or the live `Buffer` it owns.
         unsafe { self.out_buffer.cast::<CppBuffer>().as_ref() }
     }
 
     /// `Buffer::empty(out_buffer)`: none, or no entries.
-    #[must_use]
-    pub fn empty(&self) -> bool {
+    pub(crate) fn empty(&self) -> bool {
         self.buffer()
             .is_none_or(|buffer| swr_cpp_buffer_count(buffer) == 0)
     }
@@ -68,7 +69,7 @@ pub trait WriteEffects {
 
 /// `value` is the result when `outcome` is 0. Otherwise native code reports and
 /// returns `SW_ERR`: 1 packet larger than the buffer size, 2 output buffer overflow
-/// (both warnings), 3 send failed (last error from errno).
+/// with `value` bytes queued (both warnings), 3 send failed (last error from errno).
 #[derive(Debug, PartialEq, Eq)]
 pub struct WriteResult {
     pub value: isize,
@@ -122,7 +123,10 @@ pub unsafe fn swr_v1_reactor_write(
     let mut sent = 0isize;
     if let Some(held) = held {
         if u64::from(held) + length as u64 > u64::from(buffer_size) {
-            return failed(2);
+            return WriteResult {
+                value: isize::try_from(held).unwrap_or(isize::MAX),
+                outcome: 2,
+            };
         }
     } else {
         if output.ssl_send == 0 {
@@ -333,7 +337,11 @@ mod tests {
             out_buffer: held_buffer.cast(),
             ..socket()
         };
-        assert_eq!(run(&mut s, b"ab", vec![], 0).0, failed(2));
+        let overflow = WriteResult {
+            value: 5,
+            outcome: 2,
+        };
+        assert_eq!(run(&mut s, b"ab", vec![], 0).0, overflow);
         // Behind queued output, it's appended without a send.
         let mut s = SocketOutput {
             nonblock: 1,
