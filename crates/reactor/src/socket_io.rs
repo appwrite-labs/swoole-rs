@@ -117,10 +117,8 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
 /// is `EINPROGRESS` (wait for writability), 2 any other error.
 #[must_use]
 pub fn fd_connect(fd: c_int, address: &SocketAddress) -> SocketIoResult {
-    let storage = std::ptr::from_ref(address).cast::<libc::sockaddr>();
     loop {
-        // SAFETY: the borrowed address, whose storage holds `len` bytes of sockaddr.
-        if unsafe { libc::connect(fd, storage, address.len) } == 0 {
+        if address.connect(fd) == 0 {
             return READY;
         }
         match errno() {

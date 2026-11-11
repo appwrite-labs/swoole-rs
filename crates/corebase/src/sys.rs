@@ -318,6 +318,97 @@ pub fn unlink(path: &CStr) -> c_int {
     unsafe { libc::unlink(path.as_ptr()) }
 }
 
+/// `if_nametoindex(3)`: the interface's index, 0 with errno set when there is none.
+#[must_use]
+pub fn if_nametoindex(name: &CStr) -> libc::c_uint {
+    // SAFETY: `name` is NUL-terminated.
+    unsafe { libc::if_nametoindex(name.as_ptr()) }
+}
+
+/// The host's interface addresses (`getifaddrs(3)`), freed on drop.
+pub struct Interfaces(*mut libc::ifaddrs);
+
+/// One entry of an `Interfaces` list.
+#[derive(Clone, Copy)]
+pub struct Interface<'a>(&'a libc::ifaddrs);
+
+impl Interfaces {
+    /// The list, or `None` with errno set.
+    #[must_use]
+    pub fn new() -> Option<Self> {
+        let mut list = std::ptr::null_mut();
+        // SAFETY: a writable out-pointer.
+        (unsafe { libc::getifaddrs(&raw mut list) } == 0).then_some(Self(list))
+    }
+
+    /// The entries, in the list's order.
+    pub fn iter(&self) -> impl Iterator<Item = Interface<'_>> {
+        // SAFETY: the list lives as long as `self`.
+        std::iter::successors(unsafe { self.0.as_ref() }, |entry| {
+            // SAFETY: as above.
+            unsafe { entry.ifa_next.as_ref() }
+        })
+        .map(Interface)
+    }
+}
+
+impl Drop for Interfaces {
+    fn drop(&mut self) {
+        // SAFETY: the list `getifaddrs` returned, freed once.
+        unsafe { libc::freeifaddrs(self.0) };
+    }
+}
+
+impl<'a> Interface<'a> {
+    /// `ifa_name`.
+    #[must_use]
+    pub fn name(self) -> &'a CStr {
+        // SAFETY: interface names are NUL-terminated and live as long as the list.
+        unsafe { CStr::from_ptr(self.0.ifa_name) }
+    }
+
+    /// `ifa_flags` (`IFF_*`).
+    #[must_use]
+    pub fn flags(self) -> libc::c_uint {
+        self.0.ifa_flags
+    }
+
+    /// `ifa_addr`'s header, when the interface has an address: its family says
+    /// what follows it.
+    #[must_use]
+    pub fn address(self) -> Option<&'a libc::sockaddr> {
+        // SAFETY: null or an address that lives as long as the list.
+        unsafe { self.0.ifa_addr.as_ref() }
+    }
+
+    /// The address, when it is an `AF_INET` or `AF_INET6` one.
+    #[must_use]
+    pub fn ip(self) -> Option<std::net::IpAddr> {
+        let address = self.address()?;
+        match c_int::from(address.sa_family) {
+            libc::AF_INET => {
+                // SAFETY: an AF_INET address is a sockaddr_in.
+                let inet = unsafe {
+                    std::ptr::from_ref(address)
+                        .cast::<libc::sockaddr_in>()
+                        .read_unaligned()
+                };
+                Some(inet.sin_addr.s_addr.to_ne_bytes().into())
+            }
+            libc::AF_INET6 => {
+                // SAFETY: an AF_INET6 address is a sockaddr_in6.
+                let inet6 = unsafe {
+                    std::ptr::from_ref(address)
+                        .cast::<libc::sockaddr_in6>()
+                        .read_unaligned()
+                };
+                Some(inet6.sin6_addr.s6_addr.into())
+            }
+            _ => None,
+        }
+    }
+}
+
 /// `access(2)`.
 #[must_use]
 pub fn access(path: &CStr, mode: c_int) -> c_int {

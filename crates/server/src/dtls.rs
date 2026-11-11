@@ -119,9 +119,7 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
         if kind == SOCK_UDP6 {
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
         }
-        let peer = (&raw const sa.addr).cast::<libc::sockaddr>();
-        // SAFETY: the peer's address of its length.
-        if unsafe { libc::connect(fd, peer, sa.len) } < 0 {
+        if sa.connect(fd) < 0 {
             let (host, port) = swoole_rs_tls::upstream::peer(sa);
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
             break 'setup;

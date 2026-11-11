@@ -4,7 +4,6 @@
 //! OpenSSL call, which runs only when the record holds an `SSL`.
 use crate::{Socket, SocketAddress, SocketFields, TlsIo};
 use std::ffi::{c_int, c_void};
-use std::mem::size_of;
 
 /// `SW_OK`, `SW_ERR`, `SW_WAIT` and `SW_BACKLOG`.
 const OK: c_int = 0;
@@ -36,19 +35,10 @@ fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the address storage's size fits socklen_t"
-)]
-const ADDRESS_CAPACITY: libc::socklen_t = size_of::<crate::AddressStorage>() as libc::socklen_t;
-
 impl SocketFields {
     /// `Socket::get_name`: getsockname(2) into `info`, which takes the socket's type.
     pub fn get_name(&mut self) -> c_int {
-        self.info.len = ADDRESS_CAPACITY;
-        let address = (&raw mut self.info.addr).cast::<libc::sockaddr>();
-        // SAFETY: the record's own address storage and its length.
-        if unsafe { libc::getsockname(self.fd, address, &raw mut self.info.len) } != 0 {
+        if self.info.local_name(self.fd) != 0 {
             return ERR;
         }
         self.info.kind = self.socket_type;
@@ -57,19 +47,13 @@ impl SocketFields {
 
     /// `Socket::get_peer_name`: getpeername(2) into `address`, typed as the socket.
     pub fn get_peer_name(&self, address: &mut SocketAddress) -> c_int {
-        address.len = ADDRESS_CAPACITY;
         address.kind = self.socket_type;
-        let storage = (&raw mut address.addr).cast::<libc::sockaddr>();
-        // SAFETY: the address's own storage and its length.
-        status(unsafe { libc::getpeername(self.fd, storage, &raw mut address.len) } == 0)
+        status(address.peer_name(self.fd) == 0)
     }
 
     /// `Socket::bind(address)`: bind(2), marking the socket bound.
     pub fn bind(&mut self, address: &SocketAddress) -> c_int {
-        let storage = (&raw const address.addr).cast::<libc::sockaddr>();
-        let length = address.len.min(ADDRESS_CAPACITY);
-        // SAFETY: the address's own storage, `length` bytes of it.
-        if unsafe { libc::bind(self.fd, storage, length) } != 0 {
+        if address.bind(self.fd) != 0 {
             return ERR;
         }
         self.bound = 1;
