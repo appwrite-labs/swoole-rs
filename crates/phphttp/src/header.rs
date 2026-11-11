@@ -178,8 +178,7 @@ php_local! {
 
 /// The `Date` header for now, formatted at most once a second.
 pub(crate) fn date() -> *mut zend_string {
-    // SAFETY: reads the clock.
-    let now = unsafe { libc::time(ptr::null_mut()) };
+    let now = swoole_rs_corebase::time_now();
     let (time, date) = DATE_CACHE.get();
     if now == time && !date.is_null() {
         return date;
