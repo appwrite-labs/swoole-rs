@@ -155,7 +155,7 @@ impl<'a> Context<'a> {
     }
     /// The source worker's slot of `task_results`: an `EventData` per worker.
     fn result_slot(&self) -> *mut u8 {
-        let results = self.config().task_results.cast::<u8>();
+        let results = self.config().task_results.as_ptr().cast::<u8>();
         results.wrapping_add(usize::from(self.source()) * EVENT_DATA_SIZE)
     }
     /// `buf->size()`: the packed result's header and payload.

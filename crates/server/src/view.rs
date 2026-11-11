@@ -366,8 +366,8 @@ impl<'a> Server<'a> {
         ServerWorkers {
             event_pool: task_pool.wrapping_add(1),
             task_pool,
-            event_workers: config.workers.cast(),
-            user_workers: config.user_workers.cast(),
+            event_workers: config.workers.as_ptr().cast(),
+            user_workers: config.user_workers.as_ptr().cast(),
             event_count: config.worker_num,
             task_count: config.task_worker_num,
             user_count: self.user_worker_num(),

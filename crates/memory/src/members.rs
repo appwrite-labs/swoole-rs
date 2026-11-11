@@ -377,6 +377,43 @@ unsafe fn extent(payload: *mut c_void) -> (*mut c_void, usize) {
     (base.cast(), unsafe { base.read() })
 }
 
+/// A field holding an `sw_shm_calloc` mapping, or null. Only [`Shm::calloc`]
+/// fills it, so [`Shm::free`] unmaps exactly what it mapped, once. Native code
+/// reads it as the payload pointer.
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Shm(*mut c_void);
+
+impl Shm {
+    /// No mapping.
+    pub const NULL: Self = Self(ptr::null_mut());
+
+    /// `sw_shm_calloc(count, size)`: null when it fails.
+    #[must_use]
+    pub fn calloc(count: usize, size: usize) -> Self {
+        Self(sw_shm_calloc(count, size))
+    }
+
+    /// The payload, or null.
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0
+    }
+
+    #[must_use]
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+
+    /// Unmaps the mapping, if any, and leaves the field null.
+    pub fn free(&mut self) {
+        let payload = core::mem::replace(&mut self.0, ptr::null_mut());
+        if !payload.is_null() {
+            unmap(payload);
+        }
+    }
+}
+
 /// `SharedMemory::free`: unmaps the mapping `payload` heads.
 fn unmap(payload: *mut c_void) {
     // SAFETY: the caller passes a live mapping's payload.

@@ -800,10 +800,8 @@ mod tests {
     fn unbound_port(kind: c_int, host: &str, number: c_int, reuse_port: bool) -> *mut PortConfig {
         let config = port_config::swr_v1_port_config_new(1000);
         if reuse_port {
-            let server = Box::leak(Box::new(swoole_rs_server::ServerConfig {
-                enable_reuse_port: true,
-                ..Default::default()
-            }));
+            let server = Box::leak(Box::<swoole_rs_server::ServerConfig>::default());
+            server.enable_reuse_port = true;
             let head: &mut [*mut c_void; 2] =
                 Box::leak(Box::new([ptr::null_mut(), (&raw mut *server).cast()]));
             unsafe { (*config).protocol.private_data_2 = head.as_mut_ptr().cast() };

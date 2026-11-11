@@ -609,8 +609,7 @@ pub(crate) fn send_body(
         return false;
     }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
-    // SAFETY: plain libc.
-    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
+    let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     let mut rest = data;
     while !rest.is_empty() {
         // Re-read after a flow-control wait: the peer may have changed it.
