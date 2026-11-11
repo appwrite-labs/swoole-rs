@@ -358,7 +358,8 @@ impl<'a> Packed<'a> {
             .get(offset_of!(DataHead, len)..)
             .and_then(<[u8]>::first_chunk)
             .map(|len| u32::from_ne_bytes(*len) as usize)?;
-        (bytes.len().saturating_sub(size_of::<DataHead>()) >= len).then_some(Self {
+        let payload = bytes.len().checked_sub(size_of::<DataHead>())?;
+        (payload >= len).then_some(Self {
             raw: bytes.as_ptr(),
             life: PhantomData,
         })
@@ -458,6 +459,8 @@ mod tests {
         assert_eq!((payload, flags), (&b"abc"[..], 0));
         assert!(super::Packed::from_bytes(&bytes[1..bytes.len() - 1]).is_none());
         assert!(super::Packed::from_bytes(&bytes[1..17]).is_none());
+        // A truncated head counting no payload is still too short.
+        assert!(super::Packed::from_bytes(&[0; 24]).is_none());
     }
 
     #[test]

@@ -930,8 +930,8 @@ mod tests {
 
     #[test]
     fn event_data_matches_the_header() {
-        // SWR_PHPSERVER_EVENT_DATA_SIZE and _ALIGN, which C++ asserts EventData fits.
-        assert_eq!(std::mem::size_of::<EventData>(), 8192);
+        // Upstream's `sizeof(EventData)`: SW_IPC_MAX_SIZE (8192, 2048 on macOS).
+        assert_eq!(std::mem::size_of::<EventData>() as u64, SW_IPC_MAX_SIZE);
         assert_eq!(std::mem::align_of::<EventData>(), 8);
     }
 
