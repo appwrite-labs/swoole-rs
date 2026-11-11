@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
-    client::{self, Client, ClientRecord, Op},
+    client::{self, Client, Op},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::co_socket::Co as Handle;
@@ -413,12 +413,8 @@ impl Co {
         let received = match op {
             Transfer::Peek => self.0.peek(out),
             Transfer::RecvAll => self.0.recv_all(out),
-            // SAFETY: `out`'s writable bytes.
-            Transfer::RecvLine => unsafe { self.0.recv_line(out.as_mut_ptr(), out.len()) },
-            Transfer::RecvWithBuffer => {
-                // SAFETY: `out`'s writable bytes.
-                unsafe { self.0.recv_with_buffer(out.as_mut_ptr(), out.len()) }
-            }
+            Transfer::RecvLine => self.0.recv_line(out),
+            Transfer::RecvWithBuffer => self.0.recv_with_buffer(out),
             _ => self.0.recv(out),
         };
         filled(buffer, received)
@@ -584,17 +580,10 @@ impl Cli {
         unsafe { &*self.0 }
     }
 
-    /// The client's public record, at the start of its state; borrowed only
-    /// between its operations.
-    pub(crate) fn record<'a>(self) -> &'a mut ClientRecord {
-        // SAFETY: as in `get`; nothing else touches the record while the borrow lasts.
-        unsafe { &mut *self.0.cast::<ClientRecord>() }
-    }
-
     /// `cli->socket`, while the client has one.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
         // SAFETY: null or a constructed client's socket, live while the client is.
-        unsafe { Net::from_ptr(self.record().socket) }
+        unsafe { Net::from_ptr(self.get().record().socket) }
     }
 
     /// crates/clients' handle on the client.
@@ -641,7 +630,9 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
 pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
-    let callable = std::mem::replace(&mut cli.record().protocol.private_data_1, ptr::null_mut());
+    let callable = cli.get().edit_record(|record| {
+        std::mem::replace(&mut record.protocol.private_data_1, ptr::null_mut())
+    });
     if !callable.is_null() {
         callable_free(callable)?;
     }

@@ -63,8 +63,7 @@ pub unsafe extern "C" fn php_swoole_pgsql_handle_io_error(
     if first {
         let fd = conn.socket();
         if fd >= 0 {
-            // SAFETY: the connection's own socket.
-            unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
+            swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RDWR);
             conn.consume_input();
         }
         // SAFETY: a live `pdo_dbh_t`.
