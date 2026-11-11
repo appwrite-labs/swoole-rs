@@ -155,18 +155,25 @@ impl crate::ServerState {
         unsafe { sessions.wrapping_add(index).as_mut() }
     }
 
-    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`, or null.
-    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: u32) -> *mut ConnectionRecord {
-        self.connection(key, kind)
-            .map_or(core::ptr::null_mut(), core::ptr::from_mut)
-    }
-
     /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`.
     #[expect(
         clippy::mut_from_ref,
         reason = "a slot of the connection table, written under the server's own synchronization"
     )]
     pub(crate) fn connection(&self, key: libc::c_long, kind: u32) -> Option<&mut ConnectionRecord> {
+        // SAFETY: null or a slot of the live table.
+        unsafe { self.connection_ptr(key, kind).as_mut() }
+    }
+
+    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`, or null.
+    /// The pointer is the table's own, not one taken from a reference, so a
+    /// later lookup of the slot (onClose's `exist()` during the close holding
+    /// this one) leaves it valid.
+    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: u32) -> *mut ConnectionRecord {
+        self.lookup(key, kind).unwrap_or(core::ptr::null_mut())
+    }
+
+    fn lookup(&self, key: libc::c_long, kind: u32) -> Option<*mut ConnectionRecord> {
         let tables = self.tables_ref();
         let mut session_id = 0;
         let fd = if matches!(kind, BY_SESSION..=VERIFIED_TLS) {
@@ -185,12 +192,11 @@ impl crate::ServerState {
         if fd.cast_unsigned() > tables.max_connection || tables.connection_list.is_null() {
             return None;
         }
+        let slot = tables
+            .connections()
+            .wrapping_add(fd.cast_unsigned() as usize);
         // SAFETY: the live table of `max_connection + 1` slots; `fd` is inside it.
-        let value = unsafe {
-            &mut *tables
-                .connections()
-                .wrapping_add(fd.cast_unsigned() as usize)
-        };
+        let value = unsafe { &*slot };
         let found = match kind {
             BY_FD | BY_SESSION => true,
             _ if value.active == 0 => false,
@@ -199,7 +205,7 @@ impl crate::ServerState {
             VERIFIED_TLS | ITERATED => value.ssl == 0 || value.ssl_ready != 0,
             _ => true,
         };
-        found.then_some(value)
+        found.then_some(slot)
     }
 
     /// Retire a dead base-mode worker's sessions, preserving IDs and reserved bits.

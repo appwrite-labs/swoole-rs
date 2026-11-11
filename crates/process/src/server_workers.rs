@@ -114,14 +114,13 @@ pub unsafe fn swr_v1_process_server_worker_by_pid(
     if !worker.is_null() {
         return worker;
     }
-    // SAFETY: the caller loans the initialized task pool, including its registry slot.
-    let tasks = unsafe { (*view.task_pool).registry };
-    if !tasks.is_null() {
-        // SAFETY: the native task pool retains its live registry during lookup.
-        let worker = unsafe { (*tasks).lookup(pid) };
-        if !worker.is_null() {
-            return worker.cast();
-        }
+    // SAFETY: the caller loans the initialized task pool, which keeps its registry.
+    let task_pool = unsafe { &*view.task_pool };
+    let worker = task_pool
+        .with_registry(|tasks| tasks.lookup(pid))
+        .unwrap_or(core::ptr::null_mut());
+    if !worker.is_null() {
+        return worker.cast();
     }
     // SAFETY: the caller retains the Server registry, and only user category matches.
     unsafe { (*registry).lookup_category(pid, crate::worker_registry::CATEGORY_USER) }.cast()

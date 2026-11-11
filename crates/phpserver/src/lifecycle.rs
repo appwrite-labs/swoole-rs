@@ -363,6 +363,14 @@ impl ServerObject {
         self.data().init_arguments = value;
     }
 
+    /// The property `create` boxed, which leaves the object without one (`free`'s,
+    /// last); none once taken.
+    fn take_property(self) -> Option<Box<Property>> {
+        let property = std::mem::replace(&mut self.data().property, ptr::null_mut());
+        // SAFETY: null, or the box `create` made, which this took out of the object.
+        (!property.is_null()).then(|| unsafe { Box::from_raw(property.cast::<Property>()) })
+    }
+
     /// `f` over the property; `f` calls nothing that reaches the object.
     fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
         let property = self.data().property.cast::<Property>();
@@ -458,11 +466,6 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
         // The object's live server; the master deletes it below.
         let handle = ServerObject(object);
         let server = handle.server();
-        // SAFETY: per the caller.
-        let data = unsafe { Object::<ServerData>::data(object) };
-        // SAFETY: `create` boxed it; nothing else frees it.
-        let mut property = unsafe { Box::from_raw(data.property.cast::<Property>()) };
-        data.property = ptr::null_mut();
         if let Some(server) = server {
             if owns_shared() {
                 // SAFETY: freeing the object on the one thread that owns the config's slots.
@@ -472,17 +475,20 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
                 );
                 bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
             }
-            drop(std::mem::take(&mut property.callbacks));
+            // Each out of the object before it drops: the destructors can run PHP code
+            // that reaches the object (a `Connection\Iterator` calls its methods), so
+            // its data is borrowed per access, and the property stays until the end.
+            drop(handle.property(|p| std::mem::take(&mut p.callbacks)));
             // `sw_zval_free`: each copy's reference goes.
-            drop(std::mem::take(&mut property.user_processes));
-            for &port in &property.ports {
+            drop(handle.property(|p| std::mem::take(&mut p.user_processes)));
+            for port in handle.property(|p| p.ports.clone()) {
                 // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
                 unsafe { crate::port::deref(port) };
             }
-            data.serv = ptr::null_mut();
+            handle.set_serv(ptr::null_mut());
         }
         // The commands' callables go with it.
-        drop(property);
+        drop(handle.take_property());
         // SAFETY: the object Zend is freeing.
         unsafe { zend_object_std_dtor(object) };
         if let Some(server) = server {

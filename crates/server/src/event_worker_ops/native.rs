@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_pid, swoole_get_worker_type};
-use swoole_rs_process::worker_globals::thread_globals;
+use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::{
     OP_ARM_EXIT, OP_BUS_CLEAR, OP_BUS_EMPTY, OP_BUS_POP, OP_BUS_READ, OP_COMMAND_REQUEST,
@@ -319,8 +319,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             ctx.reactor().fields().wait_exit = true;
             swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
             let now = crate::shared::unix_now();
-            // SAFETY: this thread's worker globals.
-            unsafe { (*thread_globals()).exit_time = now };
+            with_globals(|globals| globals.exit_time.store(now, Ordering::Relaxed));
             0
         }
         OP_DRAIN_WORKER_PIPES => {

@@ -224,6 +224,8 @@ def plan(args, reports):
                *report('clients-http-format'))
         script('clients-php-reentrant-close', 'tests/modules/clients/php_reentrant_close.py', *php_for('curl', 'sockets'),
                '--engine', f'cargo={cargo}', *report('clients-php-reentrant-close'))
+        script('clients-php-enable-ssl', 'tests/modules/clients/php_enable_ssl.py', *php_for('curl', 'sockets'),
+               '--engine', f'cargo={cargo}', *report('clients-php-enable-ssl'))
         if integrate:
             for family, runner in [('http', 'tests/modules/clients/php_http.py'), ('dns', 'tests/modules/clients/php_dns.py'),
                                    ('lifecycle', 'tests/modules/clients/php_lifecycle.py'),

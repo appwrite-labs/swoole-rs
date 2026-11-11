@@ -7,12 +7,12 @@
 //! `os_signal.restore_previous_mask` is crates/corebase's
 //! `signal_mask::tests::restore_previous_mask`.
 
-use std::ffi::{CStr, c_int};
+use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use swoole_rs_process::signal::{
-    swoole_signal_block_all, swoole_signal_dispatch, swoole_signal_isset, swoole_signal_set_action,
-    swoole_signal_to_str, swoole_signal_unblock_all,
+    signal_name, swoole_signal_block_all, swoole_signal_dispatch, swoole_signal_isset,
+    swoole_signal_set_action, swoole_signal_unblock_all,
 };
 use swoole_rs_reactor::signal_upstream::{
     swoole_signal_callback, swoole_signal_clear, swoole_signal_get_handler,
@@ -164,13 +164,7 @@ fn unblock() {
 }
 
 fn signal_to_str() {
-    let text = |signo| {
-        // SAFETY: the function's static buffer, NUL-terminated.
-        unsafe { CStr::from_ptr(swoole_signal_to_str(signo).cast_const()) }
-            .to_str()
-            .unwrap()
-            .to_owned()
-    };
+    let text = |signo| signal_name(signo).as_cstr().to_str().unwrap().to_owned();
     assert_eq!(text(SIGTERM), "Terminated: 15");
     assert_eq!(text(SIGIO), "I/O possible: 29");
     // SAFETY: glibc's SIGRTMIN.

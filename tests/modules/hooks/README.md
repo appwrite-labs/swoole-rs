@@ -80,7 +80,7 @@ and `swoole_set_hosts_path` are called under their upstream symbols, passing
 libstdc++'s `std::string` and `std::vector` by layout (a returned `std::string` is
 read only outside a coroutine); the resolver list is Rust's
 (`swr_v1_core_name_resolver_add`, and `_remove` for the `each` that removes the
-user resolver); lookups go through `swoole_name_resolver_lookup_run`. The DNS
+user resolver); lookups go through `resolve::name_resolver_lookup`. The DNS
 requests drive the resolver record (`swr_v1_core_resolver_*`) as
 `network::gethostbyname`/`getaddrinfo` do, and `Address` is the header's inline
 calls to `swr_v1_clients_address_*` and `swr_v1_clients_url`. Excluded as in the
