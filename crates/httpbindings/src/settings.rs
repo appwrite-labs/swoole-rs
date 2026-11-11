@@ -1,5 +1,5 @@
 //! Ordered coroutine HTTP startup settings; native code owns all Zend effects.
-use crate::{Action, Text};
+use crate::Action;
 
 #[repr(C)]
 #[derive(Default)]
@@ -127,10 +127,7 @@ pub fn swr_v1_httpbindings_settings(
             continue;
         };
         out.kind = 1;
-        out.text = Text {
-            data: key.as_ptr(),
-            length: key.len(),
-        };
+        out.text = key;
         cursor.stage = 1;
         return 0;
     }
@@ -235,9 +232,10 @@ mod tests {
             assert_eq!(status, 0);
             match action.kind {
                 1 => {
-                    let text =
-                        unsafe { std::slice::from_raw_parts(action.text.data, action.text.length) };
-                    key = KEYS.into_iter().find(|k| k.as_bytes() == text).unwrap();
+                    key = KEYS
+                        .into_iter()
+                        .find(|k| k.as_bytes() == action.text)
+                        .unwrap();
                     found = u32::from(host.lookup(key)?);
                 }
                 9 => host.effect(9, "")?,

@@ -16,12 +16,13 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
     process_pool::{PoolRecord, SW_IPC_MAX_SIZE},
-    task_file,
+    task_file::{self, Packed},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks},
     workers::entry::finish,
 };
@@ -179,12 +180,19 @@ impl MultiTask for Multi {
         if data.is_null() {
             return Ok(-1);
         }
-        encode(data, event.cast()).map_err(|Bailout| Bailed)
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "task_sync's event is a zeroed Vec<u64> of SW_IPC_MAX_SIZE bytes"
+        )]
+        let event = event.cast::<EventData>();
+        // SAFETY: as above, an initialized, aligned `EventData` it lends for the call.
+        let event = unsafe { &mut *event };
+        encode(data, event).map_err(|Bailout| Bailed)
     }
 
-    fn unpack(&mut self, index: u16, result: *mut u8) -> Result<(), Bailed> {
+    fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {
         let mut data = undef();
-        if decode(result.cast(), &raw mut data).map_err(|Bailout| Bailed)? {
+        if decode(result, &raw mut data).map_err(|Bailout| Bailed)? {
             // SAFETY: the result array.
             let out = unsafe { table(self.out) };
             // SAFETY: a live array; it takes the value.
@@ -199,18 +207,25 @@ impl MultiTask for Multi {
     }
 }
 
-/// An `EventData`, which C++ asserts fits. Uninitialized, as upstream's stack
-/// `EventData`: `task_pack` writes the head and the payload its length counts.
-#[repr(C, align(8))]
-pub(crate) struct EventData(MaybeUninit<[u8; 8192]>);
+/// A `task_file::EventData` to pack into. Its payload is uninitialized, as
+/// upstream's stack `EventData`: `task_pack` writes the head and the payload its
+/// length counts.
+#[repr(C)]
+pub(crate) struct EventData {
+    head: DataHead,
+    _payload: MaybeUninit<[u8; size_of::<task_file::EventData>() - size_of::<DataHead>()]>,
+}
 
 impl EventData {
     pub(crate) fn new() -> Self {
-        Self(MaybeUninit::uninit())
+        Self {
+            head: DataHead::default(),
+            _payload: MaybeUninit::uninit(),
+        }
     }
 
     pub(crate) fn ptr(&mut self) -> *mut c_void {
-        self.0.as_mut_ptr().cast()
+        ptr::from_mut(self).cast()
     }
 }
 
@@ -260,14 +275,8 @@ fn facts(server: view::Server<'_>) -> Facts {
     }
 }
 
-/// An `EventData`'s `DataHead`.
-fn head<'a>(buf: *mut c_void) -> &'a mut DataHead {
-    // SAFETY: every `EventData` starts with its `DataHead`.
-    unsafe { &mut *buf.cast::<DataHead>() }
-}
-
-fn info(req: *mut c_void) -> Info {
-    let head = head(req);
+fn info(task: Packed<'_>) -> Info {
+    let head = task.head();
     Info {
         id: head.fd,
         worker_id: i64::from(head.reactor_id),
@@ -306,15 +315,15 @@ fn encoded<R>(data: *mut zval, each: impl FnOnce(&[u8], bool) -> R) -> Result<Op
 }
 
 /// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
-fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
+fn encode(data: *mut zval, buf: &mut EventData) -> Result<i64, Bailout> {
     let packed = encoded(data, |payload, serialized| {
+        let task = buf.ptr().cast();
         // SAFETY: a writable `EventData` and the payload's bytes.
-        if !unsafe { task_file::task_pack(buf.cast(), payload.as_ptr().cast(), payload.len()) } {
-            let head = head(buf);
-            head.fd = -1;
-            head.len = 0;
+        if !unsafe { task_file::task_pack(task, payload.as_ptr().cast(), payload.len()) } {
+            buf.head.fd = -1;
+            buf.head.len = 0;
         }
-        (head(buf).fd, serialized)
+        (buf.head.fd, serialized)
     })?;
     let Some((id, serialized)) = packed else {
         return Ok(-1);
@@ -323,16 +332,16 @@ fn encode(data: *mut zval, buf: *mut c_void) -> Result<i64, Bailout> {
         event_warning(c"large task pack failed")?;
     }
     if serialized {
-        add_flags(buf, SERIALIZE);
+        flag(buf, SERIALIZE);
     }
     Ok(id)
 }
 
-/// `php_swoole_server_task_unpack`: the task in `buf` into `out`.
-pub(crate) fn decode(buf: *mut c_void, out: *mut zval) -> Result<bool, Bailout> {
-    let buffer = swoole_rs_corebase::thread_buffer();
-    // SAFETY: a packed task and this thread's buffer.
-    let Some((data, length, flags)) = (unsafe { task_file::unpack(buf, buffer) }) else {
+/// `php_swoole_server_task_unpack`: `task` into `out`.
+pub(crate) fn decode(task: Packed<'_>, out: *mut zval) -> Result<bool, Bailout> {
+    let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
+    // SAFETY: this thread's live buffer.
+    let Some((data, length, flags)) = task.unpack(unsafe { &mut *buffer }) else {
         return Ok(false);
     };
     if u32::from(flags) & SERIALIZE == 0 {
@@ -377,21 +386,17 @@ pub(crate) fn finish_task(
 /// `php_swoole_server_task_pack`: the task id, or -1; a trapped bailout waits
 /// for the handler's end.
 pub(crate) fn pack(data: *mut zval, buf: &mut EventData) -> i64 {
-    encode(data, buf.ptr()).unwrap_or_else(|bailout| {
+    encode(data, buf).unwrap_or_else(|bailout| {
         bailout.defer();
         -1
     })
 }
 
-fn flag(buf: &mut EventData, flags: u32) {
-    add_flags(buf.ptr(), flags);
-}
-
 /// `buf->info.ext_flags |= flags`.
-fn add_flags(buf: *mut c_void, flags: u32) {
+fn flag(buf: &mut EventData, flags: u32) {
     #[expect(clippy::cast_possible_truncation, reason = "ext_flags is a uint16_t")]
     let flags = flags as u16;
-    head(buf).ext_flags |= flags;
+    buf.head.ext_flags |= flags;
 }
 
 /// `serv->task(buf, dst_worker_id)`.
@@ -517,7 +522,9 @@ fn taskwait(call: &Call) {
         let done = match tasks.task_sync(buf.ptr().cast(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
             Ok(true) => {
-                decode(tasks.result.cast(), call.return_value()).unwrap_or_else(|bailout| {
+                // SAFETY: the result the task worker packed into the slot.
+                let result = unsafe { Packed::from_raw(tasks.result.cast()) };
+                decode(result, call.return_value()).unwrap_or_else(|bailout| {
                     bailout.defer();
                     false
                 })
@@ -697,11 +704,11 @@ fn pack_method(call: &Call) {
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
     // `EventData::size()`.
-    let size = size_of::<DataHead>() + head(buf.ptr()).len as usize;
+    let size = size_of::<DataHead>() + buf.head.len as usize;
     // RETURN_STRINGL: `size` bytes of the buffer, copied.
     // SAFETY: the return slot and the buffer's bytes.
     unsafe {
-        swoole_rs_zend::sys::swr_zval_stringl(call.return_value(), buf.0.as_ptr().cast(), size);
+        swoole_rs_zend::sys::swr_zval_stringl(call.return_value(), buf.ptr().cast(), size);
     };
 }
 
@@ -709,16 +716,16 @@ fn unpack_method(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let data = call.zval(1);
-    // Upstream reads the argument's bytes as an EventData without a type check.
-    // SAFETY: a string argument (as upstream assumes).
-    let buf = unsafe { swoole_rs_zend::value::str_of(data) };
-    // SAFETY: the string's bytes.
-    let bytes = unsafe { (*buf).val.as_mut_ptr() };
-    // As upstream: the bytes hold a packed task.
-    let done = decode(bytes.cast(), call.return_value()).unwrap_or_else(|bailout| {
-        bailout.defer();
-        false
+    // A packed task: a string of a head and the payload it counts.
+    let task = call
+        .value(1)
+        .and_then(Value::bytes)
+        .and_then(Packed::from_bytes);
+    let done = task.is_some_and(|task| {
+        decode(task, call.return_value()).unwrap_or_else(|bailout| {
+            bailout.defer();
+            false
+        })
     });
     if !done {
         call.set_bool(false);
@@ -741,25 +748,25 @@ fn event_warning(text: &CStr) -> Result<(), Bailout> {
 }
 
 /// Unpack `req` into a value, or `None` (`Err` for a trapped bailout).
-fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
+fn unpack(task: Packed<'_>) -> Result<Option<zval>, Bailout> {
     let mut data = undef();
-    Ok(decode(req, &raw mut data)?.then_some(data))
+    Ok(decode(task, &raw mut data)?.then_some(data))
 }
 
 /// `php_swoole_server_onTask`, for a live server and the task it received.
-pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
+pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_int, Bailout> {
     let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
     let zserv = zserv();
-    let Some(mut data) = unpack(req)? else {
+    let Some(mut data) = unpack(task)? else {
         return Ok(SW_ERR);
     };
     let facts = facts(server);
-    let info = info(req);
+    let info = info(task);
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
         let props = Props::init(&mut args[1], &TASK);
-        crate::server::task_bind(props.object(), server.raw(), head(req));
+        crate::server::task_bind(props.object(), server.raw(), &task.head());
         props.long(c"worker_id", info.worker_id);
         props.long(c"id", info.id);
         props.value(c"data", &mut data);
@@ -789,7 +796,7 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
     let outcome = outcome.and_then(|()| {
         // SAFETY: the callback's result, or undef.
         if unsafe { type_of(&raw const retval) } != IS_NULL {
-            let finished = finish_task(server.raw(), &raw mut retval, req);
+            let finished = finish_task(server.raw(), &raw mut retval, task.as_ptr().cast_mut());
             dtor(&mut retval);
             finished?;
         }
@@ -800,11 +807,11 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
 }
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
-pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
+pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_int, Bailout> {
     let zserv = zserv();
-    let info = info(req);
+    let info = info(task);
     let id = info.id;
-    let Some(mut data) = unpack(req)? else {
+    let Some(mut data) = unpack(task)? else {
         return Ok(SW_ERR);
     };
     #[expect(
@@ -923,8 +930,8 @@ mod tests {
 
     #[test]
     fn event_data_matches_the_header() {
-        // SWR_PHPSERVER_EVENT_DATA_SIZE and _ALIGN, which C++ asserts EventData fits.
-        assert_eq!(std::mem::size_of::<EventData>(), 8192);
+        // Upstream's `sizeof(EventData)`: SW_IPC_MAX_SIZE (8192, 2048 on macOS).
+        assert_eq!(std::mem::size_of::<EventData>() as u64, SW_IPC_MAX_SIZE);
         assert_eq!(std::mem::align_of::<EventData>(), 8);
     }
 

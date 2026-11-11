@@ -18,7 +18,7 @@ use swoole_rs_ossupport::file_get_contents;
 pub use crate::pool::Bailed;
 use crate::pool::trapped;
 use crate::process_pool::SW_IPC_MAX_SIZE;
-use crate::task_file::{TASK_TMP_PATH_SIZE, errno, make_tmpfile, task_tmpfile};
+use crate::task_file::{Packed, TASK_TMP_PATH_SIZE, errno, make_tmpfile, task_tmpfile};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16, `ext_flags` at 26.
 const HEAD: usize = 40;
@@ -62,7 +62,7 @@ pub trait MultiTask {
     ///
     /// # Errors
     /// PHP bailed out (a user `__unserialize`).
-    fn unpack(&mut self, index: u16, result: *mut u8) -> Result<(), Bailed>;
+    fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed>;
     /// Task `index` was not dispatched.
     fn fail(&mut self, index: u16);
 }
@@ -322,8 +322,9 @@ fn unpack_all(
         );
         if let Ok(found) = indexes.binary_search_by_key(&task_id, |&(id, _)| id)
             && let Some(&(_, index)) = indexes.get(found)
+            && let Some(record) = Packed::from_bytes(record)
         {
-            multi.unpack(index, record.as_ptr().cast_mut())?;
+            multi.unpack(index, record)?;
         }
         offset += HEAD + len as usize;
     }
@@ -383,8 +384,8 @@ mod tests {
             unsafe { event.cast::<i64>().write_unaligned(id) };
             Ok(id)
         }
-        fn unpack(&mut self, index: u16, result: *mut u8) -> Result<(), Bailed> {
-            let id = unsafe { result.cast::<i64>().read_unaligned() };
+        fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {
+            let id = result.head().fd;
             self.unpacked.push((index, id));
             Ok(())
         }

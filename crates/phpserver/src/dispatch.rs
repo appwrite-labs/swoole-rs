@@ -14,6 +14,7 @@ use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
+use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::ConnectionRecord;
@@ -627,12 +628,6 @@ type Ctx = *mut c_void;
 
 use swoole_rs_phpprocess::swr_v1_phpprocess_start;
 
-fn head<'a, T>(event: *mut T) -> &'a DataHead {
-    // SAFETY: every Server event (`DataHead`, `RecvData`, `EventData`) starts
-    // with its live head.
-    unsafe { &*event.cast::<DataHead>() }
-}
-
 fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> *mut c_void {
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
@@ -704,22 +699,22 @@ fn task_result(outcome: Result<c_int, Bailout>) -> c_int {
     result
 }
 
-extern "C" fn on_task(_: Ctx, server: view::Server<'_>, req: *mut c_void) -> c_int {
-    task_result(crate::task::on_task(server, req))
+extern "C" fn on_task(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
+    task_result(crate::task::on_task(server, task))
 }
 
-extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, req: *mut c_void) -> c_int {
-    task_result(crate::task::on_finish(server, req))
+extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
+    task_result(crate::task::on_finish(server, task))
 }
 
-extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, req: *mut c_void) {
+extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Packed<'_>) {
     let mut data = undef();
-    let (unpacked, mut bailed) = match crate::task::decode(req, &raw mut data) {
+    let (unpacked, mut bailed) = match crate::task::decode(message, &raw mut data) {
         Ok(unpacked) => (unpacked, false),
         Err(Bailout) => (false, true),
     };
     if unpacked {
-        let info = head(req);
+        let info = message.head();
         // `Server::get_task_src_worker_id`.
         let source = i64::from(info.reactor_id);
         bailed = on_pipe_message(server, &mut data, source, info.time);
@@ -963,11 +958,10 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 }
 
 /// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
-/// the worker `addProcess` added. The worker stays a raw pointer: starting the
+/// the worker `addProcess` added. The worker is a [`Worker`] handle: starting the
 /// process writes its pid and pipe, so no reference to the record may live here.
-extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mut WorkerRecord) {
-    // SAFETY: the event's live worker.
-    let id = i64::from(unsafe { Worker::new(worker).id() });
+extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
+    let id = i64::from(worker.id());
     let config = server.config();
     let server_object = crate::lifecycle::ServerObject::running();
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
@@ -978,8 +972,8 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mu
         prepare_worker(server);
         process
     } else {
-        // SAFETY: the worker `addProcess` made holds its process object.
-        unsafe { Worker::new(worker).user_data() }.cast::<zval>()
+        // The worker `addProcess` made holds its process object.
+        worker.user_data().cast::<zval>()
     };
     // SAFETY: the process object.
     let object = unsafe { object_of(process) };
@@ -992,7 +986,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mu
     props.long(c"manager_pid", i64::from(gs.manager_pid));
     // SAFETY: the worker and its process object; this frame owns nothing that
     // needs a drop, as the process exits through a bailout.
-    unsafe { swr_v1_phpprocess_start(worker.cast(), process) };
+    unsafe { swr_v1_phpprocess_start(worker.raw().cast(), process) };
 }
 
 /// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
@@ -1138,8 +1132,8 @@ fn call_unlimited(
 extern "C" fn on_dispatch(
     _: Ctx,
     server: view::Server<'_>,
-    conn: *const ConnectionRecord,
-    data: *const RecvData,
+    conn: Option<&ConnectionRecord>,
+    send: Option<&RecvData>,
 ) -> c_int {
     let config = server.config();
     // SAFETY: as above.
@@ -1147,10 +1141,7 @@ extern "C" fn on_dispatch(
     let zserv = php_swoole_server_zval_ptr();
     // SAFETY: its live object, copied without a reference as upstream.
     let zserv = unsafe { zserv.read() };
-    // SAFETY: null, or the event's live `SendData` (a head and its payload).
-    let send = unsafe { data.as_ref() };
-    // SAFETY: null, or the event's live connection.
-    let session = match unsafe { conn.as_ref() } {
+    let session = match conn {
         Some(conn) => conn.session_id,
         None => send.map_or(0, |send| send.info.fd),
     };
