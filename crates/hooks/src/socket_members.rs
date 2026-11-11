@@ -6,13 +6,13 @@
 //! `readv`, `writev` and their `_all` forms, `recvmsg`, `sendmsg`, `recvfrom`),
 //! `peek` and `poll`. Only the read and write buffers keep their upstream symbols,
 //! which crates/phpclients and crates/phphttp link by name.
-use crate::buffered::{recv_buffered, swr_v1_hook_recv_line};
+use crate::buffered::{recv_buffered, recv_line};
 use crate::co_io::{
     NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
 };
 use crate::co_socket::{Co, peer_name};
 use crate::sendfile::{FAILED, ZERO, send_range};
-use crate::setup::{SetupOps, swr_v1_hook_accept};
+use crate::setup::{Setup, swr_v1_hook_accept};
 use crate::shutdown::READ;
 use crate::socket_wait::{error_event, ready, wait_for};
 use crate::transfer::{ALL, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
@@ -77,8 +77,7 @@ fn on_ready(event: &Event, kind: u32) -> c_int {
     };
     set_err(socket, 0);
     let hup = source.read(|record| record.event_hup) != 0;
-    // SAFETY: an installed barrier's state outlives its wait.
-    let co = unsafe { ready(socket, kind, hup) };
+    let co = ready(socket, kind, hup);
     if !co.is_null() {
         (NATIVE.resume)(co);
     }
@@ -113,40 +112,29 @@ struct Accepting {
     conn: *mut SocketRecord,
 }
 
-/// # Safety
-/// `context` is the live [`Accepting`] of the call.
-unsafe fn accepting<'a>(context: *mut c_void) -> &'a mut Accepting {
-    // SAFETY: as the caller promises.
-    unsafe { &mut *context.cast::<Accepting>() }
-}
-
-unsafe extern "C" fn accept_fail(context: *mut c_void, error: c_int) {
-    // SAFETY: the accept's live socket.
-    let socket = unsafe { accepting(context) }.socket;
-    if error < 0 {
-        default_err(socket, log::last_error());
-    } else {
-        set_err(socket, error);
+impl Setup for Accepting {
+    fn fail(&mut self, error: c_int) {
+        if error < 0 {
+            default_err(self.socket, log::last_error());
+        } else {
+            set_err(self.socket, error);
+        }
     }
-}
 
-unsafe extern "C" fn accept_wait(context: *mut c_void, event: c_int) -> bool {
-    // SAFETY: the accept of the call.
-    let state = unsafe { accepting(context) };
-    let mut timer = Timer::new(state.socket, READ, state.timeout);
-    let ready = timer.start() && wait_for(state.socket, event.cast_unsigned());
-    timer.stop();
-    ready
-}
+    fn wait(&mut self, event: c_int) -> bool {
+        let mut timer = Timer::new(self.socket, READ, self.timeout);
+        let ready = timer.start() && wait_for(self.socket, event.cast_unsigned());
+        timer.stop();
+        ready
+    }
 
-unsafe extern "C" fn accept_call(context: *mut c_void, _: c_int) -> c_int {
-    // SAFETY: the accept of the call.
-    let state = unsafe { accepting(context) };
-    state.conn = state
-        .socket
-        .net(SocketRecord::accept)
-        .unwrap_or(core::ptr::null_mut());
-    if state.conn.is_null() { -1 } else { 0 }
+    fn call(&mut self, _: c_int) -> c_int {
+        self.conn = self
+            .socket
+            .net(SocketRecord::accept)
+            .unwrap_or(core::ptr::null_mut());
+        if self.conn.is_null() { -1 } else { 0 }
+    }
 }
 
 /// A transfer's call over the `network::Socket` and the buffer it is given.
@@ -157,12 +145,6 @@ macro_rules! call {
             unsafe { $body }
         }
     };
-}
-
-/// A transfer's `network::Socket` call, over the socket's current one.
-struct Transfer<F> {
-    socket: Co,
-    call: F,
 }
 
 /// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
@@ -282,7 +264,7 @@ impl Co {
     /// `out` holds `size` writable bytes, outside the socket's read buffer.
     pub unsafe fn recv_with_buffer(self, out: *mut u8, size: usize) -> isize {
         // SAFETY: as the caller promises.
-        unsafe { recv_buffered(self, out, size) }
+        recv_buffered(self, unsafe { core::slice::from_raw_parts_mut(out, size) })
     }
 
     /// `Socket::recv_line(buf, maxlen)`, one buffered byte at a time.
@@ -290,14 +272,9 @@ impl Co {
     /// # Safety
     /// `out` holds `limit` bytes and one more, outside the socket's read buffer.
     pub unsafe fn recv_line(self, out: *mut u8, limit: usize) -> isize {
-        unsafe extern "C" fn read(this: *mut c_void, out: *mut u8, size: usize) -> isize {
-            // SAFETY: `recv_line`'s live socket.
-            let socket = unsafe { Co::of(this) };
-            // SAFETY: one byte of `recv_line`'s output.
-            unsafe { recv_buffered(socket, out, size) }
-        }
-        // SAFETY: as the caller promises; each read is the socket's buffered read.
-        unsafe { swr_v1_hook_recv_line(read, self.this(), out, limit) }
+        // SAFETY: as the caller promises.
+        let out = unsafe { core::slice::from_raw_parts_mut(out, limit + 1) };
+        recv_line(out, |at| recv_buffered(self, at))
     }
 
     /// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on
@@ -387,13 +364,7 @@ impl Co {
             timeout,
             conn: null_mut(),
         };
-        let ops = SetupOps {
-            context: (&raw mut state).cast(),
-            fail: accept_fail,
-            wait: accept_wait,
-            call: accept_call,
-        };
-        if !swr_v1_hook_accept(&ops) {
+        if !swr_v1_hook_accept(&mut state) {
             return None;
         }
         // SAFETY: the connection the listening socket accepted.
@@ -446,19 +417,10 @@ impl Co {
         length: usize,
         call: F,
     ) -> isize {
-        unsafe extern "C" fn each<F: FnMut(*mut SocketRecord, *mut u8, usize) -> isize>(
-            context: *mut c_void,
-            at: *mut u8,
-            length: usize,
-        ) -> isize {
-            // SAFETY: `transfer`'s own Transfer<F>, alive until the transfer returns.
-            let transfer = unsafe { &mut *context.cast::<Transfer<F>>() };
-            (transfer.call)(transfer.socket.socket(), at, length)
-        }
-        let mut state = Transfer { socket: self, call };
-        let context = (&raw mut state).cast();
-        // SAFETY: as the caller promises; `each` matches `context`.
-        unsafe { transfer(self, event, flags, buffer, length, each::<F>, context) }
+        let mut call = call;
+        let mut each = |at, length| call(self.socket(), at, length);
+        // SAFETY: as the caller promises.
+        unsafe { transfer(self, event, flags, buffer, length, &mut each) }
     }
 
     /// `Socket::bind(host, port)`: `SO_REUSEADDR` (a failure is only logged), bind to
