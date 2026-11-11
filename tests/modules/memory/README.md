@@ -38,15 +38,15 @@ tests here, one per TEST with its inputs and expected values (#1513, #1665).
 Nothing in the build includes `swoole_table.h` or the `FixedPool` facade any more,
 so they left with these ports.
 
-`memory/ringbuffer.cpp` and `core/heap.cpp` have no port: their subjects went
-(#2599). Upstream calls `RingBuffer` from nowhere but that TEST, and the timer,
+`memory/ringbuffer.cpp`, `core/heap.cpp` and `fixed_pool.realloc` have no port:
+their subjects went (#2599, #2849). Upstream calls `RingBuffer` from nowhere but that TEST, and the timer,
 `swoole::Heap`'s one caller, keeps its own heap (`crates/timer/src/heap.rs`), so
-nothing in the extension used the Rust ports.
+nothing in the extension used the Rust ports. `fixed_pool.realloc` tests
+`sw_shm_realloc`, which nothing else called.
 
 | Upstream TEST (core-tests/src/) | Rust test |
 | --- | --- |
 | `memory/fixed_pool.cpp` `fixed_pool.alloc` | `members::tests::fixed_pool_alloc` |
-| `memory/fixed_pool.cpp` `fixed_pool.realloc` | `members::tests::fixed_pool_realloc` |
 | `memory/global_memory.cpp` `global_memory.alloc` | `members::tests::global_memory_alloc` |
 | `memory/table.cpp` `table.create` | `table::tests::table_create` |
 | `memory/table.cpp` `table.iterator` | `table::tests::table_iterator` |

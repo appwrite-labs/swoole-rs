@@ -20,7 +20,7 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: wrk nghttp2-client
@@ -28,7 +28,7 @@ jobs:
         run: |
           sudo apt-get install -yq "linux-tools-$(uname -r)"
           sudo sysctl kernel.perf_event_paranoid=-1
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -54,12 +54,12 @@ jobs:
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/memory/memory.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: wall
           path: target/wall/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: memory

@@ -104,12 +104,19 @@ class Sides:
         return not result.returncode
 
 
+# GCC 13's ASan epilogue on aarch64 Linux never frees a function's fake (use-after-return)
+# stack frame, so once a size class's slots are used up every instrumented call scans them all
+# (about 4 µs) and then falls back to the real stack, where use-after-return goes undetected
+# anyway. std::regex makes many such calls: the rewrite gate ran 150 s there, against under 20 s on x86_64.
+ASAN_ENV = ({**os.environ, 'ASAN_OPTIONS': ':'.join(filter(None, [os.environ.get('ASAN_OPTIONS'), 'detect_stack_use_after_return=0']))}
+            if sys.platform.startswith('linux') and os.uname().machine == 'aarch64' else None)
+
 def run(binary, symbols, output, report, timeout=30):
     """Require the Rust symbols in the gate binary, run it and record its last JSON line."""
     present = subprocess.check_output(['nm', '-g', str(binary)], text=True)
     assert all(name in present for name in symbols)
     try:
-        result = run_isolated([str(binary)], timeout=timeout)
+        result = run_isolated([str(binary)], timeout=timeout, env=ASAN_ENV)
     except subprocess.TimeoutExpired as expired:
         # communicate() hands back the partial output as bytes, even in text mode.
         text = lambda data: data.decode(errors='replace') if isinstance(data, bytes) else data or ''

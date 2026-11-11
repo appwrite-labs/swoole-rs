@@ -7,8 +7,9 @@
 `run` provisions a project on the fresh stack (console account, team, project, API
 key, user, collection, bucket and one file), drives each endpoint with ApacheBench
 (keep-alive, fixed request count and concurrency) from the host, opens realtime
-subscriptions with a minimal WebSocket client, and samples the appwrite container's
-memory with `docker stats` after the load. appwrite-e2e.yml alternates the variants
+subscriptions with a minimal WebSocket client, and samples the memory of every container
+running the image under test (`appwrite-dev`: the API, realtime and the workers) with
+`docker stats` after the load. appwrite-e2e.yml alternates the variants
 on one runner so both see the same machine; the stack needs _APP_OPTIONS_ABUSE
 disabled, or session creation is rate limited.
 """
@@ -167,10 +168,16 @@ def ab(path, headers, requests=REQUESTS):
 
 
 def memory_mib():
-    usage = subprocess.run(['docker', 'stats', '--no-stream', '--format', '{{.MemUsage}}', 'appwrite'],
-                           capture_output=True, text=True, check=True).stdout.split('/')[0].strip()
-    value, unit = re.match(r'([\d.]+)\s*([KMG]i?B)', usage).groups()
-    return float(value) * {'KiB': 1 / 1024, 'MiB': 1, 'GiB': 1024, 'KB': 1 / 1000, 'MB': 1, 'GB': 1000}[unit]
+    """{container: MiB in use} for every container running the image under test."""
+    names = subprocess.run(['docker', 'ps', '--filter', 'ancestor=appwrite-dev', '--format', '{{.Names}}'],
+                           capture_output=True, text=True, check=True).stdout.split()
+    stats = subprocess.run(['docker', 'stats', '--no-stream', '--format', '{{.Name}} {{.MemUsage}}', *names],
+                           capture_output=True, text=True, check=True).stdout.splitlines()
+    memory = {}
+    for line in stats:
+        name, value, unit = re.match(r'(\S+) ([\d.]+)\s*([KMG]i?B)', line).groups()
+        memory[name] = float(value) * {'KiB': 1 / 1024, 'MiB': 1, 'GiB': 1024, 'KB': 1 / 1000, 'MB': 1, 'GB': 1000}[unit]
+    return memory
 
 
 def run(variant, trial, out):
@@ -180,7 +187,7 @@ def run(variant, trial, out):
                    for name, (path, options, requests) in endpoints(project, secret, file, Path(scratch)).items()}
     results['realtime-subscribe'] = realtime(project)
     record = {'variant': variant, 'trial': int(trial), 'requests': REQUESTS, 'concurrency': CONCURRENCY,
-              'endpoints': results, 'appwrite_memory_mib': memory_mib()}
+              'endpoints': results, 'memory_mib': memory_mib()}
     out.mkdir(parents=True, exist_ok=True)
     (out / f'{variant}-{trial}.json').write_text(json.dumps(record, indent=2) + '\n')
     print(json.dumps(record))
@@ -199,8 +206,13 @@ def report(out):
         for metric in ['requests_per_second', 'p50_ms', 'p99_ms', 'failed', 'non_2xx']:
             values = [f"{median(v, lambda r: r['endpoints'][name][metric]):.1f}" for v in variants]
             lines.append(f'| {name} | {metric} | ' + ' | '.join(values) + ' |')
-    values = [f"{median(v, lambda r: r['appwrite_memory_mib']):.0f}" for v in variants]
-    lines.append('| appwrite container | memory MiB | ' + ' | '.join(values) + ' |')
+    containers = sorted({name for record in records for name in record['memory_mib']})
+    for name in containers + ['all containers']:
+        def cell(variant):
+            mine = [r['memory_mib'] for r in records if r['variant'] == variant]
+            values = [sum(m.values()) if name == 'all containers' else m[name] for m in mine if name in m or name == 'all containers']
+            return f'{statistics.median(values):.0f}' if values else '–'
+        lines.append(f'| {name} | memory MiB | ' + ' | '.join(cell(v) for v in variants) + ' |')
     print('\n'.join(lines))
     return int(any(r['endpoints'][name]['failed'] or r['endpoints'][name]['non_2xx']
                    for r in records for name in names))
