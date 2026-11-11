@@ -787,6 +787,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn send_numbers_each_message_from_the_shared_counter() {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);

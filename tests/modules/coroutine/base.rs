@@ -11,7 +11,6 @@
 //! its data here (`swr_v1_coroutine_create`, `swoole_coroutine_create`,
 //! `swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage and is in
 //! system/fixture.cc.
-//! `AsyncFile`'s inline members are its `swr_v1_os_async_file_*` calls.
 
 use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
@@ -101,49 +100,6 @@ unsafe extern "C-unwind" {
 
     // system/fixture.cc.
     fn swr_case_event_defer(fn_: Callback, data: *mut c_void);
-
-    fn swr_v1_os_async_file_new() -> *mut c_void;
-    fn swr_v1_os_async_file_free(file: *mut c_void);
-    fn swr_v1_os_async_file_fd(file: *const c_void) -> c_int;
-    fn swr_v1_os_async_file_open(
-        file: *mut c_void,
-        path: *const std::ffi::c_char,
-        flags: c_int,
-        mode: u32,
-        effect: unsafe extern "C-unwind" fn(*const std::ffi::c_char, c_int, u32) -> c_int,
-    ) -> bool;
-    fn swr_v1_os_async_file_read(
-        file: *const c_void,
-        buf: *mut c_void,
-        count: usize,
-        effect: unsafe extern "C-unwind" fn(c_int, *mut c_void, usize) -> isize,
-    ) -> isize;
-    fn swr_v1_os_async_file_write(
-        file: *const c_void,
-        buf: *const c_void,
-        count: usize,
-        effect: unsafe extern "C-unwind" fn(c_int, *const c_void, usize) -> isize,
-    ) -> isize;
-    fn swr_v1_os_async_file_sync(
-        file: *const c_void,
-        effect: unsafe extern "C" fn(c_int) -> c_int,
-    ) -> bool;
-    fn swr_v1_os_async_file_truncate(
-        file: *const c_void,
-        length: i64,
-        effect: unsafe extern "C" fn(c_int, i64) -> c_int,
-    ) -> bool;
-    fn swr_v1_os_async_file_stat(
-        file: *const c_void,
-        statbuf: *mut Stat,
-        effect: unsafe extern "C" fn(c_int, *mut Stat) -> c_int,
-    ) -> bool;
-    fn swr_v1_os_async_file_offset(
-        file: *const c_void,
-        offset: i64,
-        whence: c_int,
-        effect: unsafe extern "C" fn(c_int, i64, c_int) -> i64,
-    ) -> i64;
 }
 
 unsafe extern "C" {
@@ -737,80 +693,44 @@ fn c_api() {
     assert!(c1 >= 1);
 }
 
-/// `coroutine_async_file.async_file`.
+/// `coroutine_async_file.async_file`. `AsyncFile` left the build with its last
+/// caller; each member was one hooked call on its descriptor, so the case makes
+/// those calls, in the TEST's order.
 fn async_file() {
     co_run(|| {
-        // SAFETY: an `AsyncFile`, its inline members' calls over the hooked file
-        // functions, freed (after its close) at the end.
+        // SAFETY: the hooked file functions over a descriptor this case opens and
+        // closes, and buffers that outlive each call.
         unsafe {
-            let file = swr_v1_os_async_file_new();
-            swr_v1_os_async_file_open(
-                file,
-                c"/tmp/file.txt".as_ptr(),
-                O_CREAT | O_RDWR,
-                0o666,
-                swoole_coroutine_open,
-            );
+            let fd = swoole_coroutine_open(c"/tmp/file.txt".as_ptr(), O_CREAT | O_RDWR, 0o666);
             // ready()
-            assert_ne!(swr_v1_os_async_file_fd(file), -1);
-            assert!(swr_v1_os_async_file_truncate(
-                file,
-                0,
-                swoole_coroutine_ftruncate
-            ));
-            assert_eq!(
-                swr_v1_os_async_file_offset(file, 0, SEEK_SET, swoole_coroutine_lseek),
-                0
-            );
-            assert_eq!(
-                swr_v1_os_async_file_offset(file, 0, SEEK_CUR, swoole_coroutine_lseek),
-                0
-            );
+            assert_ne!(fd, -1);
+            assert_eq!(swoole_coroutine_ftruncate(fd, 0), 0);
+            assert_eq!(swoole_coroutine_lseek(fd, 0, SEEK_SET), 0);
+            assert_eq!(swoole_coroutine_lseek(fd, 0, SEEK_CUR), 0);
 
             let data = b"Hello World!";
             let length = data.len();
             assert_eq!(
-                swr_v1_os_async_file_write(
-                    file,
-                    data.as_ptr().cast(),
-                    length,
-                    swoole_coroutine_write
-                ),
+                swoole_coroutine_write(fd, data.as_ptr().cast(), length),
                 length as isize
             );
 
-            assert!(swr_v1_os_async_file_sync(file, swoole_coroutine_fsync));
-            assert_eq!(
-                swr_v1_os_async_file_offset(file, 0, SEEK_SET, swoole_coroutine_lseek),
-                0
-            );
+            assert_eq!(swoole_coroutine_fsync(fd), 0);
+            assert_eq!(swoole_coroutine_lseek(fd, 0, SEEK_SET), 0);
 
             let mut buf = [0u8; 1024];
             assert_eq!(
-                swr_v1_os_async_file_read(
-                    file,
-                    buf.as_mut_ptr().cast(),
-                    1024,
-                    swoole_coroutine_read
-                ),
+                swoole_coroutine_read(fd, buf.as_mut_ptr().cast(), 1024),
                 length as isize
             );
             assert_eq!(&buf[..length], data);
 
             let mut statbuf: Stat = [0; 32];
-            assert!(swr_v1_os_async_file_stat(
-                file,
-                &mut statbuf,
-                swoole_coroutine_fstat
-            ));
+            assert_eq!(swoole_coroutine_fstat(fd, &mut statbuf), 0);
             assert!(statbuf[ST_SIZE] > 0);
 
-            // ~AsyncFile: close, then the owner's free.
-            let fd = swr_v1_os_async_file_fd(file);
-            if fd != -1 {
-                swoole_coroutine_close(fd);
-            }
-            swr_v1_os_async_file_free(file);
+            // ~AsyncFile
+            swoole_coroutine_close(fd);
         }
     });
 }
