@@ -238,7 +238,7 @@ mod tests {
         let data = (&raw mut log).cast();
         let ctx = log.ctx.as_mut_ptr();
         swr_v1_thread_context_init();
-        // The context's own entry points, without the fcontext ones this test can't link.
+        // The thread backend's own entry points, which context.rs's dispatch on THREAD reaches.
         unsafe {
             ctx.write(Context::threaded(THREAD, entry, data));
             assert_eq!(start(ctx), 0);

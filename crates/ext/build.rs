@@ -312,18 +312,6 @@ mod php {
         found
     }
 
-    /// boost.context's switch, as config.m4 picks it.
-    fn context_asm(os: &str, arch: &str) -> &'static str {
-        match (os, arch) {
-            ("macos", _) => "combined_sysv_macho_gas.S",
-            (_, "x86_64") => "x86_64_sysv_elf_gas.S",
-            (_, "aarch64") => "arm64_aapcs_elf_gas.S",
-            (_, "riscv64") => "riscv64_sysv_elf_gas.S",
-            (_, "loongarch64") => "loongarch64_sysv_elf_gas.S",
-            _ => panic!("ext: no boost.context switch for {os}/{arch}"),
-        }
-    }
-
     pub(super) fn build() {
         // `cargo clippy --all-features` turns on every hook, whose libraries CI's plain
         // jobs lack: only tools/build_ext.py, which names the PHP, builds the native code.
@@ -337,7 +325,6 @@ mod php {
         let native = root.join("native");
         let out = PathBuf::from(env::var("OUT_DIR").expect("ext: OUT_DIR"));
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
-        let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("ext: target arch");
         let platform = if os == "macos" { MACOS } else { LINUX };
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
@@ -402,15 +389,11 @@ mod php {
             .files(profile.cxx)
             .compile("swoole_native_cxx");
 
-        let asm = context_asm(&os, &arch);
         let mut c = base(false);
         for module in &modules {
             c.files(sources(module, "c"));
         }
         c.file(vendored.join("php/streams/plain_wrapper.c"))
-            // Rust's coroutine links boost.context's switch even under thread context.
-            .file(vendored.join("boost/asm").join(format!("make_{asm}")))
-            .file(vendored.join("boost/asm").join(format!("jump_{asm}")))
             .files(profile.c)
             .compile("swoole_native_c");
 
