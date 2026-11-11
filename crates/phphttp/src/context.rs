@@ -8,8 +8,7 @@ use crate::{
 use std::{
     borrow::Cow,
     collections::HashSet,
-    ffi::{CStr, CString, c_char, c_int, c_void},
-    ptr,
+    ffi::{CStr, CString, c_int},
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
@@ -143,10 +142,8 @@ pub(crate) fn alloc() -> *mut Context {
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
 /// # Safety
-/// `ctx` is a live context and `server` the live server.
-pub(crate) unsafe fn init(ctx: *mut Context, server: *mut c_void) {
-    // SAFETY: per the caller, `server` is a live `Server` for the call.
-    let server = unsafe { view::Server::from_raw(server) };
+/// `ctx` is a live context.
+pub(crate) unsafe fn init(ctx: *mut Context, server: view::Server<'_>) {
     let config = server.config();
     let state = send::state(ctx);
     state.parse_cookie = u8::from(config.http_parse_cookie);
@@ -158,7 +155,7 @@ pub(crate) unsafe fn init(ctx: *mut Context, server: *mut c_void) {
         state.compression_min_length = config.compression_min_length;
     }
     // SAFETY: per the caller.
-    unsafe { bind(ctx, server.raw(), ptr::null_mut()) };
+    unsafe { bind_server(ctx, server) };
 }
 
 /// The server a context not bound to a coroutine socket answers through.
@@ -174,20 +171,15 @@ pub(crate) fn co_socket(state: &State) -> bool {
 
 /// `ctx->send`: the server's send to the session, or the coroutine socket's.
 pub(crate) fn send(ctx: *mut Context, data: &[u8]) -> bool {
-    send_raw(ctx, data.as_ptr().cast(), data.len())
-}
-
-/// `send` of `length` bytes at `data`, which may be the context's own buffer.
-pub(crate) fn send_raw(ctx: *mut Context, data: *const c_char, length: usize) -> bool {
     let state = send::state(ctx);
     let (target, fd) = (state.private_data, state.fd);
     if co_socket(state) {
-        // SAFETY: the context's live socket and `length` bytes; true once
-        // every byte is sent.
-        unsafe { co::send_all(target, data, length) }.cast_unsigned() == length
+        // SAFETY: the context's live socket and the bytes; true once every
+        // byte is sent.
+        unsafe { co::send_all(target, data.as_ptr().cast(), data.len()) }.cast_unsigned()
+            == data.len()
     } else {
-        // SAFETY: the context's live server and `length` bytes.
-        unsafe { server_send(target, fd, data, length) }
+        server_send(server(state), fd, data)
     }
 }
 
@@ -196,18 +188,7 @@ const OUTPUT_SEND_YIELD: c_int = 1010;
 
 /// `Server::send` to `fd`, waiting in a coroutine while the socket's buffer
 /// is full. A bailout while waiting is left for the handler to raise.
-/// # Safety
-/// `server` is the live server and `data` holds `length` bytes.
-pub(crate) unsafe fn server_send(
-    server: *mut c_void,
-    fd: i64,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    // SAFETY: per the caller.
-    let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: per the caller, live while the coroutine waits.
-    let data = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> bool {
     let sent = server_methods::send(server, fd, data);
     if sent || swoole_rs_corebase::log::last_error() != OUTPUT_SEND_YIELD {
         return sent;
@@ -240,14 +221,7 @@ pub(crate) fn sendfile(
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
-        // SAFETY: the context's live server.
-        server_methods::sendfile(
-            unsafe { view::Server::from_raw(target) },
-            fd,
-            name,
-            offset,
-            length,
-        )
+        server_methods::sendfile(server(state), fd, name, offset, length)
     }
 }
 
@@ -259,29 +233,30 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
         // SAFETY: the context's live socket.
         unsafe { co::close(target) }
     } else {
-        // SAFETY: the context's live server.
-        server_methods::close(unsafe { view::Server::from_raw(target) }, fd, false)
+        server_methods::close(server(state), fd, false)
     }
 }
 
-/// `Context::bind(Server *)`, or `bind(zval *)` when `server` is null: the
-/// context sends through the server, or holds the socket object and sends
+/// `Context::bind(Server *)`: the context sends through the server.
+/// # Safety
+/// `ctx` is a live context.
+pub(crate) unsafe fn bind_server(ctx: *mut Context, server: view::Server<'_>) {
+    let state = send::state(ctx);
+    state.private_data = server.raw();
+    // A server's context holds no socket.
+    state.zsocket = Owned::null();
+}
+
+/// `Context::bind(zval *)`: the context holds the socket object and sends
 /// through its coroutine socket.
 /// # Safety
-/// `ctx` is a live context; `server` is the live server or `socket` a live
-/// `Swoole\Coroutine\Socket`.
-pub(crate) unsafe fn bind(ctx: *mut Context, server: *mut c_void, socket: *mut zval) {
+/// `ctx` is a live context and `socket` a live `Swoole\Coroutine\Socket`.
+pub(crate) unsafe fn bind(ctx: *mut Context, socket: *mut zval) {
     let state = send::state(ctx);
-    if server.is_null() {
-        // SAFETY: per the caller.
-        state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket) };
-        // SAFETY: per the caller; the context takes a reference.
-        state.zsocket = unsafe { Value::from_ptr(socket) }.map_or_else(Owned::default, Value::copy);
-    } else {
-        state.private_data = server;
-        // A server's context holds no socket.
-        state.zsocket = Owned::null();
-    }
+    // SAFETY: per the caller.
+    state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket) };
+    // SAFETY: per the caller; the context takes a reference.
+    state.zsocket = unsafe { Value::from_ptr(socket) }.map_or_else(Owned::default, Value::copy);
 }
 
 /// `Context::copy`: an HTTP/2 stream's context takes its connection's

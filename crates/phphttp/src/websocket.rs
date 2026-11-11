@@ -140,9 +140,6 @@ const ON_MESSAGE: c_int = 8;
 const OK: c_int = 0;
 const ERR: c_int = -1;
 
-/// `swoole::Server`, opaque.
-type Server = c_void;
-
 /// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
 /// tells a WebSocket server by it.
 #[must_use]
@@ -160,8 +157,10 @@ struct Connection {
 }
 
 /// `php_swoole_server_get_and_check_server(object)`: `None` after the
-/// `E_ERROR` of a server object never constructed.
-pub(crate) fn server_of(object: *mut zval) -> Option<*mut Server> {
+/// `E_ERROR` of a server object never constructed. The view lives while
+/// `_held`, which holds the object (the method's frame, or the value), is
+/// borrowed.
+pub(crate) fn server_of<T: ?Sized>(object: *mut zval, _held: &T) -> Option<view::Server<'_>> {
     // SAFETY: a `Swoole\Server` object.
     let server = unsafe { php_swoole_server_get_ptr(object) };
     if server.is_null() {
@@ -175,47 +174,33 @@ pub(crate) fn server_of(object: *mut zval) -> Option<*mut Server> {
         bailout::defer(swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message));
         return None;
     }
-    Some(server)
-}
-
-/// `Server::is_started()`.
-pub(crate) fn started(server: *mut Server) -> bool {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
-    server.is_started()
+    // SAFETY: a constructed server object's live server.
+    Some(unsafe { view::Server::from_raw(server) })
 }
 
 /// `conn->websocket_status = status` of the session's slot.
-fn set_status(server: *mut Server, fd: zend_long, status: i64) {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn set_status(server: view::Server<'_>, fd: zend_long, status: i64) {
     if let Some(conn) = server.by_session(fd) {
         conn.websocket_status = u8::try_from(status).unwrap_or_default();
     }
 }
 
 /// `Server::send`; with `wait`, waiting in a coroutine while the buffer is full.
-fn send(server: *mut Server, fd: zend_long, data: &[u8], wait: bool) -> bool {
+fn send(server: view::Server<'_>, fd: zend_long, data: &[u8], wait: bool) -> bool {
     if wait {
-        // SAFETY: a live server and the bytes.
-        return unsafe { context::server_send(server, fd, data.as_ptr().cast(), data.len()) };
+        return context::server_send(server, fd, data);
     }
-    // SAFETY: as above.
-    server_methods::send(unsafe { view::Server::from_raw(server) }, fd, data)
+    server_methods::send(server, fd, data)
 }
 
 /// `Server::close(fd, reset)`.
-fn close(server: *mut Server, fd: zend_long, reset: bool) -> bool {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn close(server: view::Server<'_>, fd: zend_long, reset: bool) -> bool {
     server_methods::close(server, fd, reset)
 }
 
 /// The port's `open_websocket_{close,ping,pong}_frame` bits, or `None` when
 /// the session is gone (`get_port_by_session_id`).
-fn port_frames(server: *mut Server, fd: zend_long) -> Option<u8> {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
     let conn = server.by_session(fd)?;
     let port = server.port_by_fd(conn.fd);
     // SAFETY: a live port.
@@ -223,9 +208,7 @@ fn port_frames(server: *mut Server, fd: zend_long) -> Option<u8> {
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
-fn port_protocol<'a>(server: *mut Server, server_fd: c_int) -> &'a [u8] {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn port_protocol<'a>(server: view::Server<'_>, server_fd: c_int) -> &'a [u8] {
     let port = server.port_by_server_fd(server_fd);
     if port.is_null() {
         return &[];
@@ -263,12 +246,10 @@ method_table! {
 
 /// MINIT: the three classes and the constants, as
 /// `php_swoole_websocket_server_minit` registered them.
-/// # Safety
-/// Called once, at MINIT, after `Swoole\Http\Server` is registered.
-pub unsafe fn websocket_minit(args: &MinitArgs) {
+/// After `Swoole\Http\Server` is registered.
+pub fn websocket_minit(args: &MinitArgs) {
     let serializable = args.thread;
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(args.module) };
+    let minit = &args.minit;
     ZLIB.store(args.zlib, Relaxed);
     swoole_rs_phpclients::register_websocket(client_websocket);
     // Its objects are the parent's (no handlers of its own are installed).
@@ -328,7 +309,7 @@ pub unsafe fn websocket_minit(args: &MinitArgs) {
         minit.property_long(&CLOSE_FRAME, name, value, ZEND_ACC_PUBLIC);
     }
     minit.property_string(&CLOSE_FRAME, c"reason", c"", ZEND_ACC_PUBLIC);
-    constants(&minit);
+    constants(minit);
 }
 
 /// The global constants, `SWOOLE_WEBSOCKET_*` then the BC `WEBSOCKET_*`, in
@@ -839,9 +820,9 @@ fn unpack(call: &Call) {
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
-fn server(call: &Call) -> Option<*mut Server> {
-    let server = server_of(call.this_zval())?;
-    if !started(server) {
+fn server(call: &Call) -> Option<view::Server<'_>> {
+    let server = server_of(call.this_zval(), call)?;
+    if !server.is_started() {
         host::fatal("server is not running");
         return None;
     }
@@ -849,13 +830,11 @@ fn server(call: &Call) -> Option<*mut Server> {
 }
 
 /// `Server::get_connection_verify(fd) != nullptr`.
-pub(crate) fn server_connection(server: *mut Server, fd: zend_long) -> bool {
+pub(crate) fn server_connection(server: view::Server<'_>, fd: zend_long) -> bool {
     connection(server, fd, true).is_some()
 }
 
-fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connection> {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+fn connection(server: view::Server<'_>, fd: zend_long, verify: bool) -> Option<Connection> {
     let conn = if verify {
         server.verified(fd)
     } else {
@@ -870,7 +849,7 @@ fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connec
 }
 
 /// `swoole_websocket_server_push`: a packed frame to a WebSocket connection.
-fn push_frame(server: *mut Server, fd: zend_long, frame: &[u8]) -> bool {
+fn push_frame(server: view::Server<'_>, fd: zend_long, frame: &[u8]) -> bool {
     if fd <= 0 {
         host::fatal(&format!("fd[{fd}] is invalid"));
         return false;
@@ -981,7 +960,7 @@ handlers! {
 /// Run a server callback; `Err` if it bailed out. A failed call warns
 /// `"Swoole\WebSocket\Server->{event} handler error"` and closes `fd`.
 fn dispatch(
-    server: *mut Server,
+    server: view::Server<'_>,
     server_fd: c_int,
     event: c_int,
     args: &mut [zval],
@@ -1018,7 +997,7 @@ pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> c_int 
 fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout::Bailout> {
     let info = request.info();
     let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
-    let server = view.raw();
+    let server = view;
     let Some(settings) = port_frames(server, fd) else {
         return Ok(ERR);
     };
@@ -1058,7 +1037,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
 
 /// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.
 pub(crate) fn handshake_open(context: *mut c_void) -> Result<(), bailout::Bailout> {
-    let server = send::state(context).private_data;
+    let server = context::server(send::state(context));
     let fd = host::fd(context);
     if handshake(context)? {
         on_open(server, context)
@@ -1069,7 +1048,7 @@ pub(crate) fn handshake_open(context: *mut c_void) -> Result<(), bailout::Bailou
 }
 
 /// A handshake `onHandshake` answers: the connection is upgrading.
-pub(crate) fn upgrading(server: *mut c_void, fd: zend_long) {
+pub(crate) fn upgrading(server: view::Server<'_>, fd: zend_long) {
     set_status(server, fd, STATUS_HANDSHAKE);
 }
 
@@ -1106,7 +1085,7 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
     set_header(context, b"Sec-WebSocket-Version", b"13")?;
     let fd = host::fd(context);
     if host::flags(context) & CO_SOCKET == 0 {
-        let server = send::state(context).private_data;
+        let server = context::server(send::state(context));
         let Some(conn) = connection(server, fd, false) else {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
@@ -1150,7 +1129,7 @@ fn closed(func: &CStr, fd: zend_long) {
 }
 
 /// `swoole_websocket_onOpen`.
-fn on_open(server: *mut Server, context: *mut Context) -> Result<(), bailout::Bailout> {
+fn on_open(server: view::Server<'_>, context: *mut Context) -> Result<(), bailout::Bailout> {
     let fd = host::fd(context);
     let Some(conn) = connection(server, fd, false) else {
         closed(c"swoole_websocket_onOpen", fd);
@@ -1270,7 +1249,7 @@ pub(crate) fn accept(context: *mut Context) {
 /// otherwise the handshake failed and the connection closes.
 pub(crate) fn handshaked(context: *mut Context) {
     let state = send::state(context);
-    let (server, fd) = (state.private_data, state.fd);
+    let (server, fd) = (crate::context::server(state), state.fd);
     let Some(conn) = connection(server, fd, true) else {
         return;
     };
