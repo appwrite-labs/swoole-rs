@@ -10,7 +10,7 @@ runs:
         base=https://download.oracle.com/otn_software/linux/instantclient/1930000
         cd "$RUNNER_TEMP"
         for part in basiclite sdk; do
-          curl -fsSL --retry 5 -o "$part.zip" "$base/instantclient-$part-linux.x64-19.30.0.0.0dbru.zip"
+          curl -fsSL --retry 5 --retry-all-errors -o "$part.zip" "$base/instantclient-$part-linux.x64-19.30.0.0.0dbru.zip"
           unzip -qo "$part.zip"
         done
         rm instantclient_*/sdk/include/ldap.h
