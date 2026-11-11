@@ -151,6 +151,13 @@ macro_rules! call {
 const BAD_HOST_ADDR: c_int = 722;
 const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
 
+/// An all-zero address, as `Address` starts: a stale scope id would misroute an
+/// interface-local IPv6 destination.
+pub(crate) fn empty_address() -> SocketAddress {
+    // SAFETY: the address is plain data: integers and the sockaddr union.
+    unsafe { core::mem::zeroed() }
+}
+
 /// `Address::assign(type, std::string(host), port, false)` into `address`; false
 /// with the last error set.
 pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port: c_int) -> bool {
@@ -477,8 +484,7 @@ impl Co {
                 format_args!("setsockopt({}, SO_REUSEADDR) failed", self.sock_fd()),
             );
         }
-        // SAFETY: an all-zero address, as `Address` starts.
-        let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+        let mut address = empty_address();
         let bound = assign(&mut address, kind, host, port)
             && self.net(|record| record.bind(&address) >= 0 && record.get_name() >= 0)
                 == Some(true);
@@ -511,9 +517,7 @@ impl Co {
             set_err(self, libc::EPROTONOSUPPORT);
             return -1;
         }
-        // Zeroed whole: a stale scope id misroutes an interface-local IPv6 destination.
-        // SAFETY: an all-zero address.
-        let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+        let mut address = empty_address();
         let mut assigned = assign(&mut address, kind, host, port);
         if !assigned && log::last_error() == BAD_HOST_ADDR {
             let ip = crate::resolve::system_gethostbyname(host, domain, timeout);
