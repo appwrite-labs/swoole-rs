@@ -1,7 +1,10 @@
 //! Shared HTTP/SOCKS proxy values and packet storage. Native objects only lend
 //! references to these stable slots.
 use crate::{CoreStringView, StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
-use std::{cell::UnsafeCell, ptr};
+use std::{
+    cell::{Cell, RefCell, RefMut},
+    ptr,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -26,10 +29,13 @@ const _: () = {
         "native proxy port offset changed"
     );
 };
+/// A proxy's values, which one thread (it is `!Sync`) reads and sets through
+/// `&self`. The native head's views write the same cells between Rust calls.
 pub struct ProxyState {
-    pub fields: UnsafeCell<ProxyFields>,
+    pub fields: Cell<ProxyFields>,
     strings: [StringSlot; 4],
-    buffer: UnsafeCell<Option<Box<[u8; 512]>>>,
+    /// A SOCKS5 proxy's packet; none for an HTTP proxy.
+    packet: Option<Box<RefCell<[u8; 512]>>>,
 }
 #[repr(C)]
 pub struct PreparedProxy {
@@ -41,16 +47,15 @@ pub struct PreparedProxy {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
     let state = Box::leak(Box::new(ProxyState {
-        fields: UnsafeCell::new(ProxyFields::default()),
+        fields: Cell::default(),
         strings: std::array::from_fn(|_| StringSlot::default()),
-        buffer: UnsafeCell::new(socks.then(|| Box::new([0; 512]))),
+        packet: socks.then(|| Box::new(RefCell::new([0; 512]))),
     }));
-    let buffer = state.buffer.get_mut().as_mut();
     PreparedProxy {
-        buffer: buffer.map_or(ptr::null_mut(), |value| (&raw mut **value).cast()),
-        fields: state.fields.get(),
+        buffer: state.buffer(),
+        fields: state.fields.as_ptr(),
         strings: state.strings.each_ref().map(ptr::from_ref),
-        // Last, and with no call: a `&mut` reborrow, or moving a box, would end the views.
+        // Last: a `&mut` reborrow, or moving a box, would end the views.
         owner: &raw mut *state,
     }
 }
@@ -64,38 +69,36 @@ pub unsafe extern "C" fn swr_v1_core_proxy_free(owner: *mut ProxyState) {
     }
 }
 impl ProxyState {
-    /// The string at `index`, or an empty view past the four slots.
-    /// # Safety
-    /// self is live, externally synchronized and cannot change during the view.
-    pub unsafe fn string(&self, index: usize) -> CoreStringView {
-        let Some(slot) = self.strings.get(index) else {
-            return CoreStringView {
-                data: c"".as_ptr(),
-                length: 0,
-            };
-        };
-        // SAFETY: the caller lends the stable, synchronized inline string slot.
-        unsafe { swr_v1_core_string_view(slot) }
+    /// A copy of the string at `index` (0 host, 1 username, 2 password, 3 target
+    /// host), or empty past the four slots.
+    #[must_use]
+    pub fn string(&self, index: usize) -> Vec<u8> {
+        self.strings.get(index).map_or_else(Vec::new, |slot| {
+            // SAFETY: no reference into a slot outlives a call on this `!Sync` owner.
+            let view = unsafe { swr_v1_core_string_view(slot) };
+            // SAFETY: the view names `length` initialized bytes, copied at once.
+            unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
+        })
     }
-    /// Sets the string at `index` (0 host, 1 username, 2 password, 3 target host):
-    /// `swr_v1_core_string_set`'s status, or -2 past the four slots.
-    /// # Safety
-    /// self is live and exclusively lent; no view of that string is in use.
-    pub unsafe fn set_string(&self, index: usize, value: &[u8]) -> i32 {
+    /// Sets the string at `index`: `swr_v1_core_string_set`'s status, or -2 past
+    /// the four slots.
+    pub fn set_string(&self, index: usize, value: &[u8]) -> i32 {
         self.strings.get(index).map_or(-2, |slot| {
-            // SAFETY: the caller lends the slot exclusively; `value` is readable.
+            // SAFETY: no reference into a slot outlives a call on this `!Sync` owner.
             unsafe { swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len()) }
         })
     }
-    /// The packet, through `&raw mut **box` (what `Box::as_mut_ptr` expands to; that method is unstable on the fuzz toolchain), which leaves the pointers handed out
-    /// before valid.
-    /// # Safety
-    /// self is a SOCKS owner, exclusively lent for packet writes.
-    pub unsafe fn buffer(&self) -> *mut u8 {
-        // SAFETY: the SOCKS owner contains the exclusive packet allocation.
-        unsafe { &mut *self.buffer.get() }
-            .as_mut()
-            .map_or(ptr::null_mut(), |value| (&raw mut **value).cast())
+    /// A SOCKS5 proxy's packet, lent while the guard lives.
+    #[must_use]
+    pub fn packet(&self) -> Option<RefMut<'_, [u8; 512]>> {
+        self.packet.as_ref().map(|packet| packet.borrow_mut())
+    }
+    /// The packet's address, for the native views and sends; null for an HTTP proxy.
+    #[must_use]
+    pub fn buffer(&self) -> *mut u8 {
+        self.packet
+            .as_ref()
+            .map_or(ptr::null_mut(), |packet| packet.as_ptr().cast())
     }
 }
 #[repr(C)]
@@ -104,10 +107,8 @@ pub struct ProxyCopyResult {
     pub index: u32,
 }
 /// Native copy-assignment order, including its guarded allocation boundaries.
-/// # Safety
-/// destination is exclusive and source stable; both owners have the same kind.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_proxy_assign(
+pub extern "C" fn swr_v1_core_proxy_assign(
     destination: &ProxyState,
     source: &ProxyState,
 ) -> ProxyCopyResult {
@@ -117,27 +118,21 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
             index: 0,
         };
     }
-    // SAFETY: a leaf scalar snapshot before the string assignments.
-    let fields = unsafe { *source.fields.get() };
-    // SAFETY: private packet presence identifies the two proxy value layouts.
-    let socks = unsafe { &*source.buffer.get() }.is_some();
+    let fields = source.fields.get();
+    let socks = source.packet.is_some();
     let slots = source.strings.iter().zip(&destination.strings);
     for (index, (from, to)) in slots.enumerate() {
         if (socks && index == 1) || (!socks && index == 0) {
-            // SAFETY: snapshot the trailing fields that have not yet been assigned.
-            let previous = unsafe { *destination.fields.get() };
-            // SAFETY: scalar writes follow native member assignment order.
-            unsafe {
-                *destination.fields.get() = ProxyFields {
-                    target_port: previous.target_port,
-                    socket_type: previous.socket_type,
-                    ..fields
-                }
-            };
+            // The scalar members declared before this string.
+            destination.fields.update(|previous| ProxyFields {
+                target_port: previous.target_port,
+                socket_type: previous.socket_type,
+                ..fields
+            });
         }
-        // SAFETY: source string bytes remain unchanged through the assignment.
+        // SAFETY: the source's slot, unchanged through the assignment.
         let value = unsafe { swr_v1_core_string_view(from) };
-        // SAFETY: destination is exclusive and the source view readable.
+        // SAFETY: a distinct owner's slot, and the source view readable.
         let status = unsafe { swr_v1_core_string_set(to, value.data, value.length) };
         if status != 0 {
             return ProxyCopyResult {
@@ -146,17 +141,18 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
             };
         }
     }
-    // SAFETY: all string assignments finished; the trailing scalar members follow.
-    unsafe { (*destination.fields.get()).target_port = fields.target_port };
-    if socks {
-        // SAFETY: trailing SOCKS socket type is assigned before its packet bytes.
-        unsafe { (*destination.fields.get()).socket_type = fields.socket_type };
-        // SAFETY: both same-kind owners contain stable disjoint packet arrays.
-        let source_buffer = unsafe { source.buffer() };
-        // SAFETY: destination packet storage is exclusively lent.
-        let destination_buffer = unsafe { destination.buffer() };
-        // SAFETY: both arrays contain512 bytes and distinct owners cannot overlap.
-        unsafe { ptr::copy_nonoverlapping(source_buffer, destination_buffer, 512) };
+    // The trailing scalar members, then the packet.
+    destination.fields.update(|previous| ProxyFields {
+        target_port: fields.target_port,
+        socket_type: if socks {
+            fields.socket_type
+        } else {
+            previous.socket_type
+        },
+        ..previous
+    });
+    if let (Some(from), Some(mut to)) = (source.packet(), destination.packet()) {
+        *to = *from;
     }
     ProxyCopyResult {
         status: 0,
@@ -166,7 +162,7 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
 
 /// Configure a fresh proxy after its protocol-specific credential validation.
 /// # Safety
-/// owner is exclusive; texts lends host/user/password terminated byte spans.
+/// owner is live; texts lends host/user/password terminated byte spans.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_proxy_configure(
     owner: *mut ProxyState,
@@ -179,13 +175,12 @@ pub unsafe extern "C" fn swr_v1_core_proxy_configure(
     let owner = unsafe { &*owner };
     // SAFETY: three initialized input descriptors remain stable through assignment.
     let texts = unsafe { std::slice::from_raw_parts(texts, 3) };
-    // SAFETY: packet ownership is immutable after construction and identifies SOCKS.
-    let socks = unsafe { &*owner.buffer.get() }.is_some();
+    let socks = owner.packet.is_some();
     for (index, (value, slot)) in texts.iter().zip(&owner.strings).enumerate() {
         if index != 0 && !authenticated {
             break;
         }
-        // SAFETY: live exclusive slot and readable input span.
+        // SAFETY: the owner's slot and a readable input span.
         let status = unsafe { swr_v1_core_string_set(slot, value.data, value.length) };
         if status != 0 {
             return ProxyCopyResult {
@@ -194,13 +189,15 @@ pub unsafe extern "C" fn swr_v1_core_proxy_configure(
             };
         }
         if index == 0 {
-            // SAFETY: scalar writes occur after the host and before credential assignment.
-            let fields = unsafe { &mut *owner.fields.get() };
-            fields.port = port;
-            if socks {
-                fields.dns_tunnel = 1;
-                fields.socket_type = socket_type;
-            }
+            // After the host and before the credentials.
+            owner.fields.update(|mut fields| {
+                fields.port = port;
+                if socks {
+                    fields.dns_tunnel = 1;
+                    fields.socket_type = socket_type;
+                }
+                fields
+            });
         }
     }
     ProxyCopyResult {
@@ -265,14 +262,9 @@ mod tests {
                         CStr::from_ptr(swr_v1_core_string_view(destination.strings[index]).data)
                     );
                 }
-                assert_eq!(
-                    swr_v1_core_string_set(source.strings[0], c"changed".as_ptr(), 7),
-                    0
-                );
-                assert_eq!(
-                    CStr::from_ptr(swr_v1_core_string_view(destination.strings[0]).data).to_bytes(),
-                    b"proxy"
-                );
+                assert_eq!((*source.owner).set_string(0, b"changed"), 0);
+                assert_eq!((*destination.owner).string(0), b"proxy");
+                assert_eq!((*source.owner).string(0), b"changed");
                 if socks {
                     assert_eq!(
                         std::slice::from_raw_parts(destination.buffer, 512),
@@ -280,6 +272,10 @@ mod tests {
                     );
                     *source.buffer = 0;
                     assert_eq!(*destination.buffer, 0x5a);
+                    assert_eq!(
+                        (*destination.owner).packet().map(|packet| packet[0]),
+                        Some(0x5a)
+                    );
                 }
                 swr_v1_core_proxy_free(source.owner);
                 swr_v1_core_proxy_free(destination.owner);
