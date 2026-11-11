@@ -45,7 +45,6 @@ impl<'a> Server<'a> {
     /// `serv` is a live `Server` for `'a`, and the server's own synchronization
     /// keeps writers of its configuration and counters (such as
     /// [`Server::config_mut`]) apart from the references the safe readers return.
-    /// Its ports' listening sockets stay open for `'a`, as [`Port::from_raw`] requires.
     #[must_use]
     pub unsafe fn from_raw(serv: *mut c_void) -> Self {
         Self {
@@ -423,7 +422,10 @@ impl<'a> Server<'a> {
     /// The listening socket of `serv->ports[index]`, or `None` past the last.
     #[must_use]
     pub(crate) fn port_socket_at(self, index: usize) -> Option<Socket<'a>> {
-        self.port_at(index)?.socket()
+        let port = self.port_at(index)?;
+        // SAFETY: null, or one of the server's live ports' listening socket, which the
+        // server keeps open while it serves.
+        unsafe { Socket::from_ptr(port.config().socket.cast()) }
     }
 
     /// `Server::task_notify_pipe(worker_id)`, or null.
@@ -524,10 +526,7 @@ impl<'a> Port<'a> {
     /// # Safety
     /// `port` is null or a live `ListenPort` for `'a`, and the port's own
     /// synchronization keeps writers of its settings ([`Port::config_mut`]) apart
-    /// from the references the safe readers return. The port's listening socket also
-    /// stays open for `'a`, or nothing reads it through this view (or a [`Socket`] it
-    /// returned) after it closes: the close ops (`OP_PORT_CLOSE`,
-    /// `OP_PORT_CLOSE_SOCKET`) free it through the raw port and return.
+    /// from the references the safe readers return.
     #[must_use]
     pub unsafe fn from_raw(port: *mut c_void) -> Option<Self> {
         core::ptr::NonNull::new(port).map(|raw| Self {
@@ -562,18 +561,19 @@ impl<'a> Port<'a> {
         unsafe { crate::port_config::of(self.raw()) }
     }
 
-    /// The port's listening socket, or `None` before it has one.
-    #[must_use]
-    pub fn socket(self) -> Option<Socket<'a>> {
-        // SAFETY: null, or the port's listening socket, which `from_raw`'s caller keeps
-        // open for as long as anything reads it.
-        unsafe { Socket::from_ptr(self.config().socket.cast()) }
+    /// `f` over the port's listening socket, or `None` before it has one (or after
+    /// it closes). The socket can't outlive `f`: a port's socket closes while the port
+    /// lives (`OP_PORT_CLOSE_SOCKET`), so no handle to it is kept past a read.
+    pub fn with_socket<R>(self, f: impl FnOnce(Socket<'_>) -> R) -> Option<R> {
+        // SAFETY: null, or the port's listening socket, live now: closing it frees it
+        // and nulls the field in one step, and the handle ends with `f`.
+        unsafe { Socket::from_ptr(self.config().socket.cast()) }.map(f)
     }
 
     /// `ListenPort::get_fd()`.
     #[must_use]
     pub fn fd(self) -> c_int {
-        self.socket().map_or(-1, Socket::fd)
+        self.with_socket(|socket| socket.fd()).unwrap_or(-1)
     }
 }
 

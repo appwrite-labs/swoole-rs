@@ -310,8 +310,8 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_COUNT => ctx.ports().len() as u64,
         OP_PORT_DEL => {
-            let sock = ctx.ports().get(usize::try_from(arg).ok()?)?.socket()?;
-            ctx.reactor().del(sock);
+            let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
+            port.with_socket(|sock| ctx.reactor().del(sock))?;
             0
         }
         OP_ARM_EXIT => {
