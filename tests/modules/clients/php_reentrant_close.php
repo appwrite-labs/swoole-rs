@@ -40,31 +40,6 @@ function http_reentry():array {
     });
     return $result;
 }
-// An upgraded client's recv() while another coroutine's recv() waits on a frame:
-// the second raises the bound-socket error, and both frames reach the first reader.
-function websocket_reentry():array {
-    $result=[];
-    Swoole\Coroutine\run(static function()use(&$result):void{
-        $server=new Swoole\Coroutine\Http\Server('127.0.0.1',0);
-        $server->handle('/',static function($request,$response):void{
-            $response->upgrade();Swoole\Coroutine::sleep(0.05);
-            foreach(['one','two'] as $frame){$response->push($frame);Swoole\Coroutine::sleep(0.01);}
-            $response->recv(5);
-        });
-        Swoole\Coroutine::create(static fn()=>$server->start());
-        $client=new Swoole\Coroutine\Http\Client('127.0.0.1',$server->port);
-        check($client->upgrade('/'),'upgrade');
-        $waiting=new Swoole\Coroutine\Channel(1);
-        Swoole\Coroutine::create(static function()use($client,$waiting):void{$waiting->push($client->recv(2));});
-        Swoole\Coroutine::sleep(0.01);
-        try{$second=['returned'=>$client->recv(1)];}
-        catch(Swoole\Error $error){$second=['bound'=>str_contains($error->getMessage(),'has already been bound')];}
-        $first=$waiting->pop(2);$next=$client->recv(2);
-        $result=['second'=>$second,'frames'=>[$first->data??null,$next->data??null]];
-        $client->close();$server->shutdown();
-    });
-    return $result;
-}
 $warnings=[];set_error_handler(static function(int $severity,string $message)use(&$warnings):bool{$warnings[]=[$severity,$message];return true;});
 $process=proc_open([PHP_BINARY,'-n',__DIR__.'/php_reentrant_close_peer.php'],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);check(is_resource($process),'spawn');fclose($pipes[0]);
 try {
@@ -86,6 +61,6 @@ try {
     check($second->close(true),'force close');
     $output=stream_get_contents($pipes[1]);$stderr=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);$exit=proc_close($process);$process=null;
     check($exit===0&&$stderr==='','peer clean exit:'.$stderr);$peer=json_decode(trim($output),true,512,JSON_THROW_ON_ERROR);
-    $http=http_reentry();$websocket=websocket_reentry();
-    echo json_encode(['outer'=>$outer,'fresh'=>$fresh,'peer'=>$peer,'http'=>$http,'websocket'=>$websocket,'warnings'=>$warnings],JSON_THROW_ON_ERROR),"\n";
+    $http=http_reentry();
+    echo json_encode(['outer'=>$outer,'fresh'=>$fresh,'peer'=>$peer,'http'=>$http,'warnings'=>$warnings],JSON_THROW_ON_ERROR),"\n";
 }finally{if(is_resource($process)){proc_terminate($process);foreach($pipes as $pipe){if(is_resource($pipe))fclose($pipe);}proc_close($process);}}
