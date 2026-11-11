@@ -7,10 +7,7 @@ use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MA
 use swoole_rs_corebase::set_errno;
 use swoole_rs_reactor::backoff;
 
-fn flock(fd: i32, operation: i32) -> i32 {
-    // SAFETY: flock has no memory preconditions.
-    unsafe { libc::flock(fd, operation) }
-}
+use swoole_rs_corebase::sys::flock;
 
 /// Locks `fd` like `flock(fd, operation)`, yielding through `coroutine_sleep` (none
 /// outside a coroutine) while another holder has it. `Err` for an operation that is

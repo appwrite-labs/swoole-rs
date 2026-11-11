@@ -225,8 +225,7 @@ impl<S: TlsSocket> Tls<S> {
         crate::sendfile::tls_sendfile(
             size,
             offset,
-            // SAFETY: `buf` is writable for its length.
-            |buf, at| unsafe { libc::pread(file, buf.as_mut_ptr().cast(), buf.len(), at) },
+            |buf, at| swoole_rs_corebase::sys::pread(file, buf, at),
             |data| self.send(data),
             || classify(errno()),
         )
