@@ -710,9 +710,8 @@ unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fc
 
 /// `php_swoole_tracer_minit`: keep the switches and observe calls when
 /// profiling or blocking detection is on.
-/// # Safety
-/// At MINIT, once.
-pub unsafe fn tracer_minit(
+pub fn tracer_minit(
+    _minit: &swoole_rs_zend::Minit,
     blocking_threshold: zend_long,
     blocking_detection: bool,
     profile: bool,
@@ -725,7 +724,7 @@ pub unsafe fn tracer_minit(
         leak_detection,
     });
     if blocking_detection || profile {
-        // SAFETY: MINIT, when Zend takes observers.
+        // SAFETY: MINIT (the token), when Zend takes observers.
         unsafe { z::zend_observer_fcall_register(Some(observer)) };
     }
 }
