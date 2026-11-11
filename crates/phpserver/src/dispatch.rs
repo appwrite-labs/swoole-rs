@@ -25,15 +25,13 @@ use swoole_rs_server::callbacks::{
 };
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
-    E_WARNING, OwnedArray,
+    E_WARNING, Owned, OwnedArray, ZString,
     bailout::{self, Bailout},
-    class_name, long_zval, message, object_of, report, string,
+    long_zval, message, object_of, report,
     sys::{
-        IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
+        ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
     },
-    type_of,
-    value::{get_long, set_str},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -108,9 +106,7 @@ fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Cal
     match invoke(cb, args, ptr::null_mut(), coroutine) {
         Ok(true) => Called::Done,
         Err(_) => Called::Bailout,
-        Ok(false) => args
-            .first()
-            .map_or(Called::Failed, |server| failed(server, event)),
+        Ok(false) => failed(event),
     }
 }
 
@@ -149,14 +145,11 @@ pub(crate) fn invoke(
 /// The warning of a failed call; a user error handler that bails out ends
 /// the event there, as upstream.
 #[cold]
-fn failed(server: &zval, event: &str) -> Called {
+fn failed(event: &str) -> Called {
     set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
     if crate::server::display_errors() {
-        // SAFETY: the server object.
-        let object = unsafe { object_of(server) };
-        // SAFETY: a live object.
-        let name = unsafe { class_name(object) };
-        let text = message!("{}->{event} handler error", name.to_string_lossy());
+        let name = crate::lifecycle::class(ServerObject::running());
+        let text = message!("{name}->{event} handler error");
         if report(E_WARNING, text.as_cstr()).is_err() {
             return Called::Bailout;
         }
@@ -247,7 +240,7 @@ pub(crate) fn zserv() -> zval {
     unsafe { *zserv }
 }
 
-fn dtor(value: &mut zval) {
+pub(crate) fn dtor(value: &mut zval) {
     // SAFETY: a value this dispatch owns.
     unsafe { zval_ptr_dtor(value) };
 }
@@ -268,32 +261,26 @@ fn receive_args(
         props.long(c"reactor_id", reactor_id);
         props.double(c"dispatch_time", info.time);
         let mut data = undef();
-        // SAFETY: `data` receives the payload.
-        unsafe { php_swoole_get_recv_data(server, &raw mut data, request) };
+        php_swoole_get_recv_data(server, &mut data, request);
         props.value(c"data", &mut data);
         dtor(&mut data);
         2
     } else {
         args[1] = long_zval(fd);
         args[2] = long_zval(reactor_id);
-        // SAFETY: as above.
-        unsafe { php_swoole_get_recv_data(server, &raw mut args[3], request) };
+        php_swoole_get_recv_data(server, &mut args[3], request);
         4
     }
 }
 
 /// After the call: the warning and close of a failed call, and the
 /// arguments' release. True on a bailout.
-fn receive_done(server: *mut c_void, succeeded: bool, fd: i64, args: &mut [zval]) -> bool {
+fn receive_done(server: view::Server<'_>, succeeded: bool, fd: i64, args: &mut [zval]) -> bool {
     if !succeeded {
-        if args
-            .first()
-            .is_some_and(|server| failed(server, "onReceive") == Called::Bailout)
-        {
+        if failed("onReceive") == Called::Bailout {
             return true;
         }
-        // SAFETY: a live server.
-        server_methods::close(unsafe { view::Server::from_raw(server) }, fd, false);
+        server_methods::close(server, fd, false);
     }
     if let Some(last) = args.last_mut() {
         dtor(last);
@@ -386,14 +373,7 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
                 address.insert_long(b"port", packet.port);
             }
         }
-        // SAFETY: the datagram's bytes, copied into a new string.
-        unsafe {
-            swoole_rs_zend::sys::swr_zval_stringl(
-                &raw mut args[1],
-                packet.data.as_ptr().cast(),
-                packet.data.len(),
-            );
-        };
+        args[1] = Owned::string(ZString::new(packet.data)).into_zval();
         args[2] = address.into_owned().into_zval();
         3
     };
@@ -745,7 +725,7 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     );
     relay(called.map_or(true, |succeeded| {
         receive_done(
-            server.raw(),
+            server,
             succeeded,
             info.fd,
             args.get_mut(..argc).unwrap_or_default(),
@@ -786,11 +766,9 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     let Some(redis) = crate::server::redis_receive() else {
         return php_swoole_server_on_receive(server, request);
     };
-    let data = swoole_rs_zend::Owned::default();
-    // SAFETY: the live server and its received request; `data` takes the payload.
-    unsafe {
-        php_swoole_get_recv_data(server, data.as_ptr(), request);
-    }
+    let data = Owned::default();
+    // SAFETY: the empty zval `data` owns, which takes the payload.
+    php_swoole_get_recv_data(server, unsafe { &mut *data.as_ptr() }, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
     relay(result.is_err());
     result.unwrap_or(SW_ERR)
@@ -881,11 +859,8 @@ fn send_wake(session_id: i64, cancel: bool) {
 }
 
 /// `php_swoole_server_onClose` (crates/phphttp's fallback).
-/// # Safety
-/// `server` is the running server and `info` the closed session's.
-pub unsafe fn php_swoole_server_on_close(server: view::Server<'_>, info: *mut DataHead) {
-    // SAFETY: per the caller.
-    close(server, unsafe { &*info });
+pub fn php_swoole_server_on_close(server: view::Server<'_>, info: &DataHead) {
+    close(server, info);
 }
 
 /// `php_swoole_server_onClose`: wake the session's senders, then `onClose`
@@ -1058,11 +1033,9 @@ const EVENT_CLOSE: u8 = 4;
 /// # Safety
 /// `server` is a live server, not started.
 pub(crate) unsafe fn set_dispatch_func(
-    server: *mut c_void,
+    server: view::Server<'_>,
     handle: *mut callable::Callable,
 ) -> Result<(), Bailout> {
-    // SAFETY: per the caller, `server` is a live `Server` for the call.
-    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     let config = unsafe { server.config_mut() };
     let previous = std::mem::replace(&mut config.private_data_3, handle.cast());
@@ -1103,7 +1076,7 @@ fn max_num_args(cache: *mut zend_fcall_info_cache) -> u32 {
 fn call_unlimited(
     cache: *mut zend_fcall_info_cache,
     args: &mut [zval],
-    retval: &mut zval,
+    retval: *mut zval,
 ) -> Result<bool, Bailout> {
     let mut saved = [ptr::null_mut(); 2];
     // SAFETY: two writable slots.
@@ -1138,9 +1111,8 @@ extern "C" fn on_dispatch(
     let config = server.config();
     // SAFETY: as above.
     let cache = unsafe { callable::cache(config.private_data_3.cast()) };
-    let zserv = php_swoole_server_zval_ptr();
-    // SAFETY: its live object, copied without a reference as upstream.
-    let zserv = unsafe { zserv.read() };
+    // Its live object, copied without a reference as upstream.
+    let zserv = zserv();
     let session = match conn {
         Some(conn) => conn.session_id,
         None => send.map_or(0, |send| send.info.fd),
@@ -1157,33 +1129,35 @@ extern "C" fn on_dispatch(
         let length = (send.info.len as usize).min(SW_IPC_BUFFER_SIZE);
         // SAFETY: the payload holds `info.len` bytes.
         let bytes = unsafe { std::slice::from_raw_parts(send.data.cast::<u8>(), length) };
-        // SAFETY: an undefined slot takes the new string.
-        unsafe { set_str(&raw mut args[3], string::copy(bytes)) };
+        args[3] = Owned::string(ZString::new(bytes)).into_zval();
         argc = 4;
     }
-    let mut retval = undef();
+    let retval = Owned::default();
     let mut worker_id = -1;
-    match call_unlimited(cache, args.get_mut(..argc).unwrap_or_default(), &mut retval) {
+    match call_unlimited(
+        cache,
+        args.get_mut(..argc).unwrap_or_default(),
+        retval.as_ptr(),
+    ) {
         Ok(false) => {
-            if failed(&args[0], "onDispatch") == Called::Bailout {
+            if failed("onDispatch") == Called::Bailout {
                 Bailout.defer();
             }
         }
-        // SAFETY: the call's return value.
-        Ok(true) if unsafe { type_of(&raw const retval) } != IS_NULL => {
-            // SAFETY: as above.
-            let id = unsafe { get_long(&raw const retval) };
+        Ok(true) if !retval.is_null() => {
+            let id = retval.long();
             if id >= i64::from(config.worker_num) {
                 let text = message!("invalid target worker-id[{id}]");
                 crate::server::fatal(E_WARNING, text.as_cstr());
             } else {
                 worker_id = id;
             }
-            dtor(&mut retval);
         }
         Ok(true) => {}
         Err(_) => Bailout.defer(),
     }
+    // Released first: `finish` may jump over this frame.
+    drop(retval);
     if argc == 4 {
         dtor(&mut args[3]);
     }
@@ -1218,21 +1192,16 @@ pub(crate) unsafe extern "C" fn length_func(
     } = unsafe { packet.cast::<PacketLength>().read() };
     // SAFETY: as above.
     let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), size as usize) };
-    let mut data = undef();
-    // SAFETY: an undefined slot takes the new string.
-    unsafe { set_str(&raw mut data, string::copy(bytes)) };
-    let mut retval = undef();
+    let mut data = Owned::string(ZString::new(bytes)).into_zval();
+    let retval = Owned::default();
     let mut result = -1;
-    match call_unlimited(cache, std::slice::from_mut(&mut data), &mut retval) {
+    match call_unlimited(cache, std::slice::from_mut(&mut data), retval.as_ptr()) {
         Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
-        Ok(true) => {
-            // SAFETY: the call's return value.
-            let value = unsafe { get_long(&raw const retval) };
-            result = isize::try_from(value).unwrap_or(-1);
-            dtor(&mut retval);
-        }
+        Ok(true) => result = isize::try_from(retval.long()).unwrap_or(-1),
         Err(_) => Bailout.defer(),
     }
+    // Released first: `finish` may jump over this frame.
+    drop(retval);
     dtor(&mut data);
     bailout::finish();
     result
@@ -1248,8 +1217,8 @@ pub(crate) fn set_server_zval(zserv: *mut zval) {
 }
 
 /// The "`<class>->on<event> handler error`" warning of a failed call.
-pub(crate) fn handler_error(server: &zval, event: &str) -> Result<(), Bailout> {
-    if failed(server, event) == Called::Bailout {
+pub(crate) fn handler_error(event: &str) -> Result<(), Bailout> {
+    if failed(event) == Called::Bailout {
         return Err(Bailout);
     }
     Ok(())

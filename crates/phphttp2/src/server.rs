@@ -873,8 +873,8 @@ unsafe fn on_receive(view: view::Server<'_>, conn: *mut c_void, request: &RecvDa
         SessionState::find(session_id)
     });
     let zdata = Owned::default();
-    // SAFETY: a new string.
-    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(view, zdata.as_ptr(), request) };
+    // SAFETY: the empty slot `zdata` owns, for a new string.
+    swoole_rs_phpserver::php_swoole_get_recv_data(view, unsafe { &mut *zdata.as_ptr() }, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));

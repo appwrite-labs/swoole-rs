@@ -16,7 +16,7 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Object, Value, ZString, bailout, message,
+    Array, Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
     sys::{
         IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
@@ -100,17 +100,14 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     swoole_rs_zend::bailout::finish();
 }
 
-/// A new Port object (an emalloc'd zval) bound to `port` and its server `serv`.
+/// A new Port object bound to `port` and its server `serv`.
 /// # Safety
 /// `serv` is a live server and `port` one of its ports.
-pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zval {
-    // SAFETY: Zend's request allocator; the Server object frees it.
-    let zport = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: a writable zval and the registered class.
-    unsafe { swoole_rs_zend::init_object(zport, PORT.entry()) };
+pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned, *mut zend_object) {
+    // SAFETY: the registered class.
+    let zport = unsafe { Owned::new_object(PORT.entry()) };
+    let object = zport.object().unwrap_or(ptr::null_mut());
     // SAFETY: the object just created, one of ours.
-    let object = unsafe { swoole_rs_zend::object_of(zport) };
-    // SAFETY: as above.
     let data = unsafe { Port::data(object) };
     data.port = port;
     data.property.serv = serv;
@@ -124,7 +121,7 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zv
         (&raw mut data.property).cast(),
         true,
     );
-    zport
+    (zport, object)
 }
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
@@ -412,25 +409,29 @@ fn finish(
 }
 
 fn set(call: &Call) {
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+    let Ok(vht) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         return call.set_bool(false);
     };
+    let settings = call.zval(1);
     let data = data(call);
     if data.port.is_null() || data.property.serv.is_null() {
         invalid(call);
     }
     // SAFETY: the port's bound server, live while the port is.
     let serv = unsafe { view::Server::from_raw(data.property.serv) };
-    if apply_settings(data.port, serv, settings).is_err() {
+    if apply_settings(data.port, serv, vht).is_err() {
         return call.set_bool(false);
     }
     bailout::raise(finish(call, settings, &mut data.property));
 }
 
 /// The `ListenPort` and TLS options of `set()`.
-fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: *mut zval) -> Result<(), Stop> {
+fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Array) -> Result<(), Stop> {
     let source = port_settings::Zend {
-        settings: Settings { serv, vht },
+        settings: Settings {
+            serv,
+            vht: Some(vht),
+        },
         port,
     };
     // SAFETY: a bound port; set() is its only user while it runs.

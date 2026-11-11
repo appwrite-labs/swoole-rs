@@ -393,9 +393,7 @@ impl Facts for Live<'_> {
             .map(|listener| {
                 // SAFETY: one of the live server's ports.
                 let config = unsafe { view::port(listener) };
-                let host = config.host();
-                // SAFETY: the host's bytes, which the port keeps.
-                let host = unsafe { core::slice::from_raw_parts(host.data.cast(), host.length) };
+                let host = config.host_bytes();
                 let protocols = (crate::port_config::methods().get_protocols)(config);
                 // SAFETY: as above.
                 let connections = unsafe { serv.port_connection_num(listener) };
