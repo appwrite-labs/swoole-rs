@@ -160,6 +160,8 @@ fn sign(value: impl Into<i64>) -> u64 {
 /// The context's objects, each null when the op doesn't use it.
 struct Objects<'a> {
     ctx: &'a mut NativeContext,
+    /// The context's server, which the ops reading it run with.
+    server: Option<crate::view::Server<'a>>,
     state: &'a ServerState,
 }
 
@@ -167,11 +169,10 @@ struct Objects<'a> {
     clippy::mut_from_ref,
     reason = "native records shared with C++, written under the server's own synchronization as master.cc did"
 )]
-impl Objects<'_> {
+impl<'a> Objects<'a> {
     /// The context's live server.
-    fn server(&self) -> crate::view::Server<'_> {
-        // SAFETY: the method runner lends a context whose server is live.
-        unsafe { crate::view::Server::from_raw(self.ctx.serv) }
+    fn server(&self) -> crate::view::Server<'a> {
+        self.server.unwrap_or_else(|| std::process::abort())
     }
     fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: a live server's config, written only under its own synchronization.
@@ -313,14 +314,16 @@ impl Objects<'_> {
 /// Answers `op` when it is one of this module's, else `None`.
 ///
 /// # Safety
-/// `ctx` is the live context for the running operation and `state`
-/// its server's; the objects each op reads are live, as for master.cc's case,
-/// and the server is at the point of its life where it makes `op`. The
-/// [`Objects`] made from them carry this proof to each stage below.
+/// `ctx` is the live context for the running operation, `server` its server (the
+/// ops reading it run with one) and `state` that server's; the objects each op
+/// reads are live, as for master.cc's case, and the server is at the point of its
+/// life where it makes `op`. The [`Objects`] made from them carry this proof to
+/// each stage below.
 #[inline(always)]
-pub(crate) unsafe fn answer(
+pub(crate) unsafe fn answer<'a>(
     ctx: *mut NativeContext,
-    state: &ServerState,
+    server: Option<crate::view::Server<'a>>,
+    state: &'a ServerState,
     op: u32,
     arg: u64,
 ) -> Option<u64> {
@@ -329,7 +332,7 @@ pub(crate) unsafe fn answer(
     }
     // SAFETY: per the caller; nothing else touches the context during the op.
     let ctx = unsafe { &mut *ctx };
-    let mut o = Objects { ctx, state };
+    let mut o = Objects { ctx, server, state };
     connection(&mut o, op, arg).or_else(|| ops(&mut o, op, arg))
 }
 
@@ -1851,8 +1854,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_LC_FACTORY_START => u64::from(crate::factory::start(o.server())),
         OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
-        // SAFETY: the master, starting its reactor threads.
-        OP_LC_START_PROCESS => sign(unsafe { crate::reactor_entry::start_reactor_threads(serv) }),
+        // The master starts its reactor threads.
+        OP_LC_START_PROCESS => sign(crate::reactor_entry::start_reactor_threads(o.server())),
         OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
             let tick = crate::server_methods::master_timer_tick;
@@ -2029,8 +2032,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_JOIN_REACTOR_THREADS => {
-            // SAFETY: the live server, in its master.
-            unsafe { crate::reactor_entry::join_reactor_thread(serv) };
+            crate::reactor_entry::join_reactor_thread(o.server());
             0
         }
         OP_PORT_CLOSE => {
@@ -2271,7 +2273,6 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_PIPE_TO_WORKER, OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
         OP_TASK_POOL_SETUP,
     };
-    use core::ptr::{null, null_mut};
     use swoole_rs_process::methods as pool;
     use swoole_rs_process::workers::ops::{
         RUN_CREATE_PROCESS_FACTORY, RUN_DESTROY_PROCESS_FACTORY,
@@ -2286,33 +2287,14 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let config = o.config();
     Some(match op {
         OP_CREATE_FACTORY => {
-            // SAFETY: the live server, at startup.
-            let made = unsafe {
-                process::run(
-                    serv,
-                    RUN_CREATE_PROCESS_FACTORY,
-                    null_mut(),
-                    null_mut(),
-                    null(),
-                    0,
-                )
-            };
+            let made = process::run_server(o.server(), RUN_CREATE_PROCESS_FACTORY);
             config.factory_ =
                 core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0));
             u64::from(!config.factory_.is_null())
         }
         OP_DESTROY_FACTORY => {
-            // SAFETY: the live server, whose process factory shutdown destroys.
-            unsafe {
-                process::run(
-                    serv,
-                    RUN_DESTROY_PROCESS_FACTORY,
-                    null_mut(),
-                    null_mut(),
-                    null(),
-                    0,
-                )
-            };
+            // The live server, whose process factory shutdown destroys.
+            process::run_server(o.server(), RUN_DESTROY_PROCESS_FACTORY);
             0
         }
         OP_DESTROY_TASK_WORKERS => {
@@ -2687,6 +2669,7 @@ pub(crate) fn release_abandoned_base(serv: crate::view::Server<'_>) {
     let mut ctx = NativeContext::new(serv.raw());
     let mut o = Objects {
         ctx: &mut ctx,
+        server: Some(serv),
         state: serv.state(),
     };
     o.gs().shutdown.store(1, SeqCst);
@@ -2732,11 +2715,11 @@ mod tests {
         // SAFETY: a fresh state and a zeroed context.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, &*state, crate::ops::OP_PORT_COUNT, 0),
+                answer(&raw mut ctx, None, &*state, crate::ops::OP_PORT_COUNT, 0),
                 None
             );
             assert_eq!(
-                answer(core::ptr::null_mut(), &*state, OP_SEND_TIMEOUT, 0),
+                answer(core::ptr::null_mut(), None, &*state, OP_SEND_TIMEOUT, 0),
                 None
             );
             crate::state::free_state(state);
@@ -2773,10 +2756,16 @@ mod tests {
         ctx.server_fd = -1;
         // SAFETY: the context's records are live above; no connection has fd -1.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, &*state, OP_ST_PIPE_FD, 0), Some(7));
-            assert_eq!(answer(&raw mut ctx, &*state, OP_ST_PIPE_FD, 1), Some(8));
             assert_eq!(
-                answer(&raw mut ctx, &*state, OP_IP_KEY, 0),
+                answer(&raw mut ctx, None, &*state, OP_ST_PIPE_FD, 0),
+                Some(7)
+            );
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_ST_PIPE_FD, 1),
+                Some(8)
+            );
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_IP_KEY, 0),
                 Some(0x0a00_0001)
             );
             crate::state::free_state(state);
@@ -2795,19 +2784,22 @@ mod tests {
             (*config).send_timeout = 2.5;
             (*config).worker_num = 6;
             assert_eq!(
-                answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT, 0),
+                answer(&raw mut ctx, None, &*state, OP_SEND_TIMEOUT, 0),
                 Some(2.5f64.to_bits())
             );
-            answer(&raw mut ctx, &*state, OP_SEND_TIMEOUT_MIN, 0);
+            answer(&raw mut ctx, None, &*state, OP_SEND_TIMEOUT_MIN, 0);
             assert_eq!((*config).send_timeout, 0.001);
-            answer(&raw mut ctx, &*state, OP_CLEAR_SEND_YIELD, 0);
+            answer(&raw mut ctx, None, &*state, OP_CLEAR_SEND_YIELD, 0);
             assert!(!(*config).send_yield);
-            answer(&raw mut ctx, &*state, OP_BASE_REACTORS, 0);
+            answer(&raw mut ctx, None, &*state, OP_BASE_REACTORS, 0);
             assert_eq!((*config).reactor_num, 6);
             (*config).scheduler_warning = true;
-            answer(&raw mut ctx, &*state, OP_WARNING_RESET, 7 << 1);
+            answer(&raw mut ctx, None, &*state, OP_WARNING_RESET, 7 << 1);
             assert!(!(*config).scheduler_warning);
-            assert_eq!(answer(&raw mut ctx, &*state, OP_WARNING_TIME, 0), Some(7));
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_WARNING_TIME, 0),
+                Some(7)
+            );
             crate::state::free_state(state);
         }
     }
@@ -2822,8 +2814,11 @@ mod tests {
         ctx.length = 8;
         // SAFETY: the context's host and data are live above.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, &*state, OP_HOST_SIZE, 0), Some(8));
-            answer(&raw mut ctx, &*state, OP_SC_ADVANCE, 3);
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_HOST_SIZE, 0),
+                Some(8)
+            );
+            answer(&raw mut ctx, None, &*state, OP_SC_ADVANCE, 3);
             crate::state::free_state(state);
         }
         assert_eq!(ctx.length, 5);
@@ -2841,12 +2836,12 @@ mod tests {
         // SAFETY: the context's worker is live above.
         unsafe {
             assert_eq!(
-                answer(&raw mut ctx, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
+                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
             assert_eq!(
-                answer(&raw mut ctx, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
+                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
@@ -2862,7 +2857,7 @@ mod tests {
         ctx.buffer = buffer.as_mut_ptr().cast();
         ctx.data = c"/tmp/a".as_ptr().cast();
         // SAFETY: the context's buffer and name are live above.
-        let name = unsafe { answer(&raw mut ctx, &*state, OP_SENDFILE_NAME, 0) };
+        let name = unsafe { answer(&raw mut ctx, None, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
         unsafe { crate::state::free_state(state) };
         assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
@@ -2881,23 +2876,30 @@ mod tests {
             config.gs = Shm::calloc(1, size_of::<ServerCounters>());
             let gs = config.gs.as_ptr().cast::<ServerCounters>();
             gs.write(ServerCounters::default());
-            assert_eq!(answer(&raw mut ctx, &*state, OP_SIGNAL_ACTIVE, 0), Some(0));
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_SIGNAL_ACTIVE, 0),
+                Some(0)
+            );
             for op in [
                 OP_ALLOC_WORKERS,
                 OP_ALLOC_TASK_RESULTS,
                 OP_ALLOC_CONNECTION_NUMS,
                 OP_ALLOC_SESSIONS,
             ] {
-                assert_eq!(answer(&raw mut ctx, &*state, op, 0), Some(1), "op {op}");
+                assert_eq!(
+                    answer(&raw mut ctx, None, &*state, op, 0),
+                    Some(1),
+                    "op {op}"
+                );
             }
             let nums = (*gs).cells();
             assert_eq!((*nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
             assert_eq!((*tables.sessions().add(5)).fd, 0, "zeroed");
             config.user_workers = Shm::calloc(1, 8);
-            answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
+            answer(&raw mut ctx, None, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());
-            answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
+            answer(&raw mut ctx, None, &*state, OP_FREE_USER_WORKERS, 0);
             config.task_results.free();
             config.workers.free();
             (*gs).connection_nums.free();
@@ -2929,16 +2931,31 @@ mod tests {
         let socket = (&raw const sock).expose_provenance() as u64;
         // SAFETY: the context's records are live above.
         unsafe {
-            assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(1));
-            answer(&raw mut ctx, &*state, OP_SC_ENSURE_BUFFER, 0);
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_OUT_EMPTY, socket),
+                Some(1)
+            );
+            answer(&raw mut ctx, None, &*state, OP_SC_ENSURE_BUFFER, 0);
             assert!(!sock.output.out_buffer.is_null());
-            assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(1));
-            answer(&raw mut ctx, &*state, OP_SC_APPEND, 0);
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_OUT_EMPTY, socket),
+                Some(1)
+            );
+            answer(&raw mut ctx, None, &*state, OP_SC_APPEND, 0);
             assert_eq!(conn.send_queued_bytes, 3);
-            assert_eq!(answer(&raw mut ctx, &*state, OP_OUT_EMPTY, socket), Some(0));
-            assert_eq!(answer(&raw mut ctx, &*state, OP_SC_OUT_FULL, 0), Some(0));
-            assert_eq!(answer(&raw mut ctx, &*state, OP_SC_OUT_HIGH, 0), Some(1));
-            answer(&raw mut ctx, &*state, OP_SC_QUEUE_CLOSE, 0);
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_OUT_EMPTY, socket),
+                Some(0)
+            );
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_SC_OUT_FULL, 0),
+                Some(0)
+            );
+            assert_eq!(
+                answer(&raw mut ctx, None, &*state, OP_SC_OUT_HIGH, 0),
+                Some(1)
+            );
+            answer(&raw mut ctx, None, &*state, OP_SC_QUEUE_CLOSE, 0);
             assert_eq!(conn.close_queued, 1);
             let buffer = sock.output.out_buffer.cast::<CppBuffer>();
             assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);

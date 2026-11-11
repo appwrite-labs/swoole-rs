@@ -38,7 +38,7 @@ const SW_ERR: u64 = u64::MAX;
     clippy::mut_from_ref,
     reason = "native records shared with C++, written by the process that owns them as workers.cc did"
 )]
-impl Context {
+impl Context<'_> {
     pub(super) fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
@@ -82,7 +82,7 @@ impl Context {
     fn callback(&self, index: u32) {
         if let Some(slot) = self.state().callbacks.slot(index) {
             // SAFETY: the slot takes the server and the bus's `EventData`.
-            unsafe { slot.call(self.serv, self.bus().buffer().cast()) };
+            unsafe { slot.call(self.serv.raw(), self.bus().buffer().cast()) };
         }
     }
     pub(super) fn event_socket(&self) -> *mut c_void {
@@ -97,7 +97,7 @@ fn timer() -> *mut c_void {
 }
 
 /// The ops on native objects.
-pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_POOL_CREATE => create_pool(ctx),
         OP_CREATE_PIPE_BUFFERS => sign(crate::master_ops::create_pipe_buffers(ctx.server())),
@@ -172,7 +172,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let reactor = ctx.reactor_handle();
             let fields = reactor.fields();
             fields.id = u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX);
-            fields.ptr = ctx.serv;
+            fields.ptr = ctx.serv.raw();
             fields.max_socket = ctx.tables().max_connection;
             fields.close = Some(crate::reactor_entry::close_connection);
             let accept = crate::server_methods::accept_connection;
@@ -234,7 +234,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// `OP_POOL_CREATE`: the event worker pool over the server's workers.
-fn create_pool(ctx: &Context) -> u64 {
+fn create_pool(ctx: &Context<'_>) -> u64 {
     let config = ctx.config();
     let workers = ctx.server().workers();
     let pool = workers.event_pool;
@@ -251,7 +251,7 @@ fn create_pool(ctx: &Context) -> u64 {
     );
     // SAFETY: as above.
     let record = unsafe { &mut *pool };
-    record.ptr = ctx.serv;
+    record.ptr = ctx.serv.raw();
     record.max_wait_time = config.max_wait_time;
     record.use_msgqueue = 0;
     record.main_loop = Some(main_loop);
@@ -272,8 +272,9 @@ fn create_pool(ctx: &Context) -> u64 {
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
 extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    // A reactor process pool's `ptr` is its server.
-    let mut ctx = over(pool.ptr(), worker.raw());
+    // SAFETY: a reactor process pool's `ptr` is its live server.
+    let serv = unsafe { view::Server::from_raw(pool.ptr()) };
+    let mut ctx = over(serv, worker.raw());
     c_int::try_from(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN)).unwrap_or(-1)
 }
 
@@ -292,8 +293,8 @@ unsafe extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitSta
 /// Runs `operation` over a context of `reactor`'s server and `event`.
 fn run(reactor: Reactor, event: *mut Event, operation: u32) -> c_int {
     let mut ctx = Context {
-        // A reactor process's reactor holds its server.
-        serv: reactor.fields().ptr,
+        // SAFETY: a reactor process's reactor holds its live server.
+        serv: unsafe { crate::reactor_entry::server(reactor) },
         worker: core::ptr::null_mut(),
         reactor: reactor.ptr(),
         event,
@@ -304,12 +305,12 @@ fn run(reactor: Reactor, event: *mut Event, operation: u32) -> c_int {
 }
 
 /// Runs `operation` over `ctx`, whose objects are live.
-fn run_over(ctx: &mut Context, operation: u32) -> i64 {
+fn run_over(ctx: &mut Context<'_>, operation: u32) -> i64 {
     swoole_rs_process::workers::run_over(ctx, operation, 0)
 }
 
 /// The context over `serv` and `worker` alone.
-fn over(serv: *mut c_void, worker: *mut WorkerRecord) -> Context {
+fn over(serv: view::Server<'_>, worker: *mut WorkerRecord) -> Context<'_> {
     Context {
         serv,
         worker,
@@ -322,7 +323,7 @@ fn over(serv: *mut c_void, worker: *mut WorkerRecord) -> Context {
 
 /// `Server::start_reactor_processes()`.
 pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
-    let mut ctx = over(serv.raw(), core::ptr::null_mut());
+    let mut ctx = over(serv, core::ptr::null_mut());
     c_int::try_from(run_over(&mut ctx, RUN_REACTOR_PROCESS_START)).unwrap_or(-1)
 }
 

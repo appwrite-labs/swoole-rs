@@ -7,6 +7,7 @@ use super::{Effects, StaticHandler};
 use crate::ServerConfig;
 use crate::ops::OP_ST_SET_ROOT;
 use crate::state::{ServerState, native_fact};
+use crate::view;
 use core::cell::RefCell;
 use core::ffi::{CStr, c_char, c_long, c_void};
 use core::ptr;
@@ -381,12 +382,10 @@ impl Server {
             );
         }
     }
-    fn handler(&self, url: &[u8]) -> StaticHandler<Scripted> {
+    fn handler(&self, url: &[u8]) -> StaticHandler<'_, Scripted> {
         // SAFETY: the server outlives the handler.
-        unsafe {
-            StaticHandler::with_effects(ptr::from_ref(&*self.0).cast_mut().cast(), url, Scripted)
-        }
-        .unwrap()
+        let server = unsafe { view::Server::from_raw(ptr::from_ref(&*self.0).cast_mut().cast()) };
+        StaticHandler::with_effects(server, url, Scripted).unwrap()
     }
 }
 

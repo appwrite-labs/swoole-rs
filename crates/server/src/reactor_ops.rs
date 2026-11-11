@@ -948,7 +948,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     use swoole_rs_timer::swoole_timer_delay;
     Some(match op {
         OP_DTLS_ACCEPT => {
-            let (serv, reactor) = (o.ctx.serv.raw(), o.handle()?.ptr());
+            let (serv, reactor) = (o.ctx.serv, o.handle()?.ptr());
             let (single_thread, close) = (o.config().single_thread, o.reactor()?.close);
             let (port, pkt) = (o.conn()?.object, o.ctx.pkt.cast());
             // SAFETY: the context's live server and reactor, the DTLS port the packet
@@ -1014,9 +1014,10 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_START_MASTER_THREAD => {
-            let (serv, reactor) = (o.ctx.serv.raw(), o.handle()?.ptr());
-            // SAFETY: the context's live server and the master's reactor.
-            sign(unsafe { crate::server_methods::start_master_thread(serv, reactor) })
+            let reactor = o.handle()?;
+            sign(crate::server_methods::start_master_thread(
+                o.ctx.serv, reactor,
+            ))
         }
         OP_EVENT_INIT => {
             let ret = swoole_event_init(0);

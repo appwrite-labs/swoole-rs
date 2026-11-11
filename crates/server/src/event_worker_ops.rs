@@ -44,8 +44,8 @@ pub use native::{
 };
 
 /// What an operation runs over.
-struct Context {
-    serv: *mut c_void,
+struct Context<'a> {
+    serv: view::Server<'a>,
     worker: *mut WorkerRecord,
     info: *mut DataHead,
     reactor: *mut c_void,
@@ -54,11 +54,10 @@ struct Context {
     socket: *mut c_void,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     /// The context's live server.
-    fn server(&self) -> view::Server<'_> {
-        // SAFETY: the method that built the context lent its live server for the call.
-        unsafe { view::Server::from_raw(self.serv) }
+    fn server(&self) -> view::Server<'a> {
+        self.serv
     }
 }
 
@@ -84,7 +83,7 @@ struct WorkerStopMessage {
 }
 
 /// Answers each event-worker op over the context.
-impl swoole_rs_process::workers::Answer for Context {
+impl swoole_rs_process::workers::Answer for Context<'_> {
     #[inline(always)]
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
         // Plain branches, not `or_else` closures, so each group inlines and an op
@@ -108,7 +107,7 @@ impl swoole_rs_process::workers::Answer for Context {
 
 /// The facts read from the server, the worker, the event head and the globals.
 #[inline(always)]
-fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let config = ctx.config();
     Some(match op {
         OP_FACTORY_END => u64::from(crate::factory::end(ctx.state(), ctx.info().fd, 0)),
@@ -153,7 +152,7 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 /// The server's PHP-facing callbacks.
 #[inline(always)]
-fn callback(ctx: &Context, op: u32) -> Option<u64> {
+fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
     let callbacks = &ctx.state().callbacks;
     let (index, data) = match op {
         OP_ON_CONNECT => (CB_CONNECT, ctx.info.cast()),
@@ -179,14 +178,14 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
         callbacks.call_server(index, ctx.server());
     } else {
         // SAFETY: the slot takes the server and the event head or worker.
-        unsafe { slot.call(ctx.serv, data) };
+        unsafe { slot.call(ctx.serv.raw(), data) };
     }
     Some(0)
 }
 
 /// The effects on the worker, the server and the process.
 #[inline(always)]
-fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let worker = ctx.worker;
     match op {
         OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
@@ -248,7 +247,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `Server::foreach_connection`'s selected connection.
 #[inline(always)]
-fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     if op == OP_CONN_AT {
         let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
         let conn = ctx
@@ -302,7 +301,7 @@ pub(crate) fn swr_workers_signal_set(arg: u64, own: extern "C" fn(c_int)) {
 }
 
 /// `Worker_global_hook`: the worker start/stop and server shutdown hooks.
-fn global_hook(ctx: &Context, hook: u64) {
+fn global_hook(ctx: &Context<'_>, hook: u64) {
     let id = match hook {
         HOOK_BEFORE_WORKER_START => SW_GLOBAL_HOOK_BEFORE_WORKER_START,
         HOOK_BEFORE_SERVER_SHUTDOWN => SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN,
@@ -313,11 +312,11 @@ fn global_hook(ctx: &Context, hook: u64) {
     }
     if hook == HOOK_BEFORE_SERVER_SHUTDOWN {
         // SAFETY: the shutdown hooks take the server.
-        unsafe { swoole_rs_corebase::swoole_call_hook(id, ctx.serv) };
+        unsafe { swoole_rs_corebase::swoole_call_hook(id, ctx.serv.raw()) };
         return;
     }
     let worker_id = ctx.worker().id() as usize;
-    let mut args: [*mut c_void; 2] = [ctx.serv, core::ptr::without_provenance_mut(worker_id)];
+    let mut args: [*mut c_void; 2] = [ctx.serv.raw(), core::ptr::without_provenance_mut(worker_id)];
     // SAFETY: the worker hooks take { server, worker id }.
     unsafe { swoole_rs_corebase::swoole_call_hook(id, args.as_mut_ptr().cast()) };
 }

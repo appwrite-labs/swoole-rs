@@ -98,8 +98,8 @@ const KIND_WEBSOCKET: c_int = 2;
 const KIND_REDIS: c_int = 3;
 
 /// What `start()` checks of a `ListenPort`.
-struct PortFacts {
-    port: *mut c_void,
+struct PortFacts<'a> {
+    port: view::Port<'a>,
     protocols: u32,
     dgram: bool,
     stream: bool,
@@ -1032,13 +1032,13 @@ fn register_callback(object: ServerObject, serv: view::Server<'_>) {
     }
 }
 
-fn port_facts(object: *mut zend_object) -> PortFacts {
+fn port_facts<'a>(object: *mut zend_object) -> PortFacts<'a> {
     // SAFETY: a bound Port object.
     let port = unsafe { crate::port::bound_port(object) };
     let c = port.config();
     let owner = c.ssl_context.as_deref();
     PortFacts {
-        port: port.raw(),
+        port,
         protocols: [
             (c.open_http_protocol, HTTP),
             (c.open_websocket_protocol, WEBSOCKET),
@@ -1058,16 +1058,14 @@ fn port_facts(object: *mut zend_object) -> PortFacts {
     }
 }
 
-fn isset(serv: view::Server<'_>, port: *mut c_void, kind: c_int) -> bool {
-    // SAFETY: null or one of the live server's ports.
-    let port = unsafe { view::Port::from_raw(port) };
-    crate::instance::php_swoole_server_isset_callback(serv, port, kind)
+fn isset(serv: view::Server<'_>, port: view::Port<'_>, kind: c_int) -> bool {
+    crate::instance::php_swoole_server_isset_callback(serv, Some(port), kind)
 }
 
 /// Optionally `clear_protocol()`, then turn on each protocol in `flags`.
-fn protocols(port: *mut c_void, flags: u32, clear: bool) {
+fn protocols(port: view::Port<'_>, flags: u32, clear: bool) {
     // SAFETY: a live port, which only start() touches meanwhile.
-    let c = unsafe { swoole_rs_server::port_config::of(port) };
+    let c = unsafe { port.config_mut() };
     if clear {
         swoole_rs_ports::methods::clear_protocol(c);
     }

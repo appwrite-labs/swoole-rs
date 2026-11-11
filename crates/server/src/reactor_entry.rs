@@ -173,15 +173,12 @@ pub(crate) unsafe fn thread_init(
     ))
 }
 
-/// `void Server::init_reactor(Reactor *)`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `reactor` a live reactor of it, on this thread.
-pub unsafe fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
-    // SAFETY: per the caller.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
+/// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
+)]
+pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     run(
         RUN_INIT_REACTOR,
         0,
@@ -189,23 +186,17 @@ pub unsafe fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
     );
 }
 
-/// `int Server::start_reactor_threads()`.
-///
-/// # Safety
-/// `serv` is a live `Server`, in its master.
-pub unsafe extern "C-unwind" fn start_reactor_threads(serv: *mut c_void) -> c_int {
-    // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+/// `int Server::start_reactor_threads()`, in the server's master.
+#[must_use]
+pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
+    let mut ctx = ReactorContext::new(serv, None);
     int(run(RUN_START_REACTOR_THREADS, 0, &mut ctx))
 }
 
-/// `static void Server::reactor_thread_main_loop(Server *, int)`.
-///
-/// # Safety
-/// `serv` is a live `Server`, on the reactor thread `reactor_id`.
-pub unsafe fn reactor_thread_main_loop(serv: *mut c_void, reactor_id: c_int) {
-    // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+/// `static void Server::reactor_thread_main_loop(Server *, int)`, on the reactor
+/// thread `reactor_id`.
+pub fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
+    let mut ctx = ReactorContext::new(serv, None);
     let id = i64::from(reactor_id).cast_unsigned();
     run(RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
 }
@@ -299,12 +290,8 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     0
 }
 
-/// `void Server::join_reactor_thread()`.
-///
-/// # Safety
-/// `serv` is a live `Server`, in its master.
-pub unsafe extern "C-unwind" fn join_reactor_thread(serv: *mut c_void) {
-    // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { view::Server::from_raw(serv) }, None);
+/// `void Server::join_reactor_thread()`, in the server's master.
+pub fn join_reactor_thread(serv: view::Server<'_>) {
+    let mut ctx = ReactorContext::new(serv, None);
     run(RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }
