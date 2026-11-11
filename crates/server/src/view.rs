@@ -599,6 +599,7 @@ mod tests {
         assert!(!serv.ran_its_single_worker_here(), "a task worker");
         config.task_worker_num = 0;
         config.factory_ = core::ptr::null_mut();
+        config.gs.free();
         unsafe { crate::swr_v1_server_state_free(state) };
     }
 }

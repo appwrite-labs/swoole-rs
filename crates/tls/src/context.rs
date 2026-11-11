@@ -107,7 +107,8 @@ impl TlsStr {
 /// Logs `"<function>(): <message>"` at warning level.
 pub type Warn = fn(function: &CStr, message: &str);
 
-/// A view of `swoole::SSLContext`'s configuration, built by native code for one call.
+/// A view of `swoole::SSLContext`'s configuration, built for one call by `owned.rs`'s
+/// `configuration`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct TlsConfig {
