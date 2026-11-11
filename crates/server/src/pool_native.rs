@@ -837,7 +837,7 @@ unsafe extern "C" fn accept(arg: *mut c_void) {
     });
     c.socket = socket(listener.cast())
         .map_or(ptr::null_mut(), |listener| {
-            listener.edit(swoole_rs_reactor::SocketRecord::accept)
+            listener.edit(swoole_rs_reactor::SocketFields::accept)
         })
         .cast();
     c.error = errno();

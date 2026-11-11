@@ -1,63 +1,27 @@
 //! [`Socket`]: a live `network::Socket`, proven so once where its pointer comes
 //! from (a reactor event, a connection, an owner's field), then read and edited
 //! without `unsafe`.
-use crate::SocketRecord;
+use crate::{SocketFields, SocketRecord};
 use std::{cell::Cell, ffi::c_int, marker::PhantomData, ptr::NonNull};
 
 /// A live `network::Socket` for `'a`, on this thread. It is `Copy` and holds no
 /// Rust reference between calls, so native code and other handles may touch the
-/// same record in between; [`read`](Self::read) and [`edit`](Self::edit) borrow it
-/// only for their closure, and refuse to nest.
+/// same record in between; [`read`](Self::read) and [`edit`](Self::edit) borrow its
+/// fields only for their closure, and refuse to nest on the same record.
 #[derive(Clone, Copy)]
 pub struct Socket<'a> {
     record: NonNull<SocketRecord>,
-    /// This thread's [`BORROWED`], looked up once per handle: a thread-local in a
-    /// `dlopen`ed library costs a TLS descriptor call per lookup.
-    borrowed: &'a Cell<bool>,
     _live: PhantomData<(&'a mut SocketRecord, *mut ())>,
 }
 
-thread_local! {
-    /// Whether a `read` or `edit` closure is running on this thread.
-    static BORROWED: Cell<bool> = const { Cell::new(false) };
-}
-
-/// This thread's [`BORROWED`], looked up once for any number of handles: an op
-/// runner that builds several keeps one, where [`Socket::from_ptr`] looks it up
-/// for each (#2964).
-#[derive(Clone, Copy)]
-pub struct SocketGuard(&'static Cell<bool>);
-
-impl SocketGuard {
-    #[must_use]
-    pub fn current() -> Self {
-        let flag = BORROWED.with(std::ptr::from_ref);
-        // SAFETY: a const thread-local without a destructor lives as long as its
-        // thread, and the guard is `!Send`, so it never leaves this one.
-        Self(unsafe { &*flag })
-    }
-
-    /// [`Socket::from_ptr`] with this guard.
-    /// # Safety
-    /// As [`Socket::from_ptr`], on the guard's thread.
-    #[must_use]
-    pub unsafe fn socket<'a>(self, record: *mut SocketRecord) -> Option<Socket<'a>> {
-        Some(Socket {
-            record: NonNull::new(record)?,
-            borrowed: self.0,
-            _live: PhantomData,
-        })
-    }
-}
-
-/// Clears [`BORROWED`] when the closure returns or unwinds.
+/// Holds a record's borrow flag, and clears it when the closure returns or unwinds.
 struct Borrow<'a>(&'a Cell<bool>);
 
 impl<'a> Borrow<'a> {
     fn take(flag: &'a Cell<bool>) -> Self {
         assert!(
             !flag.replace(true),
-            "a socket's read or edit runs inside another's"
+            "a socket's read or edit runs inside another's on the same record"
         );
         Self(flag)
     }
@@ -69,20 +33,25 @@ impl Drop for Borrow<'_> {
     }
 }
 
-impl Socket<'_> {
+impl<'a> Socket<'a> {
     /// The socket `record` points to, or None for null.
     /// # Safety
     /// A non-null `record` is a live `network::Socket` for the handle's lifetime, used on this
-    /// thread, which nothing frees or reaches through a Rust reference meanwhile
+    /// thread, which nothing frees or reaches through a Rust reference to its fields meanwhile
     /// (native code and raw pointers may, between this handle's calls).
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
-        let record = NonNull::new(record)?;
         Some(Self {
-            record,
-            borrowed: SocketGuard::current().0,
+            record: NonNull::new(record)?,
             _live: PhantomData,
         })
+    }
+
+    /// The record's borrow flag, which no closure's reference covers.
+    fn flag(self) -> &'a Cell<bool> {
+        // SAFETY: live for 'a (from_ptr); the reference covers only the flag, which
+        // `read` and `edit` never hand out, and a `Cell` may be shared.
+        unsafe { &(*self.record.as_ptr()).borrowed }
     }
 
     /// The record's address, for native calls.
@@ -93,22 +62,21 @@ impl Socket<'_> {
 
     /// `read`'s result over the record.
     /// # Panics
-    /// Inside another socket's `read` or `edit` closure.
-    pub fn read<R>(self, read: impl FnOnce(&SocketRecord) -> R) -> R {
-        let _borrow = Borrow::take(self.borrowed);
-        // SAFETY: live for the handle's lifetime (from_ptr), and no other Rust reference to it exists:
-        // handles form one only here and in `edit`, which cannot nest.
-        read(unsafe { self.record.as_ref() })
+    /// Inside a `read` or `edit` closure over the same record.
+    pub fn read<R>(self, read: impl FnOnce(&SocketFields) -> R) -> R {
+        let _borrow = Borrow::take(self.flag());
+        // SAFETY: live for the handle's lifetime (from_ptr), and no other Rust reference to its
+        // fields exists: handles form one only here and in `edit`, under the record's flag.
+        read(unsafe { &(*self.record.as_ptr()).fields })
     }
 
     /// `edit`'s result over the record, which it may change.
     /// # Panics
-    /// Inside another socket's `read` or `edit` closure.
-    pub fn edit<R>(self, edit: impl FnOnce(&mut SocketRecord) -> R) -> R {
-        let _borrow = Borrow::take(self.borrowed);
-        let mut record = self.record;
-        // SAFETY: as in `read`; this is the only reference while `edit` runs.
-        edit(unsafe { record.as_mut() })
+    /// Inside a `read` or `edit` closure over the same record.
+    pub fn edit<R>(self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
+        let _borrow = Borrow::take(self.flag());
+        // SAFETY: as in `read`; this is the only reference to the fields while `edit` runs.
+        edit(unsafe { &mut (*self.record.as_ptr()).fields })
     }
 
     /// `fd`.
@@ -129,21 +97,36 @@ impl Socket<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]
-    fn a_nested_borrow_panics_and_the_guard_clears_on_unwind() {
+    fn a_nested_read_inside_edit_panics_and_the_edit_goes_on() {
         let mut record = SocketRecord::new();
         record.fd = 7;
         let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
-        // A guard's handle shares the thread's flag with `from_ptr`'s.
-        let other = unsafe { SocketGuard::current().socket(&raw mut record) }.unwrap();
-        let nested =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| socket.read(|_| other.fd())));
-        assert!(
-            nested.is_err(),
-            "a read inside another handle's read panics"
-        );
-        socket.edit(|record| record.fd = 8);
-        assert_eq!(other.fd(), 8, "the guard cleared when the panic unwound");
+        let other = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+        socket.edit(|fields| {
+            let nested = catch_unwind(AssertUnwindSafe(|| other.read(|fields| fields.fd)));
+            assert!(
+                nested.is_err(),
+                "a read inside an edit of the same record panics"
+            );
+            // The edit's reference stays valid after the nested call unwound.
+            fields.fd = 8;
+        });
+        assert_eq!(other.fd(), 8, "the flag cleared when the edit returned");
+    }
+
+    #[test]
+    fn the_flag_clears_on_unwind_and_other_records_nest() {
+        let (mut a, mut b) = (SocketRecord::new(), SocketRecord::new());
+        b.fd = 9;
+        let a = unsafe { Socket::from_ptr(&raw mut a) }.unwrap();
+        let b = unsafe { Socket::from_ptr(&raw mut b) }.unwrap();
+        assert_eq!(a.read(|_| b.fd()), 9, "another record's read nests");
+        let unwound = catch_unwind(AssertUnwindSafe(|| a.edit(|_| panic!("in the closure"))));
+        assert!(unwound.is_err());
+        a.edit(|fields| fields.fd = 3);
+        assert_eq!(a.fd(), 3, "the flag cleared when the closure unwound");
     }
 }

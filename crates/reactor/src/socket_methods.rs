@@ -2,7 +2,7 @@
 //! and descriptor option flags, kernel timeouts, and `recv`/`send`/`peek` with their byte counters and timestamps.
 //! Native `Socket` calls these inline (`swoole_socket.h`); a TLS socket passes its
 //! OpenSSL call, which runs only when the record holds an `SSL`.
-use crate::{Socket, SocketAddress, SocketRecord, TlsIo};
+use crate::{Socket, SocketAddress, SocketFields, TlsIo};
 use std::ffi::{c_int, c_void};
 use std::mem::size_of;
 
@@ -47,7 +47,7 @@ fn status(ok: bool) -> c_int {
 )]
 const ADDRESS_CAPACITY: libc::socklen_t = size_of::<crate::AddressStorage>() as libc::socklen_t;
 
-impl SocketRecord {
+impl SocketFields {
     /// `Socket::get_name`: getsockname(2) into `info`, which takes the socket's type.
     pub fn get_name(&mut self) -> c_int {
         self.info.len = ADDRESS_CAPACITY;
@@ -243,7 +243,7 @@ pub unsafe fn socket_record_peek(
 /// `Socket::what_event_want`: the event a pending TLS read or write waits for, else
 /// `default`.
 #[must_use]
-pub fn what_event_want(socket: &SocketRecord, default: c_int) -> c_int {
+pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
     let tls = socket.tls;
     if !socket.ssl.is_null() && (tls.want_read != 0 || tls.want_write != 0) {
         use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
@@ -260,6 +260,7 @@ pub fn what_event_want(socket: &SocketRecord, default: c_int) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SocketRecord;
 
     #[test]
     fn native_event_want_preserves_write_priority_and_default() {

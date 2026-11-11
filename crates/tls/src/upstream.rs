@@ -20,10 +20,11 @@ use swoole_rs_reactor::socket_upstream::{
 };
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputEffects, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
-    SYNC_SENDFILE, Socket, SocketAddress, SocketFileRequest, SocketRecord, SyncEffects,
-    fd_recvfrom, handle_send_owned, sendfile_chunk, socket_record_peek, socket_record_recv,
-    socket_record_send, ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
-    swr_v1_socket_iov_owned, swr_v1_socket_sync, type_is, what_event_want,
+    SYNC_SENDFILE, Socket, SocketAddress, SocketFields, SocketFileRequest, SocketRecord,
+    SyncEffects, fd_recvfrom, handle_send_owned, sendfile_chunk, socket_record_peek,
+    socket_record_recv, socket_record_send, ssl_sendfile as ssl_sendfile_fd, steady_ms,
+    swr_v1_reactor_poll_events_to, swr_v1_socket_iov_owned, swr_v1_socket_sync, type_is,
+    what_event_want,
 };
 
 // SAFETY: libc's, libssl's and libcrypto's own declarations.
@@ -128,7 +129,7 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
 }
 
 /// The record's TLS state group, which `SocketTls` mirrors.
-fn tls(socket: &mut SocketRecord) -> *mut SocketTls {
+fn tls(socket: &mut SocketFields) -> *mut SocketTls {
     (&raw mut socket.tls).cast()
 }
 
@@ -151,7 +152,7 @@ pub unsafe extern "C" fn socket_ssl_get_error_reason(reason: *mut c_int) -> *con
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv")
 )]
-pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketRecord) -> *mut stack_st_X509 {
+pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut stack_st_X509 {
     let ssl = socket.ssl;
     if ssl.is_null() {
         return std::ptr::null_mut();
@@ -166,7 +167,7 @@ pub extern "C" fn socket_ssl_get_peer_cert_chain(socket: &SocketRecord) -> *mut 
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")
 )]
-pub extern "C" fn socket_ssl_verify(socket: &SocketRecord, allow_self_signed: bool) -> bool {
+pub extern "C" fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bool) -> bool {
     // SAFETY: the record's live SSL.
     let error = unsafe { swr_v1_socket_ssl_verify(socket.ssl.cast(), allow_self_signed) };
     if error == c_long::from(X509_V_OK) {
@@ -808,7 +809,7 @@ pub unsafe fn socket_writev_sync(
 
 /// `X509 *Socket::ssl_get_peer_certificate() const`: a reference the caller frees.
 #[must_use]
-pub fn ssl_get_peer_certificate(socket: &SocketRecord) -> *mut X509 {
+pub fn ssl_get_peer_certificate(socket: &SocketFields) -> *mut X509 {
     let ssl = socket.ssl;
     if ssl.is_null() {
         return std::ptr::null_mut();
@@ -819,7 +820,7 @@ pub fn ssl_get_peer_certificate(socket: &SocketRecord) -> *mut X509 {
 
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
 #[must_use]
-pub fn socket_ssl_check_host(socket: &SocketRecord, name: &CStr) -> bool {
+pub fn socket_ssl_check_host(socket: &SocketFields, name: &CStr) -> bool {
     let cert = ssl_get_peer_certificate(socket);
     // SAFETY: the owned certificate (or null) and the name's bytes.
     match unsafe { swr_v1_socket_ssl_check_host(cert, name.as_ptr(), name.count_bytes()) } {
@@ -1392,7 +1393,7 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
     let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
         return;
     };
-    if !record.edit(SocketRecord::release) {
+    if !record.edit(SocketFields::release) {
         let fd = record.fd();
         log::sys_warning(c"socket_free_defer", format_args!("close({fd}) failed"));
     }
@@ -1565,7 +1566,7 @@ pub unsafe extern "C-unwind" fn make_server_socket(
         // SAFETY: the new record, which nothing else holds.
         return unsafe { discard(socket) };
     }
-    if record.edit(SocketRecord::get_name) < 0 {
+    if record.edit(SocketFields::get_name) < 0 {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
         // SAFETY: the new record, which nothing else holds.
         return unsafe { discard(socket) };
@@ -1681,7 +1682,7 @@ mod tests {
         (path, name)
     }
 
-    fn read_all(socket: &SocketRecord, length: usize) -> Vec<u8> {
+    fn read_all(socket: &SocketFields, length: usize) -> Vec<u8> {
         let mut data = vec![0u8; length];
         let mut done = 0;
         while done < length {

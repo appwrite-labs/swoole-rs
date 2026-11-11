@@ -12,7 +12,7 @@ use libc::{c_char, c_int};
 use std::{ffi::CStr, ptr};
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_phpstubs::client_coro;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
     bailout::Bailout,
@@ -444,7 +444,7 @@ fn sendto(call: &Call) {
     };
     if socket
         .net()
-        .is_some_and(|net| net.read(SocketRecord::is_tcp))
+        .is_some_and(|net| net.read(SocketFields::is_tcp))
         && !verify_port(port)
     {
         warn(true, "The port is invalid");

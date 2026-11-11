@@ -6,8 +6,10 @@
 use crate::SocketOutput;
 use crate::socket_timeouts::SocketTimeouts;
 use crate::socket_types::{CLASS_INET4, CLASS_INET6, CLASS_LOCAL, CLASS_TCP, type_is};
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
+use std::ops::{Deref, DerefMut};
 use std::ptr;
 use swoole_rs_corebase::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
@@ -25,11 +27,33 @@ pub struct SocketTlsState {
 
 pub use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 
+/// `network::Socket`: its fields, then the flag [`crate::Socket`]'s `read` and `edit`
+/// hold while a closure has the fields. The flag sits outside them, so checking it
+/// never touches bytes a closure's reference covers.
+#[repr(C)]
+pub struct SocketRecord {
+    pub fields: SocketFields,
+    pub(crate) borrowed: Cell<bool>,
+}
+
+impl Deref for SocketRecord {
+    type Target = SocketFields;
+    fn deref(&self) -> &SocketFields {
+        &self.fields
+    }
+}
+
+impl DerefMut for SocketRecord {
+    fn deref_mut(&mut self) -> &mut SocketFields {
+        &mut self.fields
+    }
+}
+
 /// `network::Socket`'s fields. Pointers to native objects (`Buffer`, `TimerNode`,
 /// `String`, `SSL`, the owner) are opaque here.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct SocketRecord {
+pub struct SocketFields {
     pub fd: c_int,
     /// `swFdType`.
     pub fd_type: c_int,
@@ -96,21 +120,21 @@ pub static mut swr_v1_socket_defaults: SocketDefaults = SocketDefaults {
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).
 #[cfg(target_pointer_width = "64")]
 const OFFSETS: [(usize, usize); 15] = [
-    (offset_of!(SocketRecord, events), 12),
-    (offset_of!(SocketRecord, enable_tcp_nodelay), 16),
-    (offset_of!(SocketRecord, removed), 18),
-    (offset_of!(SocketRecord, close_notified), 35),
-    (offset_of!(SocketRecord, chunk_size), 36),
-    (offset_of!(SocketRecord, output), 40),
-    (offset_of!(SocketRecord, object), 64),
-    (offset_of!(SocketRecord, ssl), 72),
-    (offset_of!(SocketRecord, tls), 80),
-    (offset_of!(SocketRecord, timeouts), 88),
-    (offset_of!(SocketRecord, last_received_time), 120),
-    (offset_of!(SocketRecord, in_buffer), 136),
-    (offset_of!(SocketRecord, recv_timer), 152),
-    (offset_of!(SocketRecord, total_send_bytes), 168),
-    (offset_of!(SocketRecord, info), 176),
+    (offset_of!(SocketFields, events), 12),
+    (offset_of!(SocketFields, enable_tcp_nodelay), 16),
+    (offset_of!(SocketFields, removed), 18),
+    (offset_of!(SocketFields, close_notified), 35),
+    (offset_of!(SocketFields, chunk_size), 36),
+    (offset_of!(SocketFields, output), 40),
+    (offset_of!(SocketFields, object), 64),
+    (offset_of!(SocketFields, ssl), 72),
+    (offset_of!(SocketFields, tls), 80),
+    (offset_of!(SocketFields, timeouts), 88),
+    (offset_of!(SocketFields, last_received_time), 120),
+    (offset_of!(SocketFields, in_buffer), 136),
+    (offset_of!(SocketFields, recv_timer), 152),
+    (offset_of!(SocketFields, total_send_bytes), 168),
+    (offset_of!(SocketFields, info), 176),
 ];
 
 #[cfg(target_pointer_width = "64")]
@@ -138,17 +162,22 @@ const _: () = {
         "network::Address's size moved"
     );
     assert!(
-        size_of::<SocketRecord>() == (176 + size_of::<SocketAddress>()).next_multiple_of(8),
+        size_of::<SocketFields>() == (176 + size_of::<SocketAddress>()).next_multiple_of(8),
         "network::Socket's size moved"
+    );
+    assert!(
+        offset_of!(SocketRecord, borrowed) == 296 && size_of::<SocketRecord>() == 304,
+        "network::Socket's borrow flag moved"
     );
 };
 
 impl SocketRecord {
-    /// A socket as `new Socket()` makes it: all zero but the default timeouts.
+    /// A socket as `new Socket()` makes it: all zero but the default timeouts, and
+    /// not borrowed.
     #[must_use]
     pub fn new() -> Self {
-        // SAFETY: every field is an integer, a float, a raw pointer or a union of
-        // C address structs, all of which are valid zeroed.
+        // SAFETY: every field is an integer, a float, a raw pointer, a union of C
+        // address structs or the borrow flag's bool, all of which are valid zeroed.
         let mut socket: Self = unsafe { std::mem::zeroed() };
         // SAFETY: a plain read of the defaults, which only the owning thread assigns.
         socket.timeouts = unsafe { (*ptr::addr_of!(swr_v1_socket_defaults)).timeouts };
@@ -163,44 +192,6 @@ impl SocketRecord {
         socket.fd_type = fd_type;
         socket.removed = 1;
         socket
-    }
-
-    /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
-    #[must_use]
-    pub fn is_tcp(&self) -> bool {
-        type_is(self.socket_type, CLASS_TCP)
-    }
-
-    /// `Socket::is_inet4() || is_inet6()`: stream, datagram or raw.
-    #[must_use]
-    pub fn is_inet(&self) -> bool {
-        type_is(self.socket_type, CLASS_INET4 | CLASS_INET6)
-    }
-
-    /// `Socket::is_local`: a Unix stream or datagram socket.
-    #[must_use]
-    pub fn is_local(&self) -> bool {
-        type_is(self.socket_type, CLASS_LOCAL)
-    }
-
-    /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).
-    pub fn catch_error(&mut self, error: c_int) -> c_int {
-        crate::catch_error(error, &mut self.kernel_nobufs)
-    }
-
-    /// `Socket::set_tcp_nodelay`.
-    pub fn set_tcp_nodelay(&mut self, nodelay: c_int) -> bool {
-        if !crate::swr_v1_socket_tcp_nodelay(self.fd, nodelay) {
-            return false;
-        }
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream assigns the int to its flag"
-        )]
-        let flag = nodelay as u8;
-        self.tcp_nodelay = flag;
-        true
     }
 
     /// The record moved to the heap, as `new Socket()`; freed with [`Self::free`].
@@ -219,22 +210,6 @@ impl SocketRecord {
             // SAFETY: as the caller promises.
             drop(unsafe { Box::from_raw(socket) });
         }
-    }
-
-    /// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked
-    /// (from getsockname(2), as upstream), then the descriptor closed. False when
-    /// close(2) failed, with errno set.
-    pub fn release(&mut self) -> bool {
-        if self.is_local() && self.bound != 0 && self.get_name() == 0 {
-            // SAFETY: the Unix arm of the address getsockname(2) just wrote.
-            let path = unsafe { self.info.addr.un.sun_path };
-            if path[0] != 0 {
-                // SAFETY: a NUL-terminated path in the record's address storage.
-                unsafe { libc::unlink(path.as_ptr()) };
-            }
-        }
-        // SAFETY: close(2) has no memory preconditions.
-        self.fd == -1 || unsafe { libc::close(self.fd) } == 0
     }
 
     /// `make_socket(type, fd_type, domain, type, protocol, flags)`: socket(2) through
@@ -277,11 +252,70 @@ impl SocketRecord {
         }
         Self::open(socket_type, fd_type, domain, kind, 0, flags)
     }
+}
 
-    /// `Socket::dup`: a copy of every field, owning `dup(fd)`.
+impl SocketFields {
+    /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
     #[must_use]
-    pub fn dup(&self) -> *mut Self {
-        let mut copy = *self;
+    pub fn is_tcp(&self) -> bool {
+        type_is(self.socket_type, CLASS_TCP)
+    }
+
+    /// `Socket::is_inet4() || is_inet6()`: stream, datagram or raw.
+    #[must_use]
+    pub fn is_inet(&self) -> bool {
+        type_is(self.socket_type, CLASS_INET4 | CLASS_INET6)
+    }
+
+    /// `Socket::is_local`: a Unix stream or datagram socket.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        type_is(self.socket_type, CLASS_LOCAL)
+    }
+
+    /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).
+    pub fn catch_error(&mut self, error: c_int) -> c_int {
+        crate::catch_error(error, &mut self.kernel_nobufs)
+    }
+
+    /// `Socket::set_tcp_nodelay`.
+    pub fn set_tcp_nodelay(&mut self, nodelay: c_int) -> bool {
+        if !crate::swr_v1_socket_tcp_nodelay(self.fd, nodelay) {
+            return false;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream assigns the int to its flag"
+        )]
+        let flag = nodelay as u8;
+        self.tcp_nodelay = flag;
+        true
+    }
+
+    /// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked
+    /// (from getsockname(2), as upstream), then the descriptor closed. False when
+    /// close(2) failed, with errno set.
+    pub fn release(&mut self) -> bool {
+        if self.is_local() && self.bound != 0 && self.get_name() == 0 {
+            // SAFETY: the Unix arm of the address getsockname(2) just wrote.
+            let path = unsafe { self.info.addr.un.sun_path };
+            if path[0] != 0 {
+                // SAFETY: a NUL-terminated path in the record's address storage.
+                unsafe { libc::unlink(path.as_ptr()) };
+            }
+        }
+        // SAFETY: close(2) has no memory preconditions.
+        self.fd == -1 || unsafe { libc::close(self.fd) } == 0
+    }
+
+    /// `Socket::dup`: a copy of every field, owning `dup(fd)`, not borrowed.
+    #[must_use]
+    pub fn dup(&self) -> *mut SocketRecord {
+        let mut copy = SocketRecord {
+            fields: *self,
+            borrowed: Cell::new(false),
+        };
         // SAFETY: dup(2) has no memory preconditions.
         copy.fd = unsafe { libc::dup(copy.fd) };
         copy.into_raw()
@@ -291,8 +325,8 @@ impl SocketRecord {
     /// record that inherits its type and nonblocking flag, or null (errno set).
     /// Without accept4 the listener is marked close-on-exec, as upstream's
     /// `set_fd_option` call does.
-    pub fn accept(&mut self) -> *mut Self {
-        let mut socket = Self::new();
+    pub fn accept(&mut self) -> *mut SocketRecord {
+        let mut socket = SocketRecord::new();
         socket.removed = 1;
         socket.socket_type = self.socket_type;
         // Upstream passes sizeof(Address), not sizeof(Address::addr).

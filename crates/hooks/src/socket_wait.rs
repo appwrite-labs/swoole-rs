@@ -433,7 +433,7 @@ mod tests {
             unsafe { &mut *s.state() }.bind(WRITE, (&raw mut writer).cast());
             ON_RESUME.set(Some(Box::new(move |cid| {
                 if close_in_writer && cid == 8 {
-                    unsafe { (*event_socket).object = core::ptr::null_mut() };
+                    unsafe { (*event_socket).fields.object = core::ptr::null_mut() };
                 }
             })));
             s.0.err_code = 9;
