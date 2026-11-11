@@ -24,7 +24,6 @@ use openssl_sys::{
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::log;
 
@@ -112,9 +111,6 @@ impl TlsStr {
 /// Logs `"<function>(): <message>"` at warning level.
 pub type Warn = extern "C" fn(function: *const c_char, message: *const c_char);
 
-/// Reads an owner's current passphrase.
-pub type PassphraseOf = extern "C" fn(owner: *const c_void) -> TlsStr;
-
 /// A view of `swoole::SSLContext`'s configuration, built by native code for one call.
 #[repr(C)]
 #[derive(Debug)]
@@ -137,9 +133,6 @@ pub struct TlsConfig {
     pub disable_compress: bool,
     pub verify_peer: bool,
     pub warn: Warn,
-    /// The native `SSLContext`, which the password callback reads through `passphrase_of`.
-    pub owner: *const c_void,
-    pub passphrase_of: PassphraseOf,
 }
 
 /// One upstream method: its log name and the configuration it reads.
@@ -379,14 +372,10 @@ impl Method<'_> {
         // SAFETY: as above.
         unsafe { SSL_CTX_set_read_ahead(ctx, 1) };
 
-        if !config.passphrase.is_empty() {
-            let binding = self.password.unwrap_or_else(|| {
-                PASSPHRASE_OF.get_or_init(|| config.passphrase_of);
-                PasswordBinding {
-                    userdata: config.owner.cast_mut(),
-                    callback: password_callback,
-                }
-            });
+        // The owner's binding reads its live passphrase slot (crates/tls's owned.rs).
+        if !config.passphrase.is_empty()
+            && let Some(binding) = self.password
+        {
             // SAFETY: a live context; the binding's owner outlives the borrowed context.
             unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, binding.userdata) };
             // SAFETY: a live context; a plain callback with the binding's userdata.
@@ -525,24 +514,7 @@ extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int 
     1
 }
 
-/// Native code's passphrase reader, the same function for every context.
-static PASSPHRASE_OF: OnceLock<PassphraseOf> = OnceLock::new();
-
-/// Copies the owner's current passphrase when it fits with a spare byte, else reports none.
-extern "C" fn password_callback(
-    buffer: *mut c_char,
-    capacity: c_int,
-    _verify: c_int,
-    owner: *mut c_void,
-) -> c_int {
-    let Some(passphrase_of) = PASSPHRASE_OF.get() else {
-        return 0;
-    };
-    let passphrase = passphrase_of(owner.cast_const());
-    // SAFETY: OpenSSL lends the buffer; the reader lends the live passphrase bytes.
-    unsafe { copy_password(buffer, capacity, passphrase) }
-}
-
+/// Copies the passphrase when it fits with a spare byte, else reports none.
 /// # Safety
 /// Passphrase bytes remain live; buffer holds capacity writable bytes when positive.
 pub(crate) unsafe fn copy_password(
@@ -846,13 +818,6 @@ mod tests {
         ));
     }
 
-    extern "C" fn no_passphrase(_owner: *const c_void) -> TlsStr {
-        TlsStr {
-            data: c"".as_ptr(),
-            length: 0,
-        }
-    }
-
     struct Owned(Vec<CString>);
 
     impl Owned {
@@ -886,8 +851,6 @@ mod tests {
                 disable_compress: false,
                 verify_peer: false,
                 warn: record,
-                owner: ptr::null(),
-                passphrase_of: no_passphrase,
             }
         }
     }
@@ -1005,35 +968,21 @@ mod tests {
 
     #[test]
     fn password_copies_when_it_fits() {
-        extern "C" fn read(owner: *const c_void) -> TlsStr {
-            // SAFETY: the test's CString.
-            let owner = unsafe { &*owner.cast::<CString>() };
-            TlsStr {
-                data: owner.as_ptr(),
-                length: owner.as_bytes().len(),
-            }
-        }
-        PASSPHRASE_OF.get_or_init(|| read);
-        let mut passphrase = CString::new("swoole").unwrap();
-        let owner: *mut c_void = (&raw mut passphrase).cast();
+        let view = |text: &CString| TlsStr {
+            data: text.as_ptr(),
+            length: text.as_bytes().len(),
+        };
+        let passphrase = CString::new("swoole").unwrap();
         let mut buffer = [0x55u8; 8];
-        assert_eq!(
-            password_callback(buffer.as_mut_ptr().cast(), 8, 0, owner),
-            6
-        );
+        let copy = |buffer: &mut [u8; 8], capacity, text: &CString| unsafe {
+            copy_password(buffer.as_mut_ptr().cast(), capacity, view(text))
+        };
+        assert_eq!(copy(&mut buffer, 8, &passphrase), 6);
         assert_eq!(&buffer[..7], b"swoole\0");
         for capacity in [c_int::MIN, -1, 0, 7] {
-            assert_eq!(
-                password_callback(buffer.as_mut_ptr().cast(), capacity, 0, owner),
-                0
-            );
+            assert_eq!(copy(&mut buffer, capacity, &passphrase), 0);
         }
-        *unsafe { &mut *owner.cast::<CString>() } = CString::new("xy").unwrap();
-        assert_eq!(
-            password_callback(buffer.as_mut_ptr().cast(), 8, 0, owner),
-            2,
-            "reads the live value"
-        );
+        assert_eq!(copy(&mut buffer, 8, &CString::new("xy").unwrap()), 2);
     }
 
     #[test]

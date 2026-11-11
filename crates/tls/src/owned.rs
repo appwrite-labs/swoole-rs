@@ -3,7 +3,7 @@
 //! scalar fields and string slots through `swr_v1_tls_owner_view`; OpenSSL
 //! operations read the authoritative Rust owner.
 use crate::context::{PasswordBinding, copy_password, create_context};
-use crate::{TlsConfig, TlsStr, Warn};
+use crate::{TlsConfig, Warn};
 use openssl_sys::{SSL_CTX, SSL_CTX_free};
 use std::{
     cell::UnsafeCell,
@@ -196,16 +196,7 @@ unsafe fn configuration(owner: *const OwnedTlsContext) -> TlsConfig {
         disable_compress: fields.disable_compress != 0,
         verify_peer: fields.verify_peer != 0,
         warn: owner.warn,
-        owner: ptr::from_ref(owner).cast(),
-        passphrase_of: passphrase_view,
     }
-}
-extern "C" fn passphrase_view(owner: *const c_void) -> TlsStr {
-    // SAFETY: used only with the live Rust owner placed in the local configuration view.
-    let owner = unsafe { &*owner.cast::<OwnedTlsContext>() };
-    // SAFETY: the owner's passphrase slot remains live and externally synchronized.
-    unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[PASSPHRASE])) }
-        .into()
 }
 extern "C" fn slot_password(
     buffer: *mut c_char,
