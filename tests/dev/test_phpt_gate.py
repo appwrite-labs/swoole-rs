@@ -54,6 +54,10 @@ class PhptGate(unittest.TestCase):
         self.assertIsNotNone(racy({'path': 'tests/swoole_server/close_max_fd.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_runtime/file_lock/async_file.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_runtime/file_hook/async_file.phpt'}, {'capabilities': []}))
+        enable_ssl = 'tests/swoole_client_async/enableSSL.phpt'
+        self.assertIsNotNone(racy({'path': enable_ssl}, {'capabilities': []}))
+        self.assertFalse(verdict_failed({'test': enable_ssl, 'status': 'unsupported'}, True))
+        self.assertTrue(verdict_failed({'test': enable_ssl, 'status': 'failed'}, True))
         self.assertTrue(verdict_failed({'test': case['path'], 'status': 'failed'}, True))
 
     def test_shards_partition_every_path(self):
