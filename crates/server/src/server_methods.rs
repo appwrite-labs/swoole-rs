@@ -313,8 +313,6 @@ pub(crate) extern "C" fn accept_connection(
     let mut ctx = NativeContext::new(serv);
     ctx.reactor = reactor.as_ptr();
     ctx.server_fd = event.fd();
-    let listener = event.socket();
-    ctx.port = listener.map_or(core::ptr::null_mut(), |s| s.read(|s| s.object));
     ctx.event = ptr::from_mut(event).cast();
     // SAFETY: the server reactor's live server, and its event.
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })

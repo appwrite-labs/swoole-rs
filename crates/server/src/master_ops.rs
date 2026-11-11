@@ -241,13 +241,17 @@ impl Objects<'_> {
         matches!(kind, Some(SW_SOCK_TCP | SW_SOCK_TCP6))
     }
     /// `OP_ACCEPT`: the accepting event's listening socket accepts into the context's
-    /// socket; whether it did.
+    /// socket, and its port becomes the context's; whether it did.
     fn accept(&mut self) -> bool {
         // SAFETY: the accepting event.
         let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
         // SAFETY: its live listening socket.
         let listener = unsafe { self.sockets().socket(listener.cast()) };
-        let socket = listener.map_or(core::ptr::null_mut(), |l| l.edit(SocketRecord::accept));
+        // The listener's object is its port.
+        let (port, socket) = listener.map_or((core::ptr::null_mut(), core::ptr::null_mut()), |l| {
+            l.edit(|l| (l.object, l.accept()))
+        });
+        self.ctx.port = port;
         self.ctx.sock = socket.cast();
         !socket.is_null()
     }
@@ -456,11 +460,28 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_CONN_INIT => {
-            let conn = o.conn();
-            let (fd, ssl, accepted, sock) = o.sock()?.edit(|sock| {
-                let accepted = sock.info;
+            let (conn, state) = (o.conn(), o.state);
+            // The accepted address goes to the connection before getsockname
+            // replaces it with the local one, which is read in place.
+            let (fd, ssl, local_port, local_addr_index) = o.sock()?.edit(|sock| {
+                conn.info = sock.info;
                 sock.get_name();
-                (sock.fd, !sock.ssl.is_null(), accepted, sock.info)
+                let info = &sock.info;
+                let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
+                let v6 = info.kind != SW_SOCK_TCP;
+                // The address field by offset: raw borrows of the union's fields are safe.
+                let addr = if v6 {
+                    let at = core::mem::offset_of!(libc::sockaddr_in6, sin6_addr);
+                    (&raw const info.addr.inet_v6).cast::<u8>().wrapping_add(at)
+                } else {
+                    let at = core::mem::offset_of!(libc::sockaddr_in, sin_addr);
+                    (&raw const info.addr.inet_v4).cast::<u8>().wrapping_add(at)
+                };
+                // SAFETY: the live state and an address of the family.
+                let index = unsafe {
+                    crate::local_addr::swr_v1_server_local_addr_index(Some(state), v6, addr)
+                };
+                (sock.fd, !sock.ssl.is_null(), port, index)
             });
             conn.fd = fd;
             conn.reactor_id = o.ctx.reactor_id;
@@ -476,30 +497,15 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.socket_type = o.port().r#type;
             conn.socket = o.ctx.sock;
             conn.ssl = u8::from(ssl);
-            conn.info = accepted;
             conn.info.kind = conn.socket_type;
-            let info = &sock;
-            let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "C++'s uint16_t local_port"
             )]
-            let port = port as u16;
-            conn.local_port = port;
-            let v6 = sock.kind != SW_SOCK_TCP;
-            // The address field by offset: raw borrows of the union's fields are safe.
-            let addr = if v6 {
-                let at = core::mem::offset_of!(libc::sockaddr_in6, sin6_addr);
-                (&raw const sock.addr.inet_v6).cast::<u8>().wrapping_add(at)
-            } else {
-                let at = core::mem::offset_of!(libc::sockaddr_in, sin_addr);
-                (&raw const sock.addr.inet_v4).cast::<u8>().wrapping_add(at)
-            };
-            // SAFETY: the live state and an address of the family.
-            conn.local_addr_index = unsafe {
-                crate::local_addr::swr_v1_server_local_addr_index(Some(o.state), v6, addr)
-            };
+            let local_port = local_port as u16;
+            conn.local_port = local_port;
+            conn.local_addr_index = local_addr_index;
             0
         }
         OP_OUT_EMPTY => {

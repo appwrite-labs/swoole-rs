@@ -348,24 +348,26 @@ pub(crate) unsafe fn run_method(
         // SAFETY: a live server, per the caller.
         Some(unsafe { view::Server::from_raw(serv) }.state())
     };
-    run(
-        &mut Native {
-            context: ctx.cast(),
-            call: unanswered as ServerCall,
-            state,
-            master: ctx,
-            reactor: core::ptr::null_mut(),
-        },
-        operation,
-        arg,
-    )
+    let mut native = Native {
+        context: ctx.cast(),
+        call: unanswered as ServerCall,
+        state,
+        master: ctx,
+        reactor: core::ptr::null_mut(),
+    };
+    match (operation, state) {
+        // Outside `run`'s match, with the state known and no reactor context, so
+        // each op an accept makes folds to its answer (#2964).
+        (ops::RUN_ACCEPT, Some(_)) => connection::accept(&mut native),
+        _ => run(&mut native, operation, arg),
+    }
     .unwrap_or(SW_ERR)
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
-        RUN_ACCEPT, RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY,
-        RUN_DISABLE_ACCEPT, RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
+        RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY, RUN_DISABLE_ACCEPT,
+        RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
         RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_SIGNAL, RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK,
         RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
     };
@@ -378,8 +380,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             h,
             core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
         )?),
-        ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h)?,
-        RUN_ACCEPT => connection::accept(h)?,
         RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
         RUN_INCOMING => connection::incoming(h)?,
         RUN_IDLE_TIMEOUT => {

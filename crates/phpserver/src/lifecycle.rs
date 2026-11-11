@@ -1449,7 +1449,11 @@ pub fn php_swoole_server_send_yield(
 /// wait. Release with `send_waiters_free`.
 pub(crate) fn send_waiters(session_id: i64) -> *mut c_void {
     ServerObject::running()
-        .property(|p| p.send_waiters.remove(&session_id))
+        // Without waiters, skip hashing the key: SipHash is most of an onClose (#2964).
+        .property(|p| {
+            let waiters = &mut p.send_waiters;
+            (!waiters.is_empty()).then(|| waiters.remove(&session_id))?
+        })
         .map_or(ptr::null_mut(), |waiters| {
             Box::into_raw(Box::new(waiters)).cast()
         })
