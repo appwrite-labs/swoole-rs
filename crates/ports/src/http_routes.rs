@@ -50,14 +50,12 @@ fn route<T>(
 /// upstream's warnings print them.
 pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
     use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
-    // SAFETY: a live address holding its socket type's member.
-    let host = unsafe { swr_v1_clients_address_host(address) };
+    let host = swr_v1_clients_address_host(address);
     // SAFETY: the address text is NUL-terminated and lives until the next lookup.
     let host = unsafe { std::ffi::CStr::from_ptr(host) }
         .to_string_lossy()
         .into_owned();
-    // SAFETY: as above.
-    (host, unsafe { swr_v1_clients_address_port(address) })
+    (host, swr_v1_clients_address_port(address))
 }
 
 /// `get_package_length_size`'s result for `conn`.
@@ -321,7 +319,11 @@ pub mod exports {
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
             unsafe {
-                websocket_dispatch_frame(r.protocol.cast(), r.socket, (&raw const frame).cast())
+                websocket_dispatch_frame(
+                    r.protocol.cast(),
+                    r.socket.as_ptr(),
+                    (&raw const frame).cast(),
+                )
             }
         }
     }

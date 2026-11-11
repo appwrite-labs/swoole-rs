@@ -8,18 +8,6 @@ mutation, allocation, encoding, date/time, warnings, callbacks, IO, codecs)
 after the call returns and re-observes fields afterwards. Cursors are plain
 caller-local values.
 
-## Cookie::toString
-
-`swr_v1_httpbindings_cookie` takes six borrowed spans
-(name/value/path/domain/sameSite/priority), expires, encode/secure/httpOnly/
-partitioned bits and the last native time difference. A null value span means
-absent, distinct from present-empty. A caller-local `u32` cursor selects one
-typed native effect per call. Inputs must be disjoint initialized objects;
-non-empty spans readable, length <= `isize::MAX`. Malformed cursors/null
-objects/spans return -1 with no effect requested. Append text points at current
-input storage or Rust static literals and is consumed immediately; warnings are
-NUL-terminated static text.
-
 ## Request headers and Response header keys
 
 Request header classification returns append/cookie/upgrade/form/multipart/

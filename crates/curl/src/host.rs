@@ -7,10 +7,10 @@
 use crate::{EXEC_NEEDS_COROUTINE, Multi, swr_v1_curl_get_handle};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
-use std::ptr::{self, NonNull};
+use std::ptr;
 use swoole_rs_coroutine::{Coroutine, RC_CANCELED, scheduler};
 use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
-use swoole_rs_reactor::{SocketRecord, event_api, reactor_upstream::prepared};
+use swoole_rs_reactor::{Socket, SocketRecord, event_api, reactor_upstream::prepared};
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
@@ -34,7 +34,10 @@ unsafe extern "C" fn on_event<const BITMASK: c_int>(_: *mut c_void, event: *mut 
     // SAFETY: the reactor passes a live event on one of this crate's sockets.
     let socket = unsafe { &*event.cast::<swoole_rs_reactor::Event>() }.socket;
     // SAFETY: as above.
-    let object = unsafe { &*socket.cast::<SocketRecord>() }.object;
+    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+        return -1;
+    };
+    let object = socket.read(|socket| socket.object);
     // SAFETY: the multi set the object and keeps it live while the socket is registered.
     unsafe { crate::socket_event(object, BITMASK) };
     0
@@ -46,8 +49,7 @@ pub(crate) fn event_available() -> bool {
 
 /// Install the cURL fd type's reactor handlers unless they are.
 pub(crate) fn install_handlers() {
-    // SAFETY: called while the event loop is available.
-    if unsafe { event_api::swoole_event_isset_handler(FD_CO_CURL, EVENT_READ) } {
+    if event_api::swoole_event_isset_handler(FD_CO_CURL, EVENT_READ) {
         return;
     }
     for (event, handler) in [
@@ -58,7 +60,7 @@ pub(crate) fn install_handlers() {
         (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
         (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        // SAFETY: as above.
+        // SAFETY: `on_event` needs only the live event of a cURL socket.
         unsafe { event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler)) };
     }
 }
@@ -67,13 +69,16 @@ pub(crate) fn install_handlers() {
 /// live from [`ReactorSocket::new`] until [`ReactorSocket::free`], and the
 /// multi touches it only on the thread whose event loop it registers with.
 #[derive(Clone, Copy)]
-pub(crate) struct ReactorSocket(NonNull<SocketRecord>);
+pub(crate) struct ReactorSocket(Socket<'static>);
 
 impl ReactorSocket {
     /// Out of the reactor, carrying no object yet.
     pub(crate) fn new(fd: c_int) -> Self {
         let record = SocketRecord::with_fd(fd, FD_CO_CURL).into_raw();
-        Self(NonNull::new(record).unwrap_or_else(|| std::process::abort()))
+        // SAFETY: the new record, live until `free`, and touched only through this handle
+        // and the reactor on this thread.
+        let socket = unsafe { Socket::from_ptr(record) };
+        Self(socket.unwrap_or_else(|| std::process::abort()))
     }
 
     fn record(self) -> *mut SocketRecord {
@@ -82,20 +87,17 @@ impl ReactorSocket {
 
     /// Carry `object`, which the reactor handlers report.
     pub(crate) fn set_object(self, object: *mut c_void) {
-        // SAFETY: a live record; no reference to it is held.
-        unsafe { (*self.record()).object = object };
+        self.0.edit(|socket| socket.object = object);
     }
 
     /// The events it is registered for.
     pub(crate) fn events(self) -> c_int {
-        // SAFETY: as above.
-        unsafe { (*self.record()).events }
+        self.0.read(|socket| socket.events)
     }
 
     /// Whether it is out of the reactor.
     pub(crate) fn removed(self) -> bool {
-        // SAFETY: as above.
-        unsafe { (*self.record()).removed != 0 }
+        self.0.read(|socket| socket.removed != 0)
     }
 
     pub(crate) fn add(self, events: c_int) -> c_int {
@@ -119,12 +121,10 @@ impl ReactorSocket {
     /// Nothing uses this socket, or a copy of it, afterwards.
     pub(crate) unsafe fn free(self) {
         if self.events() != 0 && event_available() {
-            // SAFETY: a live record; no reference to it is held.
-            unsafe { (*self.record()).silent_remove = 1 };
+            self.0.edit(|socket| socket.silent_remove = 1);
             self.del();
         }
-        // SAFETY: as above.
-        unsafe { (*self.record()).fd = -1 };
+        self.0.edit(|socket| socket.fd = -1);
         // SAFETY: per the caller; with fd -1 it closes nothing.
         unsafe { swoole_rs_tls::upstream::socket_free(self.record()) };
     }

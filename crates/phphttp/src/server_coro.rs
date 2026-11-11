@@ -294,10 +294,10 @@ fn record<'a>(socket: Socket) -> &'a mut co::CoSocket {
     unsafe { co::record(socket) }
 }
 
-/// A live socket's network socket.
-fn network<'a>(socket: Socket) -> &'a mut swoole_rs_reactor::SocketRecord {
-    // SAFETY: a live socket's network socket, as live.
-    unsafe { &mut *record(socket).socket }
+/// A live socket's network socket, while it is open.
+fn network<'a>(socket: Socket) -> Option<swoole_rs_reactor::Socket<'a>> {
+    // SAFETY: a live socket's network socket: null or as live.
+    unsafe { swoole_rs_reactor::Socket::from_ptr(record(socket).socket) }
 }
 
 /// The socket's error code and message.
@@ -308,13 +308,16 @@ fn socket_error(socket: Socket) -> (c_int, *const c_char) {
 
 /// `get_addr()` and `get_port()`: the network socket's address.
 fn address(socket: Socket) -> (&'static CStr, c_int) {
-    let info = &raw const network(socket).info;
-    // SAFETY: a live address.
-    let host = unsafe { swr_v1_clients_address_host(info) };
-    // SAFETY: NUL-terminated text, live until the next call.
-    let host = unsafe { CStr::from_ptr(host) };
-    // SAFETY: a live address.
-    (host, unsafe { swr_v1_clients_address_port(info) })
+    let Some(network) = network(socket) else {
+        return (c"", 0);
+    };
+    network.read(|record| {
+        let info = &record.info;
+        let host = swr_v1_clients_address_host(info);
+        // SAFETY: NUL-terminated text, live until the next call.
+        let host = unsafe { CStr::from_ptr(host) };
+        (host, swr_v1_clients_address_port(info))
+    })
 }
 
 /// `SW_EVENT_READ`.
@@ -356,7 +359,9 @@ fn http2_begin(socket: Socket) {
 
 /// `recv_wait`: the socket waits for a request.
 fn set_recv_wait(socket: Socket, waiting: bool) {
-    network(socket).recv_wait = u8::from(waiting);
+    if let Some(network) = network(socket) {
+        network.edit(|record| record.recv_wait = u8::from(waiting));
+    }
 }
 
 method_table! {
@@ -491,7 +496,7 @@ fn construct(call: &Call) {
         // SAFETY: as above.
         unsafe { *Holder::data(object) = server };
         if reuse_port {
-            set_reuse_port(network(socket).fd);
+            set_reuse_port(network(socket).map_or(-1, swoole_rs_reactor::Socket::fd));
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
         // SAFETY: a live socket and the host's bytes.
@@ -644,10 +649,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let compression = u32::from(COMPRESSION.load(Relaxed));
     loop {
         let mut action = Action::default();
-        // SAFETY: a local cursor and output.
-        if unsafe {
-            swr_v1_httpbindings_settings(&raw mut cursor, compression, found, &raw mut action)
-        } != 0
+        if swr_v1_httpbindings_settings(Some(&mut cursor), compression, found, Some(&mut action))
+            != 0
         {
             return Ok(None);
         }
@@ -694,8 +697,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         set_error: start_set_error,
         fail: start_fail,
     };
-    // SAFETY: the host below and the local policy table.
-    let accepted = unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const errors) };
+    // SAFETY: the host's callbacks take its data, `start`.
+    let accepted = unsafe { swr_v1_httpbindings_accept_loop(Some(&host), Some(&errors)) };
     if start.bailed.get() {
         return Err(bailout::Bailout);
     }
@@ -789,12 +792,11 @@ unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
 
 /// Accept a connection and serve it with `onAccept` in a new coroutine: its
 /// id, or 0.
-unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i64 {
+unsafe extern "C" fn start_accept(data: *mut c_void, connected: &mut bool) -> i64 {
     let start = start_of(data);
     // SAFETY: the live listener, in `start`'s coroutine.
     let conn = unsafe { co::accept(start.socket, 0.0) };
-    // SAFETY: the loop's output.
-    unsafe { *connected = !conn.is_null() };
+    *connected = !conn.is_null();
     if conn.is_null() {
         return 0;
     }
@@ -832,10 +834,9 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
     cid
 }
 
-unsafe extern "C" fn start_error(data: *mut c_void, message: *mut *const c_char) -> c_int {
+unsafe extern "C" fn start_error(data: *mut c_void, message: &mut *const c_char) -> c_int {
     let (code, text) = socket_error(start_of(data).socket);
-    // SAFETY: the loop's output.
-    unsafe { *message = text };
+    *message = text;
     code
 }
 
@@ -965,7 +966,7 @@ unsafe extern "C" fn collect(
 ) {
     // SAFETY: a socket object in the server's array.
     let socket = unsafe { get_socket(connection) };
-    if network(socket).recv_wait != 0 {
+    if network(socket).is_some_and(|network| network.read(|record| record.recv_wait != 0)) {
         // SAFETY: `shutdown`'s vector, borrowed for the scan.
         unsafe { (*out.cast::<Vec<(z::zend_ulong, Socket)>>()).push((index, socket)) };
     }
@@ -1078,10 +1079,10 @@ fn on_accept(call: &Call) {
 fn add_peer(context: *mut Context, peer: &Peer) {
     let state = send::state(context);
     // The array takes a reference of its own to each of the loop's strings.
-    let remote_addr = Owned::string(peer.remote_addr.to_owned());
+    let remote_addr = Owned::string(peer.remote_addr.clone());
     add_server(state, Key::RemoteAddr, remote_addr);
     add_server(state, Key::RemotePort, Owned::long(peer.remote_port.into()));
-    let server_addr = Owned::string(peer.server_addr.to_owned());
+    let server_addr = Owned::string(peer.server_addr.clone());
     add_server(state, Key::ServerAddr, server_addr);
     add_server(state, Key::ServerPort, Owned::long(peer.server_port.into()));
 }

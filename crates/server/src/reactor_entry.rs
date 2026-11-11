@@ -36,7 +36,7 @@ pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
 /// `ctx.serv` is a live `Server` and the context's other objects are what `op` reads.
 pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     // SAFETY: per the caller.
-    let state = unsafe { view::Server::from_raw(ctx.serv) }.state_ptr();
+    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
     let context = ptr::from_mut(ctx).cast();
     // SAFETY: per the caller.
     unsafe { crate::run_reactor(op, arg, context, unanswered, state) }
@@ -46,10 +46,10 @@ pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
 ///
 /// # Safety
 /// As [`run`].
-unsafe fn run_with(
+unsafe fn run_with<'s>(
     which: Facts,
     ctx: &mut ReactorContext,
-    operation: impl FnOnce(&mut crate::Native<crate::ServerCall>, u64) -> crate::Effect<i64>,
+    operation: impl FnOnce(&mut crate::Native<'s, crate::ServerCall>, u64) -> crate::Effect<i64>,
 ) -> c_int {
     // SAFETY: per the caller.
     let state = unsafe { state(ctx.serv) };
@@ -279,8 +279,14 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let serv = unsafe { (*proto).private_data_2 };
     // SAFETY: per the caller, a live server's.
     let state = unsafe { state(serv) };
-    // SAFETY: a session socket's object is its live connection.
-    let conn = unsafe { (*socket).object }.cast::<crate::records::ConnectionRecord>();
+    // SAFETY: per the caller, a live session socket.
+    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    // A session socket's object is its live connection.
+    let conn = socket
+        .read(|s| s.object)
+        .cast::<crate::records::ConnectionRecord>();
     // SAFETY: per the caller.
     let rdata = unsafe { &*rdata };
     let len = rdata.info.len;
@@ -309,7 +315,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         crate::factory::dispatch(state, (&raw mut task).cast())
     } else {
         let mut ctx = ReactorContext::new(serv, ptr::null_mut());
-        ctx.sock = socket;
+        ctx.sock = socket.as_ptr();
         ctx.conn = conn;
         let task = &raw mut task;
         let base = mode == crate::MODE_BASE;

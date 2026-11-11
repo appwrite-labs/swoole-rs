@@ -4,7 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket;
 
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
@@ -202,11 +202,7 @@ impl ServerConfig {
 /// # Safety
 /// The caller lends a live state and synchronizes its field access as for the native view.
 #[inline(always)]
-pub(crate) unsafe fn native_fact(
-    state: *const crate::ServerState,
-    op: u32,
-    arg: u64,
-) -> Option<u64> {
+pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
         FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
@@ -247,12 +243,10 @@ pub(crate) unsafe fn native_fact(
     ) {
         return None;
     }
-    // SAFETY: the caller lends the state's stable record allocations for this leaf access.
-    let owner = unsafe { &*state };
     // SAFETY: no native callback runs during this leaf record access.
-    let config = unsafe { &mut *owner.config() };
+    let config = unsafe { &mut *state.config() };
     // SAFETY: no native callback runs during this leaf table access.
-    let tables = unsafe { &mut *owner.tables() };
+    let tables = unsafe { &mut *state.tables() };
     Some(match op {
         OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread),
@@ -278,7 +272,7 @@ pub(crate) unsafe fn native_fact(
             // SAFETY: a listed port is live, and no native callback runs while it is borrowed.
             let port = unsafe { crate::port_config::of(*port?) };
             // SAFETY: a port's socket is null or live.
-            let socket = unsafe { port.socket.cast::<SocketRecord>().as_ref() };
+            let socket = unsafe { Socket::from_ptr(port.socket.cast()) };
             match op {
                 OP_PORT_DGRAM => u64::from(matches!(port.r#type, 2 | 4 | 6)),
                 OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
@@ -289,8 +283,8 @@ pub(crate) unsafe fn native_fact(
                     port.heartbeat_idle_time = config.heartbeat_check_interval.wrapping_mul(2);
                     0
                 }
-                OP_PORT_REMOVED => u64::from(socket?.removed),
-                _ => i64::from(socket.map_or(-1, |socket| socket.fd)).cast_unsigned(),
+                OP_PORT_REMOVED => u64::from(socket?.read(|s| s.removed)),
+                _ => i64::from(socket.map_or(-1, Socket::fd)).cast_unsigned(),
             }
         }
         OP_SET_MAX_CONNECTION => {
@@ -363,15 +357,15 @@ mod tests {
             assert_eq!((*config).reactor_num, 8);
             assert_eq!((*config).timezone_, 3600);
             assert_eq!(
-                native_fact(state, OP_FIELD, u64::from(FIELD_WORKER_NUM)),
+                native_fact(&*state, OP_FIELD, u64::from(FIELD_WORKER_NUM)),
                 Some(16)
             );
             let encoded = (19 << 8) | u64::from(FIELD_WORKER_NUM);
-            assert_eq!(native_fact(state, OP_SET_FIELD, encoded), Some(0));
+            assert_eq!(native_fact(&*state, OP_SET_FIELD, encoded), Some(0));
             assert_eq!((*config).worker_num, 19);
-            assert_eq!(native_fact(state, OP_SET_RUNNING, 0), Some(0));
+            assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
             assert!(!(*config).running);
-            assert_eq!(native_fact(state, OP_RUNNING, 0), Some(0));
+            assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
             swr_v1_server_state_free(state);
         }
     }
@@ -383,7 +377,7 @@ mod tests {
             OP_PORT_IDLE, OP_PORT_REMOVED, OP_PORT_STREAM,
         };
         let state = swr_v1_server_state_new();
-        let mut socket = SocketRecord::new();
+        let mut socket = swoole_rs_reactor::SocketRecord::new();
         socket.fd = 7;
         socket.removed = 1;
         let ports: Vec<_> = [1, 2]
@@ -399,22 +393,26 @@ mod tests {
             })
             .collect();
         unsafe {
-            assert_eq!(native_fact(state, OP_PORT_COUNT, 0), Some(0));
-            assert_eq!(native_fact(state, OP_PORT_DGRAM, 0), None, "no port 0 yet");
+            assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(0));
+            assert_eq!(
+                native_fact(&*state, OP_PORT_DGRAM, 0),
+                None,
+                "no port 0 yet"
+            );
             for &port in &ports {
                 (*state).push_port(port.cast());
             }
             (*(*state).config()).heartbeat_check_interval = 5;
-            assert_eq!(native_fact(state, OP_PORT_COUNT, 0), Some(2));
+            assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(2));
             assert_eq!((**ports[1]).object_id, 2);
-            assert_eq!(native_fact(state, OP_PORT_STREAM, 0), Some(1));
-            assert_eq!(native_fact(state, OP_PORT_DGRAM, 0), Some(0));
-            assert_eq!(native_fact(state, OP_PORT_DGRAM, 1), Some(1));
-            assert_eq!(native_fact(state, OP_PORT_REMOVED, 1), Some(1));
-            assert_eq!(native_fact(state, OP_PORT_FD, 1), Some(7));
-            assert_eq!(native_fact(state, OP_LAST_PORT_FD, 0), Some(7));
-            assert_eq!(native_fact(state, OP_PORT_DEFAULT_IDLE, 1), Some(0));
-            assert_eq!(native_fact(state, OP_PORT_IDLE, 1), Some(10));
+            assert_eq!(native_fact(&*state, OP_PORT_STREAM, 0), Some(1));
+            assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 0), Some(0));
+            assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 1), Some(1));
+            assert_eq!(native_fact(&*state, OP_PORT_REMOVED, 1), Some(1));
+            assert_eq!(native_fact(&*state, OP_PORT_FD, 1), Some(7));
+            assert_eq!(native_fact(&*state, OP_LAST_PORT_FD, 0), Some(7));
+            assert_eq!(native_fact(&*state, OP_PORT_DEFAULT_IDLE, 1), Some(0));
+            assert_eq!(native_fact(&*state, OP_PORT_IDLE, 1), Some(10));
             swr_v1_server_state_free(state);
             for port in ports {
                 crate::port_config::swr_v1_port_config_free(*Box::from_raw(port));

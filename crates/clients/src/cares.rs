@@ -16,7 +16,7 @@ use swoole_rs_cares_sys as sdk;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{Socket, SocketRecord, event_api, socket_upstream};
 
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
@@ -140,7 +140,10 @@ unsafe fn process(event: *mut c_void, write: u8) -> i32 {
     let event = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
     let fd = event.fd;
     // SAFETY: its socket is a registered c-ares wrapper.
-    let data = unsafe { (*event.socket.cast::<SocketRecord>()).object };
+    let Some(socket) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {
+        return -1;
+    };
+    let data = socket.read(|socket| socket.object);
     // SAFETY: the query's channel stays live while its wrappers are registered.
     let channel = unsafe { query(data).channel };
     let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
@@ -157,7 +160,7 @@ unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
 fn install() {
     let read = EventType::SW_EVENT_READ as i32;
     let write = EventType::SW_EVENT_WRITE as i32;
-    // SAFETY: the thread's live reactor.
+    // SAFETY: the handlers need only the live event of a registered c-ares wrapper.
     unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
     // SAFETY: as above.
     unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
@@ -180,7 +183,9 @@ unsafe fn free(socket: *mut SocketRecord) {
         unsafe { SocketRecord::free(socket.cast()) };
     }
     // SAFETY: a live wrapper; c-ares retains the OS descriptor.
-    unsafe { (*socket).fd = -1 };
+    if let Some(wrapper) = unsafe { Socket::from_ptr(socket) } {
+        wrapper.edit(|wrapper| wrapper.fd = -1);
+    }
     let reactor = event_api::swr_v1_event_reactor();
     if reactor.is_null() {
         // SAFETY: as above.
@@ -204,7 +209,7 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
     };
     // SAFETY: query registry access ends before any reactor effect.
     let socket = unsafe { query(data).sockets.get(&fd).copied() };
-    let socket = if let Some(socket) = socket {
+    let wrapper = if let Some(socket) = socket {
         if events == 0 {
             // SAFETY: remove the registered native socket before detaching its descriptor.
             unsafe { event_api::swoole_event_del(socket) };
@@ -214,7 +219,8 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             unsafe { query_mut(data).sockets.remove(&fd) };
             return;
         }
-        socket
+        // SAFETY: a registered wrapper, live while the registry holds it.
+        unsafe { Socket::from_ptr(socket) }
     } else {
         if events == 0 {
             log::warning(ORIGIN, format_args!("error events, fd={fd}"));
@@ -222,20 +228,24 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         }
         // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
         let socket = socket_upstream::make_socket_fd(fd, FD);
-        // SAFETY: the fresh record.
-        unsafe { (*socket).object = data };
+        // SAFETY: the fresh record, or null.
+        let wrapper = unsafe { Socket::from_ptr(socket) };
+        if let Some(wrapper) = wrapper {
+            wrapper.edit(|wrapper| wrapper.object = data);
+        }
         // SAFETY: registry insertion completes before the reactor can run any callback.
         unsafe { query_mut(data).sockets.insert(fd, socket) };
-        socket
+        wrapper
     };
-    // SAFETY: a live wrapper's registered-event flags.
-    let registered = unsafe { (*socket).events } != 0;
-    if registered {
+    let Some(wrapper) = wrapper else {
+        return;
+    };
+    if wrapper.read(|wrapper| wrapper.events) != 0 {
         // SAFETY: update this existing registered wrapper with the requested event mask.
-        unsafe { event_api::swoole_event_set(socket, events) };
+        unsafe { event_api::swoole_event_set(wrapper.as_ptr(), events) };
     } else {
         // SAFETY: register this fresh wrapper with the requested event mask.
-        unsafe { event_api::swoole_event_add(socket, events) };
+        unsafe { event_api::swoole_event_add(wrapper.as_ptr(), events) };
     }
 }
 unsafe extern "C" fn host(
@@ -263,10 +273,14 @@ unsafe extern "C" fn host(
             if address.is_null() {
                 break;
             }
-            // SAFETY: the successful hostent supplies4 or16 initialized address bytes.
-            let text = unsafe {
-                swr_v1_clients_ip_text(if family == libc::AF_INET { 4 } else { 6 }, address.cast())
+            let (version, length) = if family == libc::AF_INET {
+                (4, 4)
+            } else {
+                (6, 16)
             };
+            // SAFETY: the successful hostent supplies 4 or 16 initialized address bytes.
+            let address = unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) };
+            let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
             // SAFETY: copy SDK data into the Rust owner before the callback returns.
@@ -320,8 +334,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     let (server, port) = crate::dns::server();
     let (server, port) = (server.as_ptr().cast::<c_char>(), port as u16);
     let domain = domain.as_ptr();
-    // SAFETY: the thread's live reactor; the probe invokes no user code.
-    if !unsafe { event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) } {
+    if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
         install();

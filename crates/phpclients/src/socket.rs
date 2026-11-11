@@ -133,6 +133,12 @@ pub fn socket_class() -> *mut zend_class_entry {
     SOCKET.entry()
 }
 
+/// `Swoole\Coroutine\Socket`.
+#[must_use]
+pub fn socket() -> &'static Class {
+    &SOCKET
+}
+
 swoole_rs_zend::minit!(socket_minit => register);
 
 /// MINIT, as `php_swoole_socket_coro_minit` did, after `Swoole\Exception`: both
@@ -801,7 +807,7 @@ fn recvfrom(call: &Call) {
 /// `["address" => .., "port" => ..]` of the socket's last address.
 fn address(socket: Co) -> OwnedArray {
     let (address, port) = socket.address();
-    endpoint(address, port)
+    endpoint(&address, port)
 }
 
 /// `["address" => address, "port" => port]`.

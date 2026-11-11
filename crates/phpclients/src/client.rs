@@ -12,6 +12,7 @@ use libc::{c_char, c_int};
 use std::{ffi::CStr, ptr};
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_phpstubs::client_coro;
+use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
     bailout::Bailout,
@@ -441,7 +442,11 @@ fn sendto(call: &Call) {
     let Some(socket) = datagram_socket(call) else {
         return call.set_bool(false);
     };
-    if socket.net().is_some_and(|record| record.is_tcp()) && !verify_port(port) {
+    if socket
+        .net()
+        .is_some_and(|net| net.read(SocketRecord::is_tcp))
+        && !verify_port(port)
+    {
         warn(true, "The port is invalid");
         return call.set_bool(false);
     }
@@ -586,7 +591,7 @@ fn getsockname(call: &Call) {
         return call.set_bool(false);
     }
     let (address, port) = socket.address();
-    set_endpoint(call, address, port);
+    set_endpoint(call, &address, port);
 }
 
 /// `getpeername(): array|false`.

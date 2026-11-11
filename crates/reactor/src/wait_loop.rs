@@ -2,7 +2,7 @@
 //! and `ReactorPoll::wait` over the Rust reactor state (#336, #391). Rust owns the loop, the
 //! kernel wait, the readiness order and the warnings; native code supplies the effects
 //! upstream reaches through `Reactor`'s callbacks.
-use crate::SocketRecord;
+use crate::Socket;
 use crate::handlers::{self, Handlers};
 use crate::reactor_state::{ReactorFields, ReactorState, before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
@@ -181,7 +181,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
 /// # Safety
 /// `index` is below the count the kernel wait reported.
 unsafe fn entry(ops: &Loop<'_>, index: usize) {
-    match ops.backend {
+    let (socket, fd, mask) = match ops.backend {
         POLL => {
             let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
             // SAFETY: the caller checked `index` against poll's entry count.
@@ -197,8 +197,7 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
             );
             let socket = ops.sockets.wrapping_add(index);
             // SAFETY: poll's sockets array has an entry for each pollfd entry.
-            let socket = unsafe { socket.read() };
-            ready(ops, socket, pollfd.fd, mask);
+            (unsafe { socket.read() }, pollfd.fd, mask)
         }
         #[cfg(target_os = "linux")]
         EPOLL => {
@@ -215,7 +214,7 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
                 clippy::cast_possible_truncation,
                 reason = "the token is a pointer stored in u64"
             )]
-            ready(ops, event.u64 as usize as *mut c_void, -1, mask);
+            (event.u64 as usize as *mut c_void, -1, mask)
         }
         #[cfg(any(
             target_os = "macos",
@@ -228,14 +227,19 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
             let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
             // SAFETY: the caller checked `index` against the kernel's ready count.
             let event = unsafe { event.read() };
-            kqueue(ops, event.udata.cast(), c_int::from(event.filter));
+            return kqueue(ops, event.udata.cast(), c_int::from(event.filter));
         }
-        _ => {}
+        _ => return,
+    };
+    // SAFETY: a registered socket (poll's array entry or epoll's token), live while its
+    // handlers run.
+    if let Some(socket) = unsafe { Socket::from_ptr(socket.cast()) } {
+        ready(ops, socket, fd, mask);
     }
 }
 
 /// poll and epoll: read, write, error (unless read or write already ran), then a oneshot removal.
-fn ready(ops: &Loop<'_>, socket: *mut c_void, fd: c_int, mask: u32) {
+fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(socket);
     for (kind, bit) in [(0, READ), (1, WRITE)] {
@@ -268,8 +272,13 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         return;
     }
     if filter == c_int::from(libc::EVFILT_READ) || filter == c_int::from(libc::EVFILT_WRITE) {
-        let fd_type = prepare(ops, udata, -1, false);
-        let live = || registered(udata);
+        // SAFETY: a read or write entry's udata is its registered socket, live while its
+        // handlers run.
+        let Some(socket) = (unsafe { Socket::from_ptr(udata.cast()) }) else {
+            return;
+        };
+        let fd_type = prepare(ops, socket, -1, false);
+        let live = || registered(socket);
         if !live() {
             return;
         }
@@ -277,7 +286,7 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         if handle(ops, kind, fd_type) < 0 {
             handler_failed(ops, kind);
         }
-        oneshot(ops, udata, live);
+        oneshot(ops, socket, live);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
         // SAFETY: a signal entry's udata is its registered `swoole::Signal`.
         unsafe { dispatch_signal(udata.cast()) };
@@ -443,53 +452,40 @@ fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
 /// fd (-1: the socket's own), and `hangup` marks `event_hup`. Returns the fd type.
-fn prepare(ops: &Loop<'_>, socket: *mut c_void, fd: c_int, hangup: bool) -> c_int {
-    let record = socket.cast::<SocketRecord>();
-    // SAFETY: `socket` is a registered socket record; the loop reads single fields.
-    let fd_type = unsafe { (*record).fd_type };
-    let fd = if fd < 0 {
-        // SAFETY: as above.
-        unsafe { (*record).fd }
-    } else {
-        fd
-    };
+fn prepare(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, hangup: bool) -> c_int {
+    let (fd_type, own) = socket.read(|record| (record.fd_type, record.fd));
     let event = Event {
-        fd,
+        fd: if fd < 0 { own } else { fd },
         reactor_id: ops.reactor_id,
         fd_type,
-        socket,
+        socket: socket.as_ptr().cast(),
     };
     // SAFETY: `ops.event` is the backend's own event, not otherwise borrowed now.
     unsafe { ops.event.write(event) };
     if hangup {
-        // SAFETY: as above.
-        unsafe { (*record).event_hup = 1 };
+        socket.edit(|record| record.event_hup = 1);
     }
     fd_type
 }
 
 /// Whether `socket` is still registered (`!socket->removed`).
-fn registered(socket: *mut c_void) -> bool {
-    // SAFETY: `socket` stays live while its handlers run.
-    unsafe { (*socket.cast::<SocketRecord>()).removed == 0 }
+fn registered(socket: Socket<'_>) -> bool {
+    socket.read(|record| record.removed == 0)
 }
 
-fn oneshot(ops: &Loop<'_>, socket: *mut c_void, live: impl Fn() -> bool) {
-    // SAFETY: `socket` stays live until its removal below.
-    if live() && unsafe { (*socket.cast::<SocketRecord>()).events } & SW_EVENT_ONCE != 0 {
-        let socket = socket.cast::<SocketRecord>();
+fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
+    if live() && socket.read(|record| record.events) & SW_EVENT_ONCE != 0 {
         if ops.backend == EPOLL {
             // SAFETY: the live state; no native effect is active.
             let state = unsafe { &mut *ops.owner };
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
-            // SAFETY: a registered socket, distinct from the state.
-            state.record(unsafe { &mut *socket }, socket, 2, 0);
+            state.record(socket, 2, 0);
         } else {
             // SAFETY: as above; poll and kqueue run `Reactor::del`.
             unsafe {
                 crate::swr_v1_reactor_change(
                     ops.owner,
-                    socket,
+                    socket.as_ptr(),
                     2,
                     0,
                     crate::socket_upstream::swr_v1_reactor_log,
@@ -584,7 +580,7 @@ mod tests {
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let events = 512 | if socket_once { SW_EVENT_ONCE } else { 0 };
-        let mut socket = SocketRecord::with_fd(fds[0], 5);
+        let mut socket = crate::SocketRecord::with_fd(fds[0], 5);
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
             assert_eq!(

@@ -189,8 +189,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_SET => unsafe { swr_workers_signal_set(arg, entry::worker_signal_handler) },
         // SAFETY: the context's live server and worker.
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
-        // SAFETY: the context's live worker.
-        OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
         OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
             SW_WORKER_IDLE
         } else {
@@ -266,7 +265,8 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let conn = unsafe { ctx.conn.as_ref() }?;
     Some(match op {
         OP_CONN_READABLE => {
-            let removed = crate::objects::socket(conn.socket).is_none_or(|s| s.removed != 0);
+            let removed =
+                crate::objects::socket(conn.socket).is_none_or(|s| s.read(|s| s.removed != 0));
             u64::from(conn.peer_closed == 0 && !removed)
         }
         OP_CONN_REACTOR => u64::from(conn.reactor_id),

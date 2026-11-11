@@ -11,7 +11,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_reactor::reactor_upstream::{
     prepared, reactor_change, reactor_interest, reactor_set_handler,
 };
-use swoole_rs_reactor::{Handler, ReactorFields, SocketRecord};
+use swoole_rs_reactor::{Handler, ReactorFields, Socket};
 
 /// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
 const ADD: u32 = 0;
@@ -48,32 +48,32 @@ impl Reactor {
         unsafe { &mut *fields }
     }
     /// `Reactor::change`'s `op` (0 add, 1 set, 2 del) of `sock` with `events`.
-    pub(crate) fn change(self, sock: &mut SocketRecord, op: u32, events: c_int) -> c_int {
+    pub(crate) fn change(self, sock: Socket<'_>, op: u32, events: c_int) -> c_int {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_change(self.0, sock, op, events) }
+        unsafe { reactor_change(self.0, sock.as_ptr(), op, events) }
     }
     /// `Reactor::interest`'s `kind` (2 add read, 3 add write, 4 remove read) of `sock`.
-    pub(crate) fn interest(self, sock: &mut SocketRecord, kind: u32, events: c_int) -> c_int {
+    pub(crate) fn interest(self, sock: Socket<'_>, kind: u32, events: c_int) -> c_int {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_interest(self.0, sock, kind, events) }
+        unsafe { reactor_interest(self.0, sock.as_ptr(), kind, events) }
     }
     /// `reactor->add(sock, events)`.
-    pub(crate) fn add(self, sock: &mut SocketRecord, events: c_int) -> c_int {
+    pub(crate) fn add(self, sock: Socket<'_>, events: c_int) -> c_int {
         self.change(sock, ADD, events)
     }
     /// `reactor->del(sock)`.
-    pub(crate) fn del(self, sock: &mut SocketRecord) -> c_int {
+    pub(crate) fn del(self, sock: Socket<'_>) -> c_int {
         self.change(sock, DEL, 0)
     }
     /// `reactor->remove_read_event(sock)`.
-    pub(crate) fn unread(self, sock: &mut SocketRecord) {
+    pub(crate) fn unread(self, sock: Socket<'_>) {
         let _ = self.interest(sock, REMOVE_READ, 0);
     }
     /// The reactor's own `close` of `sock`, when it has one.
-    pub(crate) fn close(self, sock: &mut SocketRecord) -> c_int {
+    pub(crate) fn close(self, sock: Socket<'_>) -> c_int {
         self.fields().close.map_or(0, |close| {
             // SAFETY: the reactor's close on one of its live sockets.
-            unsafe { close(self.0, (&raw mut *sock).cast()) }
+            unsafe { close(self.0, sock.as_ptr().cast()) }
         })
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
@@ -84,9 +84,8 @@ impl Reactor {
     pub(crate) fn set_error_handler(self, handler: Handler) {
         // SAFETY: a live reactor.
         let handlers = unsafe { prepared(self.0) }.handlers;
-        // SAFETY: its live handler tables.
-        unsafe {
-            swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
-        }
+        // SAFETY: its live handler tables, which nothing else borrows meanwhile.
+        let handlers = unsafe { &mut *handlers };
+        swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
     }
 }

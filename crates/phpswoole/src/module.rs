@@ -15,7 +15,7 @@ use swoole_rs_corebase::{
     log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
 };
 use swoole_rs_zend::{
-    Call, E_WARNING,
+    Call, Class, E_WARNING,
     bailout::{self, Bailout},
     report,
     sys::{
@@ -148,6 +148,11 @@ pub struct Families {
     /// crates/phplocks' MINITs: `php_swoole_atomic_minit`, `_lock_minit` and
     /// `_coroutine_lock_minit`, then (`SW_THREAD`) the thread atomics' and lock's.
     pub locks_minit: [Minit; 4],
+    /// `php_swoole_event_minit`.
+    pub event_minit: Minit,
+    /// crates/phpcollections' MINITs: `php_swoole_table_minit`, then
+    /// `php_swoole_channel_coro_minit`.
+    pub collections_minit: [Minit; 2],
     /// `php_swoole_timer_minit` and `php_swoole_timer_rshutdown`.
     pub timer_minit: Minit,
     pub timer_rshutdown: Hook,
@@ -201,8 +206,8 @@ pub struct Families {
     pub name_resolver_remove: unsafe fn(*mut zval) -> *mut zval,
     /// `swoole_socket_coro_ce` and `swoole_client_ce`, for `Swoole\Event`
     /// (crates/phpevents).
-    pub socket_class: fn() -> *mut zend_class_entry,
-    pub client_class: fn() -> *mut zend_class_entry,
+    pub socket_class: fn() -> &'static Class,
+    pub client_class: fn() -> &'static Class,
     /// crates/phphttp's and phphttp2's.
     pub http: Http,
 }
@@ -246,11 +251,8 @@ pub fn families() -> Option<&'static Families> {
 }
 
 unsafe extern "C" {
-    fn php_swoole_event_minit(module_number: c_int);
     fn php_swoole_process_minit(module_number: c_int);
     fn php_swoole_process_pool_minit(module_number: c_int);
-    fn php_swoole_table_minit(module_number: c_int);
-    fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
     fn php_swoole_runtime_mshutdown();
     fn php_swoole_runtime_rinit();
@@ -293,20 +295,20 @@ pub(crate) fn startup(module_number: c_int) {
     };
     let mut steps = vec![
         H(core_startup),
-        M(php_swoole_event_minit),
+        M(families.event_minit),
         // base
         M(families.locks_minit[0]),
         M(families.locks_minit[1]),
         M(php_swoole_process_minit),
         M(php_swoole_process_pool_minit),
-        M(php_swoole_table_minit),
+        M(families.collections_minit[0]),
         M(families.timer_minit),
     ];
     // coroutine
     steps.extend(families.coroutine_minit.map(M));
     steps.extend([
         M(families.locks_minit[2]),
-        M(php_swoole_channel_coro_minit),
+        M(families.collections_minit[1]),
         M(php_swoole_runtime_minit),
     ]);
     // client

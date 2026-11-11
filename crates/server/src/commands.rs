@@ -20,10 +20,7 @@ use swoole_rs_process::command::{
 };
 use swoole_rs_process::worker_record::Worker;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-use {
-    crate::ops::EVENT_COMMAND_RESPONSE, swoole_rs_corebase::DataHead,
-    swoole_rs_reactor::SocketRecord,
-};
+use {crate::ops::EVENT_COMMAND_RESPONSE, swoole_rs_corebase::DataHead, swoole_rs_reactor::Socket};
 
 const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
@@ -112,17 +109,16 @@ pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandFn> {
 /// which is then forgotten.
 ///
 /// # Safety
-/// `state` is live, `serv` its server, and `message` holds `length` bytes. The
+/// `serv` is `state`'s server, and `message` holds `length` bytes. The
 /// callback may resume a coroutine: this frame owns nothing that needs a drop then.
 pub unsafe fn swr_v1_server_command_result(
-    state: *const ServerState,
+    state: &ServerState,
     serv: *mut c_void,
     request_id: i64,
     message: *const c_char,
     length: usize,
 ) {
-    // SAFETY: the caller lends a live server.
-    let Some(callback) = commands(unsafe { &*state }).callbacks.remove(&request_id) else {
+    let Some(callback) = commands(state).callbacks.remove(&request_id) else {
         let m = format_args!("Invalid command result[request_id={request_id}]");
         return error(
             SW_LOG_ERROR,
@@ -187,7 +183,7 @@ pub(crate) unsafe fn answer(
     handler: CommandFn,
     serv: *mut c_void,
     (message, length): (*const c_char, usize),
-    (bus, sock): (crate::objects::Bus, &mut SocketRecord),
+    (bus, sock): (crate::objects::Bus, Socket<'_>),
     fd: i64,
     reactor_id: u16,
 ) -> bool {
@@ -216,13 +212,11 @@ pub(crate) unsafe fn answer(
 /// command pipe's worker end.
 pub(crate) fn reply_socket<'a>(
     state: &ServerState,
-    serv: crate::view::Server<'_>,
-) -> Option<&'a mut SocketRecord> {
+    serv: crate::view::Server<'a>,
+) -> Option<Socket<'a>> {
     let config = state.config_ref();
     if u64::from(config.mode_) == MODE_BASE {
-        let worker = serv.worker(0);
-        // SAFETY: its worker 0.
-        return crate::objects::socket(unsafe { (*worker).pipe_master });
+        return serv.worker_pipe(0, true);
     }
     let pair = config
         .pipe_command
@@ -598,13 +592,7 @@ mod tests {
             vec![2]
         );
         unsafe {
-            swr_v1_server_command_result(
-                &raw const s.state,
-                core::ptr::null_mut(),
-                2,
-                c"pong".as_ptr(),
-                4,
-            );
+            swr_v1_server_command_result(&s.state, core::ptr::null_mut(), 2, c"pong".as_ptr(), 4);
         }
         assert_eq!(out, b"pong");
         assert!(

@@ -44,8 +44,10 @@ jobs:
       - run: tests/dev/run.sh
 
   # Whether this PR touches what the extension build compiles or installs with.
+  # On a GitHub-hosted runner, like `required`: every PHPT and variant job waits for this one, and
+  # a hosted runner starts in seconds where a gcrunner VM takes 40 to 55. It only reads git and a cache.
   changes:
-    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       ext: ${{ steps.paths.outputs.ext }}
@@ -115,7 +117,7 @@ jobs:
           if echo "$changed" | grep -qE '^(crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
+          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|phpevents|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then
@@ -160,6 +162,12 @@ jobs:
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
       - run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
+      # Every swr_v* this build's config.h declares (SW_USE_CURL's, SW_HAVE_SSH2LIB's) is exported.
+      - name: ABI export gate
+        timeout-minutes: 5
+        run: >
+          python3 tests/modules/integration/test_bridge.py --startup-only --php-extension curl --php-extension sockets
+          --extension target/ext/swoole.so --reference target/upstream/src/modules/swoole.so
       # Compare SDK alias defaults independently of remote SSH service availability.
       - run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
@@ -342,7 +350,7 @@ jobs:
   required:
     if: always()
     needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, iouring, zts, threadcontext]
-    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - env:

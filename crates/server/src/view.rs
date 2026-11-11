@@ -15,7 +15,7 @@ use std::sync::Arc;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket;
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// The head of every `Server`.
@@ -61,11 +61,6 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn raw(self) -> *mut c_void {
         self.raw
-    }
-
-    /// The server's Rust-owned state, as a pointer.
-    pub(crate) fn state_ptr(self) -> *const ServerState {
-        self.fields().state
     }
 
     /// The server's Rust-owned state.
@@ -156,13 +151,7 @@ impl<'a> Server<'a> {
     pub fn insert_static_string(self, kind: u32, value: &[u8]) {
         // SAFETY: the live state and a byte span (non-null even when empty).
         unsafe {
-            crate::swr_v1_server_static_config(
-                self.state_ptr(),
-                kind,
-                4,
-                value.as_ptr(),
-                value.len(),
-            )
+            crate::swr_v1_server_static_config(self.state(), kind, 4, value.as_ptr(), value.len())
         };
     }
 
@@ -199,7 +188,7 @@ impl<'a> Server<'a> {
     /// `http_compression_types` lists `kind`; `None` asks whether it lists any.
     #[must_use]
     pub fn compression_type(self, kind: Option<&[u8]>) -> bool {
-        let state = self.state_ptr();
+        let state = self.state();
         let op = |operation, data: &[u8]| {
             // SAFETY: the live state and a byte span (non-null even when empty).
             unsafe {
@@ -391,7 +380,7 @@ impl<'a> Server<'a> {
     pub fn worker(self, id: u16) -> *mut WorkerRecord {
         let view = self.workers();
         // SAFETY: the server's live pools and worker arrays, with their counts.
-        unsafe { swr_v1_process_server_worker(&raw const view, id) }
+        unsafe { swr_v1_process_server_worker(&view, id) }
     }
 
     /// [`Server::worker`]'s record, or `None` past the last.
@@ -400,6 +389,28 @@ impl<'a> Server<'a> {
         // SAFETY: null or one of the server's live workers, in memory the server
         // keeps for `'a`.
         unsafe { Worker::from_raw(self.worker(id)) }
+    }
+
+    /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
+    #[must_use]
+    pub(crate) fn worker_pipe(self, id: u16, master: bool) -> Option<Socket<'a>> {
+        let worker = self.worker_record(id)?;
+        let pipe = if master {
+            worker.pipe_master()
+        } else {
+            worker.pipe_worker()
+        };
+        // SAFETY: null or a pipe socket of one of the server's live workers, which the
+        // server keeps until it frees its workers.
+        unsafe { Socket::from_ptr(pipe.cast()) }
+    }
+
+    /// The listening socket of `serv->ports[index]`, or `None` past the last.
+    #[must_use]
+    pub(crate) fn port_socket_at(self, index: usize) -> Option<Socket<'a>> {
+        let port = self.port_at(index);
+        // SAFETY: null or one of the server's live ports.
+        (!port.is_null()).then(|| unsafe { port_socket(port) })?
     }
 
     /// `Server::task_notify_pipe(worker_id)`, or null.
@@ -499,9 +510,18 @@ pub unsafe fn port<'a>(port: *mut c_void) -> &'a PortConfig {
 /// As [`port`].
 pub unsafe fn port_fd(port: *mut c_void) -> c_int {
     // SAFETY: per the caller.
-    let socket = unsafe { self::port(port) }.socket.cast::<SocketRecord>();
-    // SAFETY: null, or the port's live listening socket.
-    unsafe { socket.as_ref() }.map_or(-1, |socket| socket.fd)
+    unsafe { port_socket(port) }.map_or(-1, Socket::fd)
+}
+
+/// A `ListenPort`'s listening socket, or `None` before it has one.
+///
+/// # Safety
+/// As [`port`].
+pub(crate) unsafe fn port_socket<'a>(port: *mut c_void) -> Option<Socket<'a>> {
+    // SAFETY: per the caller.
+    let socket = unsafe { self::port(port) }.socket;
+    // SAFETY: null, or the live port's listening socket, which it owns.
+    unsafe { Socket::from_ptr(socket.cast()) }
 }
 
 /// A `network::Socket`'s fd and `swSocketType`.
@@ -510,8 +530,8 @@ pub unsafe fn port_fd(port: *mut c_void) -> c_int {
 /// `socket` is a live socket.
 pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
     // SAFETY: per the caller.
-    let socket = unsafe { &*socket.cast::<SocketRecord>() };
-    (socket.fd, socket.socket_type)
+    let socket = unsafe { Socket::from_ptr(socket.cast()) };
+    socket.map_or((-1, 0), |socket| socket.read(|s| (s.fd, s.socket_type)))
 }
 
 /// Whether one of the server's ports speaks WebSocket.
@@ -528,12 +548,11 @@ pub unsafe fn port_websocket(port: *mut c_void) -> bool {
 /// # Safety
 /// `conn` is a live connection whose `socket` is null or live.
 pub unsafe fn recv_buffer(conn: &ConnectionRecord) -> *mut c_void {
-    let socket = conn.socket.cast::<SocketRecord>();
-    if socket.is_null() {
-        return core::ptr::null_mut();
-    }
     // SAFETY: per the caller.
-    unsafe { &*socket }.recv_buffer
+    let socket = unsafe { Socket::from_ptr(conn.socket.cast()) };
+    socket.map_or(core::ptr::null_mut(), |socket| {
+        socket.read(|s| s.recv_buffer)
+    })
 }
 
 #[cfg(test)]

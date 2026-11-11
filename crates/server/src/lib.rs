@@ -100,7 +100,7 @@ pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
-    swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
+    swr_v1_server_text_slot,
 };
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -172,10 +172,10 @@ impl NativeCall for ServerCall {
         Ok(unsafe { self(context, op, arg) })
     }
 }
-struct Native<C> {
+struct Native<'a, C> {
     context: *mut c_void,
     call: C,
-    state: *const ServerState,
+    state: Option<&'a ServerState>,
     /// master.cc's context, whose records `master_ops` answers ops from; null
     /// for the other runners.
     master: *mut server_methods::NativeContext,
@@ -184,21 +184,19 @@ struct Native<C> {
     reactor: *mut reactor_ops::ReactorContext,
 }
 
-impl<C: NativeCall> Host for Native<C> {
+impl<C: NativeCall> Host for Native<'_, C> {
     // Constant opcodes erase unrelated fact-table branches before native effects.
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
-        if !self.state.is_null() {
+        if let Some(state) = self.state {
             // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
-            if let Some(value) = unsafe { config::native_fact(self.state, op, arg) } {
+            if let Some(value) = unsafe { config::native_fact(state, op, arg) } {
                 return Ok(value);
             }
             // SAFETY: the same call lends synchronized shared records, without holding callbacks.
-            if let Some(value) = unsafe { shared::native_fact(self.state, op, arg) } {
+            if let Some(value) = unsafe { shared::native_fact(state, op, arg) } {
                 return Ok(value);
             }
-            // SAFETY: as above.
-            let state = unsafe { &*self.state };
             // A slot is read or cleared, never called.
             if let Some(value) = callbacks::native_fact(state, op, arg) {
                 return Ok(value);
@@ -209,16 +207,16 @@ impl<C: NativeCall> Host for Native<C> {
             }
             if !self.reactor.is_null() {
                 // SAFETY: the reactor runner lends master.cc's live context with its state.
-                let answer = unsafe { reactor_ops::answer(self.reactor, self.state, op, arg) };
+                let answer = unsafe { reactor_ops::answer(self.reactor, state, op, arg) };
                 if let Some(value) = answer {
                     return Ok(value);
                 }
             }
         }
         // Only the method runner lends master.cc's context; the hot runners skip the call.
-        if !self.master.is_null() {
+        if let (false, Some(state)) = (self.master.is_null(), self.state) {
             // SAFETY: the method runner lends master.cc's live context with its state.
-            let answer = unsafe { master_ops::answer(self.master, self.state, op, arg) };
+            let answer = unsafe { master_ops::answer(self.master, state, op, arg) };
             if let Some(value) = answer {
                 return Ok(value);
             }
@@ -233,16 +231,15 @@ impl<C: NativeCall> Host for Native<C> {
     }
 
     fn send_now(&mut self, send: &base_factory::SendData) -> Effect<Option<i64>> {
-        // SAFETY: the entrypoint lends a null or live state; native code lends `send`.
+        // SAFETY: native code lends `send`.
         Ok(unsafe { send::send_now(self.state, send) })
     }
 
     // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
     #[inline(always)]
     fn state(&mut self) -> Effect<&ServerState> {
-        if !self.state.is_null() {
-            // SAFETY: run_state lends this state for the entire operation.
-            return Ok(unsafe { &*self.state });
+        if let Some(state) = self.state {
+            return Ok(state);
         }
         let address = usize::try_from(self.get(ops::OP_STATE)?).unwrap_or(0);
         let state = core::ptr::with_exposed_provenance::<ServerState>(address);
@@ -267,7 +264,7 @@ pub unsafe extern "C" fn swr_v1_server_run(
         &mut Native {
             context,
             call,
-            state: core::ptr::null(),
+            state: None,
             master: core::ptr::null_mut(),
             reactor: core::ptr::null_mut(),
         },
@@ -281,20 +278,19 @@ pub unsafe extern "C" fn swr_v1_server_run(
 /// reads, and the server's owned records.
 ///
 /// # Safety
-/// `state` is live for the call; `context` is a live `ReactorContext` lending
-/// synchronized server objects.
+/// `context` is a live `ReactorContext` lending synchronized server objects.
 pub(crate) unsafe fn run_reactor(
     operation: u32,
     arg: u64,
     context: *mut c_void,
     call: ServerCall,
-    state: *const ServerState,
+    state: &ServerState,
 ) -> i64 {
     run(
         &mut Native {
             context,
             call,
-            state,
+            state: Some(state),
             master: core::ptr::null_mut(),
             reactor: context.cast(),
         },
@@ -316,16 +312,16 @@ pub(crate) unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u6
 /// # Safety
 /// As [`run_reactor`].
 #[inline(always)]
-pub(crate) unsafe fn run_reactor_with(
+pub(crate) unsafe fn run_reactor_with<'s>(
     context: &mut reactor_ops::ReactorContext,
-    state: &ServerState,
-    operation: impl FnOnce(&mut Native<ServerCall>) -> Effect<i64>,
+    state: &'s ServerState,
+    operation: impl FnOnce(&mut Native<'s, ServerCall>) -> Effect<i64>,
 ) -> i64 {
     let reactor = core::ptr::from_mut(context);
     operation(&mut Native {
         context: reactor.cast(),
         call: unanswered,
-        state,
+        state: Some(state),
         master: core::ptr::null_mut(),
         reactor,
     })
@@ -346,10 +342,10 @@ pub(crate) unsafe fn run_method(
     // SAFETY: per the caller.
     let serv = unsafe { (*ctx).serv };
     let state = if serv.is_null() {
-        core::ptr::null()
+        None
     } else {
         // SAFETY: a live server, per the caller.
-        unsafe { view::Server::from_raw(serv) }.state_ptr()
+        Some(unsafe { view::Server::from_raw(serv) }.state())
     };
     run(
         &mut Native {
@@ -515,7 +511,8 @@ mod mode_tests {
         let mut host = Native {
             context: core::ptr::null_mut(),
             call: unreachable as super::ServerCall,
-            state,
+            // SAFETY: the fresh state, freed below.
+            state: Some(unsafe { &*state }),
             master: core::ptr::null_mut(),
             reactor: core::ptr::null_mut(),
         };

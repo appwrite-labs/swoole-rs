@@ -49,7 +49,13 @@ impl HttpStaticContext {
     /// Upstream's `set_filename(index_file)`: the index file appended to the path,
     /// which must stat as a regular file.
     fn set_filename(&mut self, effects: &impl StaticEffects) -> bool {
-        if static_index_path(&mut self.filename, self.path.filename_length, &self.index) != 0 {
+        if static_index_path(
+            &mut self.filename,
+            self.capacity,
+            self.path.filename_length,
+            &self.index,
+        ) != 0
+        {
             return false;
         }
         self.stat(effects) == 1 && self.facts.kind & FILE != 0

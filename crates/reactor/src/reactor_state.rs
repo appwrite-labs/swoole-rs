@@ -4,7 +4,7 @@
 //! The `Reactor` object: its public fields and backend resources share one Rust
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
-use crate::{PollSnapshot, SocketRecord, handlers::Handlers, registry::Registry};
+use crate::{PollSnapshot, Socket, SocketRecord, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -562,35 +562,29 @@ pub(crate) const fn before_wait(fields: &mut ReactorFields) {
 impl ReactorState {
     /// `Reactor::_add` (0), `_set` (1) and `_del` (2): the registry and the socket's
     /// flags together. -2 when add cannot allocate, leaving the flags alone.
-    /// The registry keeps `pointer`, the caller's pointer `socket` borrows from: one
-    /// derived from `socket` would end at the caller's next write through `pointer`.
-    pub(crate) fn record(
-        &mut self,
-        socket: &mut SocketRecord,
-        pointer: *mut SocketRecord,
-        op: u32,
-        events: c_int,
-    ) -> c_int {
-        match op {
-            0 => {
-                let result = self.registry.put(socket.fd, pointer.cast(), events);
-                if result != 0 {
-                    return result;
+    pub(crate) fn record(&mut self, socket: Socket<'_>, op: u32, events: c_int) -> c_int {
+        socket.edit(|record| {
+            match op {
+                0 => {
+                    let result = self.registry.put(record.fd, socket.as_ptr().cast(), events);
+                    if result != 0 {
+                        return result;
+                    }
+                    record.events = events;
+                    record.removed = 0;
                 }
-                socket.events = events;
-                socket.removed = 0;
+                1 => {
+                    record.events = events;
+                    self.registry.set(record.fd, events);
+                }
+                _ => {
+                    record.events = 0;
+                    record.removed = 1;
+                    self.registry.remove(record.fd);
+                }
             }
-            1 => {
-                socket.events = events;
-                self.registry.set(socket.fd, events);
-            }
-            _ => {
-                socket.events = 0;
-                socket.removed = 1;
-                self.registry.remove(socket.fd);
-            }
-        }
-        0
+            0
+        })
     }
 
     pub(crate) fn close_backend(&mut self) {
@@ -619,7 +613,7 @@ pub(crate) mod tests {
         op: u32,
         events: c_int,
     ) -> c_int {
-        unsafe { (*owner).record(&mut *socket, socket, op, events) }
+        unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
         unsafe { swr_v1_reactor_delete(owner.cast()) };
@@ -641,13 +635,19 @@ pub(crate) mod tests {
             assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
             assert_eq!(socket.events, 512);
             assert_eq!(socket.removed, 0);
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 1);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                1
+            );
             record(state.owner, &raw mut socket, 1, 1024);
             assert_eq!(socket.events, 1024);
             record(state.owner, &raw mut socket, 2, 0);
             assert_eq!(socket.events, 0);
             assert_eq!(socket.removed, 1);
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                0
+            );
             before_wait(&mut (*state.owner).fields);
             assert!((*fields).running && (*fields).start);
             assert_eq!((*fields).timeout_msec, -1);

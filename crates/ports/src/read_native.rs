@@ -13,7 +13,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_http_ffi::HttpRequest;
 use swoole_rs_reactor::reactor_upstream::{prepared, trigger_close_event};
-use swoole_rs_reactor::{Event, SocketRecord};
+use swoole_rs_reactor::{Event, Socket, SocketRecord};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
@@ -41,11 +41,11 @@ const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
 /// One readable event: the context [`readable`] runs over.
 #[repr(C)]
-struct Read {
+struct Read<'a> {
     shared: Shared,
     reactor: *mut c_void,
     event: *mut Event,
-    socket: *mut SocketRecord,
+    socket: Socket<'a>,
     conn: *mut ConnectionRecord,
     serv: *mut c_void,
     port: *mut PortConfig,
@@ -68,8 +68,12 @@ pub(crate) unsafe fn on_read(
     let event = event.cast::<Event>();
     // SAFETY: as the caller guarantees.
     let socket = unsafe { (*event).socket }.cast::<SocketRecord>();
-    // SAFETY: a connection socket's object is its connection.
-    let conn = unsafe { (*socket).object }.cast::<ConnectionRecord>();
+    // SAFETY: the event's live connection socket, which only this reactor thread touches.
+    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    // A connection socket's object is its connection.
+    let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
     // SAFETY: a live reactor.
     let fields = unsafe { prepared(reactor) }.fields;
     // SAFETY: its fields, whose `ptr` is its server.
@@ -120,12 +124,12 @@ fn errno() -> c_int {
 }
 
 /// The live server; this reactor thread only reads its settings.
-fn server(c: &Read) -> view::Server<'_> {
+fn server<'a>(c: &'a Read<'_>) -> view::Server<'a> {
     // SAFETY: the reader's context holds its live server.
     unsafe { view::Server::from_raw(c.serv) }
 }
 
-fn config(c: &Read) -> &ServerConfig {
+fn config<'a>(c: &'a Read<'_>) -> &'a ServerConfig {
     server(c).config()
 }
 
@@ -134,36 +138,40 @@ fn config(c: &Read) -> &ServerConfig {
     clippy::mut_from_ref,
     reason = "native memory: the borrow spans no native call"
 )]
-fn buffer(c: &Read) -> &mut CppString {
+fn buffer<'a>(c: &'a Read<'_>) -> &'a mut CppString {
     // SAFETY: the current buffer is live once a receive buffer or request made it current.
     unsafe { &mut *c.shared.buffer.cast::<CppString>() }
 }
 
 /// `serv->get_recv_buffer(socket)`.
-fn recv_buffer(c: &Read) -> *mut CppString {
-    // SAFETY: the live socket, which only this reactor thread touches.
-    let socket = unsafe { &mut *c.socket };
-    if socket.recv_buffer.is_null() {
-        let allocator = config(c).recv_buffer_allocator.cast();
-        // SAFETY: the server's allocator, null or live.
-        let made = unsafe { new_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator) };
-        socket.recv_buffer = made.cast();
+fn recv_buffer(c: &Read<'_>) -> *mut CppString {
+    let held = c.socket.read(|s| s.recv_buffer);
+    if !held.is_null() {
+        return held.cast();
     }
-    socket.recv_buffer.cast()
+    let allocator = config(c)
+        .recv_buffer_allocator
+        .cast::<swoole_rs_buffer::string::Allocator>();
+    // SAFETY: the server's allocator, null or live.
+    let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
+    c.socket.edit(|s| s.recv_buffer = made.cast());
+    made
 }
 
-fn send(c: &Read, packet: &[u8]) -> u64 {
+fn send(c: &Read<'_>, packet: &[u8]) -> u64 {
+    let socket = c.socket.as_ptr();
     // SAFETY: the live socket and `packet`'s bytes.
-    status(unsafe { socket_send(c.socket, packet.as_ptr().cast(), packet.len(), 0) } as i64)
+    status(unsafe { socket_send(socket, packet.as_ptr().cast(), packet.len(), 0) } as i64)
 }
 
 /// One receive of `mode` through the port's protocol, its packages handled by `K`.
 #[inline(always)]
-fn receive<K: Packages>(c: &Read, mode: u32) -> u64 {
+fn receive<K: Packages>(c: &Read<'_>, mode: u32) -> u64 {
     // SAFETY: the live port.
     let protocol = unsafe { &raw const (*c.port).protocol };
-    // SAFETY: the port's protocol, a live socket or connection and the current buffer.
-    status(unsafe { framing_recv::receive::<K>(protocol, c.socket, c.shared.buffer.cast(), mode) })
+    let (socket, buffer) = (c.socket.as_ptr(), c.shared.buffer.cast());
+    // SAFETY: the port's protocol, the live socket and the current buffer.
+    status(unsafe { framing_recv::receive::<K>(protocol, socket, buffer, mode) })
 }
 
 /// The effects every read makes, inlined into each call site, where `op` is a
@@ -182,7 +190,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             // SAFETY: `at` is within the live buffer.
             let start = unsafe { b.str.add(at) };
             // SAFETY: the live socket and `size - at` writable bytes at `start`.
-            let received = unsafe { socket_recv(c.socket, start.cast(), b.size - at, 0) };
+            let received = unsafe { socket_recv(c.socket.as_ptr(), start.cast(), b.size - at, 0) };
             status(received as i64)
         }
         OP_RECV_BUFFER => {
@@ -190,9 +198,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             1
         }
         OP_RELEASE => {
-            // SAFETY: the live socket.
-            let socket = unsafe { &mut *c.socket };
-            let held = socket.recv_buffer.cast::<CppString>();
+            let held = c.socket.read(|s| s.recv_buffer).cast::<CppString>();
             let release = !held.is_null() && {
                 // SAFETY: the socket's receive buffer, when set, is live.
                 let held = unsafe { &*held };
@@ -201,7 +207,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             if release {
                 // SAFETY: `new String`'s, which nothing uses after.
                 unsafe { delete_string(held) };
-                socket.recv_buffer = ptr::null_mut();
+                c.socket.edit(|s| s.recv_buffer = ptr::null_mut());
             }
             u64::from(release)
         }
@@ -210,8 +216,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
         OP_ACTIVE => {
             // SAFETY: the live connection.
             let active = unsafe { (*c.conn).active };
-            // SAFETY: the live socket.
-            let removed = unsafe { (*c.socket).removed };
+            let removed = c.socket.read(|s| s.removed);
             u64::from(active != 0 && removed == 0)
         }
         // SAFETY: the live port.
@@ -243,15 +248,17 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
 }
 
 /// The effects some reads make.
-fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
+fn rare(c: &mut Read<'_>, op: u32, arg: u64) -> u64 {
     // SAFETY: the live connection, which only this reactor thread touches; each
     // borrow ends before the next native call.
     let conn = || unsafe { &mut *c.conn };
     // SAFETY: the live port, whose settings nothing writes while it serves.
     let port = || unsafe { &*c.port };
     match op {
-        // SAFETY: the live socket.
-        OP_CATCH => status(unsafe { (*c.socket).catch_error(errno()) }),
+        OP_CATCH => {
+            let error = errno();
+            status(c.socket.edit(|s| s.catch_error(error)))
+        }
         OP_WARN_RECV => {
             let origin: &CStr = if c.kind == ON_READ_HTTP {
                 c"ListenPort::readable_callback_http"
@@ -308,8 +315,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             0
         }
         OP_SKIP_RECV => {
-            // SAFETY: the live socket.
-            unsafe { (*c.socket).skip_recv = 1 };
+            c.socket.edit(|s| s.skip_recv = 1);
             0
         }
         OP_UPLOADS => u64::from(config(c).upload_max_filesize > 0),
@@ -354,7 +360,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
 
 /// `Server::dispatch_task` or `http_server::dispatch_request` of `length` bytes
 /// from the buffer's start.
-fn dispatch(c: &mut Read, op: u32, length: u64) -> u64 {
+fn dispatch(c: &mut Read<'_>, op: u32, length: u64) -> u64 {
     let data = RecvData {
         info: DataHead {
             len: u32::try_from(length).unwrap_or(u32::MAX),
@@ -372,10 +378,10 @@ fn dispatch(c: &mut Read, op: u32, length: u64) -> u64 {
     let rdata = (&raw const data).cast();
     if op == OP_DISPATCH_TASK {
         // SAFETY: the port's protocol, the live socket and its data.
-        return status(unsafe { dispatch_task(proto, c.socket, rdata) });
+        return status(unsafe { dispatch_task(proto, c.socket.as_ptr(), rdata) });
     }
     // SAFETY: as above, on the live server.
-    let result = unsafe { dispatch_request(c.serv, proto, c.socket, rdata) };
+    let result = unsafe { dispatch_request(c.serv, proto, c.socket.as_ptr(), rdata) };
     // SAFETY: the connection, which dispatch may have given a new request.
     c.shared.request = unsafe { (*c.conn).object }.cast();
     status(result)

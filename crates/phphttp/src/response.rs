@@ -310,10 +310,7 @@ fn send_file(call: &Call) {
             return None;
         }
         let mut length = 0;
-        // SAFETY: a writable local.
-        match unsafe {
-            swr_v1_httpbindings_file_range(stat.st_size, offset, requested, &raw mut length)
-        } {
+        match swr_v1_httpbindings_file_range(stat.st_size, offset, requested, Some(&mut length)) {
             0 => {}
             1 | 3 => {
                 host::notice(&format!(
@@ -389,8 +386,7 @@ fn set_cookie(call: &Call, encode: bool) {
             (secure, http_only, partitioned),
         )
     } else {
-        // SAFETY: an object argument; a non-Cookie one is reported by httpbindings.
-        unsafe { object_header_line(name.as_ptr()) }
+        object_header_line(name)
     };
     let Some(cookie) = cookie else {
         return call.set_bool(false);

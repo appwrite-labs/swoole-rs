@@ -29,7 +29,7 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{
-    SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
+    Socket, SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
     swr_v1_socket_domain_and_type,
 };
 #[cfg(not(test))]
@@ -373,10 +373,23 @@ impl Handle {
         self.fields().socket
     }
 
-    fn socket(self) -> &'static mut SocketRecord {
+    fn socket(self) -> Socket<'static> {
         // SAFETY: a constructed client's socket record, live until the client is
         // destroyed (an async one's free is deferred past its callbacks).
-        unsafe { &mut *self.socket_ptr() }
+        unsafe { Socket::from_ptr(self.socket_ptr()) }.unwrap_or_else(|| std::process::abort())
+    }
+
+    fn socket_type(self) -> c_int {
+        self.socket().read(|socket| socket.socket_type)
+    }
+
+    fn tls_state(self) -> u32 {
+        self.socket().read(|socket| socket.tls.state)
+    }
+
+    /// `socket->removed = 1`: close skips the reactor.
+    fn mark_removed(self) {
+        self.socket().edit(|socket| socket.removed = 1);
     }
 
     fn has(self, event: c_int) -> bool {
@@ -427,7 +440,7 @@ impl Handle {
         // the address's storage and length.
         unsafe {
             libc::sendto(
-                self.socket().fd,
+                self.socket().fd(),
                 data.cast(),
                 length,
                 0,
@@ -440,7 +453,7 @@ impl Handle {
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
     /// retried on EINTR.
     fn recvfrom(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
-        let fd = self.socket().fd;
+        let fd = self.socket().fd();
         let address = &mut self.fields().remote_addr;
         let mut n = -1;
         for _ in 0..SOCKET_RETRY_COUNT {
@@ -475,7 +488,7 @@ impl Handle {
     /// The TLS context's view; TLS is on.
     fn tls(self) -> OwnedTlsPrepared {
         // SAFETY: the client's live context.
-        unsafe { swr_v1_tls_owner_view(self.get().tls.get()) }
+        swr_v1_tls_owner_view(unsafe { &*self.get().tls.get() })
     }
 
     fn tls_fields(self) -> &'static mut OwnedTlsFields {
@@ -515,12 +528,12 @@ impl Handle {
 
     /// `socket->get_out_buffer_length()`.
     fn queued(self) -> u32 {
-        let buffer = self.socket().output.out_buffer;
+        let buffer = self.socket().read(|socket| socket.output.out_buffer);
         if buffer.is_null() {
             return 0;
         }
         // SAFETY: the socket's live output Buffer.
-        unsafe { swoole_rs_buffer::cpp::swr_cpp_buffer_length(buffer.cast()) }
+        swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
     }
 
     /// The input buffer (`cli->buffer`), null until an async connect makes it.
@@ -649,7 +662,8 @@ impl Handle {
     }
 
     fn set_timeout(self, timeout: f64) {
-        self.socket().timeouts.set(timeout, TIMEOUT_ALL);
+        self.socket()
+            .edit(|socket| socket.timeouts.set(timeout, TIMEOUT_ALL));
     }
 
     fn timer_clear(self) {
@@ -690,37 +704,44 @@ extern "C" fn on_package(
     // SAFETY: the receive loop's package, live for the call.
     let package = unsafe { &*rdata };
     // SAFETY: the client's socket record, whose free is deferred past the callback.
-    let socket = unsafe { &*conn };
-    Handle(socket.object.cast()).call(ON_RECEIVE, package.data, package.info.len as usize);
-    if socket.output.close_wait != 0 {
+    let Some(socket) = (unsafe { Socket::from_ptr(conn) }) else {
+        return ERR;
+    };
+    Handle(socket.read(|socket| socket.object).cast()).call(
+        ON_RECEIVE,
+        package.data,
+        package.info.len as usize,
+    );
+    if socket.read(|socket| socket.output.close_wait) != 0 {
         ERR
     } else {
         OK
     }
 }
 
-/// The client of the reactor event's socket.
-fn event_client(event: *mut c_void) -> Handle {
+/// The client of the reactor event's socket, None without a socket.
+fn event_client(event: *mut c_void) -> Option<Handle> {
     // SAFETY: the reactor's live event.
     let socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
     // SAFETY: a client socket's live record, whose object is the client.
-    Handle(unsafe { (*socket.cast::<SocketRecord>()).object }.cast())
+    let socket = unsafe { Socket::from_ptr(socket.cast()) }?;
+    Some(Handle(socket.read(|socket| socket.object).cast()))
 }
 
 extern "C" fn on_stream_read(_: *mut c_void, event: *mut c_void) -> c_int {
-    on_read(event_client(event))
+    event_client(event).map_or(ERR, on_read)
 }
 
 extern "C" fn on_dgram_read(_: *mut c_void, event: *mut c_void) -> c_int {
-    on_datagram(event_client(event))
+    event_client(event).map_or(ERR, on_datagram)
 }
 
 extern "C" fn on_writable(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    on_write(event_client(event), reactor, event)
+    event_client(event).map_or(ERR, |this| on_write(this, reactor, event))
 }
 
 extern "C" fn on_failure(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    on_error(event_client(event), reactor, event)
+    event_client(event).map_or(ERR, |this| on_error(this, reactor, event))
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
@@ -743,17 +764,14 @@ pub unsafe extern "C" fn swr_v1_clients_init_reactor(reactor: *mut c_void) {
 
 /// `Client::onConnect` and the rest: `listener(object, event, ...)` for each
 /// event in `events` (`1 << ON_*`), `object` the record's.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_listen(
-    client: *mut Client,
+pub extern "C" fn swr_v1_clients_listen(
+    client: &Client,
     object: *mut c_void,
     events: u32,
     listener: Listener,
 ) {
-    let this = Handle(client);
+    let this = Handle(core::ptr::from_ref(client).cast_mut());
     this.fields().object = object;
     this.get().listener.set(Some(listener));
     this.get().events.set(events);
@@ -804,12 +822,13 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     };
     let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
     let socket = ops::make_socket(kind, fd_type, flags);
-    if socket.is_null() {
+    // SAFETY: null or the new socket record, which nothing else holds yet.
+    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
         return core::ptr::null_mut();
-    }
+    };
     let mut client = Box::new(Client {
         // SAFETY: all-zero pointers, bools, addresses and Protocol are valid.
         record: UnsafeCell::new(unsafe { core::mem::zeroed() }),
@@ -835,15 +854,15 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     fields.protocol.package_length_size = 4;
     fields.protocol.package_max_length = 2 * 1024 * 1024;
     fields.protocol.on_package = on_package as *mut c_void;
-    // SAFETY: the new socket record, which nothing else holds yet.
-    let record = unsafe { &mut *socket };
-    record.chunk_size = SEND_BUFFER_SIZE;
-    client.set(STREAM, is_stream(record.socket_type));
+    let socket_type = record.edit(|record| {
+        record.chunk_size = SEND_BUFFER_SIZE;
+        record.socket_type
+    });
+    client.set(STREAM, is_stream(socket_type));
     let mut kind_out = 0;
-    // SAFETY: two writable ints.
-    unsafe { swr_v1_socket_domain_and_type(kind, &raw mut client.domain, &raw mut kind_out) };
+    swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
     let client = Box::into_raw(client);
-    record.object = client.cast();
+    record.edit(|record| record.object = client.cast());
     client
 }
 
@@ -990,7 +1009,8 @@ fn free(this: Handle) {
     this.timer_clear();
     if this.flag(ASYNC) {
         // A cleared object tells a close in progress that the client is gone.
-        this.socket().object = core::ptr::null_mut();
+        this.socket()
+            .edit(|socket| socket.object = core::ptr::null_mut());
         // SAFETY: the live client's socket, released once.
         unsafe { socket_free(this.socket_ptr()) };
     } else {
@@ -1019,7 +1039,7 @@ pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
     address: *mut SocketAddress,
 ) -> c_int {
     let this = Handle(client.cast_mut());
-    if is_dgram(this.socket().socket_type) {
+    if is_dgram(this.socket().read(|socket| socket.socket_type)) {
         // A copy before the write, so an SDK caller may request the result in
         // remote_addr itself.
         let remote = this.fields().remote_addr;
@@ -1028,27 +1048,21 @@ pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
         OK
     } else {
         // SAFETY: the caller supplied writable Address storage.
-        this.socket().get_peer_name(unsafe { &mut *address })
+        let address = unsafe { &mut *address };
+        this.socket().read(|socket| socket.get_peer_name(address))
     }
 }
 
 /// One of the flags above; false for any other.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_flag(client: *const Client, name: u32) -> bool {
-    Handle(client.cast_mut()).flag(name)
+pub extern "C" fn swr_v1_clients_flag(client: &Client, name: u32) -> bool {
+    client.flag(name)
 }
 
 /// `buffer_high_watermark` (`high`) or `buffer_low_watermark`: the address of the
 /// value, which C++'s `Client` keeps as a reference for its lifetime.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_watermark(client: *mut Client, high: bool) -> *mut u32 {
-    let client = Handle(client).get();
+pub extern "C" fn swr_v1_clients_watermark(client: &Client, high: bool) -> *mut u32 {
     if high {
         client.high_watermark.as_ptr()
     } else {
@@ -1063,19 +1077,21 @@ fn close(this: Handle) -> c_int {
         return ERR;
     }
     this.set(CLOSED, true);
-    let saved: *mut SocketRecord = this.socket();
-    if this.flag(OPEN_SSL) && !this.get().tls.get().is_null() && !this.socket().ssl.is_null() {
-        // SAFETY: the live socket's TLS session.
-        unsafe { socket_ssl_close(this.socket_ptr()) };
+    let saved = this.socket();
+    if this.flag(OPEN_SSL)
+        && !this.get().tls.get().is_null()
+        && !saved.read(|socket| socket.ssl.is_null())
+    {
+        socket_ssl_close(saved);
     }
-    if this.socket().socket_type == SOCK_UNIX_DGRAM {
+    if this.socket_type() == SOCK_UNIX_DGRAM {
         // SAFETY: a Unix datagram socket's address is the union's Unix member.
-        let path = unsafe { this.socket().info.addr.un.sun_path.as_ptr() };
+        let path = saved.read(|socket| unsafe { socket.info.addr.un.sun_path.as_ptr() });
         // SAFETY: the NUL-terminated path it bound.
         unsafe { libc::unlink(path) };
     }
     if this.flag(ASYNC) {
-        if this.socket().removed == 0 {
+        if saved.read(|socket| socket.removed) == 0 {
             this.event(EVENT_DEL, 0);
         }
         this.timer_clear();
@@ -1087,12 +1103,12 @@ fn close(this: Handle) -> c_int {
     } else {
         this.set(ACTIVE, false);
     }
-    // SAFETY: the saved record, whose free is deferred past this call.
-    let saved = unsafe { &mut *saved };
-    if saved.object.is_null() {
+    // The saved record's free is deferred past this call.
+    let Some(fd) = saved
+        .edit(|socket| (!socket.object.is_null()).then(|| core::mem::replace(&mut socket.fd, -1)))
+    else {
         return OK;
-    }
-    let fd = core::mem::replace(&mut saved.fd, -1);
+    };
     // SAFETY: closes the client's descriptor once; -1 marks it closed.
     unsafe { libc::close(fd) }
 }
@@ -1102,7 +1118,7 @@ fn shutdown(this: Handle, how: c_int) -> c_int {
     if this.socket_ptr().is_null() || this.flag(CLOSED) {
         return ERR;
     }
-    let fd = this.socket().fd;
+    let fd = this.socket().fd();
     // SAFETY: shutdown(2) on the client's descriptor.
     let call = |how| unsafe { libc::shutdown(fd, how) };
     match how {
@@ -1126,7 +1142,7 @@ fn shutdown(this: Handle, how: c_int) -> c_int {
 
 /// `Client::sleep()`: stop reading (keeping write interest).
 fn sleep(this: Handle) -> c_int {
-    if this.socket().events & EVENT_WRITE != 0 {
+    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
         this.event(EVENT_SET, EVENT_WRITE)
     } else {
         this.event(EVENT_DEL, 0)
@@ -1135,7 +1151,7 @@ fn sleep(this: Handle) -> c_int {
 
 /// `Client::wakeup()`: read again.
 fn wakeup(this: Handle) -> c_int {
-    if this.socket().events & EVENT_WRITE != 0 {
+    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
         this.event(EVENT_SET, EVENT_READ | EVENT_WRITE)
     } else {
         this.event(EVENT_ADD, EVENT_READ)
@@ -1152,7 +1168,7 @@ fn enable_ssl(this: Handle) -> c_int {
     let tls = swr_v1_tls_owner_new(swr_v1_tls_warning);
     this.get().tls.set(tls.owner);
     this.set(OPEN_SSL, true);
-    if is_dgram(this.socket().socket_type) {
+    if is_dgram(this.socket_type()) {
         enable_dtls(this);
     }
     OK
@@ -1208,7 +1224,7 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
                     view(user, user_length),
                     view(password, password_length),
                 ];
-                let kind = this.socket().socket_type;
+                let kind = this.socket_type();
                 // SAFETY: the new owner and the caller's texts.
                 unsafe {
                     swoole_rs_corebase::swr_v1_core_proxy_configure(
@@ -1229,43 +1245,36 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
 }
 
 /// The proxy's fields (`http` or SOCKS5), null without one.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_proxy_fields(
-    client: *const Client,
+pub extern "C" fn swr_v1_clients_proxy_fields(
+    client: &Client,
     http: bool,
 ) -> *mut swoole_rs_corebase::ProxyFields {
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
-    Handle(client.cast_mut())
+    Handle(core::ptr::from_ref(client).cast_mut())
         .proxy(which)
         .map_or(core::ptr::null_mut(), |proxy| proxy.fields.get())
 }
 
 /// The client's `SSLContext`, which crates/tls configures; null while TLS is off.
-///
-/// # Safety
-/// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ssl_context(
-    client: *const Client,
-) -> *const OwnedTlsContext {
-    Handle(client.cast_mut()).get().tls.get()
+pub extern "C" fn swr_v1_clients_ssl_context(client: &Client) -> *const OwnedTlsContext {
+    client.tls.get()
 }
 
 /// `Client::enable_dtls()`: the context's protocols become DTLS.
 fn enable_dtls(this: Handle) {
     this.tls_fields().protocols = SSL_DTLS;
-    let socket = this.socket();
-    socket.dtls = 1;
-    socket.chunk_size = SSL_BUFFER_SIZE;
+    this.socket().edit(|socket| {
+        socket.dtls = 1;
+        socket.chunk_size = SSL_BUFFER_SIZE;
+    });
     this.set(DTLS, true);
 }
 
 /// `Client::ssl_handshake()`.
 fn ssl_handshake(this: Handle) -> c_int {
-    if this.socket().tls.state == SSL_STATE_READY {
+    if this.tls_state() == SSL_STATE_READY {
         return ERR;
     }
     let tls = this.get().tls.get();
@@ -1276,8 +1285,8 @@ fn ssl_handshake(this: Handle) -> c_int {
             return ERR;
         }
     }
-    if this.socket().ssl.is_null() {
-        this.socket().output.ssl_send = 1;
+    if this.socket().read(|socket| socket.ssl.is_null()) {
+        this.socket().edit(|socket| socket.output.ssl_send = 1);
         // SAFETY: the live socket and context.
         if unsafe { socket_ssl_create(this.socket_ptr(), tls, SSL_CLIENT) } < 0 {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
@@ -1288,7 +1297,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             // SAFETY: `SSL_set_tlsext_host_name` on the new session; OpenSSL copies the name.
             unsafe {
                 ssl_ctrl(
-                    this.socket().ssl,
+                    this.socket().read(|socket| socket.ssl),
                     SSL_CTRL_SET_TLSEXT_HOSTNAME,
                     TLSEXT_NAMETYPE_HOST_NAME,
                     name.as_ptr().cast_mut().cast(),
@@ -1296,11 +1305,10 @@ fn ssl_handshake(this: Handle) -> c_int {
             };
         }
     }
-    // SAFETY: the live socket's session.
-    if unsafe { socket_ssl_connect(this.socket_ptr()) } < 0 {
+    if socket_ssl_connect(this.socket()) < 0 {
         return ERR;
     }
-    if this.socket().tls.state == SSL_STATE_READY {
+    if this.tls_state() == SSL_STATE_READY {
         let fields = this.tls_fields();
         if fields.verify_peer != 0 && ssl_verify(this, fields.allow_self_signed != 0) < 0 {
             return ERR;
@@ -1312,13 +1320,18 @@ fn ssl_handshake(this: Handle) -> c_int {
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
 fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
-    // SAFETY: the live socket's session.
-    if !unsafe { socket_ssl_verify(this.socket_ptr(), allow_self_signed) } {
+    if !this
+        .socket()
+        .read(|socket| socket_ssl_verify(socket, allow_self_signed))
+    {
         return ERR;
     }
     let name = this.tls_host_name();
-    // SAFETY: as above, and a NUL-terminated name.
-    if !name.is_empty() && !unsafe { socket_ssl_check_host(this.socket_ptr(), name.as_ptr()) } {
+    if !name.is_empty()
+        && !this
+            .socket()
+            .read(|socket| socket_ssl_check_host(socket, name))
+    {
         return ERR;
     }
     OK
@@ -1509,7 +1522,7 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
             clippy::cast_sign_loss,
             reason = "upstream's buffer_size * 0.8 into a uint32_t"
         )]
-        let mark = (f64::from(this.socket().output.buffer_size) * 0.8) as u32;
+        let mark = (f64::from(this.socket().read(|socket| socket.output.buffer_size)) * 0.8) as u32;
         this.get().high_watermark.set(mark);
     }
     if inet_addr(this, host, port) < 0 {
@@ -1543,7 +1556,7 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
         break ret;
     };
     this.set(ACTIVE, false);
-    this.socket().removed = 1;
+    this.mark_removed();
     close(this);
     if this.has(ON_ERROR) {
         this.set(ONERROR_CALLED, true);
@@ -1588,14 +1601,14 @@ fn udp_connect(
         return dns_lookup(this);
     }
     this.set(ACTIVE, true);
-    let fd = this.socket().fd;
+    let fd = this.socket().fd();
     // SAFETY: a plain read of the defaults, which only the owning thread assigns.
     let default_size = unsafe { swr_v1_socket_defaults.buffer_size };
     swr_v1_socket_buffer_size(fd, true, true, default_size);
     if timeout > 0.0 {
         this.set_timeout(timeout);
     }
-    if this.socket().socket_type == SOCK_UNIX_DGRAM && bind_unix(this) < 0 {
+    if this.socket_type() == SOCK_UNIX_DGRAM && bind_unix(this) < 0 {
         return ERR;
     }
     let mut udp_connect = udp_connect;
@@ -1606,7 +1619,7 @@ fn udp_connect(
     if udp_connect == 1 {
         if ops::connect(this.fields(), CONNECT_RAW) != 0 {
             this.set(ACTIVE, false);
-            this.socket().removed = 1;
+            this.mark_removed();
             close(this);
             if is_async && this.has(ON_ERROR) {
                 this.set(ONERROR_CALLED, true);
@@ -1634,21 +1647,23 @@ fn bind_unix(this: Handle) -> c_int {
     let socket = this.socket();
     // SAFETY: getpid(2) has no preconditions.
     let pid = unsafe { libc::getpid() };
-    let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd);
-    // SAFETY: the address union's Unix member, which this socket's family uses.
-    let address = unsafe { &mut socket.info.addr.un };
-    for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
-        *slot = c_char::from_ne_bytes([byte]);
-    }
-    #[expect(clippy::cast_possible_truncation, reason = "AF_UNIX fits sa_family_t")]
-    let family = libc::AF_UNIX as libc::sa_family_t;
-    address.sun_family = family;
-    // SAFETY: the NUL-terminated path just written.
-    unsafe { libc::unlink(address.sun_path.as_ptr()) };
-    #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_un)")]
-    let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    // SAFETY: binds the client's descriptor to its own address storage.
-    let ret = unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) };
+    let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
+    let ret = socket.edit(|socket| {
+        // SAFETY: the address union's Unix member, which this socket's family uses.
+        let address = unsafe { &mut socket.info.addr.un };
+        for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
+            *slot = c_char::from_ne_bytes([byte]);
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "AF_UNIX fits sa_family_t")]
+        let family = libc::AF_UNIX as libc::sa_family_t;
+        address.sun_family = family;
+        // SAFETY: the NUL-terminated path just written.
+        unsafe { libc::unlink(address.sun_path.as_ptr()) };
+        #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_un)")]
+        let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+        // SAFETY: binds the client's descriptor to its own address storage.
+        unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) }
+    });
     if ret < 0 {
         log::sys_warning(c"Client_udp_connect", format_args!("bind({path}) failed"));
     }
@@ -1660,8 +1675,8 @@ fn bind_unix(this: Handle) -> c_int {
 #[cfg(not(test))]
 mod ops {
     use super::{
-        CONNECT_ASYNC, CONNECT_SYNC, ClientRecord, EVENT_ADD, EVENT_DEL, EVENT_SET, SocketRecord,
-        address_of,
+        CONNECT_ASYNC, CONNECT_SYNC, ClientRecord, ERR, EVENT_ADD, EVENT_DEL, EVENT_SET, Socket,
+        SocketRecord, address_of,
     };
     use core::ffi::{c_char, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
@@ -1675,10 +1690,14 @@ mod ops {
     /// read one is set.
     pub(super) fn kernel_timeout(record: &ClientRecord, timeout: f64) {
         // SAFETY: a constructed client's live socket.
-        let socket = unsafe { &mut *record.socket };
-        if socket_upstream::socket_set_kernel_read_timeout(socket, timeout) {
-            socket_upstream::socket_set_kernel_write_timeout(socket, timeout);
-        }
+        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
+            return;
+        };
+        socket.edit(|socket| {
+            if socket_upstream::socket_set_kernel_read_timeout(socket, timeout) {
+                socket_upstream::socket_set_kernel_write_timeout(socket, timeout);
+            }
+        });
     }
 
     /// `server_addr.assign(socket_type, host, port, resolve)`; `host` is NUL-terminated.
@@ -1689,7 +1708,10 @@ mod ops {
         resolve: bool,
     ) -> bool {
         // SAFETY: a constructed client's live socket.
-        let kind = unsafe { (*record.socket).socket_type };
+        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
+            return false;
+        };
+        let kind = socket.read(|socket| socket.socket_type);
         // SAFETY: the caller's NUL-terminated host.
         let length = unsafe { libc::strlen(host) };
         // SAFETY: as above.
@@ -1703,18 +1725,17 @@ mod ops {
     /// Connects the socket to `server_addr`, by `mode` (`CONNECT_*`); errno is the call's.
     pub(super) fn connect(record: &ClientRecord, mode: c_int) -> c_int {
         let address = &record.server_addr;
+        // SAFETY: a constructed client's live socket.
+        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
+            return ERR;
+        };
         match mode {
             CONNECT_ASYNC => {
-                // SAFETY: the live socket.
-                socket_upstream::socket_connect_async(unsafe { &mut *record.socket }, address)
+                socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
             }
-            CONNECT_SYNC => {
-                // SAFETY: the live socket.
-                socket_upstream::socket_connect_sync(unsafe { &mut *record.socket }, address)
-            }
+            CONNECT_SYNC => socket_upstream::connect_sync(socket, address),
             _ => {
-                // SAFETY: the live socket.
-                let fd = unsafe { (*record.socket).fd };
+                let fd = socket.fd();
                 let storage = (&raw const record.server_addr.addr).cast();
                 // SAFETY: the address's storage holds `len` bytes of sockaddr.
                 unsafe { libc::connect(fd, storage, record.server_addr.len) }
@@ -1741,8 +1762,11 @@ mod ops {
     pub(super) fn socket_error(record: &ClientRecord, error: &mut c_int) -> c_int {
         #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
         let mut length = size_of::<c_int>() as libc::socklen_t;
-        // SAFETY: the live socket.
-        let fd = unsafe { (*record.socket).fd };
+        // SAFETY: a constructed client's live socket.
+        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
+            return ERR;
+        };
+        let fd = socket.fd();
         // SAFETY: `error` holds an int and `length` says so.
         unsafe {
             libc::getsockopt(
@@ -1809,7 +1833,7 @@ pub unsafe extern "C" fn swr_v1_clients_bind(
     reuse_failed: Warn,
 ) -> c_int {
     let this = Handle(client);
-    let fd = this.socket().fd;
+    let fd = this.socket().fd();
     let enable: c_int = 1;
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
     let size = size_of::<c_int>() as libc::socklen_t;
@@ -1828,12 +1852,11 @@ pub unsafe extern "C" fn swr_v1_clients_bind(
         unsafe { reuse_failed(fd) };
     }
     // SAFETY: as the caller promises.
-    let Some(address) =
-        (unsafe { address_of(this.socket().socket_type, host, host_length, port, false) })
+    let Some(address) = (unsafe { address_of(this.socket_type(), host, host_length, port, false) })
     else {
         return ERR;
     };
-    if this.socket().bind(&address) < 0 {
+    if this.socket().edit(|socket| socket.bind(&address)) < 0 {
         log::set_last_error(errno());
         return ERR;
     }
@@ -1850,8 +1873,7 @@ fn sendto(
     data: *const c_char,
     length: usize,
 ) -> c_int {
-    let socket = this.socket();
-    if !is_dgram(socket.socket_type) {
+    if !is_dgram(this.socket_type()) {
         log::set_last_error(ERROR_OPERATION_NOT_SUPPORT);
         log::warning(
             c"sendto",
@@ -1862,7 +1884,7 @@ fn sendto(
     // SAFETY: as the caller promises.
     let Some(address) = (unsafe {
         address_of(
-            this.socket().socket_type,
+            this.socket_type(),
             host,
             host_length,
             port,
@@ -1871,7 +1893,7 @@ fn sendto(
     }) else {
         return ERR;
     };
-    let fd = this.socket().fd;
+    let fd = this.socket().fd();
     // SAFETY: the caller's `length` bytes to the local address of its length.
     if unsafe {
         libc::sendto(
@@ -2018,12 +2040,12 @@ fn on_read(this: Handle) -> c_int {
             return OK;
         }
     }
-    if this.flag(OPEN_SSL) && this.socket().tls.state != SSL_STATE_READY {
+    if this.flag(OPEN_SSL) && this.tls_state() != SSL_STATE_READY {
         if ssl_handshake(this) < 0 {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
-        if this.socket().tls.state == SSL_STATE_READY {
+        if this.tls_state() == SSL_STATE_READY {
             this.on_connect();
         }
         return OK;
@@ -2035,13 +2057,13 @@ fn on_read(this: Handle) -> c_int {
         // `swoole_init` registered them before any client existed.
         let framing = FRAMING.get().unwrap_or_else(|| std::process::abort());
         let framed = if eof { framing.eof } else { framing.length };
-        let socket = this.socket_ptr();
+        let socket = this.socket();
         let protocol = &raw const this.fields().protocol;
         // The live protocol, socket and input buffer `Framing::new` asks for. A
         // package callback may destroy the client; its socket outlives this handler.
-        let n = framed(protocol, socket, this.input());
-        // SAFETY: the socket outlives this handler; a destroyed client cleared its object.
-        let released = unsafe { (*socket).object }.is_null();
+        let n = framed(protocol, socket.as_ptr(), this.input());
+        // A destroyed client cleared its object.
+        let released = socket.read(|socket| socket.object.is_null());
         if n < 0 && !released && !this.flag(CLOSED) {
             close(this);
         }
@@ -2050,9 +2072,9 @@ fn on_read(this: Handle) -> c_int {
     let n = this.recv_once(buf, size);
     if n < 0 {
         let socket = this.socket();
-        return match catch_error(errno(), &mut socket.kernel_nobufs) {
+        return match socket.edit(|socket| catch_error(errno(), &mut socket.kernel_nobufs)) {
             SW_ERROR => {
-                let fd = socket.fd;
+                let fd = socket.fd();
                 log::sys_warning(
                     c"Client_onStreamRead",
                     format_args!("Read from socket[{fd}] failed"),
@@ -2095,16 +2117,16 @@ fn on_datagram(this: Handle) -> c_int {
 /// async stream client; `reactor` and `event` are the handler's.
 fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
     if this.flag(ACTIVE) {
-        if this.flag(OPEN_SSL) && this.socket().tls.state == SSL_STATE_WAIT_STREAM {
+        if this.flag(OPEN_SSL) && this.tls_state() == SSL_STATE_WAIT_STREAM {
             if ssl_handshake(this) < 0 {
                 log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
                 return write_failed(this);
             }
-            if this.socket().tls.state == SSL_STATE_READY {
+            if this.tls_state() == SSL_STATE_READY {
                 this.on_connect();
                 return OK;
             }
-            if this.socket().tls.want_read != 0 {
+            if this.socket().read(|socket| socket.tls.want_read) != 0 {
                 this.event(EVENT_SET, EVENT_READ);
             }
             return OK;
@@ -2126,7 +2148,7 @@ fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
     let ret = ops::socket_error(this.fields(), &mut error);
     log::set_last_error(error);
     if ret < 0 {
-        let fd = this.socket().fd;
+        let fd = this.socket().fd();
         log::sys_warning(c"Client_onWrite", format_args!("getsockopt({fd}) failed"));
         return ERR;
     }
@@ -2157,7 +2179,8 @@ fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return write_failed(this);
         }
-        this.socket().tls.state = SSL_STATE_WAIT_STREAM;
+        this.socket()
+            .edit(|socket| socket.tls.state = SSL_STATE_WAIT_STREAM);
         return OK;
     }
     this.on_connect();
@@ -2186,7 +2209,7 @@ extern "C-unwind" fn on_timeout(data: *mut c_void) {
     let this = Handle(data.cast());
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(core::ptr::null_mut());
-    if this.flag(OPEN_SSL) && this.socket().tls.state != SSL_STATE_READY {
+    if this.flag(OPEN_SSL) && this.tls_state() != SSL_STATE_READY {
         this.set(ACTIVE, false);
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
@@ -2207,7 +2230,7 @@ fn resolved(this: Handle, error: c_int, address: &CStr) {
     this.set(DNS_COMPLETED, true);
     if error == 0 {
         // The application can't see connect's result here, so onError reports it.
-        let timeout = this.socket().timeouts.connect;
+        let timeout = this.socket().read(|socket| socket.timeouts.connect);
         let (port, flags) = (this.get().server_port.get(), this.get().sock_flags.get());
         if connect(this, address.as_ptr(), port, timeout, flags) != ERR || this.flag(ONERROR_CALLED)
         {
@@ -2216,7 +2239,7 @@ fn resolved(this: Handle, error: c_int, address: &CStr) {
     } else {
         log::set_last_error(ERROR_DNSLOOKUP_RESOLVE_FAILED);
     }
-    this.socket().removed = 1;
+    this.mark_removed();
     close(this);
     if this.has(ON_ERROR) {
         this.set(ONERROR_CALLED, true);

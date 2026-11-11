@@ -177,9 +177,9 @@ is crates/server's.
 | `reload_thread` | `MODE_THREAD` with task workers and a user worker that waits for `running` to clear: a client thread reloads every worker once `onManagerStart` unlocks it, a second `reload(true)` is refused (`SW_ERROR_OPERATION_NOT_SUPPORT`), and each core worker starts twice; its trace logging is left out |
 | `reload_thread_2`, `reload_thread_3` | `MODE_THREAD`: the manager thread's 500 ms timer reloads every worker, and `onAfterReload` shuts down 500 ms later; `2` adds task workers and a user worker whose thread the manager respawns (its `lock` has no reader and is left out), `3` checks `reload(false)` is refused without task workers. Their `flags` are counters |
 | `reload_all_from_worker_error`, `reload_tasks_from_worker_error` | a reload requested from `onWorkerError`, with upstream's five-second watchdog |
-| `kill_worker_1`, `_2`, `_4`, `_5`, `worker_exit`, `shutdown_event` | `test_kill_worker` in base and process mode, with and without `reload_async`, `onWorkerExit`, and an `SW_SERVER_EVENT_SHUTDOWN` packet between workers |
+| `kill_worker_1` .. `kill_worker_6`, `worker_exit`, `shutdown_event` | `test_kill_worker` in base, process and thread mode, with and without `reload_async`, `onWorkerExit`, and an `SW_SERVER_EVENT_SHUTDOWN` packet between workers |
 | `kill_self` | `test_kill_self`: a worker killing the worker that holds the connection |
-| `clean_worker_1` | `test_clean_worker(MODE_BASE)`: a worker's `onConnect` defers `clean_worker_connections`, shuts the client's socket down and stops itself, so no `onReceive`, `onClose` or client receive, and three worker starts. The `AsyncClient` is crates/clients' client, made before the server forks and connected from `onStart`'s timer, as upstream's |
+| `clean_worker_1`, `clean_worker_2` | `test_clean_worker` in base and thread mode: a worker's `onConnect` defers `clean_worker_connections`, shuts the client's socket down and stops itself, so no `onReceive`, `onClose` or client receive, and three worker starts. The `AsyncClient` is crates/clients' client, made before the server forks and connected from `onStart`'s timer, as upstream's |
 | `base`, `process`, `process_single_thread` | `test_base` and `test_process`: one request through each mode, the methods that must refuse (`shutdown` before start, `add_port` and `add_worker` after `create`, an unknown session, an unknown command), and the start, shutdown and manager callbacks |
 
 The lock upstream's client thread waits on (a process-shared `Mutex`) is a slot in the shared
@@ -194,18 +194,12 @@ Three upstream assertions have no code left to test, so the cases leave them out
   `Server::command`, which looks the command up first, so nothing can call it with an
   unknown id.
 
-Not yet run:
-
-- `thread` and `task_thread` are `#ifdef SW_THREAD` upstream, and
-  `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use `MODE_THREAD`. None is ported
-  yet. The binary is a `SW_THREAD` build (see the MODE_THREAD TESTs below), so they can be.
-
 `core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
 `server`, in the same binary and phase, one function per TEST under its own name with the
 same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,
 `task_base`, `task_process`, `task_ipc_stream`, `task_worker3`, `task_worker4`,
-`task_sync_multi_task`, `task_sync`, `task_ipc_queue_1` .. `task_ipc_queue_5` and
-`no_idle_task_worker`. `Server::task` and both `task_sync`s are crates/process's `Tasks`
+`task_sync_multi_task`, `task_sync`, `task_ipc_queue_1` .. `task_ipc_queue_5`,
+`no_idle_task_worker`, and the `#ifdef SW_THREAD` `thread` and `task_thread`. `Server::task` and both `task_sync`s are crates/process's `Tasks`
 over the server's task pool and the worker's notify pipe, lock and result slot (`tasks`,
 as crates/phpserver's `task_state` lends them to `Swoole\Server`'s task methods); the other methods are the crates' functions under their
 upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
@@ -213,8 +207,11 @@ upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
 mapping the forked processes inherit, as core-tests' memory-pool counters are, and an
 expectation in a callback records its failure there, so here one in a forked worker fails
 the case too. `no_idle_task_worker`'s client waits on a shared flag its `onWorkerStart`
-sets, where upstream's waited on a process-shared mutex it unlocked. `task_ipc_queue_5`
-runs in thread mode (see the MODE_THREAD TESTs below).
+sets, where upstream's waited on a process-shared mutex it unlocked, and `thread`'s and
+`task_thread`'s on one `onStart` sets. `task_ipc_queue_5`, `thread` and `task_thread` run in
+thread mode (see the MODE_THREAD TESTs below). `thread` reads the event pool's
+`read_message` after the task pool, where crates/server lays it out, and leaves out its
+trace logging.
 
 `core-tests/src/server/server.cpp`'s TLS TESTs that start a server are
 `server/src/http1/server_ssl.rs`, in the same binary and phase, one function per TEST
@@ -262,7 +259,8 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
 
 The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`,
-`task_ipc_queue_5`, `ssl_client_cert_3`) need upstream's `enable_thread` build (`SW_THREAD`),
+`task_ipc_queue_5`, `thread`, `task_thread`, `reload_thread*`, `kill_worker_3`,
+`kill_worker_6`, `clean_worker_2`, `ssl_client_cert_3`) need upstream's `enable_thread` build (`SW_THREAD`),
 which core-tests always use. This binary is one too: it turns on crates/process's `thread`
 feature, so each thread has its own `SwooleWG` (worker id, type and pid), as
 `SW_THREAD_LOCAL` gives upstream. Its `main` sets `swoole_rs_server::THREAD_SUPPORTED`, as

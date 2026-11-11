@@ -2,7 +2,7 @@
 //! and descriptor option flags, kernel timeouts, and `recv`/`send`/`peek` with their byte counters and timestamps.
 //! Native `Socket` calls these inline (`swoole_socket.h`); a TLS socket passes its
 //! OpenSSL call, which runs only when the record holds an `SSL`.
-use crate::{SocketAddress, SocketRecord, TlsIo};
+use crate::{Socket, SocketAddress, SocketRecord, TlsIo};
 use std::ffi::{c_int, c_void};
 use std::mem::size_of;
 
@@ -147,22 +147,15 @@ impl SocketRecord {
 }
 
 /// The record's fd, blocking flags and TLS call (when it holds an `SSL`).
-///
-/// # Safety
-/// `socket` is a live record.
-unsafe fn io_of(
-    socket: *mut SocketRecord,
-    tls: TlsIo,
-) -> (c_int, bool, bool, Option<(TlsIo, *mut c_void)>) {
-    // SAFETY: as the caller promises.
-    let record = unsafe { &*socket };
-    let tls = (!record.ssl.is_null()).then_some((tls, socket.cast()));
-    (
-        record.fd,
-        record.output.nonblock != 0,
-        record.dont_restart != 0,
-        tls,
-    )
+fn io_of(socket: Socket<'_>, tls: TlsIo) -> (c_int, bool, bool, Option<(TlsIo, *mut c_void)>) {
+    socket.read(|record| {
+        (
+            record.fd,
+            record.output.nonblock != 0,
+            record.dont_restart != 0,
+            (!record.ssl.is_null()).then_some((tls, socket.as_ptr().cast())),
+        )
+    })
 }
 
 /// `Socket::recv`: [`crate::socket_recv`] counted into `total_recv_bytes` and, with a
@@ -170,33 +163,32 @@ unsafe fn io_of(
 /// reads as end of stream.
 ///
 /// # Safety
-/// `socket` is a live record; `buffer` denotes `length` writable bytes; `tls` and
-/// `now` are valid for it.
+/// `buffer` denotes `length` writable bytes; `tls` and `now` are valid for the socket.
 pub unsafe fn socket_record_recv(
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     buffer: *mut c_void,
     length: usize,
     flags: c_int,
     tls: TlsIo,
     now: SteadyMs,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let (fd, nonblock, dont_restart, tls) = unsafe { io_of(socket, tls) };
+    let (fd, nonblock, dont_restart, tls) = io_of(socket, tls);
     // SAFETY: the caller's buffer; the TLS call gets the socket it is valid for.
     let total =
         unsafe { crate::socket_recv(fd, buffer, length, flags, nonblock, dont_restart, tls) };
-    // SAFETY: as the caller promises; the TLS call has returned.
-    let record = unsafe { &mut *socket };
-    if total > 0 {
-        record.total_recv_bytes += total.cast_unsigned();
-        if !record.recv_timer.is_null() {
-            // SAFETY: the caller's clock.
-            record.last_received_time = unsafe { now() };
-        }
+    if total > 0
+        && socket.edit(|record| {
+            record.total_recv_bytes += total.cast_unsigned();
+            !record.recv_timer.is_null()
+        })
+    {
+        // SAFETY: the caller's clock.
+        let time = unsafe { now() };
+        socket.edit(|record| record.last_received_time = time);
     } else if total < 0 {
         // Nothing since the call has touched errno.
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if record.catch_error(error) == WAIT && record.event_hup != 0 {
+        if socket.edit(|record| record.catch_error(error) == WAIT && record.event_hup != 0) {
             return 0;
         }
     }
@@ -207,28 +199,27 @@ pub unsafe fn socket_record_recv(
 /// a send timer, `last_sent_time`.
 ///
 /// # Safety
-/// `socket` is a live record; `buffer` denotes `length` readable bytes; `tls` and
-/// `now` are valid for it.
+/// `buffer` denotes `length` readable bytes; `tls` and `now` are valid for the socket.
 pub unsafe fn socket_record_send(
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     buffer: *const c_void,
     length: usize,
     flags: c_int,
     tls: TlsIo,
     now: SteadyMs,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let (fd, _, dont_restart, tls) = unsafe { io_of(socket, tls) };
+    let (fd, _, dont_restart, tls) = io_of(socket, tls);
     // SAFETY: the caller's buffer; the TLS call gets the socket it is valid for.
     let sent = unsafe { crate::socket_send(fd, buffer, length, flags, dont_restart, tls) };
-    if sent > 0 {
-        // SAFETY: as the caller promises; the TLS call has returned.
-        let record = unsafe { &mut *socket };
-        record.total_send_bytes += sent.cast_unsigned();
-        if !record.output.send_timer.is_null() {
-            // SAFETY: the caller's clock.
-            record.last_sent_time = unsafe { now() };
-        }
+    if sent > 0
+        && socket.edit(|record| {
+            record.total_send_bytes += sent.cast_unsigned();
+            !record.output.send_timer.is_null()
+        })
+    {
+        // SAFETY: the caller's clock.
+        let time = unsafe { now() };
+        socket.edit(|record| record.last_sent_time = time);
     }
     sent
 }
@@ -236,17 +227,15 @@ pub unsafe fn socket_record_send(
 /// `Socket::peek`: [`crate::socket_peek`] on the record.
 ///
 /// # Safety
-/// `socket` is a live record; `buffer` denotes `length` writable bytes; `tls` is
-/// valid for it.
+/// `buffer` denotes `length` writable bytes; `tls` is valid for the socket.
 pub unsafe fn socket_record_peek(
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     buffer: *mut c_void,
     length: usize,
     flags: c_int,
     tls: TlsIo,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let (fd, _, _, tls) = unsafe { io_of(socket, tls) };
+    let (fd, _, _, tls) = io_of(socket, tls);
     // SAFETY: the caller's buffer; the TLS call gets the socket it is valid for.
     unsafe { crate::socket_peek(fd, buffer, length, flags, tls) }
 }
@@ -334,13 +323,31 @@ mod tests {
         let mut buffer = [0_u8; 8];
         // SAFETY: live local records and buffers; no TLS.
         unsafe {
-            let sent =
-                socket_record_send(&raw mut b, b"hello".as_ptr().cast(), 5, 0, no_tls, clock);
+            let sent = socket_record_send(
+                Socket::from_ptr(&raw mut b).unwrap(),
+                b"hello".as_ptr().cast(),
+                5,
+                0,
+                no_tls,
+                clock,
+            );
             assert_eq!(sent, 5);
-            let peeked = socket_record_peek(&raw mut a, buffer.as_mut_ptr().cast(), 8, 0, no_tls);
+            let peeked = socket_record_peek(
+                Socket::from_ptr(&raw mut a).unwrap(),
+                buffer.as_mut_ptr().cast(),
+                8,
+                0,
+                no_tls,
+            );
             assert_eq!(peeked, 5);
-            let read =
-                socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 8, 0, no_tls, clock);
+            let read = socket_record_recv(
+                Socket::from_ptr(&raw mut a).unwrap(),
+                buffer.as_mut_ptr().cast(),
+                8,
+                0,
+                no_tls,
+                clock,
+            );
             assert_eq!(read, 5);
         }
         assert_eq!(&buffer[..5], b"hello");
@@ -359,13 +366,27 @@ mod tests {
         assert_eq!(set, 0);
         // SAFETY: live local record and buffer; no TLS.
         let read = unsafe {
-            socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 4, 0, no_tls, clock)
+            socket_record_recv(
+                Socket::from_ptr(&raw mut a).unwrap(),
+                buffer.as_mut_ptr().cast(),
+                4,
+                0,
+                no_tls,
+                clock,
+            )
         };
         assert_eq!(read, -1);
         a.event_hup = 1;
         // SAFETY: as above.
         let read = unsafe {
-            socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 4, 0, no_tls, clock)
+            socket_record_recv(
+                Socket::from_ptr(&raw mut a).unwrap(),
+                buffer.as_mut_ptr().cast(),
+                4,
+                0,
+                no_tls,
+                clock,
+            )
         };
         assert_eq!(read, 0);
         assert_eq!(a.total_recv_bytes, 0);

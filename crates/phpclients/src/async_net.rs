@@ -385,9 +385,8 @@ fn connect(call: &Call) {
         }
     }
     // SAFETY: a live client; it raises its events on this object.
-    unsafe {
-        state::swr_v1_clients_listen(fresh.cli.0, object.as_ptr().cast(), events, async_event);
-    }
+    let cli = unsafe { &*fresh.cli.0 };
+    state::swr_v1_clients_listen(cli, object.as_ptr().cast(), events, async_event);
     net::this(call).conn.set(conn);
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object.as_ptr()).gc.refcount += 1 };
@@ -567,7 +566,9 @@ fn enable_ssl(call: &Call) {
     unsafe { update_property(ASYNC.entry(), object.as_ptr(), c"onSSLReady", zcallback) };
     replace(object, SSL_READY, callable);
     conn.ssl_wait = true;
-    conn.cli.socket_mut().tls.state = SSL_STATE_WAIT_STREAM;
+    if let Some(socket) = conn.cli.net() {
+        socket.edit(|record| record.tls.state = SSL_STATE_WAIT_STREAM);
+    }
     call.set_bool(true);
 }
 

@@ -6,11 +6,12 @@
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
+use crate::objects::socket;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{Socket, SocketRecord, reactor_upstream};
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
@@ -78,14 +79,15 @@ fn bus_of(thread: &mut ThreadRecord) -> *mut c_void {
     (&raw mut thread.bus).cast()
 }
 
-fn socket<'a>(socket: *mut c_void) -> &'a mut SocketRecord {
-    // SAFETY: every caller passes a live socket.
-    unsafe { &mut *socket.cast::<SocketRecord>() }
+/// The context event's socket.
+fn event_socket<'a>(ctx: &ReactorContext) -> Option<Socket<'a>> {
+    // SAFETY: the ops reading it run on a live event.
+    socket(unsafe { (*ctx.event).socket })
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
-fn pipe_socket<'a>(thread: &ThreadRecord, sock: *mut c_void) -> &'a mut SocketRecord {
-    socket(thread.message_bus().pipe_socket(socket(sock)).cast())
+fn pipe_socket<'a>(thread: &ThreadRecord, sock: *mut c_void) -> Option<Socket<'a>> {
+    socket(thread.message_bus().pipe_socket(socket(sock)?))
 }
 
 fn worker<'a>(serv: view::Server<'_>, id: impl TryInto<u16>) -> &'a mut WorkerRecord {
@@ -133,7 +135,8 @@ pub(crate) unsafe fn answer(
     let handle = unsafe { crate::reactor_handle::Reactor::of(reactor) };
     let reactor_id = || handle.fields().id;
     // `reactor->add(socket, SW_EVENT_READ)`.
-    let add_read = |socket: &mut SocketRecord| handle.change(socket, 0, SW_EVENT_READ);
+    let add_read =
+        |socket: Option<Socket<'_>>| socket.map_or(-1, |s| handle.change(s, 0, SW_EVENT_READ));
     let (conn, resp) = (ctx.conn, ctx.resp);
     // SAFETY: the ops reading it run with a live connection.
     let conn_ref = || unsafe { &mut *conn };
@@ -184,7 +187,7 @@ pub(crate) unsafe fn answer(
             let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
             // SAFETY: this thread's live buffer.
             let room = unsafe { (*buffer).size } - size_of::<DgramPacket>();
-            let fd = socket(ctx.sock.cast()).fd;
+            let fd = socket(ctx.sock.cast())?.fd();
             let pkt = packet(ctx);
             let data = (&raw mut *pkt).wrapping_add(1).cast();
             let address = &mut pkt.socket_addr;
@@ -201,12 +204,8 @@ pub(crate) unsafe fn answer(
                 let ip = unsafe { pkt.socket_addr.addr.inet_v4.sin_addr.s_addr };
                 c_long::from(ip.cast_signed())
             } else {
-                // SAFETY: the packet's live address.
-                let host = unsafe {
-                    swoole_rs_clients::address::swr_v1_clients_address_host(
-                        &raw const pkt.socket_addr,
-                    )
-                };
+                let host =
+                    swoole_rs_clients::address::swr_v1_clients_address_host(&pkt.socket_addr);
                 let length = pkt.socket_addr.len as usize;
                 if host.is_null() || length == 0 {
                     0
@@ -252,7 +251,7 @@ pub(crate) unsafe fn answer(
             };
             // arg: peer_closed, the connection is no longer available
             conn_ref().peer_closed = u8::from(arg != 0);
-            socket(ctx.sock.cast()).close_notified = 1;
+            socket(ctx.sock.cast())?.edit(|s| s.close_notified = 1);
             u64::from(factory::notify(state, (&raw mut head).cast()))
         }
         OP_CC_COUNT => {
@@ -375,12 +374,12 @@ pub(crate) unsafe fn answer(
                 .pipe_command
                 .cast::<swoole_rs_tls::socket_pair::SocketPair>();
             // SAFETY: the server's live command pipe.
-            let fd = socket(unsafe { (*pair).worker_socket }.cast()).fd;
+            let fd = socket(unsafe { (*pair).worker_socket }.cast())?.fd();
             let thread = this(ctx);
             let bus = thread.message_bus();
             bus.init_pipe_socket(fd);
             thread.pipe_command = bus.pipe_fd(fd).cast();
-            socket(thread.pipe_command.cast()).output.buffer_size = u32::MAX;
+            socket(thread.pipe_command.cast())?.edit(|s| s.output.buffer_size = u32::MAX);
             0
         }
         OP_RT_BUS_SETUP => {
@@ -405,7 +404,7 @@ pub(crate) unsafe fn answer(
             let thread = this(ctx);
             let sock = pipe_socket(thread, worker.pipe_master);
             if op == OP_WORKER_PIPE_UNREAD {
-                handle.interest(sock, 4, 0);
+                handle.interest(sock?, 4, 0);
                 return Some(0);
             }
             if add_read(sock) < 0 {
@@ -421,8 +420,7 @@ pub(crate) unsafe fn answer(
         OP_PIPE_READ => {
             let thread = this(ctx);
             ctx.resp = thread.message_bus().buffer();
-            // SAFETY: the context's live event.
-            let sock = socket(unsafe { (*ctx.event).socket });
+            let sock = event_socket(ctx)?;
             let read = crate::pool_native::read_bus(
                 thread.message_bus().rust(),
                 thread.allocator,
@@ -480,17 +478,16 @@ pub(crate) unsafe fn answer(
         }
 
         OP_RT_FRONT => {
-            // SAFETY: the context's live event.
-            let buffer = socket(unsafe { (*ctx.event).socket }).output.out_buffer;
+            let buffer = event_socket(ctx)?.read(|s| s.output.out_buffer);
             // SAFETY: the socket's live, non-empty output buffer.
-            let front = unsafe { swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front(buffer.cast()) };
+            let front =
+                swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front(unsafe { &*buffer.cast() });
             ctx.front = front.data.cast();
             ctx.front_length = front.length as usize;
             0
         }
         OP_RT_SEND_FRONT => {
-            // SAFETY: the context's live event.
-            let sock = unsafe { (*ctx.event).socket }.cast();
+            let sock = event_socket(ctx)?.as_ptr();
             let (front, length) = (ctx.front.cast(), ctx.front_length);
             // SAFETY: the event's live socket and the front message's bytes.
             let sent = unsafe { swoole_rs_tls::upstream::socket_send(sock, front, length, 0) };
@@ -498,9 +495,7 @@ pub(crate) unsafe fn answer(
         }
         OP_RT_CATCH_WAIT => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            // SAFETY: the context's live event.
-            let sock = socket(unsafe { (*ctx.event).socket });
-            u64::from(sock.catch_error(errno) == SW_WAIT)
+            u64::from(event_socket(ctx)?.edit(|s| s.catch_error(errno)) == SW_WAIT)
         }
 
         // SAFETY: the live server, this thread's reactor and a live connection.
@@ -533,12 +528,7 @@ pub(crate) unsafe fn answer(
             if op == OP_PORT_LISTEN {
                 return Some(sign((crate::port_config::methods().listen)(port)));
             }
-            // SAFETY: as above.
-            let socket = unsafe { crate::port_config::of(port) }
-                .socket
-                .cast::<SocketRecord>();
-            // SAFETY: the port's live listening socket.
-            add_read(unsafe { &mut *socket });
+            add_read(server.port_socket_at(usize::try_from(arg).unwrap_or(usize::MAX)));
             0
         }
         OP_DGRAM_BUFFER => {
@@ -553,10 +543,9 @@ pub(crate) unsafe fn answer(
             use core::sync::atomic::Ordering::SeqCst;
             let (event, port) = (ctx.event, ctx.port);
             conn_ref().last_recv_time = swoole_rs_corebase::microtime();
-            // SAFETY: the context's live event, whose socket the read may close.
-            let sock = unsafe { (*event).socket }.cast::<SocketRecord>();
-            // SAFETY: as above, live until the read.
-            let last_recv_bytes = unsafe { (*sock).total_recv_bytes };
+            // The event's socket, which the read may close.
+            let sock = event_socket(ctx)?;
+            let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
             // SAFETY: the context's live port.
             let port_config = unsafe { crate::port_config::of(port) };
             let on_read = port_config.on_read;
@@ -568,8 +557,10 @@ pub(crate) unsafe fn answer(
             ) -> c_int = unsafe { core::mem::transmute(on_read) };
             // SAFETY: this thread's reactor, the port and its event.
             let retval = unsafe { on_read(reactor, port, event.cast()) };
-            // SAFETY: upstream reads the socket after the read too.
-            let received = unsafe { (*sock).total_recv_bytes }.wrapping_sub(last_recv_bytes);
+            // Upstream reads the socket after the read too.
+            let received = sock
+                .read(|s| s.total_recv_bytes)
+                .wrapping_sub(last_recv_bytes);
             if received.cast_signed() > 0 {
                 let received = received as u64;
                 if let Some(gs) = port_config.counters() {
@@ -584,8 +575,8 @@ pub(crate) unsafe fn answer(
             if conn.active != 0 {
                 let max = config().max_queued_bytes;
                 let flag = |set: bool, bit: u64| if set { bit } else { 0 };
-                // SAFETY: an active connection's socket.
-                let notified = unsafe { (*sock).close_notified } != 0;
+                // An active connection's socket.
+                let notified = sock.read(|s| s.close_notified != 0);
                 result |= crate::conn_io::ACTIVE
                     | flag(notified, crate::conn_io::READ_NOTIFIED)
                     | flag(
@@ -675,9 +666,11 @@ unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
 
 /// `ReactorThread_resume_data_receiving`: the timer of a paused session socket.
 unsafe extern "C-unwind" fn resume_data_receiving(sock: *mut c_void) {
+    // The timer's live session socket, whose object is its connection.
+    let Some(conn) = socket(sock).map(|s| s.read(|s| s.object.cast::<ConnectionRecord>())) else {
+        return;
+    };
     let sock = sock.cast::<SocketRecord>();
-    // SAFETY: the timer's live session socket, whose object is its connection.
-    let conn = unsafe { (*sock).object }.cast::<ConnectionRecord>();
     let mut ctx = ReactorContext::new(swoole_rs_corebase::swr_v1_core_server(), ptr::null_mut());
     ctx.sock = sock;
     ctx.conn = conn;

@@ -22,7 +22,7 @@ typedef struct {
 swr_v1_core_proxy_prepared swr_v1_core_proxy_new(bool socks);
 void swr_v1_core_proxy_free(swr_v1_core_proxy *);
 swr_v1_core_proxy_copy_result
-swr_v1_core_proxy_assign(swr_v1_core_proxy *, const swr_v1_core_proxy *);
+swr_v1_core_proxy_assign(const swr_v1_core_proxy *, const swr_v1_core_proxy *);
 swr_v1_core_proxy_copy_result
 swr_v1_core_proxy_configure(swr_v1_core_proxy *,
                             const swr_v1_core_string_view_t *, int32_t, bool,

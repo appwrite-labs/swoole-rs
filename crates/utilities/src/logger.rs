@@ -403,84 +403,61 @@ pub unsafe extern "C" fn swr_v1_logger_free(logger: *mut Logger) {
     drop(unsafe { Box::from_raw(logger) });
 }
 
-/// The live logger behind a native `Logger`.
-unsafe fn live<'a>(logger: *const Logger) -> &'a Logger {
-    // SAFETY: the caller passes a logger from `swr_v1_logger_new` that is still live.
-    unsafe { &*logger }
-}
-
 /// `Logger::open`.
 /// # Safety
-/// `logger` is live and `file` is NUL-terminated.
+/// `file` is NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_open(logger: *const Logger, file: *const c_char) -> bool {
+pub unsafe extern "C" fn swr_v1_logger_open(logger: &Logger, file: *const c_char) -> bool {
     // SAFETY: a NUL-terminated path.
     let file = unsafe { CStr::from_ptr(file) }.to_owned();
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.with(|state, effects| state.open(file, effects))
+    logger.with(|state, effects| state.open(file, effects))
 }
 
 /// `Logger::reopen`.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_reopen(logger: *const Logger) {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.reopen();
+pub extern "C" fn swr_v1_logger_reopen(logger: &Logger) {
+    logger.reopen();
 }
 
 /// `Logger::close`.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_close(logger: *const Logger) {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.close();
+pub extern "C" fn swr_v1_logger_close(logger: &Logger) {
+    logger.close();
 }
 
 /// `Logger::set_stream`.
 /// # Safety
-/// `logger` is live and `stream` is a stream the caller keeps open.
+/// `stream` is a stream the caller keeps open.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_set_stream(logger: *const Logger, stream: *mut FILE) {
-    // SAFETY: per the contract.
-    let mut state = unsafe { live(logger) }.lock();
+pub unsafe extern "C" fn swr_v1_logger_set_stream(logger: &Logger, stream: *mut FILE) {
+    let mut state = logger.lock();
     state.close();
     state.fp = stream;
 }
 
 /// `Logger::put`: the line, then the backtrace if one was asked for.
 /// # Safety
-/// `logger` is live; `content` is readable as upstream's `%.*s` reads it.
+/// `content` is readable as upstream's `%.*s` reads it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_logger_put(
-    logger: *const Logger,
+    logger: &Logger,
     level: c_int,
     content: *const c_char,
     length: usize,
 ) {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.put(level, content.cast(), length);
+    logger.put(level, content.cast(), length);
 }
 
 /// `Logger::get_level`.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_level(logger: *const Logger) -> c_int {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.level.load(Relaxed)
+pub extern "C" fn swr_v1_logger_level(logger: &Logger) -> c_int {
+    logger.level.load(Relaxed)
 }
 
 /// `Logger::set_level`, clamped to the defined levels.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_set_level(logger: *const Logger, level: c_int) {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }
-        .level
-        .store(swr_v1_utils_log_level(level), Relaxed);
+pub extern "C" fn swr_v1_logger_set_level(logger: &Logger, level: c_int) {
+    logger.level.store(swr_v1_utils_log_level(level), Relaxed);
 }
 
 /// Logger settings `swr_v1_logger_set` changes.
@@ -494,16 +471,8 @@ pub enum LoggerSetting {
 }
 
 /// `Logger::set_rotation`, `set_date_with_microseconds`, `display_backtrace` and `reset`.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_set(
-    logger: *const Logger,
-    setting: LoggerSetting,
-    value: c_int,
-) {
-    // SAFETY: per the contract.
-    let logger = unsafe { live(logger) };
+pub extern "C" fn swr_v1_logger_set(logger: &Logger, setting: LoggerSetting, value: c_int) {
     let mut state = logger.lock();
     match setting {
         LoggerSetting::Rotation => state.rotation = value,
@@ -520,16 +489,15 @@ pub unsafe extern "C" fn swr_v1_logger_set(
 
 /// `Logger::set_date_format`: false, with a warning, if the format renders nothing.
 /// # Safety
-/// `logger` is live and `format` is NUL-terminated.
+/// `format` is NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_logger_set_date_format(
-    logger: *const Logger,
+    logger: &Logger,
     format: *const c_char,
 ) -> bool {
     // SAFETY: a NUL-terminated format.
     let format = unsafe { CStr::from_ptr(format) };
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.with(|state, effects| {
+    logger.with(|state, effects| {
         if strftime(&mut [0u8; SW_LOG_DATE_STRLEN], format, now().0) == 0 {
             let length = c_int::try_from(format.to_bytes().len()).unwrap_or(c_int::MAX);
             effects.push(Effect::DateFormatTooLong(length));
@@ -541,12 +509,9 @@ pub unsafe extern "C" fn swr_v1_logger_set_date_format(
 }
 
 /// `Logger::redirect_stdout_and_stderr`.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_redirect(logger: *const Logger, enable: bool) -> bool {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.with(|state, effects| {
+pub extern "C" fn swr_v1_logger_redirect(logger: &Logger, enable: bool) -> bool {
+    logger.with(|state, effects| {
         if enable {
             state.redirect(effects)
         } else {
@@ -556,21 +521,15 @@ pub unsafe extern "C" fn swr_v1_logger_redirect(logger: *const Logger, enable: b
 }
 
 /// `Logger::is_opened`.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_is_opened(logger: *const Logger) -> bool {
-    // SAFETY: per the contract.
-    unsafe { live(logger) }.lock().opened
+pub extern "C" fn swr_v1_logger_is_opened(logger: &Logger) -> bool {
+    logger.lock().opened
 }
 
 /// `Logger::get_file` (0) or `get_real_file` (1): valid until the file next changes.
-/// # Safety
-/// `logger` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_file(logger: *const Logger, real: bool) -> *const c_char {
-    // SAFETY: per the contract.
-    let state = unsafe { live(logger) }.lock();
+pub extern "C" fn swr_v1_logger_file(logger: &Logger, real: bool) -> *const c_char {
+    let state = logger.lock();
     if real {
         state.real_file.as_ptr()
     } else {
@@ -579,17 +538,9 @@ pub unsafe extern "C" fn swr_v1_logger_file(logger: *const Logger, real: bool) -
 }
 
 /// `Logger::gen_real_file`'s date suffix, without the dot; returns its length.
-/// # Safety
-/// `logger` is live and `date` is writable for 16 bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_rotation_date(
-    logger: *const Logger,
-    date: *mut [u8; 16],
-) -> usize {
-    // SAFETY: per the contract.
-    let rotation = unsafe { live(logger) }.lock().rotation;
-    // SAFETY: as above.
-    rotation_date(rotation, unsafe { &mut *date })
+pub extern "C" fn swr_v1_logger_rotation_date(logger: &Logger, date: &mut [u8; 16]) -> usize {
+    rotation_date(logger.lock().rotation, date)
 }
 
 /// The process logger, `sw_logger()`: a `swoole::Logger`, whose only member is
@@ -600,7 +551,7 @@ pub fn process_logger() -> Option<&'static Logger> {
     // SAFETY: a live `swoole::Logger` whenever set.
     let member = unsafe { cpp.as_ref() }?;
     // SAFETY: its only member is a live Logger.
-    Some(unsafe { live(*member) })
+    Some(unsafe { &**member })
 }
 
 /// `void swoole_set_log_level(int level)` (upstream `src/core/base.cc`).
@@ -751,7 +702,7 @@ pub(crate) mod tests {
     }
 
     fn file(logger: *const Logger, real: bool) -> String {
-        unsafe { CStr::from_ptr(swr_v1_logger_file(logger, real)) }
+        unsafe { CStr::from_ptr(swr_v1_logger_file(&*logger, real)) }
             .to_string_lossy()
             .into_owned()
     }
@@ -762,16 +713,16 @@ pub(crate) mod tests {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
         let (name, file_path) = path("put");
         unsafe {
-            assert!(swr_v1_logger_open(logger, name.as_ptr()), "opened");
-            assert!(swr_v1_logger_is_opened(logger), "is_opened");
+            assert!(swr_v1_logger_open(&*logger, name.as_ptr()), "opened");
+            assert!(swr_v1_logger_is_opened(&*logger), "is_opened");
             assert!(
-                swr_v1_logger_set_date_format(logger, c"%Y".as_ptr()),
+                swr_v1_logger_set_date_format(&*logger, c"%Y".as_ptr()),
                 "date format"
             );
-            swr_v1_logger_put(logger, 1, c"hidden".as_ptr(), 6);
-            swr_v1_logger_put(logger, 4, c"hello world".as_ptr(), 5);
-            swr_v1_logger_close(logger);
-            assert!(!swr_v1_logger_is_opened(logger), "closed");
+            swr_v1_logger_put(&*logger, 1, c"hidden".as_ptr(), 6);
+            swr_v1_logger_put(&*logger, 4, c"hello world".as_ptr(), 5);
+            swr_v1_logger_close(&*logger);
+            assert!(!swr_v1_logger_is_opened(&*logger), "closed");
             assert_eq!(file(logger, false), "", "close clears the file");
             assert_eq!(
                 file(logger, true),
@@ -802,7 +753,7 @@ pub(crate) mod tests {
         host();
         unsafe {
             assert!(
-                !swr_v1_logger_open(logger, c"/nonexistent/dir/log".as_ptr()),
+                !swr_v1_logger_open(&*logger, c"/nonexistent/dir/log".as_ptr()),
                 "open fails"
             );
             assert_eq!(
@@ -820,7 +771,7 @@ pub(crate) mod tests {
                 )],
                 "open diagnostic"
             );
-            assert!(!swr_v1_logger_is_opened(logger), "not opened");
+            assert!(!swr_v1_logger_is_opened(&*logger), "not opened");
             assert_eq!(
                 (file(logger, false), file(logger, true)),
                 (String::new(), String::new()),
@@ -829,7 +780,7 @@ pub(crate) mod tests {
 
             let long = CString::new("%Y".repeat(100)).unwrap();
             assert!(
-                !swr_v1_logger_set_date_format(logger, long.as_ptr()),
+                !swr_v1_logger_set_date_format(&*logger, long.as_ptr()),
                 "too long"
             );
             assert_eq!(
@@ -845,10 +796,13 @@ pub(crate) mod tests {
             );
 
             assert!(
-                !swr_v1_logger_redirect(logger, true),
+                !swr_v1_logger_redirect(&*logger, true),
                 "nothing to redirect to"
             );
-            assert!(!swr_v1_logger_redirect(logger, false), "nothing to restore");
+            assert!(
+                !swr_v1_logger_redirect(&*logger, false),
+                "nothing to restore"
+            );
             assert_eq!(log::last_error(), INVALID_PARAMS, "last error");
             let warning = |message: &str| {
                 (
@@ -874,12 +828,12 @@ pub(crate) mod tests {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
         let (name, _) = path("rotate");
         unsafe {
-            swr_v1_logger_set(logger, LoggerSetting::Rotation, 2);
-            swr_v1_logger_set_level(logger, 99);
-            assert_eq!(swr_v1_logger_level(logger), 6, "clamped");
-            assert!(swr_v1_logger_open(logger, name.as_ptr()), "opened");
+            swr_v1_logger_set(&*logger, LoggerSetting::Rotation, 2);
+            swr_v1_logger_set_level(&*logger, 99);
+            assert_eq!(swr_v1_logger_level(&*logger), 6, "clamped");
+            assert!(swr_v1_logger_open(&*logger, name.as_ptr()), "opened");
             let mut date = [0u8; 16];
-            let length = swr_v1_logger_rotation_date(logger, &raw mut date);
+            let length = swr_v1_logger_rotation_date(&*logger, &mut date);
             assert_eq!(length, 8, "daily: %Y%m%d");
             let expected = format!(
                 "{}.{}",
@@ -887,16 +841,16 @@ pub(crate) mod tests {
                 std::str::from_utf8(&date[..length]).unwrap()
             );
             assert_eq!(file(logger, true), expected, "real file");
-            swr_v1_logger_reopen(logger);
+            swr_v1_logger_reopen(&*logger);
             assert_eq!(file(logger, true), expected, "reopened");
-            swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
-            assert_eq!(swr_v1_logger_level(logger), SW_LOG_INFO, "reset level");
+            swr_v1_logger_set(&*logger, LoggerSetting::Reset, 0);
+            assert_eq!(swr_v1_logger_level(&*logger), SW_LOG_INFO, "reset level");
             assert_eq!(
-                swr_v1_logger_rotation_date(logger, &raw mut date),
+                swr_v1_logger_rotation_date(&*logger, &mut date),
                 8,
                 "reset rotation is daily too"
             );
-            swr_v1_logger_close(logger);
+            swr_v1_logger_close(&*logger);
             swr_v1_logger_free(logger);
             std::fs::remove_file(expected).ok();
         }
@@ -911,7 +865,7 @@ pub(crate) mod tests {
         unsafe impl Sync for Shared {}
         let logger = Shared(swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE));
         let (name, file_path) = path("threads");
-        unsafe { assert!(swr_v1_logger_open(logger.0, name.as_ptr()), "opened") };
+        unsafe { assert!(swr_v1_logger_open(&*logger.0, name.as_ptr()), "opened") };
         std::thread::scope(|scope| {
             for thread in 0..4 {
                 let logger = &logger;
@@ -919,14 +873,14 @@ pub(crate) mod tests {
                     for i in 0..1000 {
                         let message = CString::new(format!("t{thread}-{i}")).unwrap();
                         let length = message.as_bytes().len();
-                        unsafe { swr_v1_logger_put(logger.0, 4, message.as_ptr(), length) };
+                        unsafe { swr_v1_logger_put(&*logger.0, 4, message.as_ptr(), length) };
                     }
                 });
             }
             let logger = &logger;
             scope.spawn(move || {
                 for _ in 0..100 {
-                    unsafe { swr_v1_logger_reopen(logger.0) };
+                    unsafe { swr_v1_logger_reopen(&*logger.0) };
                 }
             });
         });

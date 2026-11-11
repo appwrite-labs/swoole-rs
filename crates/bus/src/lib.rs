@@ -26,7 +26,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::{DataHead as BusHead, log};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Socket, SocketRecord};
 
 pub use Bus as MessageBus;
 
@@ -152,9 +152,12 @@ impl Drop for Bus {
         // timers, buffers or loop: `Socket::free` is the record's deallocation.
         #[cfg(not(all(feature = "upstream-symbols", not(test))))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
-        for &socket in self.pipe_sockets.iter().filter(|socket| !socket.is_null()) {
-            // SAFETY: a record `init_pipe_socket` made, used by nothing else now.
-            unsafe { (*socket).fd = -1 };
+        for &socket in &self.pipe_sockets {
+            // SAFETY: null or a record `init_pipe_socket` made, used by nothing else now.
+            let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+                continue;
+            };
+            record.edit(|record| record.fd = -1);
             // SAFETY: as above.
             unsafe { free_socket(socket) };
         }
@@ -174,7 +177,10 @@ use swoole_rs_tls::upstream::socket_writev_sync as writev_sync;
 unsafe fn writev_sync(socket: *mut SocketRecord, iov: *const libc::iovec, count: usize) -> isize {
     let count = c_int::try_from(count).unwrap_or(c_int::MAX);
     // SAFETY: as the caller promises.
-    let fd = unsafe { (*socket).fd };
+    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    let fd = socket.fd();
     // SAFETY: as the caller promises.
     unsafe { libc::writev(fd, iov, count) }
 }
@@ -736,9 +742,14 @@ impl Bus {
         /// # Safety
         /// `socket` is a live record.
         unsafe extern "C" fn reduce(socket: *mut c_void) -> bool {
+            let error = errno();
             // SAFETY: the write's live record.
-            let nobufs = unsafe { &mut (*socket.cast::<SocketRecord>()).kernel_nobufs };
-            swoole_rs_reactor::catch_pipe_error(errno(), nobufs) == REDUCE_SIZE
+            let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+                return false;
+            };
+            socket.edit(|record| {
+                swoole_rs_reactor::catch_pipe_error(error, &mut record.kernel_nobufs)
+            }) == REDUCE_SIZE
         }
         if let Some((next, context)) = self.next_id {
             // SAFETY: the counter `count_ids` set for this bus.
@@ -782,19 +793,14 @@ impl Bus {
 /// depend on this crate.
 ///
 /// # Safety
-/// `bus` is a live bus; `socket` is a live record; `head` is writable; `data`
-/// covers `head.len` bytes or is null.
+/// `socket` is a live record; `data` covers `head.len` bytes or is null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_bus_write(
-    bus: *const Bus,
+    bus: &Bus,
     socket: *mut SocketRecord,
-    head: *mut BusHead,
+    head: &mut BusHead,
     data: *const c_char,
 ) -> bool {
-    // SAFETY: the caller's live bus.
-    let bus = unsafe { &*bus };
-    // SAFETY: the caller's writable head.
-    let head = unsafe { &mut *head };
     // SAFETY: the caller's contract.
     unsafe { bus.send(socket, head, data.cast()) }
 }

@@ -1,7 +1,7 @@
 //! Reading zvals and filling arrays.
 use std::ffi::c_char;
 
-use crate::sys::{add_assoc_null_ex, add_assoc_stringl_ex, zend_value, zval};
+use crate::sys::{add_assoc_null_ex, add_assoc_stringl_ex, zval};
 
 /// A key for Zend's `add_assoc_*_ex`, which reads its first byte even when the length is 0
 /// (`ZEND_HANDLE_NUMERIC_STR`): an empty slice's dangling pointer becomes `""`.
@@ -12,16 +12,6 @@ pub fn key_ptr(key: &[u8]) -> *const c_char {
     } else {
         key.as_ptr().cast()
     }
-}
-
-/// `Z_STR_P`, `Z_LVAL_P`, ...: the value union, read by its type's field.
-/// # Safety
-/// `value` is a live zval.
-#[must_use]
-#[inline]
-pub unsafe fn value_of(value: *const zval) -> zend_value {
-    // SAFETY: per the caller.
-    unsafe { (*value).value }
 }
 
 /// `Z_STR_P`'s bytes when `value` is a string.

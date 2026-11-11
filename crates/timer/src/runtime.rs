@@ -63,8 +63,6 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
 
 /// Upstream `swoole::realtime_add(timespec *, int64_t)`: adds milliseconds to a
 /// realtime deadline, carrying whole seconds out of `tv_nsec`.
-/// # Safety
-/// `time` is a live, writable `timespec`.
 #[cfg_attr(
     target_os = "macos",
     unsafe(export_name = "_ZN6swoole12realtime_addEP8timespecx")
@@ -73,9 +71,7 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
     not(target_os = "macos"),
     unsafe(export_name = "_ZN6swoole12realtime_addEP8timespecl")
 )]
-pub unsafe extern "C" fn realtime_add(time: *mut libc::timespec, milliseconds: i64) {
-    // SAFETY: the caller passes a live, writable timespec.
-    let time = unsafe { &mut *time };
+pub extern "C" fn realtime_add(time: &mut libc::timespec, milliseconds: i64) {
     time.tv_sec += milliseconds / 1000;
     time.tv_nsec += milliseconds % 1000 * 1_000_000;
     if time.tv_nsec >= 1_000_000_000 {
@@ -116,6 +112,18 @@ pub fn swr_v1_timer_rearm_after_add(current: i64, delay: i64) -> i64 {
     }
 }
 
+/// A new timer's delay from the floored clock. A one-shot's counts from the next
+/// millisecond, so it never falls due before `msec` has passed (#2799); a repeat's
+/// is its interval.
+#[must_use]
+pub fn swr_v1_timer_add_delay(msec: i64, persistent: bool) -> i64 {
+    if persistent {
+        msec
+    } else {
+        msec.saturating_add(1)
+    }
+}
+
 /// `Timer::delay`'s new deadline, `delay` after `now` (or after `previous` without a
 /// clock), unless it overflows or falls before zero.
 #[must_use]
@@ -127,6 +135,24 @@ pub fn swr_v1_timer_delay_deadline(now: i64, previous: i64, delay: i64) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-shot added late in a millisecond still waits its whole `msec` (#2799):
+    /// it fires once the floored clock reaches its deadline, so its earliest real
+    /// time is `deadline` ms; a repeat keeps its interval.
+    #[test]
+    fn one_shot_never_falls_due_early() {
+        for added_us in [5_000, 5_001, 5_500, 5_900, 5_999] {
+            let now = added_us / 1000;
+            for msec in [1, 2, 499, 500] {
+                let deadline = now + swr_v1_timer_add_delay(msec, false);
+                assert!(
+                    deadline * 1000 >= added_us + msec * 1000,
+                    "{msec} ms added at {added_us} us falls due at {deadline} ms"
+                );
+                assert_eq!(swr_v1_timer_add_delay(msec, true), msec);
+            }
+        }
+    }
 
     /// Upstream's `time.get_ms_steady`, over `Timer::get_absolute_msec`'s clock.
     #[test]
@@ -194,7 +220,7 @@ mod tests {
             tv_sec: 1,
             tv_nsec: 900 * 1_000_000,
         };
-        unsafe { realtime_add(&raw mut ts, 1905) };
+        realtime_add(&mut ts, 1905);
         assert_eq!(ts.tv_sec, 3);
         assert_eq!(ts.tv_nsec, 805 * 1_000_000);
     }

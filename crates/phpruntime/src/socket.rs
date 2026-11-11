@@ -400,8 +400,10 @@ impl Socket {
 
     /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        // SAFETY: the live network::Socket, which holds an SSL.
-        unsafe { socket_ssl_close(self.co().socket()) };
+        // SAFETY: the live network::Socket.
+        if let Some(socket) = unsafe { swoole_rs_reactor::Socket::from_ptr(self.co().socket()) } {
+            socket_ssl_close(socket);
+        }
     }
 
     /// The peer certificate's PEM, empty without one.
@@ -754,7 +756,7 @@ pub mod co {
         // SAFETY: per the caller, over the live vector.
         let result = unsafe { member(socket, vector) };
         // SAFETY: the live owner.
-        let state = unsafe { swr_v1_reactor_iov_view(owner) };
+        let state = swr_v1_reactor_iov_view(unsafe { &*owner });
         // SAFETY: the owner `prepare` made, released once.
         unsafe { swr_v1_reactor_iov_destroy(owner) };
         (result, state.index, state.offset_bytes)

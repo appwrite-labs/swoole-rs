@@ -18,7 +18,7 @@ use openssl_sys::{
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, swr_v1_core_string_set};
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_type};
+use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
@@ -154,11 +154,15 @@ pub(crate) fn dtls_free(config: &mut PortConfig, fd: c_int) {
 /// `ListenPort::create_dtls_session(sock)`: a session over the port's context,
 /// stored under the socket's fd; null when it fails to initialize.
 pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession {
+    // SAFETY: the live socket `PortMethods` takes.
+    let Some(sock) = (unsafe { Socket::from_ptr(sock) }) else {
+        return ptr::null_mut();
+    };
     // SAFETY: a live DTLS port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
     let context = config.ssl_context;
     let state = state(config);
-    let session = swr_v1_tls_dtls_new(sock);
+    let session = swr_v1_tls_dtls_new(sock.as_ptr());
     // SAFETY: the fresh session over the caller's live socket, and the port's live context.
     if !unsafe { swr_v1_tls_dtls_init(session, context) } {
         // SAFETY: the session made above, which nothing else holds.
@@ -166,10 +170,8 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
         return ptr::null_mut();
     }
     // SAFETY: the port's live context.
-    let shared = unsafe { swr_v1_tls_owner_clone(context) };
-    // SAFETY: the live socket `PortMethods` takes.
-    let fd = unsafe { (*sock).fd };
-    state.dtls.insert(fd, (session, shared));
+    let shared = swr_v1_tls_owner_clone(unsafe { &*context });
+    state.dtls.insert(sock.fd(), (session, shared));
     session
 }
 
@@ -179,7 +181,7 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
 /// `context` is a live owner, and nothing else uses its fields while the borrow lasts.
 unsafe fn fields<'a>(context: *const OwnedTlsContext) -> &'a mut OwnedTlsFields {
     // SAFETY: as the caller guarantees.
-    let fields = unsafe { swr_v1_tls_owner_view(context) }.fields;
+    let fields = swr_v1_tls_owner_view(unsafe { &*context }).fields;
     // SAFETY: the owner's fields live as long as the reference.
     unsafe { &mut *fields }
 }
@@ -243,6 +245,12 @@ impl Run {
     fn config<'a>(&self) -> &'a mut PortConfig {
         // SAFETY: a run's port is live (the SNI callback's once `OP_SSL_PORT` found it).
         unsafe { port_config::of(self.port) }
+    }
+
+    /// The run's socket: the one `ssl_create` takes, or the one `OP_SOCKET_NEW` made.
+    fn socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: a run's socket is null or live for the run, and only this run touches it.
+        unsafe { Socket::from_ptr(self.sock) }
     }
 
     /// The port's own context.
@@ -346,8 +354,11 @@ fn create_op(run: &mut Run, op: u32) -> u64 {
             0
         }
         OP_SET_EX_DATA => {
-            // SAFETY: the run's live socket, whose SSL `OP_SOCKET_SSL` made.
-            let ssl = unsafe { (*run.sock).ssl }.cast::<SSL>();
+            // The run's socket, whose SSL `OP_SOCKET_SSL` made.
+            let ssl = run
+                .socket()
+                .map_or(ptr::null_mut(), |s| s.read(|s| s.ssl))
+                .cast::<SSL>();
             // SAFETY: a live SSL; the port outlives its connections.
             int(unsafe { SSL_set_ex_data(ssl, swr_v1_tls_port_index(), run.port) })
         }
@@ -449,8 +460,7 @@ fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
             0
         }
         OP_GET_TYPE => int(get_option(run.fd, libc::SO_TYPE, &mut run.so_type)),
-        // SAFETY: the run's live socket.
-        OP_GET_NAME => int(unsafe { (*run.sock).get_name() }),
+        OP_GET_NAME => int(run.socket().map_or(-1, |s| s.edit(SocketRecord::get_name))),
         OP_GET_ACCEPTCONN => int(get_option(run.fd, libc::SO_ACCEPTCONN, &mut run.acceptconn)),
         OP_ACCEPTCONN => int(run.acceptconn),
         OP_WARN_IMPORT => {
@@ -460,9 +470,10 @@ fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
         OP_SOCKET_FAIL => {
             // The fd stays the caller's. Upstream's port keeps pointing at the
             // freed record; this one forgets it, which deleting the port frees.
-            // SAFETY: the record `OP_SOCKET_NEW` made.
-            unsafe { (*run.sock).fd = -1 };
-            // SAFETY: as above, freed once.
+            if let Some(socket) = run.socket() {
+                socket.edit(|s| s.fd = -1);
+            }
+            // SAFETY: the record `OP_SOCKET_NEW` made, freed once.
             unsafe { SocketRecord::free(run.sock) };
             run.config().socket = ptr::null_mut();
             0
@@ -523,29 +534,32 @@ fn warn_import(fd: c_int, which: u64) {
 /// marks the socket a server socket.
 fn adopt(run: &Run) {
     let config = run.config();
-    // SAFETY: the record `OP_SOCKET_NEW` made, which `getsockname` filled.
-    let socket = unsafe { &mut *run.sock };
-    // SAFETY: every member of the address union starts with the family.
-    let family = c_int::from(unsafe { socket.info.addr.ss.sa_family });
-    let kind = swr_v1_socket_type(family, run.so_type);
-    socket.socket_type = kind;
-    socket.info.kind = kind;
-    config.r#type = kind;
-    // SAFETY: the socket's address, typed above.
-    let host = unsafe { swr_v1_clients_address_host(&raw const socket.info) };
+    // The record `OP_SOCKET_NEW` made, which `getsockname` filled.
+    let Some(socket) = run.socket() else {
+        return;
+    };
+    let info = socket.edit(|socket| {
+        // SAFETY: every member of the address union starts with the family.
+        let family = c_int::from(unsafe { socket.info.addr.ss.sa_family });
+        let kind = swr_v1_socket_type(family, run.so_type);
+        socket.socket_type = kind;
+        socket.info.kind = kind;
+        socket.fd_type = if matches!(kind, 2 | 4 | 6) {
+            FD_DGRAM_SERVER
+        } else {
+            FD_STREAM_SERVER
+        };
+        socket.removed = 1;
+        socket.info
+    });
+    config.r#type = info.kind;
+    let host = swr_v1_clients_address_host(&info);
     // SAFETY: a NUL-terminated string.
     let length = unsafe { libc::strlen(host) };
     // SAFETY: the port's host slot and `length` readable bytes.
     if unsafe { swr_v1_core_string_set(&raw const *config.host, host, length) } != 0 {
         std::process::abort();
     }
-    // SAFETY: as above.
-    config.port = unsafe { swr_v1_clients_address_port(&raw const socket.info) };
+    config.port = swr_v1_clients_address_port(&info);
     config.listening = true;
-    socket.fd_type = if matches!(kind, 2 | 4 | 6) {
-        FD_DGRAM_SERVER
-    } else {
-        FD_STREAM_SERVER
-    };
-    socket.removed = 1;
 }

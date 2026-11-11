@@ -22,15 +22,77 @@ fn warnings() -> Vec<String> {
     WARNINGS.with(|w| w.borrow_mut().drain(..).collect())
 }
 
+/// The key a row holds.
+/// # Safety
+/// `row` is a row of a created table, or the iterator's copy of one.
+unsafe fn row_key<'a>(row: *const Row) -> &'a [u8] {
+    Live(row.cast_mut()).key()
+}
+
+/// `TableRow::unlock()`.
+/// # Safety
+/// `row` is a row of a created table this process locked.
+unsafe fn unlock(row: *mut Row) {
+    Live(row).unlock();
+}
+
+/// A row's column data, unchecked.
+fn data(row: *const Row) -> Data {
+    Data {
+        data: Live(row.cast_mut()).data(),
+        size: usize::MAX,
+    }
+}
+
+/// A number column's 8 bytes.
+/// # Safety
+/// `row` is a locked row (or the iterator's copy) of the column's table.
+unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
+    data(row).number(column)
+}
+
+/// A string column's bytes, valid while the row is locked.
+/// # Safety
+/// As `get_number`.
+unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
+    data(row).bytes(column)
+}
+
+/// The raw row access the tests drive, beside the guards.
+trait Raw {
+    /// `Table::clear_row`.
+    unsafe fn clear_row(&self, row: *mut Row);
+    /// `TableRow::set_value` with this table's warning log.
+    unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize);
+    /// `Table::current`: the iterator's copy of its row (null before `create`).
+    fn current(&self) -> *mut Row;
+}
+
+impl Raw for Table {
+    unsafe fn clear_row(&self, row: *mut Row) {
+        for column in self.columns() {
+            unsafe { clear_value(row, column) };
+        }
+    }
+
+    unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize) {
+        unsafe { set_value(row, column, value, length, self.warning) };
+    }
+
+    fn current(&self) -> *mut Row {
+        unsafe { self.cursor.as_mut() }
+            .map_or(ptr::null_mut(), |cursor| cursor.current.as_mut_ptr().cast())
+    }
+}
+
 /// `swoole_hash_php` (DJB "times 33"), as upstream's default.
-unsafe extern "C" fn djb(key: *const c_char, length: usize) -> u64 {
-    let bytes = unsafe { slice::from_raw_parts(key.cast::<u8>(), length) };
-    bytes.iter().fold(5381u64, |hash, &byte| {
+fn djb(key: &[u8], compared: usize) -> u64 {
+    key[..compared].iter().fold(5381u64, |hash, &byte| {
         hash.wrapping_mul(33).wrapping_add(u64::from(byte))
     })
 }
 
-unsafe extern "C" fn collide(_: *const c_char, _: usize) -> u64 {
+fn collide(_: &[u8], _: usize) -> u64 {
     0
 }
 
@@ -214,6 +276,24 @@ fn long_keys_are_cut_to_63_bytes() {
     assert_eq!(unsafe { row_key(row) }, &long[..63]);
     unsafe { unlock(lock) };
     assert!(t.exists(&long[..80]) && t.del(&long));
+}
+
+/// `Swoole\Table`'s hook hashes the whole PHP string, not the 63 bytes a row
+/// compares: keys sharing those bytes find each other only in one bucket.
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
+fn the_hash_sees_the_whole_key() {
+    fn length(key: &[u8], compared: usize) -> u64 {
+        assert_eq!(compared, key.len().min(63));
+        key.len() as u64
+    }
+    let mut table = three_columns(64, 0.2);
+    table.get_mut().set_hash(length);
+    let t = table.get();
+    let long = [b'q'; 100];
+    put(t, &long, 7);
+    assert!(t.exists(&long) && t.exists(&[b'q'; 164]));
+    assert!(!t.exists(&long[..80]) && !t.del(&long[..80]));
 }
 
 #[test]
@@ -528,7 +608,7 @@ impl Drop for Upstream {
     }
 }
 
-unsafe extern "C" fn one(_: *const c_char, _: usize) -> u64 {
+fn one(_: &[u8], _: usize) -> u64 {
     1
 }
 
@@ -793,4 +873,45 @@ fn table_lock_race() {
     assert!(!ptr.get(b"java", &mut lock).is_null());
     unsafe { unlock(lock) };
     assert_eq!(wait(child), 0);
+}
+
+/// The guards: a new row's flag, typed reads and writes, the unlock on drop,
+/// the iterator's copy, and another table's column reading as empty rather
+/// than past the row.
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
+fn guards_read_and_write_locked_rows() {
+    let table = three_columns(64, 0.2);
+    let t = table.get();
+    let column = |name: &[u8]| t.column(name).unwrap();
+    let (id, name, score) = (column(b"id"), column(b"name"), column(b"score"));
+    let row = t.lock_set(b"k").unwrap();
+    assert!(row.found() && row.is_new());
+    row.set_number(id, 7);
+    row.set_bytes(name, b"seven");
+    row.set_number(score, 1.5f64.to_bits());
+    row.set_bytes(id, b"ignored");
+    drop(row);
+    let row = t.lock_set(b"k").unwrap();
+    assert!(!row.is_new());
+    assert_eq!((row.number(id), row.bytes(name)), (7, &b"seven"[..]));
+    assert_eq!(f64::from_bits(row.number(score)), 1.5);
+    row.clear_row();
+    assert_eq!((row.number(id), row.bytes(name)), (0, &b""[..]));
+    drop(row);
+    assert!(!t.lock_get(b"none").unwrap().found());
+    let mut wide = Owned::new(64, 0.2);
+    assert!(wide.get_mut().add_column(b"pad", TYPE_STRING, 512));
+    assert!(wide.get_mut().add_column(b"far", TYPE_STRING, 64));
+    let far = wide.get().column(b"far").unwrap();
+    assert_eq!(t.lock_get(b"k").unwrap().bytes(far), b"");
+    // Every guard above unlocked its bucket, or this would spin until forced.
+    assert!(t.lock_set(b"k").unwrap().found());
+    assert_eq!(warnings(), Vec::<String>::new());
+    t.rewind();
+    t.forward();
+    let current = t.current_row().unwrap();
+    assert_eq!((current.key(), current.number(id)), (&b"k"[..], 0));
+    t.forward();
+    assert_eq!(t.current_row().unwrap().key(), b"");
 }

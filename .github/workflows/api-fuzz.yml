@@ -1,0 +1,102 @@
+name: API fuzz nightly
+# tests/differential/fuzz.py over 10,000 programs, upstream as control, with a new seed each
+# night (the date); the merge tier's api-fuzz phase runs seed 0's first 500 on every merge.
+# A divergence opens or updates one kind:bug issue naming its seed and program. A program
+# a rerun alone does not reproduce is flaky: reported, never filed as a bug.
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed (default: today's date, YYYYMMDD)"
+        required: false
+  # A change to this workflow runs it on its PR, which files nothing.
+  pull_request:
+    paths: [.github/workflows/api-fuzz.yml]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  fuzz:
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      # The merge tier's caches, restored only: compiled dependencies and the pinned upstream.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: false
+      - run: rm -rf target/upstream target/upstream-builds target/thirdparty
+      - id: upstream
+        uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - if: steps.upstream.outputs.cache-hit != 'true'
+        run: python3 tools/build_upstream.py
+      - run: cargo fetch --locked
+      - run: python3 tools/build_ext.py
+      - id: seed
+        env:
+          SEED: ${{ inputs.seed }}
+        run: |
+          seed=${SEED:-$(date -u +%Y%m%d)}
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "API fuzz seed: $seed (program K reproduces with \`fuzz.py --seed $seed --print K\`)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - id: fuzz
+        run: >
+          python3 tests/differential/fuzz.py
+          --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
+          --seed ${{ steps.seed.outputs.seed }} --programs 10000 --jobs "$(nproc)"
+          --cases tests/differential/cases --keep target/fuzz/divergent --output target/fuzz/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-fuzz
+          path: target/fuzz/
+          if-no-files-found: ignore
+      # fuzz.py exits 1 on a divergence or a failed case. Divergences are bugs; flaky
+      # findings (a rerun alone did not reproduce them) are listed but never filed alone.
+      - if: always() && steps.fuzz.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          report=target/fuzz/report.json
+          body=$(jq -r --arg run "$RUN" '
+            .seed as $seed |
+            def line: if .case then "- case `tests/differential/cases/\(.case)`"
+              else "- program \(.program): `python3 tests/differential/fuzz.py --seed \($seed) --print \(.program)`" end;
+            "\($run): seed \($seed), \(.programs) programs, \(.divergent) divergent, \(.flaky) flaky.",
+            "",
+            "Divergent (minimised programs are in the `api-fuzz` artifact):",
+            (.findings[] | select(.verdict == "divergent") | line),
+            "",
+            "Flaky, not reproduced by a rerun alone (not filed as bugs):",
+            (.findings[] | select(.verdict == "flaky") | line),
+            "",
+            "Reproduce program K: `python3 tests/differential/fuzz.py --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so --seed \($seed) --first K --programs 1`. Fix each divergence and add its minimised program to `tests/differential/cases/`."
+          ' "$report")
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          [ "$EVENT" != pull_request ] || exit 0
+          if [ "$(jq '[.findings[] | select(.verdict == "divergent")] | length' "$report")" = 0 ]; then
+            echo "Only flaky findings: no bug filed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          title='API fuzz nightly: cargo diverges from upstream'
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --label kind:bug,p1,status:ready --assignee loks0n --body "$body"
+          fi

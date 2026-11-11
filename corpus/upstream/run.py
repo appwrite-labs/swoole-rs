@@ -177,16 +177,39 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "second worker's \"worker start\" lands after \"begin\" (or after \"done\") whenever that "
         'thread starts later than the push and pop: the same diffs on both engines (ZTS, aarch64 '
         'dev image: upstream 13/29, hybrid 14/28; hybrid 3 of 13 merge-tier runs, #2137)',
+        'tests/swoole_thread/server/reset_concurrency.phpt':
+        "each of the four worker threads runs `echo 'WORKER STOP', PHP_EOL`, two writes to the "
+        'shared stdout, so the lines interleave ("WORKER STOPWORKER STOP") on both engines (zts '
+        'merge tier first runs: upstream 143/187, cargo 110/186; dev image upstream 9/15, cargo '
+        '12/15, #2739)',
+        'tests/swoole_thread/thread_status.phpt':
+        "it asserts a new thread isAlive() 10 µs after `new Thread`; whether the OS has run the "
+        'thread far enough to mark itself alive by then is the scheduler\'s call, on both engines '
+        '(zts merge tier first runs: upstream 6/187, cargo 6/186; dev image upstream 2/15, cargo '
+        '2/15, #2739)',
+        'tests/swoole_thread/yield.phpt':
+        "it asserts a detached thread isAlive() 10 µs after Thread::yield(), which doesn't make "
+        'the scheduler run it first (zts merge tier first runs: upstream 2/187, cargo 7/186; dev '
+        'image upstream 1/15, cargo 0/15, #2739)',
         'tests/swoole_runtime/file_lock/async_file.phpt':
         "both coroutines open the file on the AIO pool, and whichever open completes first locks "
         "first; when the second's LOCK_SH wins, it holds it for 2 s and the first's < 1 s assert "
         'fails on every engine (upstream 7/26 iouring merge-tier runs and 6/40 in Docker, hybrid '
-        '7/40, #862; macOS upstream 5/18, cargo 2/18, #2728)'}
+        '7/40, #862; macOS upstream 5/18, cargo 2/18, #2728)',
+        'tests/swoole_runtime/file_hook/async_file.phpt':
+        "its 27 AIO reads finish in about 0.8 ms, and the other coroutine's 1 ms usleep fires only "
+        "when they cross a millisecond of the timer's whole-millisecond clock, so the count >= 1 "
+        'assert fails on both engines (Docker, 260 runs: upstream 125, cargo 143, #2772)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
                        'it, printing a third "co 2 running" on both engines with the same diff '
                        '(merge tier: upstream 4 of 7 runs, hybrid 11 of 13, #1864)',
+                       'tests/swoole_coroutine/eval.phpt':
+                       "two coroutines sleep 0.5 s with equal deadlines; while activation's 1 ms "
+                       'keep-alive timer is still queued, its removal moves the second sleep to '
+                       "the heap's root, so it wakes first on both engines with the same diff "
+                       '(merge tier: upstream failed 4 of 9 re-runs, cargo 10 of 10, #2791)',
                        'tests/swoole_coroutine/stats.phpt':
                        "two coroutines both sleep 0.5 s and assert who wakes first, which varies on "
                        'both engines with the same diff (merge tier: upstream failed 21 of 27 runs, '

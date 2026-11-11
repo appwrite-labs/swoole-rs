@@ -26,9 +26,9 @@ use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
     sys::{
-        E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, php_url_encode,
-        swr_zend_http_build_query, swr_zend_property_merge, swr_zend_sensitive_parameter,
-        zend_class_entry, zend_object, zend_object_handlers, zval,
+        E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_http_build_query,
+        swr_zend_property_merge, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
+        zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -735,11 +735,7 @@ impl Client {
                 }
                 out.extend_from_slice(key);
                 out.push(b'=');
-                // SAFETY: the value's bytes; Zend returns a new string.
-                let encoded =
-                    unsafe { php_url_encode(text.bytes().as_ptr().cast(), text.bytes().len()) };
-                // SAFETY: the reference php_url_encode returned.
-                out.extend_from_slice(unsafe { ZString::from_raw(encoded) }.bytes());
+                out.extend_from_slice(ZString::url_encode(text.bytes()).bytes());
                 if index < count {
                     out.extend_from_slice(b"; ");
                 }
@@ -970,7 +966,7 @@ impl Client {
             }
             if socket
                 .net()
-                .is_some_and(|record| record.output.close_wait != 0)
+                .is_some_and(|net| net.read(|record| record.output.close_wait != 0))
             {
                 break;
             }
@@ -1206,8 +1202,8 @@ impl Client {
             return false;
         };
         if self.in_callback {
-            if let Some(record) = socket.net() {
-                record.output.close_wait = 1;
+            if let Some(net) = socket.net() {
+                net.edit(|record| record.output.close_wait = 1);
             }
             return true;
         }
@@ -2120,7 +2116,7 @@ fn getsockname(call: &Call) {
         return call.set_bool(false);
     }
     let (address, port) = socket.address();
-    set_endpoint(call, address, port);
+    set_endpoint(call, &address, port);
 }
 
 fn set_endpoint(call: &Call, address: &CStr, port: c_int) {

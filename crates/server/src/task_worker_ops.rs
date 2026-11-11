@@ -27,7 +27,7 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_START_CALLBACK, OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK, OP_WRITE_RESULT_FILE,
     OP_ZERO_RESULT,
 };
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Socket, SocketRecord};
 
 use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
 use crate::commands::CommandFn;
@@ -61,6 +61,11 @@ impl Context {
     fn server(&self) -> view::Server<'_> {
         // SAFETY: the method that built the context lent its live server for the call.
         unsafe { view::Server::from_raw(self.serv) }
+    }
+    /// The pipe or stream socket the op runs over, if any.
+    fn socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: null, or the live socket the method that built the context lent.
+        unsafe { Socket::from_ptr(self.socket) }
     }
 }
 
@@ -225,8 +230,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             };
             ctx.worker().set_status(status);
         }
-        // SAFETY: the context's live worker.
-        OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
         // SAFETY: the context's live server and worker.
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
         OP_ADD_REQUEST_COUNT => ctx.worker().add_request_count(),
@@ -251,8 +255,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
         OP_WORKER_INIT => {
-            // SAFETY: the context's live worker.
-            unsafe { swr_v1_worker_init(worker) };
+            swr_v1_worker_init(ctx.worker().into());
             let pool = ctx.pool();
             worker_set_max_request(worker, pool.max_request, pool.max_request_grace);
         }
@@ -301,14 +304,12 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             signed(unsafe { slot.receive(serv, ctx.task.cast_mut().cast()) })
         }
         OP_READ_TASK => {
-            // SAFETY: the live pipe socket the task arrives on.
-            let fd = unsafe { (*ctx.socket).fd };
+            let fd = ctx.socket()?.fd();
             // SAFETY: a whole `EventData` to read into.
             signed(unsafe { libc::read(fd, ctx.buf.cast(), EVENT_DATA_SIZE) } as i64)
         }
         LOG_READ_TASK => {
-            // SAFETY: as above.
-            let fd = unsafe { (*ctx.socket).fd };
+            let fd = ctx.socket().map_or(-1, Socket::fd);
             log::sys_warning(
                 c"TaskWorker_onPipeReceive",
                 format_args!("read({fd}, {EVENT_DATA_SIZE}) failed"),
@@ -373,7 +374,7 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // Only a stream pool has IPC state: an event worker's pool has none.
             ctx.socket = if pool.use_socket != 0 {
                 // SAFETY: the stream pool's live IPC state.
-                unsafe { swoole_rs_process::pool::pool_ipc_connection(pool.ipc) }.cast()
+                swoole_rs_process::pool::pool_ipc_connection(unsafe { &*pool.ipc }).cast()
             } else {
                 core::ptr::null_mut()
             };
@@ -476,12 +477,11 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         OP_NOTIFY_WOULD_BLOCK => {
             let error = errno();
             let socket = crate::objects::socket(master_socket().cast())?;
-            u64::from(socket.catch_error(error) == SW_WAIT)
+            u64::from(socket.edit(|s| s.catch_error(error)) == SW_WAIT)
         }
         OP_WAIT_NOTIFY_WRITABLE => {
-            let wait = swoole_rs_reactor::socket_upstream::socket_wait_event;
-            // SAFETY: the notify pipe's live master socket.
-            signed(wait(unsafe { &*master_socket() }, -1, SW_EVENT_WRITE))
+            let socket = crate::objects::socket(master_socket().cast())?;
+            signed(socket.wait_event(-1, SW_EVENT_WRITE))
         }
         _ => return None,
     })

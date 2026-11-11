@@ -164,9 +164,10 @@ fn record<'a>(cli: Cli) -> &'a mut ClientRecord {
 fn buffers(cli: Cli, options: &Options) {
     if let Some(size) = options.size("socket_buffer_size") {
         let size = clamp(size, 1, i32::MAX.into()) as u32;
-        let socket = cli.socket_mut();
-        swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd, true, true, size);
-        socket.output.buffer_size = size;
+        if let Some(socket) = cli.net() {
+            swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
+            socket.edit(|record| record.output.buffer_size = size);
+        }
     }
     for (key, high) in [
         ("buffer_high_watermark", true),
@@ -187,8 +188,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
     if !mqtt {
         record.protocol.get_package_length = default_length_func as *mut c_void;
     } else if on {
-        // SAFETY: the client's own protocol.
-        unsafe { swoole_rs_protocols_ffi::set_protocol(&raw mut record.protocol) };
+        swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
     }
 }
 
@@ -335,18 +335,14 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
     {
         return Some(false);
     }
-    if options.truthy("open_tcp_nodelay").unwrap_or(true) {
-        let socket = cli.socket_mut();
-        let tcp = matches!(
-            i64::from(socket.socket_type),
-            net::SOCK_TCP | net::SOCK_TCP6
-        );
-        if tcp && !socket.set_tcp_nodelay(1) {
+    if options.truthy("open_tcp_nodelay").unwrap_or(true)
+        && let Some(socket) = cli.net()
+    {
+        let (kind, fd) = socket.read(|record| (i64::from(record.socket_type), record.fd));
+        let tcp = matches!(kind, net::SOCK_TCP | net::SOCK_TCP6);
+        if tcp && !socket.edit(|record| record.set_tcp_nodelay(1)) {
             let error = net::errno();
-            warn_sys(
-                &format!("setsockopt({}, TCP_NODELAY) failed", socket.fd),
-                error,
-            );
+            warn_sys(&format!("setsockopt({fd}, TCP_NODELAY) failed"), error);
         }
     }
     if !proxies(cli, &options) {
@@ -423,7 +419,7 @@ fn proxy(
 /// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     // SAFETY: a live client.
-    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(cli.0) }
+    let owner = swoole_rs_clients::client::swr_v1_clients_ssl_context(unsafe { &*cli.0 })
         .cast::<tls::OwnedTlsContext>();
     if owner.is_null() {
         return;

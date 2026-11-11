@@ -21,7 +21,7 @@ use crate::records::VERIFIED_TLS;
 use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK, ServerState};
 use std::ffi::c_void;
 use swoole_rs_corebase::microtime;
-use swoole_rs_reactor::{SocketRecord, socket_record_send, steady_ms};
+use swoole_rs_reactor::{Socket, socket_record_send, steady_ms};
 
 /// `ServerEventType`.
 const SEND_DATA: u64 = 2;
@@ -64,24 +64,22 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 /// the connection's `last_send_time`.
 ///
 /// # Safety
-/// `state` is null or live; `send` lends `info.len` readable bytes at `data`.
-pub(crate) unsafe fn send_now(state: *const ServerState, send: &SendData) -> Option<i64> {
-    // SAFETY: as the caller guarantees.
-    let state = unsafe { state.as_ref() }?;
+/// `send` lends `info.len` readable bytes at `data`.
+pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> Option<i64> {
+    let state = state?;
     let conn = state.connection(send.info.fd, VERIFIED_TLS)?;
-    let socket = conn.socket.cast::<SocketRecord>();
     // SAFETY: a live connection's socket record.
-    let record = unsafe { socket.as_ref() }?;
+    let socket = unsafe { Socket::from_ptr(conn.socket.cast()) }?;
     if conn.overflow != 0
-        || record.direct_send == 0
-        || !record.ssl.is_null()
-        || !record.output.out_buffer.is_null()
+        || socket.read(|record| {
+            record.direct_send == 0 || !record.ssl.is_null() || !record.output.out_buffer.is_null()
+        })
     {
         return None;
     }
     let length = usize::try_from(send.info.len).ok()?;
     let sent = loop {
-        // SAFETY: the live socket record; `data` holds `length` bytes.
+        // SAFETY: `data` holds `length` bytes.
         let sent =
             unsafe { socket_record_send(socket, send.data.cast(), length, 0, no_tls, steady_ms) };
         if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
