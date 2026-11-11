@@ -397,7 +397,7 @@ UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expec
 # build and environment. `phpt` is the merge tier's six phpt.yml shards, whose upstream.so phpt-build
 # builds through .github/actions/upstream like every variant; each variant is one job running both engines.
 BASELINES = {
-    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)', 6,
+    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?(phpt \(\d+, upstream\)|upstream \d+)', 6,
              ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
               '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
     **{variant: (f'phpt-{variant}', 'results/upstream.json', rf'{variant} / phpt', 1,
