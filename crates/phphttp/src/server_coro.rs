@@ -787,8 +787,10 @@ unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
 /// id, or 0.
 unsafe extern "C" fn start_accept(data: *mut c_void, connected: &mut bool) -> i64 {
     let start = start_of(data);
-    // SAFETY: the live listener, in `start`'s coroutine.
-    let conn = unsafe { co::accept(start.socket, 0.0) };
+    // SAFETY: the live listener, in `start`'s coroutine. Its accept gives the
+    // connection its own copy of the listener's length callable, which the
+    // connection's object frees.
+    let conn = unsafe { swoole_rs_phpclients::Co::new(start.socket) }.accept(0.0);
     *connected = !conn.is_null();
     if conn.is_null() {
         return 0;
