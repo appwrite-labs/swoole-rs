@@ -748,7 +748,10 @@ impl Co {
         } else {
             length.wrapping_add(usize::try_from(offset).unwrap_or(0))
         };
-        uring!(self, |ops| ring::sendfile(ops, file.0, offset, end));
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::sendfile(&ops, file.0, offset, end);
+        }
         let mut timer = Timer::new(self, WRITE, self.timeout(timeout_kind(WRITE)));
         let mut offset = offset;
         let send = |offset: &mut libc::off_t, length| {

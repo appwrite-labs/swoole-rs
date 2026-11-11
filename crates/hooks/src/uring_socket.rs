@@ -503,15 +503,7 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps) -> Option<Co> {
 
 /// `UringSocket::sendfile`'s transfer once the file is open: as upstream, `end`
 /// bytes from `offset`, through the TLS session when there is one.
-///
-/// # Safety
-/// `ops` is a live socket's view in a coroutine; `file` is open.
-pub(crate) unsafe fn sendfile(
-    ops: &UringSocketOps,
-    file: c_int,
-    offset: libc::off_t,
-    end: usize,
-) -> bool {
+pub(crate) fn sendfile(ops: &UringSocketOps, file: c_int, offset: libc::off_t, end: usize) -> bool {
     let mut offset = offset;
     let sent = ops.bound(EVENT_WRITE, || {
         if !ops.ssl() {
