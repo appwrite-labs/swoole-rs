@@ -14,7 +14,7 @@ case binary with the crates and system.py's static libswoole.a (the pin's thirdp
 | Upstream TEST | Rust case |
 | --- | --- |
 | `coroutine_base.<name>`, all 26 (`create` through `c_api`) | `coroutine_base.<name>` |
-| `coroutine_async_file.async_file` | `coroutine_async_file.async_file` |
+| `coroutine_async_file.async_file` | `coroutine_async_file.async_file`: `AsyncFile` left the build (nothing called it), so the case makes the hooked call each member made, with the TEST's inputs and expected values |
 
 The facade's getters are field reads over crates/coroutine's record, its operations
 the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and

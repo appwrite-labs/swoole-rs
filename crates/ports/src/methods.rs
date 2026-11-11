@@ -1,7 +1,6 @@
-//! The `ListenPort` methods of `src/server/port.cc` that were one lifecycle run
-//! or one readable callback. Lifecycle runs answer their
-//! effects in [`crate::lifecycle_native`], the readable callbacks in
-//! [`crate::read_native`].
+//! The `ListenPort` methods of `src/server/port.cc` other than its TLS, import
+//! and close ([`crate::lifecycle`]). The readable callbacks answer their effects
+//! in [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
@@ -41,74 +40,7 @@ use swoole_rs_server::view;
 use swoole_rs_http_ffi::request_free;
 use swoole_rs_server::ConnectionRecord;
 
-use crate::lifecycle::{
-    RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
-    RUN_SSL_INIT,
-};
-use crate::lifecycle_native::Run;
 use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
-
-/// One lifecycle `kind` over `port`.
-///
-/// # Safety
-/// `port` is a live `ListenPort`; `build` sets what `kind` reads.
-unsafe fn run(kind: u32, port: *mut c_void, build: impl FnOnce(&mut Run)) -> i32 {
-    let mut run = Run::new(port);
-    build(&mut run);
-    // SAFETY: as the caller guarantees.
-    unsafe { run.run(kind) }
-}
-
-/// `ListenPort::ssl_context_init()`.
-pub(crate) fn ssl_context_init(port: *mut c_void) -> bool {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    unsafe { run(RUN_CONTEXT_INIT, port, |_| {}) != 0 }
-}
-
-/// `ListenPort::ssl_create(sock)`.
-pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    unsafe { run(RUN_SSL_CREATE, port, |run| run.sock = sock.cast()) != 0 }
-}
-
-/// `ListenPort::ssl_context_create(context, allow_empty_cert)`.
-///
-/// # Safety
-/// `port` is a live `ListenPort` and `context` a live `SSLContext`.
-pub unsafe fn ssl_context_create(
-    port: *const c_void,
-    context: *const swoole_rs_tls::OwnedTlsContext,
-    allow_empty_cert: bool,
-) -> bool {
-    let build = |run: &mut Run| {
-        run.target = context;
-        run.allow_empty_cert = allow_empty_cert;
-    };
-    // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_CONTEXT_CREATE, port.cast_mut(), build) != 0 }
-}
-
-/// `ListenPort::import(fd)`.
-pub(crate) fn import(port: *mut c_void, fd: c_int) -> bool {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    unsafe { run(RUN_IMPORT, port, |run| run.fd = fd) != 0 }
-}
-
-/// `ListenPort::close()`.
-pub(crate) fn close(port: *mut c_void) {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    unsafe { run(RUN_CLOSE, port, |_| {}) };
-}
-
-/// `ListenPort::ssl_server_sni_callback(ssl, al, arg)`, OpenSSL's servername callback.
-/// It reads neither `al` nor `arg`.
-///
-/// # Safety
-/// `ssl` is the handshake's live `SSL`.
-pub unsafe fn ssl_server_sni_callback(ssl: *mut c_void) -> c_int {
-    // SAFETY: as the caller guarantees; the SNI run finds the port from `ssl`.
-    unsafe { run(RUN_SNI, ptr::null_mut(), |run| run.ssl = ssl.cast()) }
-}
 
 /// The listening socket's options `ListenPort::listen` sets where the platform
 /// defines them: (level, option, its name, the value) for each enabled one.
@@ -545,18 +477,6 @@ pub fn set_stream_protocol(config: &mut PortConfig) {
     protocol.package_length_offset = 0;
 }
 
-/// `ListenPort::ssl_init()`.
-///
-/// # Safety
-/// `port` is a live `ListenPort` with an SSL context.
-#[must_use]
-pub unsafe fn ssl_init(port: *const c_void) -> bool {
-    // SAFETY: as the caller guarantees.
-    let target = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
-    // SAFETY: as the caller guarantees; ssl_init works on the port's own context.
-    unsafe { run(RUN_SSL_INIT, port.cast_mut(), |run| run.target = target) != 0 }
-}
-
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 pub(crate) fn destroy_http_request(conn: *mut ConnectionRecord) {
     // SAFETY: a live connection, which `PortMethods` takes.
@@ -600,6 +520,7 @@ readable_callbacks! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::{close, ssl_context_create, ssl_context_init, ssl_init};
 
     #[test]
     fn context_init_sets_upstreams_defaults_and_close_releases_it() {
@@ -629,7 +550,7 @@ mod tests {
         config.r#type = 2;
         assert!(ssl_context_init(at), "a datagram port's context");
         assert!(config.is_dtls(), "DTLS");
-        crate::lifecycle_native::tls_free(unsafe { &mut **fresh.0 });
+        crate::lifecycle::tls_free(unsafe { &mut **fresh.0 });
         assert!(
             config.ssl_context.is_null(),
             "the destructor releases what close left"
@@ -645,7 +566,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bound = listener.local_addr().unwrap().port();
         let fd = std::os::fd::IntoRawFd::into_raw_fd(listener);
-        assert!(import(at, fd), "listening");
+        assert!(crate::lifecycle::import(at, fd), "listening");
         let config = unsafe { port_config::of(at) };
         let socket = record(config);
         assert_eq!(
@@ -663,7 +584,7 @@ mod tests {
         close(at);
         assert!(config.socket.is_null(), "freed");
         let stream = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(!import(at, stream), "not listening");
+        assert!(!crate::lifecycle::import(at, stream), "not listening");
         assert!(
             config.socket.is_null(),
             "the refused record freed, not kept"
@@ -1195,11 +1116,11 @@ mod tests {
     fn server_port_import() {
         log::swr_v1_core_set_log_host(crate::read::tests::record);
         let mut port = Fresh::new();
-        assert!(!import(port.at(), libc::STDIN_FILENO));
+        assert!(!crate::lifecycle::import(port.at(), libc::STDIN_FILENO));
         assert_eq!(log::last_error(), libc::ENOTSOCK);
 
         let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(!import(port.at(), sock));
+        assert!(!crate::lifecycle::import(port.at(), sock));
         assert_eq!(log::last_error(), libc::EINVAL);
         unsafe { libc::close(sock) };
     }
