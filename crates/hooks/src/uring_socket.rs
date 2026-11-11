@@ -218,13 +218,13 @@ impl UringSocketOps {
     }
 
     /// `ssl_readv`/`ssl_writev`: TLS transfers over each iovec while they move data.
-    fn tls_vector(&self, vector: &IoVector, write: bool) -> isize {
+    fn tls_vector(&self, vector: &IoVector) -> isize {
         let mut total = 0isize;
         loop {
             let (iov, _) = vector.current();
             // SAFETY: the vector's current iovec.
             let iov = unsafe { *iov };
-            let result = if write {
+            let result = if vector.write() {
                 // SAFETY: the iovec's buffer.
                 self.tls.send(unsafe { bytes(iov.iov_base, iov.iov_len) })
             } else {
@@ -241,7 +241,8 @@ impl UringSocketOps {
     }
 
     /// `readv`/`writev`.
-    fn vector(&self, vector: &IoVector, write: bool) -> isize {
+    fn vector(&self, vector: &IoVector) -> isize {
+        let write = vector.write();
         let event = if write { EVENT_WRITE } else { EVENT_READ };
         if !self.available(event) {
             return -1;
@@ -250,7 +251,7 @@ impl UringSocketOps {
         let result = self.bound(event, || {
             loop {
                 let result = if self.ssl() {
-                    self.tls_vector(vector, write)
+                    self.tls_vector(vector)
                 } else {
                     let (iov, count) = vector.current();
                     if write {
@@ -338,15 +339,14 @@ fn transfer_result(result: isize, total: usize) -> isize {
 pub(crate) fn swr_v1_hook_uring_vector(
     ops: &UringSocketOps,
     vector: &IoVector,
-    write: bool,
     all: bool,
 ) -> isize {
     if !all {
-        return ops.vector(vector, write);
+        return ops.vector(vector);
     }
     let mut total = 0usize;
     let result = loop {
-        let result = ops.vector(vector, write);
+        let result = ops.vector(vector);
         if result <= 0 {
             break result;
         }

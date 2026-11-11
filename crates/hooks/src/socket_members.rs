@@ -599,14 +599,15 @@ impl Co {
         self.transfer_out(0, buf, call)
     }
 
-    /// `Socket::readv(io_vector)` or `writev`, or with `all` `readv_all` or
-    /// `writev_all`.
+    /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
+    /// for, or with `all` `readv_all` or `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &IoVector, write: bool, all: bool) -> isize {
+    pub fn vector(self, vector: &IoVector, all: bool) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::swr_v1_hook_uring_vector(&ops, vector, write, all);
+            return ring::swr_v1_hook_uring_vector(&ops, vector, all);
         }
+        let write = vector.write();
         let event = if write { WRITE } else { READ };
         let io: unsafe extern "C" fn(*mut SocketRecord, *const c_void) -> isize =
             if write { socket_writev } else { socket_readv };
