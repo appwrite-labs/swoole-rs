@@ -27,6 +27,7 @@ jobs:
       - if: failure() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
           name: cflite-crashes
           path: ./out/artifacts
   # A failed batch on main otherwise reaches nobody: open one ready bug for it.

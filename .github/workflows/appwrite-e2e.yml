@@ -162,6 +162,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
+          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
           name: junit-${{ matrix.variant }}-${{ matrix.service.name }}
           path: tests/e2e/Services/${{ matrix.service.name }}/junit.xml
           if-no-files-found: ignore
@@ -223,6 +224,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
+          retention-days: ${{ github.ref == 'refs/heads/main' && 0 || 1 }}
           name: appwrite-bench
           path: bench/
 
