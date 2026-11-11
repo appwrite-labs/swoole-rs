@@ -40,18 +40,15 @@ fn waits<T>(f: impl FnOnce(&mut Waits) -> T) -> T {
 }
 
 /// The native coroutine operations a wait needs.
-#[repr(C)]
 pub struct Coroutines {
     /// The current coroutine if this thread has a reactor, else null.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: fn() -> *mut c_void,
     /// Registers the SIGCHLD reaper and the reactor callbacks, once.
-    pub signal_init: unsafe extern "C" fn(),
-    /// `co->yield_ex(timeout)`.
-    pub yield_for: unsafe extern "C" fn(*mut c_void, f64),
-    /// `co->resume()`.
-    pub resume: unsafe extern "C" fn(*mut c_void),
-    /// `co->is_timedout()`.
-    pub timed_out: unsafe extern "C" fn(*mut c_void) -> bool,
+    pub signal_init: fn(),
+    /// `co->yield_ex(timeout)` of the current coroutine, if any.
+    pub yield_for: fn(f64),
+    /// `co->is_timedout()` of the current coroutine, if any.
+    pub timed_out: fn() -> bool,
 }
 
 /// What `System::waitpid` returns.
@@ -73,7 +70,8 @@ fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t 
 /// yields until the reaper hands it a child or `timeout` passes.
 ///
 /// # Safety
-/// `ops` holds the native coroutine operations.
+/// `ops.yield_for` suspends the current coroutine until [`wait_reap`] resumes it or
+/// the timeout passes.
 pub unsafe fn wait_pid(
     pid: libc::pid_t,
     status: &mut c_int,
@@ -95,8 +93,7 @@ pub unsafe fn wait_pid(
             timed_out: false,
         };
     }
-    // SAFETY: the native accessor has no preconditions.
-    let co = unsafe { (ops.current)() };
+    let co = (ops.current)();
     if co.is_null() || options & libc::WNOHANG != 0 {
         return Waited {
             pid: waitpid(pid, status, options),
@@ -104,8 +101,7 @@ pub unsafe fn wait_pid(
         };
     }
     // SIGCHLD must be registered before this last try, or its signal may be lost.
-    // SAFETY: as above.
-    unsafe { (ops.signal_init)() };
+    (ops.signal_init)();
     let child = waitpid(pid, status, options | libc::WNOHANG);
     if child != 0 {
         return Waited {
@@ -126,9 +122,8 @@ pub unsafe fn wait_pid(
             waits.by_pid.insert(pid, registered);
         }
     });
-    // SAFETY: `co` is the current coroutine; the reaper writes `task` through
-    // `registered` while this frame is suspended here.
-    unsafe { (ops.yield_for)(co, timeout) };
+    // The reaper writes `task` through `registered` while this frame is suspended here.
+    (ops.yield_for)(timeout);
     waits(|waits| {
         if pid >= 0 {
             waits.by_pid.remove(&pid);
@@ -143,8 +138,8 @@ pub unsafe fn wait_pid(
     }
     Waited {
         pid: task.pid,
-        // SAFETY: `co` is the current coroutine again.
-        timed_out: task.pid <= 0 && unsafe { (ops.timed_out)(co) },
+        // `co` is the current coroutine again.
+        timed_out: task.pid <= 0 && (ops.timed_out)(),
     }
 }
 
@@ -200,19 +195,19 @@ mod tests {
     thread_local! {
         static YIELDED: Cell<bool> = const { Cell::new(false) };
     }
-    unsafe extern "C" fn no_coroutine() -> *mut c_void {
+    fn no_coroutine() -> *mut c_void {
         std::ptr::null_mut()
     }
-    unsafe extern "C" fn a_coroutine() -> *mut c_void {
+    fn a_coroutine() -> *mut c_void {
         std::ptr::dangling_mut()
     }
-    unsafe extern "C" fn nothing() {}
+    fn nothing() {}
     unsafe extern "C" fn resume(_: *mut c_void) {}
-    unsafe extern "C" fn not_timed_out(_: *mut c_void) -> bool {
+    fn not_timed_out() -> bool {
         false
     }
     /// Stands in for a suspension during which the child exits and SIGCHLD is reaped.
-    unsafe extern "C" fn reap_while_yielded(_: *mut c_void, _: f64) {
+    fn reap_while_yielded(_: f64) {
         YIELDED.set(true);
         while wait_count() > 0 {
             unsafe { wait_reap(libc::SIGCHLD, resume) };
@@ -244,7 +239,6 @@ mod tests {
             current: no_coroutine,
             signal_init: nothing,
             yield_for: reap_while_yielded,
-            resume,
             timed_out: not_timed_out,
         };
         let child = spawn(3);
