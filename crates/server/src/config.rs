@@ -4,6 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_reactor::Socket;
 
 /// The independently configurable server fields and borrowed native handles.
@@ -68,9 +69,9 @@ pub struct ServerConfig {
     pub task_ipc_mode: u8,
     pub task_max_request: u32,
     pub task_max_request_grace: u32,
-    pub task_results: *mut c_void,
+    pub task_results: Shm,
     pub worker_registry: *mut c_void,
-    pub user_workers: *mut c_void,
+    pub user_workers: Shm,
     pub workers: *mut c_void,
     pub gs: *mut c_void,
     pub upload_max_filesize: usize,
@@ -162,9 +163,9 @@ impl Default for ServerConfig {
             task_ipc_mode: 1,
             task_max_request: 0,
             task_max_request_grace: 0,
-            task_results: core::ptr::null_mut(),
+            task_results: Shm::NULL,
             worker_registry: core::ptr::null_mut(),
-            user_workers: core::ptr::null_mut(),
+            user_workers: Shm::NULL,
             workers: core::ptr::null_mut(),
             gs: core::ptr::null_mut(),
             upload_max_filesize: 0,

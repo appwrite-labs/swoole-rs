@@ -411,13 +411,9 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 /// The result is freed once with `swr_v1_server_state_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
-    let config = crate::config::ServerConfig {
-        worker_registry: Box::into_raw(
-            Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default(),
-        )
-        .cast(),
-        ..crate::config::ServerConfig::default()
-    };
+    let mut config = crate::config::ServerConfig::default();
+    config.worker_registry =
+        Box::into_raw(Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default()).cast();
     let tables = crate::records::ServerTables::default();
     Box::into_raw(Box::new(ServerState::with(config, tables)))
 }

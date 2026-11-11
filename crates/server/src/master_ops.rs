@@ -83,7 +83,7 @@ use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::hook;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
+use swoole_rs_memory::members::{Shm, sw_shm_calloc, sw_shm_free};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
@@ -1340,10 +1340,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_FREE_USER_WORKERS => {
-            let workers = core::mem::replace(&mut o.config().user_workers, core::ptr::null_mut());
-            if !workers.is_null() {
-                sw_shm_free(workers);
-            }
+            o.config().user_workers.free();
             0
         }
         OP_ALLOC_SESSIONS => {
@@ -1370,9 +1367,10 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ALLOC_TASK_RESULTS => {
             let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
-            let results = shm_calloc(o.config().worker_num as usize, size);
+            let results = Shm::calloc(o.config().worker_num as usize, size);
+            let ready = !results.is_null();
             o.config().task_results = results;
-            u64::from(!results.is_null())
+            u64::from(ready)
         }
         OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
         op => return forwarded(o, op, arg),
@@ -2371,7 +2369,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_PIPE => {
             let ready = o.state.push_task_pipe();
             if !ready {
-                sw_shm_free(config.task_results);
+                config.task_results.free();
             }
             u64::from(ready)
         }
@@ -2915,13 +2913,13 @@ mod tests {
             assert_eq!((*gs.connection_nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
             assert_eq!((*tables.session_list.add(5)).fd, 0, "zeroed");
-            config.user_workers = sw_shm_calloc(1, 8);
+            config.user_workers = Shm::calloc(1, 8);
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());
             answer(&raw mut ctx, &*state, OP_FREE_USER_WORKERS, 0);
+            config.task_results.free();
             for allocation in [
                 config.workers,
-                config.task_results,
                 gs.connection_nums.cast(),
                 tables.session_list.cast(),
             ] {

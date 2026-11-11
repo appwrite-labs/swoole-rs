@@ -115,10 +115,8 @@ pub unsafe fn init_ipc_max_size(serv: view::Server<'_>) {
 /// # Safety
 /// `serv` is shutting down.
 pub unsafe fn destroy_task_workers(serv: view::Server<'_>) {
-    let results = serv.config().task_results;
-    if !results.is_null() {
-        swoole_rs_memory::members::sw_shm_free(results);
-    }
+    // SAFETY: the server is shutting down on this thread, with no other reference to the field.
+    unsafe { serv.config_mut() }.task_results.free();
     let pool = serv.task_pool();
     // SAFETY: the server's live task pool.
     unsafe { swoole_rs_process::methods::destroy(pool) };
@@ -190,11 +188,10 @@ pub unsafe fn create_event_workers(serv: view::Server<'_>) -> bool {
 pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.user_worker_num();
-    let copies = swoole_rs_memory::members::sw_shm_calloc(count, size).cast::<WorkerRecord>();
-    // SAFETY: per the caller.
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     let config = unsafe { serv.config_mut() };
-    config.user_workers = copies.cast();
+    config.user_workers = swoole_rs_memory::members::Shm::calloc(count, size);
+    let copies = config.user_workers.as_ptr().cast::<WorkerRecord>();
     if copies.is_null() {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);

@@ -330,11 +330,9 @@ struct Server(Box<Head>);
 impl Server {
     fn new(config: &Config) -> Self {
         let state = Box::into_raw(Box::new(ServerState::new()));
-        let server_config = ServerConfig {
-            http_autoindex: config.autoindex,
-            timezone_: config.timezone,
-            ..ServerConfig::default()
-        };
+        let mut server_config = ServerConfig::default();
+        server_config.http_autoindex = config.autoindex;
+        server_config.timezone_ = config.timezone;
         let server = Self(Box::new(Head {
             state,
             config: Box::into_raw(Box::new(server_config)),
