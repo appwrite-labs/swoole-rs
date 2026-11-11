@@ -366,7 +366,6 @@ mod tests {
     /// by up to a tick, so just after a second boundary it reads one less than an earlier
     /// precise reading. The reference reads `CLOCK_REALTIME`, the clock `time_now` uses.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no libc clock_gettime")]
     fn time_get_seconds() {
         let sec1 = time_now();
         let mut ts = libc::timespec {
