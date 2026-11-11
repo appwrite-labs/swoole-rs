@@ -157,9 +157,9 @@ fn listen(call: &Call) {
         let host = CString::new(host).unwrap_or_default();
         server_methods::add_port(serv, kind, &host, port)
     };
-    if ls.is_null() {
+    let Some(ls) = ls else {
         return call.set_bool(false);
-    }
+    };
     // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
     let zport =
         unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };

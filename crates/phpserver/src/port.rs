@@ -66,9 +66,8 @@ pub(crate) static PORT: Class = Class::new();
 /// descriptor, kept alive by an extra reference as upstream's
 /// `php_swoole_convert_to_socket`; false if `dup` fails. Registered only when
 /// Swoole was built with ext/sockets. `port` is a live `ListenPort`.
-pub(crate) fn socket(port: *mut c_void, call: &Call) {
-    // SAFETY: a live port, as above.
-    let fd = unsafe { swoole_rs_server::view::port_fd(port) };
+pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
+    let fd = port.fd();
     // SAFETY: a descriptor the port owns.
     let fd = unsafe { libc::dup(fd) };
     if fd < 0 {
@@ -121,14 +120,18 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned,
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
 /// # Safety
-/// `object` is a `Swoole\Server\Port` this class created; the caller owns nothing to drop.
-pub(crate) unsafe fn bound_port(object: *mut zend_object) -> *mut c_void {
+/// `object` is a `Swoole\Server\Port` this class created, bound for `'a`; the caller
+/// owns nothing to drop.
+pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_server::view::Port<'a> {
     // SAFETY: one of ours, per the contract.
     let port = unsafe { Port::data(object) }.port;
-    if port.is_null() {
+    // SAFETY: null, or the object's live port.
+    let port = unsafe { swoole_rs_server::view::Port::from_raw(port) };
+    port.unwrap_or_else(|| {
         crate::server::invalid(object);
-    }
-    port
+        // The `E_ERROR` above bailed out.
+        std::process::abort()
+    })
 }
 
 /// `php_swoole_server_port_deref`: drop the callables and the port's link,
@@ -338,10 +341,10 @@ fn get_callback(call: &Call) {
 }
 
 fn get_socket(call: &Call) {
-    let port = data(call).port;
-    if port.is_null() {
-        invalid(call);
-    }
+    // SAFETY: null, or the object's live port.
+    let Some(port) = (unsafe { swoole_rs_server::view::Port::from_raw(data(call).port) }) else {
+        return invalid(call);
+    };
     socket(port, call);
 }
 

@@ -584,6 +584,13 @@ impl ZString {
         Self(crate::string::copy(bytes))
     }
 
+    /// `ZSTR_EMPTY_ALLOC()`: the interned empty string, whose release does nothing.
+    #[must_use]
+    #[inline]
+    pub fn empty() -> Self {
+        Self(crate::value::empty_string())
+    }
+
     #[must_use]
     #[inline]
     pub fn bytes(&self) -> &[u8] {
@@ -731,18 +738,6 @@ impl Owned {
         let owned = Self::default();
         // SAFETY: per the caller, into a slot this owns.
         unsafe { crate::set_object(owned.as_ptr(), std) };
-        owned
-    }
-
-    /// `object_init_ex(value, ce)`: a new object of class `ce`.
-    /// # Safety
-    /// `ce` is a registered, instantiable class.
-    #[must_use]
-    #[inline]
-    pub unsafe fn new_object(ce: *mut zend_class_entry) -> Self {
-        let owned = Self::default();
-        // SAFETY: per the caller, into a slot this owns.
-        unsafe { crate::init_object(owned.as_ptr(), ce) };
         owned
     }
 

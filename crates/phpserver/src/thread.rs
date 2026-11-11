@@ -85,13 +85,14 @@ fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailou
     let serialized = serv.config().private_data_4.cast::<zend_string>();
     // SAFETY: the persistent string `copy_setting` made.
     let text = unsafe { bytes(serialized) };
+    // `$this->setting`, which upstream releases and unserializes in place: it is
+    // released first, and nothing is written once the unserialize bailed out.
+    Props::own(object).set(c"setting", &Owned::null());
     let setting = Owned::default();
     // SAFETY: an undefined slot this owns, on this PHP thread.
     let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(text, setting.as_ptr()) };
-    // `$this->setting`, which upstream unserializes in place; nothing is written
-    // once the unserialize bailed out.
-    Props::own(object).set(c"setting", &setting);
     bailed?;
+    Props::own(object).set(c"setting", &setting);
     // The coroutine options are thread-local: each worker thread sets them once.
     if let Some(options) = setting.array() {
         swoole_rs_phpcoroutines::set_coroutine_option(options);

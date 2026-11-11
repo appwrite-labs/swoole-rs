@@ -1141,7 +1141,9 @@ fn task_ipc_queue_5() {
 /// `ListenPort::get_connection_num()` of the primary port.
 fn primary_port_connection_num(serv: Server) -> usize {
     // SAFETY: the running server's primary port.
-    unsafe { serv.view().port_connection_num(serv.get_primary_port().0) }
+    serv.view().port_connection_num(
+        unsafe { swoole_rs_ffi::view::Port::from_raw(serv.get_primary_port().0) }.unwrap(),
+    )
 }
 
 /// `serv.get_event_worker_pool()->read_message`: the event pool follows the task pool,

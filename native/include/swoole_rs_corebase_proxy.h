@@ -24,7 +24,7 @@ void swr_v1_core_proxy_free(swr_v1_core_proxy *);
 swr_v1_core_proxy_copy_result
 swr_v1_core_proxy_assign(const swr_v1_core_proxy *, const swr_v1_core_proxy *);
 swr_v1_core_proxy_copy_result
-swr_v1_core_proxy_configure(swr_v1_core_proxy *,
+swr_v1_core_proxy_configure(const swr_v1_core_proxy *,
                             const swr_v1_core_string_view_t *, int32_t, bool,
                             int32_t);
 #ifdef __cplusplus

@@ -3,7 +3,7 @@
 //! `handshake`'s `std::function` send.
 use std::ffi::{c_char, c_int};
 use std::ptr;
-use swoole_rs_corebase::{ProxyFields, ProxyState, log, net_types::AddressStorage};
+use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
     socks_auth, socks_config, socks_connect, socks_negotiate, socks_strerror, socks_transition,
 };
@@ -32,22 +32,16 @@ impl<'a> Socks5Proxy<'a> {
     }
 }
 
-/// The proxy's owner.
-const fn owner<'a>(proxy: &Socks5Proxy<'a>) -> &'a ProxyState {
-    proxy.owner
-}
-
 struct Packet {
     size: i64,
     diagnostic: i32,
     last_error: i32,
 }
 
-/// Packs negotiate (0), authentication (1) or connect (2) into the owner's buffer;
-/// the proxy's single thread writes its packet and state only through this call.
+/// Packs negotiate (0), authentication (1) or connect (2) into the owner's packet.
 fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
-    let owner = owner(proxy);
-    let fields = owner.fields.get();
+    let owner = proxy.owner;
+    let fields = owner.fields();
     let mut result = Packet {
         size: -1,
         diagnostic: 0,
@@ -56,11 +50,11 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
     let Some(mut buffer) = owner.packet() else {
         return result;
     };
-    let buffer = &mut *buffer;
+    let buffer = &mut buffer[..];
     match action {
         0 => {
             if let Some(method) = socks_negotiate(!owner.string(1).is_empty(), buffer) {
-                owner.fields.set(ProxyFields { method, ..fields });
+                owner.update(|fields| fields.method = method);
                 result.size = 3;
             }
         }
@@ -70,14 +64,13 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
             if let Some(prefix) = buffer.get_mut(..3) {
                 prefix.copy_from_slice(&[5, 1, 0]);
             }
-            let mut host = owner.string(3);
-            let host_length = host.len();
-            host.push(0);
+            let host = owner.string(3);
             // SAFETY: every member of this POD sockaddr union admits zero bytes.
             let mut address: AddressStorage = unsafe { std::mem::zeroed() };
             let mut length = 0;
-            let (kind, bytes, size) = if fields.dns_tunnel != 0 {
-                (3, host.as_ptr(), host_length)
+            let (inet4, inet6);
+            let (kind, address): (u8, &[u8]) = if fields.dns_tunnel != 0 {
+                (3, &host)
             } else {
                 // SAFETY: the exact address operation receives a local union/length and terminated host.
                 let error = unsafe {
@@ -86,7 +79,7 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                         &raw mut length,
                         fields.socket_type,
                         host.as_ptr().cast(),
-                        host_length,
+                        host.len(),
                         fields.target_port,
                         None,
                     )
@@ -98,15 +91,15 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                 }
                 if swoole_rs_reactor::type_is(fields.socket_type, swoole_rs_reactor::CLASS_INET4) {
                     // SAFETY: the preceding address operation initialized the IPv4 union arm.
-                    let bytes = unsafe { ptr::addr_of!(address.inet_v4.sin_addr).cast::<u8>() };
-                    (1, bytes, size_of::<libc::in_addr>())
+                    inet4 = unsafe { address.inet_v4.sin_addr.s_addr }.to_ne_bytes();
+                    (1, &inet4)
                 } else if swoole_rs_reactor::type_is(
                     fields.socket_type,
                     swoole_rs_reactor::CLASS_INET6,
                 ) {
                     // SAFETY: the preceding address operation initialized the IPv6 union arm.
-                    let bytes = unsafe { ptr::addr_of!(address.inet_v6.sin6_addr).cast::<u8>() };
-                    (4, bytes, size_of::<libc::in6_addr>())
+                    inet6 = unsafe { address.inet_v6.sin6_addr.s6_addr };
+                    (4, &inet6)
                 } else {
                     result.diagnostic = 2;
                     return result;
@@ -118,10 +111,7 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                 reason = "native SOCKS packet API narrows its int target port to uint16_t"
             )]
             let port = fields.target_port as u16;
-            // SAFETY: the selected initialized address is disjoint from the owned packet buffer.
-            if let Some(address) = unsafe { crate::input(bytes, size) } {
-                result.size = socks_connect(kind, address, port, buffer);
-            }
+            result.size = socks_connect(kind, address, port, buffer);
             if result.size == -2 {
                 result.size = -1;
                 result.diagnostic = 3;
@@ -192,8 +182,14 @@ pub unsafe extern "C" fn handshake_step(
     let Some(reply) = (unsafe { crate::input(data, length) }) else {
         return -1;
     };
-    let owner = owner(proxy);
-    let fields = owner.fields.get();
+    socks5_step(proxy, reply)
+}
+
+/// [`handshake_step`] over a borrowed reply.
+#[must_use]
+pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> isize {
+    let owner = proxy.owner;
+    let fields = owner.fields();
     let decision = socks_transition(fields.state, fields.method, reply);
     let notice = |code, message: std::fmt::Arguments<'_>| {
         log::error_log(NOTICE, code, c"Socks5Proxy::handshake", message);
@@ -228,10 +224,7 @@ pub unsafe extern "C" fn handshake_step(
         return -1;
     }
     // The state advances before packing, as in upstream's member order.
-    owner.fields.set(ProxyFields {
-        state: decision.state,
-        ..fields
-    });
+    owner.update(|fields| fields.state = decision.state);
     match decision.action {
         1 => pack_auth_request(proxy),
         2 => pack_connect_request(proxy),
@@ -267,9 +260,6 @@ pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
 mod tests {
     use super::*;
     use std::ffi::CStr;
-    use swoole_rs_corebase::{
-        CoreStringView, swr_v1_core_proxy_configure, swr_v1_core_proxy_new, swr_v1_core_string_set,
-    };
 
     // core-tests/src/protocol/base.cpp's protocol.socks5_strerror.
     #[test]
@@ -305,82 +295,58 @@ mod tests {
     fn socks5_dns_tunnel_target_host_max_length() {
         log::swr_v1_core_set_log_host(error_log);
         assert_eq!(admit(0, 0), 1);
-        let prepared = swr_v1_core_proxy_new(true);
-        let text = |s: &'static str| CoreStringView {
-            data: s.as_ptr().cast(),
-            length: s.len(),
-        };
-        let texts = [text("127.0.0.1"), text(""), text("")];
-        let configured =
-            unsafe { swr_v1_core_proxy_configure(prepared.owner, texts.as_ptr(), 1080, false, 1) };
-        assert_eq!(configured.status, 0);
-        let proxy = Socks5Proxy::new(unsafe { &*prepared.owner });
-        let p = &proxy;
-        let set_target_host = |host: &[u8]| unsafe {
-            assert_eq!(
-                swr_v1_core_string_set(prepared.strings[3], host.as_ptr().cast(), host.len()),
-                0
-            );
-        };
-        unsafe { (*prepared.fields).dns_tunnel = 1 };
+        let owner = ProxyState::new(true);
+        let texts: [&[u8]; 3] = [b"127.0.0.1", b"", b""];
+        assert_eq!(owner.configure(texts, 1080, false, 1).status, 0);
+        let p = &Socks5Proxy::new(&owner);
+        owner.update(|fields| fields.dns_tunnel = 1);
         let target_host = vec![b'a'; usize::from(u8::MAX)];
-        set_target_host(&target_host);
-        unsafe { (*prepared.fields).target_port = 80 };
+        assert_eq!(owner.set_string(3, &target_host), 0);
+        owner.update(|fields| fields.target_port = 80);
 
         assert_eq!(pack_connect_request(p), 262);
-        let buf = unsafe { std::slice::from_raw_parts(prepared.buffer, 512) };
+        let buf = *owner.packet().unwrap();
         assert_eq!(buf[3], 0x03);
         assert_eq!(buf[4], u8::MAX);
         assert_eq!(&buf[5..5 + target_host.len()], &target_host[..]);
         let port = &buf[5 + target_host.len()..7 + target_host.len()];
         assert_eq!(u16::from_be_bytes([port[0], port[1]]), 80);
 
-        set_target_host(&[b'a'; 256]);
+        assert_eq!(owner.set_string(3, &[b'a'; 256]), 0);
         assert_eq!(pack_connect_request(p), -1);
         assert_eq!(log::last_error(), HANDSHAKE_FAILED);
-        unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(prepared.owner) };
     }
 
     #[test]
     fn handshake_steps_through_auth_and_connect() {
-        let prepared = swr_v1_core_proxy_new(true);
-        let proxy = Socks5Proxy::new(unsafe { &*prepared.owner });
-        let text = |s: &'static str| CoreStringView {
-            data: s.as_ptr().cast(),
-            length: s.len(),
-        };
-        let texts = [text("proxy"), text("user"), text("pass")];
-        let configured =
-            unsafe { swr_v1_core_proxy_configure(prepared.owner, texts.as_ptr(), 1080, true, 1) };
-        assert_eq!(configured.status, 0);
+        let owner = ProxyState::new(true);
+        let texts: [&[u8]; 3] = [b"proxy", b"user", b"pass"];
+        assert_eq!(owner.configure(texts, 1080, true, 1).status, 0);
         assert_eq!(admit(4, 4), 2);
         assert_eq!(admit(251, 0), 0);
-        let p = &proxy;
+        let p = &Socks5Proxy::new(&owner);
         assert_eq!(pack_negotiate_request(p), 3);
-        assert_eq!(unsafe { (*prepared.fields).method }, 2);
-        unsafe { (*prepared.fields).state = 1 };
-        let buffer = |n: isize| unsafe {
-            std::slice::from_raw_parts(prepared.buffer, usize::try_from(n).unwrap()).to_vec()
-        };
+        assert_eq!(owner.fields().method, 2);
+        owner.update(|fields| fields.state = 1);
+        let buffer = |n: isize| owner.packet().unwrap()[..usize::try_from(n).unwrap()].to_vec();
         // Too short, then the wrong method: failures that leave the state alone.
         assert_eq!(unsafe { handshake_step(p, [5u8].as_ptr(), 1) }, -1);
         assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, -1);
-        assert_eq!(unsafe { (*prepared.fields).state }, 1);
+        assert_eq!(owner.fields().state, 1);
         // Username/password chosen: the auth request follows.
         let n = unsafe { handshake_step(p, [5u8, 2].as_ptr(), 2) };
         assert_eq!(buffer(n), b"\x01\x04user\x04pass");
-        assert_eq!(unsafe { (*prepared.fields).state }, 2);
+        assert_eq!(owner.fields().state, 2);
         // Authenticated: the connect request names the target through the tunnel.
-        unsafe { (*prepared.fields).target_port = 80 };
+        owner.update(|fields| fields.target_port = 80);
         let n = unsafe { handshake_step(p, [1u8, 0].as_ptr(), 2) };
         assert_eq!(buffer(n), b"\x05\x01\x00\x03\x00\x00\x50");
         // Connected: ready, nothing to send.
         assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, 0);
-        assert_eq!(unsafe { (*prepared.fields).state }, 4);
+        assert_eq!(owner.fields().state, 4);
         assert_eq!(
             unsafe { CStr::from_ptr(strerror(5)) },
             c"Connection refused by destination host"
         );
-        unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(prepared.owner) };
     }
 }
