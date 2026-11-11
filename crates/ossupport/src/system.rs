@@ -279,49 +279,47 @@ pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
     }
 }
 
-/// `swoole_thread_set_name` for the calling thread; returns the pthread error.
-/// # Safety
-/// `name` is a valid NUL-terminated string.
+/// `swoole_thread_set_name(name)` for the calling thread; false after a pthread error,
+/// which becomes the last error (`check_pthread_return_value`).
 #[must_use]
-pub unsafe extern "C" fn swr_v1_os_thread_set_name(name: *const c_char) -> c_int {
+pub fn thread_set_name(name: &CStr) -> bool {
     #[cfg(target_vendor = "apple")]
-    {
-        // SAFETY: valid C string per the contract.
-        unsafe { libc::pthread_setname_np(name) }
-    }
+    // SAFETY: a NUL-terminated name, read for the call.
+    let rc = unsafe { libc::pthread_setname_np(name.as_ptr()) };
     #[cfg(not(target_vendor = "apple"))]
-    {
+    let rc = {
         // SAFETY: pthread_self has no preconditions.
         let thread = unsafe { libc::pthread_self() };
-        // SAFETY: valid C string per the contract; the calling thread is live.
-        unsafe { libc::pthread_setname_np(thread, name) }
-    }
+        // SAFETY: a NUL-terminated name, read for the call; the calling thread is live.
+        unsafe { libc::pthread_setname_np(thread, name.as_ptr()) }
+    };
+    pthread_ok(rc)
 }
 
-/// `swoole_thread_get_name` for the calling thread; returns the pthread error.
-/// # Safety
-/// `buf` points to `len` writable bytes.
-pub unsafe extern "C" fn swr_v1_os_thread_get_name(buf: *mut c_char, len: usize) -> c_int {
+/// `swoole_thread_get_name(buf, len)` for the calling thread: its NUL-terminated name
+/// in `buf`; false after a pthread error, which becomes the last error.
+pub fn thread_get_name(buf: &mut [u8]) -> bool {
     #[cfg(target_os = "android")]
     {
         // Upstream's Android shim: bionic lacks pthread_getname_np before API 26.
         // SAFETY: pthread_self has no preconditions.
         let name = format!("thread-{}", unsafe { libc::pthread_self() });
-        let copied = name.len().min(len.saturating_sub(1));
-        if len > 0 {
-            // SAFETY: `buf` has `len` writable bytes and `copied < len`.
-            unsafe { std::ptr::copy_nonoverlapping(name.as_ptr().cast(), buf, copied) };
-            // SAFETY: `copied < len`.
-            unsafe { buf.add(copied).write(0) };
+        let room = buf.len().saturating_sub(1);
+        for (to, &from) in buf
+            .iter_mut()
+            .zip(name.as_bytes().iter().take(room).chain(&[0]))
+        {
+            *to = from;
         }
-        0
+        true
     }
     #[cfg(not(target_os = "android"))]
     {
         // SAFETY: pthread_self has no preconditions.
         let thread = unsafe { libc::pthread_self() };
-        // SAFETY: `buf` has `len` writable bytes per the contract.
-        unsafe { libc::pthread_getname_np(thread, buf, len) }
+        // SAFETY: `buf` is `buf.len()` writable bytes; the calling thread is live.
+        let rc = unsafe { libc::pthread_getname_np(thread, buf.as_mut_ptr().cast(), buf.len()) };
+        pthread_ok(rc)
     }
 }
 
@@ -331,31 +329,6 @@ fn pthread_ok(rc: c_int) -> bool {
         swoole_rs_corebase::log::set_last_error(rc);
     }
     rc == 0
-}
-
-/// `bool swoole_thread_set_name(const char *name)`.
-/// # Safety
-/// `name` is a valid NUL-terminated string.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_thread_set_namePKc")
-)]
-pub unsafe extern "C" fn swoole_thread_set_name(name: *const c_char) -> bool {
-    // SAFETY: as the caller promises.
-    pthread_ok(unsafe { swr_v1_os_thread_set_name(name) })
-}
-
-/// `bool swoole_thread_get_name(char *buf, size_t len)`.
-/// # Safety
-/// `buf` points to `len` writable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_thread_get_namePcm")
-)]
-pub unsafe extern "C" fn swoole_thread_get_name(buf: *mut c_char, len: usize) -> bool {
-    // SAFETY: as the caller promises.
-    pthread_ok(unsafe { swr_v1_os_thread_get_name(buf, len) })
 }
 
 /// `size_t swoole_random_bytes(char *buf, size_t size)`, over corebase's.
@@ -404,23 +377,11 @@ mod tests {
     #[test]
     fn thread_names_round_trip() {
         std::thread::spawn(|| {
-            assert_eq!(
-                unsafe { swr_v1_os_thread_set_name(c"swr-worker".as_ptr()) },
-                0,
-                "set"
-            );
-            let mut buf = [0 as c_char; 32];
-            assert_eq!(
-                unsafe { swr_v1_os_thread_get_name(buf.as_mut_ptr(), buf.len()) },
-                0,
-                "get"
-            );
-            let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+            assert!(thread_set_name(c"swr-worker"), "set");
+            let mut buf = [0u8; 32];
+            assert!(thread_get_name(&mut buf), "get");
+            let name = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
             assert_eq!(name, c"swr-worker", "same name");
-            assert!(unsafe { swoole_thread_set_name(c"swr-upstream".as_ptr()) });
-            assert!(unsafe { swoole_thread_get_name(buf.as_mut_ptr(), buf.len()) });
-            let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
-            assert_eq!(name, c"swr-upstream", "upstream wrappers");
         })
         .join()
         .unwrap_or_else(|_| unreachable!());
@@ -432,14 +393,15 @@ mod tests {
     #[test]
     fn os_thread_name() {
         std::thread::spawn(|| {
-            let mut new_name = [0 as c_char; 512];
+            let mut new_name = [0u8; 512];
             let thread_name = c"sw-core-tests";
-            assert!(unsafe { swoole_thread_set_name(thread_name.as_ptr()) });
-            assert!(unsafe { swoole_thread_get_name(new_name.as_mut_ptr(), new_name.len()) });
-            assert_eq!(thread_name, unsafe { CStr::from_ptr(new_name.as_ptr()) });
-            assert!(!unsafe {
-                swoole_thread_set_name(c"swoole-core-tests-max-size-is-16".as_ptr())
-            });
+            assert!(thread_set_name(thread_name));
+            assert!(thread_get_name(&mut new_name));
+            assert_eq!(
+                thread_name,
+                CStr::from_bytes_until_nul(&new_name).unwrap_or_default()
+            );
+            assert!(!thread_set_name(c"swoole-core-tests-max-size-is-16"));
             assert_eq!(log::last_error(), libc::ERANGE);
         })
         .join()

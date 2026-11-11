@@ -229,8 +229,10 @@ fn set_name(call: &Call) {
     let Ok(name) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         return;
     };
-    // SAFETY: the parsed string is NUL-terminated and lives for the call.
-    call.set_bool(unsafe { swoole_rs_ossupport::swoole_thread_set_name(name.as_ptr().cast()) });
+    // The name as C reads it: up to its first NUL.
+    let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
+    let name = std::ffi::CString::new(name).unwrap_or_default();
+    call.set_bool(swoole_rs_ossupport::thread_set_name(&name));
 }
 
 /// `php_swoole_error(E_WARNING, "%s", message)`.
