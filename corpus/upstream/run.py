@@ -222,7 +222,12 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_http_server/sendfile_client_reset.phpt':
         "the server sometimes stops sending the file before the client has read 2 MiB, so the "
         "client's recv() loop asserts on empty reads until the runner's timeout, on both engines "
-        '(Docker, 24 runs each: upstream 3, cargo 3, #2815)'}
+        '(Docker, 24 runs each: upstream 3, cargo 3, #2815)',
+        'tests/swoole_http_server_coro/open_frame.phpt':
+        "the handler pushes its three frames and returns without reading the client's push, so "
+        "the server closes with unread data and resets the connection; when the client's recv() "
+        "meets the reset before the frames, the recv() asserts fail on both "
+        'engines (Docker: upstream 7/100, cargo 1/50, #2815; #2950\'s queue run: cargo 1 of 3)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
