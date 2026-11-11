@@ -8,8 +8,9 @@
 //! may yield to coroutines that reach the same context through its objects, so
 //! each step re-borrows it.
 use crate::{
-    context, header,
-    host::{self, CO_SOCKET, Context, HTTP2, NO_PAYLOAD},
+    context::{self, Ctx},
+    header,
+    host::{self, CO_SOCKET, HTTP2, NO_PAYLOAD},
     response::RESPONSE,
     state::State,
 };
@@ -33,25 +34,18 @@ const HTTP2_WRITE: c_int = 1;
 const HTTP2_SEND_FILE: c_int = 2;
 pub(crate) const HTTP2_PING: c_int = 3;
 
-/// The context's `ContextState`, its first base.
-pub(crate) fn state<'a>(ctx: *mut Context) -> &'a mut State {
-    // SAFETY: a live `swoole::http::Context`, which starts with its
-    // `ContextState`; callers drop the borrow before any host call.
-    unsafe { &mut *ctx.cast::<State>() }
-}
-
 pub(crate) use context::{close, send};
 
 /// The HTTP/2 server's `op`.
 pub(crate) fn http2(
-    ctx: *mut Context,
+    ctx: Ctx,
     op: c_int,
     data: *mut zend_string,
     offset: i64,
     length: usize,
 ) -> Result<bool, Bailout> {
     let body = of(data);
-    let (server, ctx) = (crate::http2::server(), crate::http2::Ctx::of(ctx));
+    let server = crate::http2::server();
     let done = server.is_some_and(|server| match op {
         HTTP2_END => (server.respond)(ctx, body),
         HTTP2_WRITE => (server.write)(ctx, body),
@@ -65,8 +59,8 @@ pub(crate) fn http2(
 }
 
 /// The file's `Content-Type` header, unless the response has one.
-fn file_type(ctx: *mut Context, file: *mut zend_string) {
-    let response = state(ctx).response.zobject.get();
+fn file_type(mut ctx: Ctx, file: *mut zend_string) {
+    let response = ctx.state().response.zobject.get();
     let Some(props) = response.and_then(|response| response.props(Some(&RESPONSE))) else {
         return;
     };
@@ -87,7 +81,7 @@ fn file_type(ctx: *mut Context, file: *mut zend_string) {
 }
 
 /// Send a header without borrowing context state across the IO.
-fn send_header(ctx: *mut Context, length: usize) -> Result<bool, Bailout> {
+fn send_header(ctx: Ctx, length: usize) -> Result<bool, Bailout> {
     header::header(ctx, ptr::null(), length, |head| send(ctx, head))
 }
 
@@ -101,14 +95,14 @@ fn of<'a>(data: *mut zend_string) -> &'a [u8] {
 }
 
 /// `Context::write`: a chunk of a chunked body, the header first.
-pub(crate) fn write(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
-    if host::flags(ctx) & HTTP2 != 0 {
+pub(crate) fn write(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout> {
+    if ctx.flags() & HTTP2 != 0 {
         return http2(ctx, HTTP2_WRITE, data, 0, 0);
     }
-    if state(ctx).send_header == 0 {
-        state(ctx).send_chunked = 1;
+    if ctx.state().send_header == 0 {
+        ctx.state().send_chunked = 1;
         if !send_header(ctx, 0)? {
-            let state = state(ctx);
+            let state = ctx.state();
             state.send_chunked = 0;
             state.send_header = 0;
             return Ok(false);
@@ -120,67 +114,67 @@ pub(crate) fn write(ctx: *mut Context, data: *mut zend_string) -> Result<bool, B
         return Ok(false);
     }
     // `"%x\r\n" data "\r\n"` (swoole_dec2hex: lowercase).
-    let mut out = state(ctx).write_buffer.take().unwrap_or_default();
+    let mut out = ctx.state().write_buffer.take().unwrap_or_default();
     out.clear();
     out.reserve(data.len() + 2 * size_of::<usize>() + 4);
     write!(out, "{:x}\r\n", data.len()).unwrap_or_default();
     out.extend_from_slice(data);
     out.extend_from_slice(b"\r\n");
     let sent = send(ctx, &out);
-    state(ctx).write_buffer = Some(out);
+    ctx.state().write_buffer = Some(out);
     Ok(sent)
 }
 
 /// `Context::send_trailer`, after the last chunk: false if it could not be
 /// sent (the context is then ended and closed).
-fn send_trailer(ctx: *mut Context) -> Result<bool, Bailout> {
+fn send_trailer(mut ctx: Ctx) -> Result<bool, Bailout> {
     if header::trailer(ctx, |trailer| send(ctx, trailer))? {
         return Ok(true);
     }
-    state(ctx).end = 1;
+    ctx.state().end = 1;
     close(ctx);
     Ok(false)
 }
 
 /// `Context::end`: the rest of the response, then close unless kept alive.
-pub(crate) fn end(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
-    let flags = host::flags(ctx);
+pub(crate) fn end(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout> {
+    let flags = ctx.flags();
     if flags & HTTP2 != 0 {
         return http2(ctx, HTTP2_END, data, 0, 0);
     }
-    if state(ctx).send_chunked != 0 {
+    if ctx.state().send_chunked != 0 {
         if !of(data).is_empty() && !write(ctx, data)? {
             return Ok(false);
         }
-        if state(ctx).send_trailer != 0 {
+        if ctx.state().send_trailer != 0 {
             if !send(ctx, b"0\r\n") {
                 return Ok(false);
             }
             send_trailer(ctx)?;
-            state(ctx).send_trailer = 0;
-            if state(ctx).end != 0 {
+            ctx.state().send_trailer = 0;
+            if ctx.state().end != 0 {
                 return Ok(false);
             }
         } else if !send(ctx, b"0\r\n\r\n") {
             return Ok(false);
         }
-        state(ctx).send_chunked = 0;
+        ctx.state().send_chunked = 0;
     } else if !body(ctx, data)? {
         return Ok(false);
     }
-    if state(ctx).upgrade != 0 && flags & CO_SOCKET == 0 {
+    if ctx.state().upgrade != 0 && flags & CO_SOCKET == 0 {
         crate::websocket::handshaked(ctx);
     }
-    if state(ctx).keepalive == 0 {
+    if ctx.state().keepalive == 0 {
         close(ctx);
     }
-    state(ctx).end = 1;
+    ctx.state().end = 1;
     Ok(true)
 }
 
 /// The header and a whole body: one send, or two for a large body.
-fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
-    if state(ctx).upgrade != 0 {
+fn body(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout> {
+    if ctx.state().upgrade != 0 {
         crate::websocket::accept(ctx);
     }
     let raw = of(data);
@@ -190,7 +184,7 @@ fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
         (raw.as_ptr().cast::<c_char>(), raw.len())
     };
     let (large, sent) = header::header(ctx, pointer, length, |out| {
-        let body = sent_body(state(ctx), raw);
+        let body = sent_body(ctx.state(), raw);
         let large = body.len() > MAX_APPEND_DATA;
         if !large {
             out.extend_from_slice(body);
@@ -201,19 +195,19 @@ fn body(ctx: *mut Context, data: *mut zend_string) -> Result<bool, Bailout> {
         if sent {
             return Ok(true);
         }
-        state(ctx).end = 1;
+        ctx.state().end = 1;
         close(ctx);
         return Ok(false);
     }
     if !sent {
-        state(ctx).send_header = 0;
+        ctx.state().send_header = 0;
         return Ok(false);
     }
-    let body = sent_body(state(ctx), raw);
+    let body = sent_body(ctx.state(), raw);
     if send(ctx, body) {
         return Ok(true);
     }
-    state(ctx).end = 1;
+    ctx.state().end = 1;
     close(ctx);
     Ok(false)
 }
@@ -232,19 +226,19 @@ fn sent_body<'a>(state: &State, raw: &'a [u8]) -> &'a [u8] {
 /// `Context::send_file`: the header, then `length` bytes of `file` from
 /// `offset`.
 pub(crate) fn send_file(
-    ctx: *mut Context,
+    mut ctx: Ctx,
     file: *mut zend_string,
     offset: i64,
     length: usize,
 ) -> Result<bool, Bailout> {
-    if host::flags(ctx) & HTTP2 != 0 {
+    if ctx.flags() & HTTP2 != 0 {
         return http2(ctx, HTTP2_SEND_FILE, file, offset, length);
     }
     file_type(ctx, file);
-    if state(ctx).send_header == 0 {
-        state(ctx).accept_compression = 0;
+    if ctx.state().send_header == 0 {
+        ctx.state().accept_compression = 0;
         if !send_header(ctx, length)? {
-            state(ctx).send_header = 0;
+            ctx.state().send_header = 0;
             return Ok(false);
         }
     }
@@ -253,8 +247,8 @@ pub(crate) fn send_file(
         close(ctx);
         return Ok(false);
     }
-    state(ctx).end = 1;
-    if state(ctx).keepalive == 0 {
+    ctx.state().end = 1;
+    if ctx.state().keepalive == 0 {
         close(ctx);
     }
     Ok(true)
