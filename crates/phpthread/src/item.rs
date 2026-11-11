@@ -6,11 +6,11 @@ use crate::{array::Array, barrier, classes, host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
-    Call, Owned, Value as ZValue, ZString, bailout,
+    Call, Owned, Value as ZValue, ZString, bailout, numeric,
     sys::{
         IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING,
-        IS_TRUE, IS_UNDEF, swr_zend_is_numeric_string, swr_zend_smart_strcmp, zend_binary_strcmp,
-        zend_double_to_str, zend_throw_error,
+        IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp, zend_binary_strcmp, zend_double_to_str,
+        zend_throw_error,
     },
     throw_exception,
 };
@@ -420,21 +420,6 @@ fn binary_strcmp(a: &[u8], b: &[u8]) -> i32 {
     let result =
         unsafe { zend_binary_strcmp(a.as_ptr().cast(), a.len(), b.as_ptr().cast(), b.len()) };
     result.signum()
-}
-
-/// `is_numeric_string(.., allow_errors = false)`.
-fn numeric(text: &[u8]) -> (u8, i64, f64) {
-    let (mut lval, mut dval) = (0, 0.0);
-    // SAFETY: a live byte range and two writable locals.
-    let kind = unsafe {
-        swr_zend_is_numeric_string(
-            text.as_ptr().cast(),
-            text.len(),
-            &raw mut lval,
-            &raw mut dval,
-        )
-    };
-    (kind, lval, dval)
 }
 
 /// Upstream's `compare_long_to_string`.
