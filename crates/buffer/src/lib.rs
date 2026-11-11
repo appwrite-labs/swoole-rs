@@ -231,15 +231,11 @@ impl Buffer {
                 let count = (current.length() - skip).min(size - filled);
                 if count != 0 {
                     // SAFETY: `skip + count <= current.length()`, inside the descriptor's non-null,
-                    // readable data (validated above); `filled + count <= size`, inside the
-                    // reserved, disjoint `bytes` capacity.
-                    unsafe {
-                        ptr::copy_nonoverlapping(
-                            current.data().wrapping_add(skip),
-                            bytes.as_mut_ptr().wrapping_add(filled),
-                            count,
-                        );
-                    }
+                    // readable data (validated above). `bytes` has room for `size` (it never
+                    // reallocates here) and is a separate allocation.
+                    bytes.extend_from_slice(unsafe {
+                        slice::from_raw_parts(current.data().wrapping_add(skip), count)
+                    });
                 }
                 filled += count;
                 skip += count;
@@ -248,8 +244,6 @@ impl Buffer {
                     skip = 0;
                 }
             }
-            // SAFETY: the copy loop initialized exactly `size <= capacity` bytes.
-            unsafe { bytes.set_len(size) };
             self.entries.push_back(Entry::Data(bytes));
             left -= size;
         }
@@ -287,16 +281,16 @@ pub unsafe extern "C" fn swr_v1_buffer_release(buffer: *mut Buffer) -> i32 {
         return OK;
     }
     // SAFETY: non-null (checked above); a live, uniquely owned handle from create.
-    let queue = unsafe { &*buffer };
+    let queue = unsafe { Box::from_raw(buffer) };
     if queue
         .entries
         .iter()
         .any(|e| matches!(e, Entry::TypedToken(_)))
     {
+        // Still the caller's: the same allocation, kept.
+        Box::leak(queue);
         return PENDING_NATIVE;
     }
-    // SAFETY: as above; the shared borrow ended and the handle is released once.
-    unsafe { drop(Box::from_raw(buffer)) };
     OK
 }
 
