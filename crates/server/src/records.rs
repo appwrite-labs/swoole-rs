@@ -1,4 +1,5 @@
 //! Server connections, sessions and lookup tables owned and operated by Rust.
+use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::AtomicU32;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -86,9 +87,37 @@ pub struct PortList {
 }
 
 impl ServerTables {
-    /// The connection slots, or null before they're mapped.
-    pub(crate) fn connections(&self) -> *mut ConnectionRecord {
-        self.connection_list.as_ptr().cast()
+    /// The connection slots, exactly `max_connection` of them, or none before
+    /// they're mapped. Index it with `get`, so every fd lookup is bounded by the
+    /// table's own length.
+    pub(crate) fn connections(&self) -> &[UnsafeCell<ConnectionRecord>] {
+        let base = self.connection_list.as_ptr();
+        if base.is_null() {
+            return &[];
+        }
+        // SAFETY: every factory maps the table with `max_connection` zeroed records
+        // and frees it only by nulling `connection_list`; `UnsafeCell` has the
+        // record's layout and lets slots be written under the server's own
+        // synchronization.
+        unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection as usize) }
+    }
+
+    /// The slot of `fd`, or `None` when `fd` is outside the table.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "a slot of the connection table, written under the server's own synchronization"
+    )]
+    pub(crate) fn connection_at(&self, fd: c_int) -> Option<&mut ConnectionRecord> {
+        let slot = self.connection_slot(fd)?;
+        // SAFETY: a slot of the live table; the server's own synchronization orders writes.
+        Some(unsafe { &mut *slot })
+    }
+
+    /// The table's own pointer to the slot of `fd`, or `None` when `fd` is outside
+    /// the table. It comes from the slot's `UnsafeCell`, not from a reference to the
+    /// record, so a later lookup of the same slot leaves it valid.
+    pub(crate) fn connection_slot(&self, fd: c_int) -> Option<*mut ConnectionRecord> {
+        Some(self.connections().get(usize::try_from(fd).ok()?)?.get())
     }
 
     /// The session slots, or null before they're mapped.
@@ -189,13 +218,8 @@ impl crate::ServerState {
                     .to_ne_bytes(),
             )
         };
-        if fd.cast_unsigned() >= tables.max_connection || tables.connection_list.is_null() {
-            return None;
-        }
-        let slot = tables
-            .connections()
-            .wrapping_add(fd.cast_unsigned() as usize);
-        // SAFETY: the live table of `max_connection` slots; `fd` is below it.
+        let slot = tables.connection_slot(fd)?;
+        // SAFETY: a slot of the live table, which outlives this lookup.
         let value = unsafe { &*slot };
         let found = match kind {
             BY_FD | BY_SESSION => true,
