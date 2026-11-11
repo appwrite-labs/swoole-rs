@@ -249,29 +249,30 @@ fn reactor(ctx: &Context) -> *mut c_void {
 
 /// The effects on the context's worker.
 fn worker(ctx: &Context, op: u32) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
+    let worker = ctx.worker;
     match op {
         OP_WORKER_ENTER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_EVENT_WORKER);
-            swoole_rs_process::methods::swoole_set_worker_id(ctx.worker_record().id());
+            swoole_rs_process::methods::swoole_set_worker_id(ctx.worker().id());
             swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
             // SAFETY: the context's live server and worker.
             unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
         }
-        // SAFETY: the context's live server.
-        OP_WORKER_SIGNAL_INIT => unsafe { entry::worker_signal_init(serv) },
+        OP_WORKER_SIGNAL_INIT => crate::event_worker_ops::worker_signal_init(ctx.server()),
         OP_RESET_CONNECTION_NUM => {
-            let id = ctx.worker_record().id() as usize;
+            let id = ctx.worker().id() as usize;
             // SAFETY: the live server's counters' slot for each worker.
             let slot = unsafe { &*ctx.counters().cells().wrapping_add(id) };
             slot.store(0, Ordering::Relaxed);
         }
-        OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker_record().pipe_worker.is_null())),
-        OP_WORKER_ID => return Some(u64::from(ctx.worker_record().id())),
-        // SAFETY: the context's live server and worker.
-        OP_WORKER_START_CALLBACK => unsafe { entry::worker_start_callback(serv, worker.cast()) },
-        // SAFETY: as above.
-        OP_WORKER_STOP_CALLBACK => unsafe { entry::worker_stop_callback(serv, worker.cast()) },
+        OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker().pipe_worker().is_null())),
+        OP_WORKER_ID => return Some(u64::from(ctx.worker().id())),
+        OP_WORKER_START_CALLBACK => {
+            crate::event_worker_ops::worker_start_callback(ctx.server(), ctx.worker());
+        }
+        OP_WORKER_STOP_CALLBACK => {
+            crate::event_worker_ops::call_worker_stop_callback(ctx.server(), ctx.worker());
+        }
         _ => return None,
     }
     Some(0)

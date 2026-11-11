@@ -3,19 +3,16 @@
 //! symbols when the hybrid links this crate (`upstream-symbols`). Each one enters
 //! crates/server with its operation and objects, which builds the context the C++
 //! forward built and runs the operation over it.
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
 use super::ops::{
-    RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
-    RUN_CLEAN_CONNECTIONS, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_DRAIN_PIPES,
-    RUN_FINISH, RUN_INIT_TASK_WORKERS, RUN_KILL_WORKER, RUN_REACTOR_PROCESS_MAIN,
-    RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER,
-    RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER, RUN_START_MANAGER,
-    RUN_START_WORKER_THREADS, RUN_STOP_ASYNC, RUN_STOP_WORKER_THREADS, RUN_THREAD_FACTORY_START,
-    RUN_THREAD_ID, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD, RUN_THREAD_TERMINATE_MANAGER,
-    RUN_WORKER_SIGNAL, RUN_WORKER_START,
+    RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_FINISH, RUN_INIT_TASK_WORKERS,
+    RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD,
+    RUN_RESTART_WORKER, RUN_START_MANAGER, RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS,
+    RUN_THREAD_FACTORY_START, RUN_THREAD_ID, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD,
+    RUN_THREAD_TERMINATE_MANAGER,
 };
 use crate::methods::Narrow;
 
@@ -87,17 +84,16 @@ impl<T> Object for *mut T {
     }
 }
 
-/// Each `Server` method that enters one operation: its symbol if C++ calls it, Rust name,
+/// Each `Server` method that enters one operation: its Rust name,
 /// parameters, return type, and the operation's objects and argument.
 macro_rules! methods {
-    ($($(#[$attr:meta])* $($symbol:literal)? fn $name:ident($($p:ident: $t:ty),*) -> $r:ty
+    ($($(#[$attr:meta])* fn $name:ident($($p:ident: $t:ty),*) -> $r:ty
         = $op:ident($object:expr, $other:expr, $extra:expr, $arg:expr);)*) => {$(
         #[doc = concat!("`Server::", stringify!($name), "`.")]
         ///
         /// # Safety
         /// The pointers are live objects of the types the C++ method takes.
         $(#[$attr])*
-        $(#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))])?
         pub unsafe extern "C" fn $name($($p: $t),*) -> $r {
             // SAFETY: as the caller guarantees.
             unsafe { enter($op, $object.object(), $other.object(), $extra.object(), $arg) }
@@ -114,39 +110,6 @@ methods! {
     #[must_use]
     fn reload(serv: *const c_void, reload_all_workers: bool) -> bool
         = RUN_RELOAD(serv, NONE, NONE, u64::from(reload_all_workers));
-
-    fn worker_signal_init(serv: *const c_void) -> () = RUN_SIGNAL_INIT(serv, NONE, NONE, 0);
-    fn worker_signal_handler(signo: c_int) -> ()
-        = RUN_WORKER_SIGNAL(NONE, NONE, NONE, i64::from(signo).cast_unsigned());
-    fn worker_accept_event(serv: *mut c_void, info: *mut c_void) -> ()
-        = RUN_ACCEPT_EVENT(serv, NONE, info, 0);
-    fn worker_start_callback(serv: *mut c_void, worker: *mut c_void) -> ()
-        = RUN_WORKER_START(serv, worker, NONE, 0);
-    fn worker_stop_callback(serv: *mut c_void, worker: *mut c_void) -> ()
-        = RUN_CALL_WORKER_STOP(serv, worker, NONE, 0);
-    "_ZN6swoole6Server26call_worker_start_callbackEPNS_6WorkerE"
-    fn call_worker_start_callback(serv: *mut c_void, worker: *mut c_void) -> ()
-        = RUN_CALL_WORKER_START(serv, worker, NONE, 0);
-    "_ZN6swoole6Server25call_worker_stop_callbackEPNS_6WorkerE"
-    fn call_worker_stop_callback(serv: *mut c_void, worker: *mut c_void) -> ()
-        = RUN_CALL_WORKER_STOP(serv, worker, NONE, 0);
-    fn call_worker_error_callback(serv: *mut c_void, worker: *mut c_void, status: *const c_void) -> ()
-        = RUN_CALL_WORKER_ERROR(serv, worker, status, 0);
-    #[must_use]
-    fn kill_worker(serv: *mut c_void, worker_id: c_int) -> bool
-        = RUN_KILL_WORKER(serv, NONE, NONE, i64::from(worker_id).cast_unsigned());
-    "_ZN6swoole6Server17stop_async_workerEPNS_6WorkerE"
-    fn stop_async_worker(serv: *mut c_void, worker: *mut c_void) -> ()
-        = RUN_STOP_ASYNC(serv, worker, NONE, 0);
-    fn drain_worker_pipe(serv: *const c_void) -> () = RUN_DRAIN_PIPES(serv, NONE, NONE, 0);
-    fn clean_worker_connections(serv: *mut c_void, worker: *mut c_void) -> ()
-        = RUN_CLEAN_CONNECTIONS(serv, worker, NONE, 0);
-    fn start_event_worker(serv: *mut c_void, worker: *mut c_void) -> c_int
-        = RUN_START_EVENT_WORKER(serv, worker, NONE, 0);
-    #[must_use]
-    fn send_to_reactor_thread(serv: *const c_void, ev_data: *const c_void, sendn: usize, session_id: c_long) -> isize
-        = RUN_SEND_TO_REACTOR_THREAD(serv, ev_data, &raw const session_id, sendn as u64);
-
     fn start_reactor_processes(serv: *mut c_void) -> c_int
         = RUN_REACTOR_PROCESS_START(serv, NONE, NONE, 0);
     fn reactor_process_main_loop(pool: *mut c_void, worker: *mut c_void) -> c_int
@@ -259,10 +222,6 @@ mod tests {
         arg: u64,
     ) -> i64 {
         let extra = match operation {
-            // SAFETY: send_to_reactor_thread lends its session id.
-            RUN_SEND_TO_REACTOR_THREAD => {
-                usize::try_from(unsafe { *extra.cast::<c_long>() }).unwrap_or(0)
-            }
             // SAFETY: finish lends its result's bytes.
             RUN_FINISH => unsafe { (*extra.cast::<Bytes>()).length },
             _ => extra.addr(),
@@ -272,7 +231,6 @@ mod tests {
             .push((operation, object.addr(), other.addr(), extra, arg));
         match operation {
             RUN_RESTART_WORKER => 1234,
-            RUN_SEND_TO_REACTOR_THREAD => -1,
             _ => 1,
         }
     }
@@ -290,11 +248,6 @@ mod tests {
             assert_eq!(restart_worker_process(at(0x10), at(0x20)), 1234);
             read_worker_message(at(0x30), at(0x40));
             assert!(reload(at(0x10), true));
-            worker_signal_handler(15);
-            worker_accept_event(at(0x10), at(0x50));
-            call_worker_error_callback(at(0x10), at(0x20), at(0x60));
-            assert!(kill_worker(at(0x10), -1));
-            assert_eq!(send_to_reactor_thread(at(0x10), at(0x70), 48, 9), -1);
             assert_eq!(reactor_process_main_loop(at(0x30), at(0x20)), 1);
             assert!(finish(at(0x10), c"ok".as_ptr(), 2, -1, at(0x80)));
             assert!(!create_thread_factory(at(0x10)).is_null());
@@ -311,11 +264,6 @@ mod tests {
                 (RUN_RESTART_WORKER, 0x10, 0x20, 0, 0),
                 (RUN_READ_WORKER_MESSAGE, 0x30, 0x40, 0, 0),
                 (RUN_RELOAD, 0x10, 0, 0, 1),
-                (RUN_WORKER_SIGNAL, 0, 0, 0, 15),
-                (RUN_ACCEPT_EVENT, 0x10, 0, 0x50, 0),
-                (RUN_CALL_WORKER_ERROR, 0x10, 0x20, 0x60, 0),
-                (RUN_KILL_WORKER, 0x10, 0, 0, u64::MAX),
-                (RUN_SEND_TO_REACTOR_THREAD, 0x10, 0x70, 9, 48),
                 (RUN_REACTOR_PROCESS_MAIN, 0x30, 0x20, 0, 0),
                 (RUN_FINISH, 0x10, 0x80, 2, u64::from(u32::MAX)),
                 (RUN_CREATE_THREAD_FACTORY, 0x10, 0, 0, 0),

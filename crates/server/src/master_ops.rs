@@ -1433,6 +1433,23 @@ fn thread_mode(serv: crate::view::Server<'_>, operation: u32) -> i64 {
     }
 }
 
+/// `serv->stop_async_worker(sw_worker())` over base mode's single worker, which
+/// this process runs; the builds without the event worker's ops have none.
+fn stop_single_worker(serv: crate::view::Server<'_>) {
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    {
+        let worker = swoole_rs_process::worker_globals::current_worker();
+        // SAFETY: base mode's single worker, which this process runs.
+        let worker = unsafe { swoole_rs_process::worker_record::Worker::new(worker) };
+        crate::event_worker_ops::stop_async_worker(serv, worker);
+    }
+    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
+    {
+        let _ = serv;
+        std::process::abort()
+    }
+}
+
 /// The ops that call a `Server` method crates/server or crates/process defines,
 /// or else `None`. `ProcessPool`'s methods and the process factory are
 /// [`factory_ops`]', which only the hybrid builds: their runners link the C++
@@ -1458,9 +1475,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STOP_SINGLE_WORKER => {
             o.event_pool().running = false;
-            let worker = swoole_rs_process::worker_globals::current_worker();
-            // SAFETY: as above; base mode's single worker, which this process runs.
-            unsafe { entry::stop_async_worker(serv, worker.cast()) };
+            stop_single_worker(o.server());
             0
         }
         OP_CREATE_FACTORY if u64::from(o.config().mode_) != MODE_PROCESS => {
@@ -2130,9 +2145,8 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &SendData) {
     let bus = worker_message_bus(serv.state());
     bus.rust().pass(&send.info, send.data);
-    let event = bus.buffer();
-    // SAFETY: the live server and the bus's buffer, which now holds the event.
-    unsafe { entry::worker_accept_event(serv.raw(), event.cast()) };
+    let mut head = bus.head();
+    crate::event_worker_ops::accept_event(serv, &mut head);
 }
 
 /// `SendfileTask`'s head: its offset and length, then its name.
@@ -2152,7 +2166,6 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE, OP_SEND_INCOMING, OP_SEND_SHUTDOWN,
         OP_SENDFILE_FINISH,
     };
-    use core::ffi::c_void;
     use swoole_rs_corebase::DataHead;
     use swoole_rs_tls::upstream::{
         socket_send_async as send_async, socket_sendfile_async as sendfile_async,
@@ -2175,11 +2188,8 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
     };
     // `serv->send_to_reactor_thread(head, sizeof(*head), head->fd)`.
-    let to_reactor_thread = |head: &DataHead| {
-        let size = size_of::<DataHead>();
-        // SAFETY: the live server and a head that outlives the call.
-        unsafe { entry::send_to_reactor_thread(serv, (&raw const *head).cast(), size, head.fd) }
-    };
+    let to_reactor_thread =
+        |head: &DataHead| crate::event_worker_ops::send_to_reactor_thread(o.server(), head);
     // The `SendData` native code lends at arg.
     let lent = || {
         // SAFETY: as above.
@@ -2215,8 +2225,9 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ACCEPT_EVENT => {
-            // SAFETY: the live server and the `DataHead` native code lends at arg.
-            unsafe { entry::worker_accept_event(serv, arg as *mut c_void) };
+            // SAFETY: the `DataHead` native code lends at arg.
+            let info = unsafe { &mut *(arg as *mut DataHead) };
+            crate::event_worker_ops::accept_event(o.server(), info);
             0
         }
         OP_BASE_PASS => {
