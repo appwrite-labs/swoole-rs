@@ -335,10 +335,12 @@ impl GlobalMemory {
             // counts itself after it loads null.
             drop(unsafe { Box::from_raw(pool) });
         } else {
-            // Still read, or lent out by `pool::words`: kept reachable, so a leak check
-            // doesn't report it.
-            static KEPT: AtomicPtr<GlobalImpl> = AtomicPtr::new(ptr::null_mut());
-            KEPT.store(pool, Ordering::SeqCst);
+            // Still read, or lent out by `pool::words`: every such pool stays reachable,
+            // so a leak check doesn't report it.
+            static KEPT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+            KEPT.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(pool.expose_provenance());
         }
     }
 }

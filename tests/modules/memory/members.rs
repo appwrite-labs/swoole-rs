@@ -70,11 +70,14 @@ fn a_fixed_pool_refuses_a_pointer_inside_a_slice() {
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn words_stay_mapped_after_the_pool_is_deleted() {
     swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
-    pool::init();
-    let words = pool::words::<std::sync::atomic::AtomicU32>(1).expect("a word");
-    words[0].store(7, Ordering::SeqCst);
-    pool::delete();
-    assert_eq!(words[0].load(Ordering::SeqCst), 7, "a 'static word's page");
+    // Twice: each kept pool stays reachable, so LeakSanitizer reports neither.
+    for _ in 0..2 {
+        pool::init();
+        let words = pool::words::<std::sync::atomic::AtomicU32>(1).expect("a word");
+        words[0].store(7, Ordering::SeqCst);
+        pool::delete();
+        assert_eq!(words[0].load(Ordering::SeqCst), 7, "a 'static word's page");
+    }
 }
 
 #[test]
