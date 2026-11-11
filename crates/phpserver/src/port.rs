@@ -122,8 +122,7 @@ pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     if fd < 0 {
         return call.set_bool(false);
     }
-    // SAFETY: this call's return slot, which takes `fd` whatever the result.
-    unsafe { swoole_rs_phpswoole::socket_create(call.return_value(), fd) };
+    call.set_owned(swoole_rs_phpswoole::socket_create(fd).0);
     // SAFETY: an emalloc'd slot for the reference upstream leaks.
     let keep = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: a writable slot and the Socket just made.

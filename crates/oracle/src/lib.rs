@@ -874,3 +874,54 @@ pub mod cases {
     /// A multipart POST of the same three fields and `examples/test.jpg`.
     pub const REQ2: &[u8] = include_bytes!("../upstream/core-tests/fuzz/cases/req2.bin");
 }
+
+/// Upstream's hashes (misc.cc), `Logger::get_pretty_name` and the logger's level,
+/// label, rotation, line and microsecond formatting (log.cc), built with
+/// `-fsigned-char`; the hashes promote `char`, so they come `-funsigned-char` too.
+pub mod utilities {
+    use std::ffi::{c_char, c_int};
+    unsafe extern "C" {
+        /// `swoole_hash_php` (0), `swoole_hash_jenkins` (1) or `swoole_hash_austin` (2).
+        #[link_name = "swr_oracle_utils_signed_char_hash"]
+        pub fn hash(algorithm: u32, key: *const u8, length: usize) -> u64;
+        /// [`hash`] with `char` unsigned.
+        #[link_name = "swr_oracle_utils_unsigned_char_hash"]
+        pub fn hash_unsigned(algorithm: u32, key: *const u8, length: usize) -> u64;
+        /// `Logger::set_level`'s clamp.
+        #[link_name = "swr_oracle_utils_signed_char_log_level"]
+        pub fn log_level(level: c_int) -> c_int;
+        /// `Logger::put`'s level label.
+        #[link_name = "swr_oracle_utils_signed_char_log_label"]
+        pub fn log_label(level: c_int) -> *const c_char;
+        /// `Logger::gen_real_file`'s date format.
+        #[link_name = "swr_oracle_utils_signed_char_log_rotation"]
+        pub fn log_rotation(rotation: c_int) -> *const c_char;
+        /// `Logger::get_pretty_name` copied into `output` (capacity `length`); returns its length.
+        #[link_name = "swr_oracle_utils_signed_char_pretty"]
+        pub fn pretty(name: *const u8, length: usize, strip: bool, output: *mut u8) -> usize;
+        /// `Logger::put`'s line into `capacity` bytes of `output` (null only at zero);
+        /// `error` is errno after it, EINTR before.
+        #[link_name = "swr_oracle_utils_signed_char_log_line"]
+        pub fn log_line(
+            output: *mut u8,
+            capacity: usize,
+            date: *const c_char,
+            date_precision: c_int,
+            symbol: c_char,
+            pid: c_int,
+            worker: c_int,
+            level: c_int,
+            content: *const c_char,
+            content_precision: c_int,
+            error: *mut c_int,
+        ) -> usize;
+        /// `Logger::put`'s `<.microseconds>` suffix, as [`log_line`].
+        #[link_name = "swr_oracle_utils_signed_char_log_micros"]
+        pub fn log_micros(
+            output: *mut u8,
+            capacity: usize,
+            micros: i64,
+            error: *mut c_int,
+        ) -> usize;
+    }
+}

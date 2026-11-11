@@ -4,7 +4,7 @@
 //! backtraces go through `LoggerHost` (`swr_logger_host`, in crates/process). Both run after
 //! the lock is released, so a diagnostic can log through this logger again. The log
 //! macros a Rust log runs (`swr_v1_utils_log`) are here too.
-use crate::{log_bytes, log_line, log_micros, log_rotation, swr_v1_utils_log_level};
+use crate::{log_bytes, log_level, log_line, log_micros, log_rotation};
 use libc::{FILE, c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
@@ -443,7 +443,7 @@ pub extern "C" fn swr_v1_logger_level(logger: &Logger) -> c_int {
 /// `Logger::set_level`, clamped to the defined levels.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_logger_set_level(logger: &Logger, level: c_int) {
-    logger.level.store(swr_v1_utils_log_level(level), Relaxed);
+    logger.level.store(log_level(level), Relaxed);
 }
 
 /// Logger settings `swr_v1_logger_set` changes.
@@ -560,7 +560,7 @@ pub fn process_logger() -> Option<&'static Logger> {
 )]
 pub extern "C" fn swoole_set_log_level(level: c_int) {
     if let Some(logger) = process_logger() {
-        logger.level.store(swr_v1_utils_log_level(level), Relaxed);
+        logger.level.store(log_level(level), Relaxed);
     }
 }
 

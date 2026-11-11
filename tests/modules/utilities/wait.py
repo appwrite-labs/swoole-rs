@@ -9,7 +9,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.harness import run_isolated, write_report
-from gate import PIN, asan_imports
+from tools.build_upstream import COMMIT as PIN
 
 
 def main():
@@ -18,10 +18,7 @@ def main():
     p.add_argument('--archive', type=Path, required=True)
     p.add_argument('--output', default=str(ROOT/'target/reports/utilities-wait.json'))
     p.add_argument('--sanitize', action='store_true')
-    p.add_argument('--rust-asan', action='store_true')
     args = p.parse_args()
-    if args.rust_asan and not args.sanitize:
-        p.error('--rust-asan requires --sanitize')
     if not sys.platform.startswith('linux'):
         p.error('Rust implements only the futex path; other platforms poll the Rust wait registry')
     archive = args.archive.resolve(strict=True)
@@ -30,9 +27,6 @@ def main():
     report = {'pin': PIN,
               'scope': 'Defined LP64 original misc.cc wait/wake result, errno, word and actual process-shared wake; no performance claim. C++ sanitizer only; Rust uninstrumented.',
               'passed': False}
-    if args.rust_asan:
-        report['rust_asan_imports'] = asan_imports(archive)
-        report['scope'] = report['scope'].replace('Rust uninstrumented.', 'Rust ASan imports verified; precompiled std/libc uninstrumented.')
     with tempfile.TemporaryDirectory(prefix='swr-utils-wait-') as temp:
         tree = Path(temp)
         oracle = original[original.index('#ifdef HAVE_FUTEX'):original.index('/* {{{ DJBX33A')]
