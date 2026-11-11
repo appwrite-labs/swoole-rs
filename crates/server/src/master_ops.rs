@@ -241,13 +241,17 @@ impl Objects<'_> {
         matches!(kind, Some(SW_SOCK_TCP | SW_SOCK_TCP6))
     }
     /// `OP_ACCEPT`: the accepting event's listening socket accepts into the context's
-    /// socket; whether it did.
+    /// socket, and its port becomes the context's; whether it did.
     fn accept(&mut self) -> bool {
         // SAFETY: the accepting event.
         let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
         // SAFETY: its live listening socket.
         let listener = unsafe { self.sockets().socket(listener.cast()) };
-        let socket = listener.map_or(core::ptr::null_mut(), |l| l.edit(SocketRecord::accept));
+        // The listener's object is its port.
+        let (port, socket) = listener.map_or((core::ptr::null_mut(), core::ptr::null_mut()), |l| {
+            l.edit(|l| (l.object, l.accept()))
+        });
+        self.ctx.port = port;
         self.ctx.sock = socket.cast();
         !socket.is_null()
     }

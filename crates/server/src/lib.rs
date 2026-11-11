@@ -329,26 +329,6 @@ pub(crate) unsafe fn run_reactor_with<'s>(
     .unwrap_or(SW_ERR)
 }
 
-/// `Server::accept_connection` over a method context outside [`run`]'s match: with
-/// the state known and no reactor context, each op it makes folds to its answer
-/// (#2964).
-///
-/// # Safety
-/// `ctx` is a live context whose `serv` is a live `Server`.
-pub(crate) unsafe fn run_accept(ctx: &mut server_methods::NativeContext) -> i64 {
-    // SAFETY: a live server, per the caller.
-    let state = unsafe { view::Server::from_raw(ctx.serv) }.state();
-    let master = core::ptr::from_mut(ctx);
-    connection::accept(&mut Native {
-        context: master.cast(),
-        call: unanswered as ServerCall,
-        state: Some(state),
-        master,
-        reactor: core::ptr::null_mut(),
-    })
-    .unwrap_or(SW_ERR)
-}
-
 /// Runs one operation for a `Server` method (`server_methods`) over its context,
 /// whose records `master_ops` answers. No effect here calls back into C++.
 ///
@@ -368,17 +348,19 @@ pub(crate) unsafe fn run_method(
         // SAFETY: a live server, per the caller.
         Some(unsafe { view::Server::from_raw(serv) }.state())
     };
-    run(
-        &mut Native {
-            context: ctx.cast(),
-            call: unanswered as ServerCall,
-            state,
-            master: ctx,
-            reactor: core::ptr::null_mut(),
-        },
-        operation,
-        arg,
-    )
+    let mut native = Native {
+        context: ctx.cast(),
+        call: unanswered as ServerCall,
+        state,
+        master: ctx,
+        reactor: core::ptr::null_mut(),
+    };
+    match (operation, state) {
+        // Outside `run`'s match, with the state known and no reactor context, so
+        // each op an accept makes folds to its answer (#2964).
+        (ops::RUN_ACCEPT, Some(_)) => connection::accept(&mut native),
+        _ => run(&mut native, operation, arg),
+    }
     .unwrap_or(SW_ERR)
 }
 
