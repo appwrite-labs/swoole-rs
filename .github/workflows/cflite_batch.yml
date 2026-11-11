@@ -5,11 +5,19 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 permissions: read-all
+# Batch runs write cflite, so they run one at a time; the lease covers anything else.
+concurrency:
+  group: cflite-batch
+  cancel-in-progress: false
 jobs:
   # Nightly: an hour across every fuzz/ target, growing ClusterFuzzLite's stored
   # corpus. The second schedule prunes that corpus. Crashes fail the job.
+  # The corpus is pushed to the cflite branch: kept as Actions artifacts, each target's lookup
+  # paged through every artifact of the repository, spending CI's hourly API limit (#3257).
   fuzz:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    permissions:
+      contents: write
     steps:
       - id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
@@ -19,11 +27,28 @@ jobs:
       - id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          storage-repo: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          storage-repo-branch: cflite
           fuzz-seconds: ${{ github.event.schedule == '0 6 * * *' && 600 || 3600 }}
           mode: ${{ github.event.schedule == '0 6 * * *' && 'prune' || 'batch' }}
           sanitizer: address
           minimize-crashes: true
+      # Each upload commits to cflite and a PR run's full clone fetches every commit, so pruned
+      # corpus files would stay in its history: keep the branch one commit, its latest tree.
+      # Only this job writes cflite, a data branch nothing merges from.
+      - name: Keep cflite one commit
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          REPO: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git init -q "$RUNNER_TEMP/cflite" && cd "$RUNNER_TEMP/cflite"
+          git fetch -q --depth=1 "$REPO" cflite || exit 0
+          commit=$(git commit-tree 'FETCH_HEAD^{tree}' -m 'ClusterFuzzLite corpus')
+          git push -q --force-with-lease="refs/heads/cflite:$(git rev-parse FETCH_HEAD)" "$REPO" "$commit:refs/heads/cflite"
       - if: failure() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:

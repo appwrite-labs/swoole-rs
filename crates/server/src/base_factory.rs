@@ -492,16 +492,18 @@ mod tests {
         fn script(&mut self, facts: &[(u32, u64)]) -> Script {
             let mut s = Script::with(facts);
             s.state = crate::ServerState::with_tables(ServerTables {
-                session_list: crate::records::tests::naming(&mut self.sessions),
-                connection_list: crate::records::tests::naming(&mut self.connections),
+                session_list: crate::records::tests::naming_at(self.sessions.as_mut_ptr()),
+                connection_list: crate::records::tests::naming_at(self.connections.as_mut_ptr()),
                 max_connection: 2,
                 ..ServerTables::default()
             });
             s
         }
 
+        /// Through the table's pointer, as the scripts' state reaches it: indexing would
+        /// borrow the whole table and end their pointers.
         fn conn(&mut self) -> &mut ConnectionRecord {
-            &mut self.connections[2]
+            unsafe { &mut *self.connections.as_mut_ptr().add(2) }
         }
     }
 

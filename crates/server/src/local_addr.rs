@@ -187,6 +187,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_ntop")]
     fn numbers_both_families_in_order() {
         let mut addrs = LocalAddrs {
             entries: Vec::new(),
@@ -205,6 +206,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn reads_the_interfaces_and_falls_back_to_loopback() {
         let state = ServerState::new();
         assert!(init(&state), "getifaddrs works here");

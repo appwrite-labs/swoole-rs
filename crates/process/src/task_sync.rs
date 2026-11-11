@@ -13,12 +13,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::{self, set_last_error};
+use swoole_rs_corebase::task_tmpfile;
 use swoole_rs_ossupport::file_get_contents;
 
 pub use crate::pool::Bailed;
 use crate::pool::trapped;
 use crate::process_pool::SW_IPC_MAX_SIZE;
-use crate::task_file::{Packed, TASK_TMP_PATH_SIZE, errno, make_tmpfile, task_tmpfile};
+use crate::task_file::{Packed, TASK_TMP_PATH_SIZE, errno, make_tmpfile};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16, `ext_flags` at 26.
 const HEAD: usize = 40;
@@ -182,7 +183,7 @@ impl<H: TaskHost> Tasks<'_, H> {
         // SAFETY: the result slot starts with its `DataHead`.
         unsafe { self.result.write_bytes(0, HEAD) };
         let mut path = [0; TASK_TMP_PATH_SIZE];
-        let fd = make_tmpfile(task_tmpfile(), &mut path);
+        let fd = make_tmpfile(&task_tmpfile(), &mut path);
         if fd < 0 {
             set_last_error(errno());
             return Ok(false);
