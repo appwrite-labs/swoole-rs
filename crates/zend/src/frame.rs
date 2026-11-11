@@ -33,11 +33,8 @@ impl Call {
     /// `Z_PARAM_ZVAL_EX(dest, 1, 0)`: argument `n`, `None` when null or not passed.
     #[must_use]
     #[inline]
-    pub fn zval_or_null(&self, n: u32) -> Option<*mut zval> {
-        if self.value(n).is_none_or(crate::Value::is_null) {
-            return None;
-        }
-        Some(self.zval(n))
+    pub fn zval_or_null(&self, n: u32) -> Option<&crate::Value> {
+        self.value(n).filter(|value| !value.is_null())
     }
 
     /// `Z_PARAM_ARRAY` of argument `n` as its table, or `None` when not passed.

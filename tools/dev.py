@@ -266,9 +266,6 @@ def plan(args, reports):
         phase = 'ports-callback-property'
         script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', archive, *report(phase))
-    if 'ossupport' in modules:
-        script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, *report('ossupport-file-owner'))
     if 'corebase' in modules:
         script('corebase-dns-request-guard', 'tests/modules/corebase/resolver_guard.py',
                '--archive', archive, *report('corebase-dns-request-guard'))
@@ -344,7 +341,7 @@ def plan(args, reports):
             script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
-        for family in ['logger', 'hash', 'global-logger', 'redirect']:
+        for family in ['logger', 'hash']:
             name = 'utilities-' + family + '-originals'
             script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
                    *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive,

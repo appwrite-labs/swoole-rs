@@ -157,8 +157,8 @@ fn empty_file() {
     std::fs::remove_file("/tmp/swoole_empty_file.txt").expect("remove the file");
 }
 
-/// `file.<name>`, in upstream's order; `file.open_twice` is tests/modules/ossupport's
-/// `ossupport-file-owner`.
+/// `file.<name>`, in upstream's order; `file.open_twice` is crates/ossupport's
+/// `file_record::tests::file_open_twice`.
 pub(super) const CASES: super::Cases = &[
     ("file_put_contents", put_contents),
     ("file_get_contents", get_contents_),

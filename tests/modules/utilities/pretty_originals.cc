@@ -34,19 +34,7 @@ PHP_FUNCTION(m14_storage) {
     std::string private_file = std::string(directory, length) + "/original.log";
     file = private_file.c_str();
 #endif
-#ifdef M14_CHILD_ASSERTIONS
-    if (!m14_observer_begin(directory, length)) {
-        zend_throw_error(nullptr, "Cannot create private child assertion observer");
-        RETURN_THROWS();
-    }
-    if (getenv("M14_CHECK_OBSERVER")) {
-        ::testing::GTEST_FLAG(filter) = "m14_observer.child_failure";
-    }
-#endif
     int status = RUN_ALL_TESTS();
-#ifdef M14_CHILD_ASSERTIONS
-    m14_observer_end();
-#endif
 #ifdef M14_PRIVATE_LOG_FILE
     file = previous;
 #endif

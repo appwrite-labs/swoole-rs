@@ -503,7 +503,7 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         OP_NOTIFY_WOULD_BLOCK => {
             let error = errno();
             let socket = crate::objects::socket(master_socket().cast())?;
-            u64::from(socket.edit(|s| s.catch_error(error)) == SW_WAIT)
+            u64::from(socket.catch_error(error) == SW_WAIT)
         }
         OP_WAIT_NOTIFY_WRITABLE => {
             let socket = crate::objects::socket(master_socket().cast())?;

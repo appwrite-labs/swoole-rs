@@ -321,7 +321,7 @@ mod tests {
         assert!(unsafe { read(this, received.as_mut_ptr().cast(), received.len()) } < 0);
         set_timeout(unsafe { &mut *this }, 2.5);
         assert_eq!(pair.timeout, 2.5);
-        assert_eq!(unsafe { (*pair.worker_socket).timeouts.read }, 2.5);
+        assert_eq!(unsafe { (*pair.worker_socket).fields.timeouts.read }, 2.5);
         assert!(close(unsafe { &mut *this }, CLOSE_MASTER));
         assert!(!close(unsafe { &mut *this }, CLOSE_MASTER));
         assert!(close(unsafe { &mut *this }, 0));

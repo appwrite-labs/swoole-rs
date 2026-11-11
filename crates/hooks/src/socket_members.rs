@@ -24,7 +24,7 @@ use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketRecord,
+    CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketFields, SocketRecord,
     swr_v1_reactor_iov_view, type_is,
 };
 use swoole_rs_tls::owner_fields;
@@ -144,7 +144,7 @@ unsafe extern "C" fn accept_call(context: *mut c_void, _: c_int) -> c_int {
     let state = unsafe { accepting(context) };
     state.conn = state
         .socket
-        .net(SocketRecord::accept)
+        .net(SocketFields::accept)
         .unwrap_or(core::ptr::null_mut());
     if state.conn.is_null() { -1 } else { 0 }
 }
@@ -549,7 +549,8 @@ impl Co {
         }
         // SAFETY: the address's live length.
         let to_length = unsafe { *length };
-        let call = call!(|s, at, len| libc::sendto((*s).fd, at.cast(), len, 0, to, to_length));
+        let call =
+            call!(|s, at, len| libc::sendto((*s).fields.fd, at.cast(), len, 0, to, to_length));
         // SAFETY: the caller's bytes; availability was checked above.
         unsafe {
             self.transfer(
@@ -630,7 +631,7 @@ impl Co {
     pub fn read(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
         let (buf, n) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
         uring!(self, |ops| ring::plain(ops, ring::READ, buf.cast(), n));
-        let call = call!(|s, at, len| libc::read((*s).fd, at.cast(), len));
+        let call = call!(|s, at, len| libc::read((*s).fields.fd, at.cast(), len));
         // SAFETY: each try reads into the caller's buffer.
         unsafe { self.transfer(READ, 0, buf, n, call) }
     }
@@ -640,7 +641,7 @@ impl Co {
     pub fn write(self, buf: &[u8]) -> isize {
         let (buf, n) = (buf.as_ptr().cast_mut(), buf.len());
         uring!(self, |ops| ring::plain(ops, ring::WRITE, buf.cast(), n));
-        let call = call!(|s, at, len| libc::write((*s).fd, at.cast(), len));
+        let call = call!(|s, at, len| libc::write((*s).fields.fd, at.cast(), len));
         // SAFETY: each try writes from the caller's buffer.
         unsafe { self.transfer(WRITE, 0, buf, n, call) }
     }
@@ -941,10 +942,10 @@ mod tests {
     }
 
     trait SocketMut {
-        fn socket_mut(&mut self) -> &mut SocketRecord;
+        fn socket_mut(&mut self) -> &mut SocketFields;
     }
     impl SocketMut for CoSocket {
-        fn socket_mut(&mut self) -> &mut SocketRecord {
+        fn socket_mut(&mut self) -> &mut SocketFields {
             unsafe { &mut *self.socket }
         }
     }

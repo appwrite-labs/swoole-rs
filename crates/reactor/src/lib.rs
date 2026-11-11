@@ -46,7 +46,7 @@ mod deferred;
 pub use deferred::*;
 
 mod socket;
-pub use socket::{Socket, SocketGuard};
+pub use socket::Socket;
 
 mod callbacks;
 pub use callbacks::*;
