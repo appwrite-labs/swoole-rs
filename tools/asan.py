@@ -15,8 +15,8 @@ globals carry no redzones (-asan-globals=0): rustc registers each one from a sec
 ld keeps whole, so under --gc-sections every global and every function a global's table
 points to stays, and the gates' executables would need all the extension's libraries
 (OpenSSL, the multipart parser, the context switch) to link. C and C++ globals keep
-theirs. PHP has FFI built in for the timer and ports gates. Any sanitizer report fails
-the run whatever the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a
+theirs. PHP has FFI built in for the timer and ports gates. A report from code this repository
+builds fails the run whatever the tests say; upstream's reference build is counted apart. Reports stay in target/asan/reports/ and are only counted on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
 never shows one. Rerun locally to read them. LeakSanitizer runs at the extension's
 MSHUTDOWN, not at exit, and only in the process that loaded the extension: a worker exits
@@ -96,10 +96,26 @@ def main():
                                '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json', *cases],
                               cwd=ROOT, env=run).returncode):
         failed.append('phpt')
-    if found := len(list(reports.iterdir())):
+    kinds = [origin(path.read_text(errors='replace')) for path in sorted(reports.iterdir())]
+    if found := kinds.count('ours'):
         failed.append(f'{found} sanitizer reports in {reports}')
+    if upstream := kinds.count('upstream'):
+        print(f"{upstream} reports from upstream's reference build in {reports}: triage them privately")
     print('sanitizer run: ' + (', '.join(failed) + ' failed' if failed else 'clean'))
     return int(bool(failed))
+
+
+def origin(report):
+    """'upstream' when the first repository code a report names is upstream's reference build
+    (target/upstream, which swoole.so never compiles), 'notice' for a file with no error in it
+    (ASan's note on a coroutine stack switch), else 'ours'. PHP's own frames are skipped."""
+    if 'ERROR: ' not in report and 'runtime error' not in report:
+        return 'notice'
+    for line in report.splitlines():
+        for path in line.split(str(ROOT) + '/')[1:]:
+            if not path.startswith('target/asan/php/'):
+                return 'upstream' if path.startswith('target/upstream/') else 'ours'
+    return 'ours'
 
 
 if __name__ == '__main__':
