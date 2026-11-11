@@ -227,7 +227,12 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "the handler pushes its three frames and returns without reading the client's push, so "
         "the server closes with unread data and resets the connection; when the client's recv() "
         "meets the reset before the frames, the recv() asserts fail on both "
-        'engines (Docker: upstream 7/100, cargo 1/50, #2815; #2950\'s queue run: cargo 1 of 3)'}
+        'engines (Docker: upstream 7/100, cargo 1/50, #2815; #2950\'s queue run: cargo 1 of 3)',
+        'tests/swoole_timer/bug_4794_4.phpt':
+        'each side wakes or signals the other process and then prints, so the other one can print '
+        'first: the expected 1 before 2, 5 before 6 and 8 before 7 rest on a 25 ms usleep; upstream '
+        'printed 2 first in alpine (#1420), cargo 6 before 5 and 7 before 8 in two alpine queue runs, '
+        'and the PHPT gate saw one first-run failure on each engine in 258 runs (#3001)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
