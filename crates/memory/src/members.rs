@@ -553,12 +553,12 @@ pub mod pool {
     /// `count` zero words from [`alloc`], as long as PHP runs: `Swoole\Atomic`'s
     /// and `Swoole\Lock`'s.
     #[must_use]
-    pub fn words<W: Word>(count: usize) -> Option<&'static [W]> {
+    pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
         let block = alloc(size).cast::<W>();
         // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
         // for each `Word`), which the pool gives no one else.
-        (!block.is_null()).then(|| unsafe { slice::from_raw_parts(block, count) })
+        (!block.is_null()).then(|| unsafe { slice::from_raw_parts_mut(block, count) })
     }
 }
 
