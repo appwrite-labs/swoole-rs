@@ -35,7 +35,7 @@ pub struct Coroutine {
     pub state: i32,
     pub resume_code: i32,
     pub task: *mut c_void,
-    /// The waiting yield's [`Canceler`], null when it can't be canceled.
+    /// The waiting yield's `&mut` [`Canceler`], null when it can't be canceled.
     pub cancel_fn: *mut c_void,
     /// The coroutine that last ran this one; cleared when it closes first.
     pub origin: *mut Coroutine,
@@ -68,15 +68,11 @@ impl Coroutine {
     }
 }
 
-/// A cancelable yield's cancel function: `call(native, data)` marks the
-/// coroutine canceled ([`Coroutine::mark_canceled`]) once nothing can fail, then
-/// wakes it and returns whether it did.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Canceler {
-    pub call: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-    pub data: *mut c_void,
-}
+/// A cancelable yield's cancel function, called with the coroutine: it marks
+/// it canceled ([`Coroutine::mark_canceled`]) once nothing can fail, then wakes
+/// it and returns whether it did. `cancel_fn` points at a `&mut Canceler` on
+/// the waiting yield's frame.
+pub type Canceler<'a> = dyn FnMut(*mut c_void) -> bool + 'a;
 
 /// The effects the scheduler runs, each given a `swoole::Coroutine` record
 /// (`Coroutine::native`). Rust frames between these calls own nothing with a

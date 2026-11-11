@@ -176,17 +176,10 @@ mod native {
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
     pub(super) fn suspend(socket: Co, co: *mut c_void, event: u32) {
-        /// # Safety
-        /// `data` is the [`tag`] of the record whose wait the coroutine is suspended in.
-        unsafe extern "C-unwind" fn cancel(_: *mut c_void, data: *mut c_void) -> bool {
-            // SAFETY: per the caller.
-            let (socket, event) = unsafe { untag(data) };
-            socket.cancel(event)
-        }
-        let data = tag(socket, event != READ);
+        let event = if event == READ { READ } else { WRITE };
         // SAFETY: the current coroutine, waiting on the live record, whose frames own
         // nothing with a destructor.
-        unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
+        unsafe { swoole_rs_coroutine::yield_with_cancel(co, &mut |_| socket.cancel(event)) };
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.

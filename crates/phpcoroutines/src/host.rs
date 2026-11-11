@@ -377,16 +377,12 @@ pub fn yield_(co: Co) {
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler(), state(co)) };
 }
 
-/// [`yield_`], cancelable through `cancel(co, data)`.
+/// [`yield_`], cancelable through `cancel(co)`.
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub unsafe fn yield_cancelable(
-    co: Co,
-    cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
-    data: *mut c_void,
-) {
+pub unsafe fn yield_cancelable(co: Co, cancel: &mut swoole_rs_coroutine::Canceler<'_>) {
     // SAFETY: as the caller promises.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.

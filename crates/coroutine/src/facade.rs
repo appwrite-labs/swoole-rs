@@ -177,15 +177,15 @@ pub extern "C-unwind" fn deactivate() {
 #[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
 pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
     // SAFETY: as the caller promises.
-    let canceler = unsafe { (*co).cancel_fn }.cast::<Canceler>();
+    let canceler = unsafe { (*co).cancel_fn }.cast::<&mut Canceler<'_>>();
     if canceler.is_null() {
         set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
         return false;
     }
-    // SAFETY: the waiting yield's canceler, on its live frame.
-    let Canceler { call, data } = unsafe { canceler.read() };
-    // SAFETY: that yield's cancel function.
-    unsafe { call(co.cast(), data) }
+    // SAFETY: the waiting yield's canceler, on its frame, which runs nothing
+    // until resumed.
+    let cancel = unsafe { &mut *canceler };
+    cancel(co.cast())
 }
 
 /// `yield_ex`'s timer: the wait timed out.
@@ -194,13 +194,6 @@ unsafe extern "C" fn timed_out(co: *mut c_void) {
     unsafe { (*co.cast::<Coroutine>()).mark_timed_out() };
     // SAFETY: as above.
     unsafe { resume(co) };
-}
-
-/// `yield_ex`'s cancel function.
-unsafe extern "C-unwind" fn resume_canceled(co: *mut c_void, _: *mut c_void) -> bool {
-    // SAFETY: the canceled coroutine waits in `yield_ex`.
-    unsafe { resume(co) };
-    true
 }
 
 /// `bool Coroutine::yield_ex(double timeout)`: false, with the last error, when
@@ -239,8 +232,13 @@ pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     } else {
         ptr::null_mut()
     };
+    let mut resume_canceled = |co| {
+        // SAFETY: the canceled coroutine waits below.
+        unsafe { resume(co) };
+        true
+    };
     // SAFETY: as the caller promises.
-    unsafe { yield_with_cancel(co, resume_canceled, ptr::null_mut()) };
+    unsafe { yield_with_cancel(co, &mut resume_canceled) };
     // SAFETY: `co` runs again.
     let code = unsafe { (*co.cast::<Coroutine>()).resume_code };
     if code != RC_TIMEDOUT && !timer.is_null() {
