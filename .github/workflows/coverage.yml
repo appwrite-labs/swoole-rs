@@ -120,8 +120,10 @@ jobs:
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
           --engine cargo=target/phpt/cargo.so --output target/coverage/corpus.json || true
       # The differential suite as integrate's api-fuzz runs it (#2255): seed 0's programs and the cases.
+      # The Cargo build links curl's CURLFile class, so curl loads first, as for the corpus above.
       - run: >
-          python3 tests/differential/fuzz.py --engine upstream=target/upstream/src/modules/swoole.so
+          python3 tests/differential/fuzz.py --php-extension pdo --php-extension pdo_sqlite --php-extension curl
+          --engine upstream=target/upstream/src/modules/swoole.so
           --engine cargo=target/phpt/cargo.so --seed 0 --programs 500 --cases tests/differential/cases || true
       - run: python3 corpus/library/run.py --prepare
       - working-directory: target/library/src
