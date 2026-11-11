@@ -41,8 +41,6 @@ typedef struct {
 size_t swr_v1_core_format_result(char *, size_t, int formatted, bool zero_query);
 /* swoole_set_task_tmpdir under its lock, with upstream's warnings. */
 bool swr_v1_core_set_task_tmpdir(const char *dir);
-/* SwooleG.task_tmpfile (crates/corebase/src/config_state.rs). */
-const char *swr_v1_core_task_tmpfile(void);
 /* The thread's last error is Rust's (crates/corebase/src/log.rs). */
 int swr_v1_core_last_error(void);
 void swr_v1_core_set_last_error(int);

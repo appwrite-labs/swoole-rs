@@ -400,21 +400,13 @@ pub unsafe fn copy_for_process(
     pipe
 }
 
-/// `Worker::init()` for the native symbol.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Worker4initEv")
-)]
-pub extern "C" fn swr_v1_worker_init(worker: Worker<'_>) {
+/// `Worker::init()`.
+pub fn swr_v1_worker_init(worker: Worker<'_>) {
     worker.init();
 }
 
-/// `Worker::shutdown()` for the native symbol.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Worker8shutdownEv")
-)]
-pub extern "C" fn swr_v1_worker_shutdown(worker: Worker<'_>) {
+/// `Worker::shutdown()`.
+pub fn swr_v1_worker_shutdown(worker: Worker<'_>) {
     worker.shutdown();
 }
 

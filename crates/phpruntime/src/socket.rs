@@ -610,11 +610,11 @@ pub mod co {
         count: c_int,
     ) -> (isize, c_int, usize) {
         // SAFETY: per the caller, `count` vectors valid for the operation.
-        let Some(vector) = (unsafe { IoVector::new(vectors, count) }) else {
+        let Some(mut vector) = (unsafe { IoVector::new(vectors, count) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             std::process::abort();
         };
-        let result = socket.vector(&vector, op >= 2, op & 1 == 1);
+        let result = socket.vector(&mut vector, op >= 2, op & 1 == 1);
         let (index, offset) = vector.stopped();
         (result, index, offset)
     }
@@ -634,15 +634,6 @@ pub mod co {
 
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;
-
-    /// The socket's record.
-    /// # Safety
-    /// `socket` is live.
-    #[must_use]
-    pub unsafe fn record<'a>(socket: Socket) -> &'a mut CoSocket {
-        // SAFETY: per the caller; the socket is its record.
-        unsafe { &mut *socket.cast::<CoSocket>() }
-    }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
     /// # Safety

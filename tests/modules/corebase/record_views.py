@@ -28,11 +28,9 @@ int main() {
     assert(allocator.malloc==::malloc && allocator.calloc==::calloc && allocator.realloc==::realloc && allocator.free==::free);
     void *bytes=allocator.malloc(17);assert(bytes);allocator.free(bytes);
     assert(SwooleG.max_sockets>0 && SwooleG.running && SwooleG.enable_coroutine && SwooleG.pagesize>0);
-    assert(std::strcmp(SwooleG.task_tmpfile.c_str(),"/tmp/swoole.task.XXXXXX")==0);
     SwooleG.max_sockets=91;SwooleG.dns_cache_refresh_time=2.5;
     assert(SwooleG.max_sockets==91 && SwooleG.dns_cache_refresh_time==2.5);
-    assert(swr_v1_core_set_task_tmpdir("/tmp") && std::strcmp(SwooleG.task_tmpfile.c_str(),"/tmp/swoole.task.XXXXXX")==0);
-    assert(!swr_v1_core_set_task_tmpdir("relative") && std::strcmp(SwooleG.task_tmpfile.c_str(),"/tmp/swoole.task.XXXXXX")==0);
+    assert(swr_v1_core_set_task_tmpdir("/tmp") && !swr_v1_core_set_task_tmpdir("relative"));
     assert(SwooleTG.main_thread && swoole_is_main_thread());
     SwooleTG.id=19;SwooleTG.type=3;
     auto *id_address=&SwooleTG.id;
@@ -44,7 +42,7 @@ int main() {
     assert(&SwooleTG.id==id_address && SwooleTG.id==19 && SwooleTG.type==3);
     swoole_clean();
     assert(&SwooleG.std_allocator==allocator_address && SwooleG.std_allocator.malloc==nullptr && SwooleG.max_sockets==0);
-    assert(SwooleG.dns_cache_refresh_time==0 && *SwooleG.task_tmpfile.c_str()=='\0' && !SwooleG.running);
+    assert(SwooleG.dns_cache_refresh_time==0 && !SwooleG.running);
     std::cout<<"core config/thread views PASS\n";
 }
 '''

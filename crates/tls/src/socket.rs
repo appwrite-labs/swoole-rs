@@ -75,11 +75,16 @@ impl Ssl {
     /// The SSL of `socket`'s record, or None without one.
     #[must_use]
     pub fn of(socket: Socket<'_>) -> Option<Self> {
-        let ssl = socket.read(SocketFields::ssl);
+        socket.read(Self::of_fields)
+    }
+
+    /// The SSL of a record's fields, or None without one.
+    #[must_use]
+    pub fn of_fields(fields: &SocketFields) -> Option<Self> {
         // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
         // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
         // contract) set it, and `ssl_close` takes it before freeing it.
-        unsafe { Self::new(ssl.cast()) }
+        unsafe { Self::new(fields.ssl().cast()) }
     }
 
     #[must_use]

@@ -1,7 +1,6 @@
 //! The `ProcessPool` and `Worker` methods (once `src/os/process_pool.cc`) that are
-//! whole Rust operations, defined under their upstream (Itanium) symbols when
-//! the hybrid links this crate (`upstream-symbols`). Each runs over crates/server's
-//! [`PoolNative`] side as its C++ forward did.
+//! whole Rust operations. Each runs over crates/server's [`PoolNative`] side as its
+//! C++ forward did.
 
 use crate::worker_record::Worker;
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -108,16 +107,15 @@ unsafe fn run<R: Narrow>(pool: *mut PoolRecord, worker: *mut WorkerRecord, op: u
     R::narrow(result)
 }
 
-/// Each `ProcessPool` method that is one `RUN_*` operation: its symbol if something links
-/// it by name, Rust name, parameters, return type, and the operation's worker and argument.
+/// Each `ProcessPool` method that is one `RUN_*` operation: its name, parameters, return
+/// type, and the operation's worker and argument.
 macro_rules! run_methods {
-    ($($($symbol:literal)? fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
+    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
         #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
         ///
         /// # Safety
         /// `pool` is a live `ProcessPool`; a `worker` is one of its workers.
-        $(#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))])?
-        pub unsafe extern "C" fn $name(pool: *mut PoolRecord, $($p: $t),*) -> $r {
+        pub unsafe fn $name(pool: *mut PoolRecord, $($p: $t),*) -> $r {
             // SAFETY: as the caller guarantees.
             unsafe { run(pool, $worker, $op, $arg) }
         }
@@ -126,34 +124,24 @@ macro_rules! run_methods {
 
 run_methods! {
     fn create_message_box(size: usize) -> c_int = RUN_CREATE_MESSAGE_BOX(ptr::null_mut(), size as u64);
-    "_ZN6swoole11ProcessPool18create_message_busEv"
     fn create_message_bus() -> c_int = RUN_CREATE_MESSAGE_BUS(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool12set_protocolENS_12ProtocolTypeE"
     fn set_protocol(protocol: c_int) -> () = RUN_SET_PROTOCOL(ptr::null_mut(), i64::from(protocol).cast_unsigned());
     fn start_check() -> c_int = RUN_START_CHECK(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool5startEv"
     fn start() -> c_int = RUN_START(ptr::null_mut(), 0);
     fn push_event(event: *const c_void) -> c_int = RUN_PUSH_MESSAGE(ptr::null_mut(), event.addr() as u64);
     fn drop_reload_task() -> () = RUN_DROP_RELOAD_TASK(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool6reloadEv"
     fn reload() -> bool = RUN_RELOAD(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool4stopEPNS_6WorkerE"
     fn stop(worker: *mut WorkerRecord) -> () = RUN_STOP(worker, 0);
-    "_ZN6swoole11ProcessPool13reopen_loggerEv"
     fn reopen_logger() -> () = RUN_REOPEN_LOGGER(ptr::null_mut(), 0);
     fn signal(signo: c_int, worker: *mut WorkerRecord) -> () = RUN_SIGNAL(worker, i64::from(signo).cast_unsigned());
     fn kill_all_workers(signo: c_int) -> () = RUN_KILL_ALL(ptr::null_mut(), i64::from(signo).cast_unsigned());
-    "_ZN6swoole11ProcessPool8shutdownEv"
     fn shutdown() -> bool = RUN_SHUTDOWN(ptr::null_mut(), 0);
     fn spawn(worker: *mut WorkerRecord) -> c_int = RUN_SPAWN(worker, 0);
     fn set_max_request(max: u32, grace: u32) -> () = RUN_SET_MAX_REQUEST(ptr::null_mut(), u64::from(max) | (u64::from(grace) << 32));
     fn set_type(kind: c_int) -> () = RUN_SET_TYPE(ptr::null_mut(), u64::from(kind.cast_unsigned() & 0xff));
     fn set_start_id(id: c_int) -> () = RUN_SET_START_ID(ptr::null_mut(), u64::from(id.cast_unsigned() & 0xffff));
-    "_ZN6swoole11ProcessPool6detachEv"
     fn detach() -> bool = RUN_DETACH(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool4waitEv"
     fn wait() -> c_int = RUN_WAIT(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool7destroyEv"
     fn destroy() -> () = RUN_DESTROY(ptr::null_mut(), 0);
 }
 
@@ -161,16 +149,7 @@ run_methods! {
 ///
 /// # Safety
 /// `pool` is a zeroed or reset `ProcessPool`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11ProcessPool6createEji9swIPCMode")
-)]
-pub unsafe extern "C" fn create(
-    pool: *mut PoolRecord,
-    worker_num: u32,
-    key: c_int,
-    mode: c_int,
-) -> c_int {
+pub unsafe fn create(pool: *mut PoolRecord, worker_num: u32, key: c_int, mode: c_int) -> c_int {
     // SAFETY: as the caller guarantees; the side is native's.
     let result = unsafe {
         swr_v1_process_pool_create(
@@ -188,11 +167,7 @@ pub unsafe extern "C" fn create(
 ///
 /// # Safety
 /// `pool` is a live `ProcessPool`; `data` holds `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool12push_messageEhPKvm")
-)]
-pub unsafe extern "C" fn push_message(
+pub unsafe fn push_message(
     pool: *mut PoolRecord,
     kind: u8,
     data: *const u8,
@@ -218,53 +193,22 @@ pub unsafe fn dispatch(
     })
 }
 
-/// `ProcessPool::dispatch_sync(data, dst_worker_id)`.
-///
-/// # Safety
-/// As [`dispatch`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11ProcessPool13dispatch_syncEPNS_9EventDataEPi")
-)]
-pub unsafe extern "C" fn dispatch_sync(
-    pool: *mut PoolRecord,
-    event: *mut u8,
-    worker_id: *mut c_int,
-) -> c_int {
-    // SAFETY: as the caller guarantees; the side is native's.
-    c_int::narrow(unsafe {
-        swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, true)
-    })
-}
-
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing
 /// before `create`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool10add_workerEPNS_6WorkerE")
-)]
-pub extern "C" fn add_worker(pool: &PoolRecord, worker: Worker<'_>) {
+pub fn add_worker(pool: &PoolRecord, worker: Worker<'_>) {
     pool.with_registry(|registry| registry.insert(worker.pid(), worker.raw().cast(), 0));
 }
 
 /// `ProcessPool::del_worker(worker)`: whether the worker's pid was registered.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool10del_workerEPKNS_6WorkerE")
-)]
 #[must_use]
-pub extern "C" fn del_worker(pool: &PoolRecord, worker: Worker<'_>) -> bool {
+pub fn del_worker(pool: &PoolRecord, worker: Worker<'_>) -> bool {
     pool.with_registry(|registry| registry.unregister(worker.pid()))
         .unwrap_or(false)
 }
 
 /// `ProcessPool::get_worker_by_pid(pid)`: null before `create` or for an unknown pid.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool17get_worker_by_pidEi")
-)]
 #[must_use]
-pub extern "C" fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
+pub fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
     pool.with_registry(|registry| registry.lookup(pid))
         .map_or(ptr::null_mut(), <*mut c_void>::cast)
 }
@@ -280,12 +224,8 @@ pub fn is_worker_running(pool: &PoolRecord, worker: Worker<'_>) -> bool {
 ///
 /// # Safety
 /// `worker` is a live worker of a live pool; `data` holds `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Worker17send_pipe_messageEPKvmi")
-)]
 #[must_use]
-pub unsafe extern "C" fn send_pipe_message(
+pub unsafe fn send_pipe_message(
     worker: *const WorkerRecord,
     data: *const u8,
     length: usize,
@@ -334,13 +274,8 @@ unsafe extern "C-unwind" {
 /// # Safety
 /// `pool` is a created `ProcessPool`; `file` a NUL-terminated path.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZNK6swoole11ProcessPool6listenEPKci")]
 #[must_use]
-pub unsafe extern "C" fn listen_unix(
-    pool: *const PoolRecord,
-    file: *const c_char,
-    backlog: c_int,
-) -> c_int {
+pub unsafe fn listen_unix(pool: *const PoolRecord, file: *const c_char, backlog: c_int) -> c_int {
     // SAFETY: as the caller guarantees; 5 is SW_SOCK_UNIX_STREAM.
     unsafe { listen(pool, 5, file, 0, backlog, make_server_socket) }
 }
@@ -350,9 +285,8 @@ pub unsafe extern "C" fn listen_unix(
 /// # Safety
 /// `pool` is a created `ProcessPool`; `host` a NUL-terminated address.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZNK6swoole11ProcessPool6listenEPKcii")]
 #[must_use]
-pub unsafe extern "C" fn listen_tcp(
+pub unsafe fn listen_tcp(
     pool: *const PoolRecord,
     host: *const c_char,
     port: c_int,
@@ -409,12 +343,8 @@ pub unsafe fn listen<T>(
 ///
 /// # Safety
 /// `pool` is a created `ProcessPool`; `data` is null or holds `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool8responseEPKcj")
-)]
 #[must_use]
-pub unsafe extern "C" fn response(pool: *const PoolRecord, data: *const u8, length: u32) -> c_int {
+pub unsafe fn response(pool: *const PoolRecord, data: *const u8, length: u32) -> c_int {
     // SAFETY: the caller lends a live pool.
     let ipc = unsafe { (*pool).ipc };
     let data = if data.is_null() {
@@ -442,9 +372,8 @@ pub unsafe extern "C" fn response(pool: *const PoolRecord, data: *const u8, leng
 /// # Safety
 /// `pool` is a created `ProcessPool`; `message` holds `length` bytes.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZNK6swoole11ProcessPool12send_messageEjPKcm")]
 #[must_use]
-pub unsafe extern "C" fn send_message(
+pub unsafe fn send_message(
     pool: *const PoolRecord,
     worker_id: u32,
     message: *const c_char,
@@ -516,11 +445,7 @@ pub unsafe fn pop_message(pool: *const PoolRecord, data: *mut c_void, size: usiz
 }
 
 /// `Worker::set_max_request(max_request, grace)`: this process's request limit.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Worker15set_max_requestEjj")
-)]
-pub extern "C" fn worker_set_max_request(_worker: *mut WorkerRecord, max_request: u32, grace: u32) {
+pub fn worker_set_max_request(max_request: u32, grace: u32) {
     worker_global_max_requests(max_request, grace, swoole_rs_corebase::swoole_system_random);
 }
 
@@ -592,22 +517,14 @@ pub extern "C" fn reload_warn(kind: c_int, pid: c_int, worker_id: u32) {
 }
 
 /// `Worker::is_shutdown()`: the current worker's.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Worker11is_shutdownEv")
-)]
 #[must_use]
-pub extern "C" fn worker_is_shutdown(_worker: *const WorkerRecord) -> bool {
+pub fn worker_is_shutdown() -> bool {
     swr_v1_worker_global_get(4) != 0
 }
 
 /// `Worker::is_running()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Worker10is_runningEv")
-)]
 #[must_use]
-pub extern "C" fn worker_is_running() -> bool {
+pub fn worker_is_running() -> bool {
     swr_v1_worker_global_get(3) != 0
 }
 
@@ -634,11 +551,7 @@ pub extern "C" fn swoole_get_worker_type() -> c_int {
 }
 
 /// `swoole_set_worker_id(worker_id)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_set_worker_idj")
-)]
-pub extern "C" fn swoole_set_worker_id(id: u32) {
+pub fn swoole_set_worker_id(id: u32) {
     swr_v1_worker_global_set(0, i64::from(id));
 }
 
@@ -977,10 +890,7 @@ pub(crate) mod tests {
             swoole_set_worker_type(-1);
             assert_eq!(swoole_get_worker_type(), 255, "type narrows to uint8_t");
             assert!(!worker_is_running(), "not running before init");
-            assert!(
-                !worker_is_shutdown(ptr::null()),
-                "not shut down before init"
-            );
+            assert!(!worker_is_shutdown(), "not shut down before init");
         });
         assert!(checks.join().is_ok(), "identity checks on a fresh thread");
     }

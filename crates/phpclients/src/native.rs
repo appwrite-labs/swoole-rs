@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
-    client::{self, Client, ClientRecord, Op},
+    client::{self, Client, Op},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::co_socket::Co as Handle;
@@ -113,11 +113,8 @@ impl NewSocket {
 /// # Errors
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
-    // SAFETY: a hook that owns nothing, run below the C bailout trap.
-    if unsafe { swoole_rs_zend::sys::swr_zend_try_hook(Some(swoole_rs_check_reactor)) } != 0 {
-        return Err(Bailout);
-    }
-    Ok(())
+    // SAFETY: starting the reactor holds nothing a bailout would skip dropping.
+    unsafe { bailout::trap_with(swoole_rs_phpruntime::check_reactor) }
 }
 
 /// Whether the build has an optional SSL option: the host name (0) or grease
@@ -587,17 +584,10 @@ impl Cli {
         unsafe { &*self.0 }
     }
 
-    /// The client's public record, at the start of its state; borrowed only
-    /// between its operations.
-    pub(crate) fn record<'a>(self) -> &'a mut ClientRecord {
-        // SAFETY: as in `get`; nothing else touches the record while the borrow lasts.
-        unsafe { &mut *self.0.cast::<ClientRecord>() }
-    }
-
     /// `cli->socket`, while the client has one.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
         // SAFETY: null or a constructed client's socket, live while the client is.
-        unsafe { Net::from_ptr(self.record().socket) }
+        unsafe { Net::from_ptr(self.get().record().socket) }
     }
 
     /// crates/clients' handle on the client.
@@ -644,7 +634,9 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
 pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
-    let callable = std::mem::replace(&mut cli.record().protocol.private_data_1, ptr::null_mut());
+    let callable = cli.get().edit_record(|record| {
+        std::mem::replace(&mut record.protocol.private_data_1, ptr::null_mut())
+    });
     if !callable.is_null() {
         callable_free(callable)?;
     }
@@ -814,9 +806,4 @@ pub(crate) enum Transfer {
     RecvWithBuffer = 4,
     Send = 5,
     SendAll = 6,
-}
-
-/// `php_swoole_check_reactor()`; a `swr_zend_try_hook` body.
-pub(crate) unsafe extern "C" fn swoole_rs_check_reactor() {
-    swoole_rs_phpruntime::check_reactor();
 }

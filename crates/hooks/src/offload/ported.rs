@@ -420,6 +420,7 @@ fn upstream(scenario: i32) -> Vec<String> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
 fn ported_async_gate() {
     for scenario in 0..426 {
         assert_eq!(

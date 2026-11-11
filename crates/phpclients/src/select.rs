@@ -5,19 +5,19 @@ use crate::{
     net::{CONNECT_TIMEOUT, bailed, errno, warn, warn_sys},
 };
 use libc::{POLLHUP, POLLIN, POLLOUT, c_int, c_short, nfds_t, pollfd};
-use swoole_rs_zend::{Array, Call, OwnedArray, Value};
+use swoole_rs_zend::{Array, Call, Owned, OwnedArray, Value};
 
 /// The arrays by argument number, with the event each is polled for.
 const SETS: [(u32, c_short); 3] = [(1, POLLIN), (2, POLLOUT), (3, POLLHUP)];
 
 /// The non-empty array by-reference argument `n` refers to now: read afresh
 /// each time, since two arguments may refer to the same array, which
-/// [`keep_ready`] replaces.
-fn set(call: &Call, n: u32) -> Option<&Array> {
-    call.value(n)?
-        .dereferenced()
-        .array()
-        .filter(|array| array.count() > 0)
+/// [`keep_ready`] replaces. A reference of its own, since converting the
+/// elements can run PHP code that assigns the argument.
+fn set(call: &Call, n: u32) -> Option<Owned> {
+    let value = call.value(n)?.dereferenced();
+    value.array().filter(|array| array.count() > 0)?;
+    Some(value.copy())
 }
 
 /// `php_swoole_array_length_safe`.
@@ -103,7 +103,8 @@ fn select(call: &Call) {
     let count = length(read).max(length(write)).max(length(except));
     let mut fds = Vec::with_capacity(count);
     for (n, event) in SETS {
-        if let Some(array) = set(call, n)
+        if let Some(set) = set(call, n)
+            && let Some(array) = set.array()
             && add(array, &mut fds, count, event).is_none()
         {
             return call.set_bool(false);
@@ -140,14 +141,17 @@ fn select(call: &Call) {
         return call.set_bool(false);
     }
     for (n, event) in SETS {
-        let Some(array) = set(call, n) else {
+        let Some(set) = set(call, n) else {
             continue;
         };
-        let Some(ready) = keep_ready(array, &fds, count, event) else {
+        let Some(ready) = set
+            .array()
+            .and_then(|array| keep_ready(array, &fds, count, event))
+        else {
             return call.set_bool(false);
         };
-        // SAFETY: `array`, the one thing borrowed from argument `n`, is not
-        // used again, and `set` reads every later argument afresh.
+        // SAFETY: nothing is borrowed from argument `n`: `set` holds its own
+        // reference, and every later argument is read afresh.
         unsafe { call.assign(n, ready.into_owned()) };
     }
     call.set_long(i64::from(ready));

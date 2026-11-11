@@ -10,8 +10,9 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
+use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
 use swoole_rs_buffer::string::CppString;
@@ -259,6 +260,7 @@ unsafe extern "C" {
 /// aliases in its base record; protocol callbacks and addresses retain their
 /// original identity and lifetime, including direct SDK field writes.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ClientRecord {
     pub http2: bool,
     pub open_length_check: bool,
@@ -286,7 +288,7 @@ const _: () = {
 /// One client's state, its public record first: `network::Client`.
 #[repr(C)]
 pub struct Client {
-    record: UnsafeCell<ClientRecord>,
+    record: Cell<ClientRecord>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -318,6 +320,20 @@ impl Client {
             Proxy::Socks5 => &self.socks5,
             Proxy::Http => &self.http_proxy,
         }
+    }
+
+    /// A copy of the public record.
+    pub fn record(&self) -> ClientRecord {
+        self.record.get()
+    }
+
+    /// Edit a copy of the public record and write it back, so no reference
+    /// into the record is live while `edit` runs.
+    pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
+        let mut record = self.record.get();
+        let result = edit(&mut record);
+        self.record.set(record);
+        result
     }
 
     /// One of the flags above; false for any other.
@@ -370,7 +386,7 @@ impl Handle {
     fn fields(self) -> &'static mut ClientRecord {
         // SAFETY: the live client's record, which SDK callers reach only between
         // its operations.
-        unsafe { &mut *self.get().record.get() }
+        unsafe { &mut *self.get().record.as_ptr() }
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
@@ -814,7 +830,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     };
     let mut client = Box::new(Client {
         // SAFETY: all-zero pointers, bools, addresses and Protocol are valid.
-        record: UnsafeCell::new(unsafe { core::mem::zeroed() }),
+        record: Cell::new(unsafe { core::mem::zeroed() }),
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
@@ -883,8 +899,6 @@ pub enum Op<'a> {
     Close,
     Sleep,
     Wakeup,
-    /// `enable_ssl_encrypt()`.
-    EnableSsl,
     SslHandshake,
     /// `ssl_verify(allow_self_signed)`.
     SslVerify(bool),
@@ -929,11 +943,23 @@ impl Handle {
             Op::Close => close(self).into(),
             Op::Sleep => sleep(self).into(),
             Op::Wakeup => wakeup(self).into(),
-            Op::EnableSsl => enable_ssl(self).into(),
             Op::SslHandshake => ssl_handshake(self).into(),
             Op::SslVerify(allow_self_signed) => ssl_verify(self, allow_self_signed).into(),
             Op::SslWait => self.event(EVENT_SET, EVENT_WRITE).into(),
         }
+    }
+
+    /// `enable_ssl_encrypt()`: the new TLS context, which the caller configures
+    /// before any handshake; None when TLS was already on.
+    #[must_use]
+    pub fn enable_ssl(self) -> Option<NonNull<OwnedTlsContext>> {
+        enable_ssl(self)
+    }
+
+    /// The client's TLS context, which `set()` configures; None while TLS is off.
+    #[must_use]
+    pub fn ssl_context(self) -> Option<NonNull<OwnedTlsContext>> {
+        NonNull::new(self.get().tls.get().cast_mut())
     }
 
     /// `delete client`, which may raise `onClose`.
@@ -1141,10 +1167,10 @@ fn wakeup(this: Handle) -> c_int {
 }
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
-/// client. -1 when TLS was already on.
-fn enable_ssl(this: Handle) -> c_int {
+/// client. The context, or None when TLS was already on.
+fn enable_ssl(this: Handle) -> Option<NonNull<OwnedTlsContext>> {
     if !this.get().tls.get().is_null() {
-        return ERR;
+        return None;
     }
     // A new context and the client's reference to it.
     let tls = swr_v1_tls_owner_new();
@@ -1153,7 +1179,7 @@ fn enable_ssl(this: Handle) -> c_int {
     if is_dgram(this.socket_type()) {
         enable_dtls(this);
     }
-    OK
+    NonNull::new(tls.owner.cast_mut())
 }
 
 /// `Client::set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which
