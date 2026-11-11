@@ -43,7 +43,7 @@ use swoole_rs_tls::upstream::{
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
-    swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view, swr_v1_tls_warning,
+    swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view,
 };
 #[cfg(test)]
 use tests::{
@@ -1164,7 +1164,7 @@ fn enable_ssl(this: Handle) -> c_int {
         return ERR;
     }
     // A new context and the client's reference to it.
-    let tls = swr_v1_tls_owner_new(swr_v1_tls_warning);
+    let tls = swr_v1_tls_owner_new();
     this.get().tls.set(tls.owner);
     this.set(OPEN_SSL, true);
     if is_dgram(this.socket_type()) {

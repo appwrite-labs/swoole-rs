@@ -29,7 +29,7 @@ struct SSLContext {
     SSLContext &operator=(const SSLContext &) = delete;
 
     static SSLContext *make() {
-        auto *owner = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+        auto *owner = swr_v1_tls_owner_new().owner;
         if (!owner) throw std::bad_alloc();
         return of(owner);
     }

@@ -13,7 +13,7 @@ use swoole_rs_tls::upstream::{
 use swoole_rs_tls::{
     OwnedTlsContext, owner_fields, owner_tls_host_name, reason_text, swoole_ssl_init,
     swr_v1_tls_owner_clone, swr_v1_tls_owner_new, swr_v1_tls_owner_socket_context,
-    swr_v1_tls_owner_socket_session, swr_v1_tls_warning,
+    swr_v1_tls_owner_socket_session,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -46,7 +46,7 @@ impl Co {
         if !tls.is_null() {
             return false;
         }
-        *tls = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+        *tls = swr_v1_tls_owner_new().owner;
         true
     }
 
