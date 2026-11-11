@@ -12,13 +12,6 @@ use crate::{
 use std::ptr;
 
 impl Call {
-    /// `Z_PARAM_ZVAL` of argument `n` (1-based); `None` when not passed.
-    #[must_use]
-    #[inline]
-    pub fn passed(&self, n: u32) -> Option<*mut zval> {
-        self.passed_arg(n).then(|| self.arg(n))
-    }
-
     /// `Z_PARAM_STR_OR_NULL`: as `str`, but a passed null is `None`.
     /// # Errors
     /// The argument is not a string or null under the caller's typing mode;
