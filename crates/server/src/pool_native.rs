@@ -142,6 +142,19 @@ fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
     unsafe { &mut *worker }
 }
 
+/// The pool's stream listener socket, or null.
+fn listener(pool: Pool) -> *mut c_void {
+    // SAFETY: a live pool's IPC state lives as long as the pool.
+    let ipc = unsafe { &*record(pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>() };
+    swr_v1_process_pool_ipc_listener(ipc)
+}
+
+/// [`worker_of`]'s worker as a [`Record`] handle.
+fn handle<'a>(worker: Worker) -> Record<'a> {
+    // SAFETY: as `worker_of`; the pool's protocol orders the writes.
+    unsafe { Record::new(worker) }
+}
+
 /// A live socket's fd, or -1 for none.
 fn fd(socket: *mut c_void) -> c_int {
     crate::objects::socket(socket).map_or(-1, Socket::fd)
@@ -567,8 +580,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             0
         }
         OP_WORKER_INIT => {
-            // SAFETY: the worker this process now runs.
-            let record = unsafe { Record::new(worker) };
+            let record = handle(worker);
             swr_v1_worker_init(record);
             record.set_pid(std::process::id() as c_int);
             swoole_set_worker_type(SW_WORKER);
@@ -587,8 +599,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             0
         }
         OP_WORKER_SHUTDOWN => {
-            // SAFETY: the worker this process runs.
-            swr_v1_worker_shutdown(unsafe { Record::new(worker) });
+            swr_v1_worker_shutdown(handle(worker));
             0
         }
         OP_REMOVE_PIPE => {
@@ -661,8 +672,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             }
         }
         OP_PUSH_STOP => {
-            // SAFETY: the worker stopping.
-            let record = unsafe { Record::new(worker) };
+            let record = handle(worker);
             let message = WorkerStopMessage {
                 pid: record.pid(),
                 worker_id: record.id() as u16,
@@ -703,8 +713,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_WORKER_ERROR => {
             let status = exit_status(arg);
-            // SAFETY: the worker that exited.
-            worker_report_error(unsafe { Record::new(worker) }, &status);
+            worker_report_error(handle(worker), &status);
             if let Some(on_worker_error) = callback!(record(pool).on_worker_error, ErrorFn) {
                 // SAFETY: the pool's callback over its worker and the status.
                 unsafe { on_worker_error(pool, worker, &raw const status) };
@@ -793,8 +802,7 @@ fn io(arg: *mut c_void, io: impl FnOnce(&mut PoolCall) -> isize) {
 }
 
 unsafe extern "C" fn running(pool: *mut c_void, worker: *mut c_void) -> bool {
-    // SAFETY: the live worker.
-    is_worker_running(record(pool.cast()), unsafe { Record::new(worker.cast()) })
+    is_worker_running(record(pool.cast()), handle(worker.cast()))
 }
 
 unsafe extern "C" fn end(_: *mut c_void) {
@@ -831,12 +839,7 @@ unsafe extern "C" fn queue_push(arg: *mut c_void) {
 
 unsafe extern "C" fn accept(arg: *mut c_void) {
     let c = call_of(arg);
-    // SAFETY: the pool's stream listener.
-    let listener = swr_v1_process_pool_ipc_listener(unsafe {
-        &*record(c.pool.cast())
-            .ipc
-            .cast::<swoole_rs_process::pool::PoolIpc>()
-    });
+    let listener = listener(c.pool.cast());
     c.socket = socket(listener.cast())
         .map_or(ptr::null_mut(), |listener| {
             listener.edit(swoole_rs_reactor::SocketRecord::accept)
@@ -923,8 +926,7 @@ unsafe extern "C" fn message(arg: *mut c_void) {
 }
 
 unsafe extern "C" fn shutdown(worker: *mut c_void) {
-    // SAFETY: the worker this process runs.
-    swr_v1_worker_shutdown(unsafe { Record::new(worker.cast()) });
+    swr_v1_worker_shutdown(handle(worker.cast()));
 }
 
 unsafe extern "C" fn pipe_write(arg: *mut c_void) {
@@ -955,8 +957,7 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
     let id = if worker.is_null() {
         0
     } else {
-        // SAFETY: the loop's worker.
-        unsafe { Record::new(worker).id() }
+        handle(worker).id()
     };
     let origin = loop_origin(pool);
     match kind {
@@ -969,10 +970,7 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
             log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
         }
         WARN_ACCEPT => {
-            // SAFETY: the pool's stream listener.
-            let listener = swr_v1_process_pool_ipc_listener(unsafe {
-                &*record(pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>()
-            });
+            let listener = listener(pool);
             log::sys_warning(
                 origin,
                 format_args!("[Worker#{id}] accept({}) failed", fd(listener.cast())),

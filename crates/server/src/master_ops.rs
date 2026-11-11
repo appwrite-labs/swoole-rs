@@ -300,6 +300,26 @@ impl Objects<'_> {
         // SAFETY: the ops reading it run with a live worker as the context's object.
         unsafe { &mut *self.ctx.object.cast::<WorkerRecord>() }
     }
+    /// The live `SendData` the send path lends.
+    fn send(&self) -> &SendData {
+        // SAFETY: the ops reading it run with a live send in the context.
+        unsafe { &*self.ctx.send.cast::<SendData>() }
+    }
+    /// The NUL-terminated host `add_port` lends.
+    fn host(&self) -> &CStr {
+        // SAFETY: the ops reading it run with a live host in the context.
+        unsafe { CStr::from_ptr(self.ctx.host) }
+    }
+    /// The bytes of the NUL-terminated string the ops reading it pass as data.
+    fn data_bytes(&self) -> &[u8] {
+        // SAFETY: the ops reading it pass a NUL-terminated string.
+        unsafe { CStr::from_ptr(self.ctx.data.cast()) }.to_bytes()
+    }
+    /// The live socket native code passes as `arg`.
+    fn arg_socket(&self, arg: u64) -> Option<Socket<'_>> {
+        // SAFETY: the ops reading it pass a live socket.
+        unsafe { self.sockets().socket(arg as *mut SocketRecord) }
+    }
     fn data(&self) -> std::borrow::Cow<'_, str> {
         // SAFETY: the ops reading it pass a NUL-terminated string.
         unsafe { text(self.ctx.data.cast()) }
@@ -504,8 +524,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_OUT_EMPTY => {
-            // SAFETY: native code passes a live socket.
-            let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
+            let socket = o.arg_socket(arg)?;
             let empty = |s: &SocketRecord| {
                 crate::reactor_ops::out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b))
             };
@@ -528,8 +547,8 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_QUEUE_CLOSE => {
-            // SAFETY: a live session socket of this thread's reactor.
-            let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
+            // A live session socket of this thread's reactor.
+            let socket = o.arg_socket(arg)?;
             socket
                 .read(|s| crate::reactor_ops::out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
             // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
@@ -796,8 +815,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         LOG_SENDFILE_NAME => {
             // `%.8s`: at most 8 bytes of the name.
-            // SAFETY: sendfile's name is a NUL-terminated string.
-            let name = unsafe { CStr::from_ptr(o.ctx.data.cast()) }.to_bytes();
+            let name = o.data_bytes();
             let head = String::from_utf8_lossy(name.get(..8).unwrap_or(name));
             let (length, max) = (o.ctx.length, IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1);
             let m = format_args!(
@@ -872,8 +890,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_HOST_TOO_LONG => {
-            // SAFETY: add_port's host is a NUL-terminated string.
-            let host = unsafe { text(o.ctx.host) };
+            let host = o.host().to_string_lossy();
             let m = format_args!(
                 "address '{host}' exceeds the limit of {} characters",
                 host_maxsize() - 1
@@ -912,12 +929,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_SC_NO_SESSION_EVENT => {
-            // SAFETY: send_to_connection's context holds its send data.
-            let kind = unsafe {
-                (*o.ctx.send.cast::<crate::base_factory::SendData>())
-                    .info
-                    .kind
-            };
+            // send_to_connection's context holds its send data.
+            let kind = o.send().info.kind;
             let m = format_args!(
                 "send event[{kind}] failed, session#{} does not exist",
                 o.ctx.session_id
@@ -1082,8 +1095,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 libc::SIGWINCH
             };
-            // SAFETY: kill has no memory preconditions.
-            sign(unsafe { libc::kill(pid, signal) })
+            sign(swoole_rs_process::os::kill(pid, signal))
         }
 
         // The context's port.
@@ -1156,10 +1168,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // The context's own fields.
         OP_PORT_TYPE => sign(o.ctx.socket_type),
         OP_PORT_NUMBER => sign(o.ctx.number),
-        OP_HOST_SIZE => {
-            // SAFETY: add_port's host is a NUL-terminated string.
-            unsafe { CStr::from_ptr(o.ctx.host) }.count_bytes() as u64 + 1
-        }
+        OP_HOST_SIZE => o.host().count_bytes() as u64 + 1,
         OP_HOST_MAXSIZE => host_maxsize() as u64,
         OP_SENDFILE_NAME_LEN => u64::from(o.ctx.length),
         OP_SENDFILE_NAME_MAX => (IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1) as u64,
@@ -1311,8 +1320,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SENDFILE_NAME => {
             // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
             let name = o.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE);
-            // SAFETY: sendfile's NUL-terminated name.
-            let source = unsafe { CStr::from_ptr(o.ctx.data.cast()) }.to_bytes();
+            let source = o.data_bytes();
             let length = source.len().min(IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1);
             // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes after its head.
             unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), name.cast(), length) };
@@ -1593,12 +1601,17 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// `get_connection_verify_no_ssl` for a close), its reactor, port and socket, and
 /// returns every fact the send reads, or 0 when there is none.
 fn verify(o: &mut Objects<'_>) -> u64 {
-    // SAFETY: the send path lends its live `SendData`.
-    let send = unsafe { &*o.ctx.send.cast::<SendData>() };
-    let kind = if send.info.kind == EVENT_CLOSE { 2 } else { 3 };
-    o.ctx.conn = o.state.connection_ptr(o.ctx.session_id, kind).cast();
-    // SAFETY: null, or a slot of the live connection table.
-    let Some(conn) = (unsafe { o.ctx.conn.cast::<ConnectionRecord>().as_ref() }) else {
+    let kind = if o.send().info.kind == EVENT_CLOSE {
+        2
+    } else {
+        3
+    };
+    let mut conn = o.state.connection(o.ctx.session_id, kind);
+    o.ctx.conn = conn
+        .as_deref_mut()
+        .map_or(core::ptr::null_mut(), core::ptr::from_mut)
+        .cast();
+    let Some(conn) = conn else {
         return 0;
     };
     o.ctx.reactor = swoole_rs_corebase::thread_reactor();
@@ -1690,8 +1703,8 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let addr = if let Some(conn) = o.state.connection(fd, 0) {
                 &conn.info
             } else {
-                // SAFETY: no connection: the context sends a datagram.
-                let packet = unsafe { (*o.ctx.send.cast::<crate::base_factory::SendData>()).data };
+                // No connection: the context sends a datagram.
+                let packet = o.send().data;
                 #[expect(
                     clippy::cast_ptr_alignment,
                     reason = "the payload is a message bus buffer, aligned for its `DgramPacket`"
@@ -2492,8 +2505,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let port = o.port();
             port.r#type = o.ctx.socket_type;
             port.port = o.ctx.number;
-            // SAFETY: the NUL-terminated host the caller lends.
-            let host = unsafe { CStr::from_ptr(o.ctx.host) };
+            let host = o.host();
             // SAFETY: the new port's own slot.
             let set = unsafe {
                 swoole_rs_corebase::swr_v1_core_string_set(

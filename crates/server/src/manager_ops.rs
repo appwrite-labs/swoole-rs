@@ -160,8 +160,7 @@ const REGISTRY_USER: c_int = 2;
 fn kill_workers(ctx: &Context, category: c_int, origin: &core::ffi::CStr) {
     // SAFETY: the server's live registry.
     let registry = unsafe { &*ctx.registry() };
-    // SAFETY: kill(2) has no memory preconditions.
-    let kill = |pid, signo| unsafe { libc::kill(pid, signo) };
+    let kill = swoole_rs_process::os::kill;
     let wait = |pid| swoole_waitpid(pid, None, 0);
     let warn = |pid| log::sys_warning(origin, format_args!("waitpid({pid}) failed"));
     registry.terminate(category, libc::SIGTERM, kill, wait, warn);

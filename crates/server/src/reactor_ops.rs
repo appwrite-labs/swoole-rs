@@ -148,6 +148,12 @@ fn stream_event(kind: u8) -> bool {
     matches!(kind, 0 | 2..=5 | 11..=14)
 }
 
+/// `pthread_self(3)`: the calling thread's id.
+pub(crate) fn pthread_self() -> libc::pthread_t {
+    // SAFETY: pthread_self has no preconditions.
+    unsafe { libc::pthread_self() }
+}
+
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketRecord) -> Option<&CppBuffer> {
     // SAFETY: a socket's output buffer is null or the live `Buffer` it owns.
@@ -760,8 +766,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             serv_sock.fd = fd;
             serv_sock.socket_type = config.r#type;
             serv_sock.object = port;
-            // SAFETY: the calling thread's own id.
-            config.thread_id = unsafe { libc::pthread_self() };
+            config.thread_id = pthread_self();
             change(socket.as_ptr(), 0, SW_EVENT_READ)
         }
         OP_CONN_UNREAD => interest(conn_socket(), 4),
@@ -802,8 +807,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_KILL_SELF => {
             let pid = std::process::id().cast_signed();
-            // SAFETY: signals this process.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            swoole_rs_process::os::kill(pid, libc::SIGTERM);
             0
         }
         OP_MASTER_REACTOR_ID => {

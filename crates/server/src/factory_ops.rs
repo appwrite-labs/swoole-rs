@@ -397,8 +397,8 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     match op {
         OP_FORK => return Some(signed(swoole_rs_corebase::swoole_fork(0))),
         OP_EXIT => {
-            // SAFETY: exit(3), as upstream.
-            unsafe { libc::exit(0) }
+            // exit(3), as upstream.
+            std::process::exit(0)
         }
         // SAFETY: the context's live worker.
         OP_WORKER_PID => return Some(signed(unsafe { Worker::new(worker) }.pid())),
@@ -522,10 +522,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         // SAFETY: as above.
         OP_START_MANAGER => signed(unsafe { entry::start_manager_process(serv) }),
-        OP_KILL_MANAGER => {
-            // SAFETY: kill has no memory preconditions.
-            signed(unsafe { libc::kill(gs.manager_pid, libc::SIGTERM) })
-        }
+        OP_KILL_MANAGER => signed(swoole_rs_process::os::kill(gs.manager_pid, libc::SIGTERM)),
         LOG_KILL_MANAGER => {
             let pid = gs.manager_pid;
             log::sys_warning(
