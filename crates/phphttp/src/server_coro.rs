@@ -1097,9 +1097,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         {
             conn.buffer()
                 .set_offset(i64::try_from(HTTP2_PRI.len()).unwrap_or(0));
-            http2(conn, context);
-            context = ptr::null_mut();
-            break;
+            return http2(conn, context);
         }
         request_data(context, conn.buffer(), total);
         let callable = conn.server.handler(context);
@@ -1114,8 +1112,9 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         } else {
             send::state(context).response.status = NOT_FOUND;
         }
-        context::release_objects(context);
+        let released = context::release_objects(context);
         context = ptr::null_mut();
+        released?;
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
         if !running || !keep_alive || unsafe { is_socket_closed(conn.zconn) } {
@@ -1126,10 +1125,10 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             step = Step::Parse;
         }
     }
-    if !context.is_null() {
-        context::release_objects(context);
+    if context.is_null() {
+        return Ok(());
     }
-    Ok(())
+    context::release_objects(context)
 }
 
 /// `swoole_strnpos(.., "\r\n\r\n")`.
@@ -1137,7 +1136,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
 /// takes the HTTP/1 request's context as its default and handles each frame
 /// until the peer goes or a frame fails (or a handler bailed out, which
 /// `onAccept` re-raises).
-fn http2(conn: &Connection, context: *mut Context) {
+fn http2(conn: &Connection, context: *mut Context) -> Result<(), bailout::Bailout> {
     http2_begin(conn.socket);
     let fd = send::state(context).fd;
     #[expect(
@@ -1176,7 +1175,7 @@ fn http2(conn: &Connection, context: *mut Context) {
         (server.session_free)(fd);
     }
     send::state(context).detached = 1;
-    context::release_objects(context);
+    context::release_objects(context)
 }
 
 fn find_crlf2(data: &[u8]) -> Option<usize> {
@@ -1244,10 +1243,7 @@ fn http2_request(
     } else {
         send::state(context).response.status = NOT_FOUND;
     }
-    if result.is_ok() {
-        context::release_objects(context);
-    }
-    result
+    result.and_then(|()| context::release_objects(context))
 }
 
 #[cfg(test)]

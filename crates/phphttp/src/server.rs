@@ -283,8 +283,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
             }
             call(ctx, facts.coroutine)?;
         }
-        context::release_objects(ctx);
-        Ok(())
+        context::release_objects(ctx)
     });
     bailout::raise(result);
     DONE
@@ -381,10 +380,8 @@ fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
 /// `ctx` is a queued server request's live context.
 unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
     let ctx = ctx.cast::<Context>();
-    let result = call(ctx, enable_coroutine(context::server(state(ctx))));
-    if result.is_ok() {
-        context::release_objects(ctx);
-    }
+    let result = call(ctx, enable_coroutine(context::server(state(ctx))))
+        .and_then(|()| context::release_objects(ctx));
     bailout::raise(result);
 }
 
@@ -535,17 +532,14 @@ pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
     let ctx = ctx.raw();
     let (server, fd) = (context::server(state(ctx)), state(ctx).fd);
     let Some((conn, facts)) = http2_connection(server, fd) else {
-        context::release_objects(ctx);
-        return Ok(());
+        return context::release_objects(ctx);
     };
     state(ctx).request.version = HTTP_VERSION_2;
     let Some(http2) = crate::http2::server() else {
-        context::release_objects(ctx);
-        return Ok(());
+        return context::release_objects(ctx);
     };
     if facts.static_handler && (http2.static_file)(server.raw(), crate::http2::Ctx::of(ctx))? {
-        context::release_objects(ctx);
-        return Ok(());
+        return context::release_objects(ctx);
     }
     let state = state(ctx);
     let cache = facts.cache.filter(|_| state.keepalive != 0);
@@ -572,8 +566,7 @@ pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
             (http2.respond)(crate::http2::Ctx::of(ctx), &[]);
-            context::release_objects(ctx);
-            return Ok(());
+            return context::release_objects(ctx);
         }
         // SAFETY: a live context.
         if !unsafe { context::before_request(ctx) } {
@@ -591,8 +584,7 @@ pub fn http2_request(ctx: crate::http2::Ctx) -> Result<(), bailout::Bailout> {
         }
         Ok(true) => {}
     }
-    context::release_objects(ctx);
-    Ok(())
+    context::release_objects(ctx)
 }
 
 /// `php_swoole_http_server_onClose`: forget the session's addresses, then
@@ -642,11 +634,12 @@ fn worker() -> Option<Worker> {
     })
 }
 
-/// Mark a queued request answered and release its objects.
+/// Mark a queued request answered and release its objects, deferring a
+/// bailout.
 fn abandon(ctx: *mut Context) {
     state(ctx).end = 1;
     state(ctx).after_response = 0;
-    context::release_objects(ctx);
+    bailout::defer(context::release_objects(ctx));
 }
 
 /// `swoole_http_server_onBeforeRequest` after it swaps the hooks: count the
@@ -704,7 +697,8 @@ pub extern "C" fn server_rinit() {
 }
 
 /// `php_swoole_http_server_rshutdown`: forget the uploaded files, then drop
-/// the cached addresses and the queued requests.
+/// the cached addresses and the queued requests. A bailout their release
+/// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
     // SAFETY: RSHUTDOWN, on the request's thread.
     unsafe { swr_zend_http_uploads_rshutdown() };
@@ -714,6 +708,7 @@ pub extern "C" fn server_rshutdown() {
     while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         abandon(ctx);
     }
+    bailout::finish();
 }
 
 #[cfg(test)]
