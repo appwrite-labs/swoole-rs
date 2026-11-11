@@ -12,7 +12,7 @@ use crate::{
     websocket,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     ffi::{CStr, CString, c_int, c_void},
     ptr,
     rc::Rc,
@@ -25,24 +25,29 @@ use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_p
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
-    Array, Call, Class, Key as ArrayKey, Minit, Object, Owned, OwnedArray, Props, Value, ZString,
-    bailout, handlers, method_table, string,
-    sys::{
-        self as z, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
-        zval,
-    },
-    unset_property_deny,
+    Array, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props, Value,
+    ZString, bailout, handlers, method_table, string,
+    sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, swr_zend_property_merge, zend_long, zval},
 };
 
-static SERVER: Class = Class::new();
+static SERVER: CustomClass<Data> = CustomClass::new();
 /// `SW_HAVE_COMPRESSION`.
 static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// `struct HttpServerObject { HttpServer *server; zend_object std; }`.
-type Holder = Object<*mut HttpServer>;
+/// `struct HttpServerObject { HttpServer *server; zend_object std; }`: the
+/// server `__construct` makes, dropped with the object.
+struct Data(OnceCell<HttpServer>);
+
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &SERVER
+    }
+
+    fn new() -> Self {
+        Self(OnceCell::new())
+    }
+}
 
 /// Upstream's `swoole::coroutine::HttpServer`. Its connections' coroutines
 /// share it, so every field that changes is a cell.
@@ -55,9 +60,9 @@ struct HttpServer {
     /// `handlers`, by pattern, in the order they were first set. Upstream's
     /// `std::unordered_map` leaves the order among overlapping prefixes to
     /// the standard library's hashing; registration order is ours.
-    handlers: RefCell<Vec<(Vec<u8>, *mut Callable)>>,
+    handlers: RefCell<Vec<(Vec<u8>, Rc<Callable>)>>,
     /// `default_handler`: the `/` handler.
-    default_handler: Cell<*mut Callable>,
+    default_handler: RefCell<Option<Rc<Callable>>>,
     running: Cell<bool>,
     /// The connections, by the coroutine serving each.
     clients: Owned,
@@ -86,7 +91,7 @@ impl HttpServer {
             // SAFETY: the listening socket, which the server frees in its drop.
             listener: unsafe { swoole_rs_phpclients::Co::new(socket.this()) },
             handlers: RefCell::new(Vec::new()),
-            default_handler: Cell::new(ptr::null_mut()),
+            default_handler: RefCell::new(None),
             running: Cell::new(true),
             clients: OwnedArray::default().into_owned(),
             parse_cookie: Cell::new(true),
@@ -140,35 +145,40 @@ impl HttpServer {
     }
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
-    fn set_handler(&self, pattern: &[u8], handle: *mut Callable) -> Result<(), bailout::Bailout> {
-        if pattern == b"/" {
-            self.default_handler.set(handle);
-        }
+    fn set_handler(&self, pattern: &[u8], handle: Rc<Callable>) -> Result<(), bailout::Bailout> {
+        let old_default =
+            (pattern == b"/").then(|| self.default_handler.replace(Some(handle.clone())));
         let mut handlers = self.handlers.borrow_mut();
+        let mut old = None;
         if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
-            let old = std::mem::replace(&mut entry.1, handle);
-            drop(handlers);
-            // SAFETY: the handler this one replaces, released once.
-            return unsafe { callable::release(old) };
+            old = Some(std::mem::replace(&mut entry.1, handle));
+        } else {
+            handlers.push((pattern.to_vec(), handle));
         }
-        handlers.push((pattern.to_vec(), handle));
-        Ok(())
+        drop(handlers);
+        // The handler this one replaces, released once no borrow is live.
+        drop((old_default, old));
+        bailout::outcome(())
     }
 
-    /// `get_handler`: the callable for the request's path, or null.
-    fn handler(&self, context: *mut Context) -> *mut Callable {
+    /// `get_handler`: the callable for the request's path, if any.
+    fn handler(&self, context: *mut Context) -> Option<Rc<Callable>> {
         let request = &send::state(context).request;
         // SAFETY: the request's path, `path_len` bytes.
         let path = unsafe {
             std::slice::from_raw_parts(request.path.cast::<u8>(), request.path_len as usize)
         };
-        let default = self.default_handler.get();
-        self.handlers
+        let default = self.default_handler.borrow().clone();
+        let is_default =
+            |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
+        let found = self
+            .handlers
             .borrow()
             .iter()
-            .filter(|&&(_, handle)| handle != default)
+            .filter(|(_, handle)| !is_default(handle))
             .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
-            .map_or(default, |&(_, handle)| handle)
+            .map(|(_, handle)| handle.clone());
+        found.or(default)
     }
 
     /// A flag's or a number's setting (`SWR_HTTPBINDINGS_SETTING_*`).
@@ -221,10 +231,9 @@ impl HttpServer {
 
 impl Drop for HttpServer {
     fn drop(&mut self) {
-        for (_, handle) in self.handlers.take() {
-            // SAFETY: a handler `handle` made, released once.
-            bailout::defer(unsafe { callable::release(handle) });
-        }
+        // Releasing a handler defers what it raises.
+        drop(self.default_handler.take());
+        drop(self.handlers.take());
         // Each connection frees its own copy (`Co::accept`); the listener owns the original.
         bailout::defer(self.listener.free_length_callable());
         // SAFETY: the listening socket `__construct` made, freed once.
@@ -248,13 +257,6 @@ fn text_setting(server: &HttpServer, kind: u32, text: Option<&[u8]>) {
             }
         }
     }
-}
-
-/// The live server a method's or a connection's pointer names.
-fn server<'a>(server: *const HttpServer) -> &'a HttpServer {
-    // SAFETY: the object's server, which outlives its methods and the
-    // connections it serves; only cells change.
-    unsafe { &*server }
 }
 
 /// HTTP statuses the loop answers with, and llhttp's codes it checks.
@@ -363,32 +365,6 @@ method_table! {
     ];
 }
 
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this (final) class; a null
-    // server is the unconstructed object.
-    unsafe { Holder::create(&SERVER, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    let server = unsafe { *Holder::data(std) };
-    if !server.is_null() {
-        // SAFETY: the server `__construct` boxed, dropped once.
-        drop(unsafe { Box::from_raw(server) });
-    }
-    // SAFETY: as above.
-    unsafe { Holder::dtor(std) };
-    // What releasing the handlers or the socket raised.
-    bailout::finish();
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE | ZEND_ACC_FINAL;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Holder::install(entry, handlers, create, free);
-}
-
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 pub fn server_coro_minit(args: &MinitArgs) {
     let minit = &args.minit;
@@ -400,11 +376,12 @@ pub fn server_coro_minit(args: &MinitArgs) {
 
 fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), bailout::Bailout> {
     COMPRESSION.store(compression, Relaxed);
-    minit.register(
-        &SERVER,
+    // What releasing the handlers or the socket defers is raised as the
+    // object is freed.
+    minit.register_object::<Data>(
         c"Swoole\\Coroutine\\Http\\Server",
         &METHODS.0,
-        configure,
+        ZEND_ACC_FINAL,
     );
     if short_name {
         minit.alias(&SERVER, c"Co\\Http\\Server")?;
@@ -423,15 +400,10 @@ fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), ba
     Ok(())
 }
 
-fn server_of(call: &Call) -> *mut HttpServer {
-    // SAFETY: the methods are non-static, so `$this` is one of ours.
-    unsafe { *Holder::data(call.this()) }
-}
-
-/// Writes on a server method's `$this`, under the class.
-fn props(call: &Call) -> Props<'_> {
-    // SAFETY: the methods are non-static, so `$this` is a live server object.
-    unsafe { Props::new(SERVER.entry(), call.this()) }
+/// `$this`'s server, once constructed. The frame holds `$this` for the
+/// call, and the connections' coroutines run inside `onAccept` calls.
+fn server_of(call: &Call) -> Option<&HttpServer> {
+    call.custom::<Data>()?.0.get()
 }
 
 /// `http_server_coro_set_error`: the socket's error into `errCode`/`errMsg`.
@@ -459,12 +431,13 @@ fn construct(call: &Call) {
         });
         let (host, port, ssl, reuse_port) = parsed.ok()?;
         let object = call.this();
-        if !server_of(call).is_null() {
+        let (data, props) = (call.custom::<Data>()?, call.props(Some(&SERVER))?);
+        if data.0.get().is_some() {
             call.throw_constructed_twice();
             return None;
         }
-        props(call).bytes(c"host", host);
-        props(call).bool(c"ssl", ssl);
+        props.bytes(c"host", host);
+        props.bool(c"ssl", ssl);
         if host.is_empty() {
             exception(call, EINVAL, "host is empty");
             return None;
@@ -477,15 +450,15 @@ fn construct(call: &Call) {
         };
         // SAFETY: the new socket, which the server owns until it drops.
         let socket = unsafe { Co::of(socket) };
-        let server = Box::into_raw(Box::new(HttpServer::new(socket)));
-        // SAFETY: as above.
-        unsafe { *Holder::data(object) = server };
+        if data.0.set(HttpServer::new(socket)).is_err() {
+            return None;
+        }
         if reuse_port {
             set_reuse_port(socket.sock_fd());
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
         if !socket.bind(host, port as c_int) {
-            let code = set_error(props(call), socket);
+            let code = set_error(props, socket);
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
             let port = port as i32;
             exception(
@@ -511,14 +484,14 @@ fn construct(call: &Call) {
             let _enabled = socket.enable_ssl();
         }
         if !socket.listen(0) {
-            let code = set_error(props(call), socket);
+            let code = set_error(props, socket);
             exception(call, code, "listen() failed");
             return None;
         }
         let fd = socket.sock_fd();
         let (_, bound) = address(socket);
-        props(call).long(c"fd", zend_long::from(fd));
-        props(call).long(c"port", zend_long::from(bound));
+        props.long(c"fd", zend_long::from(fd));
+        props.long(c"port", zend_long::from(bound));
         Some(())
     };
     if run().is_none() {
@@ -602,7 +575,9 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         AcceptErrors, Action, SettingsCursor, accept_loop, swr_v1_httpbindings_settings,
     };
     let object = call.this();
-    let server = server(server_of(call));
+    let (Some(server), Some(props)) = (server_of(call), call.props(Some(&SERVER))) else {
+        return Ok(None);
+    };
     let socket = server.socket;
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
@@ -612,10 +587,10 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
     // SAFETY: a live socket and the settings array.
     if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings) } {
-        props(call).long(c"errCode", EINVAL);
+        props.long(c"errCode", EINVAL);
         #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
         let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
-        props(call).bytes(c"errMsg", message.to_bytes());
+        props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
         return Ok(Some(false));
     }
@@ -659,7 +634,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         canceled: libc::ECANCELED,
     };
     let mut start = Start {
-        props: props(call),
+        props,
         server,
         socket,
         accept: &mut accept,
@@ -828,31 +803,20 @@ fn set_reuse_port(fd: c_int) {
 }
 
 fn handle(call: &Call) {
-    let server = server_of(call);
     let Ok((pattern, callable)) = call
         .arity(2, 2)
-        .and_then(|()| Ok((call.string(1, b"")?, call.zval(2))))
+        .and_then(|()| Ok((call.string(1, b"")?, call.value(2))))
     else {
         return;
     };
-    if server.is_null() {
+    let (Some(server), Some(callable)) = (server_of(call), callable) else {
         return;
-    }
-    // SAFETY: the passed callable; no argument name, so no exception.
-    let made = unsafe {
-        callable::factory(
-            callable,
-            ptr::null(),
-            true,
-            ptr::null_mut(),
-            z::swr_zend_callable_warning,
-        )
     };
-    let result = made.and_then(|handle| {
-        if handle.is_null() {
+    let result = Callable::new(callable).and_then(|handle| {
+        let Some(handle) = handle else {
             return Ok(false);
-        }
-        self::server(server).set_handler(pattern, handle)?;
+        };
+        server.set_handler(pattern, handle)?;
         Ok(true)
     });
     match result {
@@ -885,11 +849,9 @@ fn set(call: &Call) {
 }
 
 fn shutdown(call: &Call) {
-    let server = server_of(call);
-    if server.is_null() {
+    let Some(server) = server_of(call) else {
         return;
-    }
-    let server = self::server(server);
+    };
     server.running.set(false);
     server.socket.cancel(EVENT_READ);
     // Connections waiting for their next request stop waiting.
@@ -926,6 +888,8 @@ fn objects(context: *mut Context) -> [zval; 2] {
 
 /// One connection's state across its requests.
 struct Connection<'a> {
+    /// The server object, whose `onAccept` call holds it.
+    this: &'a Value,
     server: &'a HttpServer,
     socket: Co,
     zconn: *mut zval,
@@ -964,7 +928,10 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     };
-    let server = server(server_of(call));
+    let (Some(this), Some(server)) = (call.this_value(), server_of(call)) else {
+        call.set_null();
+        return;
+    };
     // SAFETY: a coroutine socket object.
     let socket = unsafe { get_socket(zconn) };
     // SAFETY: the object's live socket, which the server's array keeps.
@@ -996,6 +963,7 @@ fn on_accept(call: &Call) {
         server_port: address(server.socket).1,
     };
     let conn = Connection {
+        this,
         server,
         socket,
         zconn,
@@ -1143,10 +1111,12 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let state = send::state(context);
         let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
-        if callable.is_null() {
+        if let Some(callable) = callable {
+            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false)? {
+                host::notice("handler error");
+            }
+        } else {
             send::state(context).response.status = NOT_FOUND;
-        } else if !call_handler(callable, &mut args, false)? {
-            host::notice("handler error");
         }
         context::release_objects(context);
         context = ptr::null_mut();
@@ -1180,15 +1150,20 @@ fn http2(conn: &Connection, context: *mut Context) {
     )]
     let max_body_size = conn.package_max_length() as u32;
     if let Some(server) = crate::http2::server() {
-        // The server outlives the connection, and the context the session,
-        // freed below.
-        let http = ptr::from_ref(conn.server);
+        // The context outlives the session, freed below; the session's
+        // handler holds the server object.
+        let this = conn.this.copy();
         (server.session_new)(
             fd,
             crate::http2::Ctx::of(context),
             max_body_size,
             true,
-            Box::new(move |ctx, http1| http2_request(ctx.raw(), http1.raw(), self::server(http))),
+            Box::new(move |ctx, http1| {
+                let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
+                    return Ok(());
+                };
+                http2_request(ctx.raw(), http1.raw(), server)
+            }),
         );
         loop {
             // The frame stays in the read buffer.
@@ -1257,10 +1232,8 @@ fn http2_request(
     let callable = server.handler(context);
     let mut args = objects(context);
     let mut result = Ok(());
-    if callable.is_null() {
-        send::state(context).response.status = NOT_FOUND;
-    } else {
-        match call_handler(callable, &mut args, true) {
+    if let Some(callable) = callable {
+        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = send::state(context).stream_id;
@@ -1287,10 +1260,5 @@ mod tests {
     fn the_header_ends_at_the_first_blank_line() {
         assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n\r\nbody"), Some(14), "end");
         assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n"), None, "incomplete");
-    }
-
-    #[test]
-    fn std_follows_the_server_pointer() {
-        assert_eq!(Holder::OFFSET, size_of::<*mut c_void>(), "HttpServerObject");
     }
 }
