@@ -508,7 +508,7 @@ mod tests {
         length: *mut libc::socklen_t,
     ) -> isize {
         let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
-        let expected = unsafe { &raw mut (*socket.socket()).info };
+        let expected = unsafe { &raw mut (*socket.socket()).fields.info };
         log(format!(
             "recvfrom:{}:{}",
             addr == unsafe { &raw mut (*expected).addr.ss },

@@ -22,7 +22,7 @@ use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
-use swoole_rs_reactor::{Socket as Net, SocketRecord};
+use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
@@ -1119,7 +1119,7 @@ fn getsockname(call: &Call) {
     let Some(socket) = conn.cli.net() else {
         return call.set_bool(false);
     };
-    if socket.edit(SocketRecord::get_name) < 0 {
+    if socket.edit(SocketFields::get_name) < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
         set_err_code(Obj::this(call), error);

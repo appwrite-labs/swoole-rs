@@ -12,7 +12,7 @@ use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{Socket, SocketRecord};
+use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -21,7 +21,7 @@ pub(crate) use swoole_rs_tls::upstream::socket_free;
 #[cfg(test)]
 pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
     // SAFETY: the caller's live record.
-    let fd = unsafe { (*socket).fd };
+    let fd = unsafe { (*socket).fields.fd };
     // SAFETY: close(2) has no memory preconditions.
     unsafe { libc::close(fd) };
     // SAFETY: Rust allocated the record and nothing uses it after.
@@ -253,7 +253,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
             format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
         );
     }
-    if socket.edit(|s| s.bind(&address)) < 0 || socket.edit(SocketRecord::get_name) < 0 {
+    if socket.edit(|s| s.bind(&address)) < 0 || socket.edit(SocketFields::get_name) < 0 {
         return fail();
     }
     let info = socket.read(|s| s.info);
@@ -598,15 +598,15 @@ mod tests {
         let config = port_config::swr_v1_port_config_new(1000);
         let socket = SocketRecord::new().into_raw();
         unsafe {
-            (*socket).fd = libc::socket(libc::AF_INET, kind, 0);
-            assert!((*socket).fd >= 0, "socket(2)");
+            (*socket).fields.fd = libc::socket(libc::AF_INET, kind, 0);
+            assert!((*socket).fields.fd >= 0, "socket(2)");
             if bind {
                 let mut addr: libc::sockaddr_in = std::mem::zeroed();
                 addr.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap();
                 addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
                 let size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
                 assert_eq!(
-                    libc::bind((*socket).fd, (&raw const addr).cast(), size),
+                    libc::bind((*socket).fields.fd, (&raw const addr).cast(), size),
                     0,
                     "bind(2)"
                 );
@@ -644,7 +644,7 @@ mod tests {
         let fd = unsafe { view::port_fd(at) };
         assert!(config.listening, "published");
         assert_eq!(
-            unsafe { (*config.socket.cast::<SocketRecord>()).listened },
+            unsafe { (*config.socket.cast::<SocketRecord>()).fields.listened },
             1,
             "listen(2) succeeded"
         );
@@ -740,7 +740,7 @@ mod tests {
         config
     }
 
-    fn record<'a>(config: &PortConfig) -> &'a SocketRecord {
+    fn record<'a>(config: &PortConfig) -> &'a SocketFields {
         unsafe { &*config.socket.cast::<SocketRecord>() }
     }
 
@@ -807,7 +807,7 @@ mod tests {
             "SO_REUSEPORT"
         );
         // Unmark the old record: only a new bind marks the port's record again.
-        unsafe { (*config.socket.cast::<SocketRecord>()).bound = 0 };
+        unsafe { (*config.socket.cast::<SocketRecord>()).fields.bound = 0 };
         let bound_port = config.port;
         assert_eq!(create_socket(at), 0, "recreated");
         assert_eq!(record(config).bound, 1, "a new socket, bound");
