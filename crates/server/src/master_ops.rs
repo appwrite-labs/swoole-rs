@@ -310,10 +310,7 @@ impl Objects<'_> {
 /// its server's; the objects each op reads are live, as for master.cc's case,
 /// and the server is at the point of its life where it makes `op`. The
 /// [`Objects`] made from them carry this proof to each stage below.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per op, as master.cc's switch was"
-)]
+#[inline(always)]
 pub(crate) unsafe fn answer(
     ctx: *mut NativeContext,
     state: *const ServerState,
@@ -328,6 +325,227 @@ pub(crate) unsafe fn answer(
     // SAFETY: per the caller.
     let state = unsafe { &*state };
     let mut o = Objects { ctx, state };
+    connection(&mut o, op, arg).or_else(|| ops(&mut o, op, arg))
+}
+
+/// The ops each connection makes as it is accepted (`connection::accept`, `add`
+/// and `incoming`) and closed (`Server::close`, `base_factory::end`), answered
+/// where they are made: inlined into a call with a constant op, each folds to
+/// its arm, where [`ops`]' match and the stages it falls through to cost about
+/// 40 instructions an op, ~29 ops a connection (#2748).
+#[expect(clippy::too_many_lines, reason = "one arm per op, as in `ops`")]
+#[inline(always)]
+fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    let state = o.state;
+    Some(match op {
+        OP_PORT_SSL => u64::from(o.port().ssl),
+        OP_PORT_IDLE_TIME => o.port().max_idle_time.to_bits(),
+        OP_PORT_RCVBUF => sign(o.port().kernel_socket_recv_buffer_size),
+        OP_PORT_SNDBUF => sign(o.port().kernel_socket_send_buffer_size),
+        OP_PORT_NODELAY => u64::from(o.port().open_tcp_nodelay && o.port_is_tcp()),
+        OP_COUNT_ACCEPT => {
+            o.gs().accept_count.fetch_add(1, Relaxed);
+            o.port_gs().accept_count.fetch_add(1, Relaxed);
+            if u64::from(o.config().mode_) == MODE_BASE {
+                let at = usize::from(o.ctx.reactor_id);
+                // Base mode has one connection-count cell per worker, and the
+                // reactor id is the accepting worker's.
+                let cells = [o.gs().connection_nums, o.port_gs().connection_nums];
+                for cell in cells.map(|cells| cells.wrapping_add(at)) {
+                    // SAFETY: a cell of the counters' per-worker array, as above.
+                    unsafe { &*cell }.fetch_add(1, SeqCst);
+                }
+            } else {
+                o.gs().connection_num.fetch_add(1, SeqCst);
+                o.port_gs().connection_num.fetch_add(1, SeqCst);
+            }
+            0
+        }
+        OP_SOCK_FD => sign(o.edit_sock(|s| s.fd)),
+        OP_SSL_CLEAR => {
+            o.edit_sock(|s| s.ssl = core::ptr::null_mut());
+            0
+        }
+        OP_CHUNK_SIZE => {
+            let size = swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
+            o.edit_sock(|s| s.chunk_size = size);
+            0
+        }
+        OP_NODELAY_ENABLED => {
+            o.edit_sock(|s| s.enable_tcp_nodelay = true);
+            0
+        }
+        OP_DIRECT_SEND => {
+            o.edit_sock(|s| s.direct_send = 1);
+            0
+        }
+        OP_EVENT_FD => sign(o.ctx.server_fd),
+        OP_CONN_RESET => {
+            let fd = o.edit_sock(|s| s.fd);
+            let conn = o
+                .tables()
+                .connection_list
+                .wrapping_add(usize::try_from(fd).unwrap_or(0));
+            o.ctx.conn = conn.cast();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "C++'s ReactorId (uint8_t)"
+            )]
+            let reactor_id = if u64::from(o.config().mode_) == MODE_BASE {
+                swoole_rs_process::methods::swoole_get_worker_id() as u8
+            } else {
+                (fd % c_int::from(o.config().reactor_num)) as u8
+            };
+            o.ctx.reactor_id = reactor_id;
+            // SAFETY: the connection slot of a live fd; upstream zeroes it up to `closed`.
+            unsafe {
+                conn.cast::<u8>()
+                    .write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed));
+            }
+            u64::from(reactor_id)
+        }
+        OP_SESSION_CLAIM => {
+            let session = state.session(arg.cast_signed())?;
+            if session.fd != 0 {
+                return Some(0);
+            }
+            session.fd = o.edit_sock(|s| s.fd);
+            session.id = arg.cast_signed();
+            session.reactor_bits = (session.reactor_bits & !0xff) | u32::from(o.ctx.reactor_id);
+            1
+        }
+        OP_SESSION_BIND => {
+            o.gs().session_round = arg.cast_signed();
+            o.conn().session_id = arg.cast_signed();
+            let buffer_size = o.port().socket_buffer_size.cast_unsigned();
+            let conn = o.ctx.conn;
+            o.edit_sock(|sock| {
+                sock.object = conn;
+                sock.removed = 1;
+                sock.output.buffer_size = buffer_size;
+                sock.timeouts.write = 0.0;
+                sock.timeouts.read = 0.0;
+            });
+            0
+        }
+        OP_SOCK_SSL => u64::from(o.read_conn_socket(|s| !s.ssl.is_null())),
+        OP_ACCEPT => u64::from(o.accept()),
+        OP_SET_NODELAY => u64::from(o.edit_sock(|s| s.set_tcp_nodelay(1))),
+        OP_REACTOR_ADD_READ => sign(o.change(o.conn_socket(), 0, SW_EVENT_READ)),
+        OP_SPIN_LOCK => {
+            let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
+            // SAFETY: the shared counters' aligned lock word, which every holder takes
+            // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
+            unsafe {
+                swoole_rs_utilities::swr_v1_utils_spinlock(o.gs().spinlock.as_ptr(), cpus, 1024);
+            };
+            0
+        }
+        OP_SPIN_UNLOCK => {
+            // `sw_spinlock_release`: a release store of 0.
+            o.gs()
+                .spinlock
+                .store(0, core::sync::atomic::Ordering::Release);
+            0
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_CONN_INIT => {
+            let conn = o.conn();
+            let (fd, ssl, accepted, sock) = o.sock()?.edit(|sock| {
+                let accepted = sock.info;
+                sock.get_name();
+                (sock.fd, !sock.ssl.is_null(), accepted, sock.info)
+            });
+            conn.fd = fd;
+            conn.reactor_id = o.ctx.reactor_id;
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
+            let server_fd = arg as c_int;
+            conn.server_fd = server_fd;
+            let now = swoole_rs_corebase::microtime();
+            conn.last_recv_time = now;
+            conn.connect_time = now;
+            conn.active = 1;
+            conn.closed.store(0, Relaxed);
+            conn.worker_id = -1;
+            conn.socket_type = o.port().r#type;
+            conn.socket = o.ctx.sock;
+            conn.ssl = u8::from(ssl);
+            conn.info = accepted;
+            conn.info.kind = conn.socket_type;
+            let info = &raw const sock;
+            // SAFETY: the address getsockname filled.
+            let port = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(info) };
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "C++'s uint16_t local_port"
+            )]
+            let port = port as u16;
+            conn.local_port = port;
+            let v6 = sock.kind != SW_SOCK_TCP;
+            let addr = if v6 {
+                // SAFETY: an inet6 address's field.
+                unsafe { (&raw const sock.addr.inet_v6.sin6_addr).cast::<u8>() }
+            } else {
+                // SAFETY: an inet4 address's field.
+                unsafe { (&raw const sock.addr.inet_v4.sin_addr).cast::<u8>() }
+            };
+            // SAFETY: the live state and an address of the family.
+            conn.local_addr_index =
+                unsafe { crate::local_addr::swr_v1_server_local_addr_index(o.state, v6, addr) };
+            0
+        }
+        OP_OUT_EMPTY => {
+            // SAFETY: native code passes a live socket.
+            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
+            let buffer = socket.read(|s| s.output.out_buffer);
+            // SAFETY: null or the socket's live buffer (`Buffer::empty`).
+            u64::from(buffer.is_null() || unsafe { swr_cpp_buffer_empty(buffer.cast()) })
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_ON_CLOSE => {
+            let event = arg as *mut core::ffi::c_void;
+            let slot = o.state.callbacks.slot(CB_CLOSE)?;
+            // SAFETY: onClose's slot, the live server and the close event.
+            unsafe { slot.call(o.ctx.serv, event) };
+            0
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_CLOSE_SOCKET => {
+            let reactor = swoole_rs_corebase::thread_reactor();
+            let socket = arg as *mut SocketRecord;
+            // SAFETY: this thread's live reactor and a session socket of it.
+            sign(unsafe { crate::reactor_entry::close_connection(reactor, socket) })
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_QUEUE_CLOSE => {
+            // SAFETY: a live session socket of this thread's reactor.
+            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
+            let out = socket.read(|s| s.output.out_buffer);
+            // SAFETY: its live output buffer.
+            unsafe { swr_cpp_buffer_typed_close(out.cast()) };
+            // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
+            u64::from(
+                !cfg!(feature = "halfclose")
+                    || crate::reactor_handle::Reactor::thread().interest(socket, 4, 0) == 0,
+            )
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_FACTORY_END => {
+            u64::from(crate::factory::end(o.state, o.ctx.session_id, o.ctx.number))
+        }
+        _ => return None,
+    })
+}
+
+/// The other ops of master.cc's switch; then [`forwarded`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per op, as master.cc's switch was"
+)]
+fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    let state = o.state;
     let cpus = c_int::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     Some(match op {
         // Logs.
@@ -862,11 +1080,6 @@ pub(crate) unsafe fn answer(
         }
 
         // The context's port.
-        OP_PORT_SSL => u64::from(o.port().ssl),
-        OP_PORT_IDLE_TIME => o.port().max_idle_time.to_bits(),
-        OP_PORT_RCVBUF => sign(o.port().kernel_socket_recv_buffer_size),
-        OP_PORT_SNDBUF => sign(o.port().kernel_socket_send_buffer_size),
-        OP_PORT_NODELAY => u64::from(o.port().open_tcp_nodelay && o.port_is_tcp()),
         OP_NEW_PORT_TYPE => sign(o.port().r#type),
         OP_PORT_PUSH => {
             // SAFETY: the context's new port, which the server owns from now on;
@@ -879,99 +1092,12 @@ pub(crate) unsafe fn answer(
             o.port_gs().abort_count.fetch_add(1, SeqCst);
             0
         }
-        OP_COUNT_ACCEPT => {
-            o.gs().accept_count.fetch_add(1, Relaxed);
-            o.port_gs().accept_count.fetch_add(1, Relaxed);
-            if u64::from(o.config().mode_) == MODE_BASE {
-                let at = usize::from(o.ctx.reactor_id);
-                // Base mode has one connection-count cell per worker, and the
-                // reactor id is the accepting worker's.
-                let cells = [o.gs().connection_nums, o.port_gs().connection_nums];
-                for cell in cells.map(|cells| cells.wrapping_add(at)) {
-                    // SAFETY: a cell of the counters' per-worker array, as above.
-                    unsafe { &*cell }.fetch_add(1, SeqCst);
-                }
-            } else {
-                o.gs().connection_num.fetch_add(1, SeqCst);
-                o.port_gs().connection_num.fetch_add(1, SeqCst);
-            }
-            0
-        }
 
         // The context's socket.
-        OP_SOCK_FD => sign(o.edit_sock(|s| s.fd)),
-        OP_SSL_CLEAR => {
-            o.edit_sock(|s| s.ssl = core::ptr::null_mut());
-            0
-        }
-        OP_CHUNK_SIZE => {
-            let size = swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
-            o.edit_sock(|s| s.chunk_size = size);
-            0
-        }
-        OP_NODELAY_ENABLED => {
-            o.edit_sock(|s| s.enable_tcp_nodelay = true);
-            0
-        }
-        OP_DIRECT_SEND => {
-            o.edit_sock(|s| s.direct_send = 1);
-            0
-        }
         OP_ST_SOCK_OBJECT => u64::from(o.edit_sock(|s| !s.object.is_null())),
         OP_SC_HAS_SEND_TIMER => u64::from(o.edit_sock(|s| !s.output.send_timer.is_null())),
-        OP_EVENT_FD => sign(o.ctx.server_fd),
-        OP_CONN_RESET => {
-            let fd = o.edit_sock(|s| s.fd);
-            let conn = o
-                .tables()
-                .connection_list
-                .wrapping_add(usize::try_from(fd).unwrap_or(0));
-            o.ctx.conn = conn.cast();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "C++'s ReactorId (uint8_t)"
-            )]
-            let reactor_id = if u64::from(o.config().mode_) == MODE_BASE {
-                swoole_rs_process::methods::swoole_get_worker_id() as u8
-            } else {
-                (fd % c_int::from(o.config().reactor_num)) as u8
-            };
-            o.ctx.reactor_id = reactor_id;
-            // SAFETY: the connection slot of a live fd; upstream zeroes it up to `closed`.
-            unsafe {
-                conn.cast::<u8>()
-                    .write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed));
-            }
-            u64::from(reactor_id)
-        }
-        OP_SESSION_CLAIM => {
-            let session = state.session(arg.cast_signed())?;
-            if session.fd != 0 {
-                return Some(0);
-            }
-            session.fd = o.edit_sock(|s| s.fd);
-            session.id = arg.cast_signed();
-            session.reactor_bits = (session.reactor_bits & !0xff) | u32::from(o.ctx.reactor_id);
-            1
-        }
-        OP_SESSION_BIND => {
-            o.gs().session_round = arg.cast_signed();
-            o.conn().session_id = arg.cast_signed();
-            let buffer_size = o.port().socket_buffer_size.cast_unsigned();
-            let conn = o.ctx.conn;
-            o.edit_sock(|sock| {
-                sock.object = conn;
-                sock.removed = 1;
-                sock.output.buffer_size = buffer_size;
-                sock.timeouts.write = 0.0;
-                sock.timeouts.read = 0.0;
-            });
-            0
-        }
 
         // The context's connection.
-        OP_SOCK_SSL => u64::from(o.read_conn_socket(|s| !s.ssl.is_null())),
         OP_LAST_RECEIVED => o.read_conn_socket(|s| s.last_received_time.to_bits()),
         OP_LAST_SENT => o.read_conn_socket(|s| s.last_sent_time.to_bits()),
         OP_CONN_PROTECT => u64::from(o.conn().protect),
@@ -1041,8 +1167,6 @@ pub(crate) unsafe fn answer(
         }
 
         // Effects through the Rust definitions of the reactor's and socket's methods.
-        OP_ACCEPT => u64::from(o.accept()),
-        OP_SET_NODELAY => u64::from(o.edit_sock(|s| s.set_tcp_nodelay(1))),
         OP_SET_RCVBUF | OP_SET_SNDBUF => {
             let port = o.port();
             let (name, size) = if op == OP_SET_RCVBUF {
@@ -1073,7 +1197,6 @@ pub(crate) unsafe fn answer(
             }
             0
         }
-        OP_REACTOR_ADD_READ => sign(o.change(o.conn_socket(), 0, SW_EVENT_READ)),
         OP_SC_SET => {
             let read = if arg & 1 != 0 { SW_EVENT_READ } else { 0 };
             let write = if arg & 2 != 0 { SW_EVENT_WRITE } else { 0 };
@@ -1114,8 +1237,8 @@ pub(crate) unsafe fn answer(
             };
             u64::from(usize::try_from(sent) == Ok(length))
         }
-        OP_SC_FLAGS => send_flags(&o),
-        OP_SC_VERIFY => verify(&mut o),
+        OP_SC_FLAGS => send_flags(o),
+        OP_SC_VERIFY => verify(o),
         OP_PIPE_NOBUFS => {
             // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
             let pipes = i64::from(o.tables().reactor_pipe_num);
@@ -1142,22 +1265,6 @@ pub(crate) unsafe fn answer(
         }
         OP_SC_YIELD_ERROR => {
             log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-            0
-        }
-        OP_SPIN_LOCK => {
-            let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
-            // SAFETY: the shared counters' aligned lock word, which every holder takes
-            // this way (`sw_spinlock`, with `SW_SPINLOCK_LOOP_N`).
-            unsafe {
-                swoole_rs_utilities::swr_v1_utils_spinlock(o.gs().spinlock.as_ptr(), cpus, 1024);
-            };
-            0
-        }
-        OP_SPIN_UNLOCK => {
-            // `sw_spinlock_release`: a release store of 0.
-            o.gs()
-                .spinlock
-                .store(0, core::sync::atomic::Ordering::Release);
             0
         }
         OP_WORKER_COROUTINES | OP_WORKER_CONCURRENCY => {
@@ -1272,7 +1379,7 @@ pub(crate) unsafe fn answer(
             u64::from(!results.is_null())
         }
         OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
-        op => return forwarded(&mut o, op, arg),
+        op => return forwarded(o, op, arg),
     })
 }
 
@@ -1438,13 +1545,6 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_NOW_MS => swoole_rs_reactor::steady_ms().to_bits(),
-        OP_OUT_EMPTY => {
-            // SAFETY: native code passes a live socket.
-            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
-            let buffer = socket.read(|s| s.output.out_buffer);
-            // SAFETY: null or the socket's live buffer (`Buffer::empty`).
-            u64::from(buffer.is_null() || unsafe { swr_cpp_buffer_empty(buffer.cast()) })
-        }
         OP_SC_ENSURE_BUFFER => {
             let sock = o.sock()?;
             if sock.read(|s| s.output.out_buffer.is_null()) {
@@ -1846,23 +1946,17 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// The ops over a connection's setup and close and the server's shutdown, which
+/// The ops over a connection's close and the server's shutdown, which
 /// call crates/server's, crates/process's and crates/ports' methods under their
 /// upstream symbols; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per op, as master.cc's switch was"
-)]
 fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_DISPATCH_FUNC, CB_SHUTDOWN};
     use crate::ops::{
-        OP_ACCEPT_TIMER, OP_BEFORE_SHUTDOWN, OP_CLOSE_CONNECTION, OP_CLOSE_SOCKET, OP_CONN_INIT,
-        OP_DISPATCH_FUNC, OP_FORCE_CLOSE, OP_FORCED_EXIT, OP_FREE_SERVER, OP_JOIN_REACTOR_THREADS,
-        OP_NOTIFY_CONNECT, OP_ON_CLOSE, OP_ON_SHUTDOWN, OP_PORT_CLOSE, OP_QUEUE_CLOSE,
-        OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
+        OP_ACCEPT_TIMER, OP_BEFORE_SHUTDOWN, OP_CLOSE_CONNECTION, OP_DISPATCH_FUNC, OP_FORCE_CLOSE,
+        OP_FORCED_EXIT, OP_FREE_SERVER, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN,
+        OP_PORT_CLOSE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
     };
-    use core::ffi::c_void;
     /// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN`.
     const HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
     /// `Reactor::EXIT_CONDITION_FORCED_TERMINATION`.
@@ -1881,52 +1975,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
     };
     Some(match op {
-        OP_CONN_INIT => {
-            let conn = o.conn();
-            let (fd, ssl, accepted, sock) = o.sock()?.edit(|sock| {
-                let accepted = sock.info;
-                sock.get_name();
-                (sock.fd, !sock.ssl.is_null(), accepted, sock.info)
-            });
-            conn.fd = fd;
-            conn.reactor_id = o.ctx.reactor_id;
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let server_fd = arg as c_int;
-            conn.server_fd = server_fd;
-            let now = swoole_rs_corebase::microtime();
-            conn.last_recv_time = now;
-            conn.connect_time = now;
-            conn.active = 1;
-            conn.closed.store(0, Relaxed);
-            conn.worker_id = -1;
-            conn.socket_type = o.port().r#type;
-            conn.socket = o.ctx.sock;
-            conn.ssl = u8::from(ssl);
-            conn.info = accepted;
-            conn.info.kind = conn.socket_type;
-            let info = &raw const sock;
-            // SAFETY: the address getsockname filled.
-            let port = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(info) };
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "C++'s uint16_t local_port"
-            )]
-            let port = port as u16;
-            conn.local_port = port;
-            let v6 = sock.kind != SW_SOCK_TCP;
-            let addr = if v6 {
-                // SAFETY: an inet6 address's field.
-                unsafe { (&raw const sock.addr.inet_v6.sin6_addr).cast::<u8>() }
-            } else {
-                // SAFETY: an inet4 address's field.
-                unsafe { (&raw const sock.addr.inet_v4.sin_addr).cast::<u8>() }
-            };
-            // SAFETY: the live state and an address of the family.
-            conn.local_addr_index =
-                unsafe { crate::local_addr::swr_v1_server_local_addr_index(o.state, v6, addr) };
-            0
-        }
         OP_NOTIFY_CONNECT => u64::from(crate::server_methods::notify(
             o.server(),
             o.conn(),
@@ -2032,30 +2080,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let dispatch = slot(CB_DISPATCH_FUNC)?;
             // SAFETY: dispatch_func's slot, the live server, connection and data.
             sign(unsafe { dispatch.dispatch(serv, conn.cast(), o.ctx.send) })
-        }
-        OP_ON_CLOSE => {
-            let event = arg as *mut c_void;
-            // SAFETY: onClose's slot, the live server and the close event.
-            unsafe { slot(crate::callbacks::CB_CLOSE)?.call(serv, event) };
-            0
-        }
-        OP_CLOSE_SOCKET => {
-            let reactor = swoole_rs_corebase::thread_reactor();
-            let socket = arg as *mut SocketRecord;
-            // SAFETY: this thread's live reactor and a session socket of it.
-            sign(unsafe { crate::reactor_entry::close_connection(reactor, socket) })
-        }
-        OP_QUEUE_CLOSE => {
-            // SAFETY: a live session socket of this thread's reactor.
-            let socket = unsafe { Socket::from_ptr(arg as *mut SocketRecord) }?;
-            let out = socket.read(|s| s.output.out_buffer);
-            // SAFETY: its live output buffer.
-            unsafe { swr_cpp_buffer_typed_close(out.cast()) };
-            // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
-            u64::from(
-                !cfg!(feature = "halfclose")
-                    || crate::reactor_handle::Reactor::thread().interest(socket, 4, 0) == 0,
-            )
         }
         op => return sends(o, op, arg),
     })
@@ -2286,9 +2310,9 @@ fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
-        OP_DESTROY_TASK_WORKERS, OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN,
-        OP_NEW_BASE_FACTORY, OP_PIPE_TO_WORKER, OP_TASK_PIPE, OP_TASK_POOL_CREATE,
-        OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP,
+        OP_DESTROY_TASK_WORKERS, OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY,
+        OP_PIPE_TO_WORKER, OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
+        OP_TASK_POOL_SETUP,
     };
     use core::ptr::{null, null_mut};
     use swoole_rs_process::workers::ops::{
@@ -2390,7 +2414,6 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.ctx.object = crate::factory::new(serv, core::ptr::null_mut());
             0
         }
-        OP_FACTORY_END => u64::from(crate::factory::end(o.state, o.ctx.session_id, o.ctx.number)),
         OP_FACTORY_NOTIFY => u64::from(crate::factory::notify(o.state, o.ctx.object)),
         OP_PIPE_TO_WORKER => {
             let worker = o
