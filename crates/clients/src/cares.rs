@@ -91,32 +91,17 @@ unsafe fn query<'a>(state: *mut c_void) -> &'a Query {
     // SAFETY: as the caller promises; the query is only shared, never borrowed mutably.
     unsafe { &*state.cast::<Query>() }
 }
-unsafe extern "C" fn complete(data: *mut c_void) {
-    let (retired, coroutine, resume) = {
-        // SAFETY: the native queue's captured owner keeps this payload live during invocation.
-        let task = unsafe { &*data.cast::<Completion>() };
-        (
-            task.retired.load(Ordering::Relaxed),
-            task.coroutine,
-            task.resume,
-        )
-    };
-    if !retired {
-        // SAFETY: no Rust payload borrow spans resume; reentrant queue destruction may drop it.
-        unsafe { resume(coroutine) };
+/// The deferred resume: the reactor runs it after the pass, unless the query
+/// retired first, or drops it if the reactor is freed first.
+impl event_api::Deferred for Completion {
+    fn run(self) {
+        if !self.retired.load(Ordering::Relaxed) {
+            // SAFETY: a query is retired before its coroutine may end, so a live
+            // query's coroutine is still parked waiting for this resume.
+            unsafe { (self.resume)(self.coroutine) };
+        }
     }
-}
-unsafe extern "C-unwind" fn release_completion(data: *mut c_void) {
-    // SAFETY: the queue transfers this Rust allocation exactly once, whether it
-    // invoked or discarded its callback.
-    drop(unsafe { Box::from_raw(data.cast::<Completion>()) });
-}
-/// The deferred task: the queue popped it, so it no longer disposes of it.
-unsafe extern "C-unwind" fn run_completion(data: *mut c_void) {
-    // SAFETY: the queue's live payload; `complete` borrows none of it across resume.
-    unsafe { complete(data) };
-    // SAFETY: as above, released once.
-    unsafe { release_completion(data) };
+    fn dispose(self) {}
 }
 /// The thread's live reactor fields.
 fn reactor_fields() -> *mut swoole_rs_reactor::ReactorFields {
@@ -284,25 +269,14 @@ unsafe extern "C" fn host(
     // SAFETY: a nonnull identity is the query's original live coroutine.
     if !coroutine.is_null() && co::suspending(coroutine) {
         let retired = query.retired.clone();
-        let task = Box::into_raw(Box::new(Completion {
+        let task = Completion {
             retired,
             coroutine,
             resume: co::resume,
-        }));
-        let slot = reactor_fields()
-            .wrapping_byte_add(std::mem::offset_of!(ReactorFields, defer_tasks))
-            .cast::<*mut ReactorDeferred>();
-        // SAFETY: the live reactor's queue takes this owned completion payload once.
-        let pushed = unsafe {
-            swoole_rs_reactor::swr_v1_reactor_deferred_push(
-                slot,
-                run_completion,
-                task.cast(),
-                Some(release_completion),
-            )
         };
-        if pushed != 0 {
-            std::alloc::handle_alloc_error(std::alloc::Layout::new::<Completion>());
+        // c-ares runs on a thread whose reactor is live.
+        if event_api::swoole_event_defer_value(task).is_err() {
+            std::process::abort();
         }
         // A completion was queued, so further SDK callbacks cannot enqueue it again.
         query.coroutine.set(ptr::null_mut());
@@ -432,60 +406,45 @@ fn millis(timeout: f64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Resume {
-        payload: *mut c_void,
-        calls: usize,
+    use swoole_rs_reactor::event_api::Deferred;
+    thread_local! {
+        static RESUMED: Cell<usize> = const { Cell::new(0) };
     }
-    unsafe extern "C-unwind" fn resume_and_discard(context: *mut c_void) {
-        let context = unsafe { &mut *context.cast::<Resume>() };
-        context.calls += 1;
-        unsafe { release_completion(context.payload) };
+    unsafe extern "C-unwind" fn count_resume(_: *mut c_void) {
+        RESUMED.set(RESUMED.get() + 1);
     }
-    #[test]
-    fn completion_queue_discard_releases_token() {
-        let retired = Arc::new(AtomicBool::new(true));
-        let payload = Box::into_raw(Box::new(Completion {
+    fn completion(retired: &Arc<AtomicBool>) -> Completion {
+        Completion {
             retired: retired.clone(),
             coroutine: ptr::null_mut(),
-            resume: resume_and_discard,
-        }));
+            resume: count_resume,
+        }
+    }
+    #[test]
+    fn retired_completion_releases_token_without_resuming() {
+        let retired = Arc::new(AtomicBool::new(true));
+        let task = completion(&retired);
         assert_eq!(
             Arc::strong_count(&retired),
             2,
             "queue retains retirement token"
         );
-        unsafe { complete(payload.cast()) };
-        assert_eq!(
-            Arc::strong_count(&retired),
-            2,
-            "retired callback does not consume queue custody"
-        );
-        unsafe { release_completion(payload.cast()) };
+        task.run();
+        assert_eq!(RESUMED.get(), 0, "a retired query is not resumed");
+        assert_eq!(Arc::strong_count(&retired), 1, "run releases the token");
+        completion(&retired).dispose();
         assert_eq!(
             Arc::strong_count(&retired),
             1,
             "discard releases payload without invocation"
         );
+        assert_eq!(RESUMED.get(), 0);
     }
     #[test]
-    fn completion_can_be_discarded_during_resume() {
+    fn live_completion_resumes_once() {
         let retired = Arc::new(AtomicBool::new(false));
-        let mut context = Resume {
-            payload: ptr::null_mut(),
-            calls: 0,
-        };
-        let payload = Box::into_raw(Box::new(Completion {
-            retired: retired.clone(),
-            coroutine: (&raw mut context).cast(),
-            resume: resume_and_discard,
-        }));
-        context.payload = payload.cast();
-        unsafe { complete(payload.cast()) };
-        assert_eq!(context.calls, 1, "resume was delivered exactly once");
-        assert_eq!(
-            Arc::strong_count(&retired),
-            1,
-            "reentrant queue destruction released the token"
-        );
+        completion(&retired).run();
+        assert_eq!(RESUMED.get(), 1, "resume was delivered exactly once");
+        assert_eq!(Arc::strong_count(&retired), 1, "run released the token");
     }
 }

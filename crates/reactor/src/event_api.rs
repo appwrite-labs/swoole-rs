@@ -208,11 +208,16 @@ pub extern "C" fn swoole_event_isset_handler(fd_type: c_int, event: c_int) -> bo
 )]
 #[must_use]
 pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
-    let Some(registry) = current_prepared().map(|prepared| prepared.registry) else {
-        return std::ptr::null_mut();
-    };
-    // SAFETY: the live reactor's registry.
-    crate::swr_v1_reactor_registry_get(unsafe { registry.as_ref() }, fd)
+    with_registry(|registry| crate::swr_v1_reactor_registry_get(registry, fd))
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// `f` over the thread's `Reactor`'s socket registry (null as `None`); `None`
+/// without a reactor.
+pub fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
+    let registry = current_prepared()?.registry;
+    // SAFETY: a live reactor's registry or null, borrowed for this call alone.
+    Some(f(unsafe { registry.as_ref() }))
 }
 
 /// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
@@ -224,7 +229,7 @@ pub fn current_prepared() -> Option<crate::ReactorPrepared> {
 }
 
 /// A field of the thread's `Reactor`, written; `None` without one.
-fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
+pub fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
     let fields = current_prepared()?.fields;
     // SAFETY: a live reactor's fields, borrowed for this call alone; the loop
     // reads them through its raw pointer, never across it.

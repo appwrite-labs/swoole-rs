@@ -165,7 +165,7 @@ fn yield_(call: &Call) {
     call.set_bool(true);
 }
 
-unsafe extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
+extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
     set_yielded(host::cid(co), false);
     host::resume(co);
     true

@@ -81,7 +81,7 @@ pub(crate) fn flag(bit: u32) -> bool {
             !serv.is_null()
                 && unsafe { swoole_rs_server::view::Server::from_raw(serv) }.is_started()
         }
-        FATAL => last_error_fatal() || reactor().is_some_and(|(fields, _)| fields.bailout),
+        FATAL => last_error_fatal() || swoole_rs_reactor::event_api::swoole_event_bailed_out(),
         // `sw_is_main_thread()`.
         // SAFETY: no preconditions.
         MAIN_THREAD => !cfg!(zts) || unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() },
@@ -105,32 +105,21 @@ fn last_error_fatal() -> bool {
     }
 }
 
-/// The thread's event loop (`sw_reactor()`), if it has one: its fields and its
-/// socket registry. Callers hold the borrow only for one read or push.
-fn reactor() -> Option<(
-    &'static mut swoole_rs_reactor::ReactorFields,
-    *mut swoole_rs_reactor::Registry,
-)> {
-    let prepared = swoole_rs_reactor::event_api::current_prepared()?;
-    // SAFETY: the loop's fields, live until `swoole_event_free`.
-    unsafe { prepared.fields.as_mut() }.map(|fields| (fields, prepared.registry))
-}
-
 /// Queue `f(data)` on the running loop: on its deferred tasks, or (`destroy`)
 /// on the callbacks its free runs.
 fn reactor_push(destroy: bool, f: swoole_rs_reactor::DeferCall, data: *mut c_void) {
-    // Upstream dereferences `sw_reactor()` here unchecked.
-    let Some((fields, _)) = reactor() else {
-        std::process::abort()
-    };
-    let queue = if destroy {
-        &raw mut fields.destroy_callbacks
-    } else {
-        &raw mut fields.defer_tasks
-    };
-    // SAFETY: the loop's live queue; `data` stays with the task.
-    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) } != 0 {
-        // Upstream throws std::bad_alloc, which no frame here could catch.
+    let pushed = swoole_rs_reactor::event_api::field_mut(|fields| {
+        let queue = if destroy {
+            &raw mut fields.destroy_callbacks
+        } else {
+            &raw mut fields.defer_tasks
+        };
+        // SAFETY: the loop's live queue; `data` stays with the task.
+        unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, f, data, None) }
+    });
+    // Upstream dereferences `sw_reactor()` here unchecked, and throws std::bad_alloc,
+    // which no frame here could catch.
+    if pushed != Some(0) {
         std::process::abort();
     }
 }
@@ -284,9 +273,9 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    if let Some((_, registry)) = reactor() {
-        // SAFETY: the live loop's registry.
-        let count = swoole_rs_reactor::swr_v1_reactor_registry_count(unsafe { registry.as_ref() });
+    if let Some(count) = swoole_rs_reactor::event_api::with_registry(|registry| {
+        swoole_rs_reactor::swr_v1_reactor_registry_count(registry)
+    }) {
         stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
     }
     #[cfg(feature = "iouring")]
@@ -519,10 +508,10 @@ unsafe extern "C" fn main(args: *mut c_void) {
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
 /// main context: the loop stops, then PHP bails out.
 extern "C" fn bail_out(_: *mut c_void) {
-    if let Some((fields, _)) = reactor() {
+    swoole_rs_reactor::event_api::field_mut(|fields| {
         fields.running = false;
         fields.bailout = true;
-    }
+    });
     bailout::raise(Err(bailout::Bailout));
 }
 
