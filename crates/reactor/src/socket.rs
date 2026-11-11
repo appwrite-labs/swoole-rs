@@ -231,6 +231,45 @@ mod tests {
     }
 
     #[test]
+    fn a_read_from_another_thread_during_an_edit_is_refused_and_backs_out() {
+        let mut record = SocketRecord::new();
+        let record = (&raw mut record).expose_provenance();
+        let handle = || unsafe { Socket::from_ptr(std::ptr::with_exposed_provenance_mut(record)) };
+        let (editing, tried) = (std::sync::Barrier::new(2), std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                handle().unwrap().edit(|fields| {
+                    fields.fd = 4;
+                    editing.wait();
+                    // B's refused read has added and taken back its count by now.
+                    tried.wait();
+                    assert_eq!(handle().unwrap().borrows().load(Ordering::Relaxed), EDIT);
+                });
+            });
+            scope.spawn(|| {
+                editing.wait();
+                let read = catch_unwind(AssertUnwindSafe(|| handle().unwrap().fd()));
+                tried.wait();
+                assert!(
+                    read.is_err(),
+                    "a read while another thread edits is refused"
+                );
+            });
+        });
+        let socket = handle().unwrap();
+        assert_eq!(
+            socket.borrows().load(Ordering::Relaxed),
+            0,
+            "nothing left counted"
+        );
+        assert_eq!(
+            socket.fd(),
+            4,
+            "the edit stands, and the record reads again"
+        );
+    }
+
+    #[test]
     fn error_catching_edits_only_for_enobufs() {
         let mut record = SocketRecord::new();
         let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
