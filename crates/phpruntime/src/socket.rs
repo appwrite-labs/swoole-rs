@@ -64,14 +64,16 @@ unsafe fn trap<T>(body: Body, call: &mut T) -> Result<(), Bailout> {
 unsafe extern "C" fn make_body(call: *mut c_void) {
     // SAFETY: `trap` passes the caller's live `SocketCall`.
     let call = unsafe { &mut *call.cast::<SocketCall>() };
-    let made = swoole_rs_hooks::co_socket::make(
+    let (made, result) = swoole_rs_hooks::co_socket::make_quiet(
         call.fd,
         call.domain,
         call.kind,
         call.protocol,
         call.family,
     );
+    // The caller owns the socket before a warning's handler can bail out.
     call.socket = made.this();
+    swoole_rs_hooks::co_socket::warn_created(made, result);
 }
 
 /// `call.result = socket->close()` over a [`SocketCall`]: a body for [`trap`],
@@ -208,11 +210,14 @@ impl Socket {
             result: false,
         };
         // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
-        if unsafe { trap(make_body, &mut call) }.is_err() {
+        let trapped = unsafe { trap(make_body, &mut call) };
+        // Owns, so a bailout frees, the socket `make` wrote before it.
+        let socket = Self::wrap(call.socket, true);
+        if trapped.is_err() {
             Bailout.defer();
             return None;
         }
-        Self::wrap(call.socket, true)
+        socket
     }
 
     /// The coroutine socket of hooked `fd`, if any.
@@ -640,7 +645,11 @@ pub mod co {
             result: false,
         };
         // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
-        unsafe { trap(make_body, &mut call) }?;
+        if unsafe { trap(make_body, &mut call) }.is_err() {
+            // Frees the socket `make` wrote before the bailout, if any.
+            drop(super::Socket::wrap(call.socket, true));
+            return Err(Bailout);
+        }
         Ok(call.socket)
     }
 

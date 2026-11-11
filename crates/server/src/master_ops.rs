@@ -2723,6 +2723,22 @@ fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
     None
 }
 
+/// What `Server::destroy` frees of a base-mode server whose single worker bailed out
+/// of its loop: the base factory's connection list and counts, the server's lists and
+/// its factory. It runs none of the shutdown (callbacks, hooks, signals, ports), only
+/// marks the server shut down, so `swr_v1_server_delete` frees the rest.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) fn release_abandoned_base(serv: crate::view::Server<'_>) {
+    let mut ctx = NativeContext::new(serv.raw());
+    let mut o = Objects {
+        ctx: &mut ctx,
+        state: serv.state(),
+    };
+    o.gs().shutdown.store(1, SeqCst);
+    ops(&mut o, OP_DESTROY_FACTORY, MODE_BASE);
+    ops(&mut o, crate::ops::OP_FREE_SERVER, 0);
+}
+
 /// `Server::destroy_base_factory()`: the connection list and the connection counts.
 fn destroy_base_factory(o: &Objects<'_>) -> u64 {
     let tables = o.tables();
