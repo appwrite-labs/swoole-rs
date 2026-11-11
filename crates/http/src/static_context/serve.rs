@@ -49,7 +49,7 @@ impl HttpStaticContext {
             Event::Canonical(value) if self.serve.pending == 5 => {
                 self.serve.facts &= !path::CANONICAL_OK;
                 if let Some(value) = value
-                    && value.len() < self.filename.len()
+                    && value.len() < self.capacity
                 {
                     let status = self.publish(FILENAME, value);
                     if status < 0 {

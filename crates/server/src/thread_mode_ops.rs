@@ -30,9 +30,9 @@ use swoole_rs_process::workers::ops::{
     OP_KILL_WORKER, OP_MANAGER_THREAD_ID, OP_NEW_REACTOR_THREADS, OP_ON_AFTER_RELOAD,
     OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START, OP_ON_MANAGER_STOP, OP_ON_USER_WORKER_START,
     OP_ON_WORKER_START, OP_ON_WORKER_STOP, OP_POOL_MAIN_LOOP, OP_PORT_ADD, OP_PORT_COUNT,
-    OP_PORT_DGRAM, OP_PORT_LISTEN, OP_RUNNING, OP_SINGLE_REACTOR_PIPE, OP_STORE_LISTEN_SOCKET,
-    OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_REACTOR_NUM,
-    OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
+    OP_PORT_DGRAM, OP_PORT_LISTEN, OP_RUNNING, OP_SINGLE_REACTOR_PIPE, OP_STOPPING,
+    OP_STORE_LISTEN_SOCKET, OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD,
+    OP_THREAD_REACTOR_NUM, OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
 };
 use swoole_rs_process::workers::thread::{ThreadManager, worker_thread_start};
 
@@ -324,6 +324,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
         OP_RUNNING => u64::from(config.running),
+        OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
             #[expect(
