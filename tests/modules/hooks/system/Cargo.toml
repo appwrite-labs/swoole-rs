@@ -20,3 +20,4 @@ swoole-rs-hooks = { path = "../../../../crates/hooks" }
 swoole-rs-memory = { path = "../../../../crates/memory" }
 swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-reactor = { path = "../../../../crates/reactor" }
+swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }
