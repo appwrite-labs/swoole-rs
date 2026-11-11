@@ -1083,8 +1083,7 @@ fn part_headers_complete(state: &mut State, upload: &mut *mut libc::FILE) -> c_i
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);
-    // SAFETY: a writable, NUL-terminated template.
-    let fd = unsafe { swoole_rs_ossupport::swoole_tmpfile(path.as_mut_ptr().cast()) };
+    let fd = swoole_rs_ossupport::create_tmpfile(&mut path);
     path.pop();
     if fd < 0 {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
