@@ -680,109 +680,84 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_connect_host(
     socket.connect_host(&host, port)
 }
 
-/// How `TlsOps::step` drives the handshake.
+/// How [`Handshaking::step`] drives the handshake.
 const MODE_CLIENT: c_int = 0;
 const MODE_SERVER: c_int = 1;
 
 /// The socket's effects for `ssl_handshake`.
-#[repr(C)]
-pub struct TlsOps {
-    pub socket: *mut c_void,
+pub trait Handshaking {
     /// 0 client (`ssl_connect` steps), 1 server (`ssl_accept` steps), 2 a step
     /// that completes or fails by itself (`io_uring`'s memory BIOs).
-    pub mode: c_int,
-    pub handshaked: bool,
+    fn mode(&self) -> c_int;
+    fn handshaked(&self) -> bool;
     /// Whether the SSL context has its `SSL_CTX`, and whether it verifies the peer.
-    pub context_ready: bool,
-    pub verify_peer: bool,
+    fn context_ready(&self) -> bool;
+    fn verify_peer(&self) -> bool;
     /// `is_available(SW_EVENT_RDWR)`.
-    pub available: unsafe extern "C" fn(*mut c_void) -> bool,
+    fn available(&mut self) -> bool;
     /// `set_err(code)`, or `set_err()` for -1.
-    pub set_err: unsafe extern "C" fn(*mut c_void, c_int),
+    fn set_err(&mut self, code: c_int);
     /// `ssl_context_create()`, and `ssl_create` of the socket's context.
-    pub context_create: unsafe extern "C" fn(*mut c_void) -> bool,
-    pub create: unsafe extern "C" fn(*mut c_void) -> bool,
+    fn context_create(&mut self) -> bool;
+    fn create(&mut self) -> bool;
     /// One step: the client's `ssl_connect()` (-1 when it failed, else the SSL
     /// state), the server's `ssl_accept()` return code, or for mode 2 1 done,
     /// 0 again, -1 failed.
-    pub step: unsafe extern "C" fn(*mut c_void) -> c_int,
+    fn step(&mut self) -> c_int;
     /// Waits to read under the read timeout: a timer of its own when `fresh`,
     /// else one timer for the whole handshake.
-    pub wait: unsafe extern "C" fn(*mut c_void, bool) -> bool,
+    fn wait(&mut self, fresh: bool) -> bool;
     /// `ssl_verify(allow_self_signed)`.
-    pub verify: unsafe extern "C" fn(*mut c_void) -> bool,
+    fn verify(&mut self) -> bool;
 }
 
-impl TlsOps {
-    fn step(&self) -> c_int {
-        // SAFETY: the live socket's handshake step.
-        unsafe { (self.step)(self.socket) }
-    }
-
-    fn wait(&self, fresh: bool) -> bool {
-        // SAFETY: the live socket's wait.
-        unsafe { (self.wait)(self.socket, fresh) }
-    }
-
-    fn set_err(&self, code: c_int) {
-        // SAFETY: the live socket's error.
-        unsafe { (self.set_err)(self.socket, code) };
-    }
-
-    fn steps(&self) -> bool {
-        match self.mode {
-            MODE_CLIENT => loop {
-                match self.step() {
-                    code if code < 0 => {
-                        self.set_err(LAST_ERROR);
+fn steps(ops: &mut impl Handshaking) -> bool {
+    match ops.mode() {
+        MODE_CLIENT => loop {
+            match ops.step() {
+                code if code < 0 => {
+                    ops.set_err(LAST_ERROR);
+                    return false;
+                }
+                SSL_STATE_WAIT_STREAM => {
+                    if !ops.wait(true) {
                         return false;
                     }
-                    SSL_STATE_WAIT_STREAM => {
-                        if !self.wait(true) {
-                            return false;
-                        }
-                    }
-                    SSL_STATE_READY => return true,
-                    _ => {}
                 }
-            },
-            MODE_SERVER => {
-                let mut code = self.step();
-                while code == WAIT && self.wait(false) {
-                    code = self.step();
-                }
-                if code != READY {
-                    self.set_err(SSL_BAD_CLIENT);
-                }
-                code == READY
+                SSL_STATE_READY => return true,
+                _ => {}
             }
-            _ => loop {
-                match self.step() {
-                    1 => return true,
-                    0 => {}
-                    _ => return false,
-                }
-            },
+        },
+        MODE_SERVER => {
+            let mut code = ops.step();
+            while code == WAIT && ops.wait(false) {
+                code = ops.step();
+            }
+            if code != READY {
+                ops.set_err(SSL_BAD_CLIENT);
+            }
+            code == READY
         }
+        _ => loop {
+            match ops.step() {
+                1 => return true,
+                0 => {}
+                _ => return false,
+            }
+        },
     }
 }
 
 /// `Socket::ssl_handshake`, up to marking the socket handshaked, which native
 /// code does when this returns true.
 #[must_use]
-pub fn ssl_handshake(ops: &TlsOps) -> bool {
-    if ops.handshaked {
+pub fn ssl_handshake(ops: &mut impl Handshaking) -> bool {
+    if ops.handshaked() {
         ops.set_err(WRONG_OPERATION);
         return false;
     }
-    // SAFETY: the live socket's availability.
-    let prepared = unsafe { (ops.available)(ops.socket) }
-        // SAFETY: the live socket's context.
-        && (ops.context_ready || unsafe { (ops.context_create)(ops.socket) })
-        // SAFETY: the live socket's SSL.
-        && unsafe { (ops.create)(ops.socket) };
-    // SAFETY: the live socket's verification.
-    prepared && ops.steps() && (!ops.verify_peer || unsafe { (ops.verify)(ops.socket) })
+    let prepared = ops.available() && (ops.context_ready() || ops.context_create()) && ops.create();
+    prepared && steps(ops) && (!ops.verify_peer() || ops.verify())
 }
 
 #[cfg(test)]
@@ -811,13 +786,6 @@ mod tests {
                 None => default,
             }
         })
-    }
-
-    unsafe extern "C" fn available(_: *mut c_void) -> bool {
-        take("available", 1) != 0
-    }
-    unsafe extern "C" fn set_err(_: *mut c_void, code: c_int) {
-        log(format!("err {code}"));
     }
 
     /// A scripted socket: each effect logs its name and takes its scripted result.
@@ -1117,40 +1085,60 @@ mod tests {
         assert_eq!(log[log.len() - 1], "last_error");
     }
 
-    unsafe extern "C" fn context_create(_: *mut c_void) -> bool {
-        take("context_create", 1) != 0
+    /// A scripted handshake: each effect logs its name and takes its scripted result.
+    struct Script {
+        mode: c_int,
+        handshaked: bool,
+        context_ready: bool,
+        verify_peer: bool,
     }
-    unsafe extern "C" fn create(_: *mut c_void) -> bool {
-        take("create", 1) != 0
-    }
-    unsafe extern "C" fn step(_: *mut c_void) -> c_int {
-        c_int::try_from(take("tls_step", 1)).unwrap_or(-9)
-    }
-    unsafe extern "C" fn wait(_: *mut c_void, fresh: bool) -> bool {
-        take(if fresh { "wait_fresh" } else { "wait" }, 1) != 0
-    }
-    unsafe extern "C" fn verify(_: *mut c_void) -> bool {
-        take("verify", 1) != 0
+
+    impl Handshaking for Script {
+        fn mode(&self) -> c_int {
+            self.mode
+        }
+        fn handshaked(&self) -> bool {
+            self.handshaked
+        }
+        fn context_ready(&self) -> bool {
+            self.context_ready
+        }
+        fn verify_peer(&self) -> bool {
+            self.verify_peer
+        }
+        fn available(&mut self) -> bool {
+            take("available", 1) != 0
+        }
+        fn set_err(&mut self, code: c_int) {
+            log(format!("err {code}"));
+        }
+        fn context_create(&mut self) -> bool {
+            take("context_create", 1) != 0
+        }
+        fn create(&mut self) -> bool {
+            take("create", 1) != 0
+        }
+        fn step(&mut self) -> c_int {
+            c_int::try_from(take("tls_step", 1)).unwrap_or(-9)
+        }
+        fn wait(&mut self, fresh: bool) -> bool {
+            take(if fresh { "wait_fresh" } else { "wait" }, 1) != 0
+        }
+        fn verify(&mut self) -> bool {
+            take("verify", 1) != 0
+        }
     }
 
     fn tls(mode: c_int, script: &[(&'static str, isize)]) -> (bool, Vec<String>) {
         LOG.with(|log| log.borrow_mut().clear());
         SCRIPT.with(|s| *s.borrow_mut() = script.to_vec());
-        let ops = TlsOps {
-            socket: std::ptr::null_mut(),
+        let mut ops = Script {
             mode,
             handshaked: false,
             context_ready: false,
             verify_peer: true,
-            available,
-            set_err,
-            context_create,
-            create,
-            step,
-            wait,
-            verify,
         };
-        let ok = ssl_handshake(&ops);
+        let ok = ssl_handshake(&mut ops);
         (ok, LOG.with(|log| log.borrow().clone()))
     }
 
@@ -1202,21 +1190,13 @@ mod tests {
         assert!(!ok);
         assert_eq!(log, ["available", "context_create", "create"]);
         LOG.with(|log| log.borrow_mut().clear());
-        let ops = TlsOps {
-            socket: std::ptr::null_mut(),
+        let mut ops = Script {
             mode: MODE_CLIENT,
             handshaked: true,
             context_ready: true,
             verify_peer: false,
-            available,
-            set_err,
-            context_create,
-            create,
-            step,
-            wait,
-            verify,
         };
-        assert!(!ssl_handshake(&ops));
+        assert!(!ssl_handshake(&mut ops));
         assert_eq!(LOG.with(|log| log.borrow().clone()), ["err 509"]);
     }
 
