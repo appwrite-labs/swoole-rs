@@ -75,6 +75,9 @@ using private peers on ephemeral ports. Families: `lifecycle`, `http`, `dns`,
 `async`, `coro_io`. `socket_custody.py` (`clients-php-socket-custody`) runs
 `socket_custody.php` the same way: imported socket and stream ownership, binary I/O,
 the factory fallback and hooked pair release.
+`php_reentrant_close.py` (`clients-php-reentrant-close`, every lane, Cargo build)
+closes a persistent `Swoole\Client` from its `package_length_func` while `recv()`
+holds the connection: `recv()` fails with 5001, and the key's next connect is fresh.
 
 ```sh
 python3 tests/modules/clients/php_http.py --build-manifest BUILD_MANIFEST \
