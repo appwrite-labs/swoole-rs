@@ -374,8 +374,8 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
     }
 }
 
-/// Put `data` (or nothing) in a cycle slot, and hand back the task it held if
-/// [`swoole_event_cycle`] put it there; any other callback is left to its owner.
+/// Put `data` (or nothing) in a cycle slot, and hand back the task it held. Only
+/// [`swoole_event_cycle`] fills the slots, so a set one holds its `Rc<Slot>`.
 fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Option<Retired> {
     let replaced = std::mem::replace(
         task,
@@ -384,14 +384,9 @@ fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Optio
             data: data.map_or(std::ptr::null_mut(), <*mut Slot>::cast),
         },
     );
-    let ours = replaced
-        .callback
-        .is_some_and(|callback| std::ptr::fn_addr_eq(callback, cycle_task as crate::DeferCall));
-    if !ours || replaced.data.is_null() {
-        return None;
-    }
-    // SAFETY: with `cycle_task` as its callback, the data is the `Rc<Slot>` that
-    // `swoole_event_cycle` gave up, which the slot no longer names.
+    replaced.callback?;
+    // SAFETY: a set slot's data is the `Rc<Slot>` `swoole_event_cycle` gave up,
+    // which the slot no longer names.
     Some(Retired(unsafe {
         Rc::from_raw(replaced.data.cast::<Slot>())
     }))
