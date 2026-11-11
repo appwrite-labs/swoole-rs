@@ -26,17 +26,13 @@ use swoole_rs_zend::{method_table, sys as z};
 
 static COROUTINE: Class = Class::new();
 static ITERATOR: Class = Class::new();
-static CONTEXT: Class = Class::new();
+pub(crate) static CONTEXT: Class = Class::new();
 static EXIT: Class = Class::new();
 static CANCELED: Class = Class::new();
 static TIMEOUT: Class = Class::new();
 
 pub(crate) fn iterator() -> &'static Class {
     &ITERATOR
-}
-
-pub(crate) fn context_class() -> *mut zend_class_entry {
-    CONTEXT.entry()
 }
 
 pub(crate) fn canceled() -> *mut zend_class_entry {
