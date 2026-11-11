@@ -626,6 +626,9 @@ pub(crate) unsafe fn tls_step(socket: Co) -> c_int {
 }
 
 #[cfg(test)]
+mod ported;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::co_socket::TestSocket;
