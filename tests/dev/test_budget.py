@@ -80,6 +80,13 @@ class Budget(unittest.TestCase):
         self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base),
                          {'http-ffi': (12, 5), 'orphan-ffi': (2, 1)}, 'a rise past the fall fails')
 
+    def test_any_crate_may_rise_while_the_total_falls(self):
+        base = {'tls': 3, 'hooks': 5}
+        current = {'tls': 4, 'hooks': 3}  # tls gained an unsafe fn; hooks paid for it
+        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {})
+        current['hooks'] = 4  # the total holds, so tls's rise fails
+        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'tls': (4, 3)})
+
     def test_a_fall_into_a_new_crate_does_not_also_cover_an_ffi_rise(self):
         # http's 6 moved to locale, which is new and so unchecked; http-ffi's 6 are new unsafe.
         base = {'http': 10, 'http-ffi': 5}

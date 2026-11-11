@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Per-crate counts in non-test code that may not rise above the base commit's:
 
-  unsafe   `unsafe` blocks, fns and impls (crates/zend, the safe layer callers move
-           onto, may rise while the workspace total falls, and an `X-ffi` crate, the C ABI
-           over crate X, by as much as X falls while the total doesn't rise)
+  unsafe   `unsafe` blocks, fns and impls (any crate may rise while the workspace total
+           falls, so a PR that makes a callback an `unsafe fn` can pay for it elsewhere,
+           and an `X-ffi` crate, the C ABI over crate X, by as much as X falls while the
+           total doesn't rise)
   maps     std hash and B-tree maps and sets, where a flat table belongs
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
@@ -120,10 +121,13 @@ def above(current, base):
 def boundary_moves(rises, current, base):
     """`rises` without each `X-ffi` crate whose rise crate X's fall covers: unsafe that
     moved from X to the C ABI over it. Only while the workspace total doesn't rise, so a
-    fall into a new crate can't cover the rise as well."""
+    fall into a new crate can't cover the rise as well. Nothing is left while the total
+    falls."""
     def covered(crate, n, was):
         safe = crate.removesuffix('-ffi')
         return safe != crate and n - was <= base.get(safe, 0) - current.get(safe, 0)
+    if sum(current.values()) < sum(base.values()):
+        return {}
     if sum(current.values()) > sum(base.values()):
         return rises
     return {c: (n, was) for c, (n, was) in rises.items() if not covered(c, n, was)}
@@ -159,8 +163,6 @@ def main():
         rises = above(crates, base[kind])
         if kind == 'unsafe':
             rises = boundary_moves(rises, crates, base[kind])
-            if sum(crates.values()) < sum(base[kind].values()):
-                rises.pop('zend', None)
         if kind == 'unforbidden':
             rises |= must_forbid(current, base[kind])
         else:
