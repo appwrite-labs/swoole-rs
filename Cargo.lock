@@ -772,7 +772,6 @@ name = "swoole-rs-phpcoroutines"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-hooks",

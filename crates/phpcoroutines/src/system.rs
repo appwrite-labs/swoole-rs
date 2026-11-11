@@ -1,27 +1,24 @@
 //! `Swoole\Coroutine\System` (upstream's `swoole_coroutine_system.cc`):
 //! argument parsing, validation and results in Rust. The coroutine-aware
 //! system calls stay the C++ `swoole::coroutine::System`: its static members
-//! by their own symbols, and `swr_v1_system_*` (in `crates/hooks/src/resolve.rs`)
-//! where a C++ string or list carries the result.
+//! by their own symbols; the resolver's lookups are crates/hooks'.
 use crate::host;
 use std::{
-    ffi::{CStr, CString, c_char, c_int, c_long, c_void},
-    mem, slice,
+    ffi::{CStr, CString, c_int, c_long},
+    mem,
 };
-use swoole_rs_buffer::string;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit,
+    Call, Class, E_WARNING, Minit, Owned, OwnedArray, ZString,
     bailout::Bailout,
-    sys::{IS_ARRAY, zend_value_error, zval},
-    type_of, value,
+    sys::{zend_value_error, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-use swoole_rs_hooks::resolve::{swr_v1_system_getaddrinfo, swr_v1_system_gethostbyname};
+use swoole_rs_hooks::resolve::{system_getaddrinfo, system_gethostbyname};
 use swoole_rs_hooks::sleep::system_sleep;
 use swoole_rs_hooks::stdio::swoole_coroutine_statvfs;
 use swoole_rs_hooks::wait_event::system_wait_event;
@@ -74,26 +71,14 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// `RETVAL_STRINGL`: `out` (an empty zval) takes a copy of the string.
-unsafe extern "C" fn put_string(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: C++ lends `length` readable bytes.
-    let bytes = unsafe { slice::from_raw_parts(data.cast::<u8>(), length) };
-    // SAFETY: `out` holds nothing that needs releasing.
-    unsafe { value::set_str(out.cast(), swoole_rs_zend::string::copy(bytes)) };
+/// `bytes` up to its first NUL, as a C string argument reads it.
+fn until_nul(bytes: &[u8]) -> &[u8] {
+    bytes.split(|&b| b == 0).next().unwrap_or(bytes)
 }
 
-/// `add_next_index_stringl`, after `array_init` if `out` is not yet an array.
-unsafe extern "C" fn push_string(out: *mut c_void, data: *const c_char, length: usize) {
-    let out = out.cast::<zval>();
-    // SAFETY: the return slot.
-    if unsafe { type_of(out) } != IS_ARRAY {
-        // SAFETY: an empty return slot.
-        unsafe { value::array_init(out) };
-    }
-    // SAFETY: C++ lends `length` readable bytes.
-    let bytes = unsafe { slice::from_raw_parts(data.cast::<u8>(), length) };
-    // SAFETY: an array; it takes the new string.
-    unsafe { swoole_rs_zend::push_string(out, swoole_rs_zend::string::copy(bytes)) };
+/// `value`, or `INT_MAX` when it does not fit.
+fn saturated(value: c_long) -> c_int {
+    c_int::try_from(value).unwrap_or(c_int::MAX)
 }
 
 /// C's implicit `long` to `int` conversion, as upstream's calls make it.
@@ -237,14 +222,11 @@ fn gethostbyname(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let (name, length, out) = (
-        domain.as_ptr().cast(),
-        domain.len(),
-        call.return_value().cast(),
-    );
-    // SAFETY: the domain's bytes and the empty return slot.
-    if !unsafe { swr_v1_system_gethostbyname(name, length, family, timeout, put_string, out) } {
+    let address = system_gethostbyname(domain, saturated(family), timeout);
+    if address.is_empty() {
         call.set_bool(false);
+    } else {
+        call.set_zstring(ZString::new(&address));
     }
 }
 
@@ -283,22 +265,23 @@ fn getaddrinfo(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: NUL-terminated strings and the empty return slot.
-    let found = unsafe {
-        swr_v1_system_getaddrinfo(
-            host_name.as_ptr().cast(),
-            family,
-            socktype,
-            protocol,
-            service.as_ptr().cast(),
-            timeout,
-            push_string,
-            call.return_value().cast(),
-        )
-    };
-    if !found {
+    let addresses = system_getaddrinfo(
+        until_nul(host_name),
+        saturated(family),
+        saturated(socktype),
+        saturated(protocol),
+        until_nul(service),
+        timeout,
+    );
+    if addresses.is_empty() {
         call.set_bool(false);
+        return;
     }
+    let mut list = OwnedArray::default();
+    for address in &addresses {
+        list.push_bytes(address);
+    }
+    call.set_owned(list.into_owned());
 }
 
 /// Upstream's `(long)` cast of each `statvfs` field.
@@ -344,48 +327,21 @@ fn statvfs(call: &Call) {
 fn exec(call: &Call) {
     let parsed = call
         .arity(1, 2)
-        .and_then(|()| Ok((call.string(1, b"")?, call.bool(2, false)?)));
-    let Ok((command, errors)) = parsed else {
+        .and_then(|()| Ok((call.zstr(1)?, call.bool(2, false)?)));
+    let Ok((Some(command), errors)) = parsed else {
         call.set_bool(false);
         return;
     };
     let mut status = 0;
-    // A fresh String, freed below.
-    let buffer = string::new_sized_string(1024, None);
-    // SAFETY: live until the delete below, and only this frame's.
-    let output = unsafe { &mut *buffer };
-    // SAFETY: a zend string is NUL-terminated.
-    let command = unsafe { CStr::from_ptr(command.as_ptr().cast()) };
-    let done = exec_into(command, errors, output, &mut status);
-    let mut output_value = swoole_rs_zend::UNDEF;
-    if done {
-        // SAFETY: the String's bytes, copied into an empty slot.
-        unsafe {
-            put_string(
-                (&raw mut output_value).cast(),
-                output.as_ptr().cast(),
-                output.len(),
-            );
-        };
-    }
-    // SAFETY: from new_sized_string, not used again.
-    unsafe { string::delete_string(buffer) };
-    if !done {
+    let Some(output) = exec_into(command.c_str(), errors, &mut status) else {
         call.set_bool(false);
         return;
-    }
-    call.set_array();
-    call.add_assoc_long(c"code", libc::WEXITSTATUS(status).into());
-    call.add_assoc_long(c"signal", libc::WTERMSIG(status).into());
-    // SAFETY: the return array takes the string.
-    unsafe {
-        swoole_rs_zend::sys::add_assoc_zval_ex(
-            call.return_value(),
-            c"output".as_ptr(),
-            6,
-            &raw mut output_value,
-        );
-    }
+    };
+    let mut result = OwnedArray::default();
+    result.insert(b"code", Owned::long(libc::WEXITSTATUS(status).into()));
+    result.insert(b"signal", Owned::long(libc::WTERMSIG(status).into()));
+    result.insert(b"output", Owned::from(ZString::new(&output)));
+    call.set_owned(result.into_owned());
 }
 
 /// `SW_MUST_BE_MAIN_THREAD_EX(RETURN_TRUE)`: with `SW_THREAD`, off the main

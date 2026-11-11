@@ -2,7 +2,7 @@
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
-use std::{cell::Cell, collections::VecDeque, ffi::c_void, mem, ptr};
+use std::{cell::Cell, collections::VecDeque, mem, ptr};
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
@@ -10,9 +10,9 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     kind, message,
     sys::{
-        IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
-        swr_zend_callable, zend_array, zend_array_destroy, zend_array_dup, zend_class_entry,
-        zend_hash_merge, zend_object, zend_object_handlers, zval, zval_add_ref,
+        IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_array,
+        zend_array_destroy, zend_array_dup, zend_class_entry, zend_hash_merge, zend_object,
+        zend_object_handlers, zval, zval_add_ref,
     },
     unset_property_deny,
 };
@@ -27,7 +27,7 @@ per_thread! {
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
 struct Task {
-    callable: *mut c_void,
+    callable: Callable,
     count: i64,
 }
 
@@ -86,18 +86,12 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     unsafe { SchedulerObject::create(&SCHEDULER, ce) }
 }
 
-/// Release a queued task's callable and arguments, then free it.
-fn discard(callable: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: a kept callable, not used again.
-    unsafe { Callable::from_raw(callable) }.release()
-}
-
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees one of our objects.
     let list = mem::take(&mut unsafe { SchedulerObject::data(std) }.list);
     if let Some(tasks) = list {
         for task in *tasks {
-            bailout::defer(discard(task.callable));
+            bailout::defer(task.callable.release());
         }
     }
     // SAFETY: as above.
@@ -132,10 +126,10 @@ fn refuse(call: &Call, state: &str, method: &str) {
 /// Queue a task with its callable kept past the call.
 fn queue(scheduler: &mut Scheduler, callable: Parsed, count: i64) {
     let callable = callable.keep(None);
-    scheduler.list.get_or_insert_default().push_back(Task {
-        callable: callable.into_raw(),
-        count,
-    });
+    scheduler
+        .list
+        .get_or_insert_default()
+        .push_back(Task { callable, count });
 }
 
 /// `add(callable $func, mixed ...$params)`.
@@ -190,18 +184,14 @@ fn start(call: &Call) {
     // Each step pops before creating, so no frame here owns a task while a
     // coroutine runs.
     while let Some(task) = this(call).list.as_mut().and_then(|list| list.pop_front()) {
-        let callable = task.callable.cast::<swr_zend_callable>();
         for _ in 0..task.count {
-            // SAFETY: a kept callable; no reference outlives this statement.
-            let kept = unsafe { &mut *callable };
-            let (argc, argv) = (kept.fci.param_count, kept.fci.params);
-            let (fcc, name) = (&raw mut kept.fcc, &raw mut kept.fci.function_name);
+            let (fcc, argc, argv, name) = task.callable.parts();
             if runtime::create(fcc, argc, argv, name).is_err() {
                 runtime::raise();
                 return;
             }
         }
-        bailout::defer(discard(task.callable));
+        bailout::defer(task.callable.release());
         if bailout::pending() {
             return;
         }
