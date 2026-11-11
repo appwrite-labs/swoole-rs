@@ -230,7 +230,6 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
 type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
 
 /// What upstream's `ServerProperty` held.
-#[derive(Default)]
 pub(crate) struct Property {
     /// The Port objects, borrowed from `$server->ports`.
     ports: Vec<*mut zend_object>,
@@ -243,11 +242,25 @@ pub(crate) struct Property {
     /// The next waiter's token.
     send_token: u64,
     /// `addProcess`'s processes, copies holding a reference; boxed, as each
-    /// worker's user data points at its copy. Last, so `default()` builds nothing
-    /// after it that could unwind and drop it, which would link Zend's destructor
-    /// into tests that have no PHP.
+    /// worker's user data points at its copy.
     #[expect(clippy::vec_box, reason = "a worker's user data points at its copy")]
     user_processes: Vec<Box<Owned>>,
+}
+
+impl Default for Property {
+    /// The fields whose drops reach Zend are constants, built after every call
+    /// that could unwind: nothing drops them on the way, which would link Zend's
+    /// destructors into tests that have no PHP.
+    fn default() -> Self {
+        Self {
+            ports: Vec::new(),
+            send_waiters: Default::default(),
+            send_token: 0,
+            callbacks: [const { None }; CALLBACKS],
+            commands: const { Vec::new() },
+            user_processes: const { Vec::new() },
+        }
+    }
 }
 
 fn fact(serv: view::Server<'_>, id: u32) -> bool {
