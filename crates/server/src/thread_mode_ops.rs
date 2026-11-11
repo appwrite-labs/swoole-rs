@@ -10,7 +10,6 @@ use std::sync::Arc;
 use crate::factory_ops::run;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
-use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
@@ -378,12 +377,28 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 /// The facts and effects on the context's worker and the thread manager.
 fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
-    let pool_hook = |hook: fn(&mut PoolRecord, Worker<'_>)| {
+    // The task pool's hook for `op`, over the pool and the context's worker. The hooks
+    // are copied out first: the pool's own code, every task worker thread and PHP code
+    // a hook runs (`$server->stats()`) reach the record while one runs.
+    let pool_hook = |op| {
         let pool = ctx.workers().task_pool;
-        // SAFETY: the context's live worker, which the hook takes.
+        // SAFETY: the live server's task pool; the borrow ends with the copy.
+        let record = unsafe { &*pool };
+        let (start, main_loop, stop) = (
+            record.on_worker_start,
+            record.main_loop,
+            record.on_worker_stop,
+        );
+        // SAFETY: the context's live worker, which the hooks take.
         let worker = unsafe { Worker::new(worker) };
-        // SAFETY: the live server's task pool.
-        hook(unsafe { &mut *pool }, worker);
+        let pool = pool_native::pool_ref(pool);
+        match (op, start, main_loop, stop) {
+            (OP_ON_WORKER_START, Some(hook), ..) | (OP_ON_WORKER_STOP, .., Some(hook)) => {
+                hook(pool, worker);
+            }
+            (OP_POOL_MAIN_LOOP, _, Some(main_loop), _) => _ = main_loop(pool, worker),
+            _ => {}
+        }
         0
     };
     Some(match op {
@@ -412,21 +427,7 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             }
             0
         }
-        OP_ON_WORKER_START => pool_hook(|pool, worker| {
-            if let Some(hook) = pool.on_worker_start {
-                hook(pool.into(), worker);
-            }
-        }),
-        OP_POOL_MAIN_LOOP => pool_hook(|pool, worker| {
-            if let Some(main_loop) = pool.main_loop {
-                let _code = main_loop(pool.into(), worker);
-            }
-        }),
-        OP_ON_WORKER_STOP => pool_hook(|pool, worker| {
-            if let Some(hook) = pool.on_worker_stop {
-                hook(pool.into(), worker);
-            }
-        }),
+        OP_ON_WORKER_START | OP_POOL_MAIN_LOOP | OP_ON_WORKER_STOP => pool_hook(op),
         _ => return None,
     })
 }

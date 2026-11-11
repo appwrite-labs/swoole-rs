@@ -83,7 +83,6 @@ pub unsafe fn init_event_worker(serv: view::Server<'_>, worker: *mut WorkerRecor
     swr_v1_worker_init(unsafe { swoole_rs_process::worker_record::Worker::new(worker) });
     let config = serv.config();
     swoole_rs_process::methods::worker_set_max_request(
-        worker,
         config.max_request,
         config.max_request_grace,
     );

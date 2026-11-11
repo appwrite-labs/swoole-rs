@@ -114,7 +114,7 @@ fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
 }
 
 /// [`record`]'s pool as the handle its callbacks take.
-fn pool_ref<'a>(pool: Pool) -> PoolRef<'a> {
+pub(crate) fn pool_ref<'a>(pool: Pool) -> PoolRef<'a> {
     // SAFETY: as `record`.
     unsafe { PoolRef::new(pool) }
 }
