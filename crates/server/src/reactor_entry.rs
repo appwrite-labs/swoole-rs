@@ -236,8 +236,8 @@ pub unsafe fn reactor_thread_main_loop(serv: *mut c_void, reactor_id: c_int) {
 )]
 pub unsafe extern "C-unwind" fn dispatch_task(
     proto: *const swoole_rs_corebase::net_types::Protocol,
-    socket: *mut SocketRecord,
-    rdata: *const RecvData,
+    socket: *mut c_void,
+    rdata: *const c_void,
 ) -> c_int {
     use core::sync::atomic::Ordering::SeqCst;
     // SAFETY: per the caller; a port's protocol keeps its server.
@@ -246,7 +246,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let server = unsafe { view::Server::from_raw(serv) };
     let state = server.state();
     // SAFETY: per the caller, a live session socket.
-    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
+    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket.cast()) }) else {
         return -1;
     };
     // A session socket's object is its live connection.
@@ -254,7 +254,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         .read(|s| s.object)
         .cast::<crate::records::ConnectionRecord>();
     // SAFETY: per the caller.
-    let rdata = unsafe { &*rdata };
+    let rdata = unsafe { &*rdata.cast::<RecvData>() };
     let len = rdata.info.len;
     let mut task = {
         // SAFETY: the live connection, borrowed only for this block.

@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::Framing;
 use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
-use swoole_rs_corebase::net_types::Protocol;
+use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, recv};
@@ -25,7 +25,6 @@ use swoole_rs_framing::recv::{
 use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
 use swoole_rs_reactor::{Socket, SocketFields, SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_websocket_ffi::frame_api::PacketLength;
 
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const LOG_WARNING: c_int = 4;
@@ -41,11 +40,6 @@ struct RecvData {
     info: DataHead,
     data: *const u8,
 }
-
-type OnPackage = unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *const RecvData) -> c_int;
-type GetLength =
-    unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut PacketLength) -> isize;
-type GetLengthSize = unsafe extern "C" fn(*mut SocketRecord) -> u8;
 
 unsafe extern "C" {
     fn SSL_pending(ssl: *const c_void) -> c_int;
@@ -92,14 +86,12 @@ impl Packages for Callbacks {
             buf_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             header_len: 0,
         };
-        // SAFETY: `get_package_length` is a function of this type, or null.
-        let get =
-            unsafe { core::mem::transmute::<*mut c_void, Option<GetLength>>(p.get_package_length) };
+        let Some(get) = p.get_package_length else {
+            return -1;
+        };
         // SAFETY: upstream's call over the live protocol, socket and buffer.
-        get.map_or(
-            -1,
-            |get| unsafe { get(r.protocol, r.socket.as_ptr(), &raw mut pl) } as i64,
-        )
+        let length = unsafe { get(r.protocol, r.socket.as_ptr().cast(), &mut pl) };
+        length as i64
     }
     #[inline(always)]
     fn dispatch(r: &Recv<'_>, b: &CppString, start: usize) -> c_int {
@@ -142,11 +134,6 @@ fn paused(socket: &SocketFields) -> bool {
             == 0
 }
 
-fn on_package(protocol: &Protocol) -> Option<OnPackage> {
-    // SAFETY: `onPackage` is a function of this type, or null.
-    unsafe { core::mem::transmute::<*mut c_void, Option<OnPackage>>(protocol.on_package) }
-}
-
 /// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.
 ///
 /// # Safety
@@ -165,9 +152,11 @@ unsafe fn dispatch(
         data,
     };
     // SAFETY: as the caller promises.
-    match on_package(unsafe { &*protocol }) {
+    match unsafe { (*protocol).on_package } {
         // SAFETY: upstream's call, over the live protocol, socket and packet.
-        Some(on_package) => unsafe { on_package(protocol, socket, &raw const packet) },
+        Some(on_package) => unsafe {
+            on_package(protocol, socket.cast(), (&raw const packet).cast())
+        },
         None => -1,
     }
 }
@@ -419,13 +408,10 @@ pub(crate) unsafe fn receive<K: Packages>(
         head = fixed;
         flags |= if skip { FLAG_SKIP } else { 0 };
     } else if mode == MODE_LENGTH {
-        // SAFETY: `get_package_length_size` is a function of this type, or null.
-        let size = unsafe {
-            core::mem::transmute::<*mut c_void, Option<GetLengthSize>>(p.get_package_length_size)
-        };
+        let size = p.get_package_length_size;
         // SAFETY: upstream's call over the live socket.
         head = u32::from(size.map_or(p.package_length_size, |size| unsafe {
-            size(socket.as_ptr())
+            size(socket.as_ptr().cast())
         }));
         flags |=
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
@@ -464,7 +450,7 @@ pub const FRAMING: Framing =
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 ///
 /// # Safety
-/// A live socket, and a packet whose `buf` holds `buf_size` bytes.
+/// A live protocol and socket, and a packet whose `buf` holds `buf_size` bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(
@@ -472,19 +458,16 @@ pub const FRAMING: Framing =
     )
 )]
 pub unsafe extern "C" fn default_length_func(
-    p: &Protocol,
-    socket: *mut SocketRecord,
+    p: *const Protocol,
+    socket: *mut c_void,
     pl: &mut PacketLength,
 ) -> isize {
-    let size = if p.get_package_length_size.is_null() {
-        p.package_length_size
-    } else {
-        // SAFETY: a non-null `get_package_length_size` is a function of this type.
-        let size = unsafe {
-            core::mem::transmute::<*mut c_void, GetLengthSize>(p.get_package_length_size)
-        };
+    // SAFETY: as the caller promises.
+    let p = unsafe { &*p };
+    let size = match p.get_package_length_size {
         // SAFETY: upstream's call over the live socket.
-        unsafe { size(socket) }
+        Some(size) => unsafe { size(socket) },
+        None => p.package_length_size,
     };
     let bytes = if pl.buf.is_null() || pl.buf_size == 0 {
         &[][..]
@@ -559,11 +542,12 @@ mod tests {
         static PACKAGES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C" fn record(
+    unsafe extern "C-unwind" fn record(
         _: *const Protocol,
-        _: *mut SocketRecord,
-        packet: *const RecvData,
+        _: *mut c_void,
+        packet: *const c_void,
     ) -> c_int {
+        let packet = packet.cast::<RecvData>();
         // SAFETY: the receive's packet, `len` bytes at `data`.
         let bytes =
             unsafe { core::slice::from_raw_parts((*packet).data, (*packet).info.len as usize) };
@@ -586,9 +570,9 @@ mod tests {
         let mut socket = SocketRecord::new();
         socket.fd = pair[1];
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
-        let mut protocol: Protocol = unsafe { core::mem::zeroed() };
+        let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 1024;
-        protocol.on_package = record as *mut c_void;
+        protocol.on_package = Some(record);
         let mut buffer = CppString::EMPTY;
         buffer.alloc(8, None);
         PACKAGES.with_borrow_mut(Vec::clear);
@@ -602,7 +586,7 @@ mod tests {
         protocol.package_length_type = b'n';
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
-        protocol.get_package_length = default_length_func as *mut c_void;
+        protocol.get_package_length = Some(default_length_func);
         let status =
             recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);

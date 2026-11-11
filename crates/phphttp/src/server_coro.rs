@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{CStr, CString, c_int},
     ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
@@ -343,8 +343,7 @@ fn http2_begin(socket: Co) {
     protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
     protocol.package_length_offset = 0;
     protocol.package_body_offset = 0;
-    protocol.get_package_length =
-        swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+    protocol.get_package_length = Some(swoole_rs_ports::http_routes::exports::http2_length);
     socket.set_protocol(protocol);
 }
 
