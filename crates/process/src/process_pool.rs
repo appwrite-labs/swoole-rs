@@ -132,6 +132,17 @@ impl PoolRecord {
         self.reload_task
     }
 
+    /// The pool's worker at `index`, or `None` past `worker_num`.
+    #[must_use]
+    pub fn worker(&self, index: usize) -> Option<Worker<'_>> {
+        if self.workers.is_null() || index >= self.worker_num as usize {
+            return None;
+        }
+        // SAFETY: `workers` holds the pool's `worker_num` records, live as long as the
+        // pool (the field is crate-private; `set_workers` states it).
+        Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
+    }
+
     /// Sets `workers`.
     ///
     /// # Safety

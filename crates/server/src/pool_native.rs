@@ -691,9 +691,10 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             });
         }
         OP_POP_MESSAGE => {
-            let message = POOL_MESSAGE.0.get().cast::<c_void>();
-            // SAFETY: the live pool and the master's message buffer.
-            let popped = unsafe { pop_message(pool, message, EVENT_SIZE) };
+            let message = POOL_MESSAGE.0.get().cast::<u8>();
+            // SAFETY: the master's message buffer, which only its one thread uses.
+            let buffer = unsafe { core::slice::from_raw_parts_mut(message, EVENT_SIZE) };
+            let popped = pop_message(record(pool), buffer);
             return if popped > 0 {
                 message.expose_provenance() as i64
             } else {
