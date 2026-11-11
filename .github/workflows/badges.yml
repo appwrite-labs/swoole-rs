@@ -97,7 +97,7 @@ jobs:
       - run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
       - run: >
           python3 tools/badges.py --output out
-          ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json --commit {0}', steps.gate.outputs.commit) || '' }}
+          ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json gate/*/gate.json --commit {0}', steps.gate.outputs.commit) || '' }}
           ${{ steps.callgrind.outputs.commit && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.callgrind.outputs.commit) || '' }}
           ${{ hashFiles('coverage/summary.json') != '' && '--coverage coverage' || '' }}
       - working-directory: out

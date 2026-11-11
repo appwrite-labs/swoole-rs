@@ -255,24 +255,14 @@ jobs:
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
-          python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - name: List extensions
         id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       # Re-run flagged tests as phpt-gate does: method.phpt's rand assertion fails ~10% (#368).
       - name: Run and gate stdext PHPTs
-        run: |
-          mkdir -p target/phpt/stdext
-          for engine in upstream cargo; do
-            python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --module swoole_stdext --timeout 30 \
-              ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
-              --output target/phpt/stdext/$engine.json || [ $? -eq 1 ]
-          done
-          corpus/upstream/recheck.sh target/phpt/stdext target/phpt target/phpt/recheck \
-            --manifest target/phpt/manifest.json --timeout 30 ${{ steps.extensions.outputs.args }}
-          set -- target/phpt/stdext/*.json
-          if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
-          python3 corpus/upstream/gate.py "$@" --output phpt-stdext.json >> "$GITHUB_STEP_SUMMARY"
+        run: >
+          corpus/upstream/families.sh target/phpt/stdext target/phpt/upstream.so target/phpt/cargo.so
+          --module swoole_stdext ${{ steps.extensions.outputs.args }}
       # phphelpers' runtime fixtures call stdext helpers, so they run here, not in full-gates.
       # They run after a failed gate, but not when setup failed before the reference was built:
       # that would report its phases as failures.
@@ -296,23 +286,18 @@ jobs:
         if: always()
         with:
           name: phpt-stdext
-          path: phpt-stdext.json
+          path: target/phpt/stdext/gate.json
 
-  # The --enable-iouring --enable-uring-socket build variant and its PHPTs.
-  iouring:
-    uses: ./.github/workflows/iouring.yml
-
-  # The --enable-cares build variant and its PHPTs.
-  cares:
-    uses: ./.github/workflows/cares.yml
-
-  # The thread-safe PHP --enable-swoole-thread build variant and its PHPTs.
-  zts:
-    uses: ./.github/workflows/zts.yml
-
-  # The --enable-thread-context build variant and its coroutine PHPTs.
-  threadcontext:
-    uses: ./.github/workflows/threadcontext.yml
+  # The io_uring, c-ares, thread-safe PHP and thread-context build variants and their PHPTs.
+  variant:
+    name: ${{ matrix.variant }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [iouring, cares, zts, threadcontext]
+    uses: ./.github/workflows/variant.yml
+    with:
+      variant: ${{ matrix.variant }}
 
   # HTTP/2 conformance: h2spec on upstream and the Cargo build.
   h2spec:
@@ -593,7 +578,7 @@ jobs:
   # fails only what the queue doesn't run (callgrind) or what passes one run and fails the next.
   required:
     if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.ref == 'refs/heads/main') }}
-    needs: [full-gates, phpt-build, callgrind, phpt-stdext, iouring, cares, zts, threadcontext, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
+    needs: [full-gates, phpt-build, callgrind, phpt-stdext, variant, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
     # GitHub-hosted: one line of jq shouldn't wait 40 to 55 s for a VM at the end of every group.
     runs-on: ubuntu-24.04
     timeout-minutes: 5

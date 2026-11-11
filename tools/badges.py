@@ -74,7 +74,7 @@ def speed(result, limits, commit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--phpt', type=Path, nargs='+', help="A merge-tier run's gate outputs (phpt.json, phpt-zts.json, ...)")
+    parser.add_argument('--phpt', type=Path, nargs='+', help="A merge-tier run's gate outputs (phpt.json, phpt-root.json, a variant's gate.json, ...)")
     parser.add_argument('--commit', help='The commit that run measured')
     parser.add_argument('--callgrind', type=Path, help="A merge-tier run's callgrind.json")
     parser.add_argument('--callgrind-commit', help='The commit that callgrind run measured')
