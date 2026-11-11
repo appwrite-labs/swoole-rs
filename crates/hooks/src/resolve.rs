@@ -6,7 +6,7 @@
 //! handlers. The query itself is crates/clients (dns.rs, cares.rs) and the request
 //! record crates/corebase.
 use crate::co_socket::Co;
-use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
+use crate::offload::{AsyncEvent, AsyncOps, Handler, hook_async};
 use crate::wait_event::native::{coroutine_yield_ex, current};
 use core::ffi::{CStr, c_char, c_int, c_void};
 use std::ffi::CString;
@@ -17,18 +17,8 @@ use swoole_rs_corebase::{
     swr_v1_core_name_resolver_resolve,
 };
 
-/// Where an address goes: `put(out, text, length)`.
-type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
-
 /// `SW_TIMEOUT_ALL`.
 const TIMEOUT_ALL: c_int = 15;
-
-// SAFETY: the extension archive's.
-unsafe extern "C" {
-    /// `async::dispatch` (`async_threads.rs`, in the extension archive).
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    fn async_dispatch(request: *const c_void) -> *mut c_void;
-}
 
 /// `co->yield()` of the current coroutine (fatal outside one).
 pub(crate) fn park() {
@@ -51,20 +41,14 @@ pub(crate) unsafe extern "C" fn resume(co: *mut c_void) {
     unsafe { swoole_rs_coroutine::resume(co) };
 }
 
-/// `async::dispatch`.
-unsafe extern "C" fn async_dispatch_event(event: *const AsyncEvent) -> *mut AsyncEvent {
-    // SAFETY: a complete event, as the caller promises.
-    unsafe { async_dispatch(event.cast()) }.cast()
-}
-
 extern "C" fn last_error() -> c_int {
     log::last_error()
 }
 
-/// `coroutine::async`'s coroutine and pool operations, which native's `async` uses too.
+/// `coroutine::async`'s coroutine and pool operations.
 pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current,
-    dispatch: async_dispatch_event,
+    dispatch: crate::async_threads::dispatch,
     park,
     park_for,
     resume,
@@ -72,18 +56,15 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
 };
 
 /// `async::handler_gethostbyname`: the request's address, on a pool thread.
-unsafe extern "C" fn handler_gethostbyname(event: *mut AsyncEvent) {
-    // SAFETY: the pool's copy of the event, exclusive while the handler runs.
-    let event = unsafe { &mut *event };
-    // SAFETY: its request record, held by the copy.
+extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
+    // SAFETY: only `run` dispatches it, over a live request record the pool's copy
+    // holds a reference to.
     (event.retval, event.error) = resolver::host(unsafe { &*event.data });
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
-unsafe extern "C" fn handler_getaddrinfo(event: *mut AsyncEvent) {
-    // SAFETY: the pool's copy of the event, exclusive while the handler runs.
-    let event = unsafe { &mut *event };
-    // SAFETY: its request record, held by the copy.
+extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
+    // SAFETY: as for `handler_gethostbyname`.
     (event.retval, event.error) = resolver::lookup(unsafe { &*event.data });
 }
 
@@ -96,11 +77,10 @@ fn run(
     timeout: f64,
     request_error: bool,
 ) -> Option<c_int> {
-    let mut event = AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut());
+    let mut event = AsyncEvent::empty();
     event.data = request.as_ptr();
     event.retval = retval;
-    // SAFETY: a complete event over a live request, in a coroutine.
-    unsafe { swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC) };
+    hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     request.failed(event.retval, event.error, request_error)
 }
 
@@ -137,76 +117,32 @@ pub fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8>
     result
 }
 /// `swoole_name_resolver_lookup(name, ctx)`: the registered resolvers, then the
-/// coroutine or blocking lookup; the answer goes to `assign(out, ..)`.
+/// coroutine or blocking lookup; the answer goes to `out`.
 ///
 /// A PHP resolver may bail out, so this frame holds nothing to drop across them.
-///
-/// # Safety
-/// `name` holds `length` bytes; `assign` writes `out`.
-pub unsafe fn name_resolver_lookup(
-    name: *const c_char,
-    length: usize,
-    ctx: &mut NameResolverContext,
-    out: *mut c_void,
-    assign: Put,
-) {
-    // SAFETY: as the caller promises.
-    if unsafe { swr_v1_core_name_resolver_resolve(name, length, ctx, out, assign) } {
+pub fn name_resolver_lookup(name: &[u8], ctx: &mut NameResolverContext, out: &mut Vec<u8>) {
+    if swr_v1_core_name_resolver_resolve(name, ctx, out) {
         return;
     }
-    // SAFETY: as the caller promises.
-    let name = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) };
-    let address = if swoole_rs_coroutine::current().is_null() {
+    *out = if swoole_rs_coroutine::current().is_null() {
         resolver::gethostbyname(ctx.kind, name)
     } else {
         system_gethostbyname(name, ctx.kind, ctx.timeout)
     };
-    // SAFETY: `assign` copies the address.
-    unsafe { assign(out, address.as_ptr().cast(), address.len()) };
-}
-
-/// `swoole_name_resolver_lookup_call`.
-#[repr(C)]
-pub struct LookupCall<'a> {
-    pub name: *const c_char,
-    pub length: usize,
-    pub context: &'a mut NameResolverContext,
-    pub out: *mut c_void,
-    pub assign: Put,
-}
-
-/// `swoole_name_resolver_lookup` over a [`LookupCall`]: a `bailout::trap` body.
-///
-/// # Safety
-/// `call` is a live [`LookupCall`] whose fields are live, as [`name_resolver_lookup`]
-/// requires.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: *mut c_void) {
-    // SAFETY: as the caller promises.
-    let call = unsafe { &mut *call.cast::<LookupCall<'_>>() };
-    // SAFETY: as the caller promises.
-    unsafe { name_resolver_lookup(call.name, call.length, call.context, call.out, call.assign) };
 }
 
 /// A coroutine socket's lookup: the context's type and timeout set first, the
-/// answer through `put(out, ..)`; returns the context's `with_port`.
-///
-/// # Safety
-/// `context` is a live `NameResolver::Context`; as [`name_resolver_lookup`].
-pub(crate) unsafe fn socket_lookup(
-    context: *mut c_void,
+/// answer into `out`; returns the context's `with_port`.
+pub(crate) fn socket_lookup(
+    ctx: &mut NameResolverContext,
     kind: c_int,
     timeout: f64,
     name: &[u8],
-    out: *mut c_void,
-    put: Put,
+    out: &mut Vec<u8>,
 ) -> bool {
-    // SAFETY: as the caller promises.
-    let ctx = unsafe { &mut *context.cast::<NameResolverContext>() };
     ctx.kind = kind;
     ctx.timeout = timeout;
-    // SAFETY: as the caller promises.
-    unsafe { name_resolver_lookup(name.as_ptr().cast(), name.len(), ctx, out, put) };
+    name_resolver_lookup(name, ctx, out);
     ctx.with_port
 }
 

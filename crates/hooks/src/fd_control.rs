@@ -67,18 +67,31 @@ mod tests {
     use crate::co_socket::CoSocket;
     use swoole_rs_reactor::SocketRecord;
 
-    fn records() -> (Box<SocketRecord>, Box<CoSocket>) {
-        // Every field is a scalar, raw pointer or Protocol of those; zero is valid.
-        let (mut record, mut socket) = (
-            Box::new(SocketRecord::new()),
-            Box::new(unsafe { core::mem::zeroed::<CoSocket>() }),
-        );
-        socket.socket = &raw mut *record;
-        (record, socket)
+    /// A zeroed record over a fresh network socket. Tests reach the network socket
+    /// through the record's pointer, as the code does, so no second owner aliases it.
+    struct Records(Box<CoSocket>);
+
+    impl Records {
+        fn new() -> Self {
+            // Every field is a scalar, raw pointer or Protocol of those; zero is valid.
+            let mut socket = Box::new(unsafe { core::mem::zeroed::<CoSocket>() });
+            socket.socket = Box::into_raw(Box::new(SocketRecord::new()));
+            Self(socket)
+        }
+
+        fn co(&mut self) -> Co {
+            unsafe { Co::new(&raw mut *self.0) }
+        }
+
+        fn record(&mut self) -> &mut SocketRecord {
+            unsafe { &mut *self.0.socket }
+        }
     }
 
-    fn co(socket: &mut CoSocket) -> Co {
-        unsafe { Co::new(socket) }
+    impl Drop for Records {
+        fn drop(&mut self) {
+            drop(unsafe { Box::from_raw(self.0.socket) });
+        }
     }
 
     #[test]
@@ -88,17 +101,17 @@ mod tests {
             (libc::SO_SNDTIMEO, false, [60.0, 10.0, 60.0, 0.25]),
             (-1, true, [0.25, 0.25, 60.0, 60.0]),
         ] {
-            let (record, mut socket) = records();
+            let mut r = Records::new();
             set_errno(123);
-            assert_eq!(fd_timeout(Some(co(&mut socket)), option, 0.25, connect), 0);
-            let t = record.timeouts;
+            assert_eq!(fd_timeout(Some(r.co()), option, 0.25, connect), 0);
+            let t = r.record().timeouts;
             assert_eq!([t.dns, t.connect, t.read, t.write], expected);
             assert_eq!(crate::co_io::errno(), 123);
         }
-        let (record, mut socket) = records();
-        assert_eq!(fd_timeout(Some(co(&mut socket)), -1, 1.0, false), -1);
+        let mut r = Records::new();
+        assert_eq!(fd_timeout(Some(r.co()), -1, 1.0, false), -1);
         assert_eq!(crate::co_io::errno(), libc::EINVAL);
-        assert_eq!(record.timeouts.read, 60.0);
+        assert_eq!(r.record().timeouts.read, 60.0);
         assert_eq!(fd_timeout(None, libc::SO_RCVTIMEO, 1.0, false), -1);
         assert_eq!(crate::co_io::errno(), libc::EINVAL);
     }
@@ -106,15 +119,15 @@ mod tests {
     #[test]
     fn virtual_poll_continuations_save_direction_and_restore_all_without_callback() {
         for event in [READ, crate::shutdown::WRITE, 0] {
-            let (mut record, mut socket) = records();
-            record.timeouts.read = 4.0;
-            record.timeouts.write = 8.0;
-            let saved = fd_wait(co(&mut socket), event, 0.25);
-            assert_eq!(record.timeouts.read, 0.25);
-            assert_eq!(record.timeouts.write, 0.25);
-            co(&mut socket).set_timeout(saved, ALL);
+            let mut r = Records::new();
+            r.record().timeouts.read = 4.0;
+            r.record().timeouts.write = 8.0;
+            let saved = fd_wait(r.co(), event, 0.25);
+            assert_eq!(r.record().timeouts.read, 0.25);
+            assert_eq!(r.record().timeouts.write, 0.25);
+            r.co().set_timeout(saved, ALL);
             let expected = if event == READ { 4.0 } else { 8.0 };
-            let t = record.timeouts;
+            let t = r.record().timeouts;
             assert_eq!([t.dns, t.connect, t.read, t.write], [expected; 4]);
         }
     }
@@ -128,18 +141,18 @@ mod tests {
             libc::POLLIN | libc::POLLOUT,
             libc::POLLPRI,
         ] {
-            let (record, mut socket) = records();
+            let mut r = Records::new();
             let mut fd = pollfd {
                 fd: -1,
                 events,
                 revents: libc::POLLERR,
             };
-            assert_eq!(fd_poll_fake(&mut fd, 250, Some(co(&mut socket))), 1);
+            assert_eq!(fd_poll_fake(&mut fd, 250, Some(r.co())), 1);
             assert_eq!(
                 fd.revents,
                 libc::POLLERR | (events & (libc::POLLIN | libc::POLLOUT))
             );
-            assert_eq!(record.timeouts.read, 0.25);
+            assert_eq!(r.record().timeouts.read, 0.25);
         }
         let mut fd = pollfd {
             fd: -1,

@@ -1,7 +1,7 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
 use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
-use std::{ffi::CStr, ptr::NonNull};
+use std::{ffi::CStr, mem::MaybeUninit, ptr::NonNull};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
@@ -256,8 +256,10 @@ impl Socket {
         addr: *mut sockaddr,
         addrlen: *mut socklen_t,
     ) -> isize {
+        // SAFETY: per the caller: `length` writable bytes, any value valid.
+        let buf = unsafe { std::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), length) };
         // SAFETY: per the caller.
-        unsafe { self.co().recvfrom(buf.cast(), length, addr, addrlen) }
+        unsafe { self.co().recvfrom(buf, addr, addrlen) }
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
@@ -352,10 +354,7 @@ impl Socket {
 
     /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        // SAFETY: the live network::Socket.
-        if let Some(socket) = unsafe { swoole_rs_reactor::Socket::from_ptr(self.co().socket()) } {
-            socket_ssl_close(socket);
-        }
+        self.co().with_network(socket_ssl_close);
     }
 
     /// The peer certificate's PEM, empty without one.
@@ -610,11 +609,11 @@ pub mod co {
         count: c_int,
     ) -> (isize, c_int, usize) {
         // SAFETY: per the caller, `count` vectors valid for the operation.
-        let Some(vector) = (unsafe { IoVector::new(vectors, count) }) else {
+        let Some(mut vector) = (unsafe { IoVector::new(vectors, count) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             std::process::abort();
         };
-        let result = socket.vector(&vector, op >= 2, op & 1 == 1);
+        let result = socket.vector(&mut vector, op >= 2, op & 1 == 1);
         let (index, offset) = vector.stopped();
         (result, index, offset)
     }
@@ -634,15 +633,6 @@ pub mod co {
 
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;
-
-    /// The socket's record.
-    /// # Safety
-    /// `socket` is live.
-    #[must_use]
-    pub unsafe fn record<'a>(socket: Socket) -> &'a mut CoSocket {
-        // SAFETY: per the caller; the socket is its record.
-        unsafe { &mut *socket.cast::<CoSocket>() }
-    }
 
     /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
     /// # Safety

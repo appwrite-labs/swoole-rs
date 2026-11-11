@@ -142,17 +142,18 @@ impl Sock {
 
     /// `accept()`: the accepted connection.
     fn accept(&self) -> Option<Self> {
-        let mut addr: libc::sockaddr_storage = unsafe { mem::zeroed() };
-        let mut length = socklen::<libc::sockaddr_storage>();
-        let fd =
-            unsafe { swr_v1_hook_uring_accept(&self.ops, (&raw mut addr).cast(), &raw mut length) };
+        let mut address = SocketAddress {
+            len: socklen::<libc::sockaddr_storage>(),
+            ..SocketAddress::default()
+        };
+        let fd = swr_v1_hook_uring_accept(&self.ops, &mut address);
         (fd >= 0).then(|| Self::new(fd))
     }
 
     fn vector(&self, iov: &mut [libc::iovec], write: bool, all: bool) -> isize {
         let count = c_int::try_from(iov.len()).unwrap();
-        let vector = unsafe { IoVector::new(iov.as_ptr(), count) }.expect("IOVector");
-        swr_v1_hook_uring_vector(&self.ops, &vector, write, all)
+        let mut vector = unsafe { IoVector::new(iov.as_ptr(), count) }.expect("IOVector");
+        swr_v1_hook_uring_vector(&self.ops, &mut vector, write, all)
     }
 
     fn set_buffer_size(&self, option: c_int, size: c_int) {

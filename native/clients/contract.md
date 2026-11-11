@@ -73,8 +73,8 @@ the blocking lookup), `System::gethostbyname`/`getaddrinfo` over the async pool,
 cases link it as `swr_v1_hook_dns_lookup`) and the pool's DNS handlers.
 Upstream's `std::string` DNS API (`swoole_set_dns_server`, `swoole_get_dns_server`,
 `swoole_load_resolv_conf`, `swoole_set_hosts_path`, `get_ip_by_hosts`) is gone:
-callers use the `swr_v1_clients_*` exports. Resolvers are C functions added and
-removed with `swr_v1_core_name_resolver_add`/`_remove`.
+callers use the `swr_v1_clients_*` exports. Resolvers are Rust functions, answering
+into a `Vec<u8>`, added and removed with `swr_v1_core_name_resolver_add`/`_remove`.
 
 - `dns_lookup_impl_with_socket` is `clients_dns_lookup`: the DNS server, read from
   `resolv.conf` (`SW_DNS_RESOLV_CONF`) while none is set

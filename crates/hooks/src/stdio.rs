@@ -390,6 +390,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fopen")]
     fn runs_here_or_on_the_pool() {
         use Mode::{Here, Pool, Refuse};
         let path = std::env::temp_dir().join(format!("swr-stdio-{}", std::process::id()));
@@ -452,6 +453,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getaddrinfo without a socket type hint")]
     fn resolver_and_close_on_the_pool() {
         use Mode::{Here, Pool, Refuse};
         unsafe {
@@ -503,6 +505,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no access")]
     fn file_system_calls_on_the_pool() {
         use Mode::{Here, Pool, Refuse};
         let base = std::env::temp_dir().join(format!("swr-fs-{}", std::process::id()));

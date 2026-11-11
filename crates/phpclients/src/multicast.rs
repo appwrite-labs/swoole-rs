@@ -10,13 +10,15 @@ use crate::{
 };
 use libc::{c_char, c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
 use std::{
-    ffi::{CStr, c_void},
+    ffi::CStr,
     mem::{MaybeUninit, size_of},
+    net::{Ipv4Addr, Ipv6Addr},
     ptr,
+    str::FromStr,
 };
 use swoole_rs_zend::{
-    Array, Value, bailout, report,
-    sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array, swr_zend_is_numeric_string, zval},
+    Array, Call, Value, bailout, report,
+    sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array, swr_zend_is_numeric_string},
 };
 
 const SUCCESS: c_int = 0;
@@ -24,9 +26,6 @@ const FAILURE: c_int = -1;
 const UNHANDLED: c_int = 1;
 /// `_php_mcast_*`: failed, and the warning is already out.
 const REPORTED: c_int = -2;
-/// `INET6_ADDRSTRLEN`.
-#[cfg(not(target_vendor = "apple"))]
-const INET6_ADDRSTRLEN: usize = 46;
 /// `MAXFQDNLEN`.
 const MAXFQDNLEN: usize = 255;
 
@@ -50,15 +49,6 @@ const MEMBERSHIP: &[(c_int, bool)] = &[
 unsafe extern "C" {
     /// PHP's `php_network_gethostbyname`.
     fn php_network_gethostbyname(name: *const c_char) -> *mut libc::hostent;
-    /// libc's, which the libc crate does not bind.
-    fn inet_pton(family: c_int, text: *const c_char, address: *mut c_void) -> c_int;
-    #[cfg(not(target_vendor = "apple"))]
-    fn inet_ntop(
-        family: c_int,
-        address: *const c_void,
-        text: *mut c_char,
-        size: socklen_t,
-    ) -> *const c_char;
 }
 
 /// The socket a helper works on.
@@ -121,10 +111,7 @@ fn socket_error(socket: Co, message: &str, error: c_int) -> Result<(), Stop> {
     if error == libc::EAGAIN || error == libc::EWOULDBLOCK || error == libc::EINPROGRESS {
         return Ok(());
     }
-    // SAFETY: strerror returns a NUL-terminated message.
-    let reason = unsafe { libc::strerror(error) };
-    // SAFETY: as above, read before any other strerror call.
-    let reason = unsafe { CStr::from_ptr(reason) };
+    let reason = crate::socket::strerror(error);
     warn(format!("{message} [{error}]: {}", reason.to_string_lossy()).as_bytes())
 }
 
@@ -169,11 +156,22 @@ fn apply<T>(s: Sock, level: c_int, name: c_int, value: &T) -> Result<c_int, Stop
     Ok(SUCCESS)
 }
 
+/// `inet_pton`: the address `text` spells in full, as dotted quads or IPv6
+/// groups (no `%scope`).
+fn parse<T: FromStr>(text: &CStr) -> Option<T> {
+    text.to_str().ok()?.parse().ok()
+}
+
+/// `if_nametoindex(name)`: 0 when no interface has the name.
+fn if_index(name: &CStr) -> c_uint {
+    // SAFETY: a NUL-terminated name.
+    unsafe { libc::if_nametoindex(name.as_ptr()) }
+}
+
 /// `php_string_to_if_index`.
 fn index_by_name(name: &[u8]) -> Result<Option<c_uint>, Stop> {
     let name = text(name);
-    // SAFETY: a NUL-terminated name.
-    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    let index = if_index(&name);
     if index == 0 {
         let message = [
             b"no interface with name \"",
@@ -206,10 +204,10 @@ fn interface(value: &Value) -> Result<Option<c_uint>, Stop> {
 /// `php_set_inet_addr`.
 fn inet4(s: Sock, host: &[u8]) -> Result<Option<in_addr>, Stop> {
     let host = text(host);
-    let mut address = in_addr { s_addr: 0 };
-    // SAFETY: NUL-terminated text and a writable address.
-    if unsafe { inet_pton(libc::AF_INET, host.as_ptr(), (&raw mut address).cast()) } != 0 {
-        return Ok(Some(address));
+    if let Some(address) = parse::<Ipv4Addr>(&host) {
+        return Ok(Some(in_addr {
+            s_addr: u32::from_ne_bytes(address.octets()),
+        }));
     }
     let entry = if host.count_bytes() > MAXFQDNLEN {
         ptr::null_mut()
@@ -237,10 +235,8 @@ fn inet4(s: Sock, host: &[u8]) -> Result<Option<in_addr>, Stop> {
 fn inet6(s: Sock, host: &[u8]) -> Result<Option<sockaddr_in6>, Stop> {
     let host = text(host);
     let mut out: sockaddr_in6 = zeroed();
-    let mut address: in6_addr = zeroed();
-    // SAFETY: NUL-terminated text and a writable address.
-    if unsafe { inet_pton(libc::AF_INET6, host.as_ptr(), (&raw mut address).cast()) } != 0 {
-        out.sin6_addr = address;
+    if let Some(address) = parse::<Ipv6Addr>(&host) {
+        out.sin6_addr.s6_addr = address.octets();
     } else {
         let Some(address) = resolve6(s, &host)? else {
             return Ok(None);
@@ -301,29 +297,39 @@ fn resolve6(s: Sock, host: &CStr) -> Result<Option<in6_addr>, Stop> {
 
 /// `php_set_inet46_addr`: an address of the socket's domain.
 fn inet46(s: Sock, host: &[u8]) -> Result<Option<libc::sockaddr_storage>, Stop> {
-    let mut storage: libc::sockaddr_storage = zeroed();
-    let target = ptr::from_mut(&mut storage);
-    if s.domain == libc::AF_INET {
+    let storage = if s.domain == libc::AF_INET {
         let Some(address) = inet4(s, host)? else {
             return Ok(None);
         };
         let mut sin: sockaddr_in = zeroed();
         sin.sin_addr = address;
-        // SAFETY: a sockaddr_storage holds any sockaddr.
-        unsafe { target.cast::<sockaddr_in>().write(sin) };
-        storage.ss_family = family(libc::AF_INET);
+        stored(sin, libc::AF_INET)
     } else if s.domain == libc::AF_INET6 {
         let Some(sin6) = inet6(s, host)? else {
             return Ok(None);
         };
-        // SAFETY: as above.
-        unsafe { target.cast::<sockaddr_in6>().write(sin6) };
-        storage.ss_family = family(libc::AF_INET6);
+        stored(sin6, libc::AF_INET6)
     } else {
         warn(b"IP address used in the context of an unexpected type of socket")?;
         return Ok(None);
-    }
+    };
     Ok(Some(storage))
+}
+
+/// A socket address of `domain` in a zeroed `sockaddr_storage`.
+fn stored<T: CStruct>(address: T, domain: c_int) -> libc::sockaddr_storage {
+    const {
+        assert!(
+            size_of::<T>() <= size_of::<libc::sockaddr_storage>(),
+            "a sockaddr fits"
+        );
+    }
+    let mut storage: libc::sockaddr_storage = zeroed();
+    let at = ptr::from_mut(&mut storage).cast::<T>();
+    // SAFETY: a sockaddr_storage has room for `T`, as checked above, at any alignment.
+    unsafe { at.write_unaligned(address) };
+    storage.ss_family = family(domain);
+    storage
 }
 
 fn family(domain: c_int) -> libc::sa_family_t {
@@ -691,8 +697,7 @@ fn pktinfo(s: Sock, value: &Value) -> Result<Option<libc::in6_pktinfo>, Stop> {
         info.ipi6_ifindex = index;
     } else {
         let name = text(&string(ifindex)?);
-        // SAFETY: a NUL-terminated name.
-        let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        let index = if_index(&name);
         if index == 0 {
             let message = [
                 b"no interface with name \"",
@@ -708,14 +713,9 @@ fn pktinfo(s: Sock, value: &Value) -> Result<Option<libc::in6_pktinfo>, Stop> {
 }
 
 /// `php_do_getsockopt_ipv6_rfc3542`: `IPV6_PKTINFO` as
-/// `["addr" => string, "ifindex" => int]` in `result`.
+/// `["addr" => string, "ifindex" => int]`, returned by `call`.
 #[cfg(not(target_vendor = "apple"))]
-pub(crate) fn get_ipv6(
-    socket: Co,
-    level: c_int,
-    name: c_int,
-    result: *mut zval,
-) -> Result<c_int, Stop> {
+pub(crate) fn get_ipv6(call: &Call, socket: Co, level: c_int, name: c_int) -> Result<c_int, Stop> {
     if name != libc::IPV6_PKTINFO {
         return Ok(UNHANDLED);
     }
@@ -724,28 +724,27 @@ pub(crate) fn get_ipv6(
         socket_error(socket, "unable to get socket option", errno())?;
         return Ok(FAILURE);
     }
-    let mut shown = [0 as c_char; INET6_ADDRSTRLEN];
-    let length = socklen_t::try_from(shown.len()).unwrap_or(0);
-    // SAFETY: a live address and a buffer of `length` bytes.
-    unsafe {
-        inet_ntop(
-            libc::AF_INET6,
-            (&raw const info.ipi6_addr).cast(),
-            shown.as_mut_ptr(),
-            length,
-        )
-    };
-    // SAFETY: inet_ntop left a NUL-terminated (or all-zero) buffer.
-    let shown = unsafe { CStr::from_ptr(shown.as_ptr()) };
-    // SAFETY: the return slot.
-    unsafe { swoole_rs_zend::value::array_init(result) };
-    let addr = shown.as_ptr();
-    // SAFETY: an array; Zend copies the key and the string.
-    unsafe { swoole_rs_zend::sys::add_assoc_string_ex(result, c"addr".as_ptr(), 4, addr) };
-    let index = i64::from(info.ipi6_ifindex);
-    // SAFETY: as above.
-    unsafe { swoole_rs_zend::sys::add_assoc_long_ex(result, c"ifindex".as_ptr(), 7, index) };
+    let shown = inet6_text(Ipv6Addr::from(info.ipi6_addr.s6_addr));
+    let mut result = swoole_rs_zend::OwnedArray::default();
+    result.insert_bytes(b"addr", Some(shown.as_bytes()));
+    result.insert_long(b"ifindex", i64::from(info.ipi6_ifindex));
+    call.set_owned(result.into_owned());
     Ok(SUCCESS)
+}
+
+/// `inet_ntop(AF_INET6)`: RFC 5952 text, with the IPv4-compatible and
+/// IPv4-mapped forms ending in a dotted quad.
+#[cfg(not(target_vendor = "apple"))]
+fn inet6_text(address: Ipv6Addr) -> String {
+    let groups = address.segments();
+    let [.., a, b, c, d] = address.octets();
+    // glibc embeds the IPv4 form only when the leading zero run is exactly six groups.
+    let compatible = groups[..6] == [0; 6] && groups[6] != 0;
+    if compatible {
+        format!("::{}", Ipv4Addr::new(a, b, c, d))
+    } else {
+        address.to_string()
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -754,10 +753,10 @@ pub(crate) fn get_ipv6(
     reason = "the signature of the other platforms'"
 )]
 pub(crate) fn get_ipv6(
+    _call: &Call,
     _socket: Co,
     _level: c_int,
     _name: c_int,
-    _result: *mut zval,
 ) -> Result<c_int, Stop> {
     Ok(UNHANDLED)
 }
@@ -780,5 +779,91 @@ mod tests {
         let storage: libc::sockaddr_storage = zeroed();
         assert_eq!(storage.ss_family, 0, "zeroed family");
         assert_ne!(family(libc::AF_INET6), 0, "family fits");
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    unsafe extern "C" {
+        fn inet_pton(family: c_int, text: *const c_char, address: *mut std::ffi::c_void) -> c_int;
+        fn inet_ntop(
+            family: c_int,
+            address: *const std::ffi::c_void,
+            text: *mut c_char,
+            size: socklen_t,
+        ) -> *const c_char;
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    const TEXTS: &[&CStr] = &[
+        c"1.2.3.4",
+        c"255.255.255.255",
+        c"01.2.3.4",
+        c"1.2.3",
+        c"1.2.3.4 ",
+        c"256.1.1.1",
+        c"::",
+        c"::1",
+        c"::ffff:1.2.3.4",
+        c"fe80::1%eth0",
+        c"2001:db8::1",
+        c"1:2:3:4:5:6:7:8:9",
+        c"",
+    ];
+
+    /// glibc's, the reference: Apple's libc also takes octets with leading
+    /// zeros and a `%scope` suffix, which [`parse`] refuses on every platform.
+    #[cfg(not(target_vendor = "apple"))]
+    #[test]
+    fn parse_matches_inet_pton() {
+        for text in TEXTS {
+            let mut v4 = [0_u8; 4];
+            let ok = unsafe { inet_pton(libc::AF_INET, text.as_ptr(), v4.as_mut_ptr().cast()) };
+            assert_eq!(
+                parse::<Ipv4Addr>(text).map(|a| a.octets()),
+                (ok == 1).then_some(v4),
+                "{text:?} as IPv4"
+            );
+            let mut v6 = [0_u8; 16];
+            let ok = unsafe { inet_pton(libc::AF_INET6, text.as_ptr(), v6.as_mut_ptr().cast()) };
+            assert_eq!(
+                parse::<Ipv6Addr>(text).map(|a| a.octets()),
+                (ok == 1).then_some(v6),
+                "{text:?} as IPv6"
+            );
+        }
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    #[test]
+    fn inet6_text_matches_inet_ntop() {
+        let addresses = [
+            "::",
+            "::1",
+            "::2",
+            "::1.2.3.4",
+            "::0.1.0.0",
+            "::ffff:1.2.3.4",
+            "::1:0:0:0",
+            "fe80::1",
+            "2001:db8::1:0:0:1",
+            "1:0:0:2:0:0:0:3",
+            "1::",
+            "1:2:3:4:5:6:7:8",
+        ];
+        for address in addresses {
+            let address: Ipv6Addr = address.parse().unwrap();
+            let octets = address.octets();
+            let mut shown = [0 as c_char; 46];
+            let length = socklen_t::try_from(shown.len()).unwrap();
+            let text = unsafe {
+                inet_ntop(
+                    libc::AF_INET6,
+                    octets.as_ptr().cast(),
+                    shown.as_mut_ptr(),
+                    length,
+                )
+            };
+            let text = unsafe { CStr::from_ptr(text) }.to_str().unwrap();
+            assert_eq!(inet6_text(address), text, "{address:?}");
+        }
     }
 }

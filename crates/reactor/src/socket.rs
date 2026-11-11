@@ -39,13 +39,25 @@ struct Borrow<'a> {
 }
 
 impl<'a> Borrow<'a> {
+    /// One locked add: a read counts itself first, and backs out and waits if an edit
+    /// holds the record. (An edit only ever starts from zero, so the brief count blocks none
+    /// that wasn't already conflicting.) Inlined: every record access takes one.
+    #[inline]
     #[track_caller]
     fn read(borrows: &'a AtomicU32) -> Self {
-        // One locked add: a read counts itself first, and backs out and waits if an edit
-        // holds the record. (An edit only ever starts from zero, so the brief count blocks none
-        // that wasn't already conflicting.)
+        if borrows.fetch_add(1, Ordering::Acquire) & EDIT != 0 {
+            Self::read_contended(borrows);
+        }
+        Self { borrows, taken: 1 }
+    }
+
+    /// `read` once its first add met an edit: backs out, waits and counts itself again.
+    #[cold]
+    #[inline(never)]
+    #[track_caller]
+    fn read_contended(borrows: &AtomicU32) {
         let mut since = None;
-        while borrows.fetch_add(1, Ordering::Acquire) & EDIT != 0 {
+        loop {
             borrows.fetch_sub(1, Ordering::Relaxed);
             Self::wait(
                 borrows,
@@ -53,27 +65,46 @@ impl<'a> Borrow<'a> {
                 &mut since,
                 "a socket's read overlaps an edit of the same record",
             );
+            if borrows.fetch_add(1, Ordering::Acquire) & EDIT == 0 {
+                return;
+            }
         }
-        Self { borrows, taken: 1 }
     }
 
+    #[inline]
     #[track_caller]
     fn edit(borrows: &'a AtomicU32) -> Self {
-        let mut since = None;
-        while borrows
+        if borrows
             .compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            Self::edit_contended(borrows);
+        }
+        Self {
+            borrows,
+            taken: EDIT,
+        }
+    }
+
+    /// `edit` once the record was held: waits until it is free and takes it.
+    #[cold]
+    #[inline(never)]
+    #[track_caller]
+    fn edit_contended(borrows: &AtomicU32) {
+        let mut since = None;
+        loop {
             Self::wait(
                 borrows,
                 u32::MAX,
                 &mut since,
                 "a socket's edit overlaps a read or edit of the same record",
             );
-        }
-        Self {
-            borrows,
-            taken: EDIT,
+            if borrows
+                .compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
         }
     }
 

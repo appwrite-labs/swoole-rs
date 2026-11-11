@@ -274,8 +274,10 @@ mod tests {
     }
     #[test]
     fn a_writer_proceeds_while_a_reader_holds_the_snapshot_and_lent_bytes_survive() {
-        // Leaked: a writer stuck on the lock would outlive the test's frame.
-        let state: &'static ServerState = Box::leak(Box::new(ServerState::new()));
+        // Freed only after the writer joins: one stuck on the lock fails the test first and
+        // leaves the state leaked, since that writer would outlive the test's frame.
+        let owned = Box::into_raw(Box::new(ServerState::new()));
+        let state: &'static ServerState = unsafe { &*owned };
         let address = std::ptr::from_ref(state) as usize;
         let append = move |bytes: &'static [u8]| unsafe {
             swr_v1_server_static_config(
@@ -289,22 +291,25 @@ mod tests {
         append(b"index.php");
         let mut length = 0;
         let lent = swr_v1_server_static_text(state, 1, 0, &mut length);
-        strings(state, 1, |enabled, values| {
+        let writer = strings(state, 1, |enabled, values| {
             assert!(enabled);
             let (done, wait) = std::sync::mpsc::channel();
-            std::thread::spawn(move || done.send(append(b"index.html")));
+            let writer = std::thread::spawn(move || done.send(append(b"index.html")));
             assert_eq!(
                 wait.recv_timeout(std::time::Duration::from_secs(10)),
                 Ok(2),
                 "the append doesn't wait for the reader"
             );
             assert_eq!(values.len(), 1, "the reader keeps its snapshot");
+            writer
         });
         assert_eq!(append(b"default.htm"), 3);
         assert_eq!(
             unsafe { core::slice::from_raw_parts(lent, length) },
             b"index.php"
         );
+        assert!(writer.join().is_ok_and(|sent| sent.is_ok()));
+        drop(unsafe { Box::from_raw(owned) });
     }
     #[test]
     fn rewrite_rules_rewrite_the_context_url() {

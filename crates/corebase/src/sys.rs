@@ -83,6 +83,27 @@ pub fn close(fd: c_int) -> c_int {
     unsafe { libc::close(fd) }
 }
 
+/// `socket(2)`.
+#[must_use]
+pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
+    // SAFETY: socket(2) has no memory preconditions.
+    unsafe { libc::socket(domain, kind, protocol) }
+}
+
+/// `shutdown(2)`.
+pub fn shutdown(fd: c_int, how: c_int) -> c_int {
+    // SAFETY: shutdown(2) has no memory preconditions.
+    unsafe { libc::shutdown(fd, how) }
+}
+
+/// `getsockopt(2)` of an int option into `value`, which keeps what it held when
+/// the call fails.
+pub fn getsockopt_int(fd: c_int, level: c_int, name: c_int, value: &mut c_int) -> c_int {
+    let mut length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
+    // SAFETY: `value` holds the `length` writable bytes given.
+    unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) }
+}
+
 /// `dup(2)`.
 #[must_use]
 pub fn dup(fd: c_int) -> c_int {
