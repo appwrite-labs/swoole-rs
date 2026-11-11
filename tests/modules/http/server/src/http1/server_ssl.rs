@@ -16,6 +16,7 @@ use super::case::{
 use super::*;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use swoole_rs_clients::client::{Handle, Op};
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_HOST6: &str = "::1";
@@ -25,33 +26,11 @@ const SW_SOCK_UNIX_DGRAM: c_int = 6;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
 const F_GETFD: c_int = 1;
 
-// crates/clients' `client::Op`s and its `closed` flag.
-const OP_CONNECT: c_int = 0;
-const OP_SEND: c_int = 1;
-const OP_RECV: c_int = 4;
-const OP_CLOSE: c_int = 7;
-const OP_ENABLE_SSL: c_int = 10;
-const OP_SSL_HANDSHAKE: c_int = 11;
-const OP_FREE: c_int = 14;
+// crates/clients' `closed` flag.
 const SWR_CLIENTS_CLOSED: u32 = 1;
-
-/// crates/clients' `client::Call`: one operation for `swr_v1_clients_run`.
-#[repr(C)]
-struct Call {
-    client: *mut c_void,
-    op: c_int,
-    data: *const c_char,
-    length: usize,
-    buffer: *mut c_char,
-    a: i64,
-    b: i64,
-    timeout: f64,
-    result: i64,
-}
 
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-    fn swr_v1_clients_run(call: *mut Call);
     fn swr_v1_clients_flag(state: *const c_void, name: u32) -> bool;
     fn swr_v1_clients_ssl_context(state: *const c_void) -> *const c_void;
     #[link_name = "_Z13sw_shm_mallocm"]
@@ -201,22 +180,14 @@ impl SyncClient {
         }
     }
 
-    fn run(&self, op: c_int, set: impl FnOnce(&mut Call)) -> i64 {
-        let mut call = Call {
-            client: self.state,
-            op,
-            data: ptr::null(),
-            length: 0,
-            buffer: ptr::null_mut(),
-            a: 0,
-            b: 0,
-            timeout: 0.0,
-            result: 0,
-        };
-        set(&mut call);
-        // SAFETY: the live client; the call's pointers hold what its operation uses.
-        unsafe { swr_v1_clients_run(&raw mut call) };
-        call.result
+    /// crates/clients' handle on the client.
+    fn handle(&self) -> Handle {
+        // SAFETY: the client `new` made, live until the drop frees it.
+        unsafe { Handle::new(self.state.cast()) }
+    }
+
+    fn run(&self, op: Op<'_>) -> i64 {
+        self.handle().run(op)
     }
 
     fn connect(&mut self, host: &str, port: c_int) -> bool {
@@ -224,11 +195,11 @@ impl SyncClient {
             return false;
         }
         let host = CString::new(host).unwrap();
-        let connected = self.run(OP_CONNECT, |call| {
-            call.data = host.as_ptr();
-            call.a = port.into();
-            call.timeout = -1.0;
-            call.b = self.dgram.into();
+        let connected = self.run(Op::Connect {
+            host: &host,
+            port,
+            timeout: -1.0,
+            flags: self.dgram.into(),
         });
         if connected < 0 {
             return false;
@@ -238,10 +209,10 @@ impl SyncClient {
     }
 
     fn enable_ssl_encrypt(&self) -> bool {
-        if self.run(OP_ENABLE_SSL, |_| {}) < 0 {
+        if self.run(Op::EnableSsl) < 0 {
             return false;
         }
-        !self.connected || self.run(OP_SSL_HANDSHAKE, |_| {}) == i64::from(SW_OK)
+        !self.connected || self.run(Op::SslHandshake) == i64::from(SW_OK)
     }
 
     /// `get_client()->set_ssl_cert_file(file)` (`CERT_FILE`) or `set_ssl_key_file`.
@@ -253,16 +224,13 @@ impl SyncClient {
     }
 
     fn send(&self, data: &[u8]) -> i64 {
-        self.run(OP_SEND, |call| {
-            call.data = data.as_ptr().cast();
-            call.length = data.len();
-        })
+        self.run(Op::Send { data, flags: 0 })
     }
 
     fn recv(&self, buf: &mut [u8]) -> i64 {
-        self.run(OP_RECV, |call| {
-            call.buffer = buf.as_mut_ptr().cast();
-            call.length = buf.len();
+        self.run(Op::Recv {
+            buffer: buf,
+            flags: 0,
         })
     }
 
@@ -271,7 +239,7 @@ impl SyncClient {
         if !self.created || unsafe { swr_v1_clients_flag(self.state, SWR_CLIENTS_CLOSED) } {
             return false;
         }
-        self.run(OP_CLOSE, |_| {});
+        let _ = self.run(Op::Close);
         self.created = false;
         true
     }
@@ -282,7 +250,8 @@ impl Drop for SyncClient {
         if self.created {
             self.close();
         }
-        self.run(OP_FREE, |_| {});
+        // SAFETY: the client `new` made, deleted once.
+        unsafe { self.handle().free() };
     }
 }
 

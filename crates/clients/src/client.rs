@@ -346,7 +346,7 @@ impl Client {
 
 /// A client under an operation: a raw pointer, since a callback may free it.
 #[derive(Clone, Copy)]
-struct Handle(*mut Client);
+pub struct Handle(*mut Client);
 
 impl Handle {
     fn get(self) -> &'static Client {
@@ -853,68 +853,47 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     client
 }
 
-/// What a [`Call`] does: a `network::Client` method.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
-pub enum Op {
-    /// `connect(data, a, timeout, b)`.
-    Connect,
-    /// `send(data, length, a)`.
-    Send,
-    /// `sendto(data, a, buffer, b)`: `length` bytes of host.
-    Sendto,
-    /// `sendfile(data, a, b)`.
-    Sendfile,
-    /// `recv(buffer, length, a)`.
-    Recv,
-    /// `protocol.get_package_length` of `length` bytes at `buffer`.
-    PackageLength,
-    /// `shutdown(a)`.
-    Shutdown,
+/// One `network::Client` method for [`Handle::run`], over the caller's bytes.
+#[derive(Debug)]
+pub enum Op<'a> {
+    Connect {
+        host: &'a CStr,
+        port: c_int,
+        timeout: f64,
+        flags: c_int,
+    },
+    Send {
+        data: &'a [u8],
+        flags: c_int,
+    },
+    /// One datagram to `host`, resolved unless the client is async.
+    Sendto {
+        host: &'a CStr,
+        port: c_int,
+        data: &'a [u8],
+    },
+    Sendfile {
+        file: &'a CStr,
+        offset: i64,
+        length: usize,
+    },
+    Recv {
+        buffer: &'a mut [u8],
+        flags: c_int,
+    },
+    /// `protocol.get_package_length` of these bytes.
+    PackageLength(&'a [u8]),
+    Shutdown(c_int),
     Close,
     Sleep,
     Wakeup,
     /// `enable_ssl_encrypt()`.
     EnableSsl,
     SslHandshake,
-    /// `ssl_verify(a != 0)`.
-    SslVerify,
+    /// `ssl_verify(allow_self_signed)`.
+    SslVerify(bool),
     /// `swoole_event_set(socket, SW_EVENT_WRITE)`, to finish a handshake.
     SslWait,
-    /// `delete client`.
-    Free,
-}
-
-/// One client operation for [`swr_v1_clients_run`]. The texts at `data` (the host
-/// or file) are NUL-terminated.
-#[repr(C)]
-pub struct Call {
-    pub client: *mut Client,
-    pub op: Op,
-    pub data: *const c_char,
-    pub length: usize,
-    pub buffer: *mut c_char,
-    pub a: i64,
-    pub b: i64,
-    pub timeout: f64,
-    pub result: i64,
-}
-
-impl Call {
-    #[must_use]
-    pub fn new(client: *mut Client, op: Op) -> Self {
-        Self {
-            client,
-            op,
-            data: core::ptr::null(),
-            length: 0,
-            buffer: core::ptr::null_mut(),
-            a: 0,
-            b: 0,
-            timeout: 0.0,
-            result: 0,
-        }
-    }
 }
 
 /// `swoole::PacketLength`.
@@ -929,115 +908,142 @@ struct PacketLength {
 type LengthFunc =
     unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *const PacketLength) -> isize;
 
-/// Run a [`Call`], whose operation may raise the client's callbacks: a
-/// `bailout::trap` body that owns nothing.
-///
-/// # Safety
-/// `call` is a live [`Call`] on a live client, its pointers holding what the
-/// operation reads or writes; after `Free` the client is not used.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "C++'s implicit conversions of the call's integers"
-)]
-pub unsafe extern "C" fn swr_v1_clients_run(call: *mut c_void) {
-    // SAFETY: per the caller.
-    let call = unsafe { &mut *call.cast::<Call>() };
-    let this = Handle(call.client);
-    let (a, b) = (call.a as c_int, call.b);
-    call.result = match call.op {
-        Op::Connect => connect(this, call.data, a, call.timeout, b as c_int).into(),
-        Op::Send => send(this, call.data, call.length, a) as i64,
-        Op::Sendto => sendto(this, call.data, call.length, a, call.buffer, b as usize).into(),
-        Op::Sendfile => sendfile(this, call.data, call.a, b as usize).into(),
-        Op::Recv => recv(this, call.buffer, call.length, a) as i64,
-        Op::PackageLength => package_length(this, call.buffer, call.length) as i64,
-        Op::Shutdown => shutdown(this, a).into(),
-        Op::Close => close(this).into(),
-        Op::Sleep => sleep(this).into(),
-        Op::Wakeup => wakeup(this).into(),
-        Op::EnableSsl => enable_ssl(this).into(),
-        Op::SslHandshake => ssl_handshake(this).into(),
-        Op::SslVerify => ssl_verify(this, a != 0).into(),
-        Op::SslWait => this.event(EVENT_SET, EVENT_WRITE).into(),
-        Op::Free => {
-            free(this);
-            0
+impl Handle {
+    /// A handle on `client`.
+    ///
+    /// # Safety
+    /// `client` came from [`swr_v1_clients_new`] and stays live while this handle
+    /// or a copy of it is used.
+    #[must_use]
+    pub const unsafe fn new(client: *mut Client) -> Self {
+        Self(client)
+    }
+
+    /// Run `op`, which may raise the client's callbacks (and so free it): the
+    /// C++ method's result.
+    #[must_use]
+    pub fn run(self, op: Op<'_>) -> i64 {
+        match op {
+            Op::Connect {
+                host,
+                port,
+                timeout,
+                flags,
+            } => connect(self, host, port, timeout, flags).into(),
+            Op::Send { data, flags } => send(self, data.as_ptr().cast(), data.len(), flags) as i64,
+            Op::Sendto { host, port, data } => sendto(self, host, port, data).into(),
+            Op::Sendfile {
+                file,
+                offset,
+                length,
+            } => sendfile(self, file, offset, length).into(),
+            Op::Recv { buffer, flags } => {
+                recv(self, buffer.as_mut_ptr().cast(), buffer.len(), flags) as i64
+            }
+            Op::PackageLength(data) => package_length(self, data) as i64,
+            Op::Shutdown(how) => shutdown(self, how).into(),
+            Op::Close => close(self).into(),
+            Op::Sleep => sleep(self).into(),
+            Op::Wakeup => wakeup(self).into(),
+            Op::EnableSsl => enable_ssl(self).into(),
+            Op::SslHandshake => ssl_handshake(self).into(),
+            Op::SslVerify(allow_self_signed) => ssl_verify(self, allow_self_signed).into(),
+            Op::SslWait => self.event(EVENT_SET, EVENT_WRITE).into(),
         }
-    };
+    }
+
+    /// `delete client`, which may raise `onClose`.
+    ///
+    /// # Safety
+    /// Neither this handle nor a copy of it is used afterwards.
+    pub unsafe fn free(self) {
+        if !self.flag(CLOSED) {
+            close(self);
+        }
+        self.input_free();
+        // A pending connect timer would fire on a freed client.
+        self.timer_clear();
+        if self.flag(ASYNC) {
+            // A cleared object tells a close in progress that the client is gone.
+            self.socket()
+                .edit(|socket| socket.object = core::ptr::null_mut());
+            // SAFETY: the live client's socket, released once.
+            unsafe { socket_free(self.socket_ptr()) };
+        } else {
+            // SAFETY: `delete socket`: the record make_socket allocated, released once.
+            unsafe { SocketRecord::free(self.socket_ptr()) };
+        }
+        // SAFETY: a Box from swr_v1_clients_new, released once (per the caller).
+        let client = unsafe { Box::from_raw(self.0) };
+        for proxy in [&client.socks5, &client.http_proxy] {
+            // SAFETY: a proxy the client owns, released once.
+            unsafe { swr_v1_core_proxy_free(proxy.get()) };
+        }
+        // SAFETY: the client's reference to its context, released once.
+        unsafe { swr_v1_tls_owner_free(client.tls.get()) };
+    }
+
+    /// `Client::get_peer_name`: datagram peers are value snapshots of the last
+    /// received address; streams ask the kernel through the socket's operation.
+    pub fn peer_name(self, address: &mut SocketAddress) -> c_int {
+        if is_dgram(self.socket_type()) {
+            *address = self.fields().remote_addr;
+            OK
+        } else {
+            self.socket().read(|socket| socket.get_peer_name(address))
+        }
+    }
+
+    /// `Client::bind(host, port)`: `SO_REUSEADDR` (a failure is logged), then
+    /// bind(2) to the host's literal address.
+    #[must_use]
+    pub fn bind(self, host: &CStr, port: c_int) -> c_int {
+        let fd = self.socket().fd();
+        let enable: c_int = 1;
+        #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
+        let size = size_of::<c_int>() as libc::socklen_t;
+        // SAFETY: setsockopt(2) reads the int it is lent.
+        if unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                (&raw const enable).cast(),
+                size,
+            )
+        } < 0
+        {
+            log::sys_warning(
+                c"bind",
+                format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
+            );
+        }
+        let Some(address) = address_of(self.socket_type(), host, port, false) else {
+            return ERR;
+        };
+        if self.socket().edit(|socket| socket.bind(&address)) < 0 {
+            log::set_last_error(errno());
+            return ERR;
+        }
+        OK
+    }
 }
 
-/// The client protocol's length of the packet in `length` bytes at `data`.
+/// The client protocol's length of the packet in `data`.
 #[expect(clippy::cast_possible_truncation, reason = "`(uint32_t) length`")]
-fn package_length(this: Handle, data: *const c_char, length: usize) -> isize {
+fn package_length(this: Handle, data: &[u8]) -> isize {
     let record = this.fields();
     // SAFETY: the protocol's length function, which has this signature.
     let get = unsafe {
         core::mem::transmute::<*mut c_void, LengthFunc>(record.protocol.get_package_length)
     };
     let packet = PacketLength {
-        buf: data,
-        buf_size: length as u32,
+        buf: data.as_ptr().cast(),
+        buf_size: data.len() as u32,
         header_len: 0,
     };
-    // SAFETY: the live client's protocol and socket, and `length` bytes at `data`.
+    // SAFETY: the live client's protocol and socket, and the packet's bytes.
     unsafe { get(&raw const record.protocol, record.socket, &raw const packet) }
-}
-
-/// `delete client`: the client is not used afterwards.
-fn free(this: Handle) {
-    let client = this.0;
-    if !this.flag(CLOSED) {
-        close(this);
-    }
-    this.input_free();
-    // A pending connect timer would fire on a freed client.
-    this.timer_clear();
-    if this.flag(ASYNC) {
-        // A cleared object tells a close in progress that the client is gone.
-        this.socket()
-            .edit(|socket| socket.object = core::ptr::null_mut());
-        // SAFETY: the live client's socket, released once.
-        unsafe { socket_free(this.socket_ptr()) };
-    } else {
-        // SAFETY: `delete socket`: the record make_socket allocated, released once.
-        unsafe { SocketRecord::free(this.socket_ptr()) };
-    }
-    // SAFETY: a Box from swr_v1_clients_new, released once (see above).
-    let client = unsafe { Box::from_raw(client) };
-    for proxy in [&client.socks5, &client.http_proxy] {
-        // SAFETY: a proxy the client owns, released once.
-        unsafe { swr_v1_core_proxy_free(proxy.get()) };
-    }
-    // SAFETY: the client's reference to its context, released once.
-    unsafe { swr_v1_tls_owner_free(client.tls.get()) };
-}
-
-/// `Client::get_peer_name`: datagram peers are value snapshots of the last
-/// received address; streams ask the kernel through the socket's operation.
-///
-/// # Safety
-/// `client` is live and `address` is writable Address storage, possibly the
-/// client's own remote address (the copy permits aliasing).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
-    client: *const Client,
-    address: *mut SocketAddress,
-) -> c_int {
-    let this = Handle(client.cast_mut());
-    if is_dgram(this.socket().read(|socket| socket.socket_type)) {
-        // A copy before the write, so an SDK caller may request the result in
-        // remote_addr itself.
-        let remote = this.fields().remote_addr;
-        // SAFETY: the caller supplied writable Address storage.
-        unsafe { address.write(remote) };
-        OK
-    } else {
-        // SAFETY: the caller supplied writable Address storage.
-        let address = unsafe { &mut *address };
-        this.socket().read(|socket| socket.get_peer_name(address))
-    }
 }
 
 /// One of the flags above; false for any other.
@@ -1326,18 +1332,16 @@ fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
 
 /// `Client_inet_addr`: the first call routes through the proxies and records the
 /// server; every call assigns `server_addr`, or waits for DNS.
-fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
+fn inet_addr(this: Handle, host: &CStr, port: c_int) -> c_int {
     let (mut host, mut port) = (host, port);
-    // The last proxy's host, NUL-terminated, which `host` points into.
+    // The last proxy's host, NUL-terminated, which `host` borrows.
     let mut proxy_host;
     if !this.flag(HOST_PRESET) {
         for which in [Proxy::Socks5, Proxy::Http] {
             let Some(proxy) = this.proxy(which) else {
                 continue;
             };
-            // SAFETY: a NUL-terminated host (the caller's or a proxy's).
-            let target = unsafe { CStr::from_ptr(host) }.to_bytes();
-            proxy.set_string(3, target);
+            proxy.set_string(3, host.to_bytes());
             let fields = proxy.fields.get();
             proxy.fields.set(swoole_rs_corebase::ProxyFields {
                 target_port: port,
@@ -1345,11 +1349,10 @@ fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
             });
             proxy_host = proxy.string(0);
             proxy_host.push(0);
-            (host, port) = (proxy_host.as_ptr().cast(), fields.port);
+            let proxy_host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
+            (host, port) = (proxy_host, fields.port);
         }
-        // SAFETY: a NUL-terminated host (the caller's or a proxy's).
-        let server = unsafe { CStr::from_ptr(host) };
-        server.clone_into(&mut this.get().server_host.borrow_mut());
+        host.clone_into(&mut this.get().server_host.borrow_mut());
         this.get().server_port.set(port);
         this.set(HOST_PRESET, true);
     }
@@ -1412,7 +1415,7 @@ extern "C" fn resolve_completed(event: &mut AsyncEvent) {
 }
 
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
-fn connect(this: Handle, host: *const c_char, port: c_int, timeout: f64, flags: c_int) -> c_int {
+fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> c_int {
     if !this.flag(STREAM) {
         udp_connect(this, host, port, timeout, flags)
     } else if this.flag(ASYNC) {
@@ -1423,13 +1426,7 @@ fn connect(this: Handle, host: *const c_char, port: c_int, timeout: f64, flags: 
 }
 
 /// `Client_tcp_connect_sync`: connect, then the proxy handshake and TLS.
-fn tcp_connect_sync(
-    this: Handle,
-    host: *const c_char,
-    port: c_int,
-    timeout: f64,
-    nonblock: bool,
-) -> c_int {
+fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblock: bool) -> c_int {
     this.set_timeout(timeout);
     if timeout > 0.0 {
         ops::kernel_timeout(this, timeout);
@@ -1490,7 +1487,7 @@ fn tcp_connect_sync(
 }
 
 /// `Client_tcp_connect_async`: a nonblocking connect finished by the write handler.
-fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f64) -> c_int {
+fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_int {
     if ![ON_CONNECT, ON_ERROR, ON_CLOSE, ON_RECEIVE]
         .into_iter()
         .all(|which| this.has(which))
@@ -1553,13 +1550,7 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
 }
 
 /// `Client_udp_connect`.
-fn udp_connect(
-    this: Handle,
-    host: *const c_char,
-    port: c_int,
-    timeout: f64,
-    udp_connect: c_int,
-) -> c_int {
+fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect: c_int) -> c_int {
     let is_async = this.flag(ASYNC);
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
@@ -1664,7 +1655,7 @@ mod ops {
         CONNECT_ASYNC, CONNECT_SYNC, EVENT_ADD, EVENT_DEL, EVENT_SET, Handle, SocketRecord,
         address_of,
     };
-    use core::ffi::{c_char, c_int};
+    use core::ffi::{CStr, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
 
     /// `make_socket(type, fd_type, flags)`: the record or null.
@@ -1682,13 +1673,9 @@ mod ops {
         });
     }
 
-    /// `server_addr.assign(socket_type, host, port, resolve)`; `host` is NUL-terminated.
-    pub(super) fn assign(this: Handle, host: *const c_char, port: c_int, resolve: bool) -> bool {
-        let kind = this.socket_type();
-        // SAFETY: the caller's NUL-terminated host.
-        let length = unsafe { libc::strlen(host) };
-        // SAFETY: as above.
-        let Some(address) = (unsafe { address_of(kind, host, length, port, resolve) }) else {
+    /// `server_addr.assign(socket_type, host, port, resolve)`.
+    pub(super) fn assign(this: Handle, host: &CStr, port: c_int, resolve: bool) -> bool {
+        let Some(address) = address_of(this.socket_type(), host, port, resolve) else {
             return false;
         };
         this.fields().server_addr = address;
@@ -1746,35 +1733,23 @@ mod ops {
     }
 }
 
-/// A native log line, named for the C++ method that passes it.
-pub type Warn = unsafe extern "C" fn(fd: c_int);
-
 /// An address of socket type `kind` for `host`, resolved if `resolve`;
 /// `None` with the last error set when it does not assign.
-///
-/// # Safety
-/// `host` is NUL-terminated with `host_length` bytes before it.
-unsafe fn address_of(
-    kind: c_int,
-    host: *const c_char,
-    host_length: usize,
-    port: c_int,
-    resolve: bool,
-) -> Option<SocketAddress> {
+fn address_of(kind: c_int, host: &CStr, port: c_int, resolve: bool) -> Option<SocketAddress> {
     let mut address = SocketAddress {
         kind,
         ..SocketAddress::default()
     };
     let resolve = resolve
         .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
-    // SAFETY: the local record's union and length, and the caller's host.
+    // SAFETY: the local record's union and length, and the NUL-terminated host.
     let error = unsafe {
         crate::address::swr_v1_clients_address_assign(
             (&raw mut address.addr).cast(),
             &raw mut address.len,
             address.kind,
-            host,
-            host_length,
+            host.as_ptr(),
+            host.to_bytes().len(),
             port,
             resolve,
         )
@@ -1786,60 +1761,9 @@ unsafe fn address_of(
     Some(address)
 }
 
-/// `Client::bind(host, port)`: `SO_REUSEADDR` (a failure is logged by
-/// `reuse_failed`), then bind(2) to the host's literal address.
-///
-/// # Safety
-/// `client` is live with a socket; `host` is NUL-terminated after `host_length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_bind(
-    client: *mut Client,
-    host: *const c_char,
-    host_length: usize,
-    port: c_int,
-    reuse_failed: Warn,
-) -> c_int {
-    let this = Handle(client);
-    let fd = this.socket().fd();
-    let enable: c_int = 1;
-    #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
-    let size = size_of::<c_int>() as libc::socklen_t;
-    // SAFETY: setsockopt(2) reads the int it is lent.
-    if unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_REUSEADDR,
-            (&raw const enable).cast(),
-            size,
-        )
-    } < 0
-    {
-        // SAFETY: a log line about this descriptor.
-        unsafe { reuse_failed(fd) };
-    }
-    // SAFETY: as the caller promises.
-    let Some(address) = (unsafe { address_of(this.socket_type(), host, host_length, port, false) })
-    else {
-        return ERR;
-    };
-    if this.socket().edit(|socket| socket.bind(&address)) < 0 {
-        log::set_last_error(errno());
-        return ERR;
-    }
-    OK
-}
-
 /// `Client::sendto(host, port, data, length)`: one datagram to the host, resolved
-/// unless the client is async; `host` is NUL-terminated after `host_length` bytes.
-fn sendto(
-    this: Handle,
-    host: *const c_char,
-    host_length: usize,
-    port: c_int,
-    data: *const c_char,
-    length: usize,
-) -> c_int {
+/// unless the client is async.
+fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> c_int {
     if !is_dgram(this.socket_type()) {
         log::set_last_error(ERROR_OPERATION_NOT_SUPPORT);
         log::warning(
@@ -1848,25 +1772,16 @@ fn sendto(
         );
         return ERR;
     }
-    // SAFETY: as the caller promises.
-    let Some(address) = (unsafe {
-        address_of(
-            this.socket_type(),
-            host,
-            host_length,
-            port,
-            !this.flag(ASYNC),
-        )
-    }) else {
+    let Some(address) = address_of(this.socket_type(), host, port, !this.flag(ASYNC)) else {
         return ERR;
     };
     let fd = this.socket().fd();
-    // SAFETY: the caller's `length` bytes to the local address of its length.
+    // SAFETY: the caller's bytes to the local address of its length.
     if unsafe {
         libc::sendto(
             fd,
-            data.cast(),
-            length,
+            data.as_ptr().cast(),
+            data.len(),
             0,
             &raw const address.addr.ss,
             address.len,
@@ -1916,18 +1831,19 @@ fn send_async(this: Handle, data: *const c_char, length: usize) -> isize {
     n
 }
 
-/// `Client::sendfile(file, offset, length)`: `file` is NUL-terminated.
-fn sendfile(this: Handle, file: *const c_char, offset: i64, length: usize) -> c_int {
+/// `Client::sendfile(file, offset, length)`.
+fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
     if !this.flag(STREAM) {
         return ERR;
     }
     let is_async = this.flag(ASYNC);
     let socket = this.socket_ptr();
+    let file = file.as_ptr();
     let sent = if is_async {
-        // SAFETY: as the caller promises.
+        // SAFETY: the live client's socket and a NUL-terminated path.
         unsafe { socket_sendfile_async(socket, file, offset, length) }
     } else {
-        // SAFETY: as the caller promises.
+        // SAFETY: as above.
         unsafe { socket_sendfile_sync(socket, file, offset, length) }
     };
     if sent < 0 {
@@ -2202,8 +2118,7 @@ fn resolved(this: Handle, error: c_int, address: &CStr) {
         // The application can't see connect's result here, so onError reports it.
         let timeout = this.socket().read(|socket| socket.timeouts.connect);
         let (port, flags) = (this.get().server_port.get(), this.get().sock_flags.get());
-        if connect(this, address.as_ptr(), port, timeout, flags) != ERR || this.flag(ONERROR_CALLED)
-        {
+        if connect(this, address, port, timeout, flags) != ERR || this.flag(ONERROR_CALLED) {
             return;
         }
     } else {

@@ -3,7 +3,7 @@
 //! ([`Data`]); the callbacks are callables by slot, and the events the
 //! client raises arrive through `async_event`.
 use crate::{
-    native::{self, ErrorKind, Run},
+    native::{self, ErrorKind},
     net::{
         self, CONNECT_TIMEOUT, Conn, INVALID_PARAMS, Obj, SOCK_TCP, SOCK_TCP6, bailed, check_type,
         destructing, errno, last_error, report, set_err_code, set_last_error, socket_type,
@@ -254,7 +254,7 @@ fn destruct(call: &Call) {
     // SAFETY: the object's connection.
     if !unsafe { &*conn }.flag(state::CLOSED) {
         // SAFETY: as above.
-        if bailed(unsafe { &*conn }.call(Op::Close).run()).is_none() {
+        if bailed(unsafe { &*conn }.cli.run(Op::Close)).is_none() {
             return;
         }
     }
@@ -290,7 +290,7 @@ fn connection(object: Obj, port: i64) -> Option<*mut Conn> {
     // `SW_SOCK_SSL`.
     if kind & (1 << 9) != 0 {
         // SAFETY: the connection just made.
-        bailed(unsafe { &*conn }.call(Op::EnableSsl).run())?;
+        bailed(unsafe { &*conn }.cli.run(Op::EnableSsl))?;
     }
     Some(conn)
 }
@@ -376,19 +376,20 @@ fn connect(call: &Call) {
             }
         }
     }
-    // SAFETY: a live client; it raises its events on this object.
-    let cli = unsafe { &*fresh.cli.0 };
+    // The client raises its events on this object.
+    let cli = fresh.cli.get();
     state::swr_v1_clients_listen(cli, object.as_ptr().cast(), events, async_event);
     net::this(call).conn.set(conn);
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object.as_ptr()).gc.refcount += 1 };
 
-    let mut connect = fresh.call(Op::Connect);
-    connect.data = host.as_ptr().cast();
-    connect.a = port;
-    connect.timeout = timeout;
-    connect.b = flags;
-    let Some(result) = bailed(connect.run()) else {
+    let connect = Op::Connect {
+        host: &native::c_text(host),
+        port: net::int(port),
+        timeout,
+        flags: net::int(flags),
+    };
+    let Some(result) = bailed(fresh.cli.run(connect)) else {
         return call.set_bool(false);
     };
     if result >= 0 {
@@ -432,7 +433,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.call(Op::Close).run()).is_some_and(|result| result >= 0));
+    call.set_bool(bailed(conn.cli.run(Op::Close)).is_some_and(|result| result >= 0));
 }
 
 /// `on(string $host, callable $callback): bool`.
@@ -493,7 +494,7 @@ fn pause(call: &Call, op: Op) {
     let Some(conn) = net::connected(call) else {
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.call(op).run()).is_some_and(|result| result >= 0));
+    call.set_bool(bailed(conn.cli.run(op)).is_some_and(|result| result >= 0));
 }
 
 fn sleep(call: &Call) {
@@ -524,7 +525,7 @@ fn enable_ssl(call: &Call) {
     if !net::enable_ssl(call, conn) {
         return call.set_bool(false);
     }
-    if bailed(conn.call(Op::SslWait).run()).is_none_or(|result| result < 0) {
+    if bailed(conn.cli.run(Op::SslWait)).is_none_or(|result| result < 0) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);

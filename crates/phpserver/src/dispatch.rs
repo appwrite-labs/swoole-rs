@@ -8,6 +8,7 @@ use crate::server::DATA;
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
+    sync::OnceLock,
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
@@ -738,13 +739,30 @@ extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -
     php_swoole_server_on_receive(server, request)
 }
 
+/// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
+pub struct HttpHooks {
+    /// `php_swoole_http_server_onReceive`.
+    pub on_receive: fn(view::Server<'_>, &RecvData) -> c_int,
+    /// `php_swoole_http_server_onClose`.
+    pub on_close: fn(view::Server<'_>, &DataHead),
+    /// `swoole_http_server_can_cache_session_addr`.
+    pub can_cache_session_addr: fn(view::Server<'_>) -> bool,
+}
+
+static HTTP: OnceLock<&'static HttpHooks> = OnceLock::new();
+
+/// Keep crates/phphttp's hooks; the first registration stands.
+pub fn register_http(hooks: &'static HttpHooks) {
+    HTTP.get_or_init(|| hooks);
+}
+
+/// The registered HTTP hooks.
+pub(crate) fn http() -> Option<&'static HttpHooks> {
+    HTTP.get().copied()
+}
+
 extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    let Some(families) = swoole_rs_phpswoole::families() else {
-        return SW_OK;
-    };
-    let request = ptr::from_ref(request).cast_mut().cast();
-    // SAFETY: the Server's own event.
-    unsafe { (families.http.on_receive)(server.raw(), request) }
+    http().map_or(SW_OK, |http| (http.on_receive)(server, request))
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
@@ -904,11 +922,9 @@ extern "C" fn on_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
 }
 
 extern "C" fn on_http_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
-    let Some(families) = swoole_rs_phpswoole::families() else {
-        return;
-    };
-    // SAFETY: the Server's own event.
-    unsafe { (families.http.on_close)(server.raw(), ptr::from_ref(info).cast_mut().cast()) };
+    if let Some(http) = http() {
+        (http.on_close)(server, info);
+    }
 }
 
 extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: &DataHead) {

@@ -280,10 +280,9 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         // SAFETY: a live server.
         fact::MAX_CONNECTION => i64::from(serv.max_connection()),
-        fact::CACHE_SESSION_ADDR => i64::from(swoole_rs_phpswoole::families().is_some_and(
-            // SAFETY: a live server.
-            |families| unsafe { (families.http.can_cache_session_addr)(serv.raw()) },
-        )),
+        fact::CACHE_SESSION_ADDR => i64::from(
+            crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv)),
+        ),
         _ => 0,
     }
 }

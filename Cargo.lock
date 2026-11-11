@@ -575,6 +575,7 @@ name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
  "swoole-rs-buffer",
+ "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-ffi",

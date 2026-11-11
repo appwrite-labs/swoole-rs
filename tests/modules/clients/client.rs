@@ -2,9 +2,9 @@
 //! inputs and expected values, over the hybrid's `network::Client`. Built into the
 //! hooks case binary (tests/modules/hooks/system), which links the crates.
 //!
-//! A `Client` is crates/clients' state, made, listened to, operated on and deleted
-//! through its `swr_v1_clients_*` exports (the operations as `swr_v1_clients_run`
-//! calls); the `Socket` TLS reads are called under their upstream symbols.
+//! A `Client` is crates/clients' state, made and listened to through its
+//! `swr_v1_clients_*` exports and operated on and deleted through its `Handle`;
+//! the `Socket` TLS reads are called under their upstream symbols.
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
 //! the fork: the cases assert only on the client. [`timer_after`] schedules a
@@ -23,6 +23,8 @@ use super::{
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::io::{Read, Write};
+use swoole_rs_clients::client::{Handle, Op};
+use swoole_rs_corebase::net_types::SocketAddress;
 
 const GREETER: &[u8] = b"Hello Swoole\0";
 const GREETER_SIZE: usize = GREETER.len();
@@ -90,39 +92,6 @@ const _: () = assert!(
     "ClientRecord's layout moved"
 );
 
-/// crates/clients' `client::Op`.
-#[derive(Clone, Copy)]
-#[repr(i32)]
-enum Op {
-    Connect = 0,
-    Send = 1,
-    Sendto = 2,
-    Sendfile = 3,
-    Recv = 4,
-    Shutdown = 6,
-    Close = 7,
-    Sleep = 8,
-    Wakeup = 9,
-    EnableSsl = 10,
-    SslHandshake = 11,
-    SslVerify = 12,
-    Free = 14,
-}
-
-/// crates/clients' `client::Call`: one operation for `swr_v1_clients_run`.
-#[repr(C)]
-struct Call {
-    client: *mut c_void,
-    op: Op,
-    data: *const c_char,
-    length: usize,
-    buffer: *mut c_char,
-    a: i64,
-    b: i64,
-    timeout: f64,
-    result: i64,
-}
-
 /// `swr_v1_core_proxy_fields`.
 #[repr(C)]
 struct ProxyFields {
@@ -160,7 +129,6 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-    fn swr_v1_clients_run(call: *mut Call);
     fn swr_v1_clients_listen(
         state: *mut c_void,
         object: *mut c_void,
@@ -182,14 +150,6 @@ unsafe extern "C" {
     );
     fn swr_v1_clients_flag(state: *const c_void, name: u32) -> bool;
     fn swr_v1_clients_watermark(state: *mut c_void, high: bool) -> *mut u32;
-    fn swr_v1_clients_get_peer_name(state: *const c_void, address: *mut c_void) -> c_int;
-    fn swr_v1_clients_bind(
-        state: *mut c_void,
-        host: *const c_char,
-        host_length: usize,
-        port: c_int,
-        reuse_failed: extern "C" fn(c_int),
-    ) -> c_int;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
     fn swr_v1_clients_dns_server(
@@ -247,10 +207,6 @@ unsafe extern "C" {
 }
 
 const SIG_IGN: usize = 1;
-
-extern "C" fn reuse_failed(fd: c_int) {
-    eprintln!("WARNING: setsockopt({fd}, SO_REUSEADDR) failed");
-}
 
 fn cstring(text: &str) -> CString {
     CString::new(text).unwrap()
@@ -403,130 +359,102 @@ impl<'a> Client<'a> {
         *self.on_receive.borrow_mut() = Some(Box::new(body));
     }
 
-    /// `op` on the client, after `set` fills the call's arguments: its result.
-    fn run(&self, op: Op, set: impl FnOnce(&mut Call)) -> i64 {
-        let mut call = Call {
-            client: self.state,
-            op,
-            data: std::ptr::null(),
-            length: 0,
-            buffer: std::ptr::null_mut(),
-            a: 0,
-            b: 0,
-            timeout: 0.0,
-            result: 0,
-        };
-        set(&mut call);
-        // SAFETY: the live state; the call's pointers hold what its operation uses.
-        unsafe { swr_v1_clients_run(&raw mut call) };
-        call.result
+    /// crates/clients' handle on the client.
+    fn handle(&self) -> Handle {
+        // SAFETY: the client `new` made, live until the drop frees it.
+        unsafe { Handle::new(self.state.cast()) }
+    }
+
+    /// `op` on the client: its result.
+    fn run(&self, op: Op<'_>) -> i64 {
+        self.handle().run(op)
     }
 
     /// An operation's `int` result.
-    fn int(&self, op: Op, set: impl FnOnce(&mut Call)) -> c_int {
-        c_int::try_from(self.run(op, set)).unwrap()
+    fn int(&self, op: Op<'_>) -> c_int {
+        c_int::try_from(self.run(op)).unwrap()
     }
 
     pub(super) fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
         let host = cstring(host);
-        self.int(Op::Connect, |call| {
-            call.data = host.as_ptr();
-            call.a = port.into();
-            call.timeout = timeout;
-            call.b = flags.into();
+        self.int(Op::Connect {
+            host: &host,
+            port,
+            timeout,
+            flags,
         })
     }
 
     fn send(&self, data: &[u8], flags: c_int) -> isize {
-        let sent = self.run(Op::Send, |call| {
-            call.data = data.as_ptr().cast();
-            call.length = data.len();
-            call.a = flags.into();
-        });
+        let sent = self.run(Op::Send { data, flags });
         isize::try_from(sent).unwrap()
     }
 
     fn sendfile(&self, file: &str, offset: i64, length: usize) -> c_int {
         let file = cstring(file);
-        self.int(Op::Sendfile, |call| {
-            call.data = file.as_ptr();
-            call.a = offset;
-            call.b = i64::try_from(length).unwrap();
+        self.int(Op::Sendfile {
+            file: &file,
+            offset,
+            length,
         })
     }
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
-        let read = self.run(Op::Recv, |call| {
-            call.buffer = buf.as_mut_ptr().cast();
-            call.length = buf.len();
-            call.a = flags.into();
-        });
+        let read = self.run(Op::Recv { buffer: buf, flags });
         isize::try_from(read).unwrap()
     }
 
     fn close(&self) -> c_int {
-        self.int(Op::Close, |_| {})
+        self.int(Op::Close)
     }
 
     pub(super) fn shutdown(&self, how: c_int) -> c_int {
-        self.int(Op::Shutdown, |call| call.a = how.into())
+        self.int(Op::Shutdown(how))
     }
 
     fn sleep(&self) -> c_int {
-        self.int(Op::Sleep, |_| {})
+        self.int(Op::Sleep)
     }
 
     fn wakeup(&self) -> c_int {
-        self.int(Op::Wakeup, |_| {})
+        self.int(Op::Wakeup)
     }
 
     fn bind(&self, host: &str, port: c_int) -> c_int {
-        // SAFETY: `host` is readable for its length.
-        unsafe {
-            swr_v1_clients_bind(
-                self.state,
-                host.as_ptr().cast(),
-                host.len(),
-                port,
-                reuse_failed,
-            )
-        }
+        self.handle().bind(&cstring(host), port)
     }
 
     fn sendto(&self, host: &str, port: c_int, data: &[u8]) -> c_int {
         let host = cstring(host);
-        self.int(Op::Sendto, |call| {
-            call.data = host.as_ptr();
-            call.length = host.as_bytes().len();
-            call.a = port.into();
-            call.buffer = data.as_ptr().cast_mut().cast();
-            call.b = i64::try_from(data.len()).unwrap();
+        self.int(Op::Sendto {
+            host: &host,
+            port,
+            data,
         })
     }
 
     /// `get_peer_name(&addr)`, then the address's `get_addr()` and `get_port()`.
     fn get_peer_name(&self) -> (c_int, String, c_int) {
-        let mut address = [0_u64; 15];
-        // SAFETY: a writable `network::Address`.
-        let result =
-            unsafe { swr_v1_clients_get_peer_name(self.state, address.as_mut_ptr().cast()) };
+        let mut address = SocketAddress::default();
+        let result = self.handle().peer_name(&mut address);
+        let address = (&raw const address).cast();
         // SAFETY: the address Rust filled.
-        let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address.as_ptr().cast())) };
+        let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address)) };
         // SAFETY: as above.
-        let port = unsafe { swr_v1_clients_address_port(address.as_ptr().cast()) };
+        let port = unsafe { swr_v1_clients_address_port(address) };
         (result, host.to_str().unwrap().to_owned(), port)
     }
 
     pub(super) fn enable_ssl_encrypt(&self) -> c_int {
-        self.int(Op::EnableSsl, |_| {})
+        self.int(Op::EnableSsl)
     }
 
     fn ssl_handshake(&self) -> c_int {
-        self.int(Op::SslHandshake, |_| {})
+        self.int(Op::SslHandshake)
     }
 
     fn ssl_verify(&self, allow_self_signed: bool) -> c_int {
-        self.int(Op::SslVerify, |call| call.a = allow_self_signed.into())
+        self.int(Op::SslVerify(allow_self_signed))
     }
 
     /// `set_tls_host_name(name)`: a fresh `SSLContext`'s view with the name set, assigned
@@ -650,8 +578,8 @@ impl Drop for Client<'_> {
         if self.sync && self.created.get() {
             self.sync_close();
         }
-        // The client `new` made, deleted once.
-        self.run(Op::Free, |_| {});
+        // SAFETY: the client `new` made, deleted once.
+        unsafe { self.handle().free() };
     }
 }
 
