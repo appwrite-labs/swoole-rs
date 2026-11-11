@@ -22,6 +22,34 @@ thread_local! {
     static BORROWED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// This thread's [`BORROWED`], looked up once for any number of handles: an op
+/// runner that builds several keeps one, where [`Socket::from_ptr`] looks it up
+/// for each (#2964).
+#[derive(Clone, Copy)]
+pub struct SocketGuard(&'static Cell<bool>);
+
+impl SocketGuard {
+    #[must_use]
+    pub fn current() -> Self {
+        let flag = BORROWED.with(std::ptr::from_ref);
+        // SAFETY: a const thread-local without a destructor lives as long as its
+        // thread, and the guard is `!Send`, so it never leaves this one.
+        Self(unsafe { &*flag })
+    }
+
+    /// [`Socket::from_ptr`] with this guard.
+    /// # Safety
+    /// As [`Socket::from_ptr`], on the guard's thread.
+    #[must_use]
+    pub unsafe fn socket<'a>(self, record: *mut SocketRecord) -> Option<Socket<'a>> {
+        Some(Socket {
+            record: NonNull::new(record)?,
+            borrowed: self.0,
+            _live: PhantomData,
+        })
+    }
+}
+
 /// Clears [`BORROWED`] when the closure returns or unwinds.
 struct Borrow<'a>(&'a Cell<bool>);
 
@@ -50,12 +78,9 @@ impl Socket<'_> {
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
         let record = NonNull::new(record)?;
-        let flag = BORROWED.with(std::ptr::from_ref);
         Some(Self {
             record,
-            // SAFETY: a const thread-local without a destructor lives as long as its
-            // thread, and the handle is `!Send`, so it never leaves this one.
-            borrowed: unsafe { &*flag },
+            borrowed: SocketGuard::current().0,
             _live: PhantomData,
         })
     }
@@ -110,7 +135,8 @@ mod tests {
         let mut record = SocketRecord::new();
         record.fd = 7;
         let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
-        let other = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
+        // A guard's handle shares the thread's flag with `from_ptr`'s.
+        let other = unsafe { SocketGuard::current().socket(&raw mut record) }.unwrap();
         let nested =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| socket.read(|_| other.fd())));
         assert!(
