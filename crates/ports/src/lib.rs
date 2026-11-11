@@ -202,64 +202,80 @@ unsafe extern "C" {
     fn strncasecmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
 }
 
+/// The event `name` registers (`on()`): its index and callback property.
+/// `native_casefold` matches as libc's `strncasecmp` does, else exactly.
+#[must_use]
+pub fn event(name: &[u8], native_casefold: bool) -> Option<(usize, &'static [u8])> {
+    EVENTS
+        .iter()
+        .enumerate()
+        .find_map(|(index, &(key, property))| {
+            let found = name.len() == key.len()
+                && if native_casefold {
+                    // SAFETY: both ranges hold `len` readable bytes (`name.len() == key.len()`).
+                    unsafe {
+                        strncasecmp(name.as_ptr().cast(), key.as_ptr().cast(), key.len()) == 0
+                    }
+                } else {
+                    name == key
+                };
+            found.then_some((index, property))
+        })
+}
+
+/// The callback property `getCallback(name)` reads, matched as Zend folds ASCII.
+#[must_use]
+pub fn callback_property(name: &[u8]) -> Option<&'static [u8]> {
+    EVENTS
+        .iter()
+        .find(|(key, _)| name.eq_ignore_ascii_case(key))
+        .map(|&(_, property)| property)
+}
+
+fn span(bytes: Option<&'static [u8]>) -> PortsSpan {
+    bytes.map_or(
+        PortsSpan {
+            data: std::ptr::null(),
+            len: 0,
+        },
+        |bytes| PortsSpan {
+            data: bytes.as_ptr(),
+            len: bytes.len(),
+        },
+    )
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_ports_event(
     data: *const u8,
     len: usize,
     native_casefold: u8,
 ) -> PortsEvent {
-    let missing = PortsEvent {
-        index: -1,
-        property: PortsSpan {
-            data: std::ptr::null(),
-            len: 0,
-        },
-    };
-    if len == 0 || data.is_null() || len > isize::MAX as usize {
-        return missing;
+    let found = (len != 0 && !data.is_null() && isize::try_from(len).is_ok())
+        .then(|| {
+            // SAFETY: `data` is non-null and the caller lends `len <= isize::MAX` initialized bytes.
+            event(
+                unsafe { slice::from_raw_parts(data, len) },
+                native_casefold != 0,
+            )
+        })
+        .flatten();
+    PortsEvent {
+        index: found.map_or(-1, |(index, _)| i32::try_from(index).unwrap_or(-1)),
+        property: span(found.map(|(_, property)| property)),
     }
-    // SAFETY: `data` is non-null and the caller lends `len <= isize::MAX` initialized bytes.
-    let bytes = unsafe { slice::from_raw_parts(data, len) };
-    for (index, &(key, property)) in EVENTS.iter().enumerate() {
-        if len == key.len()
-            && if native_casefold != 0 {
-                // SAFETY: both ranges hold `len` readable bytes (`len == key.len()`).
-                unsafe { strncasecmp(data.cast(), key.as_ptr().cast(), len) == 0 }
-            } else {
-                bytes == key
-            }
-        {
-            return PortsEvent {
-                index: i32::try_from(index).unwrap_or(-1),
-                property: PortsSpan {
-                    data: property.as_ptr(),
-                    len: property.len(),
-                },
-            };
-        }
-    }
-    missing
 }
 
 /// Callback getter normalization is Zend ASCII, distinct from registration's libc fold.
 /// Only the caller's initialized bytes are borrowed; returned property bytes are static.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_ports_callback_property(data: *const u8, len: usize) -> PortsSpan {
-    if !data.is_null() && isize::try_from(len).is_ok() {
-        // SAFETY: `data` is non-null and the caller lends `len <= isize::MAX` initialized bytes.
-        let name = unsafe { slice::from_raw_parts(data, len) };
-        if let Some(&(_, property)) = EVENTS
-            .iter()
-            .find(|(key, _)| name.eq_ignore_ascii_case(key))
-        {
-            return PortsSpan {
-                data: property.as_ptr(),
-                len: property.len(),
-            };
-        }
-    }
-    PortsSpan {
-        data: std::ptr::null(),
-        len: 0,
-    }
+    span(
+        (!data.is_null() && isize::try_from(len).is_ok())
+            .then(|| {
+                // SAFETY: `data` is non-null and the caller lends `len <= isize::MAX` initialized bytes.
+                callback_property(unsafe { slice::from_raw_parts(data, len) })
+            })
+            .flatten(),
+    )
 }

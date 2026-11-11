@@ -3,7 +3,10 @@
 //! command callables), the object's creation and release, `__construct`,
 //! `start()` with `register_callback` and `on_before_start`, `addProcess`,
 //! `addCommand` and `command`.
-use crate::server::{SERVER, ServerData, fatal, running, server};
+use crate::{
+    callable::Callable,
+    server::{SERVER, ServerData, fatal, running, server},
+};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -17,13 +20,11 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
-    class_name, message, object_of, report,
+    class_name, message, report,
     sys::{
-        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array,
-        swr_zend_try_json_encode, swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert,
-        zend_object, zend_object_std_dtor, zval, zval_ptr_dtor,
+        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_try_json_encode,
+        swr_zval_stringl, zend_class_entry, zend_object, zend_object_std_dtor, zval,
     },
-    value::table,
 };
 
 /// `SWR_PHPSERVER_FACT_*`.
@@ -161,18 +162,11 @@ fn kind(object: ServerObject) -> c_int {
 /// `serv->start()` inside `zend_try`: the server runs PHP's callbacks, and one
 /// may bail out. The trap's `setjmp` sits in C just below `body`, whose frame
 /// owns nothing, so a bailout skips no destructor.
-fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
-    struct Start(*mut c_void, c_int);
-    unsafe extern "C" fn body(start: *mut c_void) {
-        // SAFETY: `start_server`'s record, live across the trap.
-        let start = unsafe { &mut *start.cast::<Start>() };
-        // SAFETY: a live server.
-        start.1 = server_methods::start(unsafe { view::Server::from_raw(start.0) });
-    }
-    let mut start = Start(serv, 0);
-    // SAFETY: as above.
-    unsafe { bailout::trap(body, (&raw mut start).cast()) }?;
-    Ok(start.1)
+fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
+    let mut started = 0;
+    // SAFETY: as above; the closure holds a view and a borrow, nothing to drop.
+    unsafe { bailout::trap_with(|| started = server_methods::start(serv)) }?;
+    Ok(started)
 }
 
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
@@ -180,23 +174,6 @@ fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
 fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
     /// `SW_USER_WORKER`.
     const USER_WORKER: c_int = 5;
-    struct Add<'a>(view::Server<'a>, *mut zval, i64);
-    unsafe extern "C" fn body(add: *mut c_void) {
-        // SAFETY: `add_worker`'s record, live across the trap. A bailout
-        // (an unconstructed process) jumps past this frame, which owns nothing.
-        let add = unsafe { &mut *add.cast::<Add<'_>>() };
-        // SAFETY: a live process object.
-        let worker = unsafe { swr_v1_phpprocess_worker(add.1, true) }.cast::<WorkerRecord>();
-        // SAFETY: a live server that has not started, and the process's worker.
-        let id = unsafe { swoole_rs_server::worker_methods::add_worker(add.0, worker) };
-        add.2 = if id >= 0 {
-            // SAFETY: the process's live worker.
-            unsafe { &mut *worker }.set_user_data(add.1.cast());
-            id.into()
-        } else {
-            -1
-        };
-    }
     if fact(serv, fact::WORKER_THREAD) {
         if crate::server::worker_type() != USER_WORKER {
             return -2;
@@ -213,36 +190,63 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
             - number(serv, fact::WORKER_NUM)
             - number(serv, fact::TASK_WORKER_NUM);
     }
-    let mut add = Add(serv, process, -3);
-    // SAFETY: as above.
-    match unsafe { bailout::trap(body, (&raw mut add).cast()) } {
-        Ok(()) => add.2,
-        Err(_) => -3,
-    }
+    let mut added = -3;
+    let add = || {
+        // SAFETY: a live process object.
+        let worker = unsafe { swr_v1_phpprocess_worker(process, true) }.cast::<WorkerRecord>();
+        // SAFETY: a live server that has not started, and the process's worker.
+        let id = unsafe { swoole_rs_server::worker_methods::add_worker(serv, worker) };
+        added = if id >= 0 {
+            // SAFETY: the process's live worker.
+            unsafe { &mut *worker }.set_user_data(process.cast());
+            id.into()
+        } else {
+            -1
+        };
+    };
+    // SAFETY: a bailout (an unconstructed process) jumps past `add`, which
+    // holds a view, a pointer and a borrow: nothing to drop.
+    let trapped = unsafe { bailout::trap_with(add) };
+    trapped.map_or(-3, |()| added)
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
 type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
 
+/// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
+type SendWaiters = HashMap<i64, Waiters>;
+
 /// What upstream's `ServerProperty` held.
-#[derive(Default)]
 pub(crate) struct Property {
     /// The Port objects, borrowed from `$server->ports`.
     ports: Vec<*mut zend_object>,
-    /// Server-level callbacks (callables) by type.
-    callbacks: [*mut c_void; CALLBACKS],
+    /// Server-level callbacks by type.
+    callbacks: [Option<Callable>; CALLBACKS],
     /// `addCommand`'s callables.
-    commands: Vec<*mut c_void>,
-    /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
-    send_waiters: HashMap<i64, Waiters>,
+    commands: Vec<Callable>,
+    send_waiters: SendWaiters,
     /// The next waiter's token.
     send_token: u64,
     /// `addProcess`'s processes, copies holding a reference; boxed, as each
-    /// worker's user data points at its copy. Last, so `default()` builds nothing
-    /// after it that could unwind and drop it, which would link Zend's destructor
-    /// into tests that have no PHP.
+    /// worker's user data points at its copy.
     #[expect(clippy::vec_box, reason = "a worker's user data points at its copy")]
     user_processes: Vec<Box<Owned>>,
+}
+
+impl Default for Property {
+    /// The fields whose drops reach Zend are constants, built after every call
+    /// that could unwind: nothing drops them on the way, which would link Zend's
+    /// destructors into tests that have no PHP.
+    fn default() -> Self {
+        Self {
+            ports: Vec::new(),
+            send_waiters: SendWaiters::default(),
+            send_token: 0,
+            callbacks: [const { None }; CALLBACKS],
+            commands: const { Vec::new() },
+            user_processes: const { Vec::new() },
+        }
+    }
 }
 
 fn fact(serv: view::Server<'_>, id: u32) -> bool {
@@ -276,10 +280,9 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         // SAFETY: a live server.
         fact::MAX_CONNECTION => i64::from(serv.max_connection()),
-        fact::CACHE_SESSION_ADDR => i64::from(swoole_rs_phpswoole::families().is_some_and(
-            // SAFETY: a live server.
-            |families| unsafe { (families.http.can_cache_session_addr)(serv.raw()) },
-        )),
+        fact::CACHE_SESSION_ADDR => i64::from(
+            crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv)),
+        ),
         _ => 0,
     }
 }
@@ -305,23 +308,16 @@ extern "C" fn php_memory() -> usize {
 pub(crate) struct ServerObject(*mut zend_object);
 
 impl ServerObject {
-    /// # Safety
-    /// `object` is a live Server object for as long as the handle is used.
-    pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
-        Self(object)
-    }
-
-    /// A Server method's `$this`.
+    /// A Server method's `$this`: the Server class's methods run on its live objects.
     pub(crate) fn this(call: &Call) -> Self {
-        // SAFETY: the Server class's methods run on its live objects.
-        unsafe { Self::new(call.this()) }
+        Self(call.this())
     }
 
-    /// The running server's object (`php_swoole_server_zval_ptr`).
+    /// The running server's object (`php_swoole_server_zval_ptr`), which
+    /// outlives its running server.
     pub(crate) fn running() -> Self {
-        let zserv = crate::dispatch::zserv();
-        // SAFETY: the server's object zval; the object outlives its running server.
-        Self(unsafe { object_of(&raw const zserv) })
+        let mut zserv = crate::dispatch::zserv();
+        Self(Value::of(&mut zserv).object().unwrap_or(ptr::null_mut()))
     }
 
     pub(crate) fn raw(self) -> *mut zend_object {
@@ -377,8 +373,13 @@ impl ServerObject {
 
     /// `get_callback(kind)`: a callable, or null.
     fn callback(self, kind: usize) -> *mut c_void {
-        self.property(|p| p.callbacks.get(kind).copied())
-            .unwrap_or(ptr::null_mut())
+        self.property(|p| {
+            p.callbacks
+                .get(kind)
+                .and_then(Option::as_ref)
+                .map(Callable::as_raw)
+        })
+        .unwrap_or(ptr::null_mut())
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
@@ -387,32 +388,22 @@ impl ServerObject {
         let Ok(kind) = usize::try_from(kind) else {
             return false;
         };
-        let taken = self.property(|p| {
-            p.callbacks
-                .get_mut(kind)
-                .map(|slot| std::mem::replace(slot, ptr::null_mut()))
-        });
-        let Some(old) = taken else {
+        // Each callable drops out of the property: its destructor may call on() again.
+        let Some(old) = self.property(|p| p.callbacks.get_mut(kind).map(Option::take)) else {
             return false;
         };
-        let free = |unowned: *mut c_void| {
-            // SAFETY: a callable no slot holds, or null, which is ignored.
-            unsafe { swoole_rs_phpruntime::callable_free(unowned) };
-        };
-        free(old);
+        drop(old);
         if bailout::pending() {
             return false;
         }
-        // SAFETY: a live value.
-        let callable = unsafe { swoole_rs_phpruntime::callable_create(callable.as_ptr()) };
-        if callable.is_null() {
+        let Some(callable) = Callable::create(callable) else {
             return false;
-        }
+        };
         // A nested on() (from the old callable's destructor) stored its callable,
         // and the property, after this one's write: keep that pair, drop ours.
-        free(self.property(|p| match p.callbacks.get_mut(kind) {
-            Some(slot) if slot.is_null() => std::mem::replace(slot, callable),
-            _ => callable,
+        drop(self.property(|p| match p.callbacks.get_mut(kind) {
+            Some(slot) if slot.is_none() => slot.replace(callable),
+            _ => Some(callable),
         }));
         true
     }
@@ -480,10 +471,7 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
             );
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        for &callable in property.callbacks.iter().filter(|cb| !cb.is_null()) {
-            // SAFETY: a callable the property owned.
-            unsafe { swoole_rs_phpruntime::callable_free(callable) };
-        }
+        drop(std::mem::take(&mut property.callbacks));
         // `sw_zval_free`: each copy's reference goes.
         drop(std::mem::take(&mut property.user_processes));
         for &port in &property.ports {
@@ -492,10 +480,7 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
         }
         data.serv = ptr::null_mut();
     }
-    for &callable in &property.commands {
-        // SAFETY: a callable the property owned.
-        unsafe { swoole_rs_phpruntime::callable_free(callable) };
-    }
+    // The commands' callables go with it.
     drop(property);
     // SAFETY: the object Zend is freeing.
     unsafe { zend_object_std_dtor(object) };
@@ -550,14 +535,6 @@ pub(crate) struct Props<'a>(
 );
 
 impl Props<'static> {
-    /// A live object, under its own class.
-    /// # Safety
-    /// `object` is live for as long as the handle is used.
-    pub(crate) unsafe fn of(object: *mut zend_object) -> Self {
-        // SAFETY: per the caller.
-        Self(unsafe { (*object).ce }, object, PhantomData)
-    }
-
     /// A Server object, under the Server class.
     pub(crate) fn server(object: ServerObject) -> Self {
         Self(SERVER.entry(), object.raw(), PhantomData)
@@ -570,6 +547,11 @@ impl Props<'static> {
 }
 
 impl<'a> Props<'a> {
+    /// The object `value` holds, under its own class, for as long as `value` is borrowed.
+    fn of_value(value: &'a Value) -> Option<Self> {
+        Some(Self(value.class()?, value.object()?, PhantomData))
+    }
+
     /// `object_init_ex(target, class)`: a new object in `target`, under its class;
     /// the handle borrows `target`, so it can't outlive the object. Zend
     /// instantiates every registered data class.
@@ -577,10 +559,6 @@ impl<'a> Props<'a> {
         *target = class.create_object().into_zval();
         let object = Value::of(target).object().unwrap_or(ptr::null_mut());
         Self(class.entry(), object, PhantomData)
-    }
-
-    pub(crate) fn object(self) -> *mut zend_object {
-        self.1
     }
 
     /// The same handle as crates/zend's, whose writes defer a bailout.
@@ -650,21 +628,17 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Own
     // SAFETY: a live server and, per the caller, one of its ports.
     let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port.raw()) };
     object.property(|p| p.ports.push(port_object));
-    // SAFETY: the Port object, live with the Server object that keeps it.
-    let props = unsafe { Props::of(port_object) };
     let info = PortInfo::of(port);
-    props.port_info(&info, Some(info.fd));
-    // SAFETY: the Server object; its class declares `ports`.
-    let zports =
-        unsafe { swr_zend_property_array(object.class(), object.raw(), c"ports".as_ptr(), 5) };
-    // SAFETY: an array.
-    let zports = unsafe { table(zports) };
+    if let Some(props) = Props::of_value(&zport) {
+        props.port_info(&info, Some(info.fd));
+    }
     let copy = zport.copy();
-    let mut zport = zport.into_zval();
-    // SAFETY: `add_next_index_zval`: the array takes the Port's reference;
-    // `ports` borrows it.
-    unsafe { zend_hash_next_index_insert(zports, &raw mut zport) };
-    props.connections(serv, port.raw());
+    // SAFETY: the Server object's `ports`, which its class declares; nothing
+    // else borrows it, and no PHP code runs, while the Port is appended.
+    unsafe { Props::own(object).zend().array(c"ports") }.push(zport);
+    if let Some(props) = Props::of_value(&copy) {
+        props.connections(serv, port.raw());
+    }
     copy
 }
 
@@ -834,6 +808,7 @@ fn add_process(call: &Call) {
             call.set_bool(false);
         }
         id => {
+            // The process object, which the copy holds too.
             if let Some(props) = process.props(Some(swoole_rs_phpprocess::process_class())) {
                 props.long(c"id", id);
             }
@@ -858,11 +833,10 @@ fn add_command(call: &Call) {
         fatal(E_WARNING, c"only support worker/task_worker process");
         return call.set_bool(false);
     }
-    // SAFETY: a passed argument.
-    let callable = unsafe { swoole_rs_phpruntime::callable_create(call.zval(3)) };
-    if callable.is_null() {
+    let Some(callable) = call.value(3).and_then(Callable::create) else {
         return call.set_bool(false);
-    }
+    };
+    let handle = callable.as_raw();
     // The property keeps the callable for the server's life.
     #[expect(
         clippy::arc_with_non_send_sync,
@@ -870,14 +844,13 @@ fn add_command(call: &Call) {
     )]
     let handler = std::sync::Arc::new(
         move |_: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
-            command_run(callable, message, reply);
+            command_run(handle, message, reply);
         },
     );
     // Upstream's `(int) types`.
     let types = c_int::from_le_bytes(types.to_le_bytes()[..4].try_into().unwrap_or_default());
     if !swr_v1_server_add_command(serv, name, types, handler) {
-        // SAFETY: the callable created above.
-        unsafe { swoole_rs_phpruntime::callable_free(callable) };
+        drop(callable);
         return call.set_bool(false);
     }
     ServerObject::this(call).property(|p| p.commands.push(callable));
@@ -889,14 +862,12 @@ fn add_command(call: &Call) {
 /// this frame. `callable` is a live command callable.
 fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
     let mut send = |text: &[u8]| reply.extend_from_slice(text);
-    let mut args = [crate::dispatch::undef(), crate::dispatch::undef()];
-    args[0] = crate::dispatch::zserv();
-    // SAFETY: a writable zval and the message's bytes.
-    unsafe { swr_zval_stringl(&raw mut args[1], message.as_ptr().cast(), message.len()) };
+    let message = Owned::string(ZString::new(message)).into_zval();
+    let mut args = [crate::dispatch::zserv(), message];
     let retval = Owned::default();
     let called = crate::dispatch::invoke(callable, &mut args, retval.as_ptr(), false);
-    // SAFETY: the message string made above.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
+    // The message string made above.
+    crate::dispatch::dtor(&mut args[1]);
     let bailed = match called {
         Err(_) => true,
         Ok(false) => {
@@ -1267,7 +1238,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     }
     if crate::server::THREAD.load(Ordering::Relaxed)
         && fact(serv, fact::THREAD_MODE)
-        && let Err(bailout) = crate::thread::copy_setting(serv, setting)
+        && let Err(bailout) = crate::thread::copy_setting(serv, settings)
     {
         bailout.defer();
         return Err(Stop);
@@ -1312,7 +1283,7 @@ fn start(call: &Call) {
     if before_start(object, serv).is_err() {
         return;
     }
-    match start_server(serv.raw()) {
+    match start_server(serv) {
         Err(bailout) => return bailout.defer(),
         Ok(..0) => {
             let error = server_methods::get_startup_error_message();
@@ -1429,7 +1400,7 @@ mod tests {
         // Not dropped: its drop would link `Owned`'s Zend destructor, which the test
         // binary has no PHP to resolve; an empty property owns nothing to free.
         let property = std::mem::ManuallyDrop::new(Property::default());
-        assert!(property.callbacks.iter().all(|cb| cb.is_null()));
+        assert!(property.callbacks.iter().all(Option::is_none));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
         assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);
     }

@@ -6,12 +6,12 @@ use crate::reactor_state::{Backend, ReactorState};
 use crate::registration;
 use crate::socket_sync::set_errno;
 use crate::{Socket, SocketRecord};
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, c_int, c_void};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
 /// kernel left it; any other is `swoole_error_log(SW_LOG_WARNING, code, ...)`. Then
 /// `swoole_print_backtrace_on_error()`.
-pub type ChangeLog = unsafe extern "C" fn(*const c_char, c_int, *const c_char);
+pub type ChangeLog = fn(origin: &CStr, code: c_int, message: &str);
 
 const SW_ERROR_EVENT_REMOVE_FAILED: c_int = 800;
 const SW_ERROR_EVENT_ADD_FAILED: c_int = 801;
@@ -45,11 +45,9 @@ struct Change {
 
 impl Change {
     /// One warning, with `errno` set to `error` for a system warning's text.
-    fn warn(&self, origin: &CStr, code: c_int, error: c_int, message: String) {
-        let message = CString::new(message).unwrap_or_default();
+    fn warn(&self, origin: &CStr, code: c_int, error: c_int, message: &str) {
         set_errno(error);
-        // SAFETY: native code's logger with two C strings.
-        unsafe { (self.log)(origin.as_ptr(), code, message.as_ptr()) };
+        (self.log)(origin, code, message);
     }
 
     /// `ReactorImpl::after_removal_failure`.
@@ -60,7 +58,7 @@ impl Change {
                 c"ReactorImpl::after_removal_failure",
                 SW_ERROR_EVENT_REMOVE_FAILED,
                 error,
-                format!(
+                &format!(
                     "failed to delete events[fd={}#{}, type={}, events={}, errno={error}]",
                     socket.fd, self.id, socket.fd_type, socket.events
                 ),
@@ -78,7 +76,7 @@ impl Change {
                 c"ReactorEpoll::del",
                 SW_ERROR_EVENT_REMOVE_FAILED,
                 errno(),
-                format!(
+                &format!(
                     "[Reactor#{id}] failed to delete events[fd={fd}, fd_type={fd_type}], this socket has already been removed"
                 ),
             );
@@ -95,7 +93,7 @@ impl Change {
                 c"ReactorEpoll::add",
                 0,
                 error,
-                format!(
+                &format!(
                     "[Reactor#{id}] epoll_ctl(epfd={epfd}, EPOLL_CTL_ADD, fd={fd}, fd_type={fd_type}, events={events}) failed"
                 ),
             ),
@@ -103,7 +101,7 @@ impl Change {
                 c"ReactorEpoll::set",
                 0,
                 error,
-                format!(
+                &format!(
                     "[Reactor#{id}] epoll_ctl(epfd={epfd}, EPOLL_CTL_MOD, fd={fd}, fd_type={fd_type}, events={events}) failed"
                 ),
             ),
@@ -117,7 +115,7 @@ impl Change {
                     c"ReactorEpoll::del",
                     0,
                     error,
-                    format!(
+                    &format!(
                         "[Reactor#{id}] epoll_ctl(epfd={epfd}, EPOLL_CTL_DEL, fd={fd}, fd_type={fd_type}) failed"
                     ),
                 );
@@ -147,7 +145,7 @@ impl Change {
                         c"ReactorKqueue::add",
                         SW_ERROR_EVENT_ADD_FAILED,
                         errno(),
-                        format!(
+                        &format!(
                             "add events[fd={fd}, reactor_id={id}, type={}, events={filter}] failed",
                             socket.fd_type
                         ),
@@ -168,7 +166,7 @@ impl Change {
                             SW_ERROR_EVENT_REMOVE_FAILED
                         },
                         errno(),
-                        format!(
+                        &format!(
                             "kqueue->{}({fd}, SW_EVENT_{}) failed",
                             if added { "set" } else { "del" },
                             if failed <= 2 { "READ" } else { "WRITE" }
@@ -183,7 +181,7 @@ impl Change {
                         c"ReactorKqueue::del",
                         SW_ERROR_EVENT_REMOVE_FAILED,
                         errno(),
-                        format!("failed to delete event[{fd}], has been removed"),
+                        &format!("failed to delete event[{fd}], has been removed"),
                     );
                     return false;
                 }
@@ -242,7 +240,7 @@ impl Change {
             ),
             _ => return true,
         };
-        self.warn(origin, code, errno(), message);
+        self.warn(origin, code, errno(), &message);
         false
     }
 }
@@ -254,8 +252,7 @@ impl Change {
 /// # Safety
 /// `owner` is a live state with an open backend and `socket` a live record distinct from it,
 /// registered until its removal; `log` neither reads nor changes either.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_change(
+pub unsafe fn swr_v1_reactor_change(
     owner: *mut ReactorState,
     socket: *mut SocketRecord,
     op: u32,
@@ -312,8 +309,7 @@ const SW_EVENT_WRITE: c_int = 1 << 10;
 ///
 /// # Safety
 /// As for [`swr_v1_reactor_change`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_interest(
+pub unsafe fn swr_v1_reactor_interest(
     owner: *mut ReactorState,
     socket: *mut SocketRecord,
     kind: u32,
@@ -359,13 +355,11 @@ mod tests {
         static LOGGED: RefCell<Vec<(String, c_int, String)>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C" fn log(origin: *const c_char, code: c_int, message: *const c_char) {
-        // SAFETY: the change passes two C strings.
-        let (origin, message) = unsafe { (CStr::from_ptr(origin), CStr::from_ptr(message)) };
+    fn log(origin: &CStr, code: c_int, message: &str) {
         let entry = (
             origin.to_string_lossy().into_owned(),
             code,
-            message.to_string_lossy().into_owned(),
+            message.to_owned(),
         );
         LOGGED.with(|logged| logged.borrow_mut().push(entry));
     }

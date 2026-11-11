@@ -221,8 +221,8 @@ impl Objects<'_> {
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
     }
     fn reactor(&self) -> &mut swoole_rs_reactor::ReactorFields {
-        // SAFETY: the context's live reactor, which begins with its prepared state.
-        let fields = unsafe { reactor_upstream::prepared(self.ctx.reactor) }.fields;
+        // The context's live reactor, which begins with its prepared state.
+        let fields = swoole_rs_reactor::ReactorPrepared::of(self.ctx.reactor).fields;
         // SAFETY: as above; only this thread touches its reactor.
         unsafe { &mut *fields }
     }
@@ -291,7 +291,7 @@ fn read_facts(o: &mut Objects<'_>) -> u64 {
     o.ctx.port = o.port_by_fd(o.event().fd());
     let process = o.mode() == crate::MODE_PROCESS;
     o.read_sock(|sock| {
-        let ssl = !sock.ssl.is_null();
+        let ssl = !sock.ssl().is_null();
         cn::FOUND
             | BUILT_PREQUEUE
             | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
@@ -323,7 +323,7 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
     if conn.active == 0 {
         return 0;
     }
-    let pending = o.read_sock(|sock| !sock.ssl.is_null() && sock.tls.state != SSL_READY);
+    let pending = o.read_sock(|sock| !sock.ssl().is_null() && sock.tls.state != SSL_READY);
     cn::FOUND
         | BUILT_PREQUEUE
         | flag(conn.close_notify != 0, cn::CLOSE_NOTIFY)
@@ -382,7 +382,7 @@ fn close_facts(o: &mut Objects<'_>) -> u64 {
     o.ctx.port = o.port_by_fd(fd);
     let (conn, base) = (o.conn(), o.mode() == crate::MODE_BASE);
     o.read_sock(|sock| {
-        let ssl = !sock.ssl.is_null();
+        let ssl = !sock.ssl().is_null();
         BUILT_PREQUEUE
             | flag(!conn.timer.is_null(), cn::TIMER)
             | flag(!conn.websocket_buffer.is_null(), cn::WEBSOCKET_BUFFER)
@@ -530,7 +530,10 @@ pub(crate) unsafe fn answer(
         }
         OP_SSL_VERIFY => {
             let allow_self_signed = o.ssl_fields().allow_self_signed != 0;
-            u64::from(o.read_sock(|sock| tls::socket_ssl_verify(sock, allow_self_signed)))
+            u64::from(
+                o.sock()
+                    .is_some_and(|sock| tls::socket_ssl_verify(sock, allow_self_signed)),
+            )
         }
         OP_CERT_TASK => {
             // SAFETY: OP_PEER_CERT filled this thread's live buffer.

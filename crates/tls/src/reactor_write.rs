@@ -6,6 +6,7 @@
 //! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
 use crate::upstream::{
     buffer_check, out_queue, socket_free, socket_handle_send, socket_handle_sendfile, socket_send,
+    with_queue,
 };
 use std::ffi::{c_int, c_void};
 use swoole_rs_buffer::Buffer;
@@ -43,14 +44,8 @@ struct Flush<'a> {
 
 /// The socket's output block and queue (null without an output buffer).
 fn output(socket: Socket<'_>) -> (*mut SocketOutput, *mut Buffer) {
-    let (output, buffer) = socket.edit(|record| (&raw mut record.output, record.output.out_buffer));
-    let queue = if buffer.is_null() {
-        std::ptr::null_mut()
-    } else {
-        // SAFETY: the socket's output buffer.
-        unsafe { out_queue(socket) }
-    };
-    (output, queue)
+    let output = socket.edit(|record| &raw mut record.output);
+    (output, out_queue(socket))
 }
 
 impl WriteEffects for Write<'_> {
@@ -77,8 +72,7 @@ impl WriteEffects for Write<'_> {
         let chunk_size = socket.read(|record| record.chunk_size);
         let buffer = swoole_rs_buffer::cpp::new_buffer(chunk_size);
         socket.edit(|record| record.output.out_buffer = buffer.cast());
-        // SAFETY: the buffer just made.
-        unsafe { out_queue(socket) }
+        out_queue(socket)
     }
 
     fn watch_writable(&self) {
@@ -117,12 +111,14 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
             format_args!("data packet is too large, cannot exceed the socket buffer size"),
         ),
         2 => {
-            // SAFETY: the overflowed socket has a queue.
-            let queue = unsafe { out_queue(socket) };
             let (mut queued, mut count) = (0u32, 0usize);
-            // SAFETY: the live queue.
-            let queue = unsafe { queue.as_ref() };
-            swoole_rs_buffer::swr_v1_buffer_stats(queue, Some(&mut queued), Some(&mut count));
+            with_queue(socket, |queue| {
+                swoole_rs_buffer::swr_v1_buffer_stats(
+                    queue.as_deref(),
+                    Some(&mut queued),
+                    Some(&mut count),
+                )
+            });
             let (fd, size) = socket.read(|record| (record.fd, record.output.buffer_size));
             log::error_log(
                 log::LOG_WARNING,
@@ -184,7 +180,7 @@ pub unsafe extern "C-unwind" fn reactor_writev(
     let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
     };
-    if !socket.read(|record| record.ssl).is_null() {
+    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         log::error_log(
             log::LOG_WARNING,
             SW_ERROR_OPERATION_NOT_SUPPORT,
@@ -214,15 +210,10 @@ pub unsafe extern "C-unwind" fn reactor_writev(
 
 impl FlushEffects for Flush<'_> {
     fn front_kind(&self) -> c_int {
-        // SAFETY: the flush's socket has queued output.
-        let queue = unsafe { out_queue(self.socket) };
         let mut front = swoole_rs_buffer::TypedFront::default();
-        // SAFETY: the live queue.
-        let queue = unsafe { queue.as_ref() };
-        buffer_check(swoole_rs_buffer::swr_v1_buffer_typed_front(
-            queue,
-            Some(&mut front),
-        ));
+        buffer_check(with_queue(self.socket, |queue| {
+            swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_deref(), Some(&mut front))
+        }));
         front.kind.cast_signed()
     }
 
