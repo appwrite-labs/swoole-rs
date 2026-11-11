@@ -198,16 +198,14 @@ fn report_socket(call: &Call, socket: Co) {
 
 /// The client's `setting` property, if it is an array.
 fn setting(call: &Call) -> Option<&Array> {
-    // SAFETY: `$this` is a live client; the class declares `setting`.
-    let slot = unsafe { z::swr_zend_property_slot(call.this(), c"setting".as_ptr(), 7) };
-    // SAFETY: null or the live property, which the call does not replace.
-    unsafe { Value::from_ptr(slot) }.and_then(Value::array)
+    call.this_value()?.property(c"setting")?.array()
 }
 
 /// `zval_get_long` of the client's `type` property.
 fn type_property(call: &Call) -> i64 {
-    // SAFETY: `$this` is a live client; the class declares `type`.
-    unsafe { swoole_rs_zend::property(call.this(), c"type") }.long()
+    call.this_value()
+        .and_then(|this| this.property(c"type"))
+        .map_or(0, Value::long)
 }
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.

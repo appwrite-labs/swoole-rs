@@ -129,6 +129,25 @@ impl Call {
         self.array(n).map(Some)
     }
 
+    /// `Z_PARAM_ARRAY_EX2(dest, 1, 1, 0)` of passed argument `n`: the array a
+    /// by-reference argument refers to, or None for null.
+    /// # Errors
+    /// The argument is neither an array nor null; Zend has thrown.
+    #[inline]
+    pub fn array_or_null(&self, n: u32) -> Result<Option<&crate::Array>, Invalid> {
+        let arg = self.arg_value(n).dereferenced();
+        if arg.is_null() {
+            return Ok(None);
+        }
+        arg.array().map(Some).ok_or_else(|| {
+            Self::wrong(
+                n,
+                arg,
+                crate::sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
+            )
+        })
+    }
+
     /// `Z_PARAM_OBJECT` of passed argument `n`.
     /// # Errors
     /// The argument is not an object; Zend has thrown.

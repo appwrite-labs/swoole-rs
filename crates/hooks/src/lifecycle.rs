@@ -15,13 +15,13 @@ use core::ffi::c_int;
 /// int it is given. Tests script them.
 #[derive(Clone, Copy)]
 struct Sys {
-    shutdown: unsafe extern "C" fn(c_int, c_int) -> c_int,
+    shutdown: fn(c_int, c_int) -> c_int,
     connect: unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int,
     option: fn(c_int, &mut c_int) -> c_int,
 }
 
 const SYS: Sys = Sys {
-    shutdown: libc::shutdown,
+    shutdown: crate::shutdown::sys_shutdown,
     connect: libc::connect,
     option: so_error,
 };
@@ -256,7 +256,7 @@ mod tests {
             if !unsafe { (*s.socket()).fields.ssl().is_null() } {
                 (NATIVE.ssl_shutdown)(s);
             }
-            if unsafe { (sys.shutdown)(s.sock_fd(), how) } < 0 {
+            if (sys.shutdown)(s.sock_fd(), how) < 0 {
                 error = errno();
             }
             if error == 0 || error == libc::ENOTCONN {
@@ -377,7 +377,7 @@ mod tests {
         static OPTION: Cell<u32> = const { Cell::new(0) };
     }
 
-    unsafe extern "C" fn fake_shutdown(fd: c_int, how: c_int) -> c_int {
+    fn fake_shutdown(fd: c_int, how: c_int) -> c_int {
         log(format!("shutdown:{fd}:{how}"));
         let (result, error) = SHUTDOWN.get();
         if error >= 0 {
