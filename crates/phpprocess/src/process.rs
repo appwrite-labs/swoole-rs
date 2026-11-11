@@ -2,7 +2,7 @@
 //! upstream's ZPP block and checks, then works on the object's `Worker` through
 //! the host table.
 use crate::{
-    host,
+    host::{self, Callable},
     report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
     signal::signal,
     worker::{self, WorkerView},
@@ -15,16 +15,16 @@ use std::{
 use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, add_assoc_long, class_name, each_value,
-    handlers, message, object_of, set_object,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, Value, bailout, handlers, message, object_of,
+    set_object,
+    string::ZBuf,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        swr_zend_emalloc, swr_zend_is_true, swr_zend_object_addref, swr_zend_object_release,
-        swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_get_executed_filename,
-        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property, zend_string,
-        zval,
+        swr_zend_object_addref, swr_zend_object_release, zend_class_entry,
+        zend_get_executed_filename, zend_object, zend_object_handlers, zend_read_property,
+        zend_string, zval,
     },
-    type_of, unset_property_deny, update_property, update_property_long,
+    unset_property_deny, update_property_long,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -338,17 +338,22 @@ fn set_worker(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int {
     // SAFETY: per the caller.
-    let std = unsafe { object_of(object) };
+    let Some(this) = (unsafe { Value::from_ptr(object) }) else {
+        return -1;
+    };
+    let Some(std) = this.object() else {
+        return -1;
+    };
     let mut slot = swoole_rs_zend::long_zval(0);
     // SAFETY: a Process object; the declared private property's slot comes back.
     let callback =
         unsafe { zend_read_property(entry(), std, c"callback".as_ptr(), 8, true, &raw mut slot) };
-    // SAFETY: a live zval.
-    let callable = unsafe { host::callable_create(callback) };
-    if callable.is_null() {
+    // SAFETY: a live property, or `slot`, which outlives it.
+    let callable = unsafe { Value::from_ptr(callback) }.and_then(Callable::create);
+    let Some(callable) = callable else {
         swoole_rs_zend::bailout::finish();
         return -1;
-    }
+    };
     worker::child_enter(worker);
     let worker = view(worker);
     for (redirect, target) in [
@@ -356,42 +361,40 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
         (worker.redirect_stdout, libc::STDOUT_FILENO),
         (worker.redirect_stderr, libc::STDERR_FILENO),
     ] {
-        // SAFETY: dup2 has no memory preconditions.
-        if redirect && unsafe { libc::dup2(worker.pipe, target) } < 0 {
+        if redirect && swoole_rs_corebase::sys::dup2(worker.pipe, target) < 0 {
             sys(E_WARNING, &message!("dup2() failed"));
         }
     }
     crate::signal::clean();
-    // SAFETY: a Process object.
-    unsafe { update_property_long(entry(), std, c"pid", i64::from(worker.pid)) };
-    if worker.pipe >= 0 {
-        // SAFETY: as above.
-        unsafe { update_property_long(entry(), std, c"pipe", i64::from(worker.pipe)) };
+    if let Some(props) = this.props(Some(&PROCESS)) {
+        props.long(c"pid", i64::from(worker.pid));
+        if worker.pipe >= 0 {
+            props.long(c"pipe", i64::from(worker.pipe));
+        }
     }
-    // SAFETY: as above.
+    // SAFETY: a Process object.
     let coroutine = unsafe { data(std) }.enable_coroutine;
     if swoole_rs_zend::bailout::pending() || (coroutine && host::reactor_init() < 0) {
-        // SAFETY: the callable made above.
-        unsafe { host::callable_free(callable) };
+        drop(callable);
         swoole_rs_zend::bailout::finish();
         return -1;
     }
-    // SAFETY: the callable, with `$this` as its one argument.
-    let called = unsafe { host::callable_call(callable, 1, object, coroutine) };
+    // `$this` is the callable's one argument.
+    let called = callable.call(&[this], coroutine);
     let bailed = swoole_rs_zend::bailout::pending();
     if !called && !bailed {
-        // SAFETY: a live object.
-        let name = unsafe { class_name(std) };
         notice(
             E_WARNING,
-            &message!("{}->onStart handler error", name.to_string_lossy()),
+            &message!(
+                "{}->onStart handler error",
+                this.value_name().to_string_lossy()
+            ),
         );
     }
     if coroutine && !bailed {
         host::event_wait();
     }
-    // SAFETY: the callable made above.
-    unsafe { host::callable_free(callable) };
+    drop(callable);
     swoole_rs_zend::bailout::finish();
     // SAFETY: equivalent to exit: Zend unwinds to its bailout point; this frame
     // owns nothing that needs a drop.
@@ -399,10 +402,11 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
 }
 
 fn construct(call: &Call) {
-    let object = call.this();
     let process = this(call);
-    // SAFETY: a live object.
-    let name = unsafe { class_name(object) }.to_string_lossy();
+    let Some(object) = call.this_value() else {
+        return;
+    };
+    let name = object.value_name().to_string_lossy();
     let refuse = |text| {
         call.throw_error(message!("{text}").as_cstr());
         call.set_bool(false);
@@ -470,8 +474,9 @@ fn construct(call: &Call) {
         }
     }
     call.update_property_long(Some(&PROCESS), c"id", i64::from(view(worker).id));
-    // SAFETY: `$this`, and the callback argument.
-    unsafe { update_property(entry(), object, c"callback", call.zval(1)) };
+    if let Some((props, callback)) = object.props(Some(&PROCESS)).zip(call.value(1)) {
+        props.value(c"callback", callback);
+    }
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream casts to PipeType"
@@ -592,15 +597,9 @@ fn stat_queue(call: &Call) {
         clippy::cast_possible_wrap,
         reason = "upstream stores size_t in zend_long"
     )]
-    // SAFETY: the array just initialised.
-    unsafe {
-        add_assoc_long(call.return_value(), c"queue_num", num as i64);
-    }
+    call.add_assoc_long(c"queue_num", num as i64);
     #[expect(clippy::cast_possible_wrap, reason = "as above")]
-    // SAFETY: as above.
-    unsafe {
-        add_assoc_long(call.return_value(), c"queue_bytes", bytes as i64);
-    }
+    call.add_assoc_long(c"queue_bytes", bytes as i64);
 }
 
 fn free_queue(call: &Call) {
@@ -659,16 +658,16 @@ fn alarm(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: all-zero is a disarmed timer.
-    let mut timer: libc::itimerval = unsafe { std::mem::zeroed() };
-    if usec > 0 {
-        let interval = libc::timeval {
-            tv_sec: (usec / 1_000_000) as _,
-            tv_usec: (usec % 1_000_000) as _,
-        };
-        timer.it_interval = interval;
-        timer.it_value = interval;
-    }
+    // Zero is a disarmed timer.
+    let usec = usec.max(0);
+    let interval = libc::timeval {
+        tv_sec: (usec / 1_000_000) as _,
+        tv_usec: (usec % 1_000_000) as _,
+    };
+    let timer = libc::itimerval {
+        it_interval: interval,
+        it_value: interval,
+    };
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
     // SAFETY: `timer` is a valid itimerval; the old value is not wanted.
     let set = unsafe { libc::setitimer(kind as _, &raw const timer, ptr::null_mut()) };
@@ -726,24 +725,16 @@ fn read(call: &Call) {
         reason = "upstream converts to size_t"
     )]
     let size = size as usize;
-    // SAFETY: Zend's allocator; it bails out when it cannot allocate.
-    let buffer = unsafe { swr_zend_string_alloc(size) };
-    let start = string_data(buffer);
-    // SAFETY: the string has room for `size` bytes and a NUL.
-    let read = unsafe { worker::pipe_read(worker, start, size, process.blocking) };
+    // Zend's allocator; it bails out when it cannot allocate.
+    let mut buffer = ZBuf::with_capacity(size);
+    let read = worker::pipe_read(worker, &mut buffer, process.blocking);
     let Ok(length) = usize::try_from(read) else {
-        // SAFETY: the string made above, never shared.
-        unsafe { swr_zend_string_free(buffer) };
         call.set_bool(false);
         return;
     };
-    let end = start.wrapping_add(length);
-    // SAFETY: `length <= size`, inside the string.
-    unsafe { *end = 0 };
-    // SAFETY: the string made above.
-    unsafe { (*buffer).len = length };
-    // SAFETY: the return value takes the string's one reference.
-    unsafe { call.set_string(buffer) };
+    // SAFETY: the read wrote `length <= size` bytes.
+    unsafe { buffer.set_len(length) };
+    call.set_zstring(buffer.into_zstring());
 }
 
 fn string_data(string: *mut zend_string) -> *mut c_char {
@@ -769,9 +760,7 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the argument's bytes.
-    let written =
-        unsafe { worker::pipe_write(worker, data.as_ptr().cast(), data.len(), process.blocking) };
+    let written = worker::pipe_write(worker, data, process.blocking);
     if written < 0 {
         sys(E_WARNING, &message!("write() failed"));
         call.set_bool(false);
@@ -873,8 +862,8 @@ fn pop(call: &Call) {
 fn exec(call: &Call) {
     let parsed = call
         .arity(2, 2)
-        .and_then(|()| Ok((call.string(1, b"")?, call.array_table(2)?)));
-    let Ok((file, Some(args))) = parsed else {
+        .and_then(|()| Ok((call.string(1, b"")?, call.array_ref(2)?)));
+    let Ok((file, args)) = parsed else {
         call.set_bool(false);
         return;
     };
@@ -883,33 +872,27 @@ fn exec(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // The argument's string is NUL-terminated in place. The vector is request
-    // memory, as upstream's, so a bailout from a conversion warning leaks nothing.
+    // The argument's string is NUL-terminated in place.
     let path = file.as_ptr().cast::<c_char>();
-    // SAFETY: a live array.
-    let count = unsafe { (*args).nNumOfElements } as usize;
-    // SAFETY: Zend's allocator; it bails out when it cannot allocate.
-    let argv = unsafe { swr_zend_emalloc(size_of::<*const c_char>() * (count + 2)) }
-        .cast::<*const c_char>();
-    // SAFETY: slot 0 of `count + 2`.
-    unsafe { *argv = path };
-    let mut next = 1;
-    let each = |value: *mut zval| {
-        // SAFETY: a live element; the string is leaked, as upstream leaks it.
-        let string = unsafe { swoole_rs_zend::value::get_string(value) };
-        let slot = argv.wrapping_add(next);
-        // SAFETY: at most `count` elements, so `next <= count`.
-        unsafe { *slot = string_data(string).cast_const() };
-        next += 1;
-        true
-    };
-    // SAFETY: the array argument, which the loop does not modify.
-    unsafe { each_value(args, each) };
-    let last = argv.wrapping_add(next);
-    // SAFETY: `next <= count + 1`.
-    unsafe { *last = ptr::null() };
+    let mut strings = Vec::with_capacity(args.count() as usize);
+    for (_, value) in args.entries() {
+        let string = value.string();
+        if bailout::pending() {
+            // Upstream's conversion bailed out here.
+            return;
+        }
+        strings.push(string);
+    }
+    let argv: Vec<*const c_char> = std::iter::once(path)
+        .chain(
+            strings
+                .iter()
+                .map(|string| string_data(string.as_ptr()).cast_const()),
+        )
+        .chain(std::iter::once(ptr::null()))
+        .collect();
     // SAFETY: a NUL-terminated path and a null-terminated argument vector.
-    let failed = unsafe { libc::execv(path, argv) } < 0;
+    let failed = unsafe { libc::execv(path, argv.as_ptr()) } < 0;
     if failed {
         sys(
             E_WARNING,
@@ -926,7 +909,7 @@ fn daemon(call: &Call) {
         Ok((
             call.bool(1, true)?,
             call.bool(2, true)?,
-            call.array_table(3)?,
+            call.value(3).map(|_| call.array_ref(3)).transpose()?,
         ))
     });
     let Ok((nochdir, noclose, pipes)) = parsed else {
@@ -934,22 +917,15 @@ fn daemon(call: &Call) {
         return;
     };
     if let Some(pipes) = pipes {
-        let mut fd = 0;
-        let each = |value: *mut zval| {
-            // SAFETY: a live element.
-            if unsafe { type_of(value) } != IS_NULL {
-                // SAFETY: C++ resolves a stream, socket or int to its fd.
-                let from = unsafe { host::convert_to_fd(value) };
+        for ((_, value), fd) in pipes.entries().zip(0..=2) {
+            if value.kind() != IS_NULL {
+                // C++ resolves a stream, socket or int to its fd.
+                let from = host::convert_to_fd(value);
                 if from >= 0 {
                     worker::dup(from, fd);
                 }
             }
-            let more = fd != 2;
-            fd += 1;
-            more
-        };
-        // SAFETY: the array argument, which the loop does not modify.
-        unsafe { each_value(pipes, each) };
+        }
     }
     call.set_bool(
         swoole_rs_ossupport::swoole_daemon(c_int::from(nochdir), c_int::from(noclose)) == 0,
@@ -1004,8 +980,7 @@ fn close(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: a worker owning its pipe.
-    if unsafe { worker::pipe_close(worker, which) } < 0 {
+    if worker::pipe_close(worker, which) < 0 {
         sys(E_WARNING, &message!("close() failed"));
         call.set_bool(false);
         return;
@@ -1014,19 +989,16 @@ fn close(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(Some(options)) = call.arity(1, 1).and_then(|()| call.array_table(1)) else {
+    let Ok(options) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         call.set_bool(false);
         return;
     };
     let process = this(call);
     checked(process);
-    let key = c"enable_coroutine";
-    // SAFETY: the array argument and a NUL-terminated key.
-    let value = unsafe { zend_hash_str_find(options, key.as_ptr(), key.count_bytes()) };
-    // SAFETY: a live element.
-    if !value.is_null() && unsafe { type_of(value) } != IS_NULL {
-        // SAFETY: as above.
-        process.enable_coroutine = unsafe { swr_zend_is_true(value) };
+    if let Some(value) = options.find(b"enable_coroutine")
+        && value.kind() != IS_NULL
+    {
+        process.enable_coroutine = value.truthy();
     }
 }
 
