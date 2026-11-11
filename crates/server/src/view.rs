@@ -45,6 +45,7 @@ impl<'a> Server<'a> {
     /// `serv` is a live `Server` for `'a`, and the server's own synchronization
     /// keeps writers of its configuration and counters (such as
     /// [`Server::config_mut`]) apart from the references the safe readers return.
+    /// Its ports' listening sockets stay open for `'a`, as [`Port::from_raw`] requires.
     #[must_use]
     pub unsafe fn from_raw(serv: *mut c_void) -> Self {
         Self {
@@ -523,7 +524,10 @@ impl<'a> Port<'a> {
     /// # Safety
     /// `port` is null or a live `ListenPort` for `'a`, and the port's own
     /// synchronization keeps writers of its settings ([`Port::config_mut`]) apart
-    /// from the references the safe readers return.
+    /// from the references the safe readers return. The port's listening socket also
+    /// stays open for `'a`, or nothing reads it through this view (or a [`Socket`] it
+    /// returned) after it closes: the close ops (`OP_PORT_CLOSE`,
+    /// `OP_PORT_CLOSE_SOCKET`) free it through the raw port and return.
     #[must_use]
     pub unsafe fn from_raw(port: *mut c_void) -> Option<Self> {
         core::ptr::NonNull::new(port).map(|raw| Self {
@@ -561,7 +565,8 @@ impl<'a> Port<'a> {
     /// The port's listening socket, or `None` before it has one.
     #[must_use]
     pub fn socket(self) -> Option<Socket<'a>> {
-        // SAFETY: null, or the live port's listening socket, which it owns.
+        // SAFETY: null, or the port's listening socket, which `from_raw`'s caller keeps
+        // open for as long as anything reads it.
         unsafe { Socket::from_ptr(self.config().socket.cast()) }
     }
 
