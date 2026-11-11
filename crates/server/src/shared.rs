@@ -64,7 +64,7 @@ pub(crate) fn unix_now() -> libc::time_t {
 }
 
 pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
-    let gs = state.config_ref().gs.cast::<ServerCounters>();
+    let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
     // SAFETY: a non-null `gs` is the server's shared counters, which stay mapped.
     unsafe { gs.as_ref() }
 }
@@ -156,7 +156,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     ) {
         return None;
     }
-    let gs = state.config_ref().gs.cast::<ServerCounters>();
+    let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
     if gs.is_null() {
         return None;
     }
@@ -271,12 +271,18 @@ mod tests {
     use crate::ops::{OP_MAXFD, OP_SET_MAXFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
     use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
     use core::sync::atomic::Ordering;
+    use swoole_rs_memory::members::Shm;
 
     #[test]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
         use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
-        let mut server = ServerCounters::default();
+        let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
+        // SAFETY: a fresh mapping of a whole `ServerCounters`.
+        let counters = gs.as_ptr().cast::<ServerCounters>();
+        unsafe { counters.write(ServerCounters::default()) };
+        // SAFETY: as above; the mapping outlives every use below.
+        let server = unsafe { &*counters };
         let mut port = PortCounters::default();
         let config = swr_v1_port_config_new(0);
         // A `ListenPort`: its settings pointer first.
@@ -299,7 +305,7 @@ mod tests {
         let state = swr_v1_server_state_new();
         // SAFETY: a fresh state, its configuration and tables, all owned by this test.
         unsafe {
-            (*(*state).config()).gs = (&raw mut server).cast();
+            (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::NULL);
             *(*state).tables() = ServerTables {
                 connection_list: connections.as_mut_ptr(),
                 session_list: sessions.as_mut_ptr(),
@@ -322,6 +328,7 @@ mod tests {
         );
         // SAFETY: allocated above and not used again.
         unsafe {
+            (*(*state).config()).gs.free();
             swr_v1_server_state_free(state);
             swr_v1_port_config_free(config);
         }
@@ -330,22 +337,16 @@ mod tests {
     #[test]
     fn shared_counter_updates_survive_a_worker_fork() {
         unsafe {
-            let mapping = libc::mmap(
-                core::ptr::null_mut(),
-                4096,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED | libc::MAP_ANON,
-                -1,
-                0,
-            );
-            assert_ne!(mapping, libc::MAP_FAILED);
+            let gs = swoole_rs_memory::members::Shm::calloc(1, 4096);
+            let mapping = gs.as_ptr();
+            assert!(!mapping.is_null());
             swr_v1_server_shared_init(mapping);
             let counters = mapping.cast::<ServerCounters>();
             assert_eq!((*counters).max_concurrency, u32::MAX);
             assert_eq!((*counters).pipe_packet_msg_id.load(Ordering::Relaxed), 1);
             (*counters).concurrency.store(7, Ordering::Relaxed);
             let state = swr_v1_server_state_new();
-            (*(*state).config()).gs = mapping;
+            (*(*state).config()).gs = gs;
             let pid = libc::fork();
             assert!(pid >= 0);
             if pid == 0 {
@@ -360,8 +361,8 @@ mod tests {
             assert_eq!(status, 0);
             assert_eq!(native_fact(&*state, OP_ST_GS_CONCURRENCY, 0), Some(5));
             assert_eq!(native_fact(&*state, OP_MAXFD, 0), Some(123));
+            (*(*state).config()).gs.free();
             swr_v1_server_state_free(state);
-            assert_eq!(libc::munmap(mapping, 4096), 0);
         }
     }
 

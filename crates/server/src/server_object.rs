@@ -41,7 +41,8 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     // SAFETY: as above, its tables.
     let tables = unsafe { &mut *fresh.tables() };
     tables.max_connection = swoole_rs_corebase::max_sockets().min(100_000);
-    let gs = swoole_rs_memory::members::sw_shm_malloc(size_of::<ServerShared>());
+    config.gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+    let gs = config.gs.as_ptr();
     if gs.is_null() {
         log::sys_warning(
             c"Server",
@@ -51,7 +52,6 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     }
     // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters.
     unsafe { crate::swr_v1_server_shared_init(gs) };
-    config.gs = gs;
     config.mode_ = u8::try_from(mode).unwrap_or_default();
     let counter = gs.wrapping_byte_add(core::mem::offset_of!(
         crate::ServerCounters,
@@ -111,7 +111,7 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     // SAFETY: the list settings.rs allocated, or null.
     unsafe { swoole_rs_corebase::sw_free(config.cpu_affinity_available.cast()) };
     config.cpu_affinity_available = ptr::null_mut();
-    swoole_rs_memory::members::sw_shm_free(config.gs);
+    config.gs.free();
     // SAFETY: `swr_v1_server_new`'s bus, freed once.
     unsafe { crate::pool_native::free_bus(state.tables_ref().message_bus) };
     // SAFETY: `swr_v1_server_new`'s state, not used again.
@@ -154,7 +154,7 @@ pub(crate) unsafe fn barrier<'a>(serv: *mut c_void, manager: bool) -> &'a Barrie
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
     let serv = unsafe { view::Server::from_raw(serv) };
     if manager {
-        let gs = serv.config().gs.cast::<ServerShared>();
+        let gs = serv.config().gs.as_ptr().cast::<ServerShared>();
         // SAFETY: the mapped record, which lives as long as the server.
         unsafe { &(*gs).manager_barrier }
     } else {
