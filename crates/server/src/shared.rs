@@ -259,15 +259,14 @@ mod tests {
         // SAFETY: as above; the mapping outlives every use below.
         let server = unsafe { &*counters };
         let mut port = PortCounters::default();
+        // A `ListenPort` is its settings.
         let config = swr_v1_port_config_new(0);
-        // A `ListenPort`: its settings pointer first.
-        let mut listen = config;
         // SAFETY: the settings were just allocated.
         unsafe { (*config).gs = (&raw mut port).cast() };
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
-        connections[1].object = (&raw mut listen).cast();
+        connections[1].object = config.cast();
         connections[2].server_fd = 1;
         let mut sessions: Vec<SessionRecord> = (0..3)
             .map(|id| SessionRecord {

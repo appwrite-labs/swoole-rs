@@ -55,14 +55,15 @@ namespace swoole {
 struct ServerPortGS : PortCounters {
  ServerPortGS() { swr_v1_server_port_shared_init(this); }
 };
-/* Upstream's ListenPort, as crates/server allocates it (server_object.rs): a box of the pointer to
- * its Rust-owned settings. */
+/* Upstream's ListenPort, as crates/server allocates it (server_object.rs): the box of its
+ * Rust-owned settings. */
 struct ListenPort {
- swr_v1_port_config *const port_config_;
  ListenPort() = delete;
  ListenPort(const ListenPort &) = delete;
  ~ListenPort() = delete;
- swr_v1_port_config *config() const { return port_config_; }
+ swr_v1_port_config *config() const {
+  return reinterpret_cast<swr_v1_port_config *>(const_cast<ListenPort *>(this));
+ }
 };
 }
 #endif

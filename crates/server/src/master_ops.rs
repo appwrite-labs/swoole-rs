@@ -2966,16 +2966,15 @@ mod tests {
         let mut sock: SocketRecord = unsafe { core::mem::zeroed() };
         // SAFETY: as above.
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        // A `ListenPort` is its settings.
         let config = crate::port_config::swr_v1_port_config_new(0);
-        // A `ListenPort` starts with its settings pointer.
-        let mut port = config;
         sock.output.buffer_size = 4;
         // SAFETY: the settings allocated above.
         unsafe { (*config).buffer_high_watermark = 2 };
         let data = *b"abc";
         ctx.sock = (&raw mut sock).cast();
         ctx.conn = (&raw mut conn).cast();
-        ctx.port = (&raw mut port).cast();
+        ctx.port = config.cast();
         ctx.data = data.as_ptr().cast();
         ctx.length = 3;
         let socket = (&raw const sock).expose_provenance() as u64;
