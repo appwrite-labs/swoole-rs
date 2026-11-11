@@ -282,8 +282,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
             }
             call(ctx, facts.coroutine)?;
         }
-        context::release_objects(ctx);
-        Ok(())
+        context::release_objects(ctx)
     });
     bailout::raise(result);
     DONE
@@ -384,10 +383,8 @@ unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
     };
     // SAFETY: per the caller.
     let mut ctx = unsafe { Ctx::of(ctx.cast()) };
-    let result = call(ctx, enable_coroutine(context::server(ctx.state())));
-    if result.is_ok() {
-        context::release_objects(ctx);
-    }
+    let result = call(ctx, enable_coroutine(context::server(ctx.state())))
+        .and_then(|()| context::release_objects(ctx));
     bailout::raise(result);
 }
 
@@ -541,17 +538,14 @@ const HTTP2_INTERNAL_ERROR: u32 = 2;
 pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     let (server, fd) = (context::server(ctx.state()), ctx.state().fd);
     let Some((conn, facts)) = http2_connection(server, fd) else {
-        context::release_objects(ctx);
-        return Ok(());
+        return context::release_objects(ctx);
     };
     ctx.state().request.version = HTTP_VERSION_2;
     let Some(http2) = crate::http2::server() else {
-        context::release_objects(ctx);
-        return Ok(());
+        return context::release_objects(ctx);
     };
     if facts.static_handler && (http2.static_file)(server.raw(), ctx)? {
-        context::release_objects(ctx);
-        return Ok(());
+        return context::release_objects(ctx);
     }
     let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive != 0);
@@ -578,8 +572,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
             (http2.respond)(ctx, &[]);
-            context::release_objects(ctx);
-            return Ok(());
+            return context::release_objects(ctx);
         }
         if !context::before_request(ctx) {
             return Ok(());
@@ -596,8 +589,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         }
         Ok(true) => {}
     }
-    context::release_objects(ctx);
-    Ok(())
+    context::release_objects(ctx)
 }
 
 /// `php_swoole_http_server_onClose`: forget the session's addresses, then
@@ -630,9 +622,7 @@ struct Worker {
 /// server worker.
 fn worker() -> Option<Worker> {
     let server = swoole_rs_corebase::swr_v1_core_server();
-    let current = swoole_rs_process::worker_globals::thread_globals();
-    // SAFETY: this thread's worker record.
-    let current = unsafe { (*current).worker };
+    let current = swoole_rs_process::worker_globals::current_worker();
     if server.is_null() || current.is_null() {
         return None;
     }
@@ -643,15 +633,16 @@ fn worker() -> Option<Worker> {
         concurrency: unsafe { &raw mut (*current).concurrency },
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency,
-        shutdown: swoole_rs_process::methods::worker_is_shutdown(current),
+        shutdown: swoole_rs_process::methods::worker_is_shutdown(),
     })
 }
 
-/// Mark a queued request answered and release its objects.
+/// Mark a queued request answered and release its objects, deferring a
+/// bailout.
 fn abandon(mut ctx: Ctx) {
     ctx.state().end = 1;
     ctx.state().after_response = 0;
-    context::release_objects(ctx);
+    bailout::defer(context::release_objects(ctx));
 }
 
 /// `swoole_http_server_onBeforeRequest` after it swaps the hooks: count the
@@ -707,7 +698,8 @@ pub extern "C" fn server_rinit() {
 }
 
 /// `php_swoole_http_server_rshutdown`: forget the uploaded files, then drop
-/// the cached addresses and the queued requests.
+/// the cached addresses and the queued requests. A bailout their release
+/// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
     // SAFETY: RSHUTDOWN, on the request's thread.
     unsafe { swr_zend_http_uploads_rshutdown() };
@@ -717,6 +709,7 @@ pub extern "C" fn server_rshutdown() {
     while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         abandon(ctx);
     }
+    bailout::finish();
 }
 
 #[cfg(test)]

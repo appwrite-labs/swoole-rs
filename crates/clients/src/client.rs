@@ -12,6 +12,7 @@
 //! longjmps out, so nothing that needs dropping is held across one.
 use core::cell::{Cell, OnceCell, RefCell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
+use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
 use swoole_rs_buffer::string::CppString;
@@ -883,8 +884,6 @@ pub enum Op<'a> {
     Close,
     Sleep,
     Wakeup,
-    /// `enable_ssl_encrypt()`.
-    EnableSsl,
     SslHandshake,
     /// `ssl_verify(allow_self_signed)`.
     SslVerify(bool),
@@ -929,11 +928,26 @@ impl Handle {
             Op::Close => close(self).into(),
             Op::Sleep => sleep(self).into(),
             Op::Wakeup => wakeup(self).into(),
-            Op::EnableSsl => enable_ssl(self).into(),
             Op::SslHandshake => ssl_handshake(self).into(),
             Op::SslVerify(allow_self_signed) => ssl_verify(self, allow_self_signed).into(),
             Op::SslWait => self.event(EVENT_SET, EVENT_WRITE).into(),
         }
+    }
+
+    /// `enable_ssl_encrypt()`: the new TLS context, which the caller configures
+    /// before any handshake; None when TLS was already on.
+    #[must_use]
+    pub fn enable_ssl(self) -> Option<NonNull<OwnedTlsContext>> {
+        enable_ssl(self)
+    }
+
+    /// The client's TLS context, which `set()` configures; None while TLS is off.
+    #[must_use]
+    pub fn ssl_context(self) -> Option<NonNull<OwnedTlsContext>> {
+        self.get()
+            .tls
+            .get()
+            .and_then(|tls| NonNull::new(tls.as_ptr().cast_mut()))
     }
 
     /// `delete client`, which may raise `onClose`.
@@ -1139,17 +1153,17 @@ fn wakeup(this: Handle) -> c_int {
 }
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
-/// client. -1 when TLS was already on.
-fn enable_ssl(this: Handle) -> c_int {
+/// client. The context, or None when TLS was already on.
+fn enable_ssl(this: Handle) -> Option<NonNull<OwnedTlsContext>> {
     // A new context and the client's reference to it.
     if this.get().tls.set(TlsContext::new()).is_err() {
-        return ERR;
+        return None;
     }
     this.set(OPEN_SSL, true);
     if is_dgram(this.socket_type()) {
         enable_dtls(this);
     }
-    OK
+    this.ssl_context()
 }
 
 /// `Client::set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which

@@ -572,8 +572,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
     #[link_name = "_ZN6swoole9microtimeEv"]
     fn microtime() -> f64;
-    #[link_name = "_Z20swoole_set_worker_idj"]
-    fn swoole_set_worker_id(worker_id: u32);
 }
 
 unsafe extern "C" {
@@ -1151,8 +1149,7 @@ unsafe extern "C" fn proxy_on_receive(
     let server = Server(serv);
     let (session, data) = request(req);
 
-    // SAFETY: sets this thread's worker id.
-    unsafe { swoole_set_worker_id(server.config().worker_num) };
+    swoole_rs_process::methods::swoole_set_worker_id(server.config().worker_num);
 
     let Some((url, headers)) = parse_request(data) else {
         eprintln!("Parse error");

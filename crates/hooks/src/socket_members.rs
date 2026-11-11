@@ -19,7 +19,7 @@ use crate::transfer::{ALL, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
 use crate::vector::{IoVector, vector_all};
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int, c_void};
 use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
@@ -169,14 +169,6 @@ pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port
         log::set_last_error(error);
     }
     error == 0
-}
-
-/// Appends the `length` bytes at `data` to the `Vec<u8>` at `out`.
-pub(crate) unsafe extern "C" fn put_host(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: `data` holds `length` bytes.
-    let data = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), length) };
-    // SAFETY: `out` is the caller's Vec, live for the call.
-    unsafe { &mut *out.cast::<Vec<u8>>() }.extend_from_slice(data);
 }
 
 /// A descriptor `Socket::sendfile` opened, closed when it goes.
@@ -602,7 +594,7 @@ impl Co {
     /// `Socket::readv(io_vector)` or `writev`, or with `all` `readv_all` or
     /// `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &IoVector, write: bool, all: bool) -> isize {
+    pub fn vector(self, vector: &mut IoVector, write: bool, all: bool) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::swr_v1_hook_uring_vector(&ops, vector, write, all);

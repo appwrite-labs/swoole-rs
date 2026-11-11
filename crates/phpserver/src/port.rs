@@ -6,34 +6,35 @@ use crate::{
     settings::{Settings, Stop},
 };
 use std::{
+    cell::{Cell, RefCell},
     ffi::{c_char, c_int, c_void},
     ptr,
+    sync::atomic::Ordering,
 };
 use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
+    Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
+    message,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
-        zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
-        zend_declare_property_null, zend_object, zend_object_handlers, zval,
+        ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy, zend_class_entry,
+        zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
+        zend_object, zval,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
 const CALLBACKS: usize = 12;
 
-/// `swoole::ServerPortProperty`: pointers only, so Rust lays it out as C++ does
-/// (a callback slot is a `zend::Function *`, null when empty).
-#[repr(C)]
+/// `swoole::ServerPortProperty`: the port's callables and its server. The
+/// server's dispatch reads it through the port's link, and PHP code a method
+/// runs can call this object's methods, so every field is a cell and the
+/// property is only ever borrowed shared.
 pub struct PortProperty {
-    callbacks: [Option<Callable>; CALLBACKS],
-    serv: *mut c_void,
-    port: *mut c_void,
-    zsetting: *mut zval,
+    callbacks: [RefCell<Option<Callable>>; CALLBACKS],
+    serv: Cell<*mut c_void>,
 }
 
 impl PortProperty {
@@ -41,26 +42,75 @@ impl PortProperty {
     pub(crate) fn callback(&self, kind: c_int) -> *mut c_void {
         usize::try_from(kind)
             .ok()
-            .and_then(|kind| self.callbacks.get(kind)?.as_ref())
-            .map_or(ptr::null_mut(), Callable::as_raw)
+            .and_then(|kind| Some(self.callbacks.get(kind)?.borrow().as_ref()?.as_raw()))
+            .unwrap_or(ptr::null_mut())
     }
 }
 
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
-#[repr(C)]
 pub struct PortData {
-    port: *mut c_void,
+    port: Cell<*mut c_void>,
     property: PortProperty,
 }
 
-type Port = Object<PortData>;
+impl Custom for PortData {
+    fn class() -> &'static CustomClass<Self> {
+        &PORT
+    }
+
+    /// A port not yet bound to a server.
+    fn new() -> Self {
+        Self {
+            port: Cell::new(ptr::null_mut()),
+            property: PortProperty {
+                callbacks: Default::default(),
+                serv: Cell::new(ptr::null_mut()),
+            },
+        }
+    }
+
+    /// In thread mode only, as upstream (`#ifndef SW_THREAD`).
+    fn serializable() -> bool {
+        crate::server::THREAD.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for PortData {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl PortData {
+    /// `php_swoole_server_port_deref`: drop the callables and the port's link,
+    /// all of them even when a destructor leaves a bailout pending.
+    fn release(&self) {
+        if !self.property.serv.get().is_null() {
+            for slot in &self.property.callbacks {
+                // Out of its slot first: a destructor this runs may reach the slot again.
+                drop(slot.take());
+            }
+            self.property.serv.set(ptr::null_mut());
+        }
+        let port = self.port.get();
+        if !port.is_null() {
+            if crate::lifecycle::owns_shared() {
+                // SAFETY: a bound port, which outlives this call, on the thread that owns its slots.
+                free_callable(take(
+                    &mut unsafe { port_config::of(port) }.protocol.private_data_1,
+                ));
+            }
+            self.port.set(ptr::null_mut());
+        }
+    }
+}
 
 /// The kinds `swoole_rs_ports::swr_v1_ports_class_property` returns.
 const PROPERTY_END: u32 = 0;
 const PROPERTY_LONG: u32 = 2;
 const PROPERTY_BOOL: u32 = 3;
 
-pub(crate) static PORT: Class = Class::new();
+pub(crate) static PORT: CustomClass<PortData> = CustomClass::new();
 
 /// `getSocket()` of a bound port: a `Socket` over a duplicate of its
 /// descriptor, kept alive by an extra reference as upstream's
@@ -81,40 +131,21 @@ pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     unsafe { swr_zval_copy(keep, call.return_value()) };
 }
 
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it;
-    // null pointers are a port not yet bound to a server.
-    unsafe { Port::create(&PORT, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    unsafe { deref(std) };
-    // SAFETY: as above.
-    unsafe { Port::dtor(std) };
-    swoole_rs_zend::bailout::finish();
-}
-
 /// A new Port object bound to `port` and its server `serv`.
 /// # Safety
 /// `serv` is a live server and `port` one of its ports.
 pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned, *mut zend_object) {
     let zport = PORT.create_object();
-    let object = zport.object().unwrap_or(ptr::null_mut());
-    // SAFETY: the object just created, one of ours.
-    let data = unsafe { Port::data(object) };
-    data.port = port;
-    data.property.serv = serv;
-    data.property.port = port;
+    let (Some(object), Some(data)) = (zport.object(), zport.custom::<PortData>()) else {
+        return (zport, ptr::null_mut());
+    };
+    data.port.set(port);
+    data.property.serv.set(serv);
     // SAFETY: per the caller.
     let config = unsafe { port_config::of(port) };
-    // The object's property lives as long as the port's link.
-    crate::server::port_property(
-        config.object_id,
-        &mut config.ptr,
-        (&raw mut data.property).cast(),
-        true,
-    );
+    // The object's property lives as long as the port's link, which only reads it.
+    let property = ptr::from_ref(&data.property).cast_mut().cast();
+    crate::server::port_property(config.object_id, &mut config.ptr, property, true);
     (zport, object)
 }
 
@@ -123,8 +154,9 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned,
 /// `object` is a `Swoole\Server\Port` this class created, bound for `'a`; the caller
 /// owns nothing to drop.
 pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_server::view::Port<'a> {
-    // SAFETY: one of ours, per the contract.
-    let port = unsafe { Port::data(object) }.port;
+    // SAFETY: a live object, per the contract.
+    let data = unsafe { custom_of::<PortData>(object) };
+    let port = data.map_or(ptr::null_mut(), |data| data.port.get());
     // SAFETY: null, or the object's live port.
     let port = unsafe { swoole_rs_server::view::Port::from_raw(port) };
     port.unwrap_or_else(|| {
@@ -134,30 +166,13 @@ pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_serve
     })
 }
 
-/// `php_swoole_server_port_deref`: drop the callables and the port's link,
-/// all of them even when a destructor leaves a bailout pending.
+/// [`PortData::release`] of a Port object the Server keeps.
 /// # Safety
-/// `object` is a `Swoole\Server\Port` this class created.
+/// `object` is a live object.
 pub(crate) unsafe fn deref(object: *mut zend_object) {
-    // SAFETY: one of ours, per the contract.
-    let data = unsafe { Port::data(object) };
-    if !data.property.serv.is_null() {
-        for slot in &mut data.property.callbacks {
-            // Out of its slot first: a destructor this runs may reach the slot again.
-            drop(slot.take());
-        }
-        data.property.serv = ptr::null_mut();
-    }
-    if !data.port.is_null() {
-        if crate::lifecycle::owns_shared() {
-            // SAFETY: a bound port, which outlives this call, on the thread that owns its slots.
-            free_callable(take(
-                &mut unsafe { port_config::of(data.port) }
-                    .protocol
-                    .private_data_1,
-            ));
-        }
-        data.port = ptr::null_mut();
+    // SAFETY: per the caller.
+    if let Some(data) = unsafe { custom_of::<PortData>(object) } {
+        data.release();
     }
 }
 
@@ -175,19 +190,6 @@ fn free_callable(callable: *mut c_void) {
     }
 }
 
-fn configure(
-    entry: &mut zend_class_entry,
-    handlers: &mut zend_object_handlers,
-    not_serializable: bool,
-) {
-    if not_serializable {
-        entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    }
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Port::install(entry, handlers, create, free);
-}
-
 method_table! {
     static METHODS = [
         c"__construct" => zim_swoole_server_port___construct, &server_port::arginfo_class_Swoole_Server_Port___construct, z::ZEND_ACC_PRIVATE;
@@ -202,20 +204,13 @@ method_table! {
 
 /// MINIT: register the class as `php_swoole_server_port_minit` did; `sockets`
 /// is `SWOOLE_SOCKETS_SUPPORT`.
-pub(crate) fn minit(minit: &Minit, not_serializable: bool, sockets: bool) {
+pub(crate) fn minit(minit: &Minit, sockets: bool) {
     let methods = if sockets {
         &METHODS.0
     } else {
         METHODS.without(&[c"getSocket"])
     };
-    minit.register(
-        &PORT,
-        c"Swoole\\Server\\Port",
-        methods,
-        |entry, handlers| {
-            configure(entry, handlers, not_serializable);
-        },
-    );
+    minit.register_object::<PortData>(c"Swoole\\Server\\Port", methods, 0);
     let ce = PORT.entry();
     for index in 0.. {
         let property = swr_v1_ports_class_property(index);
@@ -248,9 +243,13 @@ pub(crate) fn minit(minit: &Minit, not_serializable: bool, sockets: bool) {
     }
 }
 
-fn data<'a>(call: &Call) -> &'a mut PortData {
-    // SAFETY: the class's methods are non-static, so `$this` is one of ours.
-    unsafe { Port::data(call.this()) }
+/// `$this`'s data: the class's methods are non-static, so `$this` is one of ours.
+fn data(call: &Call) -> &PortData {
+    call.custom().unwrap_or_else(|| {
+        invalid(call);
+        // The `E_ERROR` above bailed out.
+        std::process::abort()
+    })
 }
 
 /// `php_swoole_server_port_get_and_check_*`: an `E_ERROR`, which does not
@@ -268,12 +267,13 @@ fn construct(call: &Call) {
 fn destruct(_: &Call) {}
 
 fn on(call: &Call) {
-    let property = &mut data(call).property;
-    if property.serv.is_null() {
+    let slots = &data(call).property.callbacks;
+    let serv = data(call).property.serv.get();
+    if serv.is_null() {
         invalid(call);
     }
     // SAFETY: the port's bound server, live while the port is.
-    let serv = unsafe { view::Server::from_raw(property.serv) };
+    let serv = unsafe { view::Server::from_raw(serv) };
     if crate::io::closed(serv) {
         crate::server::fatal(
             E_WARNING,
@@ -300,26 +300,22 @@ fn on(call: &Call) {
     }
     // The property write, the release and the create can each run PHP that
     // calls on() again, so no borrow of the slot lives across them.
-    let Some(old) = data(call)
-        .property
-        .callbacks
-        .get_mut(index)
-        .map(Option::take)
-    else {
+    let Some(slot) = slots.get(index) else {
         return call.set_bool(false);
     };
-    drop(old);
+    drop(slot.take());
     if swoole_rs_zend::bailout::pending() {
         return;
     }
     let Some(callable) = Callable::create(cb) else {
         return call.set_bool(false);
     };
-    let kept = match data(call).property.callbacks.get_mut(index) {
-        // A nested on() stored its callable, and the property, after this one's
-        // write: keep that pair and drop ours.
-        Some(slot) if slot.is_none() => slot.replace(callable),
-        _ => Some(callable),
+    // A nested on() stored its callable, and the property, after this one's
+    // write: keep that pair and drop ours.
+    let kept = if slot.borrow().is_none() {
+        slot.replace(Some(callable))
+    } else {
+        Some(callable)
     };
     drop(kept);
     let event = i32::try_from(index).unwrap_or(-1);
@@ -342,7 +338,8 @@ fn get_callback(call: &Call) {
 
 fn get_socket(call: &Call) {
     // SAFETY: null, or the object's live port.
-    let Some(port) = (unsafe { swoole_rs_server::view::Port::from_raw(data(call).port) }) else {
+    let Some(port) = (unsafe { swoole_rs_server::view::Port::from_raw(data(call).port.get()) })
+    else {
         return invalid(call);
     };
     socket(port, call);
@@ -364,12 +361,8 @@ pub(crate) fn merge_setting(
 }
 
 /// `\Swoole\Server\Helper::checkOptions($settings)` when the library is
-/// enabled, then the merge into `$this->setting`, which the property keeps.
-fn finish(
-    call: &Call,
-    settings: &Value,
-    property: &mut PortProperty,
-) -> Result<(), bailout::Bailout> {
+/// enabled, then the merge into `$this->setting`.
+fn finish(call: &Call, settings: &Value) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
         // `zval params[1] = {*zset}`: a copy without a reference.
         // SAFETY: the live settings argument.
@@ -379,8 +372,7 @@ fn finish(
             swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
         }?;
     }
-    property.zsetting = merge_setting(PORT.entry(), call.this(), settings.as_ptr())?;
-    Ok(())
+    merge_setting(PORT.entry(), call.this(), settings.as_ptr()).map(drop)
 }
 
 fn set(call: &Call) {
@@ -388,15 +380,16 @@ fn set(call: &Call) {
         return call.set_bool(false);
     };
     let data = data(call);
-    if data.port.is_null() || data.property.serv.is_null() {
+    let (port, serv) = (data.port.get(), data.property.serv.get());
+    if port.is_null() || serv.is_null() {
         invalid(call);
     }
     // SAFETY: the port's bound server, live while the port is.
-    let serv = unsafe { view::Server::from_raw(data.property.serv) };
-    if apply_settings(data.port, serv, settings).is_err() {
+    let serv = unsafe { view::Server::from_raw(serv) };
+    if apply_settings(port, serv, settings).is_err() {
         return call.set_bool(false);
     }
-    bailout::raise(finish(call, settings, &mut data.property));
+    bailout::raise(finish(call, settings));
 }
 
 /// The `ListenPort` and TLS options of `set()`.
@@ -430,20 +423,4 @@ swoole_rs_zend::handlers! {
     zim_swoole_server_port_set => set;
     zim_swoole_server_port_getCallback => get_callback;
     zim_swoole_server_port_getSocket => get_socket;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_object_mirrors_server_port_object() {
-        // `struct ServerPortObject { ListenPort *port; ServerPortProperty property; zend_object std; }`
-        assert_eq!(size_of::<PortData>(), 16 * size_of::<*mut c_void>());
-        assert_eq!(
-            Port::OFFSET,
-            size_of::<PortData>(),
-            "std follows the property"
-        );
-    }
 }

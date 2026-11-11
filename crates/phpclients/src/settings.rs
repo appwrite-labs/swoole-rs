@@ -4,8 +4,8 @@
 use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::{c_int, c_void};
-use std::ptr;
-use swoole_rs_clients::client::{ClientRecord, OPEN_SSL};
+use std::ptr::{self, NonNull};
+use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
@@ -318,8 +318,8 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
     if !proxies(cli, &options) {
         return Some(false);
     }
-    if cli.get().flag(OPEN_SSL) {
-        apply_ssl(cli, settings);
+    if let Some(owner) = cli.handle().ssl_context() {
+        apply_ssl(owner, settings);
     }
     Some(true)
 }
@@ -385,15 +385,10 @@ fn proxy(
     }
 }
 
-/// `php_swoole_client_check_ssl_setting(cli, settings)`, written into the
-/// client's `SSLContext` (crates/tls).
-pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
-    // SAFETY: a live client.
-    let owner = swoole_rs_clients::client::swr_v1_clients_ssl_context(unsafe { &*cli.0 })
-        .cast::<tls::OwnedTlsContext>();
-    if owner.is_null() {
-        return;
-    }
+/// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `owner`,
+/// a client's live `SSLContext` (crates/tls).
+pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: *const zval) {
+    let owner = owner.as_ptr().cast_const();
     // SAFETY: the live client's context, which nothing else writes during the call.
     let value = |value| unsafe { tls::set_value(owner, value) };
     // SAFETY: the caller's live settings.
