@@ -102,10 +102,15 @@ fn now() -> (libc::time_t, i64) {
     )
 }
 
+/// `std::localtime(&time)`: its static record, or null; read it at once, as upstream did.
+fn localtime(time: libc::time_t) -> *const libc::tm {
+    // SAFETY: localtime has no memory preconditions beyond its argument.
+    unsafe { libc::localtime(&raw const time) }
+}
+
 /// `std::strftime(out, format, std::localtime(&time))`.
 fn strftime(out: &mut [u8], format: &CStr, time: libc::time_t) -> usize {
-    // SAFETY: localtime returns its static record or null; it is read at once, as upstream did.
-    let tm = unsafe { libc::localtime(&raw const time) };
+    let tm = localtime(time);
     if tm.is_null() {
         return 0;
     }
@@ -294,10 +299,10 @@ impl Logger {
     fn run(&self, effect: Effect) {
         match effect {
             Effect::OpenFailed(code, file) => {
-                // SAFETY: strerror has no memory preconditions.
-                let reason = unsafe { libc::strerror(code) };
-                // SAFETY: strerror returns a NUL-terminated string, read at once.
-                let reason = unsafe { CStr::from_ptr(reason) };
+                // strerror's text: std's, without the code it appends.
+                let reason = std::io::Error::from_raw_os_error(code).to_string();
+                let suffix = format!(" (os error {code})");
+                let reason = reason.strip_suffix(&suffix).unwrap_or(&reason);
                 log::error_log(
                     LOG_WARNING,
                     SYSTEM_CALL_FAIL,
@@ -305,7 +310,7 @@ impl Logger {
                     format_args!(
                         "open('{}') failed. Error: {}[{code}]",
                         file.to_string_lossy(),
-                        reason.to_string_lossy()
+                        reason
                     ),
                 );
             }
@@ -495,10 +500,23 @@ pub unsafe extern "C" fn swr_v1_logger_set_date_format(
     logger: &Logger,
     format: *const c_char,
 ) -> bool {
-    // SAFETY: a NUL-terminated format.
+    // Upstream hands `format` to strftime unmeasured, which stops reading once the date
+    // overflows, and measures it only to keep it or for a warning that logs: its own
+    // test passes an unterminated one.
+    let tm = localtime(now().0);
+    let mut date = [0u8; SW_LOG_DATE_STRLEN];
+    let fits = !tm.is_null()
+        // SAFETY: `date` is writable for its length, `tm` is live and strftime reads
+        // `format` only as far as upstream's did.
+        && unsafe { libc::strftime(date.as_mut_ptr().cast(), date.len(), format, tm) } != 0;
+    if !fits && LOG_WARNING < logger.level.load(Relaxed) {
+        log::set_last_error(INVALID_PARAMS);
+        return false;
+    }
+    // SAFETY: NUL-terminated wherever upstream measured it: kept, or in a warning that logs.
     let format = unsafe { CStr::from_ptr(format) };
     logger.with(|state, effects| {
-        if strftime(&mut [0u8; SW_LOG_DATE_STRLEN], format, now().0) == 0 {
+        if !fits {
             let length = c_int::try_from(format.to_bytes().len()).unwrap_or(c_int::MAX);
             effects.push(Effect::DateFormatTooLong(length));
             return false;
