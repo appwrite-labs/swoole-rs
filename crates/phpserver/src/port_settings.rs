@@ -408,15 +408,14 @@ impl Source for Zend<'_> {
         let Some(value) = self.settings.get(key) else {
             return Ok(None);
         };
-        // SAFETY: a live setting; its bailouts stay deferred.
-        let callable = unsafe { swoole_rs_phpruntime::callable_create(value.as_ptr()) };
+        // Its bailouts stay deferred.
+        let callable = crate::callable::Callable::create(value);
         if checked().is_err() {
-            if !callable.is_null() {
-                self.release(callable);
-            }
+            drop(callable);
             return Err(Stop);
         }
-        Ok((!callable.is_null()).then_some(callable))
+        // Owned by the slot now, which `release` frees.
+        Ok(callable.map(|callable| std::mem::ManuallyDrop::new(callable).as_raw()))
     }
 
     fn release(&self, callable: *mut c_void) {

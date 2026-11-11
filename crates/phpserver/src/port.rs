@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{c_char, c_int, c_void},
+    ffi::{c_int, c_void},
     ptr,
     sync::atomic::Ordering,
 };
@@ -17,11 +17,7 @@ use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
     message,
-    sys::{
-        ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy, zend_class_entry,
-        zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
-        zend_object, zval,
-    },
+    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy, zend_class_entry, zend_object, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -209,7 +205,6 @@ pub(crate) fn minit(minit: &Minit, sockets: bool) {
         METHODS.without(&[c"getSocket"])
     };
     minit.register_object::<PortData>(c"Swoole\\Server\\Port", methods, 0);
-    let ce = PORT.entry();
     for index in 0.. {
         let property = swr_v1_ports_class_property(index);
         if property.kind == PROPERTY_END {
@@ -220,23 +215,13 @@ pub(crate) fn minit(minit: &Minit, sockets: bool) {
         } else {
             ZEND_ACC_PRIVATE
         };
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "ZEND_ACC_* visibilities are small"
-        )]
-        let access = access as c_int;
-        let (name, length) = (property.name.data.cast::<c_char>(), property.name.len);
+        // SAFETY: the static name's `len` bytes, which hold no NUL.
+        let name = unsafe { std::slice::from_raw_parts(property.name.data, property.name.len) };
+        let name = std::ffi::CString::new(name).unwrap_or_default();
         match property.kind {
-            // SAFETY: MINIT, with the class just registered; Zend copies the name.
-            PROPERTY_LONG => unsafe {
-                zend_declare_property_long(ce, name, length, property.value, access);
-            },
-            // SAFETY: as above.
-            PROPERTY_BOOL => unsafe {
-                zend_declare_property_bool(ce, name, length, property.value, access);
-            },
-            // SAFETY: as above.
-            _ => unsafe { zend_declare_property_null(ce, name, length, access) },
+            PROPERTY_LONG => minit.property_long(&PORT, &name, property.value, access),
+            PROPERTY_BOOL => minit.property_bool(&PORT, &name, property.value != 0, access),
+            _ => minit.property_null(&PORT, &name, access),
         }
     }
 }

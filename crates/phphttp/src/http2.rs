@@ -13,7 +13,7 @@ use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
     bailout::Bailout,
-    sys::{swr_zend_http_estrndup, swr_zend_treat_string, zval},
+    sys::{swr_zend_treat_string, zval},
 };
 
 /// The HTTP/2 server's contexts: a connection's settings context
@@ -76,10 +76,9 @@ pub struct Server {
     /// coroutine server's, and the handler of each finished request). The
     /// context outlives the session.
     pub session_new: fn(i64, Ctx, u32, bool, Handler),
-    /// One whole frame for the session of an fd; `SW_ERR` on failure.
-    /// # Safety
-    /// The frame's bytes, as long as its header says.
-    pub session_receive: unsafe fn(i64, *const u8) -> c_int,
+    /// One whole frame, at the start of the bytes, for the session of an fd;
+    /// `SW_ERR` on failure.
+    pub session_receive: fn(i64, &[u8]) -> c_int,
     /// The session of an fd goes.
     pub session_free: fn(i64),
 }
@@ -340,8 +339,8 @@ impl Ctx {
     /// `ctx->request.path`: the `:path` up to its query.
     pub fn set_path(mut self, path: &[u8]) {
         let state = self.state();
-        // SAFETY: the path's bytes, copied into request memory the context frees.
-        state.request.path = unsafe { swr_zend_http_estrndup(path.as_ptr().cast(), path.len()) };
+        // The path's bytes, copied into request memory the context frees.
+        state.request.path = parse::estrndup(path).cast();
         state.request.path_len = u32::try_from(path.len()).unwrap_or(u32::MAX);
     }
 
@@ -356,8 +355,8 @@ impl Ctx {
     /// the request's `which` array.
     pub fn treat_query(self, which: Value, query: &[u8]) {
         let array = self.value(which);
-        // SAFETY: the query's bytes, copied into request memory the SAPI frees.
-        let text = unsafe { swr_zend_http_estrndup(query.as_ptr().cast(), query.len()) };
+        // The query's bytes, copied into request memory the SAPI frees.
+        let text = parse::estrndup(query);
         // SAFETY: a fresh copy and the request's live array.
         unsafe { swr_zend_treat_string(text, array) };
     }

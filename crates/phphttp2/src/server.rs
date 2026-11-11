@@ -828,9 +828,9 @@ fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvDat
         );
         SessionState::find(session_id)
     });
+    // The empty slot `zdata` owns takes a new string.
     let zdata = Owned::default();
-    // SAFETY: the empty slot `zdata` owns, for a new string.
-    swoole_rs_phpserver::php_swoole_get_recv_data(view, unsafe { &mut *zdata.as_ptr() }, request);
+    swoole_rs_phpserver::php_swoole_get_recv_data(view, &zdata, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
@@ -846,12 +846,10 @@ pub fn server_on_close(session_id: i64) {
 }
 
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
-/// frame from the peer of connection `fd`; a bailout stays pending for the
-/// caller's `finish`.
-/// # Safety
-/// `buf` holds a whole frame.
-unsafe fn session_receive(fd: i64, buf: *const u8) -> c_int {
-    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf))
+/// frame from the peer of connection `fd`, which `frame` starts with; a bailout
+/// stays pending for the caller's `finish`.
+fn session_receive(fd: i64, frame: &[u8]) -> c_int {
+    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, frame.as_ptr()))
 }
 
 /// The entry points crates/phphttp's HTTP/1 code calls.
