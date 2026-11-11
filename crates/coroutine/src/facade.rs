@@ -207,9 +207,14 @@ unsafe extern "C" fn timed_out(co: *mut c_void) {
 /// `bool Coroutine::yield_ex(double timeout)` of `co`, the running coroutine
 /// (aborting otherwise): false, with the last error, when it timed out or was
 /// canceled.
+///
+/// # Safety
+/// The caller's frames own nothing with a destructor: a bailout abandons the
+/// coroutine's stack.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
-pub extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
-    yield_resumed(yield_timed(co, timeout))
+pub unsafe extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
+    // SAFETY: as the caller promises.
+    yield_resumed(unsafe { yield_timed(co, timeout) })
 }
 
 /// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
@@ -226,8 +231,12 @@ pub fn yield_resumed(code: i32) -> bool {
 
 /// `yield_ex` without its last error: the resume code, `RC_TIMEDOUT` or
 /// `RC_CANCELED` when it timed out or was canceled.
+///
+/// # Safety
+/// `co` is the running coroutine (this aborts otherwise); the caller's frames
+/// own nothing with a destructor.
 #[must_use]
-pub fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
+pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first.
@@ -240,7 +249,8 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
         unsafe { resume(co) };
         true
     };
-    yield_with_cancel(co, resume_canceled);
+    // SAFETY: as the caller promises.
+    unsafe { yield_with_cancel(co, resume_canceled) };
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
     if code != RC_TIMEDOUT && !timer.is_null() {

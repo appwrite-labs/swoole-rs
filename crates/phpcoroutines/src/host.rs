@@ -324,14 +324,20 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
     (stack.cast(), size)
 }
 
-/// Switch out of `co`, the running coroutine.
+/// Switch out of `co`, the running coroutine. The caller's frames must own
+/// nothing that needs a drop, as for [`resume`].
 pub(crate) fn yield_(co: Co) {
-    swoole_rs_coroutine::suspend(co);
+    // SAFETY: this thread's running coroutine; its frames own nothing that
+    // needs a drop, as this function's contract says.
+    unsafe { swoole_rs_coroutine::suspend(co) };
 }
 
 /// [`yield_`], cancelable through `cancel(co)`.
-pub(crate) fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
-    swoole_rs_coroutine::yield_with_cancel(co, cancel);
+/// # Safety
+/// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
+pub(crate) unsafe fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
+    // SAFETY: as the caller promises.
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -342,7 +348,9 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 /// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
 /// `RC_CANCELED` or another when resumed).
 pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
-    swoole_rs_coroutine::yield_timed(co, timeout)
+    // SAFETY: callers pass the running coroutine, and their frames own nothing
+    // that needs a drop (as for `yield_`).
+    unsafe { swoole_rs_coroutine::yield_timed(co, timeout) }
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.

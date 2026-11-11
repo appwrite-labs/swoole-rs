@@ -223,14 +223,22 @@ unsafe fn run_canceler<F: FnOnce(*mut c_void) -> bool + Copy>(
 
 /// `co->yield()` of `co`, the running coroutine (aborting otherwise), until it
 /// is resumed.
-pub fn suspend(co: *mut c_void) {
+///
+/// # Safety
+/// The caller's frames own nothing with a destructor: a bailout abandons the
+/// coroutine's stack.
+pub unsafe fn suspend(co: *mut c_void) {
     let s = Sched::this();
     ops::yield_(s, Co::running(s, co.cast()));
 }
 
 /// `co->yield(&cancel_fn)` of `co`, the running coroutine (aborting
 /// otherwise), where `cancel_fn` calls `cancel(co)` once `co` is marked canceled.
-pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+///
+/// # Safety
+/// The caller's frames own nothing with a destructor: a bailout abandons the
+/// coroutine's stack.
+pub unsafe fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
     let s = Sched::this();
     let co = Co::running(s, co.cast());
     let canceler = Canceler {

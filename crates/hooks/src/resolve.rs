@@ -31,7 +31,8 @@ pub(crate) fn park() {
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
 pub(crate) fn park_for(timeout: f64) -> bool {
     let co = current();
-    coroutine_yield_ex(co.cast(), timeout)
+    // SAFETY: the running coroutine.
+    unsafe { coroutine_yield_ex(co.cast(), timeout) }
 }
 
 extern "C" fn last_error() -> c_int {

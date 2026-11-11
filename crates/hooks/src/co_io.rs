@@ -165,8 +165,9 @@ mod native {
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
     pub(super) fn suspend(socket: Co, co: *mut c_void, event: u32) {
         let event = if event == READ { READ } else { WRITE };
-        // The current coroutine, waiting on the live record.
-        swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
+        // SAFETY: the current coroutine, waiting on the live record, whose frames own
+        // nothing with a destructor.
+        unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event)) };
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.

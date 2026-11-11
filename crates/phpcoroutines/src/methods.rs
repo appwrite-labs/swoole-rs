@@ -154,8 +154,8 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
 fn yield_(call: &Call) {
     let co = host::current_safe();
     set_yielded(host::cid(co), true);
-    // This frame owns nothing that needs a drop.
-    host::yield_cancelable(co, cancel_yield);
+    // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
+    unsafe { host::yield_cancelable(co, cancel_yield) };
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
