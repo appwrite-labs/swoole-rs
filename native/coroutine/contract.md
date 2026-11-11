@@ -51,7 +51,7 @@ hook. `swr_v1_coroutine_bail(callback, data)` is `Coroutine::bailout`: inside a
 coroutine it sets the hook, jumps to the main context and exits with
 `SW_CORO_BAILOUT_EXIT_CODE` if that returns; outside one it marks the scheduler.
 
-A cancelable yield's `cancel_fn` points at a `swr_v1_coroutine_canceler` (a C
+A cancelable yield's `cancel_fn` points at a `Canceler` (crates/coroutine's: a C
 function and its data) on the yielder's stack. Cancel (`Coroutine::cancel`'s
 symbol) refuses a coroutine that is not suspended with one, then calls it.
 `yield_ex` adds its timeout timer through
