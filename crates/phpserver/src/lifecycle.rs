@@ -229,6 +229,9 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
 /// `send_yield`'s coroutines waiting on one session, each with its token.
 type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
 
+/// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
+type SendWaiters = HashMap<i64, Waiters>;
+
 /// What upstream's `ServerProperty` held.
 pub(crate) struct Property {
     /// The Port objects, borrowed from `$server->ports`.
@@ -237,8 +240,7 @@ pub(crate) struct Property {
     callbacks: [Option<Callable>; CALLBACKS],
     /// `addCommand`'s callables.
     commands: Vec<Callable>,
-    /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
-    send_waiters: HashMap<i64, Waiters>,
+    send_waiters: SendWaiters,
     /// The next waiter's token.
     send_token: u64,
     /// `addProcess`'s processes, copies holding a reference; boxed, as each
@@ -254,7 +256,7 @@ impl Default for Property {
     fn default() -> Self {
         Self {
             ports: Vec::new(),
-            send_waiters: Default::default(),
+            send_waiters: SendWaiters::default(),
             send_token: 0,
             callbacks: [const { None }; CALLBACKS],
             commands: const { Vec::new() },
