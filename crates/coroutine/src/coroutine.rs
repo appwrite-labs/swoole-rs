@@ -48,8 +48,28 @@ pub struct Coroutine {
     pub execute_usec: c_long,
 }
 
+impl Coroutine {
+    /// Its execution time in microseconds up to `now`.
+    #[must_use]
+    pub fn execute_usec(&self, now: c_long) -> c_long {
+        now.wrapping_sub(self.switch_usec)
+            .wrapping_add(self.execute_usec)
+    }
+
+    /// Canceled, from the canceler once it can no longer fail.
+    pub fn mark_canceled(&mut self) {
+        self.cancel_fn = ptr::null_mut();
+        self.resume_code = RC_CANCELED;
+    }
+
+    /// A timed wait expired, before its resume.
+    pub fn mark_timed_out(&mut self) {
+        self.resume_code = RC_TIMEDOUT;
+    }
+}
+
 /// A cancelable yield's cancel function: `call(native, data)` marks the
-/// coroutine canceled ([`swr_v1_coroutine_cancel`]) once nothing can fail, then
+/// coroutine canceled ([`Coroutine::mark_canceled`]) once nothing can fail, then
 /// wakes it and returns whether it did.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -102,7 +122,7 @@ pub struct Scheduler {
     pub bailout: bool,
 }
 
-/// Swap callback slots for [`swr_v1_coroutine_set_callback`].
+/// Swap callback slots for [`Scheduler::set_callback`].
 pub const ON_YIELD: u32 = 0;
 pub const ON_RESUME: u32 = 1;
 pub const ON_CLOSE: u32 = 2;
@@ -145,6 +165,15 @@ impl Scheduler {
             self.peak_num = count;
         }
         !self.activated
+    }
+
+    /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
+    pub fn set_callback(&mut self, slot: u32, function: SwapCallback) {
+        match slot {
+            ON_YIELD => self.on_yield = function,
+            ON_RESUME => self.on_resume = function,
+            _ => self.on_close = function,
+        }
     }
 
     pub fn set_stack_size(&mut self, size: usize) {
@@ -396,27 +425,6 @@ macro_rules! operation {
 }
 
 operation! {
-    fn swr_v1_coroutine_set_stack_size(s: *mut Scheduler, size: usize) {
-        // SAFETY: the caller lends the scheduler exclusively.
-        unsafe { (*s).set_stack_size(size) };
-    }
-}
-
-operation! {
-    /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_set_callback(s: *mut Scheduler, slot: u32, function: SwapCallback) {
-        // SAFETY: the caller lends the scheduler exclusively.
-        let s = unsafe { &mut *s };
-        match slot {
-            ON_YIELD => s.on_yield = function,
-            ON_RESUME => s.on_resume = function,
-            _ => s.on_close = function,
-        }
-    }
-}
-
-operation! {
     /// `Coroutine::run`: the current coroutine becomes `co`'s origin and `co`
     /// runs until it first yields or ends. Returns its id.
     fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
@@ -433,16 +441,15 @@ operation! {
     /// callback sees the old current, then `co` runs until it yields or ends.
     #[unsafe(no_mangle)]
     fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
-        {
+        let on_resume = {
             // SAFETY: the caller lends the scheduler.
             let s = unsafe { &*s };
             debug_assert!(s.current != co, "the current coroutine cannot resume");
             if s.bailout {
                 return;
             }
-        }
-        // SAFETY: forwarded.
-        let (_, [_, on_resume, _]) = unsafe { effects(s) };
+            s.on_resume
+        };
         // SAFETY: the caller lends `co`.
         unsafe { (*co).state = STATE_RUNNING };
         // SAFETY: forwarded.
@@ -480,10 +487,12 @@ operation! {
     /// inside a coroutine yields the one closest to the main context, which
     /// switches there directly and never returns.
     fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
-        // SAFETY: the caller lends the scheduler.
-        unsafe { (*s).bailout = true };
-        // SAFETY: as above.
-        let mut co = unsafe { (*s).current };
+        let mut co = {
+            // SAFETY: the caller lends the scheduler.
+            let s = unsafe { &mut *s };
+            s.bailout = true;
+            s.current
+        };
         if co.is_null() {
             return;
         }
@@ -497,40 +506,6 @@ operation! {
         }
         // SAFETY: forwarded; `co` is live.
         unsafe { yield_(s, co) };
-    }
-}
-
-operation! {
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_set_task(co: *mut Coroutine, task: *mut c_void) {
-        // SAFETY: the caller lends `co` exclusively.
-        unsafe { (*co).task = task };
-    }
-}
-
-operation! {
-    /// Cancel, from the canceler once it can no longer fail.
-    fn swr_v1_coroutine_cancel(co: *mut Coroutine) {
-        // SAFETY: the caller lends `co` exclusively.
-        let co = unsafe { &mut *co };
-        co.cancel_fn = ptr::null_mut();
-        co.resume_code = RC_CANCELED;
-    }
-}
-
-operation! {
-    /// A timed wait expired, before its resume.
-    fn swr_v1_coroutine_timeout(co: *mut Coroutine) {
-        // SAFETY: the caller lends `co` exclusively.
-        unsafe { (*co).resume_code = RC_TIMEDOUT };
-    }
-}
-
-operation! {
-    fn swr_v1_coroutine_execute_usec(co: *const Coroutine, now: c_long) -> c_long {
-        // SAFETY: the caller passes a live coroutine.
-        let co = unsafe { &*co };
-        now.wrapping_sub(co.switch_usec).wrapping_add(co.execute_usec)
     }
 }
 
@@ -821,12 +796,12 @@ pub(crate) mod tests {
         // SAFETY: live on this frame.
         unsafe {
             (*co).cancel_fn = co.cast();
-            swr_v1_coroutine_cancel(co);
+            (*co).mark_canceled();
             assert_eq!(
                 ((*co).resume_code, (*co).cancel_fn),
                 (RC_CANCELED, ptr::null_mut())
             );
-            swr_v1_coroutine_timeout(co);
+            (*co).mark_timed_out();
             assert_eq!((*co).resume_code, RC_TIMEDOUT);
         }
     }
@@ -839,10 +814,6 @@ pub(crate) mod tests {
         switch_time(Some(&mut a), Some(&mut b), 30);
         assert_eq!((a.execute_usec, b.switch_usec), (20, 30));
         switch_time(None, None, 0);
-        // SAFETY: live on this frame.
-        assert_eq!(
-            unsafe { swr_v1_coroutine_execute_usec(&raw const a, 55) },
-            65
-        );
+        assert_eq!(a.execute_usec(55), 65);
     }
 }

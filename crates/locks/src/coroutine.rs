@@ -162,7 +162,8 @@ impl CoroutineLock {
         if word.load(Ordering::Relaxed) == 0 {
             return CoroutineOutcome::code(0);
         }
-        word.store(0, Ordering::Relaxed);
+        // Release: the next holder, perhaps another process, sees what this one wrote.
+        word.store(0, Ordering::Release);
         // Release clears ownership before waking a waiter.
         self.cid.set(0);
         self.cookie.set(ptr::null_mut());
@@ -459,5 +460,71 @@ mod tests {
         }
         drop(lock);
         STATE.with(|state| assert_eq!(state.borrow().warnings, 2));
+    }
+
+    /// A shared lock's holders are other processes (threads here, which Miri checks): an
+    /// unlock must publish what its holder wrote to the next holder. Nothing else orders the
+    /// two: the `HELD` flag only says when to start contending.
+    #[test]
+    fn an_unlock_publishes_the_holders_writes_to_the_next_holder() {
+        struct Data(std::cell::UnsafeCell<u64>);
+        unsafe impl Sync for Data {}
+        static DATA: Data = Data(std::cell::UnsafeCell::new(0));
+        static WORD: AtomicU32 = AtomicU32::new(0);
+        static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn current() -> *mut c_void {
+            ptr::NonNull::dangling().as_ptr()
+        }
+        fn cid(_: *mut c_void) -> i64 {
+            1
+        }
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "CoroutineHost::alloc_shared's type"
+        )]
+        fn shared() -> Option<&'static AtomicU32> {
+            Some(&WORD)
+        }
+        fn sleep(_: f64) -> CoroutineOutcome {
+            std::thread::yield_now();
+            CoroutineOutcome::code(0)
+        }
+        fn warning() -> u8 {
+            0
+        }
+        static HOST: CoroutineHost = CoroutineHost {
+            current,
+            cid,
+            alloc_shared: shared,
+            sleep: Some(sleep),
+            wait: None,
+            wake: None,
+            warning,
+        };
+        // Each process's own lock over the shared word, made before either holds it.
+        struct Process(Box<CoroutineLock>);
+        unsafe impl Send for Process {}
+        let first = Process(CoroutineLock::new(true, &HOST));
+        let second = Process(CoroutineLock::new(true, &HOST));
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let first = first;
+                let first = &first.0;
+                assert_eq!(first.acquire(true).code, 0);
+                unsafe { *DATA.0.get() = 42 };
+                HELD.store(true, Ordering::Relaxed);
+                assert_eq!(first.unlock().code, 0);
+            });
+            scope.spawn(move || {
+                let second = second;
+                let second = &second.0;
+                while !HELD.load(Ordering::Relaxed) {
+                    std::thread::yield_now();
+                }
+                assert_eq!(second.acquire(true).code, 0);
+                assert_eq!(unsafe { *DATA.0.get() }, 42);
+                assert_eq!(second.unlock().code, 0);
+            });
+        });
     }
 }

@@ -170,8 +170,7 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
     };
     let slot = callbacks.slot(index)?;
     if op == OP_ON_BEFORE_SHUTDOWN {
-        // SAFETY: `onBeforeShutdown` takes the server.
-        unsafe { slot.call_server(ctx.serv) };
+        callbacks.call_server(index, ctx.server());
     } else {
         // SAFETY: the slot takes the server and the event head or worker.
         unsafe { slot.call(ctx.serv, data) };
@@ -235,8 +234,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 pid: std::process::id().cast_signed(),
                 worker_id: u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX),
             };
-            // SAFETY: the context's live server.
-            let pool = unsafe { view::Server::from_raw(serv) }.workers().event_pool;
+            let pool = ctx.server().workers().event_pool;
             let data = (&raw const msg).cast::<u8>();
             // SAFETY: its live event pool and a message of the size passed.
             let sent =
@@ -253,11 +251,12 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     if op == OP_CONN_AT {
         let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
-        let conn = ctx.server().at(fd);
-        let conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
-        // SAFETY: null or a live connection whose socket is null or live.
-        let valid = unsafe { crate::reactor_ops::valid(conn) };
-        ctx.conn = if valid { conn } else { core::ptr::null_mut() };
+        let conn = ctx
+            .server()
+            .at(fd)
+            .filter(|conn| crate::reactor_ops::valid(Some(conn)));
+        let valid = conn.is_some();
+        ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
         return Some(u64::from(valid));
     }
     // SAFETY: null or the connection OP_CONN_AT selected.

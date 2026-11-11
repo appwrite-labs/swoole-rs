@@ -1,16 +1,15 @@
 //! `Server`'s commands: `add_command`, `command` and the tables behind them (the
 //! named commands, their handlers and the callbacks of requests awaiting a reply).
-//! A handler or callback is a function with its context, which its owner keeps
-//! alive for as long as the server can call it. Native code still invokes a
-//! handler whose reply it writes back to the requester.
+//! A handler or callback is a Rust closure, which the tables keep for as long as
+//! the server can call it.
 use crate::ops::{
     FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_FIELD, OP_IS_STARTED, OP_MODE,
     OP_RT_HAS_PIPE_COMMAND, OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, ServerState};
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use std::collections::BTreeMap;
-use std::sync::{MutexGuard, PoisonError};
+use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::command::{
@@ -28,35 +27,11 @@ const SW_LOG_ERROR: c_int = 5;
 const SW_MASTER: c_int = 1;
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
-/// Writes a handler's reply into `out`.
-pub type CommandReply = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: usize);
-/// `Server::Command::Handler`: answers `message` through `reply(out, ...)`.
-type Handler = unsafe extern "C" fn(
-    ctx: *mut c_void,
-    serv: *mut c_void,
-    message: *const c_char,
-    length: usize,
-    reply: CommandReply,
-    out: *mut c_void,
-);
+/// `Server::Command::Handler`: answers `message` to the server by appending its
+/// reply to the buffer.
+pub type CommandHandler = Arc<dyn Fn(crate::view::Server<'_>, &[u8], &mut Vec<u8>)>;
 /// `Server::Command::Callback`: takes the reply to a request.
-type Callback = unsafe extern "C" fn(
-    ctx: *mut c_void,
-    serv: *mut c_void,
-    message: *const c_char,
-    length: usize,
-);
-
-/// `swr_v1_server_command_fn`: a `Handler` or `Callback` with its context.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CommandFn {
-    pub invoke: *const c_void,
-    pub ctx: *mut c_void,
-}
-
-// SAFETY: the tables only hold these; the owner of `ctx` decides where it is called.
-unsafe impl Send for CommandFn {}
+pub type CommandCallback = Arc<dyn Fn(&[u8])>;
 
 struct Command {
     id: i32,
@@ -65,10 +40,15 @@ struct Command {
 
 pub(crate) struct Commands {
     named: BTreeMap<Vec<u8>, Command>,
-    handlers: BTreeMap<i32, CommandFn>,
-    callbacks: BTreeMap<i64, CommandFn>,
+    handlers: BTreeMap<i32, CommandHandler>,
+    callbacks: BTreeMap<i64, CommandCallback>,
     next_request: i64,
 }
+
+// SAFETY: the tables only hold the closures, as upstream's `std::function`s: each
+// runs on the thread its owner gives it to the server from or answers commands on,
+// and the lock keeps the tables themselves apart.
+unsafe impl Send for Commands {}
 
 impl Commands {
     pub(crate) const fn new() -> Self {
@@ -101,23 +81,14 @@ pub(crate) fn listing(state: &ServerState) -> Vec<(Vec<u8>, i32, i32)> {
 
 /// The handler of command `id`, if there is one.
 #[cfg(any(test, feature = "upstream-symbols"))]
-pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandFn> {
-    commands(state).handlers.get(&id).copied()
+pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandHandler> {
+    commands(state).handlers.get(&id).cloned()
 }
 
 /// `Server::call_command_callback`: the reply to `request_id` goes to its callback,
-/// which is then forgotten.
-///
-/// # Safety
-/// `serv` is `state`'s server, and `message` holds `length` bytes. The
-/// callback may resume a coroutine: this frame owns nothing that needs a drop then.
-pub unsafe fn swr_v1_server_command_result(
-    state: &ServerState,
-    serv: *mut c_void,
-    request_id: i64,
-    message: *const c_char,
-    length: usize,
-) {
+/// which is then forgotten. The callback may resume a coroutine: this frame owns
+/// nothing that needs a drop then.
+pub(crate) fn command_result(state: &ServerState, request_id: i64, message: &[u8]) {
     let Some(callback) = commands(state).callbacks.remove(&request_id) else {
         let m = format_args!("Invalid command result[request_id={request_id}]");
         return error(
@@ -127,25 +98,19 @@ pub unsafe fn swr_v1_server_command_result(
             m,
         );
     };
-    // SAFETY: a stored callback, called with its context and the caller's reply.
-    unsafe { call(callback, serv, message, length) };
+    callback(message);
 }
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-/// `Server::call_command_handler(mb, worker_id, sock)`: answers the command request
-/// in `mb`'s buffer with its handler and writes the reply back over `sock`.
-///
-/// # Safety
-/// `mb` is a live `MessageBus` holding a command request packet, and `sock` the
+/// `Server::call_command_handler(bus, worker_id, sock)`: answers the command request
+/// in `bus`'s buffer with its handler and writes the reply back over `sock`, the
 /// pipe the request came from.
-pub(crate) unsafe fn call_command_handler(
+pub(crate) fn call_command_handler(
     serv: crate::view::Server<'_>,
-    mb: *mut c_void,
+    bus: crate::objects::Bus,
     worker_id: u16,
-    sock: *mut c_void,
+    sock: Option<Socket<'_>>,
 ) {
-    // SAFETY: per the caller.
-    let bus = unsafe { crate::objects::Bus::of(mb) };
     let request = bus.head();
     let command_id = i32::from(request.server_fd);
     let state = serv.state();
@@ -154,45 +119,25 @@ pub(crate) unsafe fn call_command_handler(
         let origin = c"Server::call_command_handler";
         return error(SW_LOG_ERROR, E::SW_ERROR_SERVER_INVALID_COMMAND, origin, m);
     };
-    let packet = bus.packet();
-    let message = (packet.data.cast_const().cast(), packet.length);
-    let Some(sock) = crate::objects::socket(sock) else {
+    let Some(sock) = sock else {
         return;
     };
-    // SAFETY: a stored handler, the bus's packet and the caller's pipe.
-    unsafe {
-        answer(
-            handler,
-            serv.raw(),
-            message,
-            (bus, sock),
-            request.fd,
-            worker_id,
-        )
-    };
+    bus.with_packet(|message| answer(&handler, serv, message, (bus, sock), request.fd, worker_id));
 }
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 /// `command_answer(handler, ...)`, written back as `SW_SERVER_EVENT_COMMAND_RESPONSE`
 /// to request `fd` from `reactor_id`: whether `bus` wrote it to `sock`.
-///
-/// # Safety
-/// `handler` is a stored command handler, `serv` its live server, `message` a pointer
-/// to that many readable bytes and `sock` a live pipe of `bus`.
-pub(crate) unsafe fn answer(
-    handler: CommandFn,
-    serv: *mut c_void,
-    (message, length): (*const c_char, usize),
+pub(crate) fn answer(
+    handler: &CommandHandler,
+    serv: crate::view::Server<'_>,
+    message: &[u8],
     (bus, sock): (crate::objects::Bus, Socket<'_>),
     fd: i64,
     reactor_id: u16,
 ) -> bool {
-    // SAFETY: `invoke` is a `Handler`, as `add_command` stored it.
-    let invoke = unsafe { core::mem::transmute::<*const c_void, Handler>(handler.invoke) };
     let mut reply = Vec::<u8>::new();
-    let out = (&raw mut reply).cast();
-    // SAFETY: a stored handler with its context, over the caller's bytes.
-    unsafe { invoke(handler.ctx, serv, message, length, reply_into, out) };
+    handler(serv, message, &mut reply);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "SW_SERVER_EVENT_COMMAND_RESPONSE is 18"
@@ -225,15 +170,6 @@ pub(crate) fn reply_socket<'a>(
     crate::objects::socket(unsafe { (*pair).worker_socket }.cast())
 }
 
-/// # Safety
-/// `callback` is a live `Callback` with its context.
-unsafe fn call(callback: CommandFn, serv: *mut c_void, message: *const c_char, length: usize) {
-    // SAFETY: `invoke` is a `Callback`, as `swr_v1_server_command` stored it.
-    let invoke = unsafe { core::mem::transmute::<*const c_void, Callback>(callback.invoke) };
-    // SAFETY: per the caller.
-    unsafe { invoke(callback.ctx, serv, message, length) };
-}
-
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, origin, message);
 }
@@ -242,7 +178,7 @@ fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>
 pub(crate) struct AddCommand<'a> {
     pub name: &'a [u8],
     pub accepted_types: i32,
-    pub handler: CommandFn,
+    pub handler: CommandHandler,
 }
 
 /// `Server::add_command`: before start, a new name, and (outside base mode) a command
@@ -262,7 +198,7 @@ pub(crate) fn add_command<H: Host>(h: &mut H, add: &AddCommand<'_>) -> crate::Ef
         .next_command
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
     let mut commands = commands(state);
-    commands.handlers.insert(id, add.handler);
+    commands.handlers.insert(id, add.handler.clone());
     let command = Command {
         id,
         accepted_types: add.accepted_types,
@@ -273,12 +209,12 @@ pub(crate) fn add_command<H: Host>(h: &mut H, add: &AddCommand<'_>) -> crate::Ef
 
 /// `Server::command`'s arguments.
 pub(crate) struct SendCommand<'a> {
-    pub serv: *mut c_void,
+    pub serv: crate::view::Server<'a>,
     pub process_id: u32,
     pub process_type: i32,
     pub name: &'a [u8],
     pub message: &'a [u8],
-    pub callback: CommandFn,
+    pub callback: CommandCallback,
 }
 
 /// `swr_v1_server_command_send`: what `OP_ST_CMD_SEND` writes to the target process.
@@ -291,13 +227,6 @@ pub(crate) struct CommandSend {
     pub(crate) request_id: i64,
     pub(crate) message: *const u8,
     pub(crate) length: usize,
-}
-
-unsafe extern "C" fn reply_into(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: the handler lends `length` bytes.
-    let data = unsafe { core::slice::from_raw_parts(data.cast(), length) };
-    // SAFETY: `command` lends its reply buffer.
-    unsafe { (*out.cast::<Vec<u8>>()).extend_from_slice(data) };
 }
 
 /// `Server::command`: sends `message` to command `name` in the given process, whose
@@ -340,30 +269,14 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         let mut commands = commands(h.state()?);
         let id = commands.next_request;
         commands.next_request = id.wrapping_add(1);
-        commands.callbacks.insert(id, send.callback);
+        commands.callbacks.insert(id, send.callback.clone());
         id
     };
     if route.action == TO_MASTER {
         let mut reply = Vec::<u8>::new();
-        let handler = commands(h.state()?).handlers.get(&command_id).copied();
+        let handler = commands(h.state()?).handlers.get(&command_id).cloned();
         match handler {
-            Some(handler) => {
-                // SAFETY: `invoke` is a `Handler`, as `add_command` stored it.
-                let invoke =
-                    unsafe { core::mem::transmute::<*const c_void, Handler>(handler.invoke) };
-                let (message, out) = (send.message, (&raw mut reply).cast());
-                // SAFETY: a stored handler, with its context and this reply buffer.
-                unsafe {
-                    invoke(
-                        handler.ctx,
-                        send.serv,
-                        message.as_ptr().cast(),
-                        message.len(),
-                        reply_into,
-                        out,
-                    );
-                };
-            }
+            Some(handler) => handler(send.serv, send.message, &mut reply),
             None => error(
                 SW_LOG_ERROR,
                 E::SW_ERROR_SERVER_INVALID_COMMAND,
@@ -371,8 +284,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
                 format_args!("Unknown command[{command_id}]"),
             ),
         }
-        // SAFETY: the caller's callback, with the master's reply.
-        unsafe { call(send.callback, send.serv, reply.as_ptr().cast(), reply.len()) };
+        (send.callback)(&reply);
         return Ok(true);
     }
     let message = CommandSend {
@@ -451,46 +363,24 @@ mod tests {
     use crate::ops::{OP_IS_STARTED, OP_MODE, OP_RT_HAS_PIPE_COMMAND, OP_ST_PIPE_COMMAND_NEW};
     use crate::script::Script;
 
-    unsafe extern "C" fn echo(
-        ctx: *mut c_void,
-        _: *mut c_void,
-        message: *const c_char,
-        length: usize,
-        reply: CommandReply,
-        out: *mut c_void,
-    ) {
-        // SAFETY: the test's prefix and the caller's message.
-        unsafe {
-            let prefix = CStr::from_ptr(ctx.cast());
-            reply(out, prefix.as_ptr(), prefix.count_bytes());
-            reply(out, message, length);
-        }
+    fn handler(prefix: &'static [u8]) -> CommandHandler {
+        Arc::new(move |_, message, reply| {
+            reply.extend_from_slice(prefix);
+            reply.extend_from_slice(message);
+        })
     }
 
-    unsafe extern "C" fn keep(
-        ctx: *mut c_void,
-        _: *mut c_void,
-        message: *const c_char,
-        length: usize,
-    ) {
-        // SAFETY: the test's buffer and the caller's message.
-        unsafe {
-            *ctx.cast::<Vec<u8>>() = core::slice::from_raw_parts(message.cast(), length).to_vec();
-        };
-    }
-
-    fn handler(prefix: &'static CStr) -> CommandFn {
-        CommandFn {
-            invoke: echo as *const c_void,
-            ctx: prefix.as_ptr().cast_mut().cast(),
-        }
+    /// A server none of these handlers reads.
+    fn no_server() -> crate::view::Server<'static> {
+        // SAFETY: the handlers here never read their server.
+        unsafe { crate::view::Server::from_raw(core::ptr::null_mut()) }
     }
 
     fn add(h: &mut Script, name: &[u8], types: i32) -> bool {
         let add = AddCommand {
             name,
             accepted_types: types,
-            handler: handler(c"re:"),
+            handler: handler(b"re:"),
         };
         add_command(h, &add).unwrap()
     }
@@ -522,22 +412,23 @@ mod tests {
         let name = b"admin\0command";
         assert!(add(&mut s, name, 62));
         assert_eq!(listing(&s.state), [(name.to_vec(), 1, 62)]);
-        let found = super::handler(&s.state, 1).map(|found| found.invoke);
-        assert_eq!(found, Some(echo as *const c_void));
+        let mut reply = Vec::new();
+        super::handler(&s.state, 1).unwrap()(no_server(), b"x", &mut reply);
+        assert_eq!(reply, b"re:x");
         assert!(super::handler(&s.state, 2).is_none());
     }
 
-    fn send<'a>(name: &'a [u8], process_type: i32, out: &mut Vec<u8>) -> SendCommand<'a> {
+    type Out = Arc<std::sync::Mutex<Vec<u8>>>;
+
+    fn send<'a>(name: &'a [u8], process_type: i32, out: &Out) -> SendCommand<'a> {
+        let out = out.clone();
         SendCommand {
-            serv: core::ptr::null_mut(),
+            serv: no_server(),
             process_id: 0,
             process_type,
             name,
             message: b"ping",
-            callback: CommandFn {
-                invoke: keep as *const c_void,
-                ctx: core::ptr::from_mut(out).cast(),
-            },
+            callback: Arc::new(move |message| *out.lock().unwrap() = message.to_vec()),
         }
     }
 
@@ -550,14 +441,14 @@ mod tests {
         let add = AddCommand {
             name: b"hi",
             accepted_types: MASTER | EVENT_WORKER,
-            handler: handler(c"re:"),
+            handler: handler(b"re:"),
         };
         assert!(add_command(&mut s, &add).unwrap());
         s.facts.insert(OP_IS_STARTED, 1);
-        let mut out = Vec::new();
+        let out = Out::default();
         // Base mode's worker 0 is the master.
-        assert!(command(&mut s, &send(b"hi", EVENT_WORKER, &mut out)).unwrap());
-        assert_eq!(out, b"re:ping");
+        assert!(command(&mut s, &send(b"hi", EVENT_WORKER, &out)).unwrap());
+        assert_eq!(*out.lock().unwrap(), b"re:ping");
         assert_eq!(s.called(OP_ST_CMD_SEND), 0);
     }
 
@@ -567,18 +458,18 @@ mod tests {
         let add = AddCommand {
             name: b"hi",
             accepted_types: EVENT_WORKER,
-            handler: handler(c""),
+            handler: handler(b""),
         };
         assert!(add_command(&mut s, &add).unwrap());
         s.facts.extend([(OP_IS_STARTED, 1), (OP_FIELD, 4)]);
-        let mut out = Vec::new();
-        let mut to_worker = send(b"hi", EVENT_WORKER, &mut out);
+        let out = Out::default();
+        let mut to_worker = send(b"hi", EVENT_WORKER, &out);
         to_worker.process_id = 1;
         assert!(!command(&mut s, &to_worker).unwrap(), "the send failed");
         assert_eq!(s.called(OP_ST_CMD_SEND), 1);
         assert!(commands(&s.state).callbacks.is_empty());
         assert_eq!(commands(&s.state).next_request, 2);
-        assert!(!command(&mut s, &send(b"nope", EVENT_WORKER, &mut out)).unwrap());
+        assert!(!command(&mut s, &send(b"nope", EVENT_WORKER, &out)).unwrap());
         assert_eq!(commands(&s.state).next_request, 2, "no request id taken");
         s.facts.insert(OP_ST_CMD_SEND, 1);
         assert!(command(&mut s, &to_worker).unwrap());
@@ -590,10 +481,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2]
         );
-        unsafe {
-            swr_v1_server_command_result(&s.state, core::ptr::null_mut(), 2, c"pong".as_ptr(), 4);
-        }
-        assert_eq!(out, b"pong");
+        command_result(&s.state, 2, b"pong");
+        assert_eq!(*out.lock().unwrap(), b"pong");
         assert!(
             commands(&s.state).callbacks.is_empty(),
             "a reply is taken once"

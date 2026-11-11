@@ -6,7 +6,7 @@
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
-use crate::reactor_upstream::{prepared, reactor_change, reactor_interest};
+use crate::reactor_upstream::{reactor_change, reactor_interest};
 use crate::{ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -208,22 +208,27 @@ pub extern "C" fn swoole_event_isset_handler(fd_type: c_int, event: c_int) -> bo
 )]
 #[must_use]
 pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
-    let Some(registry) = current_prepared().map(|prepared| prepared.registry) else {
-        return std::ptr::null_mut();
-    };
-    // SAFETY: the live reactor's registry.
-    crate::swr_v1_reactor_registry_get(unsafe { registry.as_ref() }, fd)
+    with_registry(|registry| crate::swr_v1_reactor_registry_get(registry, fd))
+        .unwrap_or(std::ptr::null_mut())
 }
 
-/// The thread's `Reactor`'s prepared views, or `None` without one.
-fn current_prepared() -> Option<crate::ReactorPrepared> {
+/// `f` over the thread's `Reactor`'s socket registry (null as `None`); `None`
+/// without a reactor.
+pub fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
+    let registry = current_prepared()?.registry;
+    // SAFETY: a live reactor's registry or null, borrowed for this call alone.
+    Some(f(unsafe { registry.as_ref() }))
+}
+
+/// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
+#[must_use]
+pub fn current_prepared() -> Option<crate::ReactorPrepared> {
     let reactor = current();
-    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
-    (!reactor.is_null()).then(|| unsafe { prepared(reactor) })
+    (!reactor.is_null()).then(|| crate::ReactorPrepared::of(reactor))
 }
 
 /// A field of the thread's `Reactor`, written; `None` without one.
-fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
+pub fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
     let fields = current_prepared()?.fields;
     // SAFETY: a live reactor's fields, borrowed for this call alone; the loop
     // reads them through its raw pointer, never across it.
@@ -232,7 +237,7 @@ fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
 
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
 /// nothing without one.
-#[cfg(all(target_os = "linux", feature = "upstream-symbols", not(test)))]
+#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
 pub(crate) fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
     field_mut(|fields| {
         let queue = &raw mut fields.destroy_callbacks;

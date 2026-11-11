@@ -77,8 +77,7 @@ impl Context {
     }
     /// The server's own `MessageBus`.
     pub(super) fn bus(&self) -> Bus {
-        // SAFETY: the live server's bus, which this process alone reads.
-        unsafe { Bus::of(self.tables().message_bus) }
+        self.state().message_bus()
     }
     fn callback(&self, index: u32) {
         if let Some(slot) = self.state().callbacks.slot(index) {
@@ -141,16 +140,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let id = u16::try_from(unsafe { &*me }.id()).unwrap_or(0);
             // SAFETY: worker 0, live.
             let pipe = unsafe { (*ctx.other(0)).pipe_master };
-            let bus = ctx.tables().message_bus;
-            // SAFETY: the live server, its bus holding the request, and the pipe.
-            unsafe { crate::commands::call_command_handler(ctx.server(), bus, id, pipe) };
+            let pipe = crate::objects::socket(pipe);
+            crate::commands::call_command_handler(ctx.server(), ctx.bus(), id, pipe);
             0
         }
         OP_COMMAND_RESPONSE => {
-            let (fd, packet) = (ctx.bus().head().fd, ctx.bus().packet());
-            let result = crate::commands::swr_v1_server_command_result;
-            // SAFETY: the live server and the packet's bytes.
-            unsafe { result(ctx.state(), ctx.serv, fd, packet.data, packet.length) };
+            let (bus, state) = (ctx.bus(), ctx.state());
+            let fd = bus.head().fd;
+            bus.with_packet(|reply| crate::commands::command_result(state, fd, reply));
             0
         }
         OP_BUS_POP => {
@@ -171,9 +168,8 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_ADD => {
-            let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
-            // SAFETY: one of its live ports.
-            let port = unsafe { view::port(port) };
+            let index = usize::try_from(arg).ok()?;
+            let port = ctx.state().tables_ref().port_config(index)?;
             let gs = port.counters()?;
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the worker's slot of them.

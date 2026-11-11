@@ -1539,19 +1539,9 @@ fn eof_check() {
 }
 
 /// `test_command`'s `add_command("test", ALL_PROCESS, ...)` handler.
-unsafe extern "C" fn command_handler(
-    _: *mut c_void,
-    _: *mut c_void,
-    message: *const c_char,
-    length: usize,
-    reply: swoole_rs_server::CommandReply,
-    out: *mut c_void,
-) {
-    // SAFETY: the request's message.
-    let msg = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
-    let result = [b"json result, ", msg].concat();
-    // SAFETY: the reply writer and its output, for this call.
-    unsafe { reply(out, result.as_ptr().cast(), result.len()) };
+fn command_handler(_: view::Server<'_>, msg: &[u8], reply: &mut Vec<u8>) {
+    reply.extend_from_slice(b"json result, ");
+    reply.extend_from_slice(msg);
 }
 
 /// `test_command`'s mode, for `serv->is_base_mode()`.
@@ -1559,37 +1549,20 @@ static COMMAND_BASE_MODE: AtomicBool = AtomicBool::new(false);
 
 /// `serv->command(1, process_type, "test", msg, fn)`.
 fn command(serv: Server, process_type: c_int, msg: &str) {
-    let name = "test";
-    let callback = swoole_rs_server::CommandFn {
-        invoke: command_callback as *const c_void,
-        ctx: ptr::null_mut(),
-    };
-    // SAFETY: the live server; the name and message for the call; a context-free callback.
-    let sent = unsafe {
-        swoole_rs_server::swr_v1_server_command(
-            serv.0,
-            1,
-            process_type,
-            name.as_ptr().cast(),
-            name.len(),
-            msg.as_ptr().cast(),
-            msg.len(),
-            callback,
-        )
-    };
+    let callback = std::sync::Arc::new(move |msg: &[u8]| command_callback(serv, msg));
+    let sent = swoole_rs_server::swr_v1_server_command(
+        serv.view(),
+        1,
+        process_type,
+        b"test",
+        msg.as_bytes(),
+        callback,
+    );
     check(sent, "serv->command(...)");
 }
 
 /// `test_command`'s `fn`: each reply sends the next command, then the server shuts down.
-unsafe extern "C" fn command_callback(
-    _: *mut c_void,
-    serv: *mut c_void,
-    message: *const c_char,
-    length: usize,
-) {
-    let serv = Server(serv);
-    // SAFETY: the reply's message.
-    let msg = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
+fn command_callback(serv: Server, msg: &[u8]) {
     micro_sleep(50000);
     match msg {
         b"json result, hello world [0]" if COMMAND_BASE_MODE.load(Ordering::SeqCst) => {
@@ -1630,21 +1603,8 @@ fn test_command(mode: c_int) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    let name = "test";
-    let handler = swoole_rs_server::CommandFn {
-        invoke: command_handler as *const c_void,
-        ctx: ptr::null_mut(),
-    };
-    // SAFETY: the live server; the name for the call; a context-free handler.
-    unsafe {
-        swoole_rs_server::swr_v1_server_add_command(
-            serv.0,
-            name.as_ptr().cast(),
-            name.len(),
-            COMMAND_ALL_PROCESS,
-            handler,
-        )
-    };
+    let handler = std::sync::Arc::new(command_handler);
+    swoole_rs_server::swr_v1_server_add_command(serv.view(), b"test", COMMAND_ALL_PROCESS, handler);
 
     serv.set_callback(CB_START, command_start as *const c_void);
     serv.set_callback(CB_WORKER_START, ignore_worker_start as *const c_void);

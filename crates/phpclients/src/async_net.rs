@@ -206,8 +206,7 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
         ON_ERROR => {
             // The error code arrives as the length (`swoole_get_last_error()`).
             let error = i64::try_from(length).unwrap_or(0);
-            // SAFETY: a live client object.
-            unsafe { value::update_long(ASYNC.entry(), object.as_ptr(), c"errCode", error) };
+            object.props().long(c"errCode", error);
             execute_and_release(object, ERROR)
         }
         ON_BUFFER_FULL => execute(object, BUFFER_FULL),
@@ -241,10 +240,8 @@ fn construct(call: &Call) {
     if !check_type(kind) {
         return call.set_bool(false);
     }
-    // SAFETY: from a handler.
-    unsafe { native::swoole_rs_check_reactor() };
-    // SAFETY: `$this` is a live client.
-    unsafe { value::update_long(net::CLIENT.entry(), call.this(), c"type", kind) };
+    swoole_rs_phpruntime::check_reactor();
+    Obj::this(call).props().long(c"type", kind);
     call.set_bool(true);
 }
 
@@ -418,19 +415,10 @@ fn connect(call: &Call) {
             );
             warn(ErrorKind::Error, &message);
         }
-        // SAFETY: a live client object.
-        unsafe { value::update_long(ASYNC.entry(), object.as_ptr(), c"errCode", i64::from(error)) };
+        object.props().long(c"errCode", i64::from(error));
     } else {
         warn_sys(&format!("connect to server[{host}:{port}] failed"), failure);
-        // SAFETY: a live client object.
-        unsafe {
-            value::update_long(
-                ASYNC.entry(),
-                object.as_ptr(),
-                c"errCode",
-                i64::from(failure),
-            );
-        }
+        object.props().long(c"errCode", i64::from(failure));
     }
     // SAFETY: the object's connection, if an error callback did not free it.
     if let Some(remaining) = unsafe { net::this(call).conn.get().as_ref() }

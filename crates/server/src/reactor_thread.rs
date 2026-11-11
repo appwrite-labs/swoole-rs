@@ -382,8 +382,7 @@ pub(crate) fn heartbeat_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
             Ok(())
         })?;
         let interval = h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))?;
-        // SAFETY: `sleep` has no memory preconditions.
-        unsafe { libc::sleep(u32::try_from(interval).unwrap_or(u32::MAX)) };
+        std::thread::sleep(core::time::Duration::from_secs(interval));
     }
     Ok(())
 }

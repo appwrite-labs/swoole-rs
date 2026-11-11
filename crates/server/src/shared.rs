@@ -177,33 +177,30 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     ) {
         return None;
     }
-    let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
-    if gs.is_null() {
-        return None;
-    }
+    // The fields each op reads follow the native owner's lifetime and synchronization.
+    let gs = server_counters(state)?;
+    // The plain fields the master writes, through the mapping rather than `gs`.
+    let raw = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
     Some(match op {
-        // SAFETY: each leaf field read uses the native owner's lifetime and synchronization.
-        OP_IS_STARTED => u64::from(unsafe { (*gs).start.load(Ordering::Relaxed) }),
-        // SAFETY: `start` is aligned atomic storage in the shared prefix; one server starts.
+        OP_IS_STARTED => u64::from(gs.start.load(Ordering::Relaxed)),
+        // One server starts.
         OP_LC_CLAIM_START => u64::from(
-            unsafe { &(*gs).start }
+            gs.start
                 .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok(),
         ),
         OP_LC_START_TIME => {
             let now = crate::shared::unix_now();
             // SAFETY: only the starting master writes the start time, before forking workers.
-            unsafe { (*gs).start_time = now };
+            unsafe { (*raw).start_time = now };
             0
         }
-        // SAFETY: master pid is assigned before workers can read it.
-        OP_MASTER_PID => i64::from(unsafe { (*gs).master_pid }).cast_unsigned(),
-        // SAFETY: manager pid follows the original native lifecycle synchronization.
-        OP_MANAGER_PID => i64::from(unsafe { (*gs).manager_pid }).cast_unsigned(),
-        // SAFETY: native server code serializes fd-bound updates with its existing lock.
-        OP_MAXFD => i64::from(unsafe { (*gs).max_fd }).cast_unsigned(),
-        // SAFETY: native server code serializes fd-bound updates with its existing lock.
-        OP_MINFD => i64::from(unsafe { (*gs).min_fd }).cast_unsigned(),
+        // The master pid is assigned before workers can read it.
+        OP_MASTER_PID => i64::from(gs.master_pid).cast_unsigned(),
+        OP_MANAGER_PID => i64::from(gs.manager_pid).cast_unsigned(),
+        // Native server code serializes fd-bound updates with its existing lock.
+        OP_MAXFD => i64::from(gs.max_fd).cast_unsigned(),
+        OP_MINFD => i64::from(gs.min_fd).cast_unsigned(),
         OP_SET_MAXFD | OP_SET_MINFD => {
             let value = core::ffi::c_int::from_ne_bytes(
                 u32::try_from(arg & u64::from(u32::MAX))
@@ -212,30 +209,23 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             );
             if op == OP_SET_MAXFD {
                 // SAFETY: caller owns the native server fd-bound lock.
-                unsafe { (*gs).max_fd = value };
+                unsafe { (*raw).max_fd = value };
             } else {
                 // SAFETY: caller owns the native server fd-bound lock.
-                unsafe { (*gs).min_fd = value };
+                unsafe { (*raw).min_fd = value };
             }
             0
         }
-        // SAFETY: callers read the session round under the shared spin lock.
-        OP_SESSION_ROUND => unsafe { (*gs).session_round }.cast_unsigned(),
+        // Callers read the session round under the shared spin lock.
+        OP_SESSION_ROUND => gs.session_round.cast_unsigned(),
         OP_ST_GS_CONCURRENCY_SUB => {
-            // SAFETY: concurrency is aligned atomic storage in the mapped shared prefix.
-            unsafe {
-                (*gs).concurrency.fetch_sub(
-                    u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default(),
-                    Ordering::SeqCst,
-                )
-            };
+            let sub = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            gs.concurrency.fetch_sub(sub, Ordering::SeqCst);
             0
         }
-        // SAFETY: concurrency is aligned atomic storage in the shared prefix.
-        OP_ST_GS_CONCURRENCY => u64::from(unsafe { (*gs).concurrency.load(Ordering::Relaxed) }),
+        OP_ST_GS_CONCURRENCY => u64::from(gs.concurrency.load(Ordering::Relaxed)),
         OP_ST_GS_CONCURRENCY_ZERO => {
-            // SAFETY: same shared atomic cell; reset preserves the original store operation.
-            unsafe { (*gs).concurrency.store(0, Ordering::Relaxed) };
+            gs.concurrency.store(0, Ordering::Relaxed);
             0
         }
         _ => return None,

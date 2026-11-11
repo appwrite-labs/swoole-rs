@@ -4,11 +4,11 @@
 //! the vector's remaining count.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
-use crate::socket_wait::wait;
-use core::ffi::c_void;
+use crate::socket_wait::wait_barrier;
 
-/// Retries the transfer once the socket is ready; true to keep waiting.
-pub type Barrier = unsafe extern "C" fn(*mut c_void) -> bool;
+/// Retries the transfer once the socket is ready; true to keep waiting. Installed
+/// only for the wait that lends it ([`wait_barrier`]), which erases its lifetime.
+pub type Barrier = *mut (dyn FnMut() -> bool + 'static);
 
 struct Transfer<T, R> {
     socket: Co,
@@ -29,20 +29,6 @@ impl<T: FnMut() -> isize, R: FnMut() -> usize> Transfer<T, R> {
     fn would_block(&self) -> bool {
         would_block(self.socket)
     }
-}
-
-/// The barrier's retry: transfer until the vector is done or a call returns <= 0;
-/// keep waiting only when the last call would block.
-unsafe extern "C" fn retry<T: FnMut() -> isize, R: FnMut() -> usize>(state: *mut c_void) -> bool {
-    // SAFETY: `state` is the Transfer that `vector_all` lent to the wait.
-    let transfer = unsafe { &mut *state.cast::<Transfer<T, R>>() };
-    loop {
-        transfer.transfer();
-        if transfer.result <= 0 || (transfer.remaining)() == 0 {
-            break;
-        }
-    }
-    transfer.result < 0 && transfer.would_block()
 }
 
 /// `readv_all`/`writev_all` in `event`'s direction, timed by the socket's read or
@@ -77,10 +63,18 @@ pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
     } else if first == 0 || (state.remaining)() == 0 {
         first
     } else {
-        let barrier: (Barrier, *mut c_void) = (retry::<T, R>, (&raw mut state).cast());
-        // SAFETY: `state` outlives the wait, which calls `retry` with it.
-        if timer.start() && unsafe { wait(socket, event, Some(barrier), core::ptr::null_mut(), 0) }
-        {
+        // The barrier's retry: transfer until the vector is done or a call returns
+        // <= 0; keep waiting only when the last call would block.
+        let mut retry = || {
+            loop {
+                state.transfer();
+                if state.result <= 0 || (state.remaining)() == 0 {
+                    break;
+                }
+            }
+            state.result < 0 && state.would_block()
+        };
+        if timer.start() && wait_barrier(socket, event, &mut retry) {
             check(socket, state.result);
         }
         state.total
@@ -181,7 +175,7 @@ mod tests {
         }
         TIMER_OK.set(failure != 2);
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
-            while unsafe { ready(socket, event, false) }.is_null() {
+            while ready(socket, event, false).is_null() {
                 log("again");
             }
             if failure == 3 {

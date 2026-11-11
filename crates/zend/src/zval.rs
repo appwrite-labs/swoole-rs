@@ -126,6 +126,16 @@ impl Value {
         (self.kind() == IS_OBJECT).then(|| unsafe { value::obj_of(self.as_ptr()) })
     }
 
+    /// `Z_OBJ_P` of an object with `class`'s handlers: one that `class`'s
+    /// create handler made, or a subclass's that inherited it.
+    #[must_use]
+    #[inline]
+    pub fn object_of(&self, class: &crate::Class) -> Option<*mut zend_object> {
+        let object = self.object()?;
+        // SAFETY: the zval holds the live object.
+        (unsafe { (*object).handlers } == class.handlers()).then_some(object)
+    }
+
     /// The [`Custom`](crate::Custom) data of a `T` object.
     #[must_use]
     #[inline]

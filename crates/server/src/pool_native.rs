@@ -53,7 +53,7 @@ use swoole_rs_process::reload_task::ReloadTask;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
-    swoole_event_write, swr_v1_event_current,
+    swoole_event_write,
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
@@ -139,6 +139,19 @@ fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
 fn worker_of<'a>(worker: Worker) -> &'a mut WorkerRecord {
     // SAFETY: every caller passes a live worker of the pool.
     unsafe { &mut *worker }
+}
+
+/// The pool's stream listener socket, or null.
+fn listener(pool: Pool) -> *mut c_void {
+    // SAFETY: a live pool's IPC state lives as long as the pool.
+    let ipc = unsafe { &*record(pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>() };
+    swr_v1_process_pool_ipc_listener(ipc)
+}
+
+/// [`worker_of`]'s worker as a [`Record`] handle.
+fn handle<'a>(worker: Worker) -> Record<'a> {
+    // SAFETY: as `worker_of`; the pool's protocol orders the writes.
+    unsafe { Record::new(worker) }
 }
 
 /// A live socket's fd, or -1 for none.
@@ -409,8 +422,8 @@ extern "C-unwind" fn worker_exit() {
         // SAFETY: the pool's callback over its worker.
         unsafe { on_worker_exit(pool, worker) };
     }
-    // SAFETY: the loop running this end callback.
-    let reactor = unsafe { crate::objects::Reactor::of(swr_v1_event_current()) };
+    // The loop running this end callback.
+    let reactor = crate::objects::Reactor::thread();
     if reactor.if_exit() {
         reactor.fields().running = false;
     }
@@ -567,8 +580,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             0
         }
         OP_WORKER_INIT => {
-            // SAFETY: the worker this process now runs.
-            let record = unsafe { Record::new(worker) };
+            let record = handle(worker);
             swr_v1_worker_init(record);
             record.set_pid(std::process::id() as c_int);
             swoole_set_worker_type(SW_WORKER);
@@ -582,15 +594,12 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
                 return Some(-1);
             }
-            // SAFETY: the loop just made.
-            unsafe { crate::objects::Reactor::of(swr_v1_event_current()) }
-                .fields()
-                .ptr = pool.cast();
+            // The loop just made.
+            crate::objects::Reactor::thread().fields().ptr = pool.cast();
             0
         }
         OP_WORKER_SHUTDOWN => {
-            // SAFETY: the worker this process runs.
-            swr_v1_worker_shutdown(unsafe { Record::new(worker) });
+            swr_v1_worker_shutdown(handle(worker));
             0
         }
         OP_REMOVE_PIPE => {
@@ -663,8 +672,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             }
         }
         OP_PUSH_STOP => {
-            // SAFETY: the worker stopping.
-            let record = unsafe { Record::new(worker) };
+            let record = handle(worker);
             let message = WorkerStopMessage {
                 pid: record.pid(),
                 worker_id: record.id() as u16,
@@ -705,8 +713,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_WORKER_ERROR => {
             let status = exit_status(arg);
-            // SAFETY: the worker that exited.
-            worker_report_error(unsafe { Record::new(worker) }, &status);
+            worker_report_error(handle(worker), &status);
             if let Some(on_worker_error) = callback!(record(pool).on_worker_error, ErrorFn) {
                 // SAFETY: the pool's callback over its worker and the status.
                 unsafe { on_worker_error(pool, worker, &raw const status) };
@@ -795,8 +802,7 @@ fn io(arg: *mut c_void, io: impl FnOnce(&mut PoolCall) -> isize) {
 }
 
 unsafe extern "C" fn running(pool: *mut c_void, worker: *mut c_void) -> bool {
-    // SAFETY: the live worker.
-    is_worker_running(record(pool.cast()), unsafe { Record::new(worker.cast()) })
+    is_worker_running(record(pool.cast()), handle(worker.cast()))
 }
 
 unsafe extern "C" fn end(_: *mut c_void) {
@@ -833,12 +839,7 @@ unsafe extern "C" fn queue_push(arg: *mut c_void) {
 
 unsafe extern "C" fn accept(arg: *mut c_void) {
     let c = call_of(arg);
-    // SAFETY: the pool's stream listener.
-    let listener = swr_v1_process_pool_ipc_listener(unsafe {
-        &*record(c.pool.cast())
-            .ipc
-            .cast::<swoole_rs_process::pool::PoolIpc>()
-    });
+    let listener = listener(c.pool.cast());
     c.socket = socket(listener.cast())
         .map_or(ptr::null_mut(), |listener| {
             listener.edit(swoole_rs_reactor::SocketFields::accept)
@@ -925,8 +926,7 @@ unsafe extern "C" fn message(arg: *mut c_void) {
 }
 
 unsafe extern "C" fn shutdown(worker: *mut c_void) {
-    // SAFETY: the worker this process runs.
-    swr_v1_worker_shutdown(unsafe { Record::new(worker.cast()) });
+    swr_v1_worker_shutdown(handle(worker.cast()));
 }
 
 unsafe extern "C" fn pipe_write(arg: *mut c_void) {
@@ -957,8 +957,7 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
     let id = if worker.is_null() {
         0
     } else {
-        // SAFETY: the loop's worker.
-        unsafe { Record::new(worker).id() }
+        handle(worker).id()
     };
     let origin = loop_origin(pool);
     match kind {
@@ -971,10 +970,7 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
             log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
         }
         WARN_ACCEPT => {
-            // SAFETY: the pool's stream listener.
-            let listener = swr_v1_process_pool_ipc_listener(unsafe {
-                &*record(pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>()
-            });
+            let listener = listener(pool);
             log::sys_warning(
                 origin,
                 format_args!("[Worker#{id}] accept({}) failed", fd(listener.cast())),

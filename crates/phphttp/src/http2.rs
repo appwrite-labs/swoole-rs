@@ -177,7 +177,7 @@ impl Ctx {
     pub fn multipart(self) -> bool {
         let state = send::state(self.0);
         let data = state.request.h2_data.take().unwrap_or_default();
-        let parsed = parse::multipart_parse(state, data.as_ptr(), data.len());
+        let parsed = parse::multipart_parse(state, &data);
         send::state(self.0).request.h2_data = Some(data);
         parsed
     }
@@ -300,17 +300,15 @@ impl Ctx {
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
     /// `$cookie`.
     pub fn cookie(self, value: &[u8]) {
-        parse::parse_cookie(self.value(Value::Cookie), value.as_ptr(), value.len());
+        parse::parse_cookie(self.value(Value::Cookie), value);
     }
 
     /// A server connection's settings context (`default_ctx`): the server's
     /// settings, for session `fd`, kept alive and counted by the request hooks.
-    /// # Safety
-    /// `server` is the live server.
     #[must_use]
-    pub unsafe fn server_context(server: *mut c_void, fd: i64) -> Self {
+    pub fn server_context(server: view::Server<'_>, fd: i64) -> Self {
         let ctx = context::alloc();
-        // SAFETY: a new context and the live server.
+        // SAFETY: the new context.
         unsafe { context::init(ctx, server) };
         let state = send::state(ctx);
         state.fd = fd;
@@ -349,24 +347,7 @@ impl Ctx {
     /// multipart parser; false when it has none.
     #[must_use]
     pub fn multipart_start(self, content_type: &[u8]) -> bool {
-        let ctx = self.0;
-        let (mut boundary, mut length) = (std::ptr::null_mut(), 0);
-        // SAFETY: a live context, the value's bytes and local outputs.
-        let found = unsafe {
-            parse::multipart_boundary_of(
-                ctx.cast(),
-                content_type.as_ptr().cast(),
-                content_type.len(),
-                b"multipart/form-data".len(),
-                &mut boundary,
-                &mut length,
-            )
-        };
-        // SAFETY: the boundary inside the value.
-        if !found || !unsafe { parse::init_multipart(ctx.cast(), boundary, length) } {
-            return false;
-        }
-        true
+        parse::multipart_start(send::state(self.0), content_type)
     }
 
     /// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into

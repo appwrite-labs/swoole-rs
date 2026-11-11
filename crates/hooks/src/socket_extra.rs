@@ -7,8 +7,8 @@ use std::ptr;
 use swoole_rs_corebase::{ProxyState, StringSlot, swr_v1_core_proxy_free};
 use swoole_rs_tls::{OwnedTlsContext, swr_v1_tls_owner_free};
 
-/// A destructor callback: `hook(arg, socket)`.
-pub type CloseHook = unsafe extern "C" fn(*mut c_void, *mut c_void);
+/// A destructor callback, which gets the native socket.
+pub type CloseHook = Box<dyn FnOnce(*mut c_void)>;
 
 /// `repr(C)` for `tls`, first: the hooks system tests set it as `enable_ssl_encrypt`
 /// does.
@@ -18,8 +18,8 @@ pub struct SocketExtra {
     /// accepted socket shares with its server and the record releases.
     pub(crate) tls: *const OwnedTlsContext,
     pub(crate) strings: [StringSlot; 3],
-    /// `set_dtor`'s callback, its argument and the native `Socket` it is passed.
-    close_hook: Option<(CloseHook, *mut c_void, *mut c_void)>,
+    /// `set_dtor`'s callback.
+    close_hook: Option<CloseHook>,
     /// `socks5_proxy` and `http_proxy`: each an owner, or null.
     pub(crate) proxies: [*mut ProxyState; 2],
     /// The ring's host when the socket is a `UringSocket`, else none.
@@ -84,13 +84,10 @@ pub extern "C" fn swr_v1_hook_co_socket_uring(socket: Co) {
     #[cfg(not(feature = "iouring"))]
     let _ = socket;
 }
-/// `set_dtor`: `hook(arg, owner)` runs once, when the socket closes or is destroyed.
-///
-/// # Safety
-/// `hook` may be called with `arg` and the native socket until the socket is
-/// destroyed.
-pub unsafe fn set_close_hook(socket: Co, hook: CloseHook, arg: *mut c_void) {
-    socket.with_extra(|extra| extra.close_hook = Some((hook, arg, socket.this())));
+/// `set_dtor`: `hook(owner)`, with the native socket, runs once, when the socket
+/// closes or is destroyed.
+pub fn set_close_hook(socket: Co, hook: CloseHook) {
+    socket.with_extra(|extra| extra.close_hook = Some(hook));
 }
 
 /// The destructor callback, once: `close()`'s release and `~Socket`. The socket may be
@@ -98,9 +95,8 @@ pub unsafe fn set_close_hook(socket: Co, hook: CloseHook, arg: *mut c_void) {
 ///
 pub(crate) fn run_close_hook(socket: Co) {
     let hook = socket.with_extra(|extra| extra.close_hook.take()).flatten();
-    if let Some((hook, arg, owner)) = hook {
-        // SAFETY: the callback set_close_hook's caller lent until now.
-        unsafe { hook(arg, owner) };
+    if let Some(hook) = hook {
+        hook(socket.this());
     }
 }
 

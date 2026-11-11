@@ -7,26 +7,21 @@ use crate::server::{SERVER, ServerData, fatal, running, server};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     marker::PhantomData,
     ptr,
     rc::Rc,
     sync::atomic::Ordering,
 };
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_server::{
-    CommandFn, CommandReply as Reply, server_methods, swr_v1_server_add_command,
-    swr_v1_server_command, view,
-};
+use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout, class_name,
-    init_object, message, object_of, report,
+    ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
+    class_name, init_object, message, object_of, report,
     sys::{
-        IS_NULL, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree, swr_zend_instanceof,
-        swr_zend_json_decode, swr_zend_property_array, swr_zend_separate_array,
-        swr_zend_try_json_encode, swr_zval_copy, swr_zval_stringl, zend_class_entry,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_object, zend_object_std_dtor, zval,
-        zval_ptr_dtor,
+        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array,
+        swr_zend_try_json_encode, swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert,
+        zend_object, zend_object_std_dtor, zval, zval_ptr_dtor,
     },
     value::table,
 };
@@ -112,7 +107,7 @@ struct PortFacts {
 
 /// What the Server and Port objects show of a `ListenPort`.
 struct PortInfo {
-    host: swoole_rs_corebase::CoreStringView,
+    host: Vec<u8>,
     port: i64,
     kind: i64,
     fd: i64,
@@ -126,7 +121,7 @@ impl PortInfo {
         // SAFETY: per the caller.
         let config = unsafe { view::port(port) };
         Self {
-            host: config.host(),
+            host: config.host_bytes().to_vec(),
             port: config.port.into(),
             kind: config.r#type.into(),
             // SAFETY: per the caller.
@@ -236,10 +231,8 @@ type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
 /// What upstream's `ServerProperty` held.
 #[derive(Default)]
 pub(crate) struct Property {
-    /// The Port objects (`sw_malloc_zval`, borrowed from `$server->ports`).
-    ports: Vec<*mut zval>,
-    /// `addProcess`'s processes (`emalloc`ed copies holding a reference).
-    user_processes: Vec<*mut zval>,
+    /// The Port objects, borrowed from `$server->ports`.
+    ports: Vec<*mut zend_object>,
     /// Server-level callbacks (callables) by type.
     callbacks: [*mut c_void; CALLBACKS],
     /// `addCommand`'s callables.
@@ -248,6 +241,12 @@ pub(crate) struct Property {
     send_waiters: HashMap<i64, Waiters>,
     /// The next waiter's token.
     send_token: u64,
+    /// `addProcess`'s processes, copies holding a reference; boxed, as each
+    /// worker's user data points at its copy. Last, so `default()` builds nothing
+    /// after it that could unwind and drop it, which would link Zend's destructor
+    /// into tests that have no PHP.
+    #[expect(clippy::vec_box, reason = "a worker's user data points at its copy")]
+    user_processes: Vec<Box<Owned>>,
 }
 
 fn fact(serv: view::Server<'_>, id: u32) -> bool {
@@ -345,37 +344,42 @@ impl ServerObject {
         unsafe { (*self.0).ce }
     }
 
-    fn data(self) -> *mut ServerData {
-        // SAFETY: a live Server object; C++ and Rust allocate Servers as `Object<ServerData>`.
+    /// The object's data, borrowed only by the method that asks for it.
+    fn data<'a>(self) -> &'a mut ServerData {
+        // SAFETY: a live Server object, which Rust allocates as `Object<ServerData>`;
+        // each method's borrow ends with its body.
         unsafe { Object::<ServerData>::data(self.0) }
     }
 
     /// The bound `Server`, or null before `__construct`.
     pub(crate) fn serv(self) -> *mut c_void {
-        // SAFETY: the live data, read once.
-        unsafe { (*self.data()).serv }
+        self.data().serv
+    }
+
+    /// The bound `Server`, or none before `__construct`, borrowed for as long as
+    /// the handle is: the handle's contract keeps the object, and so its server, live.
+    pub(crate) fn server(&self) -> Option<view::Server<'_>> {
+        let serv = self.serv();
+        // SAFETY: the object's live server, which it keeps until `free`.
+        (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) })
     }
 
     fn set_serv(self, serv: *mut c_void) {
-        // SAFETY: the live data, written once.
-        unsafe { (*self.data()).serv = serv };
+        self.data().serv = serv;
     }
 
     /// `init_arguments` as the object holds it (no reference taken).
     pub(crate) fn init_arguments(self) -> zval {
-        // SAFETY: the live data, read once.
-        unsafe { (*self.data()).init_arguments }
+        self.data().init_arguments
     }
 
     pub(crate) fn set_init_arguments(self, value: zval) {
-        // SAFETY: the live data, written once.
-        unsafe { (*self.data()).init_arguments = value };
+        self.data().init_arguments = value;
     }
 
     /// `f` over the property; `f` calls nothing that reaches the object.
     fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
-        // SAFETY: the live data, read once.
-        let property = unsafe { (*self.data()).property }.cast::<Property>();
+        let property = self.data().property.cast::<Property>();
         // SAFETY: `create` set the property and only `free` clears it; nothing
         // else borrows it while `f` runs.
         f(unsafe { &mut *property })
@@ -424,14 +428,14 @@ impl ServerObject {
     }
 
     /// The Port object at `index` (`property->ports.at(index)`), or null.
-    pub(crate) fn port_at(self, index: usize) -> *mut zval {
+    pub(crate) fn port_at(self, index: usize) -> *mut zend_object {
         self.property(|p| p.ports.get(index).copied())
             .unwrap_or(ptr::null_mut())
     }
 
     /// The user process at `index`, or null.
     pub(crate) fn user_process(self, index: usize) -> *mut zval {
-        self.property(|p| p.user_processes.get(index).copied())
+        self.property(|p| p.user_processes.get(index).map(|process| process.as_ptr()))
             .unwrap_or(ptr::null_mut())
     }
 }
@@ -469,13 +473,14 @@ pub(crate) fn owns_shared() -> bool {
 /// # Safety
 /// Zend frees a Server object.
 pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
+    // The object's live server; the master deletes it below.
+    let handle = ServerObject(object);
+    let server = handle.server();
     // SAFETY: per the caller.
     let data = unsafe { Object::<ServerData>::data(object) };
     // SAFETY: `create` boxed it; nothing else frees it.
-    let property = unsafe { Box::from_raw(data.property.cast::<Property>()) };
+    let mut property = unsafe { Box::from_raw(data.property.cast::<Property>()) };
     data.property = ptr::null_mut();
-    // SAFETY: the object's live server; the master deletes it below.
-    let server = (!data.serv.is_null()).then(|| unsafe { view::Server::from_raw(data.serv) });
     if let Some(server) = server {
         if owns_shared() {
             // SAFETY: freeing the object on the one thread that owns the config's slots.
@@ -489,19 +494,11 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
             // SAFETY: a callable the property owned.
             unsafe { swoole_rs_phpruntime::callable_free(callable) };
         }
-        for &process in &property.user_processes {
-            // SAFETY: `sw_zval_free`: an emalloc'd zval holding a reference.
-            unsafe { zval_ptr_dtor(process) };
-            // SAFETY: as above.
-            unsafe { swr_zend_efree(process.cast()) };
-        }
+        // `sw_zval_free`: each copy's reference goes.
+        drop(std::mem::take(&mut property.user_processes));
         for &port in &property.ports {
-            // SAFETY: a Port zval `port_object` allocated.
-            let object = unsafe { swoole_rs_zend::object_of(port) };
-            // SAFETY: its Port object.
-            unsafe { crate::port::deref(object) };
-            // SAFETY: the emalloc'd zval, freed once.
-            unsafe { swr_zend_efree(port.cast()) };
+            // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
+            unsafe { crate::port::deref(port) };
         }
         data.serv = ptr::null_mut();
     }
@@ -632,9 +629,7 @@ impl<'a> Props<'a> {
 
     /// `host`, `port`, `type`, `sock` (with `fd`) and `ssl` from `info`.
     fn port_info(self, info: &PortInfo, fd: Option<i64>) {
-        // SAFETY: the view's bytes live with its port.
-        let host = unsafe { std::slice::from_raw_parts(info.host.data.cast(), info.host.length) };
-        self.bytes(c"host", host);
+        self.bytes(c"host", &info.host);
         self.long(c"port", info.port);
         self.long(c"type", info.kind);
         if let Some(fd) = fd {
@@ -646,11 +641,10 @@ impl<'a> Props<'a> {
     /// A `Connection\Iterator` over `serv` (and `port`, or all of them) in the
     /// object's `connections` property.
     fn connections(self, serv: view::Server<'_>, port: *mut c_void) {
-        let mut iterator = crate::dispatch::undef();
-        crate::server::new_iterator(&mut iterator, serv.raw(), port);
-        self.value(c"connections", &mut iterator);
-        // SAFETY: the reference taken above.
-        unsafe { zval_ptr_dtor(&raw mut iterator) };
+        self.set(
+            c"connections",
+            &crate::server::new_iterator(serv.raw(), port),
+        );
     }
 }
 
@@ -658,14 +652,13 @@ impl<'a> Props<'a> {
 /// object and appended to `$server->ports`.
 /// # Safety
 /// `object` is bound to its server, and `port` is one of its ports.
-pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> *mut zval {
-    // SAFETY: per the caller, the object's live server.
-    let serv = unsafe { view::Server::from_raw(object.serv()) };
-    // SAFETY: a live server and port.
-    let zport = unsafe { crate::port::new_object(serv.raw(), port) };
-    object.property(|p| p.ports.push(zport));
-    // SAFETY: a new Port object zval.
-    let port_object = unsafe { object_of(zport) };
+pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> Owned {
+    let Some(serv) = object.server() else {
+        return Owned::default();
+    };
+    // SAFETY: a live server and, per the caller, one of its ports.
+    let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port) };
+    object.property(|p| p.ports.push(port_object));
     // SAFETY: the Port object, live with the Server object that keeps it.
     let props = unsafe { Props::of(port_object) };
     // SAFETY: a live port.
@@ -676,11 +669,13 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> *mut z
         unsafe { swr_zend_property_array(object.class(), object.raw(), c"ports".as_ptr(), 5) };
     // SAFETY: an array.
     let zports = unsafe { table(zports) };
+    let copy = zport.copy();
+    let mut zport = zport.into_zval();
     // SAFETY: `add_next_index_zval`: the array takes the Port's reference;
     // `ports` borrows it.
-    unsafe { zend_hash_next_index_insert(zports, zport) };
+    unsafe { zend_hash_next_index_insert(zports, &raw mut zport) };
     props.connections(serv, port);
-    zport
+    copy
 }
 
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
@@ -711,7 +706,7 @@ fn exception(call: &Call, message: &CStr, code: i64) {
 
 use crate::server::set_last_error;
 
-fn class(object: ServerObject) -> String {
+pub(crate) fn class(object: ServerObject) -> String {
     // SAFETY: a live object.
     unsafe { class_name(object.raw()) }
         .to_string_lossy()
@@ -793,13 +788,14 @@ fn construct(call: &Call) {
             return call.set_bool(false);
         }
     } else if {
-        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
-        let host = unsafe { CStr::from_ptr(address.as_ptr().cast()) };
+        // The host as C reads it: up to its first NUL.
+        let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
+        let host = CString::new(host).unwrap_or_default();
         #[expect(
             clippy::cast_possible_truncation,
             reason = "add_port((SocketType) type, host, (int) port), as upstream"
         )]
-        server_methods::add_port(server, kind as c_int, host, port as c_int)
+        server_methods::add_port(server, kind as c_int, &host, port as c_int)
     }
     .is_null()
     {
@@ -835,12 +831,12 @@ fn add_process(call: &Call) {
         return call.set_bool(false);
     };
     put(serv, install::USER_WORKER_START);
-    // SAFETY: an emalloc'd copy holding its own reference, as upstream.
-    let copy = unsafe { swoole_rs_zend::sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: a writable zval and the live argument.
-    unsafe { swr_zval_copy(copy, process.as_ptr()) };
+    // A copy holding its own reference, as upstream.
+    let copy = Box::new(process.copy());
+    let (zcopy, object) = (copy.as_ptr(), copy.object());
+    // The box keeps the copy where the worker's user data points.
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
-    match add_worker(serv, copy) {
+    match add_worker(serv, zcopy) {
         -3 => bailout::defer(Err(bailout::Bailout)),
         -2 => {
             set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
@@ -851,11 +847,10 @@ fn add_process(call: &Call) {
             call.set_bool(false);
         }
         id => {
-            let process_ce = process_class();
-            // SAFETY: a live process object.
-            let process = unsafe { object_of(copy) };
-            // SAFETY: `Swoole\Process` and its object.
-            unsafe { swoole_rs_zend::Props::new(process_ce, process) }.long(c"id", id);
+            if let Some(object) = object {
+                // SAFETY: `Swoole\Process` and its live object, which the copy holds.
+                unsafe { swoole_rs_zend::Props::new(process_class(), object) }.long(c"id", id);
+            }
             call.set_long(id);
         }
     }
@@ -882,17 +877,19 @@ fn add_command(call: &Call) {
     if callable.is_null() {
         return call.set_bool(false);
     }
-    let handler = CommandFn {
-        invoke: command_run as *const c_void,
-        ctx: callable,
-    };
+    // The property keeps the callable for the server's life.
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the server's command table, like upstream's, holds PHP callables"
+    )]
+    let handler = std::sync::Arc::new(
+        move |_: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
+            command_run(callable, message, reply);
+        },
+    );
     // Upstream's `(int) types`.
     let types = c_int::from_le_bytes(types.to_le_bytes()[..4].try_into().unwrap_or_default());
-    // SAFETY: a live server, the name's bytes and the new callable, which the
-    // property keeps for the server's life.
-    if !unsafe {
-        swr_v1_server_add_command(serv.raw(), name.as_ptr().cast(), name.len(), types, handler)
-    } {
+    if !swr_v1_server_add_command(serv, name, types, handler) {
         // SAFETY: the callable created above.
         unsafe { swoole_rs_phpruntime::callable_free(callable) };
         return call.set_bool(false);
@@ -902,28 +899,16 @@ fn add_command(call: &Call) {
 }
 
 /// A command handler (`Server::Command::Handler`): `callable($server, $message)`'s
-/// string, or upstream's JSON errors. A bailout is raised last, from this frame.
-/// # Safety
-/// `callable` is a command callable and `server` the running server; `reply`
-/// writes into `out`.
-unsafe extern "C" fn command_run(
-    callable: *mut c_void,
-    _server: *mut c_void,
-    message: *const c_char,
-    length: usize,
-    reply: Reply,
-    out: *mut c_void,
-) {
-    let send = |text: &[u8]| {
-        // SAFETY: per the caller.
-        unsafe { reply(out, text.as_ptr().cast(), text.len()) };
-    };
+/// string, or upstream's JSON errors, into `reply`. A bailout is raised last, from
+/// this frame. `callable` is a live command callable.
+fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
+    let mut send = |text: &[u8]| reply.extend_from_slice(text);
     let mut args = [crate::dispatch::undef(), crate::dispatch::undef()];
     args[0] = crate::dispatch::zserv();
     // SAFETY: a writable zval and the message's bytes.
-    unsafe { swr_zval_stringl(&raw mut args[1], message, length) };
-    let mut retval = crate::dispatch::undef();
-    let called = crate::dispatch::invoke(callable, &mut args, &raw mut retval, false);
+    unsafe { swr_zval_stringl(&raw mut args[1], message.as_ptr().cast(), message.len()) };
+    let retval = Owned::default();
+    let called = crate::dispatch::invoke(callable, &mut args, retval.as_ptr(), false);
     // SAFETY: the message string made above.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
     let bailed = match called {
@@ -937,15 +922,15 @@ unsafe extern "C" fn command_run(
             warned.is_err()
         }
         Ok(true) => {
-            match Value::of(&mut retval).bytes() {
+            match retval.bytes() {
                 Some(text) => send(text),
                 None => send(br#"{"data": "wrong return type", "code": -2}"#),
             }
-            // SAFETY: as above.
-            unsafe { zval_ptr_dtor(&raw mut retval) };
             false
         }
     };
+    // Released first: a bailout jumps over this frame.
+    drop(retval);
     if bailed {
         bailout::raise(Err(bailout::Bailout));
     }
@@ -961,27 +946,25 @@ struct Wait {
 
 /// The command's reply (`Server::Command::Callback`): into `return_value`, then
 /// the waiting coroutine resumes, if it has yielded yet.
-unsafe extern "C" fn command_done(
-    context: *mut c_void,
-    _server: *mut c_void,
-    message: *const c_char,
-    length: usize,
-) {
-    // SAFETY: `command` passes its live `Wait`.
-    let wait = unsafe { &mut *context.cast::<Wait>() };
-    if wait.json_decode {
-        // SAFETY: the reply's bytes and the call's return slot.
-        unsafe { swr_zend_json_decode(message, length, wait.return_value) };
-    } else {
-        // SAFETY: as above.
-        unsafe { swr_zval_stringl(wait.return_value, message, length) };
-    }
-    // SAFETY: the waiting coroutine.
-    if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
-        // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
-        unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
-    } else {
-        wait.replied = true;
+fn command_done(wait: *mut Wait) -> impl Fn(&[u8]) {
+    move |message| {
+        let (message, length) = (message.as_ptr().cast::<c_char>(), message.len());
+        // SAFETY: `command`'s `Wait`, live until this has run: it yields until then.
+        let wait = unsafe { &mut *wait };
+        if wait.json_decode {
+            // SAFETY: the reply's bytes and the call's return slot.
+            unsafe { swr_zend_json_decode(message, length, wait.return_value) };
+        } else {
+            // SAFETY: as above.
+            unsafe { swr_zval_stringl(wait.return_value, message, length) };
+        }
+        // SAFETY: the waiting coroutine.
+        if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
+            // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
+            unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
+        } else {
+            wait.replied = true;
+        }
     }
 }
 
@@ -1019,10 +1002,11 @@ fn command(call: &Call) {
         replied: false,
     };
     let data = encoded.bytes();
-    let callback = CommandFn {
-        invoke: command_done as *const c_void,
-        ctx: (&raw mut wait).cast(),
-    };
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the server's callback table, like upstream's, holds this coroutine's wait"
+    )]
+    let callback = std::sync::Arc::new(command_done(&raw mut wait));
     // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
     let [low, high, ..] = process_id.to_le_bytes();
     let process_id = u32::from(u16::from_le_bytes([low, high]));
@@ -1031,20 +1015,8 @@ fn command(call: &Call) {
             .try_into()
             .unwrap_or_default(),
     );
-    // SAFETY: a live server, the name's and data's bytes, and `wait`, which
-    // outlives the command (its callback runs before the yield below returns).
-    let sent = unsafe {
-        swr_v1_server_command(
-            serv.raw(),
-            process_id,
-            process_type,
-            name.as_ptr().cast(),
-            name.len(),
-            data.as_ptr().cast(),
-            data.len(),
-            callback,
-        )
-    };
+    // `wait` outlives the command: its callback runs before the yield below returns.
+    let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback);
     drop(encoded);
     if !sent {
         return call.set_bool(false);
@@ -1094,9 +1066,7 @@ fn register_callback(object: ServerObject, serv: view::Server<'_>) {
     }
 }
 
-fn port_facts(zport: *mut zval) -> PortFacts {
-    // SAFETY: a live Port object.
-    let object = unsafe { object_of(zport) };
+fn port_facts(object: *mut zend_object) -> PortFacts {
     // SAFETY: a bound Port object.
     let port = unsafe { crate::port::bound_port(object) };
     // SAFETY: its live ListenPort.
@@ -1141,17 +1111,10 @@ fn protocols(port: *mut c_void, flags: u32, clear: bool) {
     c.open_redis_protocol |= flags & REDIS != 0;
 }
 
-/// `add_assoc_bool(setting, key, value)`.
-fn add_bool(setting: *mut zval, key: &CStr, value: bool) {
-    // SAFETY: a live, separated array.
-    unsafe { add_assoc_bool_ex(setting, key.as_ptr(), key.count_bytes(), value) };
-}
-
-fn has_key(setting: *mut zval, key: &CStr) -> bool {
-    // SAFETY: a live array.
-    let setting = unsafe { table(setting) };
-    // SAFETY: a live table and a NUL-terminated key.
-    !unsafe { zend_hash_str_find(setting, key.as_ptr(), key.count_bytes()) }.is_null()
+fn has_key(setting: &ArrayMut, key: &CStr) -> bool {
+    setting
+        .array()
+        .is_some_and(|setting| setting.find(key.to_bytes()).is_some())
 }
 
 /// `ServerObject::on_before_start`.
@@ -1177,25 +1140,21 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         put(serv, install::CLOSE);
     }
     put(serv, install::ALLOCATORS);
-    let ce = object.class();
     Props::own(object).long(c"master_pid", i64::from(std::process::id()));
-    // SAFETY: `$this` and its class, which declares `setting`.
-    let setting = unsafe { swr_zend_property_array(ce, object.raw(), c"setting".as_ptr(), 7) };
-    // SAFETY: the property's array.
-    unsafe { swr_zend_separate_array(setting) };
+    // SAFETY: `$this`'s `setting`, which its class declares; nothing else borrows
+    // it, and no PHP code runs, until its last write below.
+    let settings = unsafe { Props::own(object).zend().array(c"setting") };
     for (key, id) in [
         (c"worker_num", fact::WORKER_NUM),
         (c"task_worker_num", fact::TASK_WORKER_NUM),
         (c"output_buffer_size", fact::OUTPUT_BUFFER_SIZE),
         (c"max_connection", fact::MAX_CONNECTION),
     ] {
-        if !has_key(setting, key) {
-            let value = number(serv, id);
-            // SAFETY: a separated array.
-            unsafe { add_assoc_long_ex(setting, key.as_ptr(), key.count_bytes(), value) };
+        if !has_key(settings, key) {
+            settings.insert_long(key.to_bytes(), number(serv, id));
         }
     }
-    if has_key(setting, c"admin_server") {
+    if has_key(settings, c"admin_server") {
         put(serv, install::ADMIN_COMMANDS);
     }
     let kind = kind(object);
@@ -1207,11 +1166,11 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     let primary = port_facts(first);
     let mut find_http_port = false;
     if kind == KIND_REDIS {
-        add_bool(setting, c"open_redis_protocol", true);
-        add_bool(setting, c"open_http_protocol", false);
-        add_bool(setting, c"open_mqtt_protocol", false);
-        add_bool(setting, c"open_eof_check", false);
-        add_bool(setting, c"open_length_check", false);
+        settings.insert_bool(b"open_redis_protocol", true);
+        settings.insert_bool(b"open_http_protocol", false);
+        settings.insert_bool(b"open_mqtt_protocol", false);
+        settings.insert_bool(b"open_eof_check", false);
+        settings.insert_bool(b"open_length_check", false);
         protocols(primary.port, REDIS, true);
         put(serv, install::REDIS_RECEIVE);
     } else if http_server {
@@ -1222,17 +1181,17 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         } else if !isset(serv, primary.port, ON_REQUEST) {
             return stop(E_ERROR, c"require onRequest callback");
         }
-        add_bool(setting, c"open_http_protocol", true);
-        add_bool(setting, c"open_mqtt_protocol", false);
-        add_bool(setting, c"open_eof_check", false);
-        add_bool(setting, c"open_length_check", false);
+        settings.insert_bool(b"open_http_protocol", true);
+        settings.insert_bool(b"open_mqtt_protocol", false);
+        settings.insert_bool(b"open_eof_check", false);
+        settings.insert_bool(b"open_length_check", false);
         let mut flags = HTTP;
         if primary.protocols & HTTP2 != 0 {
-            add_bool(setting, c"open_http2_protocol", true);
+            settings.insert_bool(b"open_http2_protocol", true);
             flags |= HTTP2;
         }
         if primary.protocols & WEBSOCKET != 0 || kind == KIND_WEBSOCKET {
-            add_bool(setting, c"open_websocket_protocol", true);
+            settings.insert_bool(b"open_websocket_protocol", true);
             flags |= WEBSOCKET;
         }
         protocols(primary.port, flags, true);
@@ -1249,10 +1208,9 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         }
         put(serv, install::RECEIVE);
     }
-    for &zport in others {
-        // SAFETY: a live Port object.
-        let port_object = unsafe { object_of(zport) };
-        // SAFETY: as above; the Port class declares `setting`.
+    let setting = settings.as_ptr();
+    for &port_object in others {
+        // SAFETY: a live Port object; the Port class declares `setting`.
         if unsafe { swoole_rs_zend::property(port_object, c"setting") }.is_null() {
             // `$port->set($setting)`, Port's own method.
             // SAFETY: the live Port object, its class and the server's settings.
@@ -1482,7 +1440,9 @@ mod tests {
 
     #[test]
     fn property_starts_empty() {
-        let property = Property::default();
+        // Not dropped: its drop would link `Owned`'s Zend destructor, which the test
+        // binary has no PHP to resolve; an empty property owns nothing to free.
+        let property = std::mem::ManuallyDrop::new(Property::default());
         assert!(property.callbacks.iter().all(|cb| cb.is_null()));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
         assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);

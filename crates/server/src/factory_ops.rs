@@ -114,6 +114,27 @@ impl Context {
         // SAFETY: the ops that read it run with the live data sent.
         unsafe { &mut *self.send }
     }
+    /// The context's worker, for the ops that run with one.
+    fn worker(&self) -> Worker<'_> {
+        // SAFETY: the ops that read it run with a live worker.
+        unsafe { Worker::new(self.worker) }
+    }
+    /// The exit status, for the ops that run with one.
+    fn status(&self) -> &ExitStatus {
+        // SAFETY: the ops that read it run with the live exit status.
+        unsafe { &*self.status }
+    }
+    /// The connection selected by `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN`, if any.
+    fn conn(&self) -> Option<&mut ConnectionRecord> {
+        // SAFETY: null or a slot of the live connection table.
+        unsafe { self.conn.as_mut() }
+    }
+    /// The server's worker registry.
+    fn registry(&self) -> &mut swoole_rs_corebase::worker_registry::WorkerRegistry {
+        let registry = self.config().worker_registry.cast();
+        // SAFETY: the server's live registry, which only the manager writes.
+        unsafe { &mut *registry }
+    }
     fn slot(&self, index: u32) -> Option<&CallbackSlot> {
         self.state().callbacks.slot(index)
     }
@@ -156,8 +177,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
     let barriers = |init: bool| {
         for (manager, count) in [(false, c_int::from(config.reactor_num) + 1), (true, 2)] {
-            // SAFETY: the server's reactor-thread and (shared) manager barriers.
-            let barrier = unsafe { crate::server_object::barrier(serv, manager) };
+            let barrier = crate::server_object::barrier(ctx.server(), manager);
             if init {
                 swoole_rs_locks::barrier_init(barrier, manager, count);
             } else {
@@ -208,8 +228,8 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_WRITE_TO_REACTOR => {
             let (mut info, data) = send();
-            // SAFETY: the op runs with the session's connection selected.
-            info.reactor_id = i16::from(unsafe { &*ctx.conn }.reactor_id);
+            // The op runs with the session's connection selected.
+            info.reactor_id = i16::from(ctx.conn()?.reactor_id);
             info.server_fd = low16(swoole_get_worker_id().cast_signed());
             // `serv->get_reactor_pipe_socket(info.fd, info.reactor_id)`.
             let pipes = i64::from(tables.reactor_pipe_num);
@@ -253,10 +273,7 @@ fn fact(ctx: &Context, op: u32) -> Option<u64> {
         OP_STREAM_EVENT => u64::from(is_stream_event(send().kind)),
         OP_CURRENT_WORKER_ID => signed(swoole_get_worker_id().cast_signed()),
         OP_IS_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
-        OP_EXIT_STATUS => {
-            // SAFETY: the op runs with the live exit status.
-            u64::from(unsafe { &*ctx.status }.status() != 0)
-        }
+        OP_EXIT_STATUS => u64::from(ctx.status().status() != 0),
         _ => return None,
     })
 }
@@ -277,10 +294,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SEND_CONN_ACTIVE => {
             ctx.conn = ctx.state().connection_ptr(ctx.fd.into(), 0);
-            // SAFETY: null or a slot of the live connection table.
-            return Some(u64::from(
-                unsafe { ctx.conn.as_ref() }.is_some_and(|c| c.active != 0),
-            ));
+            return Some(u64::from(ctx.conn().is_some_and(|c| c.active != 0)));
         }
         OP_SESSION_CONN => {
             let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
@@ -290,8 +304,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         _ => {}
     }
-    // SAFETY: null or the connection selected above.
-    let conn = unsafe { ctx.conn.as_mut() }?;
+    let conn = ctx.conn()?;
     let send = || &mut ctx.send().info;
     Some(match op {
         OP_CONN_CLOSED => u64::from(conn.closed.load(Ordering::Relaxed)),
@@ -388,47 +401,36 @@ fn low32(value: u64) -> u32 {
 /// Forking, registering and running event and user workers.
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
-    let registry = ctx
-        .config()
-        .worker_registry
-        .cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>();
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
     let int = c_int::from_ne_bytes(low32(arg).to_ne_bytes());
     let pid = int;
     match op {
         OP_FORK => return Some(signed(swoole_rs_corebase::swoole_fork(0))),
         OP_EXIT => {
-            // SAFETY: exit(3), as upstream.
-            unsafe { libc::exit(0) }
+            // exit(3), as upstream.
+            std::process::exit(0)
         }
-        // SAFETY: the context's live worker.
-        OP_WORKER_PID => return Some(signed(unsafe { Worker::new(worker) }.pid())),
+        OP_WORKER_PID => return Some(signed(ctx.worker().pid())),
         OP_REGISTER_WORKER => {
-            // SAFETY: the context's live worker.
-            unsafe { Worker::new(worker) }.set_pid(pid);
-            // SAFETY: the server's live registry.
-            unsafe { (*registry).register(pid, worker.cast(), REGISTRY_EVENT) };
+            ctx.worker().set_pid(pid);
+            ctx.registry().register(pid, worker.cast(), REGISTRY_EVENT);
         }
         OP_REGISTER_USER_WORKER => {
             // worker: local memory; user_workers: shared memory
-            // SAFETY: the context's live worker.
-            let record = unsafe { Worker::new(worker) };
+            let record = ctx.worker();
             record.set_pid(pid);
             let id = worker_id(u64::from(record.id()));
             let shared = ctx.worker_at(id);
             // SAFETY: the worker's shared copy.
             unsafe { Worker::new(shared).set_pid(pid) };
-            // SAFETY: the server's live registry.
-            unsafe { (*registry).register(pid, worker.cast(), REGISTRY_USER) };
+            ctx.registry().register(pid, worker.cast(), REGISTRY_USER);
         }
         OP_FORGET_USER_WORKER => {
-            // SAFETY: the server's registry.
-            let _present = unsafe { (*registry).unregister(pid) };
+            let _present = ctx.registry().unregister(pid);
         }
         OP_ENTER_CHILD => {
             let own = std::process::id().cast_signed();
-            // SAFETY: the context's live worker.
-            let record = unsafe { Worker::new(worker) };
+            let record = ctx.worker();
             record.set_pid(own);
             swoole_set_worker_id(record.id());
             swoole_set_worker_pid(record.pid());
@@ -457,10 +459,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_REPORT_ERROR => {
-            // SAFETY: the context's live worker.
-            let worker = unsafe { swoole_rs_process::worker_record::Worker::new(worker) };
-            // SAFETY: the context's live exit status.
-            worker_report_error(worker, unsafe { &*ctx.status });
+            worker_report_error(ctx.worker(), ctx.status());
         }
         OP_CALL_WORKER_ERROR => {
             // SAFETY: the context's live server, worker and exit status.
@@ -523,10 +522,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         // SAFETY: as above.
         OP_START_MANAGER => signed(unsafe { entry::start_manager_process(serv) }),
-        OP_KILL_MANAGER => {
-            // SAFETY: kill has no memory preconditions.
-            signed(unsafe { libc::kill(gs.manager_pid, libc::SIGTERM) })
-        }
+        OP_KILL_MANAGER => signed(swoole_rs_process::os::kill(gs.manager_pid, libc::SIGTERM)),
         LOG_KILL_MANAGER => {
             let pid = gs.manager_pid;
             log::sys_warning(

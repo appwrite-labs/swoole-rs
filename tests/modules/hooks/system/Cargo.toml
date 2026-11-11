@@ -8,6 +8,11 @@ edition = "2024"
 publish = false
 build = "build.rs"
 
+# tests/modules/coroutine/base.rs (a #[path] module of main.rs) uses swoole-rs-coroutine;
+# cargo-machete reads only this package's own directory.
+[package.metadata.cargo-machete]
+ignored = ["swoole-rs-coroutine"]
+
 [[bin]]
 name = "swoole-rs-hooks-system-tests"
 path = "src/main.rs"
@@ -16,6 +21,7 @@ test = false
 [dependencies]
 swoole-rs-buffer = { path = "../../../../crates/buffer" }
 swoole-rs-corebase = { path = "../../../../crates/corebase" }
+swoole-rs-coroutine = { path = "../../../../crates/coroutine", features = ["upstream-symbols"] }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }
 swoole-rs-memory = { path = "../../../../crates/memory" }

@@ -170,7 +170,7 @@ fn upload() {
 fn max_request_size() {
     let mut f = server(&curl(false), 128 * 1024, 0);
     serve(&mut f);
-    assert_eq!(f.sent, [SEND_TOO_LARGE], "refused");
+    assert_eq!(f.sent, [Reply::TooLarge], "refused");
     assert!(f.dispatched.is_empty(), "never reaches the handler");
     assert!(
         SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET.contains("413 Request Entity Too Large"),

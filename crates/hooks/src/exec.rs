@@ -16,15 +16,8 @@ const OUT_OF_COROUTINE: c_int = 10001;
 /// SIGCHLD. A deferred resume let the SIGCHLD handler that a coroutine `waitPid`
 /// installs reap the child first, and exec then failed.
 ///
-/// # Safety
-/// In a coroutine (outside one it raises upstream's fatal error, which does not
-/// return); `command` is NUL-terminated and `buffer` has a buffer.
-pub unsafe fn exec(
-    command: &CStr,
-    errors: bool,
-    buffer: &mut CppString,
-    status: &mut c_int,
-) -> bool {
+/// Outside a coroutine it raises upstream's fatal error, which does not return.
+pub fn exec(command: &CStr, errors: bool, buffer: &mut CppString, status: &mut c_int) -> bool {
     if swoole_rs_coroutine::current().is_null() {
         // SAFETY: Swoole's fatal error hook; this frame owns nothing.
         unsafe {
@@ -73,7 +66,7 @@ pub struct SharedPtr<T> {
 /// Itanium ABI passes the `shared_ptr` by address and the caller destroys it.
 ///
 /// # Safety
-/// As [`exec`], with `buffer` naming a live String.
+/// `command` is NUL-terminated and `buffer` names a live String.
 #[cfg_attr(
     all(feature = "upstream-symbols", target_os = "macos"),
     unsafe(
@@ -94,6 +87,5 @@ pub unsafe extern "C" fn system_exec(
     let command = unsafe { CStr::from_ptr(command) };
     // SAFETY: the shared_ptr names a live String.
     let string = unsafe { &mut *buffer.object };
-    // SAFETY: in a coroutine, as the caller promises.
-    unsafe { exec(command, errors, string, status) }
+    exec(command, errors, string, status)
 }

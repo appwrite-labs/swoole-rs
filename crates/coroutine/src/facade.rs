@@ -13,9 +13,8 @@ use crate::scheduler::{
 };
 use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{
-    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, STACK_MARK, STACK_PROTECT, swr_v1_coroutine_get,
-    swr_v1_coroutine_iterator_each, swr_v1_coroutine_iterator_reset, swr_v1_coroutine_print_list,
-    swr_v1_coroutine_run, swr_v1_coroutine_timeout,
+    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, STACK_MARK, STACK_PROTECT, Scheduler,
+    swr_v1_coroutine_run,
 };
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
@@ -81,17 +80,12 @@ fn build() -> u32 {
 
 /// `std::chrono::steady_clock`, in microseconds (`time<seconds_type>(true)`).
 fn steady_usec() -> c_long {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
-    now.tv_sec * 1_000_000 + now.tv_nsec / 1000
+    swoole_rs_corebase::sys::clock_gettime(clock)
+        .map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
 }
 
 extern "C" fn clock() -> c_long {
@@ -197,7 +191,7 @@ pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
 /// `yield_ex`'s timer: the wait timed out.
 unsafe extern "C" fn timed_out(co: *mut c_void) {
     // SAFETY: the coroutine waits in `yield_ex` until this resumes it.
-    unsafe { swr_v1_coroutine_timeout(co.cast()) };
+    unsafe { (*co.cast::<Coroutine>()).mark_timed_out() };
     // SAFETY: as above.
     unsafe { resume(co) };
 }
@@ -259,8 +253,8 @@ pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
 /// `static void Coroutine::print_list()`.
 #[unsafe(export_name = "_ZN6swoole9Coroutine10print_listEv")]
 extern "C-unwind" fn print_list() {
-    // SAFETY: this thread's scheduler and Swoole's open stdout stream.
-    unsafe { swr_v1_coroutine_print_list(scheduler(), swoole_get_stdout_stream().cast()) };
+    // SAFETY: Swoole's open stdout stream.
+    with_scheduler(|s| unsafe { s.print_list(swoole_get_stdout_stream().cast()) });
 }
 
 /// `static void Coroutine::print_socket_bound_error(int, const char *, long)`:
@@ -325,8 +319,7 @@ extern "C" fn swoole_coroutine_get_id() -> c_long {
 /// `swoole::Coroutine *swoole_coroutine_get(long cid)`, for gdb.
 #[unsafe(export_name = "_Z20swoole_coroutine_getl")]
 extern "C" fn swoole_coroutine_get(cid: c_long) -> *mut c_void {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_get(scheduler(), cid) }
+    with_scheduler(|s| s.get(cid))
 }
 
 /// `size_t swoole_coroutine_count()`, for gdb.
@@ -339,13 +332,11 @@ pub extern "C" fn swoole_coroutine_count() -> usize {
 /// `void swoole_coroutine_iterator_reset()`, for gdb.
 #[unsafe(export_name = "_Z31swoole_coroutine_iterator_resetv")]
 extern "C" fn swoole_coroutine_iterator_reset() {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_iterator_reset(scheduler()) };
+    with_scheduler(Scheduler::iterator_reset);
 }
 
 /// `swoole::Coroutine *swoole_coroutine_iterator_each()`, for gdb.
 #[unsafe(export_name = "_Z30swoole_coroutine_iterator_eachv")]
 extern "C" fn swoole_coroutine_iterator_each() -> *mut c_void {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_iterator_each(scheduler()) }
+    with_scheduler(Scheduler::iterator_each)
 }
