@@ -23,13 +23,6 @@ type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
 /// `SW_TIMEOUT_ALL`.
 const TIMEOUT_ALL: c_int = 15;
 
-// SAFETY: the extension archive's.
-unsafe extern "C" {
-    /// `async::dispatch` (`async_threads.rs`, in the extension archive).
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    fn async_dispatch(request: *const c_void) -> *mut c_void;
-}
-
 /// `co->yield()` of the current coroutine (fatal outside one).
 pub(crate) fn park() {
     let co = current();
@@ -51,20 +44,14 @@ pub(crate) unsafe extern "C" fn resume(co: *mut c_void) {
     unsafe { swoole_rs_coroutine::resume(co) };
 }
 
-/// `async::dispatch`.
-unsafe extern "C" fn async_dispatch_event(event: *const AsyncEvent) -> *mut AsyncEvent {
-    // SAFETY: a complete event, as the caller promises.
-    unsafe { async_dispatch(event.cast()) }.cast()
-}
-
 extern "C" fn last_error() -> c_int {
     log::last_error()
 }
 
-/// `coroutine::async`'s coroutine and pool operations, which native's `async` uses too.
+/// `coroutine::async`'s coroutine and pool operations.
 pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current,
-    dispatch: async_dispatch_event,
+    dispatch: crate::async_threads::dispatch,
     park,
     park_for,
     resume,
@@ -72,18 +59,15 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
 };
 
 /// `async::handler_gethostbyname`: the request's address, on a pool thread.
-unsafe extern "C" fn handler_gethostbyname(event: *mut AsyncEvent) {
-    // SAFETY: the pool's copy of the event, exclusive while the handler runs.
-    let event = unsafe { &mut *event };
-    // SAFETY: its request record, held by the copy.
+extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
+    // SAFETY: only `run` dispatches it, over a live request record the pool's copy
+    // holds a reference to.
     (event.retval, event.error) = resolver::host(unsafe { &*event.data });
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
-unsafe extern "C" fn handler_getaddrinfo(event: *mut AsyncEvent) {
-    // SAFETY: the pool's copy of the event, exclusive while the handler runs.
-    let event = unsafe { &mut *event };
-    // SAFETY: its request record, held by the copy.
+extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
+    // SAFETY: as for `handler_gethostbyname`.
     (event.retval, event.error) = resolver::lookup(unsafe { &*event.data });
 }
 
@@ -99,8 +83,7 @@ fn run(
     let mut event = AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut());
     event.data = request.as_ptr();
     event.retval = retval;
-    // SAFETY: a complete event over a live request, in a coroutine.
-    unsafe { swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC) };
+    swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     request.failed(event.retval, event.error, request_error)
 }
 

@@ -13,8 +13,9 @@ use swoole_rs_corebase::swr_v1_core_resolver_finish;
 const AIO_TIMEOUT: c_int = 1779;
 const RESOLVE_TIMEOUT: c_int = 1780;
 /// `AsyncEvent{}`.
-const EMPTY: AsyncEvent =
-    AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut());
+const fn empty() -> AsyncEvent {
+    AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut())
+}
 
 /// The fake state, reset per scenario as the gate's `CASES` macro reset it.
 #[derive(Clone, Copy)]
@@ -60,7 +61,7 @@ thread_local! {
     static QUEUED: Cell<bool> = const { Cell::new(false) };
     static LAST_ERROR: Cell<c_int> = const { Cell::new(0) };
     /// The pool's copy of the event, and the request its `data` shares.
-    static WORKER: UnsafeCell<AsyncEvent> = const { UnsafeCell::new(EMPTY) };
+    static WORKER: UnsafeCell<AsyncEvent> = const { UnsafeCell::new(empty()) };
     static WORKER_REQUEST: RefCell<Option<Rc<Request>>> = const { RefCell::new(None) };
     /// The request the caller's event holds while it dispatches.
     static CALLER_REQUEST: RefCell<Option<Rc<Request>>> = const { RefCell::new(None) };
@@ -83,7 +84,7 @@ fn worker() -> *mut AsyncEvent {
 }
 fn reset_worker() {
     // SAFETY: no callback holds the worker between scenarios.
-    unsafe { *worker() = EMPTY };
+    unsafe { *worker() = empty() };
     drop(WORKER_REQUEST.take());
 }
 
@@ -95,12 +96,12 @@ fn complete_worker() {
     // SAFETY: the dispatched copy, live for the thread; the handlers run as the pool would.
     unsafe {
         if let Some(handler) = (*event).handler
-            && (*event).canceled == 0
+            && (*event).canceled.load(Relaxed) == 0
         {
-            handler(event);
+            handler(&mut *event);
         }
         if let Some(callback) = (*event).callback {
-            callback(event);
+            callback(&*event);
         }
     }
 }
@@ -109,9 +110,7 @@ extern "C" fn current() -> *mut c_void {
     record("current".into());
     core::ptr::dangling_mut()
 }
-unsafe extern "C" fn dispatch(event: *const AsyncEvent) -> *mut AsyncEvent {
-    // SAFETY: the offload passes its complete event.
-    let event = unsafe { &*event };
+extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
     record(format!(
         "dispatch:{}:{}",
         flag(event.handler.is_some()),
@@ -130,7 +129,7 @@ unsafe extern "C" fn dispatch(event: *const AsyncEvent) -> *mut AsyncEvent {
             event.callback,
             event.pipe_socket,
         );
-        (*copy).canceled = flag(k.worker_canceled);
+        (*copy).canceled = AtomicU8::new(flag(k.worker_canceled));
         (*copy).error = k.worker_error;
         (*copy).retval = k.worker_result;
     }
@@ -179,16 +178,13 @@ const OPS: AsyncOps = AsyncOps {
     last_error,
 };
 
-unsafe extern "C" fn typed_handler(event: *mut AsyncEvent) {
+extern "C" fn typed_handler(event: &mut AsyncEvent) {
     record("handler:typed".into());
     let k = knobs();
-    // SAFETY: the dispatched copy.
-    unsafe {
-        (*event).error = k.worker_error;
-        (*event).retval = k.worker_result;
-    }
+    event.error = k.worker_error;
+    event.retval = k.worker_result;
 }
-unsafe extern "C" fn handler_gethostbyname(event: *mut AsyncEvent) {
+extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
     record("handler:host".into());
     WORKER_REQUEST.with_borrow(|request| {
         if let Some(request) = request {
@@ -196,13 +192,10 @@ unsafe extern "C" fn handler_gethostbyname(event: *mut AsyncEvent) {
         }
     });
     let k = knobs();
-    // SAFETY: the dispatched copy.
-    unsafe {
-        (*event).retval = k.worker_result;
-        (*event).error = k.worker_error;
-    }
+    event.retval = k.worker_result;
+    event.error = k.worker_error;
 }
-unsafe extern "C" fn handler_getaddrinfo(event: *mut AsyncEvent) {
+extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
     record("handler:addr".into());
     let k = knobs();
     WORKER_REQUEST.with_borrow(|request| {
@@ -211,11 +204,8 @@ unsafe extern "C" fn handler_getaddrinfo(event: *mut AsyncEvent) {
             request.error.set(k.request_error);
         }
     });
-    // SAFETY: the dispatched copy.
-    unsafe {
-        (*event).retval = k.worker_result;
-        (*event).error = k.worker_error;
-    }
+    event.retval = k.worker_result;
+    event.error = k.worker_error;
 }
 fn lambda() {
     record("lambda:execute".into());
@@ -230,8 +220,7 @@ fn async_event(
     timeout: f64,
 ) -> bool {
     CALLER_REQUEST.set(request.cloned());
-    // SAFETY: a valid event and ops table, inside the fake coroutine.
-    let result = unsafe { swr_v1_hook_async(event, handler, timeout, &OPS) };
+    let result = swr_v1_hook_async(event, handler, timeout, &OPS);
     drop(CALLER_REQUEST.take());
     result
 }
@@ -246,7 +235,7 @@ fn sleep(seconds: f64) -> c_int {
 
 /// `gethostbyname_impl_with_async` as the hybrid's system.cc composes it.
 fn gethostbyname(name: &str, domain: c_int, timeout: f64) -> String {
-    let mut event = EMPTY;
+    let mut event = empty();
     record(format!("host-request:{name}:{domain}"));
     let request = Rc::new(Request::default());
     event.retval = 1;
@@ -280,7 +269,7 @@ fn getaddrinfo(
     service: &str,
     timeout: f64,
 ) -> Vec<String> {
-    let mut event = EMPTY;
+    let mut event = empty();
     record(format!(
         "addr-request:{name}:{family}:{kind}:{protocol}:{service}"
     ));
@@ -335,15 +324,15 @@ fn run(scenario: i32) -> Vec<String> {
         k.worker_error = [0, libc::ETIMEDOUT, libc::EIO][index((n / 8) % 3)];
         k.worker_result = [-1, 0, 1, 123][index(n / 24)];
         KNOBS.set(k);
-        let mut event = EMPTY;
+        let mut event = empty();
         let result = async_event(typed_handler, &mut event, None, 0.25);
         record(format!("result:{}", flag(result)));
-        record(format!("caller-canceled:{}", event.canceled));
+        record(format!("caller-canceled:{}", event.canceled.load(Relaxed)));
         record(format!("caller-retval:{}", event.retval));
         record(format!("caller-error:{}", event.error));
         // SAFETY: the worker slot, read between callbacks.
         record(format!("worker-canceled:{}", unsafe {
-            (*worker()).canceled
+            (*worker()).canceled.load(Relaxed)
         }));
         record(format!("errno:{}", errno()));
         late_completion();
@@ -352,8 +341,7 @@ fn run(scenario: i32) -> Vec<String> {
         k.dispatch_ok = n & 1 != 0;
         k.worker_error = [0, libc::EIO, libc::EINVAL][index((n / 2) % 3)];
         KNOBS.set(k);
-        // SAFETY: a valid ops table, inside the fake coroutine.
-        let result = unsafe { swr_v1_hook_async_job(&mut lambda, &OPS) };
+        let result = swr_v1_hook_async_job(&mut lambda, &OPS);
         record(format!("result:{}", flag(result)));
         record(format!("errno:{}", errno()));
     } else if scenario < 138 {

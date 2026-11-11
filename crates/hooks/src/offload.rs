@@ -1,20 +1,25 @@
 //! `coroutine::async`: hand a job to the `AsyncThreads` pool and park the current
-//! coroutine until the pool's completion resumes it. Native code passes the pool's
-//! `async::dispatch` and the coroutine operations in `AsyncOps`.
+//! coroutine until the pool's completion resumes it. [`AsyncOps`] holds the pool's
+//! `async::dispatch` and the coroutine operations.
 use core::ffi::{c_int, c_void};
 use core::mem::{offset_of, size_of};
+use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
 use swoole_rs_corebase::set_errno;
 
-/// `async::Handler`: runs on a pool thread.
-pub type Handler = unsafe extern "C" fn(*mut AsyncEvent);
+/// `async::Handler`: runs on a pool thread over its own copy of the event, of which
+/// the pool keeps `error` and `retval`.
+pub type Handler = extern "C" fn(&mut AsyncEvent);
+
+/// The completion: runs on the dispatching thread over the completed event.
+pub type Callback = extern "C" fn(&AsyncEvent);
 
 /// Upstream's `AsyncEvent`, with its `shared_ptr` request replaced by a counted
 /// DNS record; native code asserts the same layout.
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct AsyncEvent {
     pub task_id: usize,
-    pub canceled: u8,
+    /// The dispatching thread may set it while a pool thread reads it.
+    pub canceled: AtomicU8,
     pub error: c_int,
     /// The request's resolver record: one reference per heap copy, or null.
     pub(crate) data: *mut swoole_rs_corebase::ResolverRequest,
@@ -23,20 +28,21 @@ pub struct AsyncEvent {
     pub timestamp: f64,
     pub object: *mut c_void,
     pub handler: Option<Handler>,
-    pub callback: Option<Handler>,
+    pub callback: Option<Callback>,
 }
 
 impl AsyncEvent {
-    /// An event with no request.
-    pub(crate) const fn request(
+    /// `AsyncEvent event = {}` with these members set: no request.
+    #[must_use]
+    pub const fn request(
         object: *mut c_void,
         handler: Option<Handler>,
-        callback: Option<Handler>,
+        callback: Option<Callback>,
         pipe_socket: *mut c_void,
     ) -> Self {
         Self {
             task_id: 0,
-            canceled: 0,
+            canceled: AtomicU8::new(0),
             error: 0,
             data: core::ptr::null_mut(),
             retval: 0,
@@ -49,9 +55,19 @@ impl AsyncEvent {
     }
 }
 
+impl Clone for AsyncEvent {
+    fn clone(&self) -> Self {
+        Self {
+            canceled: AtomicU8::new(self.canceled.load(Relaxed)),
+            ..*self
+        }
+    }
+}
+
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
     size_of::<AsyncEvent>() == 72
+        && offset_of!(AsyncEvent, canceled) == 8
         && offset_of!(AsyncEvent, error) == 12
         && offset_of!(AsyncEvent, retval) == 24
         && offset_of!(AsyncEvent, object) == 48
@@ -59,22 +75,23 @@ const _: () = assert!(
     "swoole::AsyncEvent's layout moved"
 );
 
-/// The native operations an offloaded job needs.
-#[repr(C)]
+/// The native operations an offloaded job needs. Only this crate builds one, so the
+/// offload trusts what they return.
 pub struct AsyncOps {
-    /// `Coroutine::get_current_safe()`.
-    pub current: extern "C" fn() -> *mut c_void,
-    /// `async::dispatch`: a pool-owned copy of the event, or null if refused.
-    pub dispatch: unsafe extern "C" fn(*const AsyncEvent) -> *mut AsyncEvent,
+    /// `Coroutine::get_current_safe()`: fatal outside a coroutine.
+    pub(crate) current: extern "C" fn() -> *mut c_void,
+    /// `async::dispatch`: a pool-owned copy of the event, live until its completion
+    /// returns, or null if refused.
+    pub(crate) dispatch: extern "C" fn(&AsyncEvent) -> *mut AsyncEvent,
     /// `co->yield()` of the current coroutine.
-    pub park: fn(),
+    pub(crate) park: fn(),
     /// `co->yield_ex(timeout)` of the current coroutine: false on timeout or
     /// cancellation.
-    pub park_for: fn(f64) -> bool,
+    pub(crate) park_for: fn(f64) -> bool,
     /// `co->resume()`.
-    pub resume: unsafe extern "C" fn(*mut c_void),
+    pub(crate) resume: unsafe extern "C" fn(*mut c_void),
     /// `swoole_get_last_error()`.
-    pub last_error: extern "C" fn() -> c_int,
+    pub(crate) last_error: extern "C" fn() -> c_int,
 }
 
 /// The waiting coroutine, on its stack; the event's `object` while the job runs.
@@ -85,11 +102,9 @@ struct Task<'a> {
 }
 
 /// The pool thread's handler for a job: runs it, then records its errno.
-unsafe extern "C" fn run_job(event: *mut AsyncEvent) {
-    // SAFETY: the pool passes the dispatched copy; the reactor thread reads it only
-    // after completion.
-    let event = unsafe { &mut *event };
-    // SAFETY: its object is the parked task, untouched by its coroutine until completion.
+extern "C" fn run_job(event: &mut AsyncEvent) {
+    // SAFETY: only `swr_v1_hook_async_job` dispatches this handler, its parked task
+    // the object, which the coroutine leaves alone until the completion.
     let task = unsafe { &mut *event.object.cast::<Task<'_>>() };
     if let Some(job) = &mut task.job {
         job();
@@ -99,25 +114,22 @@ unsafe extern "C" fn run_job(event: *mut AsyncEvent) {
 }
 
 /// The reactor thread's completion: resumes the parked coroutine unless it gave up.
-unsafe extern "C" fn completed(event: *mut AsyncEvent) {
-    // SAFETY: the pool passes the completed copy, still live.
-    let event = unsafe { &*event };
-    if event.canceled != 0 {
+extern "C" fn completed(event: &AsyncEvent) {
+    if event.canceled.load(Relaxed) != 0 {
         return;
     }
-    // SAFETY: not canceled, so the task's coroutine is still parked on it.
+    // SAFETY: only this module dispatches this completion, its task the object; not
+    // canceled, so the task's coroutine is still parked on it.
     let task = unsafe { &*event.object.cast::<Task<'_>>() };
     // SAFETY: `co` is the parked coroutine.
     unsafe { (task.ops.resume)(task.co) };
 }
 
-/// `coroutine::async(handler, event, timeout)`: runs `handler(event)` on the pool and
-/// waits up to `timeout`. True with the pool's result in `event`; false if refused, or
-/// on timeout or cancellation (`event` canceled, -1, and the last error as errno).
-///
-/// # Safety
-/// `event` and `ops` are valid; `handler` is a pool handler for `event`; inside a coroutine.
-pub unsafe fn swr_v1_hook_async(
+/// `coroutine::async(handler, event, timeout)`, inside a coroutine (`ops.current` is
+/// fatal outside one): runs `handler` on the pool and waits up to `timeout`. True with
+/// the pool's result in `event`; false if refused, or on timeout or cancellation
+/// (`event` canceled, -1, and the last error as errno).
+pub fn swr_v1_hook_async(
     event: &mut AsyncEvent,
     handler: Handler,
     timeout: f64,
@@ -128,8 +140,7 @@ pub unsafe fn swr_v1_hook_async(
     event.object = (&raw mut task).cast();
     event.handler = Some(handler);
     event.callback = Some(completed);
-    // SAFETY: `event` is complete; the pool copies it.
-    let dispatched = unsafe { (ops.dispatch)(event) };
+    let dispatched = (ops.dispatch)(event);
     if dispatched.is_null() {
         return false;
     }
@@ -137,15 +148,16 @@ pub unsafe fn swr_v1_hook_async(
     if (ops.park_for)(timeout) {
         // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
         let done = unsafe { &*dispatched };
-        event.canceled = done.canceled;
+        *event.canceled.get_mut() = done.canceled.load(Relaxed);
         event.error = done.error;
         event.retval = done.retval;
         set_errno(done.error);
         true
     } else {
-        // SAFETY: the pool's copy is pending; canceling it keeps `completed` off `task`.
-        unsafe { (*dispatched).canceled = 1 };
-        event.canceled = 1;
+        // SAFETY: the pool's copy is pending, live until its completion on this
+        // thread; canceling it keeps `completed` off `task`.
+        unsafe { (*dispatched).canceled.store(1, Relaxed) };
+        *event.canceled.get_mut() = 1;
         event.retval = -1;
         event.error = (ops.last_error)();
         set_errno(event.error);
@@ -157,16 +169,12 @@ pub unsafe fn swr_v1_hook_async(
 /// operations; the hooked functions' and `System::read_file`'s offload. Outside a
 /// coroutine it raises upstream's fatal error.
 pub fn async_job(job: &mut (dyn FnMut() + Send)) -> bool {
-    // SAFETY: the coroutine's operations, whose `current` is fatal outside a coroutine.
-    unsafe { swr_v1_hook_async_job(job, &crate::resolve::COROUTINE_ASYNC) }
+    swr_v1_hook_async_job(job, &crate::resolve::COROUTINE_ASYNC)
 }
 
-/// `coroutine::async(fn)`: runs `job` on the pool and waits for it, then sets errno
-/// to the job's. False if the pool refused it.
-///
-/// # Safety
-/// `ops` is valid; inside a coroutine.
-pub unsafe fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> bool {
+/// `coroutine::async(fn)`, inside a coroutine: runs `job` on the pool and waits for
+/// it, then sets errno to the job's. False if the pool refused it.
+pub fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> bool {
     let co = (ops.current)();
     let mut task = Task {
         co,
@@ -179,8 +187,7 @@ pub unsafe fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncO
         Some(completed),
         core::ptr::null_mut(),
     );
-    // SAFETY: `event` is complete (an empty request); the pool copies it.
-    let dispatched = unsafe { (ops.dispatch)(&raw const event) };
+    let dispatched = (ops.dispatch)(&event);
     if dispatched.is_null() {
         return false;
     }
@@ -209,20 +216,20 @@ mod tests {
     extern "C" fn current() -> *mut c_void {
         core::ptr::dangling_mut()
     }
-    unsafe extern "C" fn dispatch(event: *const AsyncEvent) -> *mut AsyncEvent {
+    extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
         if REFUSE.get() {
             return core::ptr::null_mut();
         }
-        let copy = Box::new(unsafe { core::ptr::read(event) });
+        let copy = Box::new(event.clone());
         PENDING.with_borrow_mut(|slot| &raw mut **slot.insert(copy))
     }
     // Runs the pool's half (handler, then completion) as the reactor would, unless timed out.
     fn park() {
         let raw = PENDING.with_borrow_mut(|slot| &raw mut **slot.as_mut().unwrap());
         unsafe {
-            ((*raw).handler.unwrap())(raw);
-            if (*raw).canceled == 0 {
-                ((*raw).callback.unwrap())(raw);
+            ((*raw).handler.unwrap())(&mut *raw);
+            if (*raw).canceled.load(Relaxed) == 0 {
+                ((*raw).callback.unwrap())(&*raw);
             }
         }
     }
@@ -248,26 +255,16 @@ mod tests {
         last_error,
     };
 
-    unsafe extern "C" fn handler(event: *mut AsyncEvent) {
-        unsafe {
-            (*event).retval = 7;
-            (*event).error = 3;
-        }
+    extern "C" fn handler(event: &mut AsyncEvent) {
+        event.retval = 7;
+        event.error = 3;
     }
 
     fn empty() -> AsyncEvent {
-        AsyncEvent {
-            task_id: 0,
-            canceled: 0,
-            error: 0,
-            data: core::ptr::null_mut(),
-            retval: 1,
-            pipe_socket: core::ptr::null_mut(),
-            timestamp: 0.0,
-            object: core::ptr::null_mut(),
-            handler: None,
-            callback: None,
-        }
+        let mut event =
+            AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut());
+        event.retval = 1;
+        event
     }
 
     fn errno() -> c_int {
@@ -282,10 +279,10 @@ mod tests {
             set_errno(libc::ENOENT);
         };
         RESUMED.set(0);
-        assert!(unsafe { swr_v1_hook_async_job(&mut job, &OPS) });
+        assert!(swr_v1_hook_async_job(&mut job, &OPS));
         assert_eq!((RESUMED.get(), errno()), (1, libc::ENOENT));
         REFUSE.set(true);
-        assert!(!unsafe { swr_v1_hook_async_job(&mut job, &OPS) });
+        assert!(!swr_v1_hook_async_job(&mut job, &OPS));
         REFUSE.set(false);
         assert_eq!(runs, 1);
     }
@@ -294,12 +291,12 @@ mod tests {
     fn handler_result_or_timeout_reaches_the_event() {
         RESUMED.set(0);
         let mut event = empty();
-        assert!(unsafe { swr_v1_hook_async(&mut event, handler, 1.0, &OPS) });
+        assert!(swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
         assert_eq!(
             (
                 event.retval,
                 event.error,
-                event.canceled,
+                event.canceled.load(Relaxed),
                 errno(),
                 RESUMED.get()
             ),
@@ -308,10 +305,15 @@ mod tests {
 
         TIME_OUT.set(true);
         let mut event = empty();
-        assert!(!unsafe { swr_v1_hook_async(&mut event, handler, 1.0, &OPS) });
+        assert!(!swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
         TIME_OUT.set(false);
         assert_eq!(
-            (event.retval, event.error, event.canceled, errno()),
+            (
+                event.retval,
+                event.error,
+                event.canceled.load(Relaxed),
+                errno()
+            ),
             (-1, 9001, 1, 9001)
         );
         // The pool finishes later; the completion skips the gone coroutine.
