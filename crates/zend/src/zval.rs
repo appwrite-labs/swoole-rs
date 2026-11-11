@@ -454,6 +454,51 @@ impl Array {
     }
 }
 
+/// An array zval with a reference of its own ([`Value::hold`]), released the
+/// way `zend_array_release` does: a shared table only loses the reference,
+/// without `zval_ptr_dtor`'s possible-root check or `zend_try`, and only the
+/// last one is destroyed through [`Owned`]'s drop.
+pub struct HeldArray(Owned);
+
+impl Value {
+    /// `ZVAL_COPY` of an array, so a callback that replaces or unsets its
+    /// holder separates the table instead of freeing it; None for anything else.
+    #[must_use]
+    #[inline]
+    pub fn hold(&self) -> Option<HeldArray> {
+        self.array()?;
+        Some(HeldArray(self.copy()))
+    }
+}
+
+impl std::ops::Deref for HeldArray {
+    type Target = Value;
+
+    #[inline]
+    fn deref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl Drop for HeldArray {
+    #[inline]
+    fn drop(&mut self) {
+        let Some(array) = self.0.array() else { return };
+        let [refcount, info] = header(&array.0);
+        let immutable = info & crate::sys::IS_ARRAY_IMMUTABLE != 0;
+        if !immutable && refcount == 1 {
+            // The last reference: `Owned`'s drop destroys the table inside `zend_try`.
+            return;
+        }
+        if !immutable {
+            // SAFETY: another holder keeps the table live; this gives up its reference.
+            unsafe { (*array.as_ptr()).gc.refcount -= 1 };
+        }
+        // Nothing is left for `Owned`'s drop to release.
+        std::mem::forget(std::mem::take(&mut self.0));
+    }
+}
+
 /// [`Array::entries`].
 pub struct Entries<'a> {
     table: &'a Array,
