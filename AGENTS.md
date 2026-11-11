@@ -188,8 +188,7 @@ old: at most one run (about 15-30 minutes) behind `main`. Every job has a
 ### Red main
 
 The queue tests every group on top of `main` before it lands, so `main`'s own run fails
-only what the queue doesn't run (`callgrind`) or a phase that passes one run and fails the
-next. Never stop other work because of it. What must not slip through is a **new** failure:
+only a phase that passes one run and fails the next. Never stop other work because of it. What must not slip through is a **new** failure:
 a phase that passed in the previous completed merge-tier run, or one that didn't exist
 then. Before you claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
 

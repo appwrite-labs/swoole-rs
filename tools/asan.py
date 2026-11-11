@@ -74,9 +74,11 @@ def main():
            'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
            'UBSAN_OPTIONS': options}
     gates = [sys.executable, 'tools/dev.py', 'integrate', '--all-modules', '--php', str(php / 'bin/php')]
-    # Every gate but the lints and cargo_asan.py's runs, which make an ASan build of their own.
+    # Every gate but the lints, cargo_asan.py's runs (they make an ASan build of their own) and the
+    # syscall differential: ASan's runtime makes syscalls of its own, and `applications` already
+    # runs the same projects under ASan.
     planned = json.loads(subprocess.check_output([*gates, '--plan'], cwd=ROOT, env=run, text=True))
-    phases = [arg for entry in planned if entry['phase'] not in {'format', 'clippy', 'ownership'}
+    phases = [arg for entry in planned if entry['phase'] not in {'format', 'clippy', 'ownership', 'syscalls'}
               and not entry['phase'].endswith('-rust-asan') for arg in ['--phase', entry['phase']]]
     failed = []
     if subprocess.run([*gates, *phases, '--with-prerequisites', '--jobs', str(args.jobs),

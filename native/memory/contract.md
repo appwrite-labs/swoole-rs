@@ -79,8 +79,7 @@ system pages, and are freed when the pool is.
 
 `sw_shm_*` (`members.rs`): an anonymous `MAP_SHARED` mapping whose first 8 bytes
 hold its total size; the payload follows. A zero-byte allocation still reserves
-the header; overflowing sizes return NULL. Reallocation copies
-min(old_total-8, new_total-8) payload bytes.
+the header; overflowing sizes return NULL.
 
 ## Upstream members
 
@@ -92,7 +91,7 @@ owner whose constructor returns upstream's throws as errors (-1
 `Exception(SW_ERROR_INVALID_PARAMS)`, -2 `std::bad_alloc`).
 `SwooleG.memory_pool` is the `GlobalMemory` in `members::pool` (`init`,
 `swoole_init`'s; `delete`, `swoole_clean`'s), whose `alloc` aborts where upstream's
-throws. `FixedPool`, `GlobalMemory` and `sw_shm_realloc` have no C++ caller left; their
+throws. `FixedPool` and `GlobalMemory` have no C++ caller left; their
 members stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
 `swr_table_make` allocates through `members::pool::alloc`; the pool's `free` is
 a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust frame active.

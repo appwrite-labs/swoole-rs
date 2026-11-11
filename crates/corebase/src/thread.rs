@@ -22,12 +22,14 @@ pub struct Thread {
     exit_status: AtomicI32,
 }
 
-extern "C" fn entry(body: *mut c_void) -> *mut c_void {
-    // SAFETY: `start` handed this thread the box it leaked.
-    let body = unsafe { Box::from_raw(body.cast::<Body>()) };
+/// The thread's start routine: `start` hands it the boxed body, which it owns.
+extern "C" fn entry(body: Box<Body>) -> *mut c_void {
     body();
     ptr::null_mut()
 }
+
+/// `pthread_create`'s start routine type.
+type Routine = extern "C" fn(*mut c_void) -> *mut c_void;
 
 impl Thread {
     fn handle(&self) -> std::sync::MutexGuard<'_, Option<Handle>> {
@@ -46,6 +48,11 @@ impl Thread {
             std::process::abort();
         }
         let body: *mut Body = Box::into_raw(Box::new(Box::new(body)));
+        // SAFETY: a `Box<Body>` parameter is ABI-compatible with the `*mut c_void`
+        // `pthread_create` passes, which is always `body`.
+        let entry = unsafe {
+            std::mem::transmute::<extern "C" fn(Box<Body>) -> *mut c_void, Routine>(entry)
+        };
         let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
         let code = crate::with_signals_blocked(|| {
             // SAFETY: default attributes; `entry` owns `body` once the thread starts.
@@ -59,6 +66,21 @@ impl Thread {
         // SAFETY: a successful `pthread_create` wrote the handle.
         *handle = Some(Handle(unsafe { thread.assume_init() }));
         Ok(())
+    }
+
+    /// The started thread's `pthread_t`, until it is joined or detached.
+    pub fn id(&self) -> Option<libc::pthread_t> {
+        self.handle().as_ref().map(|handle| handle.0)
+    }
+
+    /// `detach()`: the thread runs on unjoined. False when there is none.
+    pub fn detach(&self) -> bool {
+        let Some(Handle(thread)) = self.handle().take() else {
+            return false;
+        };
+        // SAFETY: the handle `start` stored, taken so no one else joins or detaches it.
+        unsafe { libc::pthread_detach(thread) };
+        true
     }
 
     /// `joinable()`: started and not yet joined.

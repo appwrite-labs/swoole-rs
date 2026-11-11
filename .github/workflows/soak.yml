@@ -35,11 +35,11 @@ jobs:
         ports: ['6379:6379']
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: php-mysql
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -65,7 +65,7 @@ jobs:
         run: >
           python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --control target/soak/upstream.json
           --duration $((minutes * 60)) --output target/soak/cargo.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: soak

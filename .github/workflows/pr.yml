@@ -15,7 +15,7 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # PHP headers and libclang: zend-sys binds them under the `php` feature,
       # which --all-features turns on (every module crate, as in crates/ext).
       - uses: ./.github/actions/install
@@ -41,7 +41,7 @@ jobs:
     timeout-minutes: 10
     steps:
       # Two commits: the PR's merge commit and, as HEAD^1, main, which tools/budget.py compares against.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - name: Check migration ledger
@@ -71,7 +71,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # The PHPT families of the modules this PR touches (every family for shared build
@@ -80,7 +80,7 @@ jobs:
       # (tools/ci.py BASELINES).
       # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
       # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ github.run_id }}
@@ -148,7 +148,7 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/install
@@ -160,7 +160,7 @@ jobs:
       - name: Clear cached builds
         run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - id: upstream
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -212,7 +212,7 @@ jobs:
           python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine cargo=target/ext/swoole.so
           --output target/reports/corpus-halfclose.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: pr-reports
@@ -264,7 +264,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: List touched modules
@@ -282,7 +282,7 @@ jobs:
         run: rm -rf target/upstream target/thirdparty target/native-core
       - if: steps.touched.outputs.modules != ''
         id: upstream
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -297,7 +297,7 @@ jobs:
         run: >
           python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --skip-phase phpt
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && steps.touched.outputs.modules != ''
         with:
           name: gates-reports
@@ -314,7 +314,7 @@ jobs:
       php: ${{ steps.build.outputs.php }}
       shards: ${{ steps.shards.outputs.shards }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: build
         uses: ./.github/actions/phpt-build
         with:
