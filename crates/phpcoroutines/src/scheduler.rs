@@ -6,7 +6,7 @@ use std::{cell::Cell, collections::VecDeque, ffi::c_void, mem, ptr};
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray,
+    Call, Callable, Class, E_ERROR, E_WARNING, Minit, Object, OwnedArray, Parsed,
     bailout::{self, Bailout},
     class_name, message,
     sys::{
@@ -132,8 +132,8 @@ fn refuse(call: &Call, state: &str, method: &str) {
 }
 
 /// Queue a task with its callable kept past the call.
-fn queue(scheduler: &mut Scheduler, mut callable: Callable, count: i64) {
-    callable.keep(None);
+fn queue(scheduler: &mut Scheduler, callable: Parsed, count: i64) {
+    let callable = callable.keep(None);
     if scheduler.list.is_null() {
         scheduler.list = Box::into_raw(Box::default());
     }
