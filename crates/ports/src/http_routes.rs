@@ -192,11 +192,9 @@ pub mod exports {
             let flags = fragment.offset() as u16;
             context.fragment_flags = flags;
             if frame.opcode == 0 {
-                let conn: *mut ConnectionRecord = &raw mut *conn;
-                // SAFETY: a live server and one of its connections.
-                let max = unsafe {
-                    swoole_rs_server::server_methods::package_max_length(serv, conn.cast())
-                };
+                // SAFETY: the port's live server, as the caller guarantees.
+                let serv = unsafe { view::Server::from_raw(serv) };
+                let max = swoole_rs_server::server_methods::package_max_length(serv, conn);
                 context.package_max_length = max as usize;
             }
         }

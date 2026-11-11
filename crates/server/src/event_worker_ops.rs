@@ -220,8 +220,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
-            // SAFETY: the context's live server and worker.
-            unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
+            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker().into());
         }
         OP_CPU_AFFINITY =>
         {

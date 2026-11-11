@@ -368,8 +368,7 @@ pub(crate) unsafe fn answer(
         }
         OP_RT_THREAD_WORKER => {
             let worker = worker(server, reactor_id());
-            // SAFETY: the live server and this thread's worker.
-            unsafe { crate::worker_methods::init_event_worker(server, worker) };
+            crate::worker_methods::init_event_worker(server, (&mut *worker).into());
             sign(add_read(pipe_socket(this(ctx), worker.pipe_worker)));
             0
         }

@@ -826,10 +826,7 @@ fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvDat
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
-        let conn = ptr::from_ref(conn).cast_mut().cast();
-        // SAFETY: the live server and the session's connection.
-        let max_body_size =
-            unsafe { swoole_rs_server::server_methods::package_max_length(view.raw(), conn) };
+        let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn);
         crate::session::session_new(
             session_id,
             default_ctx,

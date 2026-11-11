@@ -247,14 +247,12 @@ fn reactor(ctx: &Context) -> *mut c_void {
 
 /// The effects on the context's worker.
 fn worker(ctx: &Context, op: u32) -> Option<u64> {
-    let worker = ctx.worker;
     match op {
         OP_WORKER_ENTER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_EVENT_WORKER);
             swoole_rs_process::methods::swoole_set_worker_id(ctx.worker().id());
             swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
-            // SAFETY: the context's live server and worker.
-            unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
+            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker());
         }
         OP_WORKER_SIGNAL_INIT => crate::event_worker_ops::worker_signal_init(ctx.server()),
         OP_RESET_CONNECTION_NUM => {
