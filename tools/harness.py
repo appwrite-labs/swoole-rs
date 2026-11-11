@@ -34,6 +34,10 @@ class Engine:
         extra = [arg for extension in self.php_extensions for arg in ['-d', f'extension={extension}']]
         return [self.php, '-n', *extra, '-d', f'extension={self.extension}', *map(str, args)]
 
+    def pid(self, proc):
+        """The PHP process PROC, started from command(), runs: PROC itself unless PHP is wrapped."""
+        return proc.pid
+
     def metadata(self):
         if not self.extension.is_file():
             raise ValueError(f'Extension does not exist: {self.extension}')
