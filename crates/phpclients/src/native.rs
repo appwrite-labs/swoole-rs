@@ -113,11 +113,8 @@ impl NewSocket {
 /// # Errors
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
-    // SAFETY: a hook that owns nothing, run below the C bailout trap.
-    if unsafe { swoole_rs_zend::sys::swr_zend_try_hook(Some(swoole_rs_check_reactor)) } != 0 {
-        return Err(Bailout);
-    }
-    Ok(())
+    // SAFETY: starting the reactor holds nothing a bailout would skip dropping.
+    unsafe { bailout::trap_with(swoole_rs_phpruntime::check_reactor) }
 }
 
 /// Whether the build has an optional SSL option: the host name (0) or grease
@@ -814,9 +811,4 @@ pub(crate) enum Transfer {
     RecvWithBuffer = 4,
     Send = 5,
     SendAll = 6,
-}
-
-/// `php_swoole_check_reactor()`; a `swr_zend_try_hook` body.
-pub(crate) unsafe extern "C" fn swoole_rs_check_reactor() {
-    swoole_rs_phpruntime::check_reactor();
 }
