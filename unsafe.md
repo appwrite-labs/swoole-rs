@@ -1,26 +1,26 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `8578fc0`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `af9311a`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
-| `server` | 807 |  |
+| `server` | 802 |  |
 | `zend` | 505 |  |
-| `tls` | 441 |  |
-| `hooks` | 362 |  |
+| `tls` | 440 |  |
+| `hooks` | 361 |  |
 | `reactor` | 260 |  |
-| `process` | 240 |  |
-| `phpserver` | 235 |  |
+| `process` | 236 |  |
+| `phpserver` | 234 |  |
 | `phpcoroutines` | 229 |  |
-| `phpclients` | 226 |  |
-| `corebase` | 204 |  |
+| `phpclients` | 225 |  |
+| `corebase` | 202 |  |
 | `phpruntime` | 201 |  |
 | `phpstdext` | 186 |  |
-| `phphttp` | 182 |  |
-| `ports` | 170 |  |
+| `phphttp` | 179 |  |
+| `clients` | 164 |  |
+| `ports` | 164 |  |
 | `coroutine` | 162 |  |
-| `clients` | 161 |  |
-| `phpswoole` | 158 |  |
+| `phpswoole` | 157 |  |
 | `curl` | 105 |  |
 | `memory` | 103 |  |
 | `phpprocess` | 88 |  |
@@ -30,12 +30,12 @@
 | `protocols-ffi` | 62 |  |
 | `http-ffi` | 58 |  |
 | `locks` | 53 |  |
-| `phphttp2` | 52 |  |
+| `phphttp2` | 51 |  |
 | `timer` | 50 |  |
 | `pgsql` | 47 |  |
 | `ssh2` | 47 |  |
 | `odbc` | 41 |  |
-| `utilities` | 36 |  |
+| `utilities` | 33 |  |
 | `bus` | 31 |  |
 | `oci` | 31 |  |
 | `websocket-ffi` | 28 |  |
@@ -73,4 +73,4 @@
 | `websocket` | 0 | ✅ |
 | `zend-sys` | 0 |  |
 
-Total 5,878. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 5,852. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
