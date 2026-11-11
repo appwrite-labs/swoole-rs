@@ -77,8 +77,21 @@ const SUCCESS: c_int = 0;
 /// `swoole_globals`: the module globals outside ZTS, which C++ reads by name;
 /// under ZTS each thread's are TSRM's.
 #[unsafe(no_mangle)]
-// SAFETY: booleans, integers and a nullable pointer, for which zero is valid.
-static mut swoole_globals: Globals = unsafe { std::mem::zeroed() };
+static mut swoole_globals: Globals = Globals {
+    display_errors: Cell::new(false),
+    cli: Cell::new(false),
+    use_shortname: Cell::new(false),
+    enable_preemptive_scheduler: Cell::new(false),
+    enable_library: Cell::new(false),
+    enable_fiber_mock: Cell::new(false),
+    blocking_detection: Cell::new(false),
+    blocking_threshold: Cell::new(0),
+    profile: Cell::new(false),
+    leak_detection: Cell::new(false),
+    socket_buffer_size: Cell::new(0),
+    req_status: Cell::new(0),
+    in_autoload: Cell::new(std::ptr::null_mut()),
+};
 
 /// This thread's module globals, live from MINIT for the thread's life
 /// (`Globals` is not `Sync`, so the reference stays on this thread).
