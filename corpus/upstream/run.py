@@ -135,6 +135,12 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'it connects to live www.baidu.com:80 with a 1 s timeout, and every engine sometimes '
         'misses it with the same "Unable to connect" (16 merge-tier runs: upstream 3/32, hybrid '
         '4/32, cargo 2/15 first runs; hybrid 2/4 then upstream 0/25 in one iouring gate, #2116)',
+        'tests/swoole_client_async/enableSSL.phpt':
+        "it asserts live www.baidu.com's reply contains 'www.baidu.com' in the first onReceive, "
+        'which gets whatever TLS records have arrived: the server splits the reply into records '
+        '(789, 1024, 907, 395 bytes...) sometimes 0.1-25 ms apart, and a first read of only the '
+        "789-byte record fails on every engine (aarch64 dev image, alternating: upstream 41/60, "
+        'cargo 48/60 idle and under CPU load; merge tier cargo 2/4 then upstream 0/27, #2873)',
         'tests/swoole_websocket_server/pack.phpt':
         'mt_rand(0, 128000) can draw 0, and get_safe_random(0) reaches '
         'openssl_random_pseudo_bytes(0), which throws ValueError: about 0.8% of runs on any '
