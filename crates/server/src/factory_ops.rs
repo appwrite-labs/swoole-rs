@@ -436,7 +436,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             swoole_set_worker_id(record.id());
             swoole_set_worker_pid(record.pid());
             swoole_set_worker_type(int);
-            crate::worker_methods::set_current_worker(worker);
+            swoole_rs_process::worker_globals::set_current_worker(worker);
         }
         OP_POOL_MAIN_LOOP => {
             type MainLoop =

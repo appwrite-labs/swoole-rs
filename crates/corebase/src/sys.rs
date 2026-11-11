@@ -41,6 +41,18 @@ pub fn set_errno(value: c_int) {
     unsafe { slot.write(value) };
 }
 
+/// `strerror(3)`: libc's message for `code`, as std's `strerror_r` reads it.
+#[must_use]
+pub fn strerror(code: c_int) -> String {
+    let mut text = std::io::Error::from_raw_os_error(code).to_string();
+    // std appends the code; strip that, leaving libc's message.
+    let message = text
+        .strip_suffix(&format!(" (os error {code})"))
+        .map_or(text.len(), str::len);
+    text.truncate(message);
+    text
+}
+
 /// `read(2)` into `buf`.
 pub fn read(fd: c_int, buf: &mut [impl ReadSlot]) -> isize {
     // SAFETY: `buf` is writable for its length.
@@ -155,6 +167,16 @@ mod tests {
         }
         assert_eq!(close(copy), -1);
         assert_eq!(errno(), libc::EBADF);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strerror")]
+    fn strerror_is_libc_message() {
+        for code in [libc::ENOENT, libc::EAGAIN, libc::EBADF, 0, 9999] {
+            // SAFETY: strerror returns a NUL-terminated message for any code.
+            let libc = unsafe { CStr::from_ptr(libc::strerror(code)) };
+            assert_eq!(strerror(code), libc.to_str().unwrap(), "code {code}");
+        }
     }
 
     #[test]

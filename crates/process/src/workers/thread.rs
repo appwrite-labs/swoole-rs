@@ -40,7 +40,6 @@ use super::ops::{
 };
 use super::{Host, SW_ERR, SW_OK};
 use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
-use crate::worker_globals::thread_globals;
 use crate::worker_record::WorkerRecord;
 
 /// `swoole::WorkerType`.
@@ -396,8 +395,7 @@ fn body<H: Host>(h: &mut H, arg: u64) {
         if kind == TASK_WORKER {
             worker.set_status(WORKER_IDLE);
         }
-        // SAFETY: this thread's live worker-globals record.
-        unsafe { (*thread_globals()).worker = worker.raw() };
+        crate::worker_globals::set_current_worker(worker.raw());
     }
     h.op(OP_WORKER_THREAD_START, arg);
     if message_bus {
@@ -471,6 +469,7 @@ fn thread_main<H: Host>(h: &mut H, arg: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker_globals::thread_globals;
     use crate::workers::script::Script;
 
     #[test]

@@ -26,6 +26,7 @@ use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
+    host::callable::Callable,
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_http_build_query,
         swr_zend_property_merge, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
@@ -122,7 +123,7 @@ struct Client {
     websocket: bool,
     accept_websocket_compression: bool,
     ws: Option<Box<dyn WebSocket>>,
-    write_func: *mut c_void,
+    write_func: Option<Rc<Callable>>,
     path: Vec<u8>,
     basic_auth: Vec<u8>,
     head: bool,
@@ -361,7 +362,7 @@ impl Client {
             accept_websocket_compression: false,
             // SAFETY: a fresh C++ allocation the client frees.
             ws: native::websocket(),
-            write_func: ptr::null_mut(),
+            write_func: None,
             path: Vec::new(),
             basic_auth: Vec::new(),
             head: false,
@@ -468,18 +469,16 @@ impl Client {
                 self.body_decompression = truthy(found);
             }
             if let Some(found) = get(b"write_func") {
-                let old = std::mem::replace(&mut self.write_func, ptr::null_mut());
-                // SAFETY: the callable the client owned, if any, which it no longer holds.
-                unsafe { native::swoole_http_client_coro_callable_free(old) };
+                drop(self.write_func.take());
                 if bailout::pending() {
                     return;
                 }
-                // SAFETY: a live zval.
-                let created = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
+                let created = Callable::new(found).unwrap_or_else(|bailed| {
+                    bailed.defer();
+                    None
+                });
                 // The old callable's destructor may have set a write_func: this one replaces it.
-                let nested = std::mem::replace(&mut self.write_func, created);
-                // SAFETY: the nested call's callable, if any, which the client no longer holds.
-                unsafe { native::swoole_http_client_coro_callable_free(nested) };
+                drop(std::mem::replace(&mut self.write_func, created));
                 if bailout::pending() {
                     return;
                 }
@@ -1259,9 +1258,7 @@ impl Drop for Client {
     /// bails out; that bailout stays pending for the `free` handler to raise.
     fn drop(&mut self) {
         self.close(true);
-        // SAFETY: the C++ objects the client owns, freed once (null is ignored
-        // by each, as `delete` is).
-        unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
+        drop(self.write_func.take());
         if let Some(fd) = self.download_file.take() {
             native::swoole_http_client_coro_file_close(fd);
         }
@@ -1417,7 +1414,7 @@ fn on_body(this: *mut Client, at: *const c_char, length: usize) -> c_int {
     let data = unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) };
     let decompress =
         client.body_decompression && !client.compression_error && client.compress != Compress::None;
-    if !client.write_func.is_null() {
+    if let Some(callable) = client.write_func.clone() {
         let mut chunk = data;
         if decompress {
             if client.decompress(data) {
@@ -1429,13 +1426,14 @@ fn on_body(this: *mut Client, at: *const c_char, length: usize) -> c_int {
                 client.compression_error = true;
             }
         }
-        let (callable, object) = (client.write_func, client.object);
+        let object = client.object;
         let (pointer, size) = (chunk.as_ptr(), chunk.len());
         client.in_callback = true;
-        // SAFETY: the client's callable, its object and the chunk's bytes, which
-        // live until the call returns (the body is cleared after).
-        let result =
-            unsafe { native::swoole_http_client_coro_call(callable, object, pointer.cast(), size) };
+        // SAFETY: the client's object and the chunk's bytes, which live until
+        // the call returns (the body is cleared after); the callable is held.
+        let result = unsafe {
+            native::swoole_http_client_coro_call(&callable, object, pointer.cast(), size)
+        };
         // The callback may have reentered the client; read it afresh.
         let client = parser_client(this);
         client.body.clear();

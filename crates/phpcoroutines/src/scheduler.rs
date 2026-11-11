@@ -256,7 +256,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     if let Some(value) = options.get(b"name_resolver") {
         if let Some(resolvers) = value.array() {
             for (_, resolver) in resolvers.entries() {
-                host::add_name_resolver(resolver.as_ptr());
+                host::add_name_resolver(resolver);
             }
         } else {
             host::fatal_error(E_WARNING, c"name_resolver must be an array");
@@ -405,9 +405,9 @@ fn rshutdown() -> Result<(), Bailout> {
         return Ok(());
     };
     loop {
-        // SAFETY: the resolver list; every PHP resolver matches null. Each
-        // match is unlinked and returned (crates/phpclients).
-        let resolver = unsafe { (families.name_resolver_remove)(ptr::null_mut()) };
+        // Every PHP resolver matches `None`; each match is unlinked and returned
+        // (crates/phpclients).
+        let resolver = (families.name_resolver_remove)(None);
         if resolver.is_null() {
             break;
         }

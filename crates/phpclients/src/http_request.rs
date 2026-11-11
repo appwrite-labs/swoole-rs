@@ -1,7 +1,7 @@
 //! The HTTP client's byte-level rules, free of Zend: request formatting through
 //! upstream's fixed `sw_snprintf` buffers, multipart sizes, header token lists,
 //! random tokens and response header semantics.
-use swoole_rs_clients::http_format::{ClientsFormatSpan, swr_v1_clients_http_format};
+use swoole_rs_clients::http_format::http_format;
 
 /// `SW_HTTP_CLIENT_BOUNDARY_PREKEY` and `SW_HTTP_CLIENT_BOUNDARY_TOTAL_SIZE`.
 const BOUNDARY_PREFIX: &[u8] = b"----SwooleBoundary";
@@ -17,7 +17,7 @@ const LENGTH_BUFFER: usize = 64;
 /// `SW_STACK_BUFFER_SIZE`, the bound of `swoole_http_token_list_contains_value`.
 const TOKEN_LIST_LIMIT: usize = 8192;
 
-/// What `swr_v1_clients_http_format` writes (`clients_format_request`).
+/// What `http_format` writes (`clients_format_request`).
 #[derive(Clone, Copy)]
 enum Format {
     ContentLength = 0,
@@ -28,30 +28,10 @@ enum Format {
     Closing = 5,
 }
 
-fn span(bytes: &[u8]) -> ClientsFormatSpan {
-    ClientsFormatSpan {
-        data: bytes.as_ptr(),
-        length: bytes.len(),
-    }
-}
-
 /// `sw_snprintf` into a `capacity`-byte buffer, appended to `out`.
 fn format(out: &mut Vec<u8>, kind: Format, spans: [&[u8]; 4], number: usize, capacity: usize) {
     let mut buffer = vec![0_u8; capacity];
-    // SAFETY: the spans borrow live slices and the output is a distinct buffer
-    // of `capacity` bytes.
-    let result = unsafe {
-        swr_v1_clients_http_format(
-            kind as u32,
-            span(spans[0]),
-            span(spans[1]),
-            span(spans[2]),
-            span(spans[3]),
-            number,
-            buffer.as_mut_ptr(),
-            capacity,
-        )
-    };
+    let result = http_format(kind as u32, spans.map(Some), number, buffer.as_mut_slice());
     out.extend_from_slice(buffer.get(..result.written).unwrap_or(&buffer));
 }
 

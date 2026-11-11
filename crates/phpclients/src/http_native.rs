@@ -12,8 +12,9 @@ use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
-use swoole_rs_phpruntime::{callable_call, callable_free, co};
+use swoole_rs_phpruntime::co;
 use swoole_rs_websocket_ffi::frame_api::get_package_length;
+use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
     Array, Call, Owned, Value, bailout, set_object, string,
     sys::{zend_object, zval, zval_ptr_dtor},
@@ -277,17 +278,10 @@ pub(crate) fn swoole_http_client_coro_file_close(fd: c_int) {
     swoole_coroutine_close(fd);
 }
 
-pub(crate) unsafe fn swoole_http_client_coro_callable_free(callable: *mut c_void) {
-    if !callable.is_null() {
-        // SAFETY: the client's callable, freed once.
-        unsafe { callable_free(callable) };
-    }
-}
-
 /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
 /// 2 if it bailed out.
 pub(crate) unsafe fn swoole_http_client_coro_call(
-    callable: *mut c_void,
+    callable: &Callable,
     client: *mut zend_object,
     data: *const c_char,
     length: size_t,
@@ -300,8 +294,7 @@ pub(crate) unsafe fn swoole_http_client_coro_call(
     let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
     // SAFETY: a fresh string the zval owns.
     unsafe { value::set_str(&raw mut args[1], string::copy(data)) };
-    // SAFETY: a live callable and arguments.
-    let result = match unsafe { callable_call(callable, &mut args, std::ptr::null_mut(), false) } {
+    let result = match crate::native::call(callable, &mut args, std::ptr::null_mut(), false) {
         Ok(true) => 0,
         Ok(false) => 1,
         Err(bailout::Bailout) => 2,
