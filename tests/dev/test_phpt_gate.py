@@ -45,6 +45,12 @@ class PhptGate(unittest.TestCase):
         self.assertIn(f'1 pending a port (not gated)</summary>\n\n- `{failing} (#{PENDING[failing]}): failed`', summary)
         self.assertIn(f'1 pending a port but passing here: drop them from PENDING_PORTS</summary>\n\n- `{passing}`', summary)
 
+    def test_sanitizer_racy_original_runs_without_sanitizers(self):
+        from corpus.upstream.run import racy
+        path = 'tests/swoole_websocket_server/get_large_requests.phpt'
+        self.assertIsNotNone(racy({'path': path}, {'capabilities': ['sanitizers']}))
+        self.assertIsNone(racy({'path': path}, {'capabilities': []}))
+
     def test_thread_context_racy_original_runs_without_thread_context(self):
         from corpus.upstream.run import racy, verdict_failed
         case = {'path': 'tests/swoole_coroutine/cancel/throw_exception.phpt'}
