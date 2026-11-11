@@ -214,15 +214,18 @@ impl<'a> Op<'a> {
         self.operand(self.result_type, self.result)
     }
 
-    /// `_get_zval_ptr_ptr_var`: op1's variable, through an indirection.
-    fn op1_indirect(self) -> Option<&'a Value> {
-        let slot = self.op1()?;
-        if !matches!(u32::from(self.op1_type), IS_VAR | IS_CV) || slot.kind() != IS_INDIRECT {
-            return Some(slot);
+    /// `_get_zval_ptr_ptr_var` and `ZVAL_DEREF`: the slot op1's variable
+    /// holds its value in, through an indirection and a reference.
+    fn op1_container(self) -> Option<&'a Value> {
+        let mut slot = self.op1()?;
+        if matches!(u32::from(self.op1_type), IS_VAR | IS_CV) && slot.kind() == IS_INDIRECT {
+            // SAFETY: an indirect zval holds `zv`, at offset 0.
+            let target = unsafe { slot.as_ptr().cast::<*mut zval>().read() };
+            // SAFETY: the live slot it points to.
+            slot = unsafe { Value::from_ptr(target) }?;
         }
-        // SAFETY: an indirect zval holds `zv`, at offset 0.
-        let target = unsafe { slot.as_ptr().cast::<*mut zval>().read() };
-        // SAFETY: the live slot it points to.
-        unsafe { Value::from_ptr(target) }
+        // SAFETY: the variable's own slot, or its reference's, which the
+        // opcode handler works on in place, as Zend's does.
+        unsafe { Value::from_ptr(slot.referent()) }
     }
 }

@@ -724,8 +724,7 @@ fn pack_method(call: &Call) {
 }
 
 fn to_string(call: &Call) {
-    // SAFETY: `$this`, which the frame holds for the call.
-    pack_value(call, unsafe { Value::from_ptr(call.this_zval()) }, 0, 0);
+    pack_value(call, call.this_value(), 0, 0);
 }
 
 /// `websocket::decode` of a whole frame, warning as it does; the input is

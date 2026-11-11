@@ -13,12 +13,10 @@ use std::{
 use swoole_rs_corebase::sys;
 use swoole_rs_zend::{
     Class, Minit, Owned, Value,
-    bailout::Bailout,
     sys::{
         IS_RESOURCE_EX, PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
         swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_expose,
-        swr_zend_stream_fd, swr_zend_stream_from_zval, swr_zend_stream_open,
-        swr_zend_stream_select_fd, swr_zend_thread_main_request, zend_value,
+        swr_zend_stream_fd, swr_zend_stream_open, swr_zend_thread_main_request, zend_value,
     },
     value,
 };
@@ -50,20 +48,13 @@ fn error(errno: i64) -> Owned {
 /// `php_swoole_thread_stream_cast`: a duplicate of a stream's descriptor, or
 /// -1. A warning's handler that bailed out is deferred.
 pub(crate) fn stream_cast(value: &Value) -> c_int {
-    // SAFETY: a live zval, in its request; null when it is not a stream.
-    let stream = unsafe { swr_zend_stream_from_zval(value.as_ptr()) };
-    if stream.is_null() {
-        return -1;
-    }
-    let mut fd = -1;
-    // SAFETY: a live stream; the shim traps a bailout.
-    match unsafe { swr_zend_stream_select_fd(stream, &raw mut fd) } {
-        0 if fd >= 0 => sys::dup(fd),
-        2 => {
-            Bailout.defer();
+    match value.stream_fd() {
+        Ok(Some(fd)) => sys::dup(fd),
+        Ok(None) => -1,
+        Err(bailout) => {
+            bailout.defer();
             -1
         }
-        _ => -1,
     }
 }
 

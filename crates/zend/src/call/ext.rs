@@ -130,22 +130,24 @@ impl Call {
     }
 
     /// `Z_PARAM_ARRAY_EX2(dest, 1, 1, 0)` of passed argument `n`: the array a
-    /// by-reference argument refers to, or None for null.
+    /// by-reference argument refers to, with a reference of its own, or None
+    /// for null.
     /// # Errors
     /// The argument is neither an array nor null; Zend has thrown.
     #[inline]
-    pub fn array_or_null(&self, n: u32) -> Result<Option<&crate::Array>, Invalid> {
+    pub fn array_or_null(&self, n: u32) -> Result<Option<crate::Owned>, Invalid> {
         let arg = self.arg_value(n).dereferenced();
         if arg.is_null() {
             return Ok(None);
         }
-        arg.array().map(Some).ok_or_else(|| {
-            Self::wrong(
-                n,
-                arg,
-                crate::sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
-            )
-        })
+        if arg.array().is_some() {
+            return Ok(Some(arg.into_owned()));
+        }
+        Err(Self::wrong(
+            n,
+            &arg,
+            crate::sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
+        ))
     }
 
     /// `Z_PARAM_OBJECT` of passed argument `n`.
@@ -153,13 +155,13 @@ impl Call {
     /// The argument is not an object; Zend has thrown.
     #[inline]
     pub fn object(&self, n: u32) -> Result<*mut zval, Invalid> {
-        let arg = self.arg_value(n).dereferenced();
-        if arg.object().is_some() {
-            return Ok(arg.as_ptr());
+        let arg = self.arg_value(n);
+        if arg.dereferenced().object().is_some() {
+            return Ok(arg.referent());
         }
         Err(Self::wrong(
             n,
-            arg,
+            &arg.dereferenced(),
             crate::sys::_zend_expected_type_Z_EXPECTED_OBJECT,
         ))
     }

@@ -11,16 +11,16 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, Owned, Value, ZString,
+    Call, Owned, UNDEF, Value, ZString,
     bailout::Bailout,
     handlers,
     sys::{
-        _zend_hash_init, _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashTable,
-        IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
-        IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof,
-        swr_zend_try_lookup_class, zend_class_entry, zend_execute_data, zend_function,
-        zend_get_type_by_const, zend_internal_function, zend_long, zend_throw_error,
-        zend_type_error, zend_value, zif_handler, zval, zval_ptr_dtor,
+        _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
+        IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
+        swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof, swr_zend_try_lookup_class,
+        zend_class_entry, zend_execute_data, zend_function, zend_get_type_by_const,
+        zend_internal_function, zend_long, zend_throw_error, zend_type_error, zend_value,
+        zif_handler, zval, zval_ptr_dtor,
     },
     value::{self, table},
 };
@@ -409,7 +409,7 @@ pub(crate) fn check(typed: Typed, key: KeyType, value: &Value) -> bool {
         }
         return false;
     }
-    match (value.class(), Typed::of(value)) {
+    match (value.class(), Typed::of(&value)) {
         (Some(actual), _) => check_object(typed.header().ce, actual),
         (None, element) if expected == IS_ARRAY => check_array(typed, element),
         _ => true,
@@ -564,10 +564,10 @@ pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -
     // SAFETY: per Zend's contract.
     let frame = unsafe { Frame::new(frame) };
     // `get_array_on_opline`: op1's slot.
-    let Some(array) = frame.op().op1_indirect() else {
+    let Some(array) = frame.op().op1_container() else {
         return DISPATCH;
     };
-    match Typed::of(array.dereferenced()) {
+    match Typed::of(array) {
         Some(typed) if typed.this().key == 0 => {
             throw(c"The typed array list do not support random deletion of elements");
             CONTINUE
@@ -584,28 +584,17 @@ pub unsafe extern "C" fn swr_v1_phpstdext_foreach_begin(frame: *mut zend_execute
     // SAFETY: per Zend's contract.
     let frame = unsafe { Frame::new(frame) };
     let op = frame.op();
-    if op
-        .op1_indirect()
-        .and_then(|array| Typed::of(array.dereferenced()))
-        .is_none()
-    {
+    if op.op1_container().and_then(Typed::of).is_none() {
         return DISPATCH;
     }
     throw(c"The type array do not support using references for element value during iteration");
     if let Some(result) = op.result() {
-        let result = result.as_ptr();
-        // SAFETY: the result slot: `ZVAL_UNDEF`.
-        unsafe {
-            (*result).u1 = _zval_struct__bindgen_ty_1 {
-                type_info: IS_UNDEF,
-            }
+        let mut undefined = UNDEF;
+        undefined.u2 = _zval_struct__bindgen_ty_2 {
+            fe_iter_idx: u32::MAX,
         };
-        // SAFETY: as above: `Z_FE_ITER_P(result) = -1`.
-        unsafe {
-            (*result).u2 = _zval_struct__bindgen_ty_2 {
-                fe_iter_idx: u32::MAX,
-            }
-        };
+        // SAFETY: the result slot: `ZVAL_UNDEF`, then `Z_FE_ITER_P(result) = -1`.
+        unsafe { result.as_ptr().write(undefined) };
     }
     CONTINUE
 }
@@ -801,7 +790,10 @@ unsafe fn run(
 
 /// The typed array a builtin's first argument names, if it is one.
 fn typed_target(call: &Call) -> Option<Typed<'_>> {
-    Typed::of(call.value(1)?.dereferenced())
+    let array = call.value(1)?.referent();
+    // SAFETY: the array the by-reference argument refers to, which the builtin
+    // works on in place.
+    Typed::of(unsafe { Value::from_ptr(array) }?)
 }
 
 /// Check each argument after the first as an appended value.
@@ -862,7 +854,7 @@ unsafe extern "C" fn splice(frame: *mut zend_execute_data, value: *mut zval) {
 fn check_replacement(typed: Typed, replacement: &Value) -> bool {
     let values = replacement.dereferenced();
     let Some(values) = values.array() else {
-        return check(typed, KeyType::UNDEF, values);
+        return check(typed, KeyType::UNDEF, &values);
     };
     values
         .entries()

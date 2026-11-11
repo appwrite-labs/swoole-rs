@@ -226,7 +226,7 @@ unsafe fn assign_op(
         // SAFETY: dimension lookup failed before the operation's result exists.
         return unsafe { abandon(op, data) };
     };
-    let target = element.dereferenced();
+    let target = element.referent();
     if element.kind() == z::IS_REFERENCE {
         // SAFETY: a reference zval holds `ref`, at offset 0.
         let reference = unsafe { element.as_ptr().cast::<*mut zend_reference>().read() };
@@ -250,7 +250,7 @@ unsafe fn assign_op(
         return unsafe { abandon(op, data) };
     }
     // SAFETY: Zend applies the exact current opcode to the live element and value.
-    leaf(unsafe { swr_phpstdext_binary(target.as_ptr(), value.as_ptr(), op.at) })?;
+    leaf(unsafe { swr_phpstdext_binary(target, value.as_ptr(), op.at) })?;
     // SAFETY: per the caller.
     unsafe { publish(op, data, target) }
 }
@@ -258,10 +258,10 @@ unsafe fn assign_op(
 /// Publish `element` as `op`'s result, then free `data`'s operand.
 /// # Safety
 /// As [`free_operand`].
-unsafe fn publish(op: Op, data: Op, element: &Value) -> Result<(), Bailout> {
+unsafe fn publish(op: Op, data: Op, element: *const zval) -> Result<(), Bailout> {
     if let Some(result) = op.result() {
         // SAFETY: publish a retained copy of the actual post-operation element.
-        unsafe { z::swr_zval_copy(result.as_ptr(), element.as_ptr()) };
+        unsafe { z::swr_zval_copy(result.as_ptr(), element) };
     }
     // SAFETY: per the caller; released after result publication.
     unsafe { free_operand(data) }
@@ -271,10 +271,9 @@ unsafe fn publish(op: Op, data: Op, element: &Value) -> Result<(), Bailout> {
 /// `frame` is at an `ASSIGN_DIM` or `ASSIGN_DIM_OP` instruction.
 unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
     let op = frame.op();
-    let Some(array) = op.op1_indirect() else {
+    let Some(array) = op.op1_container() else {
         return Ok(DISPATCH);
     };
-    let array = array.dereferenced();
     let Some(typed) = Typed::of(array) else {
         return Ok(DISPATCH);
     };

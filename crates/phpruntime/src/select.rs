@@ -69,13 +69,13 @@ fn to_fd_set(
     let mut entries = array.entries();
     while let Some((key, index, value)) = entries.next_stored() {
         let value = value.dereferenced();
-        let fd = convert_to_fd(value)?;
+        let fd = convert_to_fd(&value)?;
         if fd < 0 {
             continue;
         }
         found
             .entry(fd)
-            .or_insert_with(|| Entry::new(key, index, value));
+            .or_insert_with(|| Entry::new(key, index, &value));
         rows.push((fd, event));
     }
     Ok(())
@@ -93,7 +93,7 @@ fn emulate_read(array: &mut ArrayMut) -> usize {
             let stream = unsafe { swr_zend_stream_from_zval(value.as_ptr()) };
             // SAFETY: null or a live stream.
             if unsafe { stream.as_ref() }.is_some_and(|stream| stream.writepos > stream.readpos) {
-                ready.push(Entry::new(key, index, value));
+                ready.push(Entry::new(key, index, &value));
             }
         }
     }

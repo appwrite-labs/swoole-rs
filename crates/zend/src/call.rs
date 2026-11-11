@@ -396,14 +396,6 @@ impl Call {
         unsafe { zend_argument_value_error(n, c"%s".as_ptr(), message.as_ptr()) };
     }
 
-    /// `Z_PARAM_ZVAL_EX(.., 0, 1)` of argument `n` (1-based), which must be
-    /// passed: a reference yields the value it refers to.
-    #[must_use]
-    #[inline]
-    pub fn zval_deref(&self, n: u32) -> *mut zval {
-        self.arg_value(n).dereferenced().as_ptr()
-    }
-
     /// Make by-reference argument `n` (1-based), which must be passed, hold
     /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
     /// # Safety
@@ -411,12 +403,13 @@ impl Call {
     /// [`Call::array_ref`], ...) is used afterwards: what it held is released.
     #[inline]
     pub unsafe fn assign(&self, n: u32, value: crate::Owned) {
-        let slot = self.arg_value(n).dereferenced();
-        // SAFETY: a passed argument's live value, released here; per the
-        // caller, nothing borrows it any more.
-        unsafe { slot.release() };
+        let slot = self.arg_value(n).referent();
+        // SAFETY: a passed argument's live slot, for the call.
+        let held = unsafe { &*slot.cast::<Value>() };
+        // SAFETY: per the caller, nothing borrows what it holds, released here.
+        unsafe { held.release() };
         // SAFETY: as above; the slot takes over the value.
-        unsafe { slot.as_ptr().write(value.into_zval()) };
+        unsafe { slot.write(value.into_zval()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.

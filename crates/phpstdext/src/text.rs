@@ -4,7 +4,7 @@ use std::{ffi::c_void, ptr};
 use swoole_rs_zend::{
     Call, UNDEF, ZStr, handlers,
     sys::{
-        swr_zend_emalloc, swr_zend_treat_string, swr_zend_try_json_decode_ex, zend_long,
+        swr_zend_http_estrndup, swr_zend_treat_string, swr_zend_try_json_decode_ex, zend_long,
         zend_string, zval,
     },
 };
@@ -94,14 +94,10 @@ fn parse_str(call: &Call) {
     };
     call.set_array();
     // `estrndup`: the SAPI frees it.
-    // SAFETY: Zend's request allocator.
-    let copy = unsafe { swr_zend_emalloc(text.len() + 1) }.cast::<u8>();
-    // SAFETY: room for the bytes and a NUL.
-    unsafe { ptr::copy_nonoverlapping(text.as_ptr(), copy, text.len()) };
-    // SAFETY: as above.
-    unsafe { copy.wrapping_add(text.len()).write(0) };
+    // SAFETY: Zend copies `text.len()` bytes, in a request.
+    let copy = unsafe { swr_zend_http_estrndup(text.as_ptr().cast(), text.len()) };
     // SAFETY: an emalloc'd NUL-terminated copy and the array just made.
-    unsafe { swr_zend_treat_string(copy.cast(), call.return_value()) };
+    unsafe { swr_zend_treat_string(copy, call.return_value()) };
 }
 
 fn str_is_empty(call: &Call) {

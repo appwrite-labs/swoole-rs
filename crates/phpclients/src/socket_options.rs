@@ -616,7 +616,9 @@ fn get_option(call: &Call) {
 /// The array (or object properties) of a `setOption` value, or `None` after
 /// the type error upstream throws.
 fn option_table<'a>(call: &Call, value: &'a Value, name: &str) -> Option<&'a Array> {
-    let table = value.array().or_else(|| value.properties());
+    // SAFETY: the caller hands the table to `option_pair`, which copies what it
+    // finds before any PHP code runs.
+    let table = value.array().or_else(|| unsafe { value.properties() });
     if table.is_none() {
         let message = format!(
             "must be of type array|object when argument $opt_name is {name}, {} given",
@@ -630,9 +632,9 @@ fn option_table<'a>(call: &Call, value: &'a Value, name: &str) -> Option<&'a Arr
 /// The two longs a `setOption` array holds under `keys`: `Err(false)` after
 /// the missing-key warning, `Err(true)` when the call must stop (a bailout).
 fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
-    let mut found = [None; 2];
+    let mut found = [None, None];
     for (slot, key) in found.iter_mut().zip(keys) {
-        *slot = table.find(key.to_bytes());
+        *slot = table.find(key.to_bytes()).map(Value::copy);
         if slot.is_none() {
             let message = format!("no key \"{}\" passed in optval", key.to_string_lossy());
             let message = CString::new(message).unwrap_or_default();
@@ -643,7 +645,7 @@ fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
     }
     let mut values = [0; 2];
     for (value, item) in values.iter_mut().zip(found.into_iter().flatten()) {
-        *value = long(item).map_err(|Stop| true)?;
+        *value = long(&item).map_err(|Stop| true)?;
     }
     Ok(values)
 }

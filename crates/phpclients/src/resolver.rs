@@ -199,7 +199,7 @@ fn lookup(call: &Call) {
         return;
     };
     let held = call.value(2).map(Value::dereferenced);
-    let Some(context) = context_of(held.and_then(Value::custom::<Held>)) else {
+    let Some(context) = context_of(held.as_deref().and_then(Value::custom::<Held>)) else {
         return;
     };
     // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
@@ -220,6 +220,7 @@ fn add(call: &Call) {
         Ok(_) => call.set_bool(
             call.value(1)
                 .map(Value::dereferenced)
+                .as_deref()
                 .is_some_and(php_swoole_name_resolver_add),
         ),
         Err(_) => call.set_bool(false),
@@ -271,7 +272,8 @@ fn remove(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let kept = native::swoole_name_resolver_php_remove(call.value(1).map(Value::dereferenced));
+    let kept =
+        native::swoole_name_resolver_php_remove(call.value(1).map(Value::dereferenced).as_deref());
     if !kept.is_null() {
         // Drop the reference `add` took, through the argument as upstream does.
         // SAFETY: the argument holds another reference, so no destructor runs.
