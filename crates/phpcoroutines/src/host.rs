@@ -493,12 +493,14 @@ pub(crate) fn create(args: *mut c_void) -> c_long {
 /// bails the whole process out. Its frame owns nothing to drop.
 unsafe extern "C" fn main(args: *mut c_void) {
     // SAFETY: on the new coroutine, with its creator's arguments.
-    let ctx = unsafe { crate::context::open(args) };
+    let Some(ctx) = (unsafe { crate::context::open(args) }) else {
+        return;
+    };
+    let context = ctx.ptr().cast();
     // SAFETY: Rust's entry and defer loop, over this coroutine's context.
     let caught =
-        unsafe { swoole_rs_zend::sys::swr_zend_coroutine_run(Some(enter), Some(defers), ctx) };
-    // SAFETY: the context, which nothing uses again.
-    unsafe { crate::context::close(ctx) };
+        unsafe { swoole_rs_zend::sys::swr_zend_coroutine_run(Some(enter), Some(defers), context) };
+    crate::context::close(ctx);
     if caught != 0 {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
         unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
@@ -516,15 +518,18 @@ extern "C" fn bail_out(_: *mut c_void) {
 }
 
 unsafe extern "C" fn enter(context: *mut c_void) -> *mut swr_zend_callable {
-    // SAFETY: the running coroutine's context.
-    unsafe { crate::context::enter(context) }
+    // SAFETY: `main` passes the running coroutine's context.
+    unsafe { crate::context::Ctx::of(context) }.map_or(std::ptr::null_mut(), crate::context::enter)
 }
 
 /// The defer tasks, last in first out; an exception bails out to the trap.
 unsafe extern "C" fn defers(context: *mut c_void) {
+    // SAFETY: `main` passes the running coroutine's context.
+    let Some(ctx) = (unsafe { crate::context::Ctx::of(context) }) else {
+        return;
+    };
     loop {
-        // SAFETY: the running coroutine's context.
-        let task = unsafe { crate::context::defer_next(context) };
+        let task = crate::context::defer_next(ctx);
         if task.is_null() {
             return;
         }
