@@ -214,7 +214,11 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "the parent kills the SWOOLE_PROCESS server as soon as its client closes, and shutdown "
         "joins the reactor threads, whose destroy callback closes every connection, before it "
         "stops the worker; when that wins, onClose's getClientInfo() finds no session and the "
-        'isArray assert fails on both engines (Docker, 150 runs each: upstream 4, cargo 5, #2890)'}
+        'isArray assert fails on both engines (Docker, 150 runs each: upstream 4, cargo 5, #2890)',
+        'tests/swoole_coroutine_lock/lock.phpt':
+        "its three concurrent requests land on different SWOOLE_PROCESS workers, and when request "
+        "2's worker takes the shared lock before request 1's, the output is lock2, value 3, lock1 "
+        'on both engines (Docker, 150 runs each: upstream 20, cargo 19, #2923)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
