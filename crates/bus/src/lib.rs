@@ -787,13 +787,22 @@ mod tests {
     }
 
     #[test]
-    fn count_ids_takes_each_id_from_the_shared_counter() {
+    fn send_numbers_each_message_from_the_shared_counter() {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let mut bus = Bus::create(64);
-        bus.count_ids(&COUNTER);
-        let counter = bus.next_id.unwrap();
-        assert_eq!(counter.fetch_add(1, Ordering::SeqCst), 1);
-        assert_eq!(counter.fetch_add(1, Ordering::SeqCst), 2);
+        let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
+        pipe.bus.count_ids(&COUNTER);
+        let mut socket = SocketRecord::with_fd(pipe.fds[0], /* SW_FD_PIPE */ 3);
+        for (expected, payload) in [(1, b"one".as_slice()), (2, b"two".as_slice())] {
+            let mut head = BusHead {
+                msg_id: 99,
+                len: u32::try_from(payload.len()).unwrap(),
+                fd: 7,
+                ..BusHead::default()
+            };
+            assert!(unsafe { pipe.bus.send(&raw mut socket, &mut head, payload.as_ptr()) });
+            assert_eq!(head.msg_id, expected);
+            assert_eq!(pipe.read(false).as_deref(), Some(payload));
+        }
         assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
     }
     struct Static(Allocator);
