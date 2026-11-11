@@ -4,7 +4,6 @@ use std::{
     ffi::{CString, c_int},
     io,
     net::IpAddr,
-    ptr,
 };
 use swoole_rs_zend::{Call, E_WARNING, OwnedArray, handlers, report};
 
@@ -167,7 +166,7 @@ fn local_mac(call: &Call) {
             continue;
         }
         // SAFETY: an AF_LINK address is a sockaddr_dl.
-        let link = unsafe { &*ptr::from_ref(address).cast::<libc::sockaddr_dl>() };
+        let link = unsafe { &*std::ptr::from_ref(address).cast::<libc::sockaddr_dl>() };
         if link.sdl_alen == 6 {
             // LLADDR: the address follows the name in sdl_data.
             let start = usize::from(link.sdl_nlen);
