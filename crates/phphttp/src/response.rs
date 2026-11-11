@@ -11,7 +11,6 @@ use crate::{
 };
 use std::{
     ffi::{c_int, c_void},
-    mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
