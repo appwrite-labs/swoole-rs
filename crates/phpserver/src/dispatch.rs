@@ -1138,8 +1138,8 @@ fn call_unlimited(
 extern "C" fn on_dispatch(
     _: Ctx,
     server: view::Server<'_>,
-    conn: *const ConnectionRecord,
-    data: *const RecvData,
+    conn: Option<&ConnectionRecord>,
+    send: Option<&RecvData>,
 ) -> c_int {
     let config = server.config();
     // SAFETY: as above.
@@ -1147,10 +1147,7 @@ extern "C" fn on_dispatch(
     let zserv = php_swoole_server_zval_ptr();
     // SAFETY: its live object, copied without a reference as upstream.
     let zserv = unsafe { zserv.read() };
-    // SAFETY: null, or the event's live `SendData` (a head and its payload).
-    let send = unsafe { data.as_ref() };
-    // SAFETY: null, or the event's live connection.
-    let session = match unsafe { conn.as_ref() } {
+    let session = match conn {
         Some(conn) => conn.session_id,
         None => send.map_or(0, |send| send.info.fd),
     };
