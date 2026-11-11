@@ -109,14 +109,21 @@ thread_local! {
 /// # Safety
 /// In a thread's request, inside its `zend_try`.
 pub(crate) unsafe fn stdio_open() {
+    // Opening `php://stdout` and `php://stderr` sets PHP's process-global
+    // `cli_out` and `cli_err`: one thread at a time.
+    static OPENING: Mutex<()> = Mutex::new(());
     let names = [
         (c"php://stdin", c"rb", c"STDIN"),
         (c"php://stdout", c"wb", c"STDOUT"),
         (c"php://stderr", c"wb", c"STDERR"),
     ];
+    let opening = OPENING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: in a request, with NUL-terminated strings.
     let streams =
         names.map(|(path, mode, _)| unsafe { swr_zend_stream_open(path.as_ptr(), mode.as_ptr()) });
+    drop(opening);
     if streams.iter().any(|stream| stream.is_null()) {
         for stream in streams.into_iter().filter(|stream| !stream.is_null()) {
             // SAFETY: a stream opened above.
