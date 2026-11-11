@@ -378,7 +378,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             h,
             core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
         )?),
-        ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h)?,
         RUN_ACCEPT => connection::accept(h)?,
         RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
         RUN_INCOMING => connection::incoming(h)?,

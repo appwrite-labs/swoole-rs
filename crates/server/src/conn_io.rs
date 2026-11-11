@@ -9,7 +9,7 @@
 //! clean FIN, `close_notified` is the terminal read state, and a TLS close notify
 //! still owed is queued behind the output (`native/halfclose/prequeue.md`).
 use crate::ops::{
-    LOG_CC_LINGER, OP_CC_COUNT, OP_CC_DTLS_FREE, OP_CC_FACTS, OP_CC_FINISH, OP_CC_HTTP_DESTROY,
+    LOG_CC_LINGER, OP_CC_COUNT, OP_CC_DTLS_FREE, OP_CC_FINISH, OP_CC_HTTP_DESTROY,
     OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
     OP_CC_REDIS_OBJECT, OP_CC_SESSION_CLEAR, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_SSL_WANT,
     OP_CC_TIMER_DEL, OP_CC_VALID, OP_CC_WATCH_WRITE, OP_CC_WEBSOCKET_FREE, OP_CLOSE, OP_LOCK,
@@ -237,8 +237,8 @@ fn peer_closed(facts: u64) -> bool {
 
 /// `Server::close_connection`: release what the connection holds, count the close,
 /// clear its session and move the max fd down past it, then close the socket.
-pub(crate) fn close_connection<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    let facts = h.get(OP_CC_FACTS)?;
+/// `facts` are its fact bits, the socket's fd above bit 32.
+pub(crate) fn close_connection<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     let fd = i64::from(low(facts >> 32).cast_signed());
     if facts & TIMER != 0 {
         h.get(OP_CC_TIMER_DEL)?;
@@ -530,17 +530,20 @@ mod tests {
     fn close_releases_and_moves_the_max_fd() {
         let fd = 9u64 << 32;
         let mut h = Script::with(&[
-            (
-                OP_CC_FACTS,
-                fd | TIMER | WEBSOCKET_BUFFER | SOCKET_SSL | RECV_BUFFER | BASE,
-            ),
             (OP_MAXFD, 9),
             (OP_MINFD, 3),
             (OP_CC_HTTP_OBJECT, 1),
             (OP_CC_FINISH, 0),
         ])
         .queue(OP_CC_VALID, &[0, 0, 1]);
-        assert_eq!(close_connection(&mut h).unwrap(), SW_OK);
+        assert_eq!(
+            close_connection(
+                &mut h,
+                fd | TIMER | WEBSOCKET_BUFFER | SOCKET_SSL | RECV_BUFFER | BASE
+            )
+            .unwrap(),
+            SW_OK
+        );
         for op in [
             OP_CC_TIMER_DEL,
             OP_CC_WEBSOCKET_FREE,
@@ -560,57 +563,46 @@ mod tests {
             (0, 0)
         );
 
-        let mut h = Script::with(&[
-            (OP_CC_FACTS, fd | REMOVED | LINGER | CLOSE_RESET),
-            (OP_MAXFD, 12),
-            (OP_CC_LINGER, 1),
-        ]);
-        close_connection(&mut h).unwrap();
+        let mut h = Script::with(&[(OP_MAXFD, 12), (OP_CC_LINGER, 1)]);
+        close_connection(&mut h, fd | REMOVED | LINGER | CLOSE_RESET).unwrap();
         assert_eq!((h.called(OP_REACTOR_DEL), h.called(LOG_CC_LINGER)), (0, 1));
         assert_eq!(h.called(OP_SET_MAXFD), 0, "not the max fd");
         assert_eq!(h.args(OP_CC_COUNT), vec![0]);
 
-        let mut h = Script::with(&[(OP_CC_FACTS, fd), (OP_REACTOR_DEL, u64::MAX)]);
-        assert_eq!(close_connection(&mut h).unwrap(), SW_ERR);
+        let mut h = Script::with(&[(OP_REACTOR_DEL, u64::MAX)]);
+        assert_eq!(close_connection(&mut h, fd).unwrap(), SW_ERR);
         assert_eq!(h.called(OP_CC_FINISH), 0);
     }
 
     #[test]
     fn prequeue_close_queues_a_tls_close_notify() {
         let tls = PREQUEUE | TLS_READY_STREAM;
-        let mut h = Script::with(&[(OP_CC_FACTS, tls), (OP_CC_SSL_WANT, 1)]);
-        assert_eq!(close_connection(&mut h).unwrap(), SW_OK);
+        let mut h = Script::with(&[(OP_CC_SSL_WANT, 1)]);
+        assert_eq!(close_connection(&mut h, tls).unwrap(), SW_OK);
         assert_eq!(
             (h.called(OP_CC_QUEUE_CLOSE), h.args(OP_CC_WATCH_WRITE)),
             (1, vec![0])
         );
         assert_eq!(h.called(OP_CC_FINISH), 0, "drains first");
-        let mut h = Script::with(&[
-            (OP_CC_FACTS, tls | CLOSE_QUEUED | REMOVED),
-            (OP_CC_SSL_WANT, 1),
-        ]);
-        close_connection(&mut h).unwrap();
+        let mut h = Script::with(&[(OP_CC_SSL_WANT, 1)]);
+        close_connection(&mut h, tls | CLOSE_QUEUED | REMOVED).unwrap();
         assert_eq!(
             (h.called(OP_CC_QUEUE_CLOSE), h.args(OP_CC_WATCH_WRITE)),
             (0, vec![1])
         );
-        let mut h = Script::with(&[
-            (OP_CC_FACTS, tls),
-            (OP_CC_SSL_WANT, 1),
-            (OP_CC_WATCH_WRITE, u64::MAX),
-        ]);
-        close_connection(&mut h).unwrap();
+        let mut h = Script::with(&[(OP_CC_SSL_WANT, 1), (OP_CC_WATCH_WRITE, u64::MAX)]);
+        close_connection(&mut h, tls).unwrap();
         assert_eq!(h.called(OP_CC_FINISH), 1, "could not watch: close now");
-        let mut h = Script::with(&[(OP_CC_FACTS, tls), (OP_CC_SSL_SHUTDOWN, 1)]);
-        close_connection(&mut h).unwrap();
+        let mut h = Script::with(&[(OP_CC_SSL_SHUTDOWN, 1)]);
+        close_connection(&mut h, tls).unwrap();
         assert_eq!(
             (h.called(OP_CC_SSL_WANT), h.called(OP_CC_FINISH)),
             (0, 1),
             "sent"
         );
         for terminal in [PEER_CLOSED, CLOSE_FORCE, CLOSE_RESET, SSL_CLOSED, PREQUEUE] {
-            let mut h = Script::with(&[(OP_CC_FACTS, tls ^ terminal), (OP_CC_SSL_WANT, 1)]);
-            close_connection(&mut h).unwrap();
+            let mut h = Script::with(&[(OP_CC_SSL_WANT, 1)]);
+            close_connection(&mut h, tls ^ terminal).unwrap();
             assert_eq!(h.called(OP_CC_SSL_SHUTDOWN), 0);
         }
     }

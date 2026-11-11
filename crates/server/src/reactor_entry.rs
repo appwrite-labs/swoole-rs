@@ -10,9 +10,9 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
 use crate::ops::{
-    RUN_CLOSE_CONNECTION, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED,
-    RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT, RUN_RT_PIPE_WRITE,
-    RUN_START_REACTOR_THREADS, RUN_THREAD_SHUTDOWN,
+    RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ,
+    RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT, RUN_RT_PIPE_WRITE, RUN_START_REACTOR_THREADS,
+    RUN_THREAD_SHUTDOWN,
 };
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::{unanswered, view};
@@ -170,7 +170,7 @@ pub unsafe extern "C-unwind" fn close_connection(
     let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
     ctx.sock = socket;
     // SAFETY: per the caller.
-    int(unsafe { run(RUN_CLOSE_CONNECTION, 0, &mut ctx) })
+    unsafe { run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection) }
 }
 
 /// `void ReactorThread::shutdown(Reactor *)`.
