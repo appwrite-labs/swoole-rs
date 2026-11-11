@@ -407,12 +407,11 @@ def read_limits(directory):
 
 
 def ratchet(results, limits):
-    """{workload: lower record} for each recorded workload that every result beats once rounded up.
-    A result from before the Cargo build replaced the hybrid (no `cargo` row) lowers nothing."""
+    """{workload: lower record} for each recorded workload that every result beats once rounded up."""
     lowered = {}
     for workload, limit in limits.items():
         rows = [result['instructions_per_request'].get(workload) for result in results]
-        if results and all(row and 'cargo' in row for row in rows):
+        if results and all(rows):
             record = max(lowest(row['cargo'] / row['upstream']) for row in rows)
             if record < limit:
                 lowered[workload] = record

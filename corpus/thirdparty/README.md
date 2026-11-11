@@ -22,12 +22,12 @@ five temporary Symfony 7 constraints recorded in the manifest to avoid host PHP
 8.5 selecting PHP-8.4-only runtime packages. Do not use `composer update` during
 preparation. Development-only lock entries are not installed.
 
-Run upstream and hybrid sequentially:
+Run upstream and the Cargo build sequentially:
 
 ```sh
 python3 corpus/thirdparty/hyperf.py \
   --engine upstream=/absolute/path/to/upstream/swoole.so \
-  --engine hybrid=/absolute/path/to/hybrid/swoole.so \
+  --engine cargo=target/ext/swoole.so \
   --output target/reports/thirdparty-hyperf.json
 ```
 
