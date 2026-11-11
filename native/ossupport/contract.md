@@ -38,10 +38,10 @@ so the native `swoole_sys_warning` sees its errno.
   `write` in append mode, otherwise `pwrite`/`pread` at the progress; zero stops,
   `EINTR`/`EAGAIN` retry, other errors set `failed` for the upstream warning.
 - `file_size`: `fstat` errno or `EISDIR` for non-regular files.
-- `swr_v1_os_sendfile` (Darwin, FreeBSD): retries `EINTR`, advancing the offset by
-  each call's progress; Darwin retries with the length the interrupted call
-  reported. `swr_v1_os_sendfile_copy` (`!HAVE_SENDFILE`): one 64 KiB `pread` and
-  one `write`, no retries. Linux keeps its direct `sendfile`.
+- `swr_v1_os_sendfile` is upstream's `swoole_sendfile` (`src/os/sendfile.cc`) for
+  Rust's one caller, crates/tls: on Darwin and FreeBSD it retries `EINTR`, advancing
+  the offset by each call's progress (Darwin retries with the length the interrupted
+  call reported); Linux keeps its direct `sendfile`.
 - `random_bytes` (in corebase, so String's `append_random_bytes` reaches
   it): `getrandom` on Linux/Android (retrying `EINTR`/`EAGAIN`, a zero result
   repeats), `arc4random_buf` elsewhere.
@@ -70,7 +70,6 @@ calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through c
 signal, `swoole_get_cpu_affinity` (`getpid()`, as upstream), the native thread id
 and thread names. `swoole_set_isolation` is an inline header call with each
 `std::string`'s `c_str()`; Rust logs each failed step as it happens, errno intact.
-`file.rs`'s `swoole_sendfile` is upstream's `src/os/sendfile.cc`.
 
 `file_open`/`file_close` and `tmpfile` back `File::open`,
 `File::close` and `swoole_tmpfile`. The resolver request constructors and the

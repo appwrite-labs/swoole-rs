@@ -6,9 +6,6 @@ void swr_zend_array_init(zval *target);
 void swr_zend_object_release(zend_object *object);
 void swr_zend_object_addref(zend_object *object);
 
-/* ZEND_HASH_FOREACH_VAL: `each` returns false to stop. */
-void swr_zend_hash_foreach(const HashTable *table, bool (*each)(zval *value, void *context), void *context);
-
 /* zval_get_long, whose slow path's signature depends on the PHP version. */
 zend_long swr_zval_get_long(const zval *value);
 

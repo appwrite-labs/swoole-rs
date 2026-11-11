@@ -85,16 +85,6 @@ pub(crate) fn make(
     Ok(NewSocket(unsafe { Co::new(socket) }))
 }
 
-/// `delete socket`.
-/// # Errors
-/// A close hook bailed out.
-/// # Safety
-/// `socket` is live and owned; it is gone after the call.
-pub(crate) unsafe fn free_socket(socket: Co) -> Result<(), Bailout> {
-    // SAFETY: per the caller.
-    unsafe { co::free(socket.as_ptr()) }
-}
-
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
 /// to an object. Dropped, it leaks.
 #[must_use]
@@ -114,8 +104,8 @@ impl NewSocket {
     /// # Errors
     /// A close hook bailed out.
     pub(crate) fn free(self) -> Result<(), Bailout> {
-        // SAFETY: an owned socket, which nothing else holds.
-        unsafe { free_socket(self.0) }
+        // SAFETY: an owned socket, which nothing else holds; gone after the call.
+        unsafe { co::free(self.0.as_ptr()) }
     }
 }
 
