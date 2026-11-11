@@ -14,7 +14,7 @@ class Ratchet(unittest.TestCase):
         self.assertEqual(callgrind.verdict(1.205, recorded=1.20)[1:], (False, False))
 
     def test_above_noise_fails(self):
-        self.assertTrue(callgrind.verdict(1.22, recorded=1.20)[1])
+        self.assertTrue(callgrind.verdict(1.23, recorded=1.20)[1])
 
     def test_beating_the_record_asks_to_lower_it(self):
         self.assertEqual(callgrind.verdict(1.17, recorded=1.20)[1:], (False, True))

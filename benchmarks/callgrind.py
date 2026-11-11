@@ -35,7 +35,9 @@ from tools.annotations import annotate
 from tools.harness import ROOT, parse_engines
 from corpus.run import WebSocket
 
-NOISE = 1.01  # counts for the same binaries drift well under 1% between runs
+# A PR that never runs a workload's path still moves it by up to 1.5% (inlining under LTO,
+# the allocator's state; #2951), so a record allows 2%.
+NOISE = 1.02
 PAYLOAD = bytes(range(256)) * 256
 # Compressible JSON text, about 4 KiB and 1 KiB.
 DOCUMENT = json.dumps([{'id': i, 'event': 'order.created', 'status': 'paid', 'total': i * 25}
