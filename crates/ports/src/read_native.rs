@@ -262,7 +262,7 @@ impl Connection for Read<'_> {
         if dispatch == Dispatch::Task {
             // SAFETY: the port's protocol, the live socket and its data.
             return i64::from(unsafe {
-                dispatch_task(proto.cast(), self.socket.as_ptr(), rdata.cast())
+                dispatch_task(proto.cast(), self.socket.as_ptr().cast(), rdata)
             });
         }
         let serv = self.server.raw();

@@ -17,9 +17,10 @@ use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
     Owned, Value,
+    bailout::{self, Bailout},
     sys::{
-        swr_zend_efree, swr_zend_http_property_offset, zend_class_entry, zend_object, zend_string,
-        zval, zval_ptr_dtor,
+        swr_zend_efree, swr_zend_http_property_offset, swr_zend_zval_release, zend_class_entry,
+        zend_object, zend_string, zval,
     },
     value::set_long,
 };
@@ -363,13 +364,19 @@ pub(crate) fn available(mut ctx: Ctx) -> bool {
 /// The context's own references to its request and response objects,
 /// released once it is handled. Their free handlers clear the slots, and the
 /// second frees the context, so each pointer is read before its release.
-pub(crate) fn release_objects(mut ctx: Ctx) {
+/// A property's `__destruct` can run PHP code, so each is released inside
+/// `zend_try`; both are, so the context is freed, and a bailout is deferred.
+/// # Errors
+/// A destructor bailed out, or a bailout is pending.
+pub(crate) fn release_objects(mut ctx: Ctx) -> Result<(), Bailout> {
     let request = ctx.state().request.zobject.ptr;
-    // SAFETY: the context's live request object, released once.
-    unsafe { zval_ptr_dtor(request) };
+    // SAFETY: the context's live request object, released once; the shim's
+    // setjmp sits between this frame and its destructors.
+    bailout::defer(unsafe { bailout::trap(swr_zend_zval_release, request.cast()) });
     let response = ctx.state().response.zobject.ptr;
     // SAFETY: as above, for the response.
-    unsafe { zval_ptr_dtor(response) };
+    bailout::defer(unsafe { bailout::trap(swr_zend_zval_release, response.cast()) });
+    bailout::outcome(())
 }
 
 /// `Context::free`: release the context once neither object nor an HTTP/2

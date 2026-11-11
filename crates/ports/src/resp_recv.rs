@@ -4,7 +4,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
 use swoole_rs_protocols_ffi::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
-use swoole_rs_reactor::{Socket, SocketRecord};
+use swoole_rs_reactor::Socket;
 use swoole_rs_server::ConnectionRecord;
 
 /// `catch_read_error`'s `SW_CLOSE` and `SW_ERROR`.
@@ -17,8 +17,6 @@ struct RecvData {
     info: DataHead,
     data: *const u8,
 }
-
-type OnPackage = unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *const RecvData) -> c_int;
 
 struct Connection<'a> {
     protocol: *const Protocol,
@@ -66,14 +64,18 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
         data: unsafe { (*c.buffer).as_mut_ptr() },
     };
     // SAFETY: the live protocol.
-    let on_package = unsafe { (*c.protocol).on_package };
-    // SAFETY: `onPackage` is a function of this type, or null.
-    let on_package = unsafe { core::mem::transmute::<*mut c_void, Option<OnPackage>>(on_package) };
-    let Some(on_package) = on_package else {
+    let Some(on_package) = (unsafe { (*c.protocol).on_package }) else {
         return -1;
     };
     // SAFETY: upstream's call, over the live protocol, socket and packet.
-    if unsafe { on_package(c.protocol, c.socket.as_ptr(), &raw const data) } < 0 {
+    if unsafe {
+        on_package(
+            c.protocol,
+            c.socket.as_ptr().cast(),
+            (&raw const data).cast(),
+        )
+    } < 0
+    {
         return -1;
     }
     c_int::from(c.socket.read(|s| s.removed) != 0)
@@ -126,6 +128,7 @@ pub(crate) unsafe fn recv_packet(
 mod tests {
     use super::*;
     use swoole_rs_protocols_ffi::SW_ERR;
+    use swoole_rs_reactor::SocketRecord;
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]
@@ -147,7 +150,7 @@ mod tests {
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
         conn.fd = pairs[1];
         conn.socket = (&raw mut socket).cast();
-        let mut protocol: Protocol = unsafe { core::mem::zeroed() };
+        let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;
         buffer.alloc(65536, None);

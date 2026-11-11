@@ -4,6 +4,7 @@
 //! contexts (crates/ports).
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
+use swoole_rs_corebase::net_types::GetPackageLength;
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::PortConfig;
@@ -34,7 +35,7 @@ pub(crate) trait Source {
     /// `serv->single_thread = true`.
     fn single_thread(&self);
     /// `php_swoole_server_length_func`, the `Protocol::LengthFunc` that runs the callable.
-    fn length_func(&self) -> *mut c_void;
+    fn length_func(&self) -> GetPackageLength;
     /// `ssl_sni_certs`: a context per host name, configured and added.
     fn sni(&self) -> Step;
     /// `port->ssl_init()`.
@@ -225,7 +226,7 @@ fn framing(s: &impl Source, c: &mut PortConfig) -> Step {
         offset(s, v, &mut c.protocol.package_body_offset, error)?;
     }
     if let Some(callable) = s.callable(c"package_length_func")? {
-        c.protocol.get_package_length = s.length_func();
+        c.protocol.get_package_length = Some(s.length_func());
         let previous = std::mem::replace(&mut c.protocol.private_data_1, callable);
         if !previous.is_null() {
             s.release(previous);
@@ -404,8 +405,8 @@ impl Source for Zend<'_> {
         unsafe { self.settings.server().config_mut() }.single_thread = true;
     }
 
-    fn length_func(&self) -> *mut c_void {
-        crate::dispatch::length_func as *mut c_void
+    fn length_func(&self) -> GetPackageLength {
+        crate::dispatch::length_func
     }
 
     fn sni(&self) -> Step {
@@ -457,7 +458,17 @@ impl Source for Zend<'_> {
 mod tests {
     use super::*;
     use std::{cell::RefCell, collections::HashMap};
+    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
     use swoole_rs_server::port_config::swr_v1_port_config_new;
+
+    /// The mock settings' `package_length_func` callback.
+    unsafe extern "C" fn length_func(
+        _: *const Protocol,
+        _: *mut c_void,
+        _: &mut PacketLength,
+    ) -> isize {
+        11
+    }
 
     /// A settings value, as PHP converts it.
     #[derive(Clone)]
@@ -531,8 +542,8 @@ mod tests {
         fn single_thread(&self) {
             self.trace.borrow_mut().push("single_thread".into());
         }
-        fn length_func(&self) -> *mut c_void {
-            std::ptr::without_provenance_mut(11)
+        fn length_func(&self) -> GetPackageLength {
+            length_func
         }
         fn sni(&self) -> Step {
             self.trace.borrow_mut().push("sni".into());
@@ -854,7 +865,10 @@ mod tests {
             usize::from(c.protocol.package_length_offset),
             SW_IPC_BUFFER_SIZE
         );
-        assert_eq!(c.protocol.get_package_length.addr(), 11);
+        assert_eq!(
+            c.protocol.get_package_length.map(|f| f as usize),
+            Some(length_func as GetPackageLength as usize)
+        );
         let trace = table.trace.borrow().join(";");
         assert!(trace.contains("callable:package_length_func;release:7;single_thread"));
     }

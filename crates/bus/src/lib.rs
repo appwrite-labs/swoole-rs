@@ -202,12 +202,20 @@ impl Bus {
         }
     }
 
+    /// The current message's head; an empty one while no buffer is set.
     fn head(&self) -> BusHead {
-        // SAFETY: reads only run on a bus whose buffer is set.
+        if self.buffer.is_null() {
+            return BusHead::default();
+        }
+        // SAFETY: `set_buffer`'s contract: a set buffer starts with a header, live
+        // until it is replaced.
         unsafe { self.buffer.read() }
     }
 
     fn set_flags(&self, flags: u8) {
+        if self.buffer.is_null() {
+            return;
+        }
         // SAFETY: as `head`.
         unsafe { (*self.buffer).flags = flags };
     }
@@ -247,8 +255,12 @@ impl Bus {
         }
     }
 
-    /// `MessageBus::pass`: the buffer points at `data` instead of holding it.
+    /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
+    /// while no buffer is set.
     pub fn pass(&self, info: &BusHead, data: *const c_char) {
+        if self.buffer.is_null() {
+            return;
+        }
         let mut head = *info;
         if info.len > 0 {
             head.flags = PTR;
@@ -300,18 +312,12 @@ impl Bus {
 
     /// `MessageBus::read` (stream pipes, `dgram == false`) and
     /// `MessageBus::read_with_buffer` (datagram pipes): >0 a whole packet, 0 wait
-    /// (or allocate, see `state.event`), -1 an error.
-    ///
-    /// # Safety
-    /// The buffer is set.
-    unsafe fn read(
-        &mut self,
-        fd: c_int,
-        dgram: bool,
-        state: &mut BusRead,
-        nobufs: &mut bool,
-    ) -> isize {
+    /// (or allocate, see `state.event`), -1 an error or no buffer set.
+    fn read(&mut self, fd: c_int, dgram: bool, state: &mut BusRead, nobufs: &mut bool) -> isize {
         state.event = 0;
+        if self.buffer.is_null() {
+            return -1;
+        }
         loop {
             if state.resume {
                 state.resume = false;
@@ -641,18 +647,14 @@ impl Bus {
     /// Reads from the pipe `fd`; see `Bus::read`. On `BUS_ALLOCATE` the caller
     /// allocates (or reallocates) `state.size` bytes, calls [`Bus::adopt`], and
     /// calls this again with the same `state`.
-    ///
-    /// # Safety
-    /// The buffer is set.
-    pub unsafe fn receive(
+    pub fn receive(
         &mut self,
         fd: c_int,
         dgram: bool,
         nobufs: &mut bool,
         state: &mut BusRead,
     ) -> isize {
-        // SAFETY: the caller's contract.
-        let n = unsafe { self.read(fd, dgram, state, nobufs) };
+        let n = self.read(fd, dgram, state, nobufs);
         let origin = if dgram {
             c"MessageBus::read_with_buffer"
         } else {
@@ -785,6 +787,27 @@ mod tests {
     }
 
     #[test]
+    fn a_bus_without_a_buffer_reads_nothing_and_has_no_packet() {
+        let mut bus = Bus::new(64);
+        let mut state = BusRead {
+            received: 0,
+            size: 0,
+            data: ptr::null_mut(),
+            allocator: ptr::null(),
+            chunks: 0,
+            resume: false,
+            event: 0,
+        };
+        let mut nobufs = false;
+        assert_eq!(bus.receive(-1, false, &mut nobufs, &mut state), -1);
+        assert_eq!(state.event, 0, "no event");
+        bus.pass(&BusHead::default(), ptr::null());
+        assert_eq!(bus.packet().length, 0);
+        assert!(bus.move_packet().is_null());
+        bus.pop();
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn send_numbers_each_message_from_the_shared_counter() {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -878,7 +901,7 @@ mod tests {
             };
             let mut nobufs = false;
             loop {
-                let n = unsafe { self.bus.read(self.fds[1], dgram, &mut state, &mut nobufs) };
+                let n = self.bus.read(self.fds[1], dgram, &mut state, &mut nobufs);
                 if state.event == BUS_ALLOCATE {
                     let data = unsafe { libc::realloc(state.data, state.size) };
                     let allocator = (&raw const ALLOCATOR.0).cast();
@@ -957,7 +980,7 @@ mod tests {
         };
         let mut nobufs = false;
         assert_eq!(
-            unsafe { pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) },
+            pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs),
             0
         );
         assert_eq!((state.event, state.size), (BUS_ALLOCATE, 5000));
@@ -965,7 +988,7 @@ mod tests {
         let allocator = (&raw const ALLOCATOR.0).cast();
         unsafe { pipe.bus.adopt(data, state.size, allocator) };
         assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
-        assert!(unsafe { pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) } > 0);
+        assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > 0);
         assert_eq!(pipe.bus.packet().length, 5000);
         let moved = pipe.bus.move_packet();
         assert_eq!(moved.cast::<c_void>(), data);
@@ -1071,7 +1094,7 @@ mod tests {
         };
         let mut nobufs = false;
         loop {
-            let n = unsafe { bus.read(fd, dgram, &mut state, &mut nobufs) };
+            let n = bus.read(fd, dgram, &mut state, &mut nobufs);
             if state.event != BUS_ALLOCATE {
                 return n;
             }

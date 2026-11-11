@@ -7,6 +7,7 @@ use std::ffi::{CStr, c_char, c_int};
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 
 use swoole_rs_websocket::{
     DecodedFrame, INVALID_CONTROL, control_invalid, decode_in_place, encoded_size, frame_length,
@@ -43,14 +44,6 @@ const _: () = assert!(
     size_of::<Frame>() == 24 && std::mem::offset_of!(Frame, payload_length) == 8,
     "websocket::Frame's layout"
 );
-
-/// `swoole::PacketLength`.
-#[repr(C)]
-pub struct PacketLength {
-    pub buf: *const u8,
-    pub buf_size: u32,
-    pub header_len: u32,
-}
 
 /// Upstream encoders fail a masked header-only frame after appending it.
 fn header_only_mask(flags: u8) -> bool {
@@ -144,7 +137,7 @@ upstream! {
     /// # Safety
     /// `pl.buf` covers `pl.buf_size` readable bytes.
     pub unsafe extern "C" fn get_package_length(
-        _protocol: *const std::ffi::c_void,
+        _protocol: *const Protocol,
         _socket: *mut std::ffi::c_void,
         pl: &mut PacketLength,
     ) -> isize {
