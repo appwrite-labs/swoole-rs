@@ -688,7 +688,8 @@ pub extern "C" fn swr_v1_locks_coroutine_release(word: Option<&AtomicU32>) -> i3
     if a.load(Ordering::Relaxed) == 0 {
         return 0;
     }
-    a.store(0, Ordering::Relaxed);
+    // Release: the next holder sees what this one wrote.
+    a.store(0, Ordering::Release);
     1
 }
 #[unsafe(no_mangle)]
@@ -732,6 +733,44 @@ mod tests {
         let aligned = words.as_mut_ptr().cast::<c_void>();
         assert_eq!(unsafe { swr_v1_locks_lock(aligned, 99, 0, 0, 0) }, EINVAL);
         assert_eq!(unsafe { swr_v1_locks_unlock(aligned, 99) }, EINVAL);
+    }
+
+    /// `swr_v1_locks_coroutine_release` publishes its holder's writes to the next holder
+    /// `swr_v1_locks_coroutine_try` admits, whichever process (here thread) that is. The
+    /// `HELD` flag only says when to start trying; it orders nothing.
+    #[test]
+    fn coroutine_release_publishes_the_holders_writes() {
+        struct Data(std::cell::UnsafeCell<u64>);
+        unsafe impl Sync for Data {}
+        impl Data {
+            fn get(&self) -> *mut u64 {
+                self.0.get()
+            }
+        }
+        let data = Data(std::cell::UnsafeCell::new(0));
+        let word = AtomicU32::new(0);
+        let held = std::sync::atomic::AtomicBool::new(false);
+        let acquire = |cid| {
+            while swr_v1_locks_coroutine_try(Some(&word), 0, 0, 1, cid, 1) != 1 {
+                thread::yield_now();
+            }
+        };
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                acquire(1);
+                unsafe { *data.get() = 42 };
+                held.store(true, Ordering::Relaxed);
+                assert_eq!(swr_v1_locks_coroutine_release(Some(&word)), 1);
+            });
+            scope.spawn(|| {
+                while !held.load(Ordering::Relaxed) {
+                    thread::yield_now();
+                }
+                acquire(2);
+                assert_eq!(unsafe { *data.get() }, 42);
+                assert_eq!(swr_v1_locks_coroutine_release(Some(&word)), 1);
+            });
+        });
     }
 
     #[test]
