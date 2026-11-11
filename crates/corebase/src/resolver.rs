@@ -1,5 +1,5 @@
 //! Always-available libc resolver providers shared by native and async DNS requests.
-use std::ffi::{c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 
 /// `SW_DNS_LOOKUP_RANDOM`, masked out of `gethostbyname`'s flags.
 const LOOKUP_RANDOM: c_int = 1 << 11;
@@ -114,48 +114,35 @@ pub struct Resolved {
 /// Internal resolver permits a contained native diagnostic failure. The sentinel
 /// remains internal and is never published as the request's libc error.
 pub(crate) const DIAGNOSTIC_FAILED: c_int = c_int::MIN;
-/// `network::getaddrinfo`: resolves `host` (and `service`, null for none) into at
-/// most `capacity` socket addresses; `unknown` reports an entry of another family,
-/// which keeps its zeroed slot, and false from it stops the walk.
-///
-/// # Safety
-/// `host` and a non-null `service` are NUL-terminated; `results` holds `capacity`
-/// zeroed entries.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors the existing libc resolver boundary"
-)]
-pub(crate) unsafe fn resolve_addresses(
-    host: *const c_char,
-    service: *const c_char,
-    family: c_int,
-    socktype: c_int,
-    protocol: c_int,
-    results: *mut libc::sockaddr_in6,
-    capacity: usize,
+/// `network::getaddrinfo`: resolves `host` (and `service`, none for none) into at
+/// most `results.len()` socket addresses; `unknown` reports an entry of another
+/// family, which keeps its slot, and false from it stops the walk.
+pub(crate) fn resolve_addresses(
+    host: &CStr,
+    service: Option<&CStr>,
+    hints: (c_int, c_int, c_int),
+    results: &mut [libc::sockaddr_in6],
     mut unknown: impl FnMut(c_int) -> bool,
 ) -> Resolved {
     // SAFETY: addrinfo is plain data.
-    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
-    hints.ai_family = family;
-    hints.ai_socktype = socktype;
-    hints.ai_protocol = protocol;
+    let mut request: libc::addrinfo = unsafe { std::mem::zeroed() };
+    (request.ai_family, request.ai_socktype, request.ai_protocol) = hints;
+    let service = service.map_or(std::ptr::null(), CStr::as_ptr);
     let mut list = std::ptr::null_mut();
-    // SAFETY: the strings are the caller's; `list` receives the resolver's list.
-    let error = unsafe { libc::getaddrinfo(host, service, &raw const hints, &raw mut list) };
+    // SAFETY: terminated strings; `list` receives the resolver's list.
+    let error =
+        unsafe { libc::getaddrinfo(host.as_ptr(), service, &raw const request, &raw mut list) };
     if error != 0 {
         return Resolved { error, count: 0 };
     }
     let mut count = 0;
     let mut diagnostic_failed = false;
     let mut entry = list;
-    while count < capacity {
+    for slot in results.iter_mut() {
         // SAFETY: `entry` walks the resolver's list until null.
         let Some(item) = (unsafe { entry.as_ref() }) else {
             break;
         };
-        // SAFETY: slot `count` is within the caller's `capacity`.
-        let slot = unsafe { results.add(count) }.cast::<u8>();
         let size = match item.ai_family {
             libc::AF_INET => size_of::<libc::sockaddr_in>(),
             libc::AF_INET6 => size_of::<libc::sockaddr_in6>(),
@@ -167,6 +154,7 @@ pub(crate) unsafe fn resolve_addresses(
                 0
             }
         };
+        let slot = std::ptr::from_mut(slot).cast::<u8>();
         // SAFETY: `ai_addr` holds the family's address; the slot holds a sockaddr_in6.
         unsafe { std::ptr::copy_nonoverlapping(item.ai_addr.cast::<u8>(), slot, size) };
         count += 1;
@@ -184,6 +172,35 @@ pub(crate) unsafe fn resolve_addresses(
     }
 }
 
+/// `swr_v1_clients_gethostbyname` into room for any family's address.
+#[must_use]
+pub fn gethostbyname(flags: c_int, name: &CStr) -> Option<[c_char; 46]> {
+    let mut binary = [0 as c_char; 46];
+    // SAFETY: a terminated name, and `first_address` copies at most 46 bytes.
+    let status = unsafe { swr_v1_clients_gethostbyname(flags, name.as_ptr(), binary.as_mut_ptr()) };
+    (status == 0).then_some(binary)
+}
+
+// SAFETY: libc's.
+unsafe extern "C" {
+    fn inet_ntop(
+        family: c_int,
+        source: *const core::ffi::c_void,
+        output: *mut c_char,
+        capacity: libc::socklen_t,
+    ) -> *const c_char;
+}
+
+/// `inet_ntop(family, binary)`'s text, or none for another family or a failure.
+#[must_use]
+pub fn ntop(family: c_int, binary: &[c_char; 16]) -> Option<[c_char; 46]> {
+    let mut text = [0 as c_char; 46];
+    // SAFETY: room for an address of either family (4 or 16 bytes) and for its text;
+    // another family reads nothing.
+    let result = unsafe { inet_ntop(family, binary.as_ptr().cast(), text.as_mut_ptr(), 46) };
+    (!result.is_null()).then_some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,36 +209,17 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no getaddrinfo")]
     fn resolves_addresses_through_libc() {
         let mut results: [libc::sockaddr_in6; 16] = unsafe { std::mem::zeroed() };
-        let found = unsafe {
-            resolve_addresses(
-                c"127.0.0.1".as_ptr(),
-                c"80".as_ptr(),
-                libc::AF_INET,
-                libc::SOCK_STREAM,
-                0,
-                results.as_mut_ptr(),
-                16,
-                |_| true,
-            )
-        };
+        let hints = (libc::AF_INET, libc::SOCK_STREAM, 0);
+        let found = resolve_addresses(c"127.0.0.1", Some(c"80"), hints, &mut results, |_| true);
         assert_eq!(found, Resolved { error: 0, count: 1 });
         let v4 = unsafe { &*results.as_ptr().cast::<libc::sockaddr_in>() };
         assert_eq!(
             (u16::from_be(v4.sin_port), v4.sin_addr.s_addr.to_ne_bytes()),
             (80, [127, 0, 0, 1])
         );
-        let failed = unsafe {
-            resolve_addresses(
-                c"127.0.0.1".as_ptr(),
-                c"no-such-service-swr".as_ptr(),
-                libc::AF_INET,
-                0,
-                0,
-                results.as_mut_ptr(),
-                16,
-                |_| true,
-            )
-        };
+        let hints = (libc::AF_INET, 0, 0);
+        let service = Some(c"no-such-service-swr");
+        let failed = resolve_addresses(c"127.0.0.1", service, hints, &mut results, |_| true);
         assert_ne!(failed.error, 0);
     }
 }
