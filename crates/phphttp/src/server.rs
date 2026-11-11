@@ -283,8 +283,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
     let zdata = state.request.zdata.as_ptr();
-    // SAFETY: the live server and its request; the data moves into the context.
-    unsafe { php_swoole_get_recv_data(server, zdata, request) };
+    // SAFETY: the request's own zval, which nothing else borrows; the data moves into it.
+    php_swoole_get_recv_data(server, unsafe { &mut *zdata }, request);
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
     let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
@@ -642,11 +642,11 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
 /// # Safety
 /// `server` is the live server and `info` the closed session's.
 pub unsafe fn http_server_on_close(server: *mut c_void, info: *mut c_void) {
-    let info = info.cast::<DataHead>();
+    // SAFETY: per the caller, the closed session's head.
+    let info = unsafe { &*info.cast::<DataHead>() };
     // SAFETY: per the caller, `server` is a live `Server` for the call.
     let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: per the caller.
-    let session = unsafe { (*info).fd };
+    let session = info.fd;
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd)
     {
@@ -656,8 +656,7 @@ pub unsafe fn http_server_on_close(server: *mut c_void, info: *mut c_void) {
             }
         });
     }
-    // SAFETY: per the caller.
-    unsafe { php_swoole_server_on_close(server, info) };
+    php_swoole_server_on_close(server, info);
 }
 
 /// The counters of the worker serving requests.

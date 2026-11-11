@@ -23,9 +23,7 @@ use swoole_rs_process::{
 use swoole_rs_server::{port_config, server_methods, view};
 use swoole_rs_zend::{
     Object, bailout, object_of, string,
-    sys::{
-        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zend_string, zval,
-    },
+    sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
     value::{empty_string, set_str},
 };
 
@@ -133,9 +131,7 @@ unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
 
 /// `php_swoole_get_recv_data`: a request's payload into `zdata`, taking the
 /// message bus's packet or the connection's receive buffer when it holds them.
-/// # Safety
-/// `zdata` is writable.
-pub unsafe fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: *mut zval, req: &RecvData) {
+pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &mut zval, req: &RecvData) {
     let (flags, length) = (req.info.flags, req.info.len as usize);
     if length == 0 {
         // SAFETY: per the caller.
@@ -186,11 +182,7 @@ fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
 }
 
 /// `serv->send(fd, data)`, then the `send_yield` wait or the kernel-nobufs pause.
-/// # Safety
-/// `serv` is the running server and `data` a live string.
-pub(crate) unsafe fn send(serv: view::Server<'_>, fd: c_long, data: *mut zend_string) -> bool {
-    // SAFETY: per the caller.
-    let bytes = unsafe { string::bytes(data) };
+pub(crate) fn send(serv: view::Server<'_>, fd: c_long, bytes: &[u8]) -> bool {
     let sent = server_methods::send(serv, fd, bytes);
     if !sent
         && swoole_rs_corebase::log::last_error() == crate::lifecycle::SW_ERROR_OUTPUT_SEND_YIELD

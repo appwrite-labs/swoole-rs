@@ -8,7 +8,7 @@ use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
-use swoole_rs_zend::{E_ERROR, E_WARNING, Message, sys::IS_ARRAY};
+use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
 
 /// `SW_TIMER_MIN_SEC`.
 const TIMER_MIN_SEC: f64 = 0.001;
@@ -421,15 +421,15 @@ impl Source for Zend<'_> {
                 let message = c"ssl_sni_certs array requires string host name keys";
                 return Err(self.fatal(E_WARNING, message));
             };
-            if value.kind() != IS_ARRAY {
+            let Some(vht) = value.array() else {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
-            }
+            };
             // SAFETY: an SSL port; the copy's reference goes to `sni_add` below or is released.
             let context = unsafe { context_dup(self.port) };
-            let item = Self {
+            let item = Zend {
                 settings: Settings {
                     serv: self.settings.serv,
-                    vht: value.array(),
+                    vht: Some(vht),
                 },
                 port: self.port,
             };

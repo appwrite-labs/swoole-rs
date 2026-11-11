@@ -11,7 +11,7 @@ use std::{
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Value, bailout, message, report,
+    Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
     sys::{swr_zend_callable_warning, swr_zend_try_facade_update},
 };
 
@@ -190,7 +190,7 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
 /// The settings array and the Server being configured.
 pub(crate) struct Settings<'a> {
     pub(crate) serv: view::Server<'a>,
-    pub(crate) vht: Option<&'a swoole_rs_zend::Array>,
+    pub(crate) vht: Option<&'a Array>,
 }
 
 /// Stop: a bailout is pending (upstream never ran past it).
@@ -353,8 +353,6 @@ fn set(call: &Call) {
 /// `$this->setting`.
 fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> {
     let port = this.port_at(0);
-    // SAFETY: the primary port's object zval.
-    let port = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: the live Port object, its class and the settings argument.
     unsafe {
         bailout::call_method(
@@ -456,7 +454,7 @@ fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
                 return Ok(());
             }
             // SAFETY: a live server, not started.
-            unsafe { crate::dispatch::set_dispatch_func(s.serv.raw(), handle) }
+            unsafe { crate::dispatch::set_dispatch_func(s.serv, handle) }
         });
         if set.is_err() {
             bailout::defer(set);

@@ -1023,8 +1023,8 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         return Ok(ERR);
     };
     let mut data = Owned::default();
-    // SAFETY: an empty slot for the payload.
-    unsafe { php_swoole_get_recv_data(view, data.as_ptr(), request) };
+    // SAFETY: the empty slot `data` owns, for the payload.
+    php_swoole_get_recv_data(view, unsafe { &mut *data.as_ptr() }, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = message_policy(opcode, settings);
     if delivery != 0 {
