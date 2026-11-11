@@ -102,6 +102,13 @@ to a URL (pattern, replacement and URL split at NUL): compiling and matching end
 pattern of letters, digits and `/` replaces each occurrence as literal text. ClusterFuzzLite
 links libc++, not the libstdc++ upstream's `std::regex` comes from, so the comparison with
 upstream is the `http-rewrites` gate's (`tests/modules/http/rewrite_gate.cc`).
+`ws_inflate` hands any bytes to `swoole_rs_inflate::message` (permessage-deflate,
+RFC 7692), then deflates the rest with `swoole_rs_deflate::message` at the level the
+first byte picks: inflating that gives the rest back. `http_inflate` compresses a body
+as gzip, zlib or raw deflate and feeds it to `Inflate::decode` (or the HTTP/2 client's
+`Inflate::gzip_only`) in fuzzer-chosen chunks: one call and the chunks both give the body
+back, except where a raw stream's first chunk can't trigger upstream's first-chunk raw
+retry. The uncompressed body, whole and in the same chunks, decodes without a panic.
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in

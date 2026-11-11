@@ -8,7 +8,6 @@
 #include "swoole.h"
 #include "swoole_ssl.h"
 #include "swoole_buffer.h"
-#include "swoole_file.h"
 
 #include "swoole_rs_reactor.h"
 #include "swoole_rs_clients.h"

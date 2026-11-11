@@ -43,16 +43,6 @@ pub unsafe fn get_long(value: *const zval) -> zend_long {
     unsafe { &*value.cast::<Value>() }.long()
 }
 
-/// [`Value::double`] of a raw zval.
-/// # Safety
-/// `value` is a live zval.
-#[must_use]
-#[inline]
-pub unsafe fn get_double(value: *const zval) -> f64 {
-    // SAFETY: per the caller.
-    unsafe { &*value.cast::<Value>() }.double()
-}
-
 /// [`Value::string`] of a raw zval: a new reference the caller owns.
 /// # Safety
 /// `value` is a live zval.

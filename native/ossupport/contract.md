@@ -3,8 +3,7 @@
 Feature bit 131072 (`ossupport`). ABI:
 `swoole_rs_ossupport.h`.
 
-Rust owns the async thread pool, file records (`file_record.rs`,
-`async_file.rs`; `swoole_file.h`'s classes are views of them), the SysV queue,
+Rust owns the async thread pool, file records (`file_record.rs`), the SysV queue,
 sendfile and entropy.
 
 ## Thread pool
@@ -49,9 +48,8 @@ so the native `swoole_sys_warning` sees its errno.
 
 - `file_api.rs` is the rest of upstream's `src/os/file.cc`:
   `swoole_tmpfile` under its upstream symbol, `file_get_contents` and
-  `file_put_contents` (Rust's only callers are the server and process).
-  `native/ossupport/swoole_file.h` keeps only the AsyncFile members the
-  ossupport gate calls. Logs name the function as upstream's `__SW_FUNC__` does.
+  `file_put_contents` (Rust's only callers are the server and process). Logs name
+  the function as upstream's `__SW_FUNC__` does.
 
 ## SysV message queue
 
