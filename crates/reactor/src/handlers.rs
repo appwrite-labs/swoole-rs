@@ -176,12 +176,7 @@ mod tests {
     }
 
     fn call(handler: Option<Handler>) -> c_int {
-        let mut event = Event {
-            fd: 0,
-            reactor_id: 0,
-            fd_type: 0,
-            socket: ptr::null_mut(),
-        };
+        let mut event = Event::empty();
         handler.map_or(0, |h| {
             h(unsafe { Running::new(ptr::null_mut()) }, &mut event)
         })

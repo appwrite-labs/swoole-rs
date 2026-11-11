@@ -723,8 +723,7 @@ extern "C" fn on_package(
 
 /// The client of the reactor event's socket, None without a socket.
 fn event_client(event: &Event) -> Option<Handle> {
-    // SAFETY: a client socket's live record, whose object is the client.
-    let socket = unsafe { Socket::from_ptr(event.socket.cast()) }?;
+    let socket = event.socket()?;
     Some(Handle(socket.read(|socket| socket.object).cast()))
 }
 

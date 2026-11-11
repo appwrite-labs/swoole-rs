@@ -44,13 +44,73 @@ pub(crate) fn uring() -> Option<&'static UringOps> {
     URING.get().copied()
 }
 
-/// Upstream's `swoole::Event`.
+/// Upstream's `swoole::Event`: what a handler is called with. Its socket is null or a
+/// live socket record for as long as the event is, so only the wait loop and
+/// [`Event::new`]'s callers, who promise that, make one.
 #[repr(C)]
 pub struct Event {
-    pub fd: c_int,
-    pub reactor_id: i16,
-    pub fd_type: c_int,
-    pub socket: *mut c_void,
+    fd: c_int,
+    reactor_id: i16,
+    fd_type: c_int,
+    socket: *mut c_void,
+}
+
+impl Event {
+    /// An event over `socket`.
+    /// # Safety
+    /// `socket` is null or a live socket record for as long as the event is used.
+    #[must_use]
+    pub const unsafe fn new(
+        fd: c_int,
+        reactor_id: i16,
+        fd_type: c_int,
+        socket: *mut c_void,
+    ) -> Self {
+        Self {
+            fd,
+            reactor_id,
+            fd_type,
+            socket,
+        }
+    }
+
+    /// An event with no socket, which the wait loop fills.
+    pub(crate) const fn empty() -> Self {
+        Self {
+            fd: 0,
+            reactor_id: 0,
+            fd_type: 0,
+            socket: std::ptr::null_mut(),
+        }
+    }
+
+    #[must_use]
+    pub const fn fd(&self) -> c_int {
+        self.fd
+    }
+
+    #[must_use]
+    pub const fn reactor_id(&self) -> i16 {
+        self.reactor_id
+    }
+
+    #[must_use]
+    pub const fn fd_type(&self) -> c_int {
+        self.fd_type
+    }
+
+    /// The event's socket, if it has one.
+    #[must_use]
+    pub fn socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: null or a live record while the event is (the type's invariant).
+        unsafe { Socket::from_ptr(self.socket.cast()) }
+    }
+
+    /// The socket pointer, for callers that pass it on.
+    #[must_use]
+    pub const fn socket_ptr(&self) -> *mut c_void {
+        self.socket
+    }
 }
 
 /// One `wait()`: its native effects and what it reads from the state.
@@ -107,12 +167,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let once = unsafe { &raw const (*fields).once };
     // SAFETY: a single field read of the live state.
     let id = unsafe { (*fields).id };
-    let mut event = Event {
-        fd: 0,
-        reactor_id: 0,
-        fd_type: 0,
-        socket: std::ptr::null_mut(),
-    };
+    let mut event = Event::empty();
     let run = Loop {
         ops,
         owner,

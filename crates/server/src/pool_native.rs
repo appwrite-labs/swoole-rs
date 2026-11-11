@@ -428,13 +428,13 @@ extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
     });
     let size = record(pool).max_packet_size as usize;
     // SAFETY: the packet buffer holds `max_packet_size` bytes.
-    let fd = fd(event.socket.cast());
+    let fd = fd(event.socket_ptr().cast());
     // SAFETY: as above.
     let n = unsafe { libc::read(fd, packet.cast(), size) };
     if n < 0 && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",
-            format_args!("failed to read({}) pipe", event.fd),
+            format_args!("failed to read({}) pipe", event.fd()),
         );
     }
     let info = DataHead {
@@ -449,7 +449,7 @@ extern "C" fn recv_packet(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
 extern "C" fn recv_message(reactor: Running<'_>, event: &mut Event) -> c_int {
     let pool = reactor_pool(reactor);
-    if bus_read(pool, event.socket) > 0 {
+    if bus_read(pool, event.socket_ptr()) > 0 {
         bus_deliver(pool);
     }
     0

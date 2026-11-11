@@ -88,7 +88,7 @@ impl Context {
     }
     pub(super) fn event_socket(&self) -> *mut c_void {
         // SAFETY: the context's live event.
-        unsafe { (*self.event).socket }.cast()
+        unsafe { (*self.event).socket_ptr() }.cast()
     }
 }
 
@@ -228,11 +228,14 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_CLOSE_NOTIFY => {
             // SAFETY: the connection the context selected.
             let conn = unsafe { &*ctx.conn };
-            let mut event = Event {
-                fd: conn.fd,
-                reactor_id: i16::from(conn.reactor_id),
-                fd_type: FD_SESSION,
-                socket: conn.socket.cast(),
+            // SAFETY: the selected connection's live socket, for this call.
+            let mut event = unsafe {
+                Event::new(
+                    conn.fd,
+                    i16::from(conn.reactor_id),
+                    FD_SESSION,
+                    conn.socket.cast(),
+                )
             };
             run(
                 ctx.reactor_handle(),

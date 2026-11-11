@@ -292,7 +292,7 @@ pub unsafe extern "C-unwind" fn reactor_writable_callback(
     event: *mut Event,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let socket = unsafe { (*event).socket }.cast::<SocketRecord>();
+    let socket = unsafe { (*event).socket_ptr() }.cast::<SocketRecord>();
     // SAFETY: as the caller promises.
     let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
@@ -323,12 +323,8 @@ pub unsafe extern "C-unwind" fn reactor_drain_write_buffer(
     let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
         return;
     };
-    let mut event = Event {
-        fd: record.fd(),
-        reactor_id: 0,
-        fd_type: 0,
-        socket: socket.cast(),
-    };
+    // SAFETY: `record` proved the socket live, and the event lives for this call.
+    let mut event = unsafe { Event::new(record.fd(), 0, 0, socket.cast()) };
     let flush = Flush {
         reactor,
         socket: record,
