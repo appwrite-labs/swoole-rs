@@ -158,7 +158,8 @@ def pending(tests, rechecked, engine='upstream', results=()):
     both passed and failed, or to 9 for one it failed every re-run of after upstream
     failed one. Another engine stops once its verdict is settled (a pass after an upstream
     failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its
-    budget is spent: one re-run if its first failure timed out, nine once upstream failed a
+    budget is spent: one re-run if its first failure timed out (unless an upstream re-run timed
+    out too), nine once upstream failed a
     re-run or while it has passed none (a test racy on both engines may fail several cargo
     re-runs in a row on a busy runner before one passes, #2815), else three. A failure alone
     doesn't settle it: a test racy on both engines (#862) fails a cargo re-run as often as
@@ -180,6 +181,8 @@ def pending(tests, rechecked, engine='upstream', results=()):
             return EXTENDED_RERUNS if any(other and 'passed' not in other for other in others) else 0
         return [test for test in tests if within(runs[test]['upstream'], budget(test))]
     timed_out = {row['test'] for row in results if row['engine'] == engine and row.get('timed_out')}
+    # A hang upstream shares (#2815's sendfile_client_reset) is no reason to cut cargo's re-runs short.
+    timed_out -= {row['test'] for row in rechecked if row['engine'] == 'upstream' and row.get('timed_out')}
     left = []
     for test in tests:
         statuses = runs[test].get(engine, [])

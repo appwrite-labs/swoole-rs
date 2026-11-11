@@ -2,8 +2,8 @@
 # Re-run the PHPT gate's flagged tests up to three times per engine, upstream first. Upstream
 # stops at a test's first failed re-run; cargo then re-runs every flagged test until its
 # verdict is settled (a pass, and also a failure unless upstream failed), once only when its
-# first failure timed out, up to nine times when upstream failed one or until cargo passes
-# one (gate.py --print-pending).
+# first failure timed out (unless upstream timed out too), up to nine times when upstream
+# failed one or until cargo passes one (gate.py --print-pending).
 # An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
 # A test cargo both passed and failed then gets more upstream re-runs (up to 24 in all),
 # so a test racy on both engines isn't counted as a cargo regression; so does one whose

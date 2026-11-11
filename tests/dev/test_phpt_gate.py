@@ -195,6 +195,10 @@ class PhptGate(unittest.TestCase):
         # A first cargo failure that timed out gets one re-run; timing out again is a regression.
         self.assertEqual(recheck(['slow'], rechecked), (['slow'], [], [], []))
         self.assertEqual(pending(['slow'], [row('slow', 'upstream', 'failed')], 'cargo', results), ['slow'])
+        # When upstream's failure timed out too, both engines hang: cargo gets nine re-runs to pass one.
+        hangs = [row('slow', 'upstream', 'failed', True), row('slow', 'cargo', 'failed', True)]
+        self.assertEqual(pending(['slow'], hangs, 'cargo', results), ['slow'])
+        self.assertEqual(pending(['slow'], hangs + [row('slow', 'cargo', 'failed', True)] * 8, 'cargo', results), [])
 
     def test_mixed_cargo_gets_more_upstream_reruns(self):
         def row(test, engine, status):
