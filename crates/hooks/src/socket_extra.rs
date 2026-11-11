@@ -44,9 +44,9 @@ impl Drop for SocketExtra {
     }
 }
 impl SocketExtra {
-    /// A record's fresh metadata, which [`SocketExtra::free`] releases.
-    pub(crate) fn alloc() -> *mut Self {
-        Box::into_raw(Box::new(Self {
+    /// A record's fresh metadata.
+    pub(crate) fn boxed() -> Box<Self> {
+        Box::new(Self {
             strings: std::array::from_fn(|_| StringSlot::default()),
             tls: None,
             close_hook: None,
@@ -55,18 +55,7 @@ impl SocketExtra {
             uring: None,
             #[cfg(feature = "iouring")]
             bio: [ptr::null_mut(); 2],
-        }))
-    }
-
-    /// Release what [`SocketExtra::alloc`] made, or nothing for null.
-    ///
-    /// # Safety
-    /// `owner` is null or from `alloc`, released once.
-    pub(crate) unsafe fn free(owner: *mut Self) {
-        if !owner.is_null() {
-            // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(owner) });
-        }
+        })
     }
 }
 
@@ -104,15 +93,14 @@ mod tests {
 
     #[test]
     fn tls_slot_is_the_extra_records_owner() {
-        let extra = SocketExtra::alloc();
+        let mut extra = SocketExtra::boxed();
         let owner = TlsContext::new();
         let pointer = owner.as_ptr();
-        unsafe { (*extra).tls = Some(owner) };
-        let slot = unsafe { *extra.cast::<*const swoole_rs_tls::OwnedTlsContext>() };
+        extra.tls = Some(owner);
+        let slot = unsafe { *(&raw const *extra).cast::<*const swoole_rs_tls::OwnedTlsContext>() };
         assert_eq!(
             slot, pointer,
             "the slot is the owner pointer native code reads"
         );
-        unsafe { SocketExtra::free(extra) };
     }
 }

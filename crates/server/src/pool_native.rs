@@ -86,7 +86,7 @@ const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 /// come from. crates/process and crates/phpprocess read both through `message_bus`.
 #[repr(C)]
 struct PoolBus {
-    bus: *mut MessageBus,
+    bus: Box<MessageBus>,
     allocator: *const CoreAllocator,
 }
 
@@ -259,7 +259,7 @@ pub(crate) fn new_bus(counter: *mut c_void) -> *mut c_void {
     // SAFETY: the caller's live, aligned counter, which outlives the bus.
     bus.count_ids(unsafe { &*counter.cast::<AtomicU64>() });
     let bus = PoolBus {
-        bus: Box::into_raw(bus),
+        bus,
         allocator: &raw const STD_ALLOCATOR,
     };
     Box::into_raw(Box::new(bus)).cast()
@@ -274,15 +274,13 @@ fn free_message_bus(pool: Pool) {
     unsafe { free_bus(record(pool).message_bus()) };
 }
 
-/// `delete bus`.
+/// `delete bus`: the record and the Rust bus it owns.
 ///
 /// # Safety
 /// `bus` is [`new_bus`]'s, not used again.
 pub(crate) unsafe fn free_bus(bus: *mut c_void) {
     // SAFETY: as the caller guarantees.
-    let bus = unsafe { Box::from_raw(bus.cast::<PoolBus>()) };
-    // SAFETY: the bus `new_bus` boxed, not used again.
-    drop(unsafe { Box::from_raw(bus.bus) });
+    drop(unsafe { Box::from_raw(bus.cast::<PoolBus>()) });
 }
 
 // ---------------------------------------------------------------- pipes and box

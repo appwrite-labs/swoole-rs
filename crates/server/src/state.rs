@@ -52,8 +52,8 @@ pub struct ServerState {
     locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
-    /// The interface addresses `Server::create` read (`local_addr`); null before.
-    pub(crate) local_addrs: AtomicPtr<crate::local_addr::LocalAddrs>,
+    /// The interface addresses `Server::create` first read (`local_addr`); none before.
+    pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
     /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
     task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
@@ -105,7 +105,7 @@ impl ServerState {
             texts: [const { StringSlot::new() }; TEXT_COUNT],
             locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
-            local_addrs: AtomicPtr::new(core::ptr::null_mut()),
+            local_addrs: std::sync::OnceLock::new(),
             task_pipes: std::sync::Mutex::new(Vec::new()),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
@@ -451,8 +451,6 @@ unsafe fn free_pipe(pipe: *mut SocketPair) {
 
 impl Drop for ServerState {
     fn drop(&mut self) {
-        // SAFETY: the table `local_addr::init` boxed, if any; nothing reads it after the state.
-        unsafe { crate::local_addr::free(*self.local_addrs.get_mut()) };
         // SAFETY: this state owns its unique table-view box; the shared arena is a loan.
         drop(unsafe { Box::from_raw(*self.tables.get_mut()) });
         // SAFETY: this state owns its unique configuration box; native reference

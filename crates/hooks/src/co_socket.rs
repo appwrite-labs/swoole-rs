@@ -53,7 +53,7 @@ pub struct CoSocket {
     /// lent out.
     pub(crate) state: *mut Bound,
     /// The record's metadata, which `init` makes and `fini` releases.
-    pub(crate) extra: *mut crate::socket_extra::SocketExtra,
+    pub(crate) extra: Option<Box<SocketExtra>>,
 }
 
 /// Field offsets native code asserts too (`swoole_rs_co_socket.h`).
@@ -253,8 +253,6 @@ impl Co {
         write_buffer, set_write_buffer: *mut c_void;
         /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
-        /// Null once released, else the live metadata, which `fini` frees.
-        extra, set_extra: *mut crate::socket_extra::SocketExtra;
     }
 
     /// `f` over a copy of the protocol, written back after it: nothing borrows the
@@ -352,9 +350,9 @@ impl Co {
     /// Inside another `with_extra` over the same record.
     #[track_caller]
     pub fn with_extra<T>(self, f: impl FnOnce(&mut SocketExtra) -> T) -> Option<T> {
-        // SAFETY: `new`'s contract: null or the live metadata; the loan makes this its
-        // only reference.
-        self.lend(EXTRA, |_| unsafe { self.extra().as_mut() }.map(f))
+        // SAFETY: `new`'s contract: a live record, whose metadata the loan makes this
+        // its only reference to.
+        self.lend(EXTRA, |_| unsafe { (*self.0).extra.as_deref_mut() }.map(f))
     }
 
     /// The bound coroutines, barriers and timers.
@@ -436,7 +434,7 @@ impl CoSocket {
             zero_copy: false,
             resolve_context: ptr::null_mut(),
             state,
-            extra: SocketExtra::alloc(),
+            extra: Some(SocketExtra::boxed()),
         }
     }
 
@@ -562,9 +560,7 @@ pub unsafe fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
         drop(unsafe { Box::from_raw(socket.state) });
     }
     socket.state = ptr::null_mut();
-    // SAFETY: the record's own metadata, released once.
-    unsafe { SocketExtra::free(socket.extra) };
-    socket.extra = ptr::null_mut();
+    socket.extra = None;
 }
 
 /// `~Socket()`: the destructor callback if it has not run, the buffers, the
