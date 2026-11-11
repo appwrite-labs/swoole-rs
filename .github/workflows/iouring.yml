@@ -23,9 +23,11 @@ jobs:
         with:
           args: --configure=--enable-iouring --configure=--enable-uring-socket
           php: ${{ steps.install.outputs.php }}
-      - run: cargo fetch --locked
+      - name: Fetch crates
+        run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
-      - run: |
+      - name: Build cargo engine
+        run: |
           python3 tools/build_ext.py --configure=--enable-iouring --configure=--enable-uring-socket
           mkdir -p target/phpt
           cp ${{ steps.upstream.outputs.library }} target/phpt/upstream.so
@@ -40,13 +42,16 @@ jobs:
           --extension target/ext/swoole.so --reference target/phpt/upstream.so
       # On a PR, upstream's report comes from main's latest run of this job while nothing it
       # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
-      - if: github.event_name == 'pull_request'
+      - name: Load upstream baseline
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: corpus/upstream/baseline.sh iouring
-      - id: extensions
+      - name: List extensions
+        id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
-      - run: |
+      - name: Run and gate PHPTs
+        run: |
           families="--module swoole_iouring --module swoole_runtime --module swoole_coroutine_lock --module swoole_coroutine_system"
           mkdir -p target/phpt/iouring
           for engine in upstream cargo; do

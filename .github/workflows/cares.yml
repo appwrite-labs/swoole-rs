@@ -22,11 +22,15 @@ jobs:
         with:
           args: --configure=--enable-cares
           php: ${{ steps.install.outputs.php }}
-      - run: cargo fetch --locked
-      - run: cargo clippy --locked -p swoole-rs-clients --features cares --all-targets -- -D warnings
-      - run: cargo test --locked -p swoole-rs-clients --features cares completion_
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Lint clients with c-ares
+        run: cargo clippy --locked -p swoole-rs-clients --features cares --all-targets -- -D warnings
+      - name: Test c-ares completions
+        run: cargo test --locked -p swoole-rs-clients --features cares completion_
       # The control is the pinned reference itself, unpatched.
-      - run: |
+      - name: Build cargo engine
+        run: |
           python3 tools/build_ext.py --configure=--enable-cares
           mkdir -p target/phpt
           cp ${{ steps.upstream.outputs.library }} target/phpt/upstream.so
@@ -41,27 +45,32 @@ jobs:
           --extension target/ext/swoole.so --reference target/phpt/upstream.so
       # On a PR, upstream's report comes from main's latest run of this job while nothing it
       # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
-      - if: github.event_name == 'pull_request'
+      - name: Load upstream baseline
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: corpus/upstream/baseline.sh cares
-      - id: extensions
+      - name: List extensions
+        id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
-      - run: |
+      - name: Run c-ares runtime cases
+        run: |
           python3 tests/modules/clients/cares.py ${{ steps.extensions.outputs.args }} \
             --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so \
             --output target/phpt/cares-runtime.json
       # The original System DNS timeout case against a resolver that answers late (#1190).
       # Its 712 comes from c-ares's own timeout; the thread-pool lookup reports 10018 on
       # both engines, and the runner's resolver fails before the 1 ms deadline.
-      - run: >
+      - name: Run DNS timeout originals
+        run: >
           sudo python3 tests/modules/corebase/slow_resolver.py --
           python3 corpus/upstream/run.py
           --manifest tests/modules/corebase/dns-timeout-originals.json --external-network --require-all
           ${{ steps.extensions.outputs.args }}
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --output target/phpt/dns-timeout-originals.json
-      - run: |
+      - name: Run and gate PHPTs
+        run: |
           families="--module swoole_coroutine --module swoole_coroutine_system --module swoole_client_coro --module swoole_http_client_coro --module swoole_socket_coro"
           mkdir -p target/phpt/cares
           for engine in upstream cargo; do

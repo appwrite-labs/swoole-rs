@@ -25,20 +25,24 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
+      - name: Clear cached builds
+        run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - uses: actions/cache@v4
         with:
           path: target/php-zts
           key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
-      - run: .devcontainer/php.sh target/php-zts --enable-zts
+      - name: Build ZTS PHP
+        run: .devcontainer/php.sh target/php-zts --enable-zts
       - id: upstream
         uses: ./.github/actions/upstream
         with:
           args: --php-config ${{ github.workspace }}/target/php-zts/bin/php-config --phpize ${{ github.workspace }}/target/php-zts/bin/phpize --php-sockets --configure=--enable-swoole-thread
           php: ${{ hashFiles('.devcontainer/php.sh') }}
-      - run: cargo fetch --locked
+      - name: Fetch crates
+        run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
-      - run: |
+      - name: Build cargo engine
+        run: |
           python3 tools/build_ext.py --php-config $PWD/target/php-zts/bin/php-config --php-sockets --configure=--enable-swoole-thread
           mkdir -p target/phpt
           cp ${{ steps.upstream.outputs.library }} target/phpt/upstream.so
@@ -55,7 +59,8 @@ jobs:
           --extension target/ext/swoole.so --reference target/phpt/upstream.so
       # On a PR, upstream's report comes from main's latest run of this job while nothing it
       # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
-      - if: github.event_name == 'pull_request'
+      - name: Load upstream baseline
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: corpus/upstream/baseline.sh zts target/php-zts/bin/php
@@ -74,7 +79,8 @@ jobs:
               --build-manifest target/ext/build-manifest.json \
               --output target/phpt/collections-$profile.json
           done
-      - run: |
+      - name: Run and gate PHPTs
+        run: |
           families="--module swoole_thread --module swoole_atomic --module swoole_lock"
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
           mkdir -p target/phpt/zts
