@@ -6,10 +6,10 @@ use crate::ops::{
     LOG_TOO_MANY_PORTS, OP_CONN_UID, OP_CONN_WORKER, OP_DGRAM_PORT, OP_DISPATCH_FUNC,
     OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_FD_CONN, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD,
     OP_FIELD, OP_HAS_DISPATCH_FUNC, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IP_KEY, OP_IS_CREATED,
-    OP_IS_MASTER, OP_MODE, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_COUNT,
+    OP_IS_MASTER, OP_MODE, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_COUNT,
     OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE,
     OP_SEND_SYNC, OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
-    OP_SENDFILE_OFFSET, OP_SOCKET_CONN, OP_SOCKET_NOBUFS, OP_STREAM_PORT, OP_SYSTEMD_FDS,
+    OP_SENDFILE_OFFSET, OP_STREAM_PORT, OP_SYSTEMD_FDS,
     OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
     OP_WORKER_IDLE,
 };
@@ -104,19 +104,6 @@ pub(crate) fn sendwait<H: Host>(h: &mut H, session: u64) -> crate::Effect<bool> 
         return Ok(false);
     }
     h.is(OP_SEND_SYNC)
-}
-
-/// `Server::has_kernel_nobufs_error`.
-pub(crate) fn kernel_nobufs<H: Host>(h: &mut H, session: u64) -> crate::Effect<bool> {
-    let conn = h.op(OP_SOCKET_CONN, session)?;
-    if conn == 0 {
-        return Ok(false);
-    }
-    Ok(if conn & 2 != 0 {
-        h.is(OP_PIPE_NOBUFS)?
-    } else {
-        h.is(OP_SOCKET_NOBUFS)?
-    })
 }
 
 /// Idle workers among ids `from..to`.
@@ -254,14 +241,13 @@ pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
 /// The dispatch and port operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use crate::ops::{
-        RUN_ADD_PORT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS,
+        RUN_ADD_PORT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
         RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
     };
     Ok(match operation {
         RUN_SCHEDULE_WORKER => schedule_worker(h, i32::try_from(arg.cast_signed()).unwrap_or(0))?,
         RUN_FEEDBACK => i64::from(feedback(h, arg)?),
         RUN_SENDWAIT => i64::from(sendwait(h, arg)?),
-        RUN_KERNEL_NOBUFS => i64::from(kernel_nobufs(h, arg)?),
         RUN_IDLE_WORKERS => idle_workers(h, false)?,
         RUN_IDLE_TASK_WORKERS => idle_workers(h, true)?,
         RUN_TASKING => tasking(h)?,
@@ -375,11 +361,6 @@ mod tests {
         let mut s = Script::with(&[]);
         assert!(!sendwait(&mut s, 3).unwrap(), "missing session");
         assert_eq!(s.args(LOG_SENDWAIT), vec![3], "traced");
-
-        let mut s = Script::with(&[(OP_SOCKET_CONN, 3), (OP_PIPE_NOBUFS, 1)]);
-        assert!(kernel_nobufs(&mut s, 1).unwrap(), "pipe");
-        let mut s = Script::with(&[(OP_SOCKET_CONN, 1), (OP_PIPE_NOBUFS, 1)]);
-        assert!(!kernel_nobufs(&mut s, 1).unwrap(), "socket");
 
         let mut s = Script::with(&[(OP_FIELD, 3)]).queue(OP_WORKER_IDLE, &[1, 0, 1]);
         assert_eq!(
