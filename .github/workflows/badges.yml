@@ -33,8 +33,11 @@ jobs:
         with:
           ref: main
       # The newest finished merge-tier run on main with a gate result (a gate missing a shard
-      # uploads no phpt.json), and its build variants' gates. Latest-wins cancels most runs,
-      # so they are skipped before the limit, or 20 of them hide every finished run.
+      # uploads no phpt.json) from every build variant too: a variant job that died before its
+      # gate would take its tests out of the count, which reads as a regression (#3223).
+      # Latest-wins cancels most runs, so they are skipped before the limit, or 20 of them
+      # hide every finished run. The list is its own command so that a refused API call fails
+      # the step instead of leaving the badge stale without a word.
       # Not on a push: a push changes none of the run results below, and looking them up costs
       # about 40 API calls from the hourly limit every job shares. The badges that come from
       # the checkout are still rewritten.
@@ -42,15 +45,15 @@ jobs:
         id: gate
         if: github.event_name != 'push'
         run: |
-          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
-            if gh run download "$run" -n phpt -D gate/phpt 2>/dev/null && [ -f gate/phpt/phpt.json ]; then
-              for variant in zts stdext iouring cares threadcontext alpine root; do
-                gh run download "$run" -n "phpt-$variant" -D "gate/$variant" 2>/dev/null || echo "::warning::run $run has no phpt-$variant gate"
-              done
-              echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"
-              break
-            fi
+          runs=$(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId')
+          for run in $runs; do
             rm -rf gate
+            gh run download "$run" -n phpt -D gate/phpt 2>/dev/null && [ -f gate/phpt/phpt.json ] || continue
+            for variant in zts stdext iouring cares threadcontext alpine root; do
+              gh run download "$run" -n "phpt-$variant" -D "gate/$variant" 2>/dev/null || { echo "::warning::run $run has no phpt-$variant gate"; continue 2; }
+            done
+            echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"
+            break
           done
       # The two newest completed merge-tier runs on main whose callgrind job uploaded a result
       # (it uploads one when the limits fail too, which is when the badge matters most):
