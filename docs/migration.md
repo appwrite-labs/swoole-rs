@@ -51,7 +51,7 @@ Graduated: base64, buffer, corebase, crc32, error, framing, http, protocols, web
 The merge tier's `callgrind` job is a ratchet, not a target:
 [`benchmarks/callgrind_limits/`](../benchmarks/callgrind_limits) (one file per workload)
 records the Cargo build/upstream instruction ratio per workload, and the
-job fails if one rises more than 1% (noise) above its record.
+job fails if one rises more than 2% (noise) above its record.
 
 - A PR that makes a workload cheaper lowers its record in the same PR. When
   two consecutive merge runs both beat a record rounded up to two decimals,
