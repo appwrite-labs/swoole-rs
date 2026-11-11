@@ -134,8 +134,7 @@ fn sleep(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: C++ sleeps the running coroutine.
-    call.set_bool(unsafe { system_sleep(seconds) } == 0);
+    call.set_bool(system_sleep(seconds) == 0);
 }
 
 /// `zend_value_error(message)`, then false.
@@ -505,8 +504,7 @@ fn wait_event(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: waits on the descriptor in the running coroutine.
-    let events = unsafe { system_wait_event(fd, int(events), timeout) };
+    let events = system_wait_event(fd, int(events), timeout);
     if events < 0 {
         call.set_bool(false);
     } else {

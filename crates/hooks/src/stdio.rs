@@ -83,8 +83,7 @@ mod native {
     }
 
     pub(super) fn sleep(seconds: f64) -> c_int {
-        // SAFETY: `System::sleep` raises upstream's fatal error outside a coroutine.
-        unsafe { crate::sleep::system_sleep(seconds) }
+        crate::sleep::system_sleep(seconds)
     }
 }
 

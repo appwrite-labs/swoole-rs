@@ -13,7 +13,7 @@ use crate::records::ConnectionRecord;
 /// The `ListenPort` methods crates/ports defines and the server calls. Ports
 /// depends on this crate, so `swoole_init` (crates/ffi) registers them with
 /// [`set_methods`]. A `port` is one of the server's live `ListenPort`s
-/// (`server_object::port_new`), passed as `PollOps` passes its sockets (crates/hooks).
+/// (`server_object::port_new`), passed as a raw pointer.
 pub struct PortMethods {
     pub ssl_context_init: fn(port: *mut c_void) -> bool,
     /// `ssl_create(sock)`, of a socket the port accepted.

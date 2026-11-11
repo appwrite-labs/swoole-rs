@@ -1,52 +1,45 @@
 //! `System::wait_event(fd, events, timeout)`: wait until `fd` is readable and/or
 //! writable. A zero timeout is one `poll(2)` here; otherwise the coroutine parks on
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
-//! drive (the reactor's and the coroutine's under `System::wait_event`, fakes in tests).
+//! drive (the reactor's [`Watch`] and the coroutine's under `System::wait_event`, fakes
+//! in tests).
 use crate::{event_waiter, wait_revents};
+use core::cell::Cell;
 use core::ffi::c_void;
 use swoole_rs_corebase::constants::FdType;
+
+pub use native::Watch;
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
 pub(crate) const READ: i32 = 1 << 9;
 pub(crate) const WRITE: i32 = 1 << 10;
 pub(crate) const ERROR: i32 = 1 << 11;
 
-/// The reactor's and the coroutine's side of an `EventWaiter`.
-#[repr(C)]
-pub struct EventWaitOps {
+/// The reactor's and the coroutine's side of an `EventWaiter`; `S` is its reactor
+/// socket, which dropping takes off the reactor and releases, not its fd.
+pub struct EventWaitOps<S> {
     /// The current coroutine.
-    pub current: extern "C" fn() -> *mut c_void,
+    pub(crate) current: extern "C" fn() -> *mut c_void,
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
-    /// `events`; null with the last error in `*error` if the reactor refuses it (the
-    /// socket is then released, not its fd).
-    pub add: unsafe extern "C" fn(
-        fd: i32,
-        events: i32,
-        waiter: *mut c_void,
-        error: *mut i32,
-    ) -> *mut c_void,
+    /// `events`; the last error if the reactor refuses it. The wait passes its own
+    /// waiter, and drops the socket first.
+    pub(crate) add: fn(fd: i32, events: i32, waiter: *mut c_void) -> Result<S, i32>,
     /// `co->yield_ex(timeout)`: 0, or the last error if it timed out or was cancelled.
-    pub park: fn(timeout: f64) -> i32,
-    /// Take the socket off the reactor and release it, not its fd.
-    pub remove: unsafe extern "C" fn(socket: *mut c_void),
+    pub(crate) park: fn(timeout: f64) -> i32,
 }
 
-/// A parked `wait_event`: its coroutine and the events fired so far.
-struct Waiter {
+/// A parked `wait_event` (the object of its reactor socket): its coroutine and the
+/// events fired so far.
+pub(crate) struct Waiter {
     co: *mut c_void,
-    revents: u32,
+    revents: Cell<u32>,
 }
 
 /// The reactor fired `event` on a waiter's socket: the coroutine to resume
 /// (deferred) on the first event, else null.
-///
-/// # Safety
-/// `waiter` is the socket's object, a parked `swr_v1_hook_wait_event`'s.
-pub(crate) unsafe fn event_ready(waiter: *mut c_void, event: i32) -> *mut c_void {
-    // SAFETY: the waiter lives in its parked frame, and only this thread touches it.
-    let waiter = unsafe { &mut *waiter.cast::<Waiter>() };
-    let plan = event_waiter(waiter.revents, event.cast_unsigned());
-    waiter.revents = plan.revents;
+pub(crate) fn event_ready(waiter: &Waiter, event: i32) -> *mut c_void {
+    let plan = event_waiter(waiter.revents.get(), event.cast_unsigned());
+    waiter.revents.set(plan.revents);
     if plan.wake {
         waiter.co
     } else {
@@ -56,30 +49,25 @@ pub(crate) unsafe fn event_ready(waiter: *mut c_void, event: i32) -> *mut c_void
 
 /// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
 /// fired events, or the error.
-///
-/// # Safety
-/// `ops` is native code's, callable in the current coroutine.
-unsafe fn park(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps) -> Result<u32, i32> {
+fn park<S>(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps<S>) -> Result<u32, i32> {
     let co = (ops.current)();
-    let mut waiter = Waiter { co, revents: 0 };
-    let mut error = 0;
-    // SAFETY: `waiter` outlives the socket, which `remove` takes off the reactor.
-    let socket = unsafe { (ops.add)(fd, events, (&raw mut waiter).cast(), &raw mut error) };
-    if socket.is_null() {
-        return Err(error);
-    }
+    let waiter = Waiter {
+        co,
+        revents: Cell::new(0),
+    };
+    // `waiter` outlives the socket, dropped (off the reactor) below.
+    let socket = (ops.add)(fd, events, (&raw const waiter).cast_mut().cast())?;
     let park = ops.park;
     let error = park(timeout);
-    if error != 0 && waiter.revents != 0 {
+    if error != 0 && waiter.revents.get() != 0 {
         // An event fired in the loop pass that timed out or cancelled the
         // wait, and its deferred resume is still queued: take it here, or it
         // resumes this coroutine wherever it next waits, or after it ends.
         park(0.0);
     }
-    // SAFETY: the socket `add` made.
-    unsafe { (ops.remove)(socket) };
+    drop(socket);
     if error == 0 {
-        Ok(waiter.revents)
+        Ok(waiter.revents.get())
     } else {
         Err(error)
     }
@@ -135,25 +123,23 @@ pub(crate) fn from_poll(revents: i16) -> i32 {
 }
 
 /// `int System::wait_event(int fd, int events, double timeout)`: the fired events, or
-/// -1 with errno and the last error set.
-///
-/// # Safety
-/// In a coroutine when `timeout` is not zero (outside one it raises upstream's fatal
-/// error, which does not return), with the thread's reactor running.
+/// -1 with errno and the last error set. Outside a coroutine a nonzero `timeout` is
+/// upstream's fatal error, which does not return.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole9coroutine6System10wait_eventEiid")
 )]
 #[must_use]
-pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
+pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
     let ops = EventWaitOps {
         current: native::current,
-        add: native::add::<{ FdType::SW_FD_CO_EVENT as i32 }>,
+        add: |fd, events, waiter| {
+            // SAFETY: `park` passes its own waiter, which outlives the watch it drops.
+            unsafe { Watch::add(fd, FdType::SW_FD_CO_EVENT as i32, events, waiter) }
+        },
         park: native::park,
-        remove: native::remove,
     };
-    // SAFETY: the reactor's ops, in the current coroutine as the caller promises.
-    let waited = unsafe { swr_v1_hook_wait_event(fd, events, timeout, &ops) };
+    let waited = swr_v1_hook_wait_event(fd, events, timeout, &ops);
     if waited.last_error != 0 {
         swoole_rs_corebase::log::set_last_error(waited.last_error);
     }
@@ -167,9 +153,12 @@ pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
     use core::ffi::{c_int, c_void};
+    use core::ptr::NonNull;
     use swoole_rs_corebase::log;
     use swoole_rs_reactor::SocketRecord;
-    use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del};
+    use swoole_rs_reactor::event_api::{
+        swoole_event_add, swoole_event_del, swoole_event_is_available,
+    };
 
     pub(crate) use swoole_rs_coroutine::yield_ex as coroutine_yield_ex;
 
@@ -191,38 +180,62 @@ pub(crate) mod native {
         co
     }
 
-    /// Releases the record, not its fd: the waiter doesn't own it.
-    pub(crate) unsafe fn release(socket: *mut SocketRecord) {
-        // SAFETY: a live record of this module's.
-        unsafe { (*socket).fields.fd = -1 };
-        // SAFETY: as above; nothing uses it afterwards.
-        unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+    /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
+    const WRONG_OPERATION: c_int = 509;
+
+    /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
+    /// the thread's reactor with an object the readiness handlers reach. Dropping it
+    /// takes it off the reactor and frees the record, leaving the fd open.
+    pub struct Watch(NonNull<SocketRecord>);
+
+    impl Watch {
+        /// Registers `fd`, typed `fd_type`, for `events` with `object`.
+        ///
+        /// # Errors
+        /// The last error, when there is no reactor or it refuses the socket.
+        ///
+        /// # Safety
+        /// `object` is what `fd_type`'s readiness handlers take it for, and stays
+        /// live until the watch is dropped.
+        pub unsafe fn add(
+            fd: i32,
+            fd_type: c_int,
+            events: i32,
+            object: *mut c_void,
+        ) -> Result<Self, i32> {
+            if !swoole_event_is_available() {
+                return Err(WRONG_OPERATION);
+            }
+            let mut record = SocketRecord::with_fd(fd, fd_type);
+            record.object = object;
+            let watch = Self(NonNull::from(Box::leak(Box::new(record))));
+            // SAFETY: a fresh record this watch owns, on the thread's live reactor.
+            if unsafe { swoole_event_add(watch.0.as_ptr(), events) } < 0 {
+                let error = log::last_error();
+                watch.release();
+                return Err(error);
+            }
+            Ok(watch)
+        }
+
+        /// Frees the record, off the reactor, without closing the fd it borrows.
+        fn release(self) {
+            let socket = core::mem::ManuallyDrop::new(self).0.as_ptr();
+            // SAFETY: the watch's own record, which nothing else uses.
+            unsafe { (*socket).fields.fd = -1 };
+            // SAFETY: as above; nothing uses it afterwards.
+            unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+        }
     }
 
-    /// A `FD_TYPE` socket for `fd` with `object` as its object, or null (released, its
-    /// fd left open: the caller doesn't own it) with the error in `error` if the
-    /// reactor refused it.
-    pub(crate) unsafe extern "C" fn add<const FD_TYPE: c_int>(
-        fd: i32,
-        events: i32,
-        object: *mut c_void,
-        error: *mut i32,
-    ) -> *mut c_void {
-        let socket = {
-            let mut socket = SocketRecord::with_fd(fd, FD_TYPE);
-            socket.object = object;
-            socket
+    impl Drop for Watch {
+        fn drop(&mut self) {
+            if swoole_event_is_available() {
+                // SAFETY: the record `add` registered on this thread's live reactor.
+                unsafe { swoole_event_del(self.0.as_ptr()) };
+            }
+            Self(self.0).release();
         }
-        .into_raw();
-        // SAFETY: the new record, on the running reactor.
-        if unsafe { swoole_event_add(socket, events) } < 0 {
-            // SAFETY: the caller's slot.
-            unsafe { *error = log::last_error() };
-            // SAFETY: the record, which the reactor refused.
-            unsafe { release(socket) };
-            return core::ptr::null_mut();
-        }
-        socket.cast()
     }
 
     pub(super) fn park(timeout: f64) -> i32 {
@@ -232,26 +245,15 @@ pub(crate) mod native {
             log::last_error()
         }
     }
-
-    pub(crate) unsafe extern "C" fn remove(socket: *mut c_void) {
-        let socket = socket.cast::<SocketRecord>();
-        // SAFETY: the record `add` registered.
-        unsafe { swoole_event_del(socket) };
-        // SAFETY: as above, now off the reactor.
-        unsafe { release(socket) };
-    }
 }
 
 /// Waits for `events` (only `SW_EVENT_READ`/`WRITE` count) on `fd`.
-///
-/// # Safety
-/// `ops` is callable in the current coroutine.
 #[must_use]
-pub unsafe fn swr_v1_hook_wait_event(
+pub fn swr_v1_hook_wait_event<S>(
     fd: i32,
     events: i32,
     timeout: f64,
-    ops: &EventWaitOps,
+    ops: &EventWaitOps<S>,
 ) -> WaitEvent {
     let events = events & (READ | WRITE);
     if events == 0 {
@@ -281,8 +283,7 @@ pub unsafe fn swr_v1_hook_wait_event(
         };
         return failed(error, 0);
     }
-    // SAFETY: native code's ops, callable in the current coroutine.
-    let fired = match unsafe { park(fd, events, timeout, ops) } {
+    let fired = match park(fd, events, timeout, ops) {
         Ok(fired) => fired,
         Err(error) => return failed(0, error),
     };
@@ -306,7 +307,15 @@ mod tests {
     use std::cell::Cell;
 
     const CO: *mut c_void = 0x10 as *mut c_void;
-    const SOCKET: *mut c_void = 0x20 as *mut c_void;
+
+    /// The fake reactor's socket: dropping it takes it off.
+    struct Socket;
+
+    impl Drop for Socket {
+        fn drop(&mut self) {
+            ADDED.set(ADDED.get() - 1);
+        }
+    }
 
     thread_local! {
         /// The waiter `add` registered, and how many sockets are on the reactor.
@@ -317,23 +326,22 @@ mod tests {
     extern "C" fn current() -> *mut c_void {
         CO
     }
-    unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, error: *mut i32) -> *mut c_void {
+    /// The parked waiter `add` registered.
+    fn waiter<'a>() -> &'a Waiter {
+        unsafe { &*WAITER.get().cast::<Waiter>() }
+    }
+    fn add(fd: i32, _: i32, waiter: *mut c_void) -> Result<Socket, i32> {
         if fd == 9 {
-            unsafe { *error = libc::EBADF };
-            return core::ptr::null_mut();
+            return Err(libc::EBADF);
         }
         WAITER.set(waiter);
         ADDED.set(ADDED.get() + 1);
-        SOCKET
-    }
-    unsafe extern "C" fn remove(socket: *mut c_void) {
-        assert_eq!(socket, SOCKET);
-        ADDED.set(ADDED.get() - 1);
+        Ok(Socket)
     }
     /// The reactor fires an error then a read before the deferred resume runs.
     fn fires_error(_: f64) -> i32 {
-        assert_eq!(unsafe { event_ready(WAITER.get(), ERROR) }, CO);
-        assert!(unsafe { event_ready(WAITER.get(), READ) }.is_null());
+        assert_eq!(event_ready(waiter(), ERROR), CO);
+        assert!(event_ready(waiter(), READ).is_null());
         0
     }
     fn times_out(_: f64) -> i32 {
@@ -353,7 +361,7 @@ mod tests {
             assert_eq!(timeout, 0.0);
             return 0;
         }
-        assert_eq!(unsafe { event_ready(WAITER.get(), READ) }, CO);
+        assert_eq!(event_ready(waiter(), READ), CO);
         libc::ETIMEDOUT
     }
 
@@ -368,13 +376,8 @@ mod tests {
     }
 
     fn wait(fd: i32, events: i32, timeout: f64, park: fn(f64) -> i32) -> WaitEvent {
-        let ops = EventWaitOps {
-            current,
-            add,
-            park,
-            remove,
-        };
-        unsafe { swr_v1_hook_wait_event(fd, events, timeout, &ops) }
+        let ops = EventWaitOps { current, add, park };
+        swr_v1_hook_wait_event(fd, events, timeout, &ops)
     }
 
     #[test]
@@ -416,14 +419,13 @@ mod tests {
         let masks = [0, READ, WRITE, ERROR, READ | WRITE, READ | ERROR];
         for held in masks {
             for event in masks {
-                let mut waiter = Waiter {
+                let waiter = Waiter {
                     co: CO,
-                    revents: held.cast_unsigned(),
+                    revents: Cell::new(held.cast_unsigned()),
                 };
-                let raw = (&raw mut waiter).cast();
                 let mut wakes = 0;
                 for fired in [event, WRITE] {
-                    let co = unsafe { event_ready(raw, fired) };
+                    let co = event_ready(&waiter, fired);
                     if !co.is_null() {
                         assert_eq!(co, CO);
                         wakes += 1;
@@ -431,7 +433,7 @@ mod tests {
                 }
                 let expected = usize::from(held == 0) + usize::from(held | event == 0);
                 assert_eq!(wakes, expected, "held {held} event {event}");
-                assert_eq!(waiter.revents, (held | event | WRITE).cast_unsigned());
+                assert_eq!(waiter.revents.get(), (held | event | WRITE).cast_unsigned());
             }
         }
     }
