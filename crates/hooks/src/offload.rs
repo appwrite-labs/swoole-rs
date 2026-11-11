@@ -117,7 +117,7 @@ pub struct AsyncOps {
     /// cancellation.
     pub(crate) park_for: fn(f64) -> bool,
     /// `co->resume()`.
-    pub(crate) resume: unsafe extern "C" fn(*mut c_void),
+    pub(crate) resume: unsafe extern "C-unwind" fn(*mut c_void),
     /// `swoole_get_last_error()`.
     pub(crate) last_error: extern "C" fn() -> c_int,
 }
@@ -282,7 +282,7 @@ mod tests {
         park();
         true
     }
-    unsafe extern "C" fn resume(_: *mut c_void) {
+    unsafe extern "C-unwind" fn resume(_: *mut c_void) {
         RESUMED.set(RESUMED.get() + 1);
     }
     extern "C" fn last_error() -> c_int {

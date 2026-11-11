@@ -264,13 +264,11 @@ pub fn stats() -> Option<(u32, usize, f32)> {
 /// `Iouring::futex_wait` on `word`, in a coroutine.
 #[must_use]
 pub fn futex_wait(word: &AtomicU32) -> c_int {
-    // SAFETY: the word outlives the request, which completes before this returns.
-    unsafe { uring::futex_wait(&HOST, word.as_ptr()) }
+    uring::futex_wait(&HOST, word)
 }
 
 /// `Iouring::futex_wakeup` on `word`, in a coroutine.
 #[must_use]
 pub fn futex_wakeup(word: &AtomicU32) -> c_int {
-    // SAFETY: as in `futex_wait`.
-    unsafe { uring::futex_wakeup(&HOST, word.as_ptr()) }
+    uring::futex_wakeup(&HOST, word)
 }
