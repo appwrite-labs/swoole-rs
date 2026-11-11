@@ -63,8 +63,8 @@ pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
     use crate::ops::{
         LOG_LC_ONLY_ONE, OP_IS_CREATED, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_CLAIM_START,
         OP_LC_CLEAR_ERROR, OP_LC_DAEMON, OP_LC_DAEMONIZE, OP_LC_FACTORY_START,
-        OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_PROCESS, OP_LC_START_THREAD,
-        OP_LC_START_TIME, OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_SET_RUNNING,
+        OP_LC_INIT_PROTOCOLS, OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_PROCESS,
+        OP_LC_START_THREAD, OP_LC_START_TIME, OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_SET_RUNNING,
     };
     h.get(OP_LC_CLEAR_ERROR)?;
     if h.signed(OP_LC_CHECK)? < 0 {
@@ -85,6 +85,7 @@ pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
     if !h.is(OP_LC_FACTORY_START)? {
         return Ok(SW_ERR);
     }
+    h.get(OP_LC_INIT_PROTOCOLS)?;
     h.get(OP_LC_WRITE_PID)?;
     let started = match h.get(OP_MODE)? {
         MODE_BASE => h.signed(OP_LC_START_BASE)?,
@@ -412,6 +413,7 @@ mod tests {
                     OP_LC_PREPARE_WORKERS,
                     OP_SET_RUNNING,
                     OP_LC_FACTORY_START,
+                    OP_LC_INIT_PROTOCOLS,
                     OP_LC_WRITE_PID,
                     OP_MODE,
                     run,

@@ -1832,8 +1832,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_START;
     use crate::ops::{
         OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_LC_DAEMON, OP_LC_FACTORY_START,
-        OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH,
-        OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
+        OP_LC_INIT_PROTOCOLS, OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER,
+        OP_MAX_SOCKETS, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
     };
     use swoole_rs_clients::address::assign;
     use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
@@ -1853,6 +1853,14 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             sign(swoole_daemon(0, 1))
         }
         OP_LC_FACTORY_START => u64::from(crate::factory::start(o.server())),
+        // In the master, after the process factory forks and before any reactor
+        // thread, base-mode worker or worker thread starts.
+        OP_LC_INIT_PROTOCOLS => {
+            for port in o.tables().ports() {
+                (crate::port_config::methods().init_protocol)(port.raw());
+            }
+            0
+        }
         OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
         // The master starts its reactor threads.
         OP_LC_START_PROCESS => sign(crate::reactor_entry::start_reactor_threads(o.server())),

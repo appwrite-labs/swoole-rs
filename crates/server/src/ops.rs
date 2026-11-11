@@ -465,7 +465,7 @@ pub const OP_ON_PIPE_MESSAGE: u32 = 295;
 pub const OP_CLOSE_FORWARD: u32 = 296;
 /// `send_to_connection` of the pipe's packet.
 pub const OP_PIPE_SEND: u32 = 297;
-/// The thread buffer grows for 64K datagrams, then the handlers and port protocols.
+/// The thread buffer grows for 64K datagrams, then the session handlers.
 pub const OP_DGRAM_BUFFER: u32 = 298;
 pub const OP_SESSION_HANDLERS: u32 = 299;
 /// `microtime()`, a `double`.
@@ -894,6 +894,9 @@ pub const OP_LC_START_THREAD: u32 = 1214;
 /// `Server::shutdown()` from a worker thread: the thread manager respawns no worker
 /// from now on. `running` stays set, so the master still handles the SIGTERM.
 pub const OP_SET_STOPPING: u32 = 1215;
+/// `Server::init_reactor`'s `init_protocol` over every port, once a start, before
+/// any reactor or worker that reads the ports starts.
+pub const OP_LC_INIT_PROTOCOLS: u32 = 1216;
 
 #[cfg(test)]
 mod tests {
