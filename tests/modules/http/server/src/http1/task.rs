@@ -1154,6 +1154,15 @@ fn event_pool_read_message(serv: Server) -> bool {
     unsafe { ptr::read_volatile(&raw const (*pool).read_message) }
 }
 
+/// Polls `done` every millisecond for up to 3 s, where upstream sleeps a fixed time for
+/// another thread that a loaded host can outlast.
+fn wait_for(done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !done() && std::time::Instant::now() < deadline {
+        sleep_us(1000);
+    }
+}
+
 /// `onStart` of `thread` and `task_thread`: unlocks the client thread's `lock`.
 unsafe extern "C" fn unlock_on_start(_: *mut c_void, _: *mut c_void) {
     shared().unlocked.store(true, Ordering::SeqCst);
@@ -1246,8 +1255,14 @@ fn thread() {
             // SAFETY: signals the master, this process.
             unsafe { kill(serv.get_master_pid(), SIGIO) };
             sleep_us(1000);
+            // Upstream asserts after that 1 ms, but the master's reactor runs the handler
+            // when it is next scheduled, which can be later under load.
+            wait_for(|| event_pool_read_message(serv));
             assert!(event_pool_read_message(serv));
 
+            // Upstream shuts down here and counts the pipe messages after `start`; under
+            // load a worker can still be starting, so its message would never arrive.
+            wait_for(|| counter_get(4) == 2);
             serv.shutdown();
         },
     );
