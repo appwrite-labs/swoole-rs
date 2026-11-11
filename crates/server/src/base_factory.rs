@@ -466,7 +466,7 @@ mod tests {
             s.state = crate::ServerState::with_tables(ServerTables {
                 session_list: crate::records::tests::naming(&mut self.sessions),
                 connection_list: crate::records::tests::naming(&mut self.connections),
-                max_connection: 2,
+                max_connection: 3,
                 ..ServerTables::default()
             });
             s

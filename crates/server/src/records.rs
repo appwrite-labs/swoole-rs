@@ -182,10 +182,10 @@ impl crate::ServerState {
                     .to_ne_bytes(),
             )
         };
-        if fd.cast_unsigned() > tables.max_connection || tables.connection_list.is_null() {
+        if fd.cast_unsigned() >= tables.max_connection || tables.connection_list.is_null() {
             return None;
         }
-        // SAFETY: the live table of `max_connection + 1` slots; `fd` is inside it.
+        // SAFETY: the live table of `max_connection` slots; `fd` is below it.
         let value = unsafe {
             &mut *tables
                 .connections()
@@ -298,7 +298,7 @@ pub(crate) mod tests {
             let tables = &mut *(*state).tables();
             tables.session_list = naming(&mut sessions);
             tables.connection_list = naming(&mut connections);
-            tables.max_connection = 2;
+            tables.max_connection = 3;
             assert_eq!(
                 swr_v1_server_session(&*state, 1),
                 sessions.as_mut_ptr().add(1)
@@ -309,6 +309,7 @@ pub(crate) mod tests {
             assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 1).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
+            // fd == max_connection is one past the table.
             assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
             connections[2].ssl = 1;
             assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
