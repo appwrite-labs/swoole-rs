@@ -38,8 +38,6 @@ impl Minit {
     /// and the token is dropped before that MINIT returns.
     #[must_use]
     pub unsafe fn new(module: c_int) -> Self {
-        // MINIT runs on the thread that then runs requests.
-        let _ = crate::local::Php::enter();
         Self {
             module,
             _thread: PhantomData,

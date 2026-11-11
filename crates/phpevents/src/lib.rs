@@ -20,7 +20,8 @@ use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phphelpers::callable::Callable;
 use swoole_rs_phpstubs::event;
-use swoole_rs_reactor::event_api::{self, CycleTask, Deferred, FdHandler};
+use swoole_rs_phpswoole::reactor::{self, PhpFdHandler};
+use swoole_rs_reactor::event_api::{self, CycleTask, Deferred};
 use swoole_rs_tls::event_socket::EventSocket;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Owned, Php, Value,
@@ -201,7 +202,7 @@ fn add(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if let Err(error) = loop_driver::check() {
+    if let Err(error) = loop_driver::check(call.php()) {
         error.defer();
         return;
     }
@@ -299,7 +300,7 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if let Err(error) = loop_driver::check() {
+    if let Err(error) = loop_driver::check(call.php()) {
         error.defer();
         return;
     }
@@ -492,7 +493,7 @@ fn cycle(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if let Err(error) = loop_driver::check() {
+    if let Err(error) = loop_driver::check(call.php()) {
         error.defer();
         return;
     }
@@ -583,33 +584,33 @@ struct Writable;
 /// The user fd type's error handler.
 struct Error;
 
-impl FdHandler for Readable {
-    fn handle(fd: c_int) -> c_int {
-        Php::running().map_or(0, |php| handled(ready(php, fd, false)))
+impl PhpFdHandler for Readable {
+    fn handle(php: Php<'_>, fd: c_int) -> c_int {
+        handled(ready(php, fd, false))
     }
 }
 
-impl FdHandler for Writable {
-    fn handle(fd: c_int) -> c_int {
-        Php::running().map_or(0, |php| handled(ready(php, fd, true)))
+impl PhpFdHandler for Writable {
+    fn handle(php: Php<'_>, fd: c_int) -> c_int {
+        handled(ready(php, fd, true))
     }
 }
 
-impl FdHandler for Error {
-    fn handle(fd: c_int) -> c_int {
-        Php::running().map_or(0, |php| handled(error_event(php, fd)))
+impl PhpFdHandler for Error {
+    fn handle(php: Php<'_>, fd: c_int) -> c_int {
+        handled(error_event(php, fd))
     }
 }
 
 /// The user fd type's read, write and error handlers, unless they are set.
-fn install_handlers() {
+fn install_handlers(php: Php<'_>) {
     let read = EventType::SW_EVENT_READ as c_int;
     if event_api::swoole_event_isset_handler(FD_USER, read) {
         return;
     }
-    event_api::swoole_event_set_fd_handler::<Readable>(FD_USER, read);
-    event_api::swoole_event_set_fd_handler::<Writable>(FD_USER, EventType::SW_EVENT_WRITE as c_int);
-    event_api::swoole_event_set_fd_handler::<Error>(FD_USER, EventType::SW_EVENT_ERROR as c_int);
+    reactor::set_fd_handler::<Readable>(php, FD_USER, read);
+    reactor::set_fd_handler::<Writable>(php, FD_USER, EventType::SW_EVENT_WRITE as c_int);
+    reactor::set_fd_handler::<Error>(php, FD_USER, EventType::SW_EVENT_ERROR as c_int);
 }
 
 /// The errno's description, as libc's `strerror`.

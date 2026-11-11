@@ -4,39 +4,25 @@
 //! reach the same value as the loop's thread. Tests unwind and run in parallel, so
 //! they keep it per thread.
 //!
-//! Every access takes a [`Php`]: proof that this thread runs PHP, which a
-//! non-thread-safe PHP lets one thread at a time do. A Rust thread that never ran
-//! PHP can't get one, so it can't reach a process value at the same time.
+//! Every access takes a [`Php`]: a lease on running PHP for the token's lifetime,
+//! which a non-thread-safe PHP grants one thread at a time. A thread outside such a
+//! scope (a Rust thread, or a PHP thread once the call that leased it returned)
+//! holds none, so it can't reach a process value at the same time.
 use std::marker::PhantomData;
 
-/// Proof that this thread runs PHP. Neither `Send` nor `Sync`, so it stays on the
-/// thread that got it.
+/// This thread runs PHP for `'a`: it executes only while it is the one thread
+/// running PHP (a thread-context coroutine that yields is parked until it holds the
+/// baton again). Neither `Send` nor `Sync`, so it stays on its thread.
 #[derive(Clone, Copy)]
-pub struct Php(PhantomData<*const ()>);
+pub struct Php<'a>(pub(crate) PhantomData<&'a *const ()>);
 
-#[cfg(not(any(zts, panic = "unwind")))]
-thread_local! {
-    /// Whether this thread has run MINIT or a Zend call that asked for a [`Php`].
-    static PHP_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-impl Php {
-    /// This thread's proof once it has run PHP (MINIT, or a [`Call::php`](crate::Call::php)).
-    /// Per-thread state needs none, so ZTS and tests always have one.
+impl Php<'_> {
+    /// # Safety
+    /// For all of `'a`, this thread runs PHP: it executes only while no other
+    /// thread runs PHP, as within a Zend call or a callback of the loop PHP drives.
     #[must_use]
-    pub fn running() -> Option<Self> {
-        #[cfg(not(any(zts, panic = "unwind")))]
-        if !PHP_THREAD.get() {
-            return None;
-        }
-        Some(Self(PhantomData))
-    }
-
-    /// Records that this thread runs PHP; only Zend's own entry points call it.
-    pub(crate) fn enter() -> Self {
-        #[cfg(not(any(zts, panic = "unwind")))]
-        PHP_THREAD.set(true);
-        Self(PhantomData)
+    pub unsafe fn assume<'a>() -> Php<'a> {
+        Php(PhantomData)
     }
 }
 
@@ -76,8 +62,8 @@ pub struct PhpLocal<T>(T);
 // SAFETY: built only for a non-thread-safe PHP, which runs PHP on one thread at a
 // time (the request thread, or under thread contexts the coroutine thread holding
 // the scheduler's baton, whose hand-over orders each access after the last). The
-// value is reached only through a `Php`, which only such a thread can get and which
-// can't leave it.
+// value is reached only through a live `Php`, which leases running PHP for its
+// lifetime, can't leave its thread, and is borrowed only for the access.
 #[cfg(not(any(zts, panic = "unwind")))]
 unsafe impl<T> Sync for PhpLocal<T> {}
 
@@ -96,7 +82,7 @@ impl<T> PhpLocal<T> {
         Self(value)
     }
 
-    fn with<R>(&'static self, _php: Php, f: impl FnOnce(&T) -> R) -> R {
+    fn with<R>(&'static self, _php: Php<'_>, f: impl FnOnce(&T) -> R) -> R {
         #[cfg(any(zts, panic = "unwind"))]
         return self.0.with(f);
         #[cfg(not(any(zts, panic = "unwind")))]
@@ -105,22 +91,22 @@ impl<T> PhpLocal<T> {
 }
 
 impl<T> PhpLocal<std::cell::RefCell<T>> {
-    pub fn with_borrow<R>(&'static self, php: Php, f: impl FnOnce(&T) -> R) -> R {
+    pub fn with_borrow<R>(&'static self, php: Php<'_>, f: impl FnOnce(&T) -> R) -> R {
         self.with(php, |cell| f(&cell.borrow()))
     }
 
-    pub fn with_borrow_mut<R>(&'static self, php: Php, f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn with_borrow_mut<R>(&'static self, php: Php<'_>, f: impl FnOnce(&mut T) -> R) -> R {
         self.with(php, |cell| f(&mut cell.borrow_mut()))
     }
 }
 
 impl<T: Copy> PhpLocal<std::cell::Cell<T>> {
     #[must_use]
-    pub fn get(&'static self, php: Php) -> T {
+    pub fn get(&'static self, php: Php<'_>) -> T {
         self.with(php, std::cell::Cell::get)
     }
 
-    pub fn set(&'static self, php: Php, value: T) {
+    pub fn set(&'static self, php: Php<'_>, value: T) {
         self.with(php, |cell| cell.set(value));
     }
 }
