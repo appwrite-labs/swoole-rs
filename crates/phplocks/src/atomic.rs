@@ -30,7 +30,7 @@ impl Custom for Atomic {
         &ATOMIC
     }
     fn new() -> Self {
-        Self(alloc(pool::words(1).and_then(<[_]>::first)))
+        Self(alloc(pool::words(1).and_then(|words| words.first())))
     }
 }
 
@@ -39,7 +39,7 @@ impl Custom for Long {
         &LONG
     }
     fn new() -> Self {
-        Self(alloc(pool::words(1).and_then(<[_]>::first)))
+        Self(alloc(pool::words(1).and_then(|words| words.first())))
     }
 }
 

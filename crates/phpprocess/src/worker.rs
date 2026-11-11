@@ -23,14 +23,6 @@ const CLOSE_READ: i64 = 3;
 const CLOSE_WRITE: i64 = 4;
 const TIMEOUT_ALL: c_int = 15;
 
-// SAFETY: the C++ runtime's allocator.
-unsafe extern "C" {
-    #[link_name = "_Znwm"]
-    fn operator_new(size: usize) -> *mut c_void;
-    #[link_name = "_ZdlPv"]
-    fn operator_delete(storage: *mut c_void);
-}
-
 /// What the methods read of a `Worker`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WorkerView {
@@ -54,14 +46,13 @@ pub(crate) fn new() -> *mut c_void {
     Box::into_raw(WorkerRecord::boxed()).cast()
 }
 
-/// `delete pair`: the pair's ends, then `new`'s storage.
+/// `delete pair`: the pair's ends, then its box.
 /// # Safety
-/// `pair` came from operator new and nothing uses it afterwards.
+/// `pair` is a boxed pair, as [`open_pipe`] and crates/server's pools make them, and
+/// nothing uses it afterwards.
 unsafe fn delete_pair(pair: *mut SocketPair) {
     // SAFETY: as the caller promises.
-    socket_pair::drop(unsafe { &mut *pair });
-    // SAFETY: as the caller promises.
-    unsafe { operator_delete(pair.cast()) };
+    socket_pair::drop(&mut *unsafe { Box::from_raw(pair) });
 }
 
 /// Frees a worker `new` made, and the pipe it owns unless it shares a server's.
@@ -92,19 +83,16 @@ pub(crate) fn set_id(worker: *mut c_void, id: u32) {
 
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
 pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
-    // SAFETY: storage for one pair; a failed operator new throws, which aborts here.
-    let storage = unsafe { operator_new(size_of::<SocketPair>()) }
-        .cast::<std::mem::MaybeUninit<SocketPair>>();
-    // SAFETY: fresh storage for a pair.
-    let pair = socket_pair::unix_socket_new(unsafe { &mut *storage }, true, socket_type);
-    // SAFETY: constructed above.
-    let pair_ref = unsafe { &*pair };
-    let (master, end) = (pair_ref.master_socket, pair_ref.worker_socket);
+    let mut storage = Box::new_uninit();
+    socket_pair::unix_socket_new(&mut storage, true, socket_type);
+    // SAFETY: the constructor initialised it.
+    let mut built: Box<SocketPair> = unsafe { storage.assume_init() };
+    let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
-        // SAFETY: the pair made above.
-        unsafe { delete_pair(pair) };
+        socket_pair::drop(&mut built);
         return -1;
     }
+    let pair = Box::into_raw(built);
     let record = record(worker);
     record.pipe_master = master.cast();
     record.pipe_worker = end.cast();

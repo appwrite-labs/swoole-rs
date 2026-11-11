@@ -10,16 +10,16 @@ use crate::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
         add_next_index_long, add_next_index_null, add_next_index_stringl, php_format_date,
         php_url_encode, swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
         swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
         swr_zend_separate_array, swr_zend_string_release, swr_zend_try_get_double,
         swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_update,
-        swr_zend_try_ptr_dtor, swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref,
-        zend_array_count, zend_class_entry, zend_hash_add_new, zend_hash_index_find,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
-        zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_try_ptr_dtor, swr_zend_try_symtable_update, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_hash_add_new, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
+        zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -750,94 +750,91 @@ impl ArrayMut {
         unsafe { &mut *value.cast::<Self>() }
     }
 
-    /// `SEPARATE_ARRAY`: the zval, holding an array of its own, to write.
+    /// `SEPARATE_ARRAY`: the zval, holding an array of its own, to write, or
+    /// None once a bailout is pending: nothing is written then, because
+    /// upstream never ran past it.
     #[inline]
-    fn separate(&mut self) -> *mut zval {
+    fn separate(&mut self) -> Option<*mut zval> {
+        if bailout::pending() {
+            return None;
+        }
         let zval = self.0.as_ptr();
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
         if self.0.array().is_some_and(|array| header(&array.0)[0] <= 1) {
-            return zval;
+            return Some(zval);
         }
         // SAFETY: an array zval borrowed mutably; a shared or immutable array
         // is duplicated, and the zval's reference moves to the copy.
         unsafe { swr_zend_separate_array(zval) };
-        zval
+        Some(zval)
     }
 
     /// `add_next_index_stringl`: Zend copies the bytes.
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
+        let Some(array) = self.separate() else { return };
         // SAFETY: a live array.
-        unsafe { add_next_index_stringl(self.separate(), data.as_ptr().cast(), data.len()) };
+        unsafe { add_next_index_stringl(array, data.as_ptr().cast(), data.len()) };
     }
 
     /// `add_next_index_long`.
     #[inline]
     pub fn push_long(&mut self, value: zend_long) {
+        let Some(array) = self.separate() else { return };
         // SAFETY: a live array.
-        unsafe { add_next_index_long(self.separate(), value) };
+        unsafe { add_next_index_long(array, value) };
     }
 
     /// `add_next_index_null`.
     #[inline]
     pub fn push_null(&mut self) {
+        let Some(array) = self.separate() else { return };
         // SAFETY: a live array.
-        unsafe { add_next_index_null(self.separate()) };
+        unsafe { add_next_index_null(array) };
     }
 
-    /// `add_assoc_stringl_ex`, or `add_assoc_null_ex` for `None`: Zend copies
-    /// key and value.
+    /// `add_assoc_stringl_ex`, or `add_assoc_null_ex` for `None`.
     #[inline]
     pub fn insert_bytes(&mut self, key: &[u8], value: Option<&[u8]>) {
-        // SAFETY: a live array.
-        unsafe { crate::set_key(self.separate(), key, value) };
+        self.insert(
+            key,
+            value.map_or_else(Owned::null, |value| ZString::new(value).into()),
+        );
     }
 
     /// `add_assoc_long_ex`.
     #[inline]
     pub fn insert_long(&mut self, key: &[u8], value: zend_long) {
-        // SAFETY: a live array; Zend copies the key.
-        unsafe { add_assoc_long_ex(self.separate(), crate::key_ptr(key), key.len(), value) };
+        self.insert(key, Owned::long(value));
     }
 
     /// `add_assoc_double_ex`.
     #[inline]
     pub fn insert_double(&mut self, key: &[u8], value: f64) {
-        // SAFETY: a live array; Zend copies the key.
-        unsafe { add_assoc_double_ex(self.separate(), crate::key_ptr(key), key.len(), value) };
+        self.insert(key, Owned::double(value));
     }
 
     /// `add_assoc_bool_ex`.
     #[inline]
     pub fn insert_bool(&mut self, key: &[u8], value: bool) {
-        // SAFETY: a live array; Zend copies the key.
-        unsafe { add_assoc_bool_ex(self.separate(), crate::key_ptr(key), key.len(), value) };
+        self.insert(key, Owned::bool(value));
     }
 
     /// `zend::array_set`: `Z_TRY_ADDREF_P(value)`, then `add_assoc_zval_ex`, so
     /// the array holds its own reference.
     #[inline]
     pub fn insert_value(&mut self, key: &[u8], value: &Value) {
-        // SAFETY: a live value.
-        unsafe { swr_zval_try_addref(value.as_ptr()) };
-        // SAFETY: a live array; it takes the reference, and Zend copies the key.
-        unsafe {
-            add_assoc_zval_ex(
-                self.separate(),
-                crate::key_ptr(key),
-                key.len(),
-                value.as_ptr(),
-            );
-        }
+        self.insert(key, value.copy());
     }
 
     /// `add_next_index_zval`: the array takes `value`, which is released
     /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]
     pub fn push(&mut self, value: Owned) {
-        self.separate();
-        let Some(array) = self.0.array() else { return };
+        let Some(array) = self.separate().and_then(|_| self.0.array()) else {
+            return;
+        };
         // SAFETY: a live array; it copies the zval in when it inserts it.
         let added = unsafe { zend_hash_next_index_insert(array.as_ptr(), value.as_ptr()) };
         if !added.is_null() {
@@ -845,27 +842,22 @@ impl ArrayMut {
         }
     }
 
-    /// `add_assoc_zval_ex`: the array takes over `value`.
+    /// `add_assoc_zval_ex`: the array takes over `value`. A key already there
+    /// releases its value (as [`release`] does), which can run `__destruct`.
     #[inline]
     pub fn insert(&mut self, key: &[u8], value: Owned) {
-        let mut value = value.into_zval();
-        // SAFETY: a live array; Zend copies the key.
-        unsafe {
-            add_assoc_zval_ex(
-                self.separate(),
-                crate::key_ptr(key),
-                key.len(),
-                &raw mut value,
-            );
-        };
+        let Some(array) = self.separate() else { return };
+        // SAFETY: a live array.
+        unsafe { symtable_update(array, key, value) };
     }
 
     /// `zend_hash_add_new`: the array takes over `value` under `key`, which the
     /// caller knows is absent, and references the key itself.
     #[inline]
     pub fn add_new(&mut self, key: &ZStr, value: Owned) {
-        self.separate();
-        let Some(array) = self.0.array() else { return };
+        let Some(array) = self.separate().and_then(|_| self.0.array()) else {
+            return;
+        };
         let mut value = value.into_zval();
         // SAFETY: a live table and key; the table takes the value.
         unsafe { zend_hash_add_new(array.as_ptr(), key.as_ptr(), &raw mut value) };
@@ -875,8 +867,9 @@ impl ArrayMut {
     /// what was there (as [`release`] does), and references the key itself.
     #[inline]
     pub fn update(&mut self, key: &ZStr, value: Owned) {
-        self.separate();
-        let Some(array) = self.0.array() else { return };
+        let Some(array) = self.separate().and_then(|_| self.0.array()) else {
+            return;
+        };
         let mut value = value.into_zval();
         // SAFETY: as `add_new`.
         bailout::defer(bailout::trapped(unsafe {
@@ -888,17 +881,25 @@ impl ArrayMut {
     /// is there, made a list first unless it is one.
     #[inline]
     pub fn merge(&mut self, key: &[u8], value: Owned) {
+        let Some(array) = self.separate() else { return };
         let mut value = value.into_zval();
         // SAFETY: a live array; it takes the value, and Zend copies the key.
         unsafe {
-            swr_zend_array_add_or_merge(
-                self.separate(),
-                crate::key_ptr(key),
-                key.len(),
-                &raw mut value,
-            );
+            swr_zend_array_add_or_merge(array, crate::key_ptr(key), key.len(), &raw mut value);
         }
     }
+}
+
+/// `add_assoc_zval_ex(array, key, value)`, with a released value's
+/// `__destruct` run inside `zend_try` and a bailout deferred.
+/// # Safety
+/// `array` is a live array zval.
+pub(crate) unsafe fn symtable_update(array: *mut zval, key: &[u8], value: Owned) {
+    let mut value = value.into_zval();
+    // SAFETY: per the caller; the array takes the value, and Zend copies the key.
+    bailout::defer(bailout::trapped(unsafe {
+        swr_zend_try_symtable_update(array, crate::key_ptr(key), key.len(), &raw mut value)
+    }));
 }
 
 impl OwnedArray {
