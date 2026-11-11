@@ -123,7 +123,7 @@ struct With<'a, K>(Recv<'a>, PhantomData<K>);
 fn socket_flags(socket: &SocketFields) -> u32 {
     (if socket.removed != 0 { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait != 0 { FLAG_WAIT } else { 0 })
-        | (if socket.ssl.is_null() { 0 } else { FLAG_TLS })
+        | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
         | (if paused(socket) { FLAG_PAUSED } else { 0 })
 }
 
@@ -335,7 +335,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
             unsafe { b.split(eof, split_part, context) as i64 }
         }
         OP_SSL_PENDING => {
-            let ssl = s.read(|s| s.ssl);
+            let ssl = s.read(swoole_rs_reactor::SocketFields::ssl);
             // SAFETY: the socket's live SSL.
             i64::from(unsafe { SSL_pending(ssl) })
         }

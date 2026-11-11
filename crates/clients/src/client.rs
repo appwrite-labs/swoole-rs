@@ -364,7 +364,9 @@ impl Handle {
     }
 
     /// The client's public record: live with the client, and borrowed only
-    /// between effects, as the state is.
+    /// between effects, as the state is. Each call reborrows the whole record, so
+    /// it ends the borrow an earlier call (or `socket`/`socket_ptr`) returned:
+    /// call those first and keep only the last borrow.
     fn fields(self) -> &'static mut ClientRecord {
         // SAFETY: the live client's record, which SDK callers reach only between
         // its operations.
@@ -437,12 +439,14 @@ impl Handle {
 
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
     fn sendto(self, data: *const c_char, length: usize) -> isize {
+        // The descriptor first: `socket()` borrows the record again.
+        let fd = self.socket().fd();
         let address = &self.fields().server_addr;
         // SAFETY: the socket's descriptor, `length` readable bytes at `data` and
         // the address's storage and length.
         unsafe {
             libc::sendto(
-                self.socket().fd(),
+                fd,
                 data.cast(),
                 length,
                 0,
@@ -480,11 +484,11 @@ impl Handle {
 
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
     fn recvfrom_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
+        // The socket first: `socket_ptr()` borrows the record again.
+        let socket = self.socket_ptr();
         let address = &raw mut self.fields().remote_addr;
         // SAFETY: the live socket, `length` writable bytes at `data` and the address.
-        unsafe {
-            socket_recvfrom_sync_address(self.socket_ptr(), data.cast(), length, flags, address)
-        }
+        unsafe { socket_recvfrom_sync_address(socket, data.cast(), length, flags, address) }
     }
 
     /// The TLS context's view; TLS is on.
@@ -1057,7 +1061,7 @@ fn close(this: Handle) -> c_int {
     let saved = this.socket();
     if this.flag(OPEN_SSL)
         && !this.get().tls.get().is_null()
-        && !saved.read(|socket| socket.ssl.is_null())
+        && !saved.read(|socket| socket.ssl().is_null())
     {
         socket_ssl_close(saved);
     }
@@ -1242,7 +1246,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             return ERR;
         }
     }
-    if this.socket().read(|socket| socket.ssl.is_null()) {
+    if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = 1);
         // SAFETY: the live socket and context.
         if unsafe { socket_ssl_create(this.socket_ptr(), tls, SSL_CLIENT) } < 0 {
@@ -1254,7 +1258,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             // SAFETY: `SSL_set_tlsext_host_name` on the new session; OpenSSL copies the name.
             unsafe {
                 ssl_ctrl(
-                    this.socket().read(|socket| socket.ssl),
+                    this.socket().read(swoole_rs_reactor::SocketFields::ssl),
                     SSL_CTRL_SET_TLSEXT_HOSTNAME,
                     TLSEXT_NAMETYPE_HOST_NAME,
                     name.as_ptr().cast_mut().cast(),
@@ -1277,18 +1281,11 @@ fn ssl_handshake(this: Handle) -> c_int {
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
 fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
-    if !this
-        .socket()
-        .read(|socket| socket_ssl_verify(socket, allow_self_signed))
-    {
+    if !socket_ssl_verify(this.socket(), allow_self_signed) {
         return ERR;
     }
     let name = this.tls_host_name();
-    if !name.is_empty()
-        && !this
-            .socket()
-            .read(|socket| socket_ssl_check_host(socket, name))
-    {
+    if !name.is_empty() && !socket_ssl_check_host(this.socket(), name) {
         return ERR;
     }
     OK

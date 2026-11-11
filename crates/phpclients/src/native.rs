@@ -548,7 +548,7 @@ impl Co {
     /// `get_ssl() != nullptr`.
     pub(crate) fn has_ssl(self) -> bool {
         self.net()
-            .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
+            .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
     }
 
     /// The peer certificate; the socket has TLS.
