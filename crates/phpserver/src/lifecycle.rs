@@ -367,17 +367,16 @@ impl ServerObject {
     /// The property `create` boxed, which leaves the object without one (`free`'s,
     /// last); none once taken.
     fn take_property(self) -> Option<Box<Property>> {
-        let property = std::mem::replace(&mut self.data().property, ptr::null_mut());
-        // SAFETY: null, or the box `create` made, which this took out of the object.
-        (!property.is_null()).then(|| unsafe { Box::from_raw(property.cast::<Property>()) })
+        self.data().property.take()
     }
 
     /// `f` over the property; `f` calls nothing that reaches the object.
     fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
-        let property = self.data().property.cast::<Property>();
-        // SAFETY: `create` set the property and only `free` clears it; nothing
-        // else borrows it while `f` runs.
-        f(unsafe { &mut *property })
+        // `create` set the property and only `free` takes it, last.
+        let Some(property) = self.data().property.as_deref_mut() else {
+            std::process::abort()
+        };
+        f(property)
     }
 
     /// `get_callback(kind)`: a callable, or null.
@@ -443,7 +442,7 @@ pub(crate) unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_o
     let object = unsafe { Object::<ServerData>::create(&SERVER, ce) };
     // SAFETY: the object just created.
     let data = unsafe { Object::<ServerData>::data(object) };
-    data.property = Box::into_raw(Box::<Property>::default()).cast();
+    data.property = Some(Box::default());
     // ZVAL_NULL(&init_arguments)
     data.init_arguments.u1.type_info = IS_NULL;
     object
