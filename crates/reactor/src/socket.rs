@@ -3,13 +3,15 @@
 //! without `unsafe`.
 use crate::{SocketFields, SocketRecord};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 use std::{ffi::c_int, marker::PhantomData, ptr::NonNull};
 
 /// A live `network::Socket` for `'a`. It is `Copy` and holds no Rust reference
 /// between calls, so native code and other handles may touch the same record in
 /// between; [`read`](Self::read) and [`edit`](Self::edit) borrow its fields only for
-/// their closure. Reads share a record, from any thread; an edit has it alone, and a
-/// read or edit that would overlap one panics.
+/// their closure. Reads share a record, from any thread; an edit has it alone. A read
+/// or edit that would overlap another thread's waits for it to end; one that overlaps
+/// a borrow still held after a second, as a nested one on its own thread is, panics.
 #[derive(Clone, Copy)]
 pub struct Socket<'a> {
     record: NonNull<SocketRecord>,
@@ -18,6 +20,14 @@ pub struct Socket<'a> {
 
 /// The borrow count's edit bit; below it, the reads holding the record.
 const EDIT: u32 = 1 << 31;
+
+/// How long a borrow waits for an overlapping one to end. Another thread's closure
+/// ends within it; a borrow nested on the waiting thread never does, and panics.
+const PATIENCE: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(1)
+};
 
 /// A record's borrow, released when the closure returns or unwinds.
 struct Borrow<'a> {
@@ -28,28 +38,51 @@ struct Borrow<'a> {
 impl<'a> Borrow<'a> {
     #[track_caller]
     fn read(borrows: &'a AtomicU32) -> Self {
-        // One locked add: a read counts itself first, and backs out if an edit holds the
-        // record. (An edit only ever starts from zero, so the brief count blocks none
+        // One locked add: a read counts itself first, and backs out and waits if an edit
+        // holds the record. (An edit only ever starts from zero, so the brief count blocks none
         // that wasn't already conflicting.)
-        let borrow = Self { borrows, taken: 1 };
-        // On failure the assert unwinds through `borrow`, which takes the count back.
-        assert!(
-            borrows.fetch_add(1, Ordering::Acquire) & EDIT == 0,
-            "a socket's read runs inside an edit of the same record"
-        );
-        borrow
+        let mut since = None;
+        while borrows.fetch_add(1, Ordering::Acquire) & EDIT != 0 {
+            borrows.fetch_sub(1, Ordering::Relaxed);
+            Self::wait(
+                borrows,
+                EDIT,
+                &mut since,
+                "a socket's read overlaps an edit of the same record",
+            );
+        }
+        Self { borrows, taken: 1 }
     }
 
     #[track_caller]
     fn edit(borrows: &'a AtomicU32) -> Self {
-        let taken = borrows.compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed);
-        assert!(
-            taken.is_ok(),
-            "a socket's edit runs inside a read or edit of the same record"
-        );
+        let mut since = None;
+        while borrows
+            .compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            Self::wait(
+                borrows,
+                u32::MAX,
+                &mut since,
+                "a socket's edit overlaps a read or edit of the same record",
+            );
+        }
         Self {
             borrows,
             taken: EDIT,
+        }
+    }
+
+    /// Waits until no bit of `held` is set in the count; panics with `overlap` once it has
+    /// waited [`PATIENCE`] since the first wait of this borrow.
+    #[cold]
+    #[track_caller]
+    fn wait(borrows: &AtomicU32, held: u32, since: &mut Option<Instant>, overlap: &str) {
+        let since = *since.get_or_insert_with(Instant::now);
+        while borrows.load(Ordering::Relaxed) & held != 0 {
+            assert!(since.elapsed() < PATIENCE, "{overlap}");
+            std::thread::yield_now();
         }
     }
 }
@@ -89,7 +122,7 @@ impl<'a> Socket<'a> {
 
     /// `read`'s result over the record.
     /// # Panics
-    /// Inside an `edit` closure over the same record.
+    /// Inside an `edit` closure over the same record, after waiting a second for it to end.
     #[track_caller]
     pub fn read<R>(self, read: impl FnOnce(&SocketFields) -> R) -> R {
         let _borrow = Borrow::read(self.borrows());
@@ -100,7 +133,7 @@ impl<'a> Socket<'a> {
 
     /// `edit`'s result over the record, which it may change.
     /// # Panics
-    /// Inside a `read` or `edit` closure over the same record.
+    /// Inside a `read` or `edit` closure over the same record, after waiting a second for it to end.
     #[track_caller]
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
         let _borrow = Borrow::edit(self.borrows());
@@ -231,41 +264,33 @@ mod tests {
     }
 
     #[test]
-    fn a_read_from_another_thread_during_an_edit_is_refused_and_backs_out() {
+    fn a_read_from_another_thread_waits_for_an_edit() {
         let mut record = SocketRecord::new();
         let record = (&raw mut record).expose_provenance();
         let handle = || unsafe { Socket::from_ptr(std::ptr::with_exposed_provenance_mut(record)) };
-        let (editing, tried) = (std::sync::Barrier::new(2), std::sync::Barrier::new(2));
-        std::thread::scope(|scope| {
+        let editing = std::sync::Barrier::new(2);
+        let read = std::thread::scope(|scope| {
             scope.spawn(|| {
                 handle().unwrap().edit(|fields| {
-                    fields.fd = 4;
                     editing.wait();
-                    // B's refused read has added and taken back its count by now.
-                    tried.wait();
-                    assert_eq!(handle().unwrap().borrows().load(Ordering::Relaxed), EDIT);
+                    // B's read has started; this write races it unless it waits.
+                    std::thread::yield_now();
+                    fields.fd = 4;
                 });
             });
-            scope.spawn(|| {
-                editing.wait();
-                let read = catch_unwind(AssertUnwindSafe(|| handle().unwrap().fd()));
-                tried.wait();
-                assert!(
-                    read.is_err(),
-                    "a read while another thread edits is refused"
-                );
-            });
+            scope
+                .spawn(|| {
+                    editing.wait();
+                    handle().unwrap().fd()
+                })
+                .join()
+                .unwrap()
         });
-        let socket = handle().unwrap();
+        assert_eq!(read, 4, "the read ran after the edit, and saw its write");
         assert_eq!(
-            socket.borrows().load(Ordering::Relaxed),
+            handle().unwrap().borrows().load(Ordering::Relaxed),
             0,
             "nothing left counted"
-        );
-        assert_eq!(
-            socket.fd(),
-            4,
-            "the edit stands, and the record reads again"
         );
     }
 
