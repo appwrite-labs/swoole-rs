@@ -17,9 +17,6 @@ use swoole_rs_corebase::{
     swr_v1_core_name_resolver_resolve,
 };
 
-/// Where an address goes: `put(out, text, length)`.
-type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
-
 /// `SW_TIMEOUT_ALL`.
 const TIMEOUT_ALL: c_int = 15;
 
@@ -137,76 +134,32 @@ pub fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8>
     result
 }
 /// `swoole_name_resolver_lookup(name, ctx)`: the registered resolvers, then the
-/// coroutine or blocking lookup; the answer goes to `assign(out, ..)`.
+/// coroutine or blocking lookup; the answer goes to `out`.
 ///
 /// A PHP resolver may bail out, so this frame holds nothing to drop across them.
-///
-/// # Safety
-/// `name` holds `length` bytes; `assign` writes `out`.
-pub unsafe fn name_resolver_lookup(
-    name: *const c_char,
-    length: usize,
-    ctx: &mut NameResolverContext,
-    out: *mut c_void,
-    assign: Put,
-) {
-    // SAFETY: as the caller promises.
-    if unsafe { swr_v1_core_name_resolver_resolve(name, length, ctx, out, assign) } {
+pub fn name_resolver_lookup(name: &[u8], ctx: &mut NameResolverContext, out: &mut Vec<u8>) {
+    if swr_v1_core_name_resolver_resolve(name, ctx, out) {
         return;
     }
-    // SAFETY: as the caller promises.
-    let name = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) };
-    let address = if swoole_rs_coroutine::current().is_null() {
+    *out = if swoole_rs_coroutine::current().is_null() {
         resolver::gethostbyname(ctx.kind, name)
     } else {
         system_gethostbyname(name, ctx.kind, ctx.timeout)
     };
-    // SAFETY: `assign` copies the address.
-    unsafe { assign(out, address.as_ptr().cast(), address.len()) };
-}
-
-/// `swoole_name_resolver_lookup_call`.
-#[repr(C)]
-pub struct LookupCall<'a> {
-    pub name: *const c_char,
-    pub length: usize,
-    pub context: &'a mut NameResolverContext,
-    pub out: *mut c_void,
-    pub assign: Put,
-}
-
-/// `swoole_name_resolver_lookup` over a [`LookupCall`]: a `bailout::trap` body.
-///
-/// # Safety
-/// `call` is a live [`LookupCall`] whose fields are live, as [`name_resolver_lookup`]
-/// requires.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: *mut c_void) {
-    // SAFETY: as the caller promises.
-    let call = unsafe { &mut *call.cast::<LookupCall<'_>>() };
-    // SAFETY: as the caller promises.
-    unsafe { name_resolver_lookup(call.name, call.length, call.context, call.out, call.assign) };
 }
 
 /// A coroutine socket's lookup: the context's type and timeout set first, the
-/// answer through `put(out, ..)`; returns the context's `with_port`.
-///
-/// # Safety
-/// `context` is a live `NameResolver::Context`; as [`name_resolver_lookup`].
-pub(crate) unsafe fn socket_lookup(
-    context: *mut c_void,
+/// answer into `out`; returns the context's `with_port`.
+pub(crate) fn socket_lookup(
+    ctx: &mut NameResolverContext,
     kind: c_int,
     timeout: f64,
     name: &[u8],
-    out: *mut c_void,
-    put: Put,
+    out: &mut Vec<u8>,
 ) -> bool {
-    // SAFETY: as the caller promises.
-    let ctx = unsafe { &mut *context.cast::<NameResolverContext>() };
     ctx.kind = kind;
     ctx.timeout = timeout;
-    // SAFETY: as the caller promises.
-    unsafe { name_resolver_lookup(name.as_ptr().cast(), name.len(), ctx, out, put) };
+    name_resolver_lookup(name, ctx, out);
     ctx.with_port
 }
 
