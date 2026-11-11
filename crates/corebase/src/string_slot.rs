@@ -1,7 +1,12 @@
 //! Rust string slots for native configuration views. Copies own independent
 //! bytes.
 
-use std::{cell::UnsafeCell, ffi::c_char, ptr, sync::Arc};
+use std::{
+    cell::UnsafeCell,
+    ffi::{CStr, c_char},
+    ptr,
+    sync::Arc,
+};
 
 /// Borrowed terminated bytes; embedded NULs are included in length.
 #[repr(C)]
@@ -71,6 +76,11 @@ impl StringSlot {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         self.with_nul().split_last().map_or(&[], |(_, bytes)| bytes)
+    }
+    /// The bytes up to the first NUL, as C reads them.
+    #[must_use]
+    pub fn c_str(&self) -> &CStr {
+        CStr::from_bytes_until_nul(self.with_nul()).unwrap_or_default()
     }
     /// A C view of the bytes; its pointer also covers the NUL after them, which
     /// native readers stop at. Reading through it is the reader's promise that

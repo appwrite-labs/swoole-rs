@@ -14,7 +14,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    ffi::{CStr, c_int, c_void},
+    ffi::{c_int, c_void},
     mem::ManuallyDrop,
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
@@ -110,7 +110,7 @@ const DISPATCH_FDMOD: u8 = 2;
 
 // The connection's addresses and its peer's port and loopback check.
 use swoole_rs_clients::address::{
-    swr_v1_clients_address_host, swr_v1_clients_address_loopback, swr_v1_clients_address_port,
+    swr_v1_clients_address_loopback, swr_v1_clients_address_port, with_host,
 };
 
 /// A keep-alive session's server and remote address, until it closes, by its
@@ -130,14 +130,11 @@ pub(crate) fn new_zval() -> zval {
 }
 
 fn address(server: view::Server<'_>, conn: &ConnectionRecord, local: bool) -> ZString {
-    let text = if local {
-        // SAFETY: the live server and one of its connections.
-        unsafe { swoole_rs_server::local_addr::get_local_addr(server.raw(), conn) }
-    } else {
-        swr_v1_clients_address_host(&conn.info)
-    };
-    // SAFETY: the server's NUL-terminated address text.
-    ZString::new(unsafe { CStr::from_ptr(text) }.to_bytes())
+    if local {
+        let text = swoole_rs_server::local_addr::get_local_addr(server, conn);
+        return ZString::new(text.to_bytes());
+    }
+    with_host(&conn.info, |text| ZString::new(text.to_bytes()))
 }
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and

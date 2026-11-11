@@ -6,7 +6,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
-use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::server;
@@ -913,10 +913,9 @@ fn get_client_info(call: &Call) {
     call.add_assoc_long(c"socket_type", i64::from(conn.socket_type));
     let remote_port = swr_v1_clients_address_port(&conn.info);
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
-    let ip = swr_v1_clients_address_host(&conn.info);
-    // SAFETY: the address text, NUL-terminated.
-    let ip = unsafe { CStr::from_ptr(ip) };
-    add_bytes(call, c"remote_ip", ip.as_ptr(), ip.count_bytes());
+    with_host(&conn.info, |ip| {
+        add_bytes(call, c"remote_ip", ip.as_ptr(), ip.count_bytes());
+    });
     call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id));
     call.add_assoc_long(c"connect_time", conn.connect_time as i64);
     call.add_assoc_long(c"last_time", i64::from(conn.last_recv_time as i32));

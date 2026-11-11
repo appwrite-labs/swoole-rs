@@ -10,7 +10,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_clients::{
-    address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
+    address::{swr_v1_clients_address_port, with_host},
     client::{self, Client, Op},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -444,8 +444,7 @@ impl Co {
         if !self.0.getpeername(&mut sa) {
             return None;
         }
-        let (host, port) = address(&sa);
-        Some((host.to_owned(), port))
+        Some(address(&sa))
     }
 
     #[expect(clippy::cast_sign_loss, reason = "an event bit set")]
@@ -748,18 +747,12 @@ pub(crate) fn filled<T: Copy + TryInto<usize>>(buffer: &mut ZBuf, received: T) -
 
 /// [`address`] of `socket`'s `info`, copied out of the record.
 pub(crate) fn net_address(socket: Net<'_>) -> (CString, c_int) {
-    socket.read(|record| {
-        let (host, port) = address(&record.info);
-        (host.to_owned(), port)
-    })
+    socket.read(|record| address(&record.info))
 }
 
 /// The address and port of `address`: `get_addr()` and `get_port()`.
-pub(crate) fn address(address: &SocketAddress) -> (&CStr, c_int) {
-    let host = swr_v1_clients_address_host(address);
-    // SAFETY: NUL-terminated text, live until this thread's next presentation,
-    // after the caller copies it.
-    let host = unsafe { CStr::from_ptr(host) };
+pub(crate) fn address(address: &SocketAddress) -> (CString, c_int) {
+    let host = with_host(address, CStr::to_owned);
     (host, swr_v1_clients_address_port(address))
 }
 

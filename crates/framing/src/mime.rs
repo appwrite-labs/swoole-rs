@@ -1,7 +1,7 @@
 //! Upstream's `mime_type` table (`src/protocol/mime_type.cc`): the catalog, the
 //! process-wide map PHP's `swoole_mime_type_*` functions change, and lookup by a
 //! filename's lowercased last suffix.
-use core::ffi::{CStr, c_char};
+use core::ffi::CStr;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
@@ -9,8 +9,6 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 /// What `get` answers for an unknown suffix.
 pub const FALLBACK: &CStr = c"application/octet-stream";
 
-// A value's bytes stay put until its suffix is set again or deleted, as an
-// `unordered_map` value's do, so `get` can lend them past the lock.
 static MAP: LazyLock<Mutex<BTreeMap<Vec<u8>, CString>>> = LazyLock::new(|| {
     Mutex::new(
         CATALOG
@@ -60,12 +58,14 @@ pub fn del(suffix: &[u8]) -> bool {
     map().remove(suffix).is_some()
 }
 
-/// `mime_type::get`: the type, valid until its suffix is set again or deleted.
+/// `mime_type::get`: a copy of the type, as callers take before the table changes.
 #[must_use]
-pub fn get(filename: &[u8]) -> *const c_char {
+pub fn get(filename: &[u8]) -> Vec<u8> {
     map()
         .get(&suffix(filename))
-        .map_or(FALLBACK.as_ptr(), |kind| kind.as_ptr())
+        .map_or(FALLBACK, CString::as_c_str)
+        .to_bytes()
+        .to_vec()
 }
 
 /// `mime_type::exists`.
@@ -473,23 +473,10 @@ mod tests {
         SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The text of the table value or fallback `kind` points at, read under `SERIAL`.
-    fn text(kind: *const c_char) -> Vec<u8> {
-        if kind == FALLBACK.as_ptr() {
-            return FALLBACK.to_bytes().to_vec();
-        }
-        map()
-            .values()
-            .find(|value| value.as_ptr() == kind)
-            .expect("a table value")
-            .to_bytes()
-            .to_vec()
-    }
-
     #[test]
     fn get() {
         let _serial = serial();
-        let result = text(super::get(b"test.html.json"));
+        let result = super::get(b"test.html.json");
         assert_eq!(result, b"application/json");
     }
 
@@ -505,7 +492,7 @@ mod tests {
         let test_mime_type = c"application/swoole-core-test";
         super::set(b"swoole_test", test_mime_type);
 
-        let result = text(super::get(b"test.swoole_test"));
+        let result = super::get(b"test.swoole_test");
         assert_eq!(result, test_mime_type.to_bytes());
     }
 
@@ -516,7 +503,7 @@ mod tests {
         assert!(super::add(b"swoole_test2", test_mime_type));
         assert!(!super::add(b"swoole_test2", test_mime_type));
 
-        let result = text(super::get(b"test.swoole_test2"));
+        let result = super::get(b"test.swoole_test2");
         assert_eq!(result, test_mime_type.to_bytes());
     }
 
@@ -542,9 +529,9 @@ mod tests {
     #[test]
     fn lookup_lowercases_and_an_empty_name_finds_nothing() {
         let _serial = serial();
-        assert_eq!(text(super::get(b"a.html.JSON")), b"application/json");
+        assert_eq!(super::get(b"a.html.JSON"), b"application/json");
         assert!(super::exists(b"a.html.JSON"));
-        assert_eq!(text(super::get(b"")), FALLBACK.to_bytes());
+        assert_eq!(super::get(b""), FALLBACK.to_bytes());
         assert!(!super::exists(b""));
     }
 }
