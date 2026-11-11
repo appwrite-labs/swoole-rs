@@ -375,7 +375,7 @@ impl Context {
 /// `new String(data, length)`: the connection's client certificate.
 fn client_cert(data: *const u8, length: usize) -> *mut CppString {
     let mut cert = Box::new(CppString::EMPTY);
-    cert.alloc(length, core::ptr::null());
+    cert.alloc(length, None);
     // SAFETY: the bus packet's `length` readable bytes.
     unsafe { cert.append(data, length) };
     Box::into_raw(cert)

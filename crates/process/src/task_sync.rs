@@ -309,8 +309,7 @@ fn unpack_all(
     indexes: &[(i64, u16)],
     content: &CppString,
 ) -> Result<(), Bailed> {
-    // SAFETY: the file's bytes, read into the String.
-    let bytes = unsafe { std::slice::from_raw_parts(content.str, content.length) };
+    let bytes = content.view();
     let mut offset = 0;
     while let Some(record) = bytes.get(offset..).filter(|record| record.len() >= HEAD) {
         let task_id = i64::from_ne_bytes(record.first_chunk().copied().unwrap_or_default());

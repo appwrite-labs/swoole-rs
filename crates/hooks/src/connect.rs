@@ -526,13 +526,13 @@ impl Connecting for Live<'_> {
             name = unsafe { bytes(view) };
         }
         self.socket.with_buffer(true, |write| {
-            let (at, size) = (write.str, write.size);
+            let (at, size) = (write.as_mut_ptr(), write.size());
             // SAFETY: the live owner, the name above and the write buffer's capacity.
             let written =
                 unsafe { swr_v1_http_proxy_connect(http, name.as_ptr(), name.len(), at, size) };
-            write.length = written;
-            // SAFETY: the `written` bytes just packed.
-            unsafe { core::slice::from_raw_parts(at, written) }.to_vec()
+            // SAFETY: the `written <= size` bytes just packed.
+            unsafe { write.set_len(written) };
+            write.view().to_vec()
         })
     }
 
@@ -547,8 +547,9 @@ impl Connecting for Live<'_> {
         let n = recv_packet(self.socket, 0.0);
         let accepted = n > 0
             && self.socket.with_buffer(false, |read| {
+                let view = read.view();
                 // SAFETY: its received bytes.
-                unsafe { swr_v1_http_proxy_accept(read.str, read.length) }
+                unsafe { swr_v1_http_proxy_accept(view.as_ptr(), view.len()) }
             });
         drop(scope);
         (n, accepted)
@@ -558,7 +559,7 @@ impl Connecting for Live<'_> {
         for write in [false, true] {
             if write || received {
                 self.socket.with_buffer(write, |buffer| {
-                    (buffer.length, buffer.offset) = (0, 0);
+                    buffer.clear();
                 });
             }
         }

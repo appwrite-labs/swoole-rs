@@ -111,11 +111,12 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         return false;
     }
     let size = size.unsigned_abs();
-    content.alloc(size + 1, std::ptr::null());
+    content.alloc(size + 1, None);
     let buf = content.spare().get_mut(..size).unwrap_or_default();
     let io = record.read_all(buf);
     warn_io(c"File::read_all", "pread", fd, buf.as_ptr(), size, io);
-    content.length = io.done;
+    // SAFETY: the read filled the buffer's first `io.done <= size` bytes.
+    unsafe { content.set_len(io.done) };
     content.set_null_terminated();
     true
 }
@@ -138,13 +139,14 @@ pub unsafe extern "C" fn swr_v1_os_file_get_contents(
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_os_file_read_content(owner: &FileRecord, content: &mut CppString) {
     let fd = owner.descriptor();
-    content.alloc(BUFFER_SIZE_STD, std::ptr::null());
+    content.alloc(BUFFER_SIZE_STD, None);
     loop {
         let n = sys::read(fd, content.spare());
         if n <= 0 {
             break;
         }
-        content.grow(n.unsigned_abs());
+        // SAFETY: the read filled the `n` spare bytes after the content.
+        unsafe { content.grow(n.unsigned_abs()) };
     }
 }
 

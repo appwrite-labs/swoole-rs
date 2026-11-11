@@ -364,8 +364,8 @@ fn exec(call: &Call) {
         unsafe {
             put_string(
                 (&raw mut output_value).cast(),
-                output.str.cast(),
-                output.length,
+                output.as_ptr().cast(),
+                output.len(),
             );
         };
     }

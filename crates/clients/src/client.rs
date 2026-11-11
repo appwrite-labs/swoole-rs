@@ -554,7 +554,7 @@ impl Handle {
     fn input_init(self) {
         if self.input().is_null() {
             let mut buffer = Box::new(CppString::EMPTY);
-            buffer.alloc(CLIENT_BUFFER_SIZE, core::ptr::null());
+            buffer.alloc(CLIENT_BUFFER_SIZE, None);
             self.fields().buffer = Box::into_raw(buffer).cast();
         }
     }
@@ -572,22 +572,23 @@ impl Handle {
     /// The input buffer's free tail; the buffer exists.
     fn input_tail(self) -> Tail {
         let buffer = self.input_mut();
+        let length = buffer.len();
         Tail {
-            str: buffer.str.wrapping_add(buffer.length).cast(),
-            size: buffer.size - buffer.length,
+            str: buffer.as_mut_ptr().wrapping_add(length).cast(),
+            size: buffer.size() - length,
         }
     }
 
     /// The input buffer's length grows by `n` read bytes.
     fn input_grow(self, n: usize) {
-        self.input_mut().length += n;
+        let buffer = self.input_mut();
+        // SAFETY: its one caller read `n` bytes into `input_tail`, which bounds them.
+        unsafe { buffer.set_len(buffer.len() + n) };
     }
 
     /// `buffer->clear()`.
     fn input_clear(self) {
-        let buffer = self.input_mut();
-        buffer.length = 0;
-        buffer.offset = 0;
+        self.input_mut().clear();
     }
 
     /// The SOCKS5 negotiation request: its bytes and length.
@@ -654,13 +655,17 @@ impl Handle {
         };
         // SAFETY: the thread's or the client's live String, unborrowed elsewhere.
         let buffer = unsafe { &mut *buffer };
-        buffer.length = if shared {
+        let length = if shared {
             length
         } else {
-            buffer.length + length
+            buffer.len() + length
         };
-        // SAFETY: the buffer's first `length` bytes.
-        unsafe { swoole_rs_http_ffi::swr_v1_http_proxy_accept(buffer.str.cast(), buffer.length) }
+        // SAFETY: the callers' recv just filled them: the shared buffer from its
+        // start, the input buffer after its content (its free tail bounds both).
+        unsafe { buffer.set_len(length) };
+        let view = buffer.view();
+        // SAFETY: the buffer's `length` bytes.
+        unsafe { swoole_rs_http_ffi::swr_v1_http_proxy_accept(view.as_ptr().cast(), view.len()) }
     }
 
     fn set_timeout(self, timeout: f64) {
@@ -784,10 +789,10 @@ fn errno() -> c_int {
 fn shared_buffer() -> Tail {
     // SAFETY: the thread's shared String, set up by `swoole_init` before any
     // proxied connect, and unborrowed elsewhere.
-    let buffer = unsafe { &*thread_buffer().cast::<CppString>() };
+    let buffer = unsafe { &mut *thread_buffer().cast::<CppString>() };
     Tail {
-        str: buffer.str.cast(),
-        size: buffer.size,
+        str: buffer.as_mut_ptr().cast(),
+        size: buffer.size(),
     }
 }
 

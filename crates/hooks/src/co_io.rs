@@ -199,12 +199,11 @@ mod native {
         socket.with_buffer(true, |string| {
             // SAFETY: the write's live buffer slot.
             let at = unsafe { &mut *at };
-            if *at != string.str {
-                string.length = 0;
-                string.offset = 0;
+            if *at != string.as_mut_ptr() {
+                string.clear();
                 // SAFETY: the write's `length` bytes, outside the String.
                 unsafe { string.append(*at, length) };
-                *at = string.str;
+                *at = string.as_mut_ptr();
             }
         });
     }
@@ -212,8 +211,10 @@ mod native {
     fn read_buffer(socket: Co, view: &mut ReadBuffer, action: u32, size: usize) {
         socket.with_buffer(false, |string| {
             if action != 0 {
-                string.length = view.length;
-                string.offset = view.offset;
+                // SAFETY: the packet receive's view of this String counts only
+                // the bytes its receives wrote (crate::packet).
+                unsafe { string.set_len(view.length) };
+                string.set_offset(view.offset);
                 if action == 2 {
                     string.extend(size);
                 } else if action == 3 {
@@ -221,10 +222,10 @@ mod native {
                 }
             }
             *view = ReadBuffer {
-                length: string.length,
-                size: string.size,
-                offset: string.offset,
-                str: string.str,
+                length: string.len(),
+                size: string.size(),
+                offset: string.offset(),
+                str: string.as_mut_ptr(),
             };
         });
     }
@@ -251,7 +252,7 @@ mod native {
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
         // SAFETY: the live record's read String, which the packet receive fills.
-        let buf = unsafe { (*socket.read_buffer().cast::<CppString>()).str };
+        let buf = unsafe { (*socket.read_buffer().cast::<CppString>()).as_mut_ptr() };
         let mut packet = PacketLength {
             buf,
             buf_size: size,

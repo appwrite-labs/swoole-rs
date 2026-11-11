@@ -196,11 +196,10 @@ impl Co {
     /// The write buffer becomes `data`, then `send_all` of it: whether all went.
     pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
         let buffer = self.write_buffer();
-        buffer.length = 0;
-        buffer.offset = 0;
+        buffer.clear();
         // SAFETY: the caller's bytes.
         unsafe { buffer.append(data.as_ptr(), data.len()) };
-        let (data, length) = (buffer.str, buffer.length);
+        let (data, length) = (buffer.as_ptr(), buffer.len());
         // SAFETY: the buffer's bytes, which the send only reads.
         unsafe { co::send_all(self.as_ptr(), data.cast(), length) }.cast_unsigned() == length
     }
@@ -231,8 +230,8 @@ impl Co {
     /// `recv` into the read buffer's room past its length.
     pub(crate) fn recv_input(self) -> isize {
         let buffer = self.input();
-        let at = buffer.str.wrapping_add(buffer.length);
-        let room = buffer.size - buffer.length;
+        let room = buffer.size() - buffer.len();
+        let at = buffer.as_mut_ptr().wrapping_add(buffer.len());
         // SAFETY: a live socket and the buffer's `room` writable bytes at `at`.
         unsafe { co::recv(self.as_ptr(), at.cast(), room) }
     }

@@ -545,10 +545,10 @@ pub(crate) unsafe fn answer(
                     fd: o.sock()?.fd().into(),
                     kind: u8::try_from(EVENT_CONNECT).unwrap_or_default(),
                     reactor_id: o.reactor().id.cast_signed(),
-                    len: u32::try_from(buffer.length).unwrap_or(u32::MAX),
+                    len: u32::try_from(buffer.len()).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
-                data: buffer.str.cast_const().cast(),
+                data: buffer.as_ptr().cast(),
             };
             0
         }

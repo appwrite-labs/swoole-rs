@@ -838,7 +838,7 @@ fn task_worker4() {
 /// `Server::task_unpack(task, &buffer, &packet)` into a 32 KiB `String`: the bytes.
 fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
     let mut buffer = CppString::EMPTY;
-    buffer.alloc(32 * 1024, ptr::null());
+    buffer.alloc(32 * 1024, None);
     let unpacked = task.unpack(&mut buffer);
     let bytes = unpacked.map(|(data, length, _)| {
         // SAFETY: the unpacked payload, live while `buffer` or the task is.
