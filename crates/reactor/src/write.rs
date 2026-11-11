@@ -6,8 +6,7 @@
 use crate::Socket;
 use std::ffi::{c_int, c_void};
 use swoole_rs_buffer::cpp::{
-    CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_append_iovec, swr_cpp_buffer_count,
-    swr_cpp_buffer_length,
+    CppBuffer, swr_cpp_buffer_append_iovec, swr_cpp_buffer_count, swr_cpp_buffer_length,
 };
 
 /// `SwReturnCode::SW_WAIT`.
@@ -152,22 +151,24 @@ pub unsafe fn swr_v1_reactor_write(
         }
         ops.watch_writable();
     }
-    let offset = sent.max(0).unsigned_abs();
+    let offset = libc::off_t::try_from(sent.max(0)).unwrap_or(libc::off_t::MAX);
+    // `_write`'s bytes as one iovec, so both kinds append past `offset` alike.
+    let bytes = libc::iovec {
+        iov_base: payload.data.cast_mut().cast(),
+        iov_len: length,
+    };
+    let (iov, count) = if payload.iov.is_null() {
+        (&raw const bytes, 1)
+    } else {
+        (payload.iov, payload.count)
+    };
     socket.read(|record| {
         let Some(buffer) = record.output.buffer() else {
             // `new Buffer` threw, which nothing catches.
             std::process::abort();
         };
-        if payload.iov.is_null() {
-            // At most `buffer_size` bytes, checked above.
-            let rest = u32::try_from(length.saturating_sub(offset)).unwrap_or(u32::MAX);
-            // SAFETY: `data` holds `length` bytes, and `offset` of them were sent.
-            unsafe { swr_cpp_buffer_append(buffer, payload.data.wrapping_add(offset), rest) };
-        } else {
-            let offset = libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX);
-            // SAFETY: `iov` holds `count` iovecs; `offset` bytes of them were sent.
-            unsafe { swr_cpp_buffer_append_iovec(buffer, payload.iov, payload.count, offset) };
-        }
+        // SAFETY: `iov` holds `count` iovecs over the payload; `offset` bytes were sent.
+        unsafe { swr_cpp_buffer_append_iovec(buffer, iov, count, offset) };
     });
     done(isize::try_from(length).unwrap_or(isize::MAX))
 }
@@ -177,7 +178,7 @@ mod tests {
     use super::*;
     use crate::SocketRecord;
     use std::cell::RefCell;
-    use swoole_rs_buffer::cpp::{delete_buffer, new_buffer};
+    use swoole_rs_buffer::cpp::{delete_buffer, new_buffer, swr_cpp_buffer_append};
 
     #[derive(Default)]
     struct Native {
