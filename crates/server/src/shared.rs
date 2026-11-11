@@ -243,7 +243,7 @@ pub unsafe extern "C" fn swr_v1_server_port_shared_init(storage: *mut core::ffi:
 mod tests {
     use super::*;
     use crate::ops::{OP_MAXFD, OP_SET_MAXFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
-    use crate::state::{swr_v1_server_state_free, swr_v1_server_state_new};
+    use crate::state::{free_state, swr_v1_server_state_new};
     use core::sync::atomic::Ordering;
     use swoole_rs_memory::members::Shm;
 
@@ -304,7 +304,7 @@ mod tests {
         // SAFETY: allocated above and not used again.
         unsafe {
             (*(*state).config()).gs.free();
-            swr_v1_server_state_free(state);
+            free_state(state);
             swr_v1_port_config_free(config);
         }
     }
@@ -338,7 +338,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_ST_GS_CONCURRENCY, 0), Some(5));
             assert_eq!(native_fact(&*state, OP_MAXFD, 0), Some(123));
             (*(*state).config()).gs.free();
-            swr_v1_server_state_free(state);
+            free_state(state);
         }
     }
 }

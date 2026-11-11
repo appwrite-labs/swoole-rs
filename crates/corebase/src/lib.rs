@@ -66,7 +66,6 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
 use std::{cmp::Ordering, ptr, slice};
 
 unsafe extern "C" {
-    fn strtol(input: *const c_char, end: *mut *mut c_char, base: c_int) -> c_long;
     fn strtoul(input: *const c_char, end: *mut *mut c_char, base: c_int) -> c_ulong;
     fn strncasecmp(left: *const c_char, right: *const c_char, count: usize) -> c_int;
     fn toupper(value: c_int) -> c_int;
@@ -105,11 +104,40 @@ pub extern "C" fn swoole_api_version_id() -> c_int {
     API_VERSION_ID
 }
 
-/// Parse the successful, representable portion of `std::stoi` using the host
-/// decimal parser, leaving errno as it was, as a successful `std::stoi` does.
-/// Native code retains the throwing path.
+/// The successful, representable portion of `std::stoi`: `strtol(input, &end, 10)`
+/// in the C locale (leading white space, a sign, then decimal digits), none where
+/// `std::stoi` throws. Native code retains the throwing path.
+#[must_use]
+pub fn parse_stoi(input: &[u8]) -> Option<c_int> {
+    let start = input
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))?;
+    let (negative, digits) = match input.get(start..)? {
+        [b'-', rest @ ..] => (true, rest),
+        [b'+', rest @ ..] => (false, rest),
+        rest => (false, rest),
+    };
+    let end = digits
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(digits.len());
+    let digits = digits.get(..end).filter(|digits| !digits.is_empty())?;
+    let mut value: i64 = 0;
+    for digit in digits {
+        let digit = i64::from(digit - b'0');
+        value = value.checked_mul(10)?;
+        value = if negative {
+            value.checked_sub(digit)?
+        } else {
+            value.checked_add(digit)?
+        };
+    }
+    c_int::try_from(value).ok()
+}
+
+/// [`parse_stoi`] for native code: 1 with `*output` set, else 0.
 /// # Safety
-/// `input` is a valid NUL-terminated string.
+/// `input` is null or a valid NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     input: *const c_char,
@@ -121,17 +149,9 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     if input.is_null() {
         return 0;
     }
-    let saved = sys::errno();
-    sys::set_errno(0);
-    let mut end = ptr::null_mut();
-    // SAFETY: `input` is a non-null, NUL-terminated string; `end` is a live local.
-    let value = unsafe { strtol(input, &raw mut end, 10) };
-    let range = sys::errno() == libc::ERANGE;
-    sys::set_errno(saved);
-    if end.cast_const() == input || range {
-        return 0;
-    }
-    let Ok(value) = c_int::try_from(value) else {
+    // SAFETY: a non-null, NUL-terminated string.
+    let input = unsafe { CStr::from_ptr(input) };
+    let Some(value) = parse_stoi(input.to_bytes()) else {
         return 0;
     };
     *output = value;
@@ -143,16 +163,12 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
 /// catches, the process aborts as `std::terminate` does.
 #[must_use]
 pub fn get_env(name: &CStr) -> Option<c_int> {
-    // SAFETY: a NUL-terminated name; the value is read before the environment changes.
-    let value = unsafe { libc::getenv(name.as_ptr()) };
-    if value.is_null() {
-        return None;
-    }
-    let mut output = 0;
-    // SAFETY: getenv's NUL-terminated value and a live output.
-    if unsafe { swr_v1_corebase_parse_stoi(value, Some(&mut output)) } == 0 {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::OsStr::from_bytes(name.to_bytes());
+    let value = std::env::var_os(name)?;
+    let Some(output) = parse_stoi(value.as_bytes()) else {
         std::process::abort();
-    }
+    };
     Some(output)
 }
 
@@ -644,7 +660,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strtol")]
     fn stoi_parser_publishes_only_representable_decimal_values() {
         for (text, expected) in [
             ("0", 0),

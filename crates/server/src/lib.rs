@@ -97,9 +97,7 @@ pub use config::ServerConfig;
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-pub use state::{
-    ServerState, swr_v1_server_state_free, swr_v1_server_state_new, swr_v1_server_text_slot,
-};
+pub use state::{ServerState, swr_v1_server_state_new, swr_v1_server_text_slot};
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::admin_register;
@@ -418,7 +416,7 @@ mod mode_tests {
         };
         assert_eq!(host.get(OP_MODE), Ok(2));
         // SAFETY: created above and not used again.
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
     }
 }
 

@@ -72,31 +72,50 @@ impl StringSlot {
             0
         })
     }
+    /// [`Self::set`] through a shared slot, as native configuration views do: 0, or
+    /// -2 when the allocation fails, which leaves the slot as it was.
+    ///
+    /// # Safety
+    /// Nothing else reads or sets the slot meanwhile, no borrow from
+    /// [`Self::bytes`], [`Self::c_str`] or [`Self::view`] outlives the call, and
+    /// `value` is not the slot's own bytes.
+    pub unsafe fn set_shared(&self, value: &[u8]) -> i32 {
+        let Some(replacement) = Bytes::copy(value) else {
+            return -2;
+        };
+        // SAFETY: the caller holds the slot exclusively; the copy is published only
+        // after its allocation succeeded.
+        unsafe { *self.bytes.get() = replacement };
+        0
+    }
     /// The bytes, embedded NULs included; a NUL follows them.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        self.with_nul().split_last().map_or(&[], |(_, bytes)| bytes)
+        self.bytes_with_nul()
+            .split_last()
+            .map_or(&[], |(_, bytes)| bytes)
     }
     /// The bytes up to the first NUL, as C reads them.
     #[must_use]
     pub fn c_str(&self) -> &CStr {
-        CStr::from_bytes_until_nul(self.with_nul()).unwrap_or_default()
+        CStr::from_bytes_until_nul(self.bytes_with_nul()).unwrap_or_default()
     }
     /// A C view of the bytes; its pointer also covers the NUL after them, which
     /// native readers stop at. Reading through it is the reader's promise that
     /// the slot stays unchanged meanwhile.
     #[must_use]
     pub fn view(&self) -> CoreStringView {
-        let bytes = self.with_nul();
+        let bytes = self.bytes_with_nul();
         CoreStringView {
             data: bytes.as_ptr().cast(),
             length: bytes.len().saturating_sub(1),
         }
     }
     /// The bytes and their terminating NUL, which C views read as a C string.
-    fn with_nul(&self) -> &[u8] {
-        // SAFETY: a write through a shared slot is `swr_v1_core_string_set`, whose
-        // caller holds the slot exclusively, so none overlaps this borrow.
+    #[must_use]
+    pub fn bytes_with_nul(&self) -> &[u8] {
+        // SAFETY: a write through a shared slot is `set_shared`, whose caller holds
+        // the slot exclusively, so none overlaps this borrow.
         match unsafe { &*self.bytes.get() } {
             Bytes::Inline { data, length } => data.get(..=*length).unwrap_or_default(),
             Bytes::Heap(data) => data,
@@ -108,8 +127,8 @@ impl StringSlot {
 pub extern "C" fn swr_v1_core_string_view(slot: &StringSlot) -> CoreStringView {
     slot.view()
 }
-/// Fallible byte assignment; 0 success, -2 allocation refusal.
-/// Embedded NULs remain part of the value, with a separate trailing terminator.
+/// [`StringSlot::set_shared`], for native code. Embedded NULs remain part of the
+/// value, with a separate trailing terminator.
 /// # Safety
 /// slot is live/exclusive, bytes readable for length.
 #[unsafe(no_mangle)]
@@ -129,7 +148,8 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
     };
     // SAFETY: the slot is live and externally synchronized.
     let slot = unsafe { &*slot };
-    // SAFETY: publish only after the allocation succeeded.
+    // SAFETY: publish only after the allocation succeeded; `bytes` may be the
+    // slot's own, which `set_shared` would hold borrowed across the write.
     unsafe { *slot.bytes.get() = replacement };
     0
 }

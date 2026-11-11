@@ -373,23 +373,9 @@ fn proxy(
     user: Option<&ZString>,
     password: Option<&ZString>,
 ) {
-    let host = host.bytes();
     let user = user.map_or(&[][..], ZString::bytes);
     let password = password.map_or(&[][..], ZString::bytes);
-    // SAFETY: a live client; the proxy copies every string during the call.
-    unsafe {
-        swoole_rs_clients::client::swr_v1_clients_proxy(
-            cli.0,
-            http,
-            host.as_ptr().cast(),
-            host.len(),
-            port,
-            user.as_ptr().cast(),
-            user.len(),
-            password.as_ptr().cast(),
-            password.len(),
-        );
-    }
+    swoole_rs_clients::client::set_proxy(cli.get(), http, host.bytes(), port, user, password);
 }
 
 /// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `owner`,
