@@ -55,13 +55,15 @@ impl<'a> Server<'a> {
 
     /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
     /// none.
+    ///
+    /// # Safety
+    /// The server is not deleted during `'a`: `swr_v1_server_delete` frees it before
+    /// it clears `SwooleG.server`, so a view kept past that dangles.
     #[must_use]
-    pub fn current() -> Option<Server<'static>> {
+    pub unsafe fn current() -> Option<Self> {
         let serv = swoole_rs_corebase::swr_v1_core_server();
-        // SAFETY: null, or the process's live server: only `swr_v1_server_new` sets it,
-        // and the server's shutdown (`OP_FREE_SERVER`, `swr_v1_server_delete`) clears
-        // it before the server goes, after the calls that read it (as C++ reads
-        // `sw_server()`).
+        // SAFETY: null, or the process's server (only `swr_v1_server_new` sets it),
+        // live for `'a` per the caller.
         (!serv.is_null()).then(|| unsafe { Server::from_raw(serv) })
     }
 

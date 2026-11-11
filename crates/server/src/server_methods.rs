@@ -462,8 +462,8 @@ pub(crate) unsafe extern "C-unwind" fn master_timer_tick(serv: *mut c_void) {
 /// `conn` is a live connection of `SwooleG.server`, on this thread's reactor.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
-    // The connection's live server, per the caller.
-    let Some(serv) = view::Server::current() else {
+    // SAFETY: the connection's server, live for the tick per the caller.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
         return;
     };
     let mut ctx = NativeContext::new(serv.raw());

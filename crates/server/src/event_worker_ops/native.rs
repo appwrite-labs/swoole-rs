@@ -466,7 +466,8 @@ pub fn worker_signal_init(serv: view::Server<'_>) {
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
 pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
-    let Some(serv) = view::Server::current() else {
+    // SAFETY: a worker's signal runs while its server lives; the view ends with it.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
         return;
     };
     let mut ctx = context(serv, Reactor::thread());

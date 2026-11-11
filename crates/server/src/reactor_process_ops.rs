@@ -109,7 +109,9 @@ fn pipe(ctx: &Context<'_>, op: u32) -> Option<u64> {
 /// path, and returns the server for its owner to delete. Any other server is left alone.
 #[must_use]
 pub fn release_abandoned_server() -> Option<*mut c_void> {
-    let server = view::Server::current()?;
+    // SAFETY: MSHUTDOWN deletes the server only after this returns, and the view
+    // ends here.
+    let server = unsafe { view::Server::current() }?;
     if !server.ran_its_single_worker_here() {
         return None;
     }

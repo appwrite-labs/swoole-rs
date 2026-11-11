@@ -55,16 +55,12 @@ pub(crate) fn server_class() -> *mut zend_class_entry {
         .map_or(std::ptr::null_mut(), |families| (families.server_class)())
 }
 
-/// The running server, unless it is null.
-fn server() -> Option<view::Server<'static>> {
-    view::Server::current()
-}
-
 /// Who may construct a Process: 0, or 1 in a started server's master, 2 once
 /// async-io threads exist.
 pub(crate) fn construct_guard() -> c_int {
-    if server().is_some_and(view::Server::is_started) && methods::swoole_get_worker_type() == MASTER
-    {
+    // SAFETY: the running server, read once here.
+    let started = unsafe { view::Server::current() }.is_some_and(view::Server::is_started);
+    if started && methods::swoole_get_worker_type() == MASTER {
         return 1;
     }
     if thread_async_threads().is_null() {
@@ -88,7 +84,9 @@ thread_local! {
 /// In a server worker thread, `process` becomes a copy of its server worker
 /// (shared); false elsewhere.
 pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
-    let Some(serv) = server().filter(|&serv| serv.is_worker_thread()) else {
+    // SAFETY: the running server, which outlives this worker thread's requests.
+    let Some(serv) = unsafe { view::Server::current() }.filter(|&serv| serv.is_worker_thread())
+    else {
         return false;
     };
     let user = methods::swoole_get_worker_type() == USER_WORKER;
@@ -119,7 +117,10 @@ pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
 /// The id a Process takes after the server's workers: `get_all_worker_num()`
 /// once started, else 1.
 pub(crate) fn worker_base() -> u32 {
-    let Some(serv) = server() else { return 1 };
+    // SAFETY: the running server, which nothing deletes during this read.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
+        return 1;
+    };
     if !serv.is_started() {
         return 1;
     }
@@ -263,7 +264,8 @@ pub(crate) fn callable_defer_free(callable: Callable) {
 #[unsafe(export_name = "php_swoole_is_enable_coroutine")]
 #[must_use]
 pub extern "C" fn enable_coroutine() -> bool {
-    let Some(serv) = server() else {
+    // SAFETY: the running server, which nothing deletes during this read.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
         return swoole_rs_corebase::swr_v1_core_enable_coroutine();
     };
     match methods::swoole_get_worker_type() {
@@ -322,7 +324,8 @@ fn task_coroutine(serv: view::Server<'_>) -> bool {
 /// `Server::is_sync_process()` of the running server.
 #[must_use]
 pub fn sync_server() -> bool {
-    server().is_some_and(|serv| match methods::swoole_get_worker_type() {
+    // SAFETY: the running server, which nothing deletes during this read.
+    unsafe { view::Server::current() }.is_some_and(|serv| match methods::swoole_get_worker_type() {
         MANAGER => true,
         TASK_WORKER => !task_coroutine(serv),
         _ => false,
@@ -335,7 +338,8 @@ pub fn sync_server() -> bool {
 #[must_use]
 pub fn timer_uses_reactor() -> bool {
     let kind = methods::swoole_get_worker_type();
-    match server() {
+    // SAFETY: the running server, which nothing deletes during this read.
+    match unsafe { view::Server::current() } {
         Some(serv) => kind == USER_WORKER || (kind == TASK_WORKER && task_coroutine(serv)),
         None => crate::pool::timer_uses_reactor(kind == MASTER).unwrap_or(true),
     }

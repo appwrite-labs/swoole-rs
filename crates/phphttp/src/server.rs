@@ -629,7 +629,8 @@ struct Worker {
 /// `sw_server()` and `sw_worker()`'s counters; none when this process is no
 /// server worker.
 fn worker() -> Option<Worker> {
-    let server = view::Server::current()?;
+    // SAFETY: a worker's server, which outlives the worker's requests.
+    let server = unsafe { view::Server::<'static>::current() }?;
     let current = swoole_rs_process::worker_globals::current_worker();
     if current.is_null() {
         return None;

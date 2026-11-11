@@ -58,7 +58,8 @@ fn thread_mode(serv: view::Server<'_>) -> bool {
 /// `__construct`'s check: 0 no server yet, 1 this worker thread's server
 /// (in `existing`), 2 not the main thread, 3 a server already exists.
 pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
-    let current = view::Server::current();
+    // SAFETY: the process's server, which outlives every request.
+    let current = unsafe { view::Server::current() };
     if !crate::server::THREAD.load(Ordering::Relaxed) {
         return if current.is_none() { 0 } else { 3 };
     }

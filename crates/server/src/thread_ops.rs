@@ -647,8 +647,9 @@ unsafe extern "C-unwind" fn resume_data_receiving(sock: *mut c_void) {
     let Some(socket) = socket(sock) else {
         return;
     };
-    // The live server, whose socket's timer this is.
-    let Some(serv) = view::Server::current() else {
+    // SAFETY: the server whose socket's timer this is, live while its reactor runs
+    // the timer; the view ends with it.
+    let Some(serv) = (unsafe { view::Server::current() }) else {
         return;
     };
     let mut ctx = ReactorContext::new(serv, None);

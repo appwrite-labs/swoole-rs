@@ -75,7 +75,8 @@ pub(crate) fn flag(bit: u32) -> bool {
         SHUTDOWN_FUNCTIONS => {
             g.req_status.get() == swoole_rs_phpswoole::CALL_USER_SHUTDOWNFUNC_BEGIN
         }
-        SERVER_STARTED => swoole_rs_server::view::Server::current()
+        // SAFETY: the process's server, read once here.
+        SERVER_STARTED => unsafe { swoole_rs_server::view::Server::current() }
             .is_some_and(swoole_rs_server::view::Server::is_started),
         FATAL => last_error_fatal() || swoole_rs_reactor::event_api::swoole_event_bailed_out(),
         // `sw_is_main_thread()`.

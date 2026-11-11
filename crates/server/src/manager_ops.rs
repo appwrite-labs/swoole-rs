@@ -519,7 +519,8 @@ unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_v
 /// `Manager_signal_handler`: the manager's signals over `SwooleG.server`.
 extern "C" fn signal_handler(signo: c_int) {
     run_manager(
-        view::Server::current(),
+        // SAFETY: the manager's signal runs while its server lives; the view ends with it.
+        unsafe { view::Server::current() },
         RUN_MANAGER_SIGNAL,
         i64::from(signo).cast_unsigned(),
     );
