@@ -21,41 +21,16 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// Copies one C++ string out to `out`.
-type Put = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: usize);
+use swoole_rs_hooks::resolve::{swr_v1_system_getaddrinfo, swr_v1_system_gethostbyname};
+use swoole_rs_hooks::sleep::system_sleep;
+use swoole_rs_hooks::stdio::swoole_coroutine_statvfs;
+use swoole_rs_hooks::wait_event::system_wait_event;
+// `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
+pub(crate) use swoole_rs_phpswoole::zif_swoole_async_dns_lookup_coro;
 
 unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
-    fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
-
-    fn swr_v1_system_gethostbyname(
-        host: *const c_char,
-        length: usize,
-        family: c_long,
-        timeout: f64,
-        put: Put,
-        out: *mut c_void,
-    ) -> bool;
-    fn swr_v1_system_getaddrinfo(
-        host: *const c_char,
-        family: c_long,
-        socktype: c_long,
-        protocol: c_long,
-        service: *const c_char,
-        timeout: f64,
-        put: Put,
-        out: *mut c_void,
-    ) -> bool;
-    fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
+    // crates/phpevents': declared, since crates/phpevents depends on this crate.
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
-
-    // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
-    pub(crate) fn zif_swoole_async_dns_lookup_coro(
-        frame: *mut z::zend_execute_data,
-        value: *mut z::zval,
-    );
 }
 
 /// `SW_EVENT_READ`.

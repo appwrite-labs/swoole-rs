@@ -32,7 +32,7 @@ static CONTEXT: Class = Class::new();
 /// A `NameResolver::Context` (crates/corebase's `NameResolverContext`) and the resolver
 /// list, as the rest of this file uses them.
 mod native {
-    use std::ffi::{c_char, c_int, c_void};
+    use std::ffi::{c_int, c_void};
     use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
     use swoole_rs_zend::{
         bailout,
@@ -153,24 +153,6 @@ mod native {
         unsafe { swoole_rs_corebase::swr_v1_core_name_resolver_remove(php_same, resolver.cast()) }
             .cast()
     }
-
-    pub(super) use swoole_rs_corebase::Assign;
-
-    /// `swoole_name_resolver_lookup_call`: `swoole_name_resolver_lookup(name, context)`,
-    /// its result through `assign`.
-    #[repr(C)]
-    pub(super) struct Lookup {
-        pub(super) name: *const c_char,
-        pub(super) length: usize,
-        pub(super) context: *mut c_void,
-        pub(super) out: *mut c_void,
-        pub(super) assign: Assign,
-    }
-
-    unsafe extern "C" {
-        /// Run a [`Lookup`]; a `bailout::trap` body (native/clients/dns.cc).
-        pub(super) fn swoole_name_resolver_lookup_run(call: *mut c_void);
-    }
 }
 
 pub(crate) use native::swoole_name_resolver_context_reset;
@@ -276,10 +258,11 @@ fn lookup(call: &Call) {
         return;
     };
     let mut result = Vec::new();
-    let mut run = native::Lookup {
+    let mut run = swoole_rs_hooks::resolve::LookupCall {
         name: name.as_ptr().cast(),
         length: name.len(),
-        context,
+        // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
+        context: unsafe { &mut *context.cast() },
         out: (&raw mut result).cast(),
         assign: assign_vec,
     };
@@ -287,7 +270,7 @@ fn lookup(call: &Call) {
     // may bail out, which the trap catches.
     match unsafe {
         bailout::trap(
-            native::swoole_name_resolver_lookup_run,
+            swoole_rs_hooks::resolve::swoole_name_resolver_lookup_run,
             (&raw mut run).cast(),
         )
     } {
@@ -430,7 +413,7 @@ unsafe extern "C" fn lookup_php(
     length: usize,
     context: *mut swoole_rs_corebase::NameResolverContext,
     out: *mut c_void,
-    assign: native::Assign,
+    assign: swoole_rs_corebase::Assign,
 ) -> bool {
     let (resolver, context) = (resolver.cast::<zval>(), context.cast::<c_void>());
     // SAFETY: per the caller.

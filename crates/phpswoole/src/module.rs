@@ -250,6 +250,8 @@ pub fn families() -> Option<&'static Families> {
     FAMILIES.get().copied()
 }
 
+// The class crates' MINIT and shutdown hooks: declared, since each of those crates
+// depends on this one.
 unsafe extern "C" {
     fn php_swoole_process_minit(module_number: c_int);
     fn php_swoole_process_pool_minit(module_number: c_int);
@@ -383,6 +385,7 @@ extern "C" fn php_hooks() {
     swr_v1_core_set_print_backtrace(swr_zend_print_stack_trace as *const () as *mut c_void);
 }
 
+// Declared: crates/ffi depends on this crate, and the rest is C.
 unsafe extern "C" {
     /// `void swoole_init()`, crates/ffi's.
     #[link_name = "_Z11swoole_initv"]

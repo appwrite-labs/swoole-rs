@@ -6,7 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `System::sleep(seconds)`: 0, or negative when the coroutine was cancelled.
-pub type CoroutineSleep = unsafe extern "C" fn(f64) -> i32;
+pub type CoroutineSleep = unsafe extern "C-unwind" fn(f64) -> i32;
 
 /// What a sleep call returns to PHP.
 #[repr(C)]
@@ -200,7 +200,7 @@ pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
         const CANCELED: i32 = 10017;
         let co = current();
         // SAFETY: `co` is the running coroutine.
-        let resumed = unsafe { coroutine_yield_ex(co, crate::sleep_timeout(sec, 0.001)) };
+        let resumed = unsafe { coroutine_yield_ex(co.cast(), crate::sleep_timeout(sec, 0.001)) };
         if !resumed && swoole_rs_corebase::log::last_error() == CANCELED {
             -1
         } else {
@@ -213,10 +213,10 @@ pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
 mod tests {
     use super::*;
 
-    unsafe extern "C" fn cancelled(_: f64) -> i32 {
+    unsafe extern "C-unwind" fn cancelled(_: f64) -> i32 {
         -1
     }
-    unsafe extern "C" fn slept(seconds: f64) -> i32 {
+    unsafe extern "C-unwind" fn slept(seconds: f64) -> i32 {
         assert!(seconds >= 0.0, "a non-negative duration");
         0
     }

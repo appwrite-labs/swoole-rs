@@ -227,7 +227,7 @@ pub(crate) mod native {
 
     pub(super) unsafe extern "C" fn park(co: *mut c_void, timeout: f64) -> i32 {
         // SAFETY: the current coroutine.
-        if unsafe { coroutine_yield_ex(co, timeout) } {
+        if unsafe { coroutine_yield_ex(co.cast(), timeout) } {
             0
         } else {
             log::last_error()
