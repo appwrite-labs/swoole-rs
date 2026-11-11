@@ -1,8 +1,9 @@
 name: Sanitizers
 # The Cargo-built swoole.so under ASan and UBSan, with every module gate and crate unit test
-# (the application corpus among them) and the PHPT selection (tools/asan.py). Nightly, and from the PR tier when a PR touches this run. Any
-# sanitizer report fails the run; rerun tools/asan.py locally to read it and file it as a
-# p0 kind:bug, or privately if upstream code is at fault. Reports are never uploaded here.
+# (the application corpus among them) and the PHPT selection (tools/asan.py). Nightly, and from the PR tier when a PR touches this run. A
+# report from code this repository builds fails the run; rerun tools/asan.py locally to read it
+# and file it as a p0 kind:bug. Upstream's reference build is only counted; its reports go to
+# the private security repository. Reports are never uploaded here.
 on:
   schedule:
     - cron: '17 3 * * *'
