@@ -15,8 +15,8 @@ use std::{
 use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, add_assoc_long, class_name, each_value,
-    handlers, message, object_of, set_object,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, Props, class_name, each_value, handlers,
+    message, object_of, set_object,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
         swr_zend_emalloc, swr_zend_is_true, swr_zend_object_addref, swr_zend_object_release,
@@ -24,7 +24,7 @@ use swoole_rs_zend::{
         zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property, zend_string,
         zval,
     },
-    type_of, unset_property_deny, update_property, update_property_long,
+    type_of, unset_property_deny, update_property,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -369,10 +369,10 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     }
     crate::signal::clean();
     // SAFETY: a Process object.
-    unsafe { update_property_long(entry(), std, c"pid", i64::from(worker.pid)) };
+    let props = unsafe { Props::new(entry(), std) };
+    props.long(c"pid", i64::from(worker.pid));
     if worker.pipe >= 0 {
-        // SAFETY: as above.
-        unsafe { update_property_long(entry(), std, c"pipe", i64::from(worker.pipe)) };
+        props.long(c"pipe", i64::from(worker.pipe));
     }
     // SAFETY: as above.
     let coroutine = unsafe { data(std) }.enable_coroutine;
@@ -598,15 +598,9 @@ fn stat_queue(call: &Call) {
         clippy::cast_possible_wrap,
         reason = "upstream stores size_t in zend_long"
     )]
-    // SAFETY: the array just initialised.
-    unsafe {
-        add_assoc_long(call.return_value(), c"queue_num", num as i64);
-    }
+    call.add_assoc_long(c"queue_num", num as i64);
     #[expect(clippy::cast_possible_wrap, reason = "as above")]
-    // SAFETY: as above.
-    unsafe {
-        add_assoc_long(call.return_value(), c"queue_bytes", bytes as i64);
-    }
+    call.add_assoc_long(c"queue_bytes", bytes as i64);
 }
 
 fn free_queue(call: &Call) {
@@ -703,7 +697,7 @@ fn start(call: &Call) {
         std::cmp::Ordering::Greater => {
             let server = host::server_class();
             // SAFETY: `$this`; upstream names Server as the scope of the public property.
-            unsafe { update_property_long(server, call.this(), c"pid", i64::from(pid)) };
+            unsafe { Props::new(server, call.this()) }.long(c"pid", i64::from(pid));
             call.set_long(i64::from(pid));
         }
         std::cmp::Ordering::Equal => {

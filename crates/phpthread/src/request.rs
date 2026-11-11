@@ -11,7 +11,7 @@ use std::{
     sync::Mutex,
 };
 use swoole_rs_zend::{
-    Class, Minit,
+    Class, Minit, Props,
     bailout::Bailout,
     object_of,
     sys::{
@@ -21,7 +21,6 @@ use swoole_rs_zend::{
         swr_zend_stream_open, swr_zend_stream_select_fd, swr_zend_string_release,
         swr_zend_thread_main_request, zend_string, zend_value, zval,
     },
-    update_property_long,
 };
 
 static ERROR: Class = Class::new();
@@ -48,7 +47,7 @@ unsafe fn error(out: *mut zval, errno: i64) {
     // SAFETY: an object zval just made.
     let std = unsafe { object_of(out) };
     // SAFETY: the class's own readonly property, set in its scope.
-    unsafe { update_property_long(ERROR.entry(), std, c"code", errno) };
+    unsafe { Props::new(ERROR.entry(), std) }.long(c"code", errno);
 }
 
 /// `php_swoole_thread_stream_cast`: a duplicate of a stream's descriptor, or

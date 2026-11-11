@@ -24,14 +24,14 @@ use swoole_rs_process::{
 };
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, class_name, handlers, long_zval, message,
-    object_of, string,
+    Call, Class, E_ERROR, E_WARNING, Minit, Object, Props, class_name, handlers, long_zval,
+    message, object_of, string,
     sys::{
         IS_ARRAY, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, object_init_ex,
         swr_zend_array_init, zend_class_entry, zend_hash_index_find, zend_hash_index_update,
         zend_object, zend_object_handlers, zend_read_property, zval, zval_ptr_dtor,
     },
-    type_of, unset_property_deny, update_property_long, value,
+    type_of, unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -295,12 +295,12 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
 
 fn update_bool(object: *mut zend_object, name: &std::ffi::CStr, value: bool) {
     // SAFETY: a live Pool object.
-    unsafe { swoole_rs_zend::Props::new(POOL.entry(), object) }.bool(name, value);
+    unsafe { Props::new(POOL.entry(), object) }.bool(name, value);
 }
 
 fn update_long(object: *mut zend_object, name: &std::ffi::CStr, value: i64) {
     // SAFETY: a live Pool object.
-    unsafe { update_property_long(POOL.entry(), object, name, value) };
+    unsafe { Props::new(POOL.entry(), object) }.long(name, value);
 }
 
 fn getpid() -> i64 {
@@ -949,12 +949,11 @@ fn get_process(call: &Call) {
         // SAFETY: the new object.
         let std = unsafe { object_of(&raw const object) };
         // SAFETY: as above.
-        unsafe { update_property_long(process_ce, std, c"id", current_id) };
-        // SAFETY: as above.
-        unsafe { update_property_long(process_ce, std, c"pid", i64::from(worker_pid(worker))) };
+        let props = unsafe { Props::new(process_ce, std) };
+        props.long(c"id", current_id);
+        props.long(c"pid", i64::from(worker_pid(worker)));
         if i64::from(view.ipc_mode) == IPC_UNIXSOCK {
-            // SAFETY: as above.
-            unsafe { update_property_long(process_ce, std, c"pipe", i64::from(pipe)) };
+            props.long(c"pipe", i64::from(pipe));
         }
         // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
         set_worker_of(std, worker, true, c_int::from(view.is_async));
@@ -978,7 +977,7 @@ fn get_process(call: &Call) {
         if worker_pid(worker) != pid {
             crate::worker::record(worker).set_pid(pid);
             // SAFETY: a Process object.
-            unsafe { update_property_long(process_ce, std, c"pid", i64::from(pid)) };
+            unsafe { Props::new(process_ce, std) }.long(c"pid", i64::from(pid));
         }
     }
     // SAFETY: the live element, which the return value shares (`ZVAL_COPY`).
