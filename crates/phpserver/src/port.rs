@@ -107,10 +107,8 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zv
     // SAFETY: Zend's request allocator; the Server object frees it.
     let zport = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: a writable zval and the registered class.
-    unsafe { swoole_rs_zend::init_object(zport, PORT.entry()) };
+    let object = unsafe { swoole_rs_zend::init_object(zport, PORT.entry()) };
     // SAFETY: the object just created, one of ours.
-    let object = unsafe { swoole_rs_zend::object_of(zport) };
-    // SAFETY: as above.
     let data = unsafe { Port::data(object) };
     data.port = port;
     data.property.serv = serv;

@@ -699,9 +699,7 @@ fn construct(
         FRAME.entry()
     };
     // SAFETY: the caller's writable slot and a registered class.
-    unsafe { init_object(frame, class) };
-    // SAFETY: the object just created.
-    let object = unsafe { obj_of(frame) };
+    let object = unsafe { init_object(frame, class) };
     if class == CLOSE_FRAME.entry() {
         // A close payload is a string.
         if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default() {

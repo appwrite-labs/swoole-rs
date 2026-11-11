@@ -588,9 +588,7 @@ impl<'a> Props<'a> {
     pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
         let ce = class.entry();
         // SAFETY: a writable zval and a registered data class.
-        unsafe { init_object(target, ce) };
-        let object = Value::of(target).object().unwrap_or(ptr::null_mut());
-        Self(ce, object, PhantomData)
+        Self(ce, unsafe { init_object(target, ce) }, PhantomData)
     }
 
     pub(crate) fn object(self) -> *mut zend_object {
