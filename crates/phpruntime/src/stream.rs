@@ -110,7 +110,7 @@ const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE as i32;
 /// close while it waits only drops this reference.
 struct NetStream {
     socket: Rc<Socket>,
-    blocking: bool,
+    blocking: std::cell::Cell<bool>,
 }
 
 fn errno() -> i32 {
@@ -159,21 +159,28 @@ pub static mut swoole_runtime_socket_ops: php_stream_ops = php_stream_ops {
 };
 
 /// The stream's `NetStream`, null once closed.
-fn net(stream: *mut php_stream) -> *mut NetStream {
+fn net_ptr(stream: *mut php_stream) -> *mut NetStream {
     // SAFETY: a live stream of these operations.
     unsafe { (*stream).abstract_ }.cast()
+}
+
+/// The stream's `NetStream`, none once closed. The stream owns it until its
+/// close, which no borrow outlives: each is taken for one operation.
+fn net<'a>(stream: *mut php_stream) -> Option<&'a NetStream> {
+    // SAFETY: null or the open stream's live NetStream.
+    unsafe { net_ptr(stream).as_ref() }
 }
 
 /// `php_stream_alloc(ops, abstract, persistent_id, "r+")` of `socket`;
 /// null (the socket freed) if it fails.
 fn alloc(
     ops: *const php_stream_ops,
-    socket: Socket,
+    socket: Rc<Socket>,
     persistent_id: *const c_char,
 ) -> Result<*mut php_stream, Bailout> {
     let net = Box::into_raw(Box::new(NetStream {
-        socket: Rc::new(socket),
-        blocking: true,
+        socket,
+        blocking: std::cell::Cell::new(true),
     }));
     let mut stream = ptr::null_mut();
     // SAFETY: PHP receives this stable owned abstract pointer before resource registration.
@@ -276,25 +283,20 @@ fn parse_address(name: &[u8], error: Option<*mut *mut zend_string>) -> Option<(C
 
 /// `socket_write`.
 fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<isize, Bailout> {
-    let net = net(stream);
-    if net.is_null() {
+    let Some(net) = net(stream) else {
         return Ok(-1);
-    }
-    // SAFETY: an open stream's NetStream.
-    let net = unsafe { &*net };
-    let (socket, blocking) = (Rc::clone(&net.socket), net.blocking);
-    let buf = buf.cast_mut();
-    // SAFETY: Zend lends `count` bytes at `buf` for every branch below.
+    };
+    let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
+    // SAFETY: Zend lends `count` bytes at `buf` for the call, which a send only reads.
+    let send = |op| unsafe { socket.io(op, buf.cast_mut(), count) };
+    // SAFETY: no preconditions.
     if !unsafe { swr_zend_stream_vm_active() } {
-        // SAFETY: as above.
-        return Ok(unsafe { socket.io(Io::SendSync, buf, count) });
+        return Ok(send(Io::SendSync));
     }
     let mut written = if blocking {
-        // SAFETY: as above.
-        unsafe { socket.io(Io::SendAll, buf, count) }
+        send(Io::SendAll)
     } else {
-        // SAFETY: as above.
-        let written = unsafe { socket.io(Io::SendOnce, buf, count) };
+        let written = send(Io::SendOnce);
         socket.set_error(errno());
         written
     };
@@ -326,25 +328,21 @@ fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<is
 
 /// `socket_read`.
 fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize, Bailout> {
-    let net = net(stream);
-    if net.is_null() {
+    let Some(net) = net(stream) else {
         return Ok(-1);
-    }
-    // SAFETY: an open stream's NetStream.
-    let net = unsafe { &*net };
-    let (socket, blocking) = (Rc::clone(&net.socket), net.blocking);
-    // SAFETY: Zend lends `count` writable bytes at `buf` for every branch.
+    };
+    let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
+    // SAFETY: Zend lends `count` writable bytes at `buf` for the call.
+    let recv = |op| unsafe { socket.io(op, buf, count) };
+    // SAFETY: no preconditions.
     if !unsafe { swr_zend_stream_vm_active() } {
-        // SAFETY: as above.
-        return Ok(unsafe { socket.io(Io::RecvSync, buf, count) });
+        return Ok(recv(Io::RecvSync));
     }
     // SAFETY: a live stream.
     let mut read = if blocking && !unsafe { swr_zend_stream_buffered(stream) } {
-        // SAFETY: as above.
-        unsafe { socket.io(Io::Recv, buf, count) }
+        recv(Io::Recv)
     } else {
-        // SAFETY: as above.
-        let read = unsafe { socket.io(Io::RecvOnce, buf, count) };
+        let read = recv(Io::RecvOnce);
         socket.set_error(errno());
         read
     };
@@ -405,7 +403,7 @@ unsafe extern "C" fn swr_v1_phpruntime_socket_close(
 }
 
 unsafe fn close_stream(stream: *mut php_stream) -> Result<c_int, Bailout> {
-    let net = net(stream);
+    let net = net_ptr(stream);
     if net.is_null() {
         return Ok(FAILURE);
     }
@@ -433,12 +431,10 @@ unsafe extern "C" fn swr_v1_phpruntime_socket_cast(
     castas: c_int,
     ret: *mut *mut c_void,
 ) -> c_int {
-    let net = net(stream);
-    if net.is_null() {
+    let Some(net) = net(stream) else {
         return FAILURE;
-    }
-    // SAFETY: an open stream's NetStream.
-    let fd = unsafe { (*net).socket.fd() };
+    };
+    let fd = net.socket.fd();
     match castas {
         AS_STDIO => {
             if ret.is_null() {
@@ -470,12 +466,10 @@ unsafe extern "C" fn swr_v1_phpruntime_socket_stat(
     stream: *mut php_stream,
     ssb: *mut php_stream_statbuf,
 ) -> c_int {
-    let net = net(stream);
-    if net.is_null() {
+    let Some(net) = net(stream) else {
         return FAILURE;
-    }
-    // SAFETY: an open stream's NetStream.
-    let fd = unsafe { (*net).socket.fd() };
+    };
+    let fd = net.socket.fd();
     // SAFETY: per the caller.
     let sb = unsafe { &raw mut (*ssb).sb };
     // SAFETY: `sb` is a writable `struct stat`.
@@ -504,15 +498,12 @@ fn set_option(
     value: c_int,
     ptrparam: *mut c_void,
 ) -> Result<c_int, Bailout> {
-    let net = net(stream);
-    if net.is_null() {
+    let Some(net) = net(stream) else {
         return Ok(option::RETURN_ERR);
-    }
-    // SAFETY: an open stream's NetStream.
-    let socket = unsafe { Rc::clone(&(*net).socket) };
+    };
+    let socket = Rc::clone(&net.socket);
     match option {
-        // SAFETY: as above.
-        option::BLOCKING => unsafe { (*net).blocking = value != 0 },
+        option::BLOCKING => net.blocking.set(value != 0),
         option::XPORT_API => xport_api(stream, &socket, ptrparam.cast())?,
         option::META_DATA_API => meta_data(stream, &socket, ptrparam.cast()),
         // PHP socket streams share this timeout between reads and writes
@@ -626,6 +617,9 @@ fn xport_api(
         (ptr::null_mut(), ptr::null_mut())
     };
     let error_text = want_errortext.then_some(&raw mut p.outputs.error_text);
+    let (buf, buflen) = (p.inputs.buf, p.inputs.buflen);
+    // SAFETY: Zend lends `buflen` bytes at `buf`, writable unless it sends.
+    let io = |op| unsafe { socket.io(op, buf, buflen) };
     match p.op {
         xport::LISTEN => {
             p.outputs.returncode = if socket.listen(p.inputs.backlog) {
@@ -678,8 +672,7 @@ fn xport_api(
                 return oob(p);
             }
             let sent = if p.inputs.addr.is_null() {
-                // SAFETY: Zend lends `buflen` bytes at `buf`.
-                unsafe { socket.io(Io::Send, p.inputs.buf, p.inputs.buflen) }
+                io(Io::Send)
             } else {
                 // SAFETY: as above, and `addrlen` bytes at `addr`.
                 unsafe {
@@ -711,8 +704,7 @@ fn xport_api(
                 return oob(p);
             }
             p.outputs.returncode = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
-                // SAFETY: Zend lends `buflen` writable bytes at `buf`.
-                returncode(unsafe { socket.io(Io::Peek, p.inputs.buf, p.inputs.buflen) })
+                returncode(io(Io::Peek))
             } else {
                 recvfrom(socket, p, textaddr, addr, addrlen)
             };
@@ -759,24 +751,13 @@ fn connect(
     if socket.fd() < 0 {
         return FAILURE;
     }
-    let (host, port) = if socket.is_inet() {
-        // SAFETY: Zend lends `namelen` bytes at `name`.
-        let name = unsafe {
-            std::slice::from_raw_parts(param.inputs.name.cast::<u8>(), param.inputs.namelen)
-        };
-        let parsed = parse_address(name, error);
-        if socket.socket_type() == libc::SOCK_STREAM {
-            socket.set_nodelay(1);
-        }
-        match parsed {
-            Some(parsed) => parsed,
-            None => return FAILURE,
-        }
-    } else if param.inputs.name.is_null() {
+    let inet = socket.is_inet();
+    let parsed = target(inet, param, error);
+    if inet && socket.socket_type() == libc::SOCK_STREAM {
+        socket.set_nodelay(1);
+    }
+    let Some((host, port)) = parsed else {
         return FAILURE;
-    } else {
-        // SAFETY: Zend's NUL-terminated name.
-        (unsafe { CStr::from_ptr(param.inputs.name) }.to_owned(), 0)
     };
     if let Some(bindto) = context_option(stream, c"socket", c"bindto") {
         // SAFETY: a live option value.
@@ -811,13 +792,14 @@ fn connect(
     0
 }
 
-/// `socket_bind`: 0, or -1.
-fn bind(
-    socket: &Socket,
+/// The transport parameter's name: on an `inet` socket the host and port it
+/// parses to (else none, with `error`), on another the NUL-terminated path.
+fn target(
+    inet: bool,
     param: &php_stream_xport_param,
     error: Option<*mut *mut zend_string>,
-) -> c_int {
-    let parsed = if socket.is_inet() {
+) -> Option<(CString, i32)> {
+    if inet {
         // SAFETY: Zend lends `namelen` bytes at `name`.
         let name = unsafe {
             std::slice::from_raw_parts(param.inputs.name.cast::<u8>(), param.inputs.namelen)
@@ -828,8 +810,16 @@ fn bind(
     } else {
         // SAFETY: Zend's NUL-terminated name.
         Some((unsafe { CStr::from_ptr(param.inputs.name) }.to_owned(), 0))
-    };
-    let Some((host, port)) = parsed else {
+    }
+}
+
+/// `socket_bind`: 0, or -1.
+fn bind(
+    socket: &Socket,
+    param: &php_stream_xport_param,
+    error: Option<*mut *mut zend_string>,
+) -> c_int {
+    let Some((host, port)) = target(socket.is_inet(), param, error) else {
         socket.set_error(libc::EINVAL);
         return -1;
     };
@@ -888,7 +878,7 @@ fn accept(
         client.set_nodelay(1);
     }
     // SAFETY: a live stream.
-    let connection = alloc(unsafe { (*stream).ops }, client, ptr::null())?;
+    let connection = alloc(unsafe { (*stream).ops }, Rc::new(client), ptr::null())?;
     if !connection.is_null() {
         // SAFETY: both live; the client counts its reference.
         unsafe { swr_zend_stream_share_context(connection, stream) };
@@ -1185,12 +1175,11 @@ unsafe fn create(
         return Ok(ptr::null_mut());
     };
     socket.set_zero_copy();
-    let stream = alloc(socket_ops(), socket, persistent_id)?;
+    let socket = Rc::new(socket);
+    let stream = alloc(socket_ops(), Rc::clone(&socket), persistent_id)?;
     if stream.is_null() {
         return Ok(stream);
     }
-    // SAFETY: the stream just made.
-    let socket = unsafe { Rc::clone(&(*net(stream)).socket) };
     if !ssl_set_options(&socket, context)? {
         drop(socket);
         // SAFETY: the stream is ours; its close callback runs below the C trap.
@@ -1240,7 +1229,7 @@ fn stream_from_socket(
         #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
         socket.set_timeout(seconds as f64, timeout::ALL);
     }
-    let stream = alloc(socket_ops(), socket, ptr::null())?;
+    let stream = alloc(socket_ops(), Rc::new(socket), ptr::null())?;
     if !stream.is_null() {
         // SAFETY: the stream just made.
         unsafe { (*stream).flags |= PHP_STREAM_FLAG_AVOID_BLOCKING };
