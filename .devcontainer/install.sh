@@ -8,7 +8,9 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 # The CI mirror sometimes throttles one connection for minutes; give up on a
 # stalled download quickly and retry instead of waiting out apt's long default.
-APT='-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=5'
+# dpkg skips its fsync per unpacked file: CI runners and image builds are thrown away,
+# and the option lasts for this install only (#3025).
+APT='-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=5 -o Dpkg::Options::=--force-unsafe-io'
 # In apt.conf.d, so a job's later bare apt-get (variant.yml's valgrind) reads these indexes too (#2958).
 if [ -n "$APT_CACHE" ]; then
     mkdir -p "$APT_CACHE/archives/partial" "$APT_CACHE/lists/partial"
