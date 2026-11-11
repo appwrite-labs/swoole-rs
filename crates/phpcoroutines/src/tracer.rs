@@ -88,8 +88,8 @@ struct Leaks {
     /// Live allocations per site.
     counters: HashMap<Vec<u8>, u32, Hasher>,
     /// The first backtrace of each site that reached the threshold, released at
-    /// RSHUTDOWN, so none is left for the thread's exit.
-    backtraces: HashMap<Vec<u8>, Owned, Hasher>,
+    /// RSHUTDOWN (a plain zval, so `Leaks` has no drop glue that needs PHP).
+    backtraces: HashMap<Vec<u8>, zval, Hasher>,
     rounds: usize,
     threshold: zend_long,
 }
@@ -221,7 +221,7 @@ impl Leaks {
     fn save_backtrace(&mut self, at: Option<Vec<u8>>) {
         if let Some(at) = at {
             let trace = backtrace(BACKTRACE_IGNORE_ARGS);
-            self.backtraces.insert(at, trace);
+            self.backtraces.insert(at, trace.into_zval());
         }
     }
 
@@ -356,7 +356,9 @@ fn report(threshold: zend_long) -> Result<(), bailout::Bailout> {
                 .borrow()
                 .backtraces
                 .get(&at)
-                .and_then(|trace| trace_to_string(trace))
+                // SAFETY: a kept backtrace, live until RSHUTDOWN.
+                .and_then(|trace| unsafe { Value::from_ptr(trace) })
+                .and_then(trace_to_string)
         });
         if let Some(trace) = trace {
             write(trace.bytes())?;
@@ -740,7 +742,11 @@ pub extern "C" fn tracer_rshutdown() {
     if leak_detection() {
         unhook();
     }
-    drop(LEAKS.with(|leaks| mem::take(&mut leaks.borrow_mut().backtraces)));
+    let traces = LEAKS.with(|leaks| mem::take(&mut leaks.borrow_mut().backtraces));
+    for (_, mut trace) in traces {
+        // SAFETY: a kept backtrace array.
+        unsafe { z::zval_ptr_dtor(&raw mut trace) };
+    }
     profiling_clear();
 }
 
