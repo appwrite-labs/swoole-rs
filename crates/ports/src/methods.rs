@@ -886,7 +886,7 @@ mod tests {
             "SO_REUSEPORT"
         );
         // Unmark the old record: only a new bind marks the port's record again.
-        unsafe { (*config.socket.cast::<SocketRecord>()).bound = 0 };
+        unsafe { (*config.socket.cast::<SocketRecord>()).fields.bound = 0 };
         let bound_port = config.port;
         assert_eq!(create_socket(at), 0, "recreated");
         assert_eq!(record(config).bound, 1, "a new socket, bound");
