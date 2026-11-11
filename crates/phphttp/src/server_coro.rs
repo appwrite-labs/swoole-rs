@@ -7,7 +7,7 @@ use crate::{
     context::{self, CompressionTypes, Ctx},
     host,
     parse::{Key, add_protocol, add_server, parse_request},
-    server::{Callable, call_handler},
+    server::{Callable, NO_THEN, call_handler},
     websocket,
 };
 use std::{
@@ -744,6 +744,9 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
                 zsocket.as_ptr(),
                 self.accept.callback.as_ptr(),
                 &raw mut cid,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         })
         .is_err();
@@ -1092,7 +1095,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
-            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false)? {
+            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false, NO_THEN)? {
                 host::notice("handler error");
             }
         } else {
@@ -1207,7 +1210,7 @@ fn http2_request(
     let mut args = objects(context);
     let mut result = Ok(());
     if let Some(callable) = callable {
-        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true) {
+        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true, NO_THEN) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = context.state().stream_id;
