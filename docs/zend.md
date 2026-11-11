@@ -183,6 +183,22 @@ call `php_error_docref`, `zend_error` or a C++ reporter directly from Rust.
 upstream: an error handler that `exit()`s, and one that raises a fatal error,
 on a Rust-raised warning.
 
+### memory_limit
+
+Zend's request allocator (`emalloc`, `zend_string_alloc`, `array_init`, a
+growing hash) doesn't bail out at `memory_limit`. Since PHP's delayed
+out-of-memory errors (8.2.35, 8.3.36, 8.4.27 and 8.5.12; Ubuntu's
+8.3.6-0ubuntu0.24.04.13, which CI uses, backports them), an allocation past the
+limit returns its memory and queues the "Allowed memory size" fatal error. Zend
+raises it at the VM's next interrupt check or in `zend_call_function`, which
+Rust reaches only through `bailout::call`. Past the hard limit (twice
+`memory_limit`, or 1 GiB above it) the allocator ends the process with
+`_exit(137)`. So `ZString`, `ZBuf`, `OwnedArray`, `ArrayMut` and `Callable`
+allocate with no `setjmp`. An older PHP bails out of the allocator, over the
+Rust frames that called it, and zend-sys warns when built against one.
+`tests/modules/zend/memory_limit.php` reaches the limit inside a `ZBuf` and
+compares the outcome with upstream's.
+
 ### Native scopes and C++ exceptions
 
 `native/corebase/swoole_rs_zend_guard.h` defines native scope outcomes: normal

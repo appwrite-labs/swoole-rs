@@ -743,7 +743,6 @@ fn read(call: &Call) {
         reason = "upstream converts to size_t"
     )]
     let size = size as usize;
-    // Zend's allocator; it bails out when it cannot allocate.
     let mut buffer = ZBuf::with_capacity(size);
     let read = worker::pipe_read(worker, &mut buffer, blocking(process));
     let Ok(length) = usize::try_from(read) else {
