@@ -1,8 +1,9 @@
 <?php
 // A header or trailer value's __toString replaces the array being sent (#3263);
 // Response denies unset(). The response carries the array as sending began.
+// HTTP/1 and HTTP/2 (tests/modules/http2/test_header_reentry.py) alike.
 $server = new Swoole\Http\Server('127.0.0.1', (int) getenv('TEST_PORT'), SWOOLE_BASE);
-$server->set(['worker_num' => 1, 'log_level' => SWOOLE_LOG_NONE]);
+$server->set(['worker_num' => 1, 'log_level' => SWOOLE_LOG_NONE, 'open_http2_protocol' => true]);
 
 final class Value
 {
@@ -25,6 +26,13 @@ $server->on('request', static function ($request, $response): void {
         '/nested' => static function () use ($response) { $response->header['X-List'] = 'flat'; },
     ];
     $path = $request->server['request_uri'];
+    if ($path === '/echo') {
+        // The request's x- headers and cookies, for the HTTP/2 client's case.
+        $sent = array_filter($request->header, fn($key) => str_starts_with($key, 'x-'), ARRAY_FILTER_USE_KEY);
+        ksort($sent);
+        $response->end(json_encode(['header' => $sent, 'cookie' => $request->cookie ?? []]));
+        return;
+    }
     if ($path === '/trailer') {
         // trailer() turns sending trailers on.
         $response->trailer('x-t0', null);
