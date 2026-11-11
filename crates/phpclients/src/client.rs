@@ -200,15 +200,10 @@ fn type_property(call: &Call) -> i64 {
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.
 fn socket_closed(data: &mut Data) {
-    if let Some(socket) = data.co() {
-        let protocol = &mut socket.record().protocol;
-        if !protocol.private_data_1.is_null() {
-            // The length callable this socket owns.
-            if let Err(bailout) = native::callable_free(protocol.private_data_1) {
-                bailout.defer();
-            }
-            protocol.private_data_1 = ptr::null_mut();
-        }
+    if let Some(socket) = data.co()
+        && let Err(bailout) = socket.free_length_callable()
+    {
+        bailout.defer();
     }
     data.socket = ptr::null_mut();
     let props = data.props().own();
@@ -248,12 +243,11 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
         // reference to it is live while the hook runs.
         Box::new(move |_| socket_closed(unsafe { &mut *client })),
     );
-    let record = socket.record();
     let props = data.props().own();
-    props.long(c"fd", i64::from(record.sock_fd));
+    props.long(c"fd", i64::from(socket.handle().sock_fd()));
     props.value(c"socket", &data.zsocket);
     socket.use_zend_strings();
-    record.zero_copy = true;
+    socket.handle().set_zero_copy(true);
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
         report_object(
             Some(data.props()),
