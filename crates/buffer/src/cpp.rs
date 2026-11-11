@@ -69,7 +69,8 @@ impl CppBuffer {
 }
 
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and elsewhere
-// the caller ignores it. Each has a complete (C1/D1) and a base (C2/D2) symbol.
+// the caller ignores it. Only the complete-object (C1/D1) symbols: nothing derives from
+// Buffer, so no caller names a base-object (C2/D2) one.
 upstream! {
     "_ZN6swoole6BufferC1Ej", "_ZN6swoole6BufferC1Ej" =>
     /// `Buffer(uint32_t chunk_size)`, in uninitialized storage.
@@ -77,10 +78,6 @@ upstream! {
         let mut queue = ptr::null_mut();
         check(swr_v1_buffer_typed_create(chunk_size, Some(&mut queue)));
         this.write(CppBuffer { queue })
-    }
-    "_ZN6swoole6BufferC2Ej", "_ZN6swoole6BufferC2Ej" =>
-    pub extern "C" fn swr_cpp_buffer_new_base(this: &mut MaybeUninit<CppBuffer>, chunk_size: u32) -> *mut CppBuffer {
-        swr_cpp_buffer_new(this, chunk_size)
     }
     "_ZN6swoole6BufferD1Ev", "_ZN6swoole6BufferD1Ev" =>
     /// `~Buffer()`: pops every entry, then releases the queue.
@@ -91,13 +88,6 @@ upstream! {
         // SAFETY: the drained handle, released once.
         check(unsafe { swr_v1_buffer_release(this.queue) });
         this
-    }
-    "_ZN6swoole6BufferD2Ev", "_ZN6swoole6BufferD2Ev" =>
-    /// # Safety
-    /// As `swr_cpp_buffer_drop`.
-    pub unsafe extern "C" fn swr_cpp_buffer_drop_base(this: &mut CppBuffer) -> *mut CppBuffer {
-        // SAFETY: as the caller promises.
-        unsafe { swr_cpp_buffer_drop(this) }
     }
     "_ZNK6swoole6Buffer11typed_frontEv", "_ZNK6swoole6Buffer11typed_frontEv" =>
     /// `typed_front()`: the first entry; the queue must not be empty.
@@ -164,18 +154,21 @@ upstream! {
     }
 }
 
-/// `new Buffer(chunk_size)`: operator new's storage, so C++ `delete` frees it.
+/// `new Buffer(chunk_size)`, boxed: [`delete_buffer`] frees it.
 #[must_use]
 pub fn new_buffer(chunk_size: u32) -> *mut CppBuffer {
-    unsafe extern "C" {
-        #[link_name = "_Znwm"]
-        fn operator_new(size: usize) -> *mut std::ffi::c_void;
-    }
-    // SAFETY: `new Buffer`'s storage. A failed operator new throws `bad_alloc`, which
-    // aborts at this extern "C" frame, as every queue failure does.
-    let storage = unsafe { operator_new(size_of::<CppBuffer>()) };
-    // SAFETY: a fresh, aligned allocation for one Buffer, owned by nothing else.
-    swr_cpp_buffer_new(unsafe { &mut *storage.cast() }, chunk_size)
+    swr_cpp_buffer_new(Box::leak(Box::new_uninit()), chunk_size)
+}
+
+/// `delete buffer`.
+///
+/// # Safety
+/// `buffer` came from [`new_buffer`] and is not used again.
+pub unsafe fn delete_buffer(buffer: *mut CppBuffer) {
+    // SAFETY: as the caller promises.
+    let mut this = unsafe { Box::from_raw(buffer) };
+    // SAFETY: as above; the box frees it next.
+    unsafe { swr_cpp_buffer_drop(&mut this) };
 }
 
 #[cfg(test)]
@@ -283,5 +276,14 @@ mod tests {
             assert_eq!(swr_cpp_buffer_typed_front(this).kind, TYPE_CLOSE);
             // Teardown pops the queued CLOSE marker.
         });
+    }
+
+    #[test]
+    fn new_and_delete_buffer() {
+        let buffer = new_buffer(4);
+        unsafe { swr_cpp_buffer_append(&*buffer, b"abcdef".as_ptr(), 6) };
+        assert_eq!(swr_cpp_buffer_count(unsafe { &*buffer }), 2);
+        // Deleting a non-empty Buffer pops its entries first.
+        unsafe { delete_buffer(buffer) };
     }
 }

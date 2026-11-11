@@ -5,7 +5,7 @@
 use crate::native::{Co, Socket};
 use libc::{c_char, c_int, c_void, size_t};
 use std::{ffi::CStr, sync::OnceLock};
-use swoole_rs_buffer::string::{CppString, swr_string_drop};
+use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_write};
 use swoole_rs_hooks::socket_members::{get_read_buffer, get_write_buffer};
@@ -59,11 +59,6 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
     WEBSOCKET.get().map(|new| new())
 }
 
-unsafe extern "C" {
-    #[link_name = "_ZdlPv"]
-    fn operator_delete(storage: *mut c_void);
-}
-
 /// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_READ`.
 const TIMEOUT_CONNECT: c_int = 1 << 1;
 pub(crate) const TIMEOUT_READ: c_int = 1 << 2;
@@ -96,10 +91,8 @@ pub(crate) unsafe fn swoole_http_client_coro_buffer_free(buffer: *mut c_void) {
     if buffer.is_null() {
         return;
     }
-    // SAFETY: a popped `new String`, destroyed once.
-    swr_string_drop(unsafe { &mut *buffer.cast() });
-    // SAFETY: its storage, from `operator new`.
-    unsafe { operator_delete(buffer) };
+    // SAFETY: a popped `new String`, deleted once.
+    unsafe { delete_string(buffer.cast()) };
 }
 
 /// The socket frames WebSocket packets from now on.

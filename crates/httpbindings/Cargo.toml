@@ -9,5 +9,8 @@ license = "Apache-2.0"
 name = "swoole_rs_httpbindings"
 crate-type = ["rlib"]
 
+[dependencies]
+swoole-rs-locale = { path = "../locale" }
+
 [lints]
 workspace = true

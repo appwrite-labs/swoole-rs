@@ -566,6 +566,7 @@ dependencies = [
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
@@ -625,6 +626,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-httpbindings"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-locale",
+]
 
 [[package]]
 name = "swoole-rs-inflate"

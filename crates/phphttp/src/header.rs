@@ -12,8 +12,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
-    response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
-    swr_v1_httpbindings_encoding,
+    encoding, response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
@@ -405,13 +404,9 @@ fn build(
         if compression && compress(state, body, length) {
             length = compressed(state).len();
             let codecs = CAPABILITIES.load(Relaxed) & CODECS;
-            let encoding =
-                swr_v1_httpbindings_encoding(i32::from(state.compression_method), codecs);
+            let label = encoding(i32::from(state.compression_method), codecs);
             out.extend_from_slice(b"Content-Encoding: ");
-            // SAFETY: a static label.
-            out.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(encoding.data, encoding.length)
-            });
+            out.extend_from_slice(label.map_or(b"".as_slice(), CStr::to_bytes));
             out.extend_from_slice(b"\r\n");
         }
         if flags & CONTENT_LENGTH == 0 {
@@ -580,10 +575,8 @@ pub(crate) fn compress_body<'a>(
         return None;
     }
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
-    let encoding = swr_v1_httpbindings_encoding(i32::from(state.compression_method), codecs);
-    // SAFETY: a static NUL-terminated label.
-    let encoding = unsafe { CStr::from_ptr(encoding.data.cast()) };
-    Some((encoding, compressed(state)))
+    let label = encoding(i32::from(state.compression_method), codecs).unwrap_or_default();
+    Some((label, compressed(state)))
 }
 
 #[cfg(test)]
