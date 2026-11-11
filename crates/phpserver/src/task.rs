@@ -19,6 +19,7 @@ use std::{
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
+use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
     process_pool::{PoolRecord, SW_IPC_MAX_SIZE},
@@ -227,7 +228,7 @@ impl EventData {
 /// Upstream's `TaskCo`: a coroutine waiting in `taskwait` (`list` empty) or
 /// `taskCo`/`taskWaitMulti` for results written into `result`.
 struct TaskCo {
-    co: *mut c_void,
+    co: Coroutine,
     result: *mut zval,
     list: Vec<i64>,
     count: u32,
@@ -504,7 +505,7 @@ fn taskwait(call: &Call) {
         reason = "upstream passes (int *) &dst_worker_id"
     )]
     let mut dst = dst as c_int;
-    if !swoole_rs_phpcoroutines::in_coroutine() {
+    let Some(co) = Coroutine::current() else {
         let mut tasks = task_state(serv, true);
         let done = match tasks.task_sync(buf.ptr().cast(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
@@ -526,9 +527,8 @@ fn taskwait(call: &Call) {
             call.set_bool(false);
         }
         return;
-    }
+    };
     flag(&mut buf, NONBLOCK | COROUTINE);
-    let co = swoole_rs_phpcoroutines::current();
     let mut task_co = TaskCo {
         co,
         result: call.return_value(),
@@ -540,8 +540,8 @@ fn taskwait(call: &Call) {
         return call.set_bool(false);
     }
     pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
-    // SAFETY: the current coroutine; onFinish resumes it.
-    let done = unsafe { swoole_rs_phpcoroutines::suspend_for(task_co.co, timeout) };
+    // onFinish resumes it.
+    let done = swoole_rs_phpcoroutines::suspend_for(timeout);
     pending(serv, |p| p.coroutines.remove(&id));
     if !done {
         call.set_bool(false);
@@ -610,7 +610,9 @@ fn task_co(call: &Call, fill_false: bool) {
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
-    let co = swoole_rs_phpcoroutines::current();
+    let Some(co) = Coroutine::current() else {
+        return;
+    };
     let result = call.return_value();
     call.set_array();
     let mut task_co = TaskCo {
@@ -654,8 +656,8 @@ fn task_co(call: &Call, fill_false: bool) {
     }
     task_co.list = list;
     task_co.count = n_task;
-    // SAFETY: the current coroutine; onFinish resumes it.
-    if unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
+    // onFinish resumes it.
+    if swoole_rs_phpcoroutines::suspend_for(timeout) {
         return;
     }
     for j in 0..n_task as usize {
@@ -881,7 +883,7 @@ fn resume(server: view::Server<'_>, id: i64, mut data: zval) -> Result<(), Bailo
         // SAFETY: the waiting call's return slot.
         unsafe { result.write(data) };
         // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
-        unsafe { swoole_rs_phpcoroutines::wake(co, false) };
+        unsafe { co.wake(false) };
         return Ok(());
     }
     let Some(index) = index else {
@@ -898,7 +900,7 @@ fn resume(server: view::Server<'_>, id: i64, mut data: zval) -> Result<(), Bailo
     // SAFETY: the result array.
     if unsafe { count(result) } == total {
         // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
-        unsafe { swoole_rs_phpcoroutines::wake(co, false) };
+        unsafe { co.wake(false) };
     }
     Ok(())
 }

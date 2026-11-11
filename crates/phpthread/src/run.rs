@@ -144,13 +144,12 @@ pub extern "C" fn thread_bailout() {
         // SAFETY: a live native scope's jump buffer; this frame owns nothing.
         unsafe { swr_zend_bailout_to(target) };
     }
-    let co = swoole_rs_phpcoroutines::current();
-    if !co.is_null() {
+    if swoole_rs_phpcoroutines::in_coroutine() {
         // Return to the immediate native resumer; Rust owners relay the
         // pending exit after cleanup. This request never resumes an exited
         // PHP frame.
         loop {
-            swoole_rs_phpcoroutines::yield_coroutine(co);
+            swoole_rs_phpcoroutines::suspend();
         }
     }
     // SAFETY: the thread's script scope, or Zend's current one; this frame
@@ -158,8 +157,11 @@ pub extern "C" fn thread_bailout() {
     unsafe { swr_zend_bailout_to(BAILOUT.get()) };
 }
 
+/// The running coroutine's id as the scopes' context token, null outside one.
 extern "C" fn guard_context() -> *mut c_void {
-    swoole_rs_phpcoroutines::current()
+    swoole_rs_phpcoroutines::Coroutine::current().map_or(ptr::null_mut(), |co| {
+        ptr::without_provenance_mut(usize::try_from(co.cid()).unwrap_or(usize::MAX))
+    })
 }
 
 /// MINIT (`php_swoole_thread_minit`): the exit scopes' hooks, `Swoole\Thread`

@@ -869,13 +869,9 @@ fn send_wake(session_id: i64, cancel: bool) {
     if waiters.is_null() {
         return;
     }
-    loop {
-        let co = crate::lifecycle::send_next(waiters, !cancel);
-        if co.is_null() {
-            break;
-        }
+    while let Some(co) = crate::lifecycle::send_next(waiters, !cancel) {
         // SAFETY: a coroutine parked in `send_yield`, until it wakes.
-        unsafe { swoole_rs_phpcoroutines::wake(co, cancel) };
+        unsafe { co.wake(cancel) };
     }
     crate::lifecycle::send_waiters_free(waiters);
 }

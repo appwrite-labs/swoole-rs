@@ -16,6 +16,7 @@ use std::{
     rc::Rc,
     sync::atomic::Ordering,
 };
+use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::{
@@ -211,7 +212,7 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
-type Waiters = Rc<RefCell<VecDeque<(u64, *mut c_void)>>>;
+type Waiters = Rc<RefCell<VecDeque<(u64, Coroutine)>>>;
 
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
@@ -903,7 +904,7 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
 struct Wait {
     return_value: *mut zval,
     json_decode: bool,
-    coroutine: *mut c_void,
+    coroutine: Coroutine,
     replied: bool,
 }
 
@@ -921,10 +922,9 @@ fn command_done(wait: *mut Wait) -> impl Fn(&[u8]) {
             // SAFETY: as above.
             unsafe { swr_zval_stringl(wait.return_value, message, length) };
         }
-        // SAFETY: the waiting coroutine.
-        if unsafe { swoole_rs_phpcoroutines::is_suspending(wait.coroutine) } {
+        if wait.coroutine.is_suspending() == Some(true) {
             // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
-            unsafe { swoole_rs_phpcoroutines::wake(wait.coroutine, false) };
+            unsafe { wait.coroutine.wake(false) };
         } else {
             wait.replied = true;
         }
@@ -957,7 +957,9 @@ fn command(call: &Call) {
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
-    let coroutine = swoole_rs_phpcoroutines::current();
+    let Some(coroutine) = Coroutine::current() else {
+        return;
+    };
     let mut wait = Wait {
         return_value: call.return_value(),
         json_decode,
@@ -985,8 +987,8 @@ fn command(call: &Call) {
         return call.set_bool(false);
     }
     if !wait.replied {
-        // SAFETY: this call's coroutine; `command_done` resumes it.
-        unsafe { swoole_rs_phpcoroutines::suspend(coroutine) };
+        // `command_done` resumes it.
+        swoole_rs_phpcoroutines::suspend();
     }
 }
 
@@ -1322,7 +1324,9 @@ pub fn php_swoole_server_send_yield(
     data: &[u8],
 ) -> Result<bool, bailout::Bailout> {
     swoole_rs_phpruntime::coroutine_check()?;
-    let co = swoole_rs_phpcoroutines::current();
+    let Some(co) = Coroutine::current() else {
+        return Ok(false);
+    };
     if data.is_empty() {
         return Ok(false);
     }
@@ -1336,8 +1340,8 @@ pub fn php_swoole_server_send_yield(
         });
         waiters.borrow_mut().push_back((token, co));
         let timeout = server.config().send_timeout;
-        // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
-        if !unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
+        // `onBufferEmpty` or `onClose` wakes it.
+        if !swoole_rs_phpcoroutines::suspend_for(timeout) {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
             return Ok(false);
         }
@@ -1365,10 +1369,10 @@ pub(crate) fn send_waiters(session_id: i64) -> *mut c_void {
         })
 }
 
-/// The next coroutine to wake, or null: `pop` takes it off the queue (a
-/// resume), else it stays first until its `send_yield` leaves (a cancel).
+/// The next coroutine to wake: `pop` takes it off the queue (a resume), else
+/// it stays first until its `send_yield` leaves (a cancel).
 /// `waiters` is from `send_waiters` and not yet freed.
-pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> *mut c_void {
+pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> Option<Coroutine> {
     // SAFETY: per the caller.
     let waiters = unsafe { &*waiters.cast::<Waiters>() };
     let mut queue = waiters.borrow_mut();
@@ -1377,7 +1381,7 @@ pub(crate) fn send_next(waiters: *mut c_void, pop: bool) -> *mut c_void {
     } else {
         queue.front().copied()
     };
-    next.map_or(ptr::null_mut(), |(_, co)| co)
+    next.map(|(_, co)| co)
 }
 
 /// Release what `send_waiters` took, once.
