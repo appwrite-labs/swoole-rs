@@ -4,6 +4,7 @@
 use core::ffi::{c_int, c_void};
 use core::ptr::{null, null_mut};
 
+use crate::factory_ops::run;
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
@@ -11,7 +12,6 @@ use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
-use swoole_rs_process::workers::factory_methods::run;
 use swoole_rs_process::workers::ops::{
     LOG_UNKNOWN_COMMAND, OP_ALL_WORKER_NUM, OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS,
     OP_COMMAND_REPLY, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS,
@@ -412,7 +412,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SPAWN_USER_WORKER => {
             // The manager spawns the pending workers by index, below their count.
             let &worker = ctx.registry().pending().get(index(arg))?;
-            spawn(RUN_SPAWN_USER_WORKER, worker)
+            spawn(RUN_SPAWN_USER_WORKER, worker.cast())
         }
         OP_WORKER_BY_PID => {
             ctx.worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
@@ -420,7 +420,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CHECK_EXIT_STATUS => {
             let status = exit_status(arg);
-            let (worker, status) = (ctx.worker.cast(), (&raw const status).cast());
+            let (worker, status) = (ctx.worker, &raw const status);
             // SAFETY: the context's live server, the worker found and its exit status.
             unsafe { run(serv, RUN_CHECK_EXIT_STATUS, worker, null_mut(), status, 0) };
             return Some(0);
