@@ -1,7 +1,8 @@
 <?php
 // A persistent Client closed from its own package_length_func while recv() holds
 // the connection: the connection is closed, not pooled, and the key reconnects fresh.
-// A Coroutine\Http\Client whose write_func replaces itself and calls its client,
+// A Coroutine\Http\Client whose write_func tries get, post and recv (each fails, and
+// the response it is in completes), replaces itself and calls its client,
 // while another coroutine uses the client across the request's yields.
 function check(bool $condition,string $message):void { if(!$condition)throw new RuntimeException($message); }
 function http_reentry():array {
@@ -14,17 +15,21 @@ function http_reentry():array {
         });
         Swoole\Coroutine::create(static fn()=>$server->start());
         $client=new Swoole\Coroutine\Http\Client('127.0.0.1',$server->port);
-        $first=[];$second=[];
+        $first=[];$second=[];$nested=[];
         $later=static function($c,string $data)use(&$second):void{$second[]=[$data,$c->getStatusCode(),$c->getDefer()];};
-        check($client->set(['timeout'=>5,'write_func'=>static function($c,string $data)use(&$first,$later):void{
-            $first[]=$data;check($c->set(['write_func'=>$later,'timeout'=>5]),'replace write_func from itself');
+        check($client->set(['timeout'=>5,'write_func'=>static function($c,string $data)use(&$first,&$nested,$later):void{
+            $first[]=$data;
+            foreach(['get'=>static fn()=>$c->get('/'),'post'=>static fn()=>$c->post('/','x'),'recv'=>static fn()=>$c->recv()] as $name=>$call){
+                $nested[$name]=[$call(),$c->errCode===SOCKET_EINPROGRESS];
+            }
+            check($c->set(['write_func'=>$later,'timeout'=>5]),'replace write_func from itself');
         }]),'set write_func');
         $busy=true;$uses=0;
         Swoole\Coroutine::create(static function()use(&$client,&$busy,&$uses):void{
             while($busy){check($client->set(['timeout'=>5])&&$client->getDefer()===false,'use while yielded');$uses++;Swoole\Coroutine::sleep(0.002);}
         });
         $get=$client->get('/');
-        $result['get']=['ok'=>$get,'status'=>$client->statusCode,'first'=>$first,'second'=>$second];
+        $result['get']=['ok'=>$get,'status'=>$client->statusCode,'first'=>$first,'second'=>$second,'nested'=>$nested];
         $client->close();$client=new Swoole\Coroutine\Http\Client('127.0.0.1',$server->port);
         $file=tempnam(sys_get_temp_dir(),'reentry');
         $download=$client->download('/',$file);

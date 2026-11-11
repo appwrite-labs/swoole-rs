@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A persistent Client closed from its package_length_func during recv(): not pooled, key reconnects fresh.
-A Coroutine\\Http\\Client reentered from write_func and from another coroutine while a request yields."""
+A Coroutine\\Http\\Client reentered from write_func (a request or recv there fails) and from another coroutine while a request yields."""
 import argparse
 import json
 from pathlib import Path
@@ -11,7 +11,8 @@ from tools.harness import parse_engines,run_isolated,write_report
 
 EXPECTED=dict(outer=dict(received=False,errCode=5001,connected=False),fresh=dict(reuse=False,reuse_count=0),
               peer=dict(accepts=2,eof=True),
-              http=dict(get=dict(ok=True,status=200,first=['a'],second=[['b',0,False],['c',0,False]]),
+              http=dict(get=dict(ok=True,status=200,first=['a'],second=[['b',0,False],['c',0,False]],
+                                 nested=dict(get=[False,True],post=[False,True],recv=[False,True])),
                         download=dict(ok=True,status=200,body='abc'),used_while_yielded=True),warnings=[])
 
 def main():

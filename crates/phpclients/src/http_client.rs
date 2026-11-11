@@ -869,8 +869,22 @@ impl Client {
         false
     }
 
+    /// A request or receive from a callback during a response (`write_func`)
+    /// fails: the response it is in is still being received on this socket.
+    fn refuse_in_callback(&self) -> bool {
+        if self.in_callback.get() {
+            let message =
+                c"the client is receiving a response; call it again after this callback returns";
+            set_error_properties(self.props(), libc::EINPROGRESS, message);
+        }
+        self.in_callback.get()
+    }
+
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&self, path: &[u8]) -> bool {
+        if self.refuse_in_callback() {
+            return false;
+        }
         crate::resolver::swoole_name_resolver_context_reset(
             &mut self.resolve.borrow_mut(),
             self.use_default_port,
@@ -898,7 +912,7 @@ impl Client {
     }
 
     fn recv_response(&self, timeout: f64) -> bool {
-        if !self.wait_response.get() {
+        if !self.wait_response.get() || self.refuse_in_callback() {
             return false;
         }
         let Some(socket) = self.co() else {
