@@ -516,15 +516,12 @@ impl Handle {
     /// The proxy's state, or -1 when there is none.
     fn proxy_state(self, which: Proxy) -> c_int {
         self.proxy(which)
-            .map_or(-1, |proxy| c_int::from(proxy.fields.get().state))
+            .map_or(-1, |proxy| c_int::from(proxy.fields().state))
     }
 
     fn set_proxy_state(self, which: Proxy, state: c_int) {
         if let Some(proxy) = self.proxy(which) {
-            let state = u8::try_from(state).unwrap_or_default();
-            proxy
-                .fields
-                .update(|fields| swoole_rs_corebase::ProxyFields { state, ..fields });
+            proxy.update(|fields| fields.state = u8::try_from(state).unwrap_or_default());
         }
     }
 
@@ -601,9 +598,8 @@ impl Handle {
 
     fn socks5_buffer(self) -> *const c_char {
         self.proxy(Proxy::Socks5)
-            .map_or(core::ptr::null(), |proxy| {
-                proxy.buffer().cast_const().cast()
-            })
+            .and_then(ProxyState::packet)
+            .map_or(core::ptr::null(), |packet| packet.as_ptr().cast())
     }
 
     /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
@@ -622,22 +618,16 @@ impl Handle {
             return (core::ptr::null(), 0);
         };
         let tls = !self.get().tls.get().is_null();
+        let target = proxy.string(3);
         let host = if tls && !self.tls_host_name().is_empty() {
-            self.tls_host_name().to_bytes().to_vec()
+            self.tls_host_name().to_bytes()
         } else {
-            proxy.string(3)
+            &target
         };
         let shared = shared_buffer();
-        // SAFETY: the live proxy, the host's bytes and the shared buffer's.
-        let length = unsafe {
-            swoole_rs_http_ffi::swr_v1_http_proxy_connect(
-                proxy,
-                host.as_ptr(),
-                host.len(),
-                shared.str.cast(),
-                shared.size,
-            )
-        };
+        // SAFETY: the shared buffer's `size` bytes, which nothing else borrows.
+        let output = unsafe { core::slice::from_raw_parts_mut(shared.str.cast(), shared.size) };
+        let length = swoole_rs_http_ffi::proxy_connect(proxy, host, output);
         (shared.str, length)
     }
 
@@ -1189,46 +1179,26 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     let port = port as c_int;
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
+    let [host, user, password] = [
+        (host, host_length),
+        (user, user_length),
+        (password, password_length),
+    ]
+    .map(|(text, length)| {
+        // SAFETY: each text lends `length` bytes for the call.
+        unsafe { core::slice::from_raw_parts(text.cast::<u8>(), length) }
+    });
     let proxy = if http {
-        let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
-        // SAFETY: the new owner and the caller's texts.
-        unsafe {
-            swoole_rs_http_ffi::swr_v1_http_proxy_configure(
-                owner,
-                host,
-                host_length,
-                port,
-                user,
-                user_length,
-                password,
-                password_length,
-            );
-        }
-        owner
+        Box::into_raw(swoole_rs_http_ffi::http_proxy(host, port, user, password))
     } else {
         // SAFETY: a length check that logs.
-        match unsafe { socks5_admit(user_length, password_length) } {
+        match unsafe { socks5_admit(user.len(), password.len()) } {
             0 => core::ptr::null_mut(),
             config => {
-                let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;
-                let view = |data, length| swoole_rs_corebase::CoreStringView { data, length };
-                let texts = [
-                    view(host, host_length),
-                    view(user, user_length),
-                    view(password, password_length),
-                ];
-                let kind = this.socket_type();
-                // SAFETY: the new owner and the caller's texts.
-                unsafe {
-                    swoole_rs_corebase::swr_v1_core_proxy_configure(
-                        owner,
-                        texts.as_ptr(),
-                        port,
-                        config == 2,
-                        kind,
-                    )
-                };
-                owner
+                let owner = ProxyState::new(true);
+                let texts = [host, user, password];
+                owner.configure(texts, port, config == 2, this.socket_type());
+                Box::into_raw(owner)
             }
         }
     };
@@ -1246,7 +1216,7 @@ pub extern "C" fn swr_v1_clients_proxy_fields(
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
     Handle(core::ptr::from_ref(client).cast_mut())
         .proxy(which)
-        .map_or(core::ptr::null_mut(), |proxy| proxy.fields.as_ptr())
+        .map_or(core::ptr::null_mut(), ProxyState::fields_ptr)
 }
 
 /// The client's `SSLContext`, which crates/tls configures; null while TLS is off.
@@ -1342,15 +1312,11 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> c_int {
                 continue;
             };
             proxy.set_string(3, host.to_bytes());
-            let fields = proxy.fields.get();
-            proxy.fields.set(swoole_rs_corebase::ProxyFields {
-                target_port: port,
-                ..fields
-            });
-            proxy_host = proxy.string(0);
+            proxy.update(|fields| fields.target_port = port);
+            proxy_host = proxy.string(0).to_vec();
             proxy_host.push(0);
             let proxy_host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
-            (host, port) = (proxy_host, fields.port);
+            (host, port) = (proxy_host, proxy.fields().port);
         }
         host.clone_into(&mut this.get().server_host.borrow_mut());
         this.get().server_port.set(port);

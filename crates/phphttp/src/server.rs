@@ -232,11 +232,12 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         );
         return CLOSED;
     };
-    let port = server.port_by_server_fd(server_fd);
-    // SAFETY: the connection's live port.
-    let config = unsafe { view::port(port) };
-    // SAFETY: the live server and port.
-    let isset = |kind| unsafe { php_swoole_server_isset_callback(server, port, kind) };
+    // A live connection's listening port.
+    let Some(port) = server.port_by_server_fd(server_fd) else {
+        return CLOSED;
+    };
+    let config = port.config();
+    let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol && isset(ON_REQUEST);
     let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);

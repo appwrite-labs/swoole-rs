@@ -54,7 +54,7 @@ impl Context {
         self.server().workers()
     }
     /// `serv->ports`.
-    pub(super) fn ports(&self) -> &[*mut c_void] {
+    pub(super) fn ports(&self) -> &[view::Port<'_>] {
         self.server().ports()
     }
     pub(super) fn callback_slot(&self, index: u32) -> Option<&crate::callbacks::CallbackSlot> {
@@ -89,12 +89,6 @@ impl Context {
         // SAFETY: the context's live event.
         unsafe { (*self.event).socket_ptr() }.cast()
     }
-}
-
-/// One of the server's ports.
-pub(super) fn port_config<'a>(port: *mut c_void) -> &'a crate::port_config::PortConfig {
-    // SAFETY: the context hands out only its live server's ports.
-    unsafe { view::port(port) }
 }
 
 /// This thread's timer, or null.
@@ -168,8 +162,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_ADD => {
-            let index = usize::try_from(arg).ok()?;
-            let port = ctx.state().tables_ref().port_config(index)?;
+            let port = ctx.ports().get(usize::try_from(arg).ok()?)?.config();
             let gs = port.counters()?;
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the worker's slot of them.
