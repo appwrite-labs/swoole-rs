@@ -148,7 +148,7 @@ fn report(kind: u8, signo: i32, error: i32) {
 mod descriptor {
     use super::{
         EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK, c_int,
-        c_void, current, socket_free, swoole_event_add, swoole_event_del,
+        c_void, socket_free, swoole_event_add, swoole_event_del,
     };
     use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
     use crate::socket_upstream::make_socket_fd;

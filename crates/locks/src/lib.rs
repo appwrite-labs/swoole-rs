@@ -855,6 +855,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn shared_mutex_locks_once_made_and_refuses_after_destroy() {
         let mut mutex = SharedMutex::new();
         assert_eq!(mutex.init(), 0);
