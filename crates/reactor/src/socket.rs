@@ -42,7 +42,7 @@ impl<'a> Borrow<'a> {
     /// One locked add: a read counts itself first, and backs out and waits if an edit
     /// holds the record. (An edit only ever starts from zero, so the brief count blocks none
     /// that wasn't already conflicting.) Inlined: every record access takes one.
-    #[inline]
+    #[inline(always)]
     #[track_caller]
     fn read(borrows: &'a AtomicU32) -> Self {
         if borrows.fetch_add(1, Ordering::Acquire) & EDIT != 0 {
@@ -71,7 +71,7 @@ impl<'a> Borrow<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     #[track_caller]
     fn edit(borrows: &'a AtomicU32) -> Self {
         if borrows
@@ -198,6 +198,7 @@ impl<'a> Socket<'a> {
     /// `read`'s result over the record.
     /// # Panics
     /// Inside an `edit` closure over the same record, after waiting a second for it to end.
+    #[inline(always)]
     #[track_caller]
     pub fn read<R>(self, read: impl FnOnce(&SocketFields) -> R) -> R {
         let _borrow = Borrow::read(self.borrows());
@@ -209,6 +210,7 @@ impl<'a> Socket<'a> {
     /// `edit`'s result over the record, which it may change.
     /// # Panics
     /// Inside a `read` or `edit` closure over the same record, after waiting a second for it to end.
+    #[inline(always)]
     #[track_caller]
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
         let _borrow = Borrow::edit(self.borrows());

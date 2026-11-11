@@ -61,6 +61,16 @@ pub struct ConnectionRecord {
     pub server_fd: c_int,
 }
 
+impl ConnectionRecord {
+    /// The connection's session socket, or `None` before it has one or after it closes:
+    /// closing frees the socket and nulls the field in one step, on the socket's thread.
+    #[must_use]
+    pub fn socket(&self) -> Option<swoole_rs_reactor::Socket<'_>> {
+        // SAFETY: null, or the connection's live socket, as above.
+        unsafe { swoole_rs_reactor::Socket::from_ptr(self.socket.cast()) }
+    }
+}
+
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 #[repr(C)]
 pub struct ServerTables {
