@@ -1,4 +1,5 @@
 //! Server connections, sessions and lookup tables owned and operated by Rust.
+use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::AtomicU32;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -60,6 +61,16 @@ pub struct ConnectionRecord {
     pub server_fd: c_int,
 }
 
+impl ConnectionRecord {
+    /// The connection's session socket, or `None` before it has one or after it closes:
+    /// closing frees the socket and nulls the field in one step, on the socket's thread.
+    #[must_use]
+    pub fn socket(&self) -> Option<swoole_rs_reactor::Socket<'_>> {
+        // SAFETY: null, or the connection's live socket, as above.
+        unsafe { swoole_rs_reactor::Socket::from_ptr(self.socket.cast()) }
+    }
+}
+
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 #[repr(C)]
 pub struct ServerTables {
@@ -86,9 +97,34 @@ pub struct PortList {
 }
 
 impl ServerTables {
-    /// The connection slots, or null before they're mapped.
-    pub(crate) fn connections(&self) -> *mut ConnectionRecord {
-        self.connection_list.as_ptr().cast()
+    /// The connection slots, exactly `max_connection` of them, or none before
+    /// they're mapped. Index it with `get`, so every fd lookup is bounded by the
+    /// table's own length.
+    pub(crate) fn connections(&self) -> &[UnsafeCell<ConnectionRecord>] {
+        let base = self.connection_list.as_ptr();
+        if base.is_null() {
+            return &[];
+        }
+        // SAFETY: every factory maps the table with `max_connection` zeroed records
+        // and frees it only by nulling `connection_list`; `UnsafeCell` has the
+        // record's layout and lets slots be written under the server's own
+        // synchronization.
+        unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection as usize) }
+    }
+
+    /// The slot of `fd`, or `None` when `fd` is outside the table.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "a slot of the connection table, written under the server's own synchronization"
+    )]
+    pub(crate) fn connection_at(&self, fd: c_int) -> Option<&mut ConnectionRecord> {
+        // SAFETY: a slot of the live table; the server's own synchronization orders writes.
+        Some(unsafe { &mut *self.connection_slot(fd)? })
+    }
+
+    /// The slot of `fd` as the table's own pointer, or `None` when `fd` is outside it.
+    pub(crate) fn connection_slot(&self, fd: c_int) -> Option<*mut ConnectionRecord> {
+        Some(self.connections().get(usize::try_from(fd).ok()?)?.get())
     }
 
     /// The session slots, or null before they're mapped.
@@ -189,13 +225,8 @@ impl crate::ServerState {
                     .to_ne_bytes(),
             )
         };
-        if fd.cast_unsigned() > tables.max_connection || tables.connection_list.is_null() {
-            return None;
-        }
-        let slot = tables
-            .connections()
-            .wrapping_add(fd.cast_unsigned() as usize);
-        // SAFETY: the live table of `max_connection + 1` slots; `fd` is inside it.
+        let slot = tables.connection_slot(fd)?;
+        // SAFETY: a slot of the live table.
         let value = unsafe { &*slot };
         let found = match kind {
             BY_FD | BY_SESSION => true,
@@ -316,7 +347,7 @@ pub(crate) mod tests {
             let tables = &mut *(*state).tables();
             tables.session_list = naming_at(session_at);
             tables.connection_list = naming_at(connection_at);
-            tables.max_connection = 2;
+            tables.max_connection = 3;
             assert_eq!(swr_v1_server_session(&*state, 1), session_at.add(1));
             let expected = connection_at.add(2);
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
@@ -324,6 +355,7 @@ pub(crate) mod tests {
             assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 1).is_null());
             assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
+            // fd == max_connection is one past the table.
             assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
             (*expected).ssl = 1;
             assert!(swr_v1_server_connection(&*state, 1, 3).is_null());

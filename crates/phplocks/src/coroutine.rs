@@ -1,8 +1,5 @@
 //! `Swoole\\Coroutine\\Lock`: PHP object ownership over the Rust coroutine lock.
-use std::{
-    cell::OnceCell,
-    ffi::{c_int, c_void},
-};
+use std::{cell::OnceCell, ffi::c_int};
 use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock, CoroutineOutcome};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
@@ -22,7 +19,6 @@ static CLASS: CustomClass<Held> = CustomClass::new();
 /// backoff or, with `io_uring` (whose engine always has futexes), the ring's futex.
 static HOST: CoroutineHost = CoroutineHost {
     current: host::current,
-    cid: host::cid,
     alloc_shared: host::alloc_shared,
     #[cfg(not(feature = "iouring"))]
     sleep: Some(host::sleep),
@@ -40,17 +36,14 @@ static HOST: CoroutineHost = CoroutineHost {
 };
 
 mod host {
-    use super::{CoroutineOutcome, c_int, c_void};
+    use super::{CoroutineOutcome, c_int};
 
     /// No leaf runs PHP, so none bails out.
     const fn done(code: c_int) -> CoroutineOutcome {
         CoroutineOutcome { code, bailed: 0 }
     }
-    pub(super) fn current() -> *mut c_void {
-        swoole_rs_phpcoroutines::current()
-    }
-    pub(super) fn cid(co: *mut c_void) -> i64 {
-        swoole_rs_phpcoroutines::cid(co)
+    pub(super) fn current() -> Option<i64> {
+        swoole_rs_phpcoroutines::Coroutine::current().map(swoole_rs_phpcoroutines::Coroutine::cid)
     }
     pub(super) fn alloc_shared() -> Option<&'static std::sync::atomic::AtomicU32> {
         super::pool::words(1)?.first()
