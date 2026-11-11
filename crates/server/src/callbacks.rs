@@ -104,23 +104,6 @@ impl CallbackSlot {
         })
     }
 
-    /// `serv->onX(serv)`, for a slot of a `(Server *)` signature; nothing when
-    /// the slot is empty.
-    ///
-    /// # Safety
-    /// The slot holds that signature, and `serv` is a live `Server`.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) unsafe fn call_server(&self, serv: *mut c_void) {
-        type Invoke = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void);
-        let invoke = self.invoke.load(Relaxed);
-        // SAFETY: the slot holds null or a `void (*)(void *, Server *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        if let Some(invoke) = invoke {
-            // SAFETY: per the caller, with the slot's own context.
-            unsafe { invoke(self.ctx.load(Relaxed), serv) };
-        }
-    }
-
     /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
     ///
     /// # Safety
@@ -172,6 +155,39 @@ impl ServerCallbacks {
 
     pub(crate) fn slot(&self, index: u32) -> Option<&CallbackSlot> {
         self.0.get(index as usize)
+    }
+}
+
+/// The slots of a `void (Server *)` signature.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+const SERVER_SLOTS: [u32; 7] = [
+    CB_START,
+    CB_BEFORE_SHUTDOWN,
+    CB_SHUTDOWN,
+    CB_MANAGER_START,
+    CB_MANAGER_STOP,
+    CB_BEFORE_RELOAD,
+    CB_AFTER_RELOAD,
+];
+
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+impl ServerCallbacks {
+    /// `serv->onX(serv)` for slot `index`, one of the `(Server *)` slots; nothing
+    /// when the slot is empty or of another signature.
+    pub(crate) fn call_server(&self, index: u32, serv: crate::view::Server<'_>) {
+        type Invoke = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void);
+        let Some(slot) = self.slot(index).filter(|_| SERVER_SLOTS.contains(&index)) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: a `(Server *)` slot holds null or a `void (*)(void *, Server *)`: native
+        // code assigns its typed member, and `view::Server::set_callback`'s caller one of
+        // the slot's own signature.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            // SAFETY: the slot's own context and a live server.
+            unsafe { invoke(slot.ctx.load(Relaxed), serv.raw()) };
+        }
     }
 }
 

@@ -150,25 +150,16 @@ fn stream_event(kind: u8) -> bool {
     matches!(kind, 0 | 2..=5 | 11..=14)
 }
 
-/// `Buffer::empty(buffer)`.
-///
-/// # Safety
-/// `buffer` is null or a live `Buffer`.
-unsafe fn empty(buffer: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast::<CppBuffer>() })
+/// `pthread_self(3)`: the calling thread's id.
+pub(crate) fn pthread_self() -> libc::pthread_t {
+    // SAFETY: pthread_self has no preconditions.
+    unsafe { libc::pthread_self() }
 }
 
-/// `buffer ? buffer->length() : 0`.
-///
-/// # Safety
-/// As `empty`.
-unsafe fn length(buffer: *mut c_void) -> u32 {
-    if buffer.is_null() {
-        return 0;
-    }
-    // SAFETY: per the caller.
-    swr_cpp_buffer_length(unsafe { &*buffer.cast::<CppBuffer>() })
+/// A socket's output buffer, or `None` without one.
+pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
+    // SAFETY: a socket's output buffer is null or the live `Buffer` it owns.
+    unsafe { socket.output.out_buffer.cast::<CppBuffer>().as_ref() }
 }
 
 /// The context's objects, each live when the op reading it runs.
@@ -215,6 +206,10 @@ impl Objects<'_> {
     fn event(&self) -> &Event {
         // SAFETY: the ops reading it run on a live event.
         unsafe { &*self.ctx.event }
+    }
+    fn resp(&self) -> &DataHead {
+        // SAFETY: OP_PIPE_READ stored the live message first.
+        unsafe { &*self.ctx.resp }
     }
     fn front(&self) -> &DataHead {
         // SAFETY: OP_RT_FRONT stored the live front message first.
@@ -320,11 +315,11 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
             "a reactor thread writes only its own fds"
         );
     }
-    o.ctx.conn = o.connection(c_long::from(fd), 0);
-    // SAFETY: a table slot.
-    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+    let Some(conn) = o.state.connection(c_long::from(fd), 0) else {
+        o.ctx.conn = core::ptr::null_mut();
         return 0;
     };
+    o.ctx.conn = &raw mut *conn;
     if conn.active == 0 {
         return 0;
     }
@@ -342,11 +337,11 @@ fn write_facts(o: &mut Objects<'_>) -> u64 {
 /// the context's connection.
 fn peer_close_facts(o: &mut Objects<'_>) -> u64 {
     let fd = o.event().fd();
-    o.ctx.conn = o.connection(c_long::from(fd), 0);
-    // SAFETY: a table slot.
-    let Some(conn) = (unsafe { o.ctx.conn.as_ref() }) else {
+    let Some(conn) = o.state.connection(c_long::from(fd), 0) else {
+        o.ctx.conn = core::ptr::null_mut();
         return 0;
     };
+    o.ctx.conn = &raw mut *conn;
     if conn.active == 0 {
         return 0;
     }
@@ -433,17 +428,13 @@ pub(crate) unsafe fn facts(ctx: &mut ReactorContext, state: &ServerState, which:
 }
 
 /// `Server::is_valid_connection`.
-///
-/// # Safety
-/// `conn` is null or a live connection whose socket is null or live.
-pub(crate) unsafe fn valid(conn: *const ConnectionRecord) -> bool {
-    // SAFETY: per the caller.
-    let Some(conn) = (unsafe { conn.as_ref() }) else {
+pub(crate) fn valid(conn: Option<&ConnectionRecord>) -> bool {
+    let Some(conn) = conn.filter(|conn| conn.active != 0) else {
         return false;
     };
-    // SAFETY: per the caller.
+    // SAFETY: an active connection's socket is null or live.
     let socket = unsafe { Socket::from_ptr(conn.socket.cast()) };
-    conn.active != 0 && socket.is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
+    socket.is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
 }
 
 fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Arguments<'_>) {
@@ -566,13 +557,12 @@ pub(crate) unsafe fn answer(
         OP_REACTOR_NUM => u64::from(o.config().reactor_num),
         OP_WORKER_NUM => u64::from(o.config().worker_num),
         OP_CONN_AT | OP_CC_VALID => {
-            let conn = o.connection(c_long::from(int(arg)), 0);
-            // SAFETY: a table slot, whose socket is null or live.
-            if !unsafe { valid(conn) } {
+            let conn = o.state.connection(c_long::from(int(arg)), 0);
+            if !valid(conn.as_deref()) {
                 return Some(0);
             }
             if op == OP_CONN_AT {
-                o.ctx.conn = conn;
+                o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
             }
             1
         }
@@ -599,10 +589,8 @@ pub(crate) unsafe fn answer(
         }
         OP_CONN_FORCE => u64::from(o.conn().close_force),
         OP_CONN_HANDSHAKING => u64::from(o.conn().ssl != 0 && o.conn().ssl_ready == 0),
-        // SAFETY: OP_PIPE_READ stored the live message first.
-        OP_PIPE_TYPE => u64::from(unsafe { (*o.ctx.resp).kind }),
-        // SAFETY: as above.
-        OP_PIPE_FD => sign(unsafe { (*o.ctx.resp).fd }),
+        OP_PIPE_TYPE => u64::from(o.resp().kind),
+        OP_PIPE_FD => sign(o.resp().fd),
         OP_MICROTIME => microtime().to_bits(),
         OP_QUEUE_FULL => {
             u64::from(o.conn().recv_queued_bytes.load(SeqCst) > o.config().max_queued_bytes)
@@ -618,9 +606,8 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_RT_BUF_EMPTY => {
-            let buffer = o.event_socket()?.read(|s| s.output.out_buffer);
-            // SAFETY: the event socket's output buffer is null or live.
-            u64::from(unsafe { empty(buffer) })
+            let sock = o.event_socket()?;
+            u64::from(sock.read(|s| out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b))))
         }
         OP_RT_FRONT_STREAM => u64::from(stream_event(o.front().kind)),
         OP_RT_TOUCH_SEND => {
@@ -640,9 +627,8 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_WR_QUEUED => {
-            let buffer = o.read_sock(|s| s.output.out_buffer);
-            // SAFETY: the socket's output buffer is null or live.
-            o.conn().send_queued_bytes = unsafe { length(buffer) };
+            let length = o.read_sock(|s| out_buffer(s).map_or(0, |b| swr_cpp_buffer_length(b)));
+            o.conn().send_queued_bytes = length;
             0
         }
         OP_WR_STATE => write_state(&o),
@@ -782,13 +768,12 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let config = unsafe { port_config::of(port) };
             let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
             let fd = socket.fd();
-            // SAFETY: the connection table's slot for the listening fd.
-            let serv_sock = unsafe { &mut *o.connection(c_long::from(fd), 0) };
+            // The connection table's slot for the listening fd.
+            let serv_sock = o.state.connection(c_long::from(fd), 0)?;
             serv_sock.fd = fd;
             serv_sock.socket_type = config.r#type;
             serv_sock.object = port;
-            // SAFETY: the calling thread's own id.
-            config.thread_id = unsafe { libc::pthread_self() };
+            config.thread_id = pthread_self();
             change(socket.as_ptr(), 0, SW_EVENT_READ)
         }
         OP_CONN_UNREAD => interest(conn_socket(), 4),
@@ -829,8 +814,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_KILL_SELF => {
             let pid = std::process::id().cast_signed();
-            // SAFETY: signals this process.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            swoole_rs_process::os::kill(pid, libc::SIGTERM);
             0
         }
         OP_MASTER_REACTOR_ID => {
@@ -861,20 +845,14 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_RT_POP => {
-            let buffer = o.event_socket()?.read(|s| s.output.out_buffer);
-            // SAFETY: the event socket's live buffer, which holds the front.
-            swr_cpp_buffer_pop(unsafe { &*buffer.cast() });
+            o.event_socket()?
+                .read(|s| out_buffer(s).map(|b| swr_cpp_buffer_pop(b)));
             0
         }
-        OP_WR_FRONT => {
-            let buffer = o.sock()?.read(|s| s.output.out_buffer);
-            // SAFETY: the socket's output buffer is null or live.
-            if unsafe { empty(buffer) } {
-                return Some(0);
-            }
-            // SAFETY: a live, non-empty buffer.
-            1 + u64::from(swr_cpp_buffer_typed_front(unsafe { &*buffer.cast() }).kind)
-        }
+        OP_WR_FRONT => o.sock()?.read(|s| {
+            let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b));
+            buffer.map_or(0, |b| 1 + u64::from(swr_cpp_buffer_typed_front(b).kind))
+        }),
         OP_CC_QUEUE_CLOSE => {
             let sock = o.sock()?;
             let mut buffer = sock.read(|s| s.output.out_buffer);
@@ -882,8 +860,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
                 sock.edit(|s| s.output.out_buffer = buffer);
             }
-            // SAFETY: the socket's live output buffer.
-            swr_cpp_buffer_typed_close(unsafe { &*buffer.cast() });
+            sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
             o.conn().close_queued = 1;
             0
         }
@@ -1035,8 +1012,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_BASE_PASS => {
             // SAFETY: the `SendData` (the context's task) the dispatch lends at arg.
             let send = unsafe { &*(arg as *const SendData) };
-            // SAFETY: the context's live server and its state.
-            unsafe { crate::master_ops::base_pass(o.ctx.serv, o.state, send) };
+            crate::master_ops::base_pass(o.server(), send);
             0
         }
         OP_STORE_LISTEN_SOCKET => {
@@ -1083,16 +1059,11 @@ fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
 fn write_state(o: &Objects<'_>) -> u64 {
     let conn = o.conn();
     let (out, buffer_size, timer, removed) = o.read_sock(|s| {
+        let out = out_buffer(s).map(|b| (swr_cpp_buffer_length(b), swr_cpp_buffer_empty(b)));
         let output = &s.output;
-        (
-            output.out_buffer,
-            output.buffer_size,
-            output.send_timer,
-            s.removed != 0,
-        )
+        (out, output.buffer_size, output.send_timer, s.removed != 0)
     });
-    // SAFETY: the socket's output buffer is null or live.
-    let length = unsafe { length(out) };
+    let (length, out_empty) = out.unwrap_or((0, true));
     let buffer_empty = o
         .state
         .callbacks
@@ -1105,8 +1076,7 @@ fn write_state(o: &Objects<'_>) -> u64 {
             LOW_WATERMARK,
         )
         | flag(!timer.is_null(), SEND_TIMER)
-        // SAFETY: as above.
-        | flag(unsafe { empty(out) }, OUT_EMPTY)
+        | flag(out_empty, OUT_EMPTY)
         | flag(conn.peer_closed != 0, PEER_CLOSED)
         | flag(removed, REMOVED)
 }

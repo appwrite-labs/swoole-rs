@@ -27,23 +27,22 @@ const EVENT_TIMEOUT: c_int = 1;
 const FUTEX2_SIZE_U32: u32 = 0x02;
 const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
 
-/// What the engine needs from the native side.
-#[repr(C)]
+/// What the engine needs from the coroutine scheduler, the reactor and the log.
 pub struct Host {
     /// `Coroutine::get_current_safe()`.
     pub current: extern "C" fn() -> *mut c_void,
     /// The thread's engine, created on first use (null if it failed).
-    pub instance: unsafe extern "C" fn() -> *mut Uring,
+    pub instance: fn() -> *mut Uring,
     /// Suspend `coroutine` until [`wakeup`] resumes it; cancelling it calls
     /// [`cancel`] with `event`.
-    pub suspend: unsafe extern "C" fn(coroutine: *mut c_void, event: *mut c_void),
-    pub resume: unsafe extern "C" fn(coroutine: *mut c_void),
+    pub suspend: unsafe fn(coroutine: *mut c_void, event: *mut c_void),
+    pub resume: unsafe extern "C-unwind" fn(coroutine: *mut c_void),
     /// `swoole_event_is_running()`.
-    pub event_running: unsafe extern "C" fn() -> bool,
+    pub event_running: fn() -> bool,
     /// Logs "`io_uring_submit()` failed" with errno.
-    pub submit_failed: unsafe extern "C" fn(),
+    pub submit_failed: fn(),
     /// Logs that the ring with this fd had no room for a timeout.
-    pub timeout_full: unsafe extern "C" fn(ring_fd: c_int),
+    pub timeout_full: fn(ring_fd: c_int),
 }
 
 /// `SwooleG.iouring_*` and the opcode probes this build requires.
@@ -86,7 +85,8 @@ pub struct Uring {
     task_num: u32,
     waiting: VecDeque<*mut Event>,
     cqes: Vec<*mut sys::io_uring_cqe>,
-    ready: Vec<*mut Event>,
+    /// Completed events and their results.
+    ready: Vec<(*mut Event, isize)>,
 }
 
 fn errno() -> c_int {
@@ -159,13 +159,18 @@ fn complete(result: isize) -> isize {
     }
 }
 
+/// An all-zero sqe: the state every `io_uring_prep_*` starts from.
+fn zeroed_sqe() -> sys::io_uring_sqe {
+    // SAFETY: the sqe is integers and unions of them, for which all-zero is valid.
+    unsafe { mem::zeroed() }
+}
+
 impl Event {
     /// Upstream's `INIT_EVENT`: the current coroutine, or a fatal error outside one.
     fn new(host: &Host) -> Self {
         Self {
             coroutine: (host.current)(),
-            // SAFETY: an all-zero sqe is the state every io_uring_prep_* starts from.
-            data: unsafe { mem::zeroed() },
+            data: zeroed_sqe(),
             result: 0,
             timeout: sys::__kernel_timespec {
                 tv_sec: 0,
@@ -189,59 +194,64 @@ impl Event {
 
     /// Submit and suspend until the completion; the result as upstream's `execute`.
     fn execute(&mut self, host: &Host) -> isize {
-        // SAFETY: the native callback has no preconditions.
-        let uring = unsafe { (host.instance)() };
+        let uring = (host.instance)();
         if uring.is_null() {
             return -1;
         }
-        let event: *mut Self = self;
-        // SAFETY: `uring` is the live thread engine; `event` outlives the suspension.
-        unsafe { dispatch(uring, event) };
-        // SAFETY: as above; no reference to the engine is held across the switch.
-        unsafe { (*uring).task_num += 1 };
-        // SAFETY: suspends this coroutine; the wakeup handler resumes it.
-        unsafe { (host.suspend)(self.coroutine, event.cast()) };
+        let (coroutine, event) = (self.coroutine, ptr::from_mut(self).cast());
+        {
+            // SAFETY: the thread's live engine; the borrow ends before the switch,
+            // which may re-enter it.
+            let engine = unsafe { &mut *uring };
+            engine.dispatch(self);
+            engine.task_num += 1;
+        }
+        // SAFETY: suspends this coroutine; the wakeup handler resumes it, and the
+        // event stays in this frame until then.
+        unsafe { (host.suspend)(coroutine, event) };
         self.result
     }
 }
 
-/// Queue `event` in the ring, or in the wait queue when the ring is full.
-///
-/// # Safety
-/// `uring` is a live engine and `event` stays valid until its completion.
-unsafe fn dispatch(uring: *mut Uring, event: *mut Event) {
-    // SAFETY: the caller's contract; no host callback runs while this borrow lives.
-    let engine = unsafe { &mut *uring };
-    // SAFETY: the ring is initialized.
-    let sqe = unsafe { sys::swr_uring_get_sqe(&raw mut engine.ring) };
-    if sqe.is_null() {
-        engine.waiting.push_back(event);
-        return;
-    }
-    // SAFETY: the caller's contract.
-    let event = unsafe { &mut *event };
-    // SAFETY: `sqe` is a free slot of this ring.
-    unsafe { ptr::copy_nonoverlapping(&raw const event.data, sqe, 1) };
-    // SAFETY: as above; user data identifies the event on completion.
-    unsafe { (*sqe).user_data = ptr::from_mut(event) as u64 };
-    if event.flags & EVENT_TIMEOUT != 0 {
+impl Uring {
+    /// A free submission slot, or null when the ring is full.
+    fn get_sqe(&mut self) -> *mut sys::io_uring_sqe {
         // SAFETY: the ring is initialized.
-        let timeout_sqe = unsafe { sys::swr_uring_get_sqe(&raw mut engine.ring) };
-        if timeout_sqe.is_null() {
-            // SAFETY: the native callback only logs.
-            unsafe { (engine.host.timeout_full)(engine.ring.ring_fd) };
-        } else {
-            // SAFETY: `timeout_sqe` is a free slot of this ring.
-            unsafe { timeout_sqe.write_bytes(0, 1) };
-            // SAFETY: the timeout lives in the event, valid until its completion.
-            unsafe { sys::swr_uring_prep_link_timeout(timeout_sqe, &raw mut event.timeout, 0) };
-            // SAFETY: as above.
-            unsafe { (*timeout_sqe).user_data = TIMEOUT_EVENT };
-            // SAFETY: `sqe` is still this ring's unsubmitted slot.
-            unsafe { (*sqe).flags |= 1 << sys::io_uring_sqe_flags_bit_IOSQE_IO_LINK_BIT };
-        }
+        unsafe { sys::swr_uring_get_sqe(&raw mut self.ring) }
     }
-    submit(engine, false);
+
+    /// Queue `event` in the ring, or in the wait queue when the ring is full. Both
+    /// keep its address: it stays suspended in its operation until its completion.
+    fn dispatch(&mut self, event: &mut Event) {
+        let sqe = self.get_sqe();
+        if sqe.is_null() {
+            self.waiting.push_back(event);
+            return;
+        }
+        // SAFETY: a free slot of this ring, which nothing else refers to.
+        let sqe = unsafe { &mut *sqe };
+        // SAFETY: the sqe is plain integers, so a bitwise copy is a valid one.
+        *sqe = unsafe { ptr::read(&raw const event.data) };
+        // User data identifies the event on completion.
+        sqe.user_data = ptr::from_mut(event) as u64;
+        if event.flags & EVENT_TIMEOUT != 0 {
+            let timeout_sqe = self.get_sqe();
+            if timeout_sqe.is_null() {
+                (self.host.timeout_full)(self.ring.ring_fd);
+            } else {
+                // SAFETY: another free slot of this ring.
+                let timeout_sqe = unsafe { &mut *timeout_sqe };
+                *timeout_sqe = zeroed_sqe();
+                // SAFETY: the timeout lives in the event, valid until its completion.
+                unsafe {
+                    sys::swr_uring_prep_link_timeout(timeout_sqe, &raw mut event.timeout, 0);
+                }
+                timeout_sqe.user_data = TIMEOUT_EVENT;
+                sqe.flags |= 1 << sys::io_uring_sqe_flags_bit_IOSQE_IO_LINK_BIT;
+            }
+        }
+        submit(self, false);
+    }
 }
 
 fn sq_space_left(engine: &Uring) -> u32 {
@@ -264,8 +274,7 @@ trait Submitter {
 
 impl Submitter for Uring {
     fn event_running(&mut self) -> bool {
-        // SAFETY: the native callback has no preconditions.
-        unsafe { (self.host.event_running)() }
+        (self.host.event_running)()
     }
 
     fn sq_used(&mut self) -> u32 {
@@ -283,8 +292,7 @@ impl Submitter for Uring {
     }
 
     fn failed(&mut self) {
-        // SAFETY: the native callback only logs.
-        unsafe { (self.host.submit_failed)() };
+        (self.host.submit_failed)();
     }
 }
 
@@ -477,10 +485,7 @@ pub unsafe fn wakeup(uring: *mut Uring) -> bool {
                 if data == TIMEOUT_EVENT {
                     continue;
                 }
-                let event = data as *mut Event;
-                // SAFETY: user data is an event suspended in its operation.
-                unsafe { (*event).result = res as isize };
-                ready.push(event);
+                ready.push((data as *mut Event, res as isize));
             }
             // SAFETY: consumes the `count` cqes read above.
             unsafe { sys::swr_uring_cq_advance(&raw mut engine.ring, count) };
@@ -491,17 +496,18 @@ pub unsafe fn wakeup(uring: *mut Uring) -> bool {
                 let Some(waiting) = engine.waiting.pop_front() else {
                     break;
                 };
-                // SAFETY: a queued event is suspended in its operation.
-                unsafe { dispatch(uring, waiting) };
+                // SAFETY: a queued event is suspended in its operation, and nothing
+                // else borrows it.
+                engine.dispatch(unsafe { &mut *waiting });
             }
             ready
         };
-        for &event in &ready {
+        for &(event, result) in &ready {
             let coroutine = {
-                // SAFETY: the event is suspended in its operation, and nothing else
-                // borrows it until its coroutine resumes.
+                // SAFETY: user data is an event suspended in its operation, and
+                // nothing else borrows it until its coroutine resumes.
                 let event = unsafe { &mut *event };
-                event.result = complete(event.result);
+                event.result = complete(result);
                 event.coroutine
             };
             let host = {
@@ -519,22 +525,25 @@ pub unsafe fn wakeup(uring: *mut Uring) -> bool {
     }
 }
 
-/// Cancel `event`'s request, as a coroutine cancelling a suspended one does.
-///
-/// # Safety
-/// `event` is suspended in its operation.
-pub unsafe fn cancel(host: &Host, event: *mut c_void) -> bool {
+/// Cancel the request whose event is at `event`, as a coroutine cancelling a
+/// suspended one does. The kernel only compares the address with each request's
+/// user data.
+#[expect(
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "`event` is only a key: the kernel compares it, nothing dereferences it"
+)]
+pub fn cancel(host: &Host, event: *mut c_void) -> bool {
     let mut cancel = Event::new(host);
-    // SAFETY: a zeroed sqe.
+    // SAFETY: a zeroed sqe; `event` is a key, never dereferenced.
     unsafe { sys::swr_uring_prep_cancel(cancel.sqe(), event, 0) };
     cancel.execute(host) == 0
 }
 
 /// One `io_uring` request, end to end: `prep` fills the sqe, with pointers that
 /// stay valid until the request completes, which is before this returns.
-fn request(host: &Host, timeout: f64, prep: impl FnOnce(*mut sys::io_uring_sqe)) -> isize {
+fn request(host: &Host, timeout: f64, prep: impl FnOnce(&mut sys::io_uring_sqe)) -> isize {
     let mut event = Event::new(host).with_timeout(timeout);
-    prep(event.sqe());
+    prep(&mut event.data);
     event.execute(host)
 }
 
@@ -652,17 +661,15 @@ pub unsafe fn recvfrom(
     }
 }
 
-/// `size` bytes of `in_fd` from `offset` to `out_fd`. With `splice_pages`
-/// (`MSG_SPLICE_PAGES`, when the build headers have it) one zero-copy sendmsg;
-/// otherwise splices through a pipe.
-///
-/// # Safety
-/// `offset` is null or valid.
-pub unsafe fn sendfile(
+/// `size` bytes of `in_fd` from `offset` (the file position without one) to
+/// `out_fd`. With `splice_pages` (`MSG_SPLICE_PAGES`, when the build headers have
+/// it) one zero-copy sendmsg; otherwise splices through a pipe.
+#[must_use]
+pub fn sendfile(
     host: &Host,
     out_fd: c_int,
     in_fd: c_int,
-    offset: *mut libc::off_t,
+    offset: Option<&mut libc::off_t>,
     size: usize,
     timeout: f64,
     splice_pages: c_int,
@@ -671,19 +678,17 @@ pub unsafe fn sendfile(
         return 0;
     }
     if splice_pages != 0 {
-        // SAFETY: the caller's contract.
-        unsafe { send_spliced(host, out_fd, in_fd, offset, size, timeout, splice_pages) }
+        send_spliced(host, out_fd, in_fd, offset, size, timeout, splice_pages)
     } else {
-        // SAFETY: the caller's contract.
-        unsafe { send_piped(host, out_fd, in_fd, offset, size, timeout) }
+        send_piped(host, out_fd, in_fd, offset, size, timeout)
     }
 }
 
-unsafe fn send_spliced(
+fn send_spliced(
     host: &Host,
     out_fd: c_int,
     in_fd: c_int,
-    offset: *mut libc::off_t,
+    offset: Option<&mut libc::off_t>,
     size: usize,
     timeout: f64,
     splice_pages: c_int,
@@ -696,12 +701,7 @@ unsafe fn send_spliced(
     let mut msg: libc::msghdr = unsafe { mem::zeroed() };
     msg.msg_iov = &raw mut iov;
     msg.msg_iovlen = 1;
-    let from = if offset.is_null() {
-        u64::MAX
-    } else {
-        // SAFETY: the caller's contract.
-        unsafe { *offset }.cast_unsigned()
-    };
+    let from = offset.as_deref().map_or(u64::MAX, |&at| at.cast_unsigned());
     #[expect(clippy::cast_possible_truncation, reason = "upstream's sqe.len = size")]
     let len = size as u32;
     let ret = request(host, timeout, |sqe| {
@@ -714,24 +714,23 @@ unsafe fn send_spliced(
                 splice_pages.cast_unsigned(),
             );
         }
-        // SAFETY: `sqe` is the event's own.
-        let sqe = unsafe { &mut *sqe };
         sqe.len = len;
         sqe.__bindgen_anon_5.splice_fd_in = in_fd;
         sqe.__bindgen_anon_1.addr2 = from;
     });
-    if ret > 0 && !offset.is_null() {
-        // SAFETY: the caller's contract.
-        unsafe { *offset += ret as libc::off_t };
+    if ret > 0
+        && let Some(offset) = offset
+    {
+        *offset += ret as libc::off_t;
     }
     ret
 }
 
-unsafe fn send_piped(
+fn send_piped(
     host: &Host,
     out_fd: c_int,
     in_fd: c_int,
-    offset: *mut libc::off_t,
+    offset: Option<&mut libc::off_t>,
     size: usize,
     timeout: f64,
 ) -> isize {
@@ -752,26 +751,19 @@ unsafe fn send_piped(
         // SAFETY: as above.
         unsafe { libc::close(write_end) };
     };
-    let start = if offset.is_null() {
-        0
-    } else {
-        // SAFETY: the caller's contract.
-        unsafe { *offset }
-    };
+    let start = offset.as_deref().copied();
     let mut total_sent = 0_usize;
     let mut event = Event::new(host).with_timeout(timeout);
     while total_sent < size {
         let to_send = (size - total_sent).min(pipe_size);
-        let from = if offset.is_null() {
-            -1
-        } else {
+        let from = start.map_or(-1, |start| {
             start + i64::try_from(total_sent).unwrap_or(i64::MAX)
-        };
+        });
         #[expect(clippy::cast_possible_truncation, reason = "at most the pipe size")]
         let nbytes = to_send as c_uint;
-        // SAFETY: a zeroed sqe is valid; the request completes before the next.
-        event.data = unsafe { mem::zeroed() };
-        // SAFETY: as above.
+        // The request completes before the next.
+        event.data = zeroed_sqe();
+        // SAFETY: the event's own sqe; the splice carries no pointers.
         unsafe { sys::swr_uring_prep_splice(event.sqe(), in_fd, from, write_end, -1, nbytes, 0) };
         let ret1 = event.execute(host);
         if ret1 <= 0 {
@@ -783,8 +775,7 @@ unsafe fn send_piped(
             set_errno(saved);
             return -1;
         }
-        // SAFETY: as above.
-        event.data = unsafe { mem::zeroed() };
+        event.data = zeroed_sqe();
         let spliced = c_uint::try_from(ret1).unwrap_or(c_uint::MAX);
         // SAFETY: as above.
         unsafe { sys::swr_uring_prep_splice(event.sqe(), read_end, -1, out_fd, -1, spliced, 0) };
@@ -804,9 +795,10 @@ unsafe fn send_piped(
         }
     }
     close_pipe();
-    if total_sent > 0 && !offset.is_null() {
-        // SAFETY: the caller's contract.
-        unsafe { *offset += libc::off_t::try_from(total_sent).unwrap_or(libc::off_t::MAX) };
+    if total_sent > 0
+        && let Some(offset) = offset
+    {
+        *offset += libc::off_t::try_from(total_sent).unwrap_or(libc::off_t::MAX);
     }
     total_sent.cast_signed()
 }
@@ -960,10 +952,10 @@ pub(crate) mod testing {
     extern "C" fn current() -> *mut c_void {
         ptr::dangling_mut()
     }
-    unsafe extern "C" fn instance() -> *mut Uring {
+    fn instance() -> *mut Uring {
         ENGINE.with(std::cell::Cell::get)
     }
-    unsafe extern "C" fn suspend(_coroutine: *mut c_void, event: *mut c_void) {
+    unsafe fn suspend(_coroutine: *mut c_void, event: *mut c_void) {
         let uring = ENGINE.with(std::cell::Cell::get);
         let event = event.cast::<Event>();
         // SAFETY: the test engine is live; the event is in the caller's frame.
@@ -982,12 +974,12 @@ pub(crate) mod testing {
             }
         }
     }
-    unsafe extern "C" fn resume(_coroutine: *mut c_void) {}
-    unsafe extern "C" fn event_running() -> bool {
+    unsafe extern "C-unwind" fn resume(_coroutine: *mut c_void) {}
+    fn event_running() -> bool {
         false
     }
-    unsafe extern "C" fn submit_failed() {}
-    unsafe extern "C" fn timeout_full(_fd: c_int) {}
+    fn submit_failed() {}
+    fn timeout_full(_fd: c_int) {}
     pub(crate) static HOST: Host = Host {
         current,
         instance,

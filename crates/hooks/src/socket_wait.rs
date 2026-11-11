@@ -64,7 +64,7 @@ impl Wait {
         self.0.with_state(|state| state.want = event);
     }
 
-    fn set_barrier(&self, event: u32, barrier: Option<(Barrier, *mut c_void)>) {
+    fn set_barrier(&self, event: u32, barrier: Option<Barrier>) {
         self.0.with_state(|state| {
             if let Some(slot) = state.barriers.get_mut(slot(event)) {
                 *slot = barrier;
@@ -133,48 +133,57 @@ impl Wait {
     }
 }
 
-/// `Socket::wait_event(event)` for the current coroutine, with `barrier` (and its
-/// state) retrying the transfer while it is installed. `buffer`, when not null, is
-/// a write's buffer slot, which may move to the socket's write buffer. True when
+/// `Socket::wait_event(event)` for the current coroutine. `buffer`, when not null,
+/// is a write's buffer slot, which may move to the socket's write buffer. True when
 /// woken with the socket open and no error.
 ///
 /// # Safety
-/// The barrier's state outlives the call; `buffer` is null or a live slot of
-/// `length` bytes.
-pub(crate) unsafe fn wait(
-    socket: Co,
-    event: u32,
-    barrier: Option<(Barrier, *mut c_void)>,
-    buffer: *mut *mut u8,
-    length: usize,
-) -> bool {
+/// `buffer` is null or a live slot of `length` bytes.
+pub(crate) unsafe fn wait(socket: Co, event: u32, buffer: *mut *mut u8, length: usize) -> bool {
+    let co = (NATIVE.current)();
+    !co.is_null() && Wait(socket).wait(co, event, buffer, length)
+}
+
+/// Clears the barrier [`wait_barrier`] installed, also when the wait unwinds.
+struct Installed(Wait, u32);
+
+impl Drop for Installed {
+    fn drop(&mut self) {
+        self.0.set_barrier(self.1, None);
+    }
+}
+
+/// [`wait_for`] with `barrier` retrying the transfer while it is installed: the
+/// ready callback calls it, and holds the coroutine while it returns true.
+pub(crate) fn wait_barrier(socket: Co, event: u32, barrier: &mut dyn FnMut() -> bool) -> bool {
     let co = (NATIVE.current)();
     if co.is_null() {
         return false;
     }
-    let wait = Wait(socket);
-    if barrier.is_none() {
-        return wait.wait(co, event, buffer, length);
-    }
-    wait.set_barrier(event, barrier);
-    let woke = wait.wait(co, event, buffer, length);
-    wait.set_barrier(event, None);
-    woke
+    let barrier: *mut (dyn FnMut() -> bool + '_) = barrier;
+    #[expect(
+        clippy::transmute_ptr_to_ptr,
+        reason = "a raw pointer cast cannot extend a trait object's lifetime"
+    )]
+    // SAFETY: only the lifetime changes. `Installed` uninstalls the barrier before
+    // this returns, while the borrow is still live, and only `ready` calls it meanwhile.
+    let barrier =
+        unsafe { core::mem::transmute::<*mut (dyn FnMut() -> bool + '_), Barrier>(barrier) };
+    let installed = Installed(Wait(socket), event);
+    installed.0.set_barrier(event, Some(barrier));
+    installed.0.wait(co, event, core::ptr::null_mut(), 0)
 }
 
 /// [`wait`] with no barrier and no buffer.
 pub(crate) fn wait_for(socket: Co, event: u32) -> bool {
-    // SAFETY: no barrier and no buffer.
-    unsafe { wait(socket, event, None, core::ptr::null_mut(), 0) }
+    // SAFETY: no buffer.
+    unsafe { wait(socket, event, core::ptr::null_mut(), 0) }
 }
 
 /// The readable (`event` read) or writable callback: the coroutine to resume, or
 /// null. Under a TLS wait the other direction's coroutine wakes; otherwise an
 /// installed barrier that keeps waiting holds the coroutine unless the peer hung up.
-///
-/// # Safety
-/// An installed barrier's state is live.
-pub(crate) unsafe fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
+pub(crate) fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
     let other = if event == READ { WRITE } else { READ };
     let (want, woken, barrier) = socket.with_state(|state| {
         let woken = if state.want == event {
@@ -191,10 +200,10 @@ pub(crate) unsafe fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
     if want != 0 {
         return woken;
     }
-    if let Some((barrier, barrier_state)) = barrier {
-        // SAFETY: the installed barrier with its live state; it does not touch the
-        // state's barriers or bindings.
-        if unsafe { barrier(barrier_state) } && !hup {
+    if let Some(barrier) = barrier {
+        // SAFETY: an installed barrier is the live, exclusive borrow its suspended
+        // `wait_barrier` lent; it does not touch the state's barriers or bindings.
+        if unsafe { (*barrier)() } && !hup {
             return core::ptr::null_mut();
         }
     }
@@ -264,22 +273,21 @@ mod tests {
     fn wake_on_ready() {
         ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
             let bound = socket.with_state(|state| state.co(event));
-            let woken = unsafe { ready(socket, event, false) };
+            let woken = ready(socket, event, false);
             log(format!("woken:{}", !woken.is_null() && woken == bound));
         })));
     }
 
-    fn wait_on(socket: &mut TestSocket, event: u32, barrier: Option<Barrier>) -> bool {
-        let mut slot = core::ptr::null_mut();
-        unsafe {
-            wait(
-                socket.co(),
-                event,
-                barrier.map(|b| (b, core::ptr::null_mut())),
-                &raw mut slot,
-                4,
-            )
+    fn wait_on(
+        socket: &mut TestSocket,
+        event: u32,
+        barrier: Option<&mut dyn FnMut() -> bool>,
+    ) -> bool {
+        if let Some(barrier) = barrier {
+            return wait_barrier(socket.co(), event, barrier);
         }
+        let mut slot = core::ptr::null_mut();
+        unsafe { wait(socket.co(), event, &raw mut slot, 4) }
     }
 
     fn effects() -> Vec<String> {
@@ -354,15 +362,12 @@ mod tests {
 
     #[test]
     fn a_barrier_that_keeps_waiting_holds_the_coroutine() {
-        unsafe extern "C" fn again(_: *mut c_void) -> bool {
-            true
-        }
         let mut s = socket(0);
         ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
-            let woken = unsafe { ready(socket, event, false) };
+            let woken = ready(socket, event, false);
             log(format!("woken:{}", !woken.is_null()));
         })));
-        assert!(wait_on(&mut s, READ, Some(again)));
+        assert!(wait_on(&mut s, READ, Some(&mut || true)));
         assert_eq!(
             effects(),
             ["set:512", "yield:512", "woken:false", "remove:512"]

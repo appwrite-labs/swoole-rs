@@ -37,7 +37,7 @@ use swoole_rs_process::workers::ops::{
 };
 
 use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
-use crate::commands::CommandFn;
+use crate::commands::CommandHandler;
 use crate::{view, worker_methods};
 
 /// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head.
@@ -61,7 +61,7 @@ struct Context {
     /// The worker being restarted, or the message being read.
     worker: *mut WorkerRecord,
     task: *const EventData,
-    handler: CommandFn,
+    handler: Option<CommandHandler>,
     wait_status: c_int,
     wait_error: c_int,
     msg: EventData,
@@ -93,10 +93,7 @@ impl Context {
             serv,
             worker: null_mut(),
             task: null(),
-            handler: CommandFn {
-                invoke: null(),
-                ctx: null_mut(),
-            },
+            handler: None,
             wait_status: 0,
             wait_error: 0,
             msg: EventData {
@@ -147,8 +144,16 @@ impl Context {
         // SAFETY: the ops reading it run with the message being read.
         unsafe { &*self.task }
     }
-    fn registry(&self) -> *mut registry::WorkerRegistry {
-        self.config().worker_registry.cast()
+    /// The server's worker registry.
+    fn registry(&self) -> &mut registry::WorkerRegistry {
+        let registry = self.config().worker_registry.cast();
+        // SAFETY: the server's live registry, which only the manager writes.
+        unsafe { &mut *registry }
+    }
+    /// The event pool's reload task, for the ops that run while the manager reloads.
+    fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {
+        // SAFETY: the reload task the manager started.
+        unsafe { &mut *self.pool().reload_task }
     }
 }
 
@@ -161,10 +166,8 @@ const REGISTRY_USER: c_int = 2;
 /// `Factory::kill_event_workers()` (`origin` `kill_event_workers`) and
 /// `kill_user_workers()`: SIGTERM each worker of `category`, then wait for each.
 fn kill_workers(ctx: &Context, category: c_int, origin: &core::ffi::CStr) {
-    // SAFETY: the server's live registry.
-    let registry = unsafe { &*ctx.registry() };
-    // SAFETY: kill(2) has no memory preconditions.
-    let kill = |pid, signo| unsafe { libc::kill(pid, signo) };
+    let registry = ctx.registry();
+    let kill = swoole_rs_process::os::kill;
     let wait = |pid| swoole_waitpid(pid, None, 0);
     let warn = |pid| log::sys_warning(origin, format_args!("waitpid({pid}) failed"));
     registry.terminate(category, libc::SIGTERM, kill, wait, warn);
@@ -271,12 +274,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
     let (pool, task_pool) = (ctx.workers().event_pool, ctx.workers().task_pool);
-    let callback = |index| {
-        if let Some(slot) = ctx.state().callbacks.slot(index) {
-            // SAFETY: the manager and reload callbacks take the server.
-            unsafe { slot.call_server(serv) };
-        }
-    };
+    let callback = |index| ctx.state().callbacks.call_server(index, ctx.server());
     let registry = ctx.registry();
     match op {
         OP_CREATE_EVENT_WORKERS => {
@@ -347,12 +345,11 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the server's `count` worker records.
             let workers: &[WorkerRecord] =
                 unsafe { core::slice::from_raw_parts(workers, count as usize) };
-            // SAFETY: the reload task the manager started.
-            unsafe { &mut *ctx.pool().reload_task }.add_workers(workers);
+            ctx.reload_task().add_workers(workers);
         }
         OP_RELOAD_KILL_ALL => {
-            // SAFETY: the reload task the manager started.
-            unsafe { &mut *ctx.pool().reload_task }.kill_all(libc::SIGTERM, methods::reload_warn);
+            ctx.reload_task()
+                .kill_all(libc::SIGTERM, methods::reload_warn);
         }
         OP_RESTART_WORKER => {
             let status = exit_status(arg);
@@ -367,20 +364,19 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_REAP_DETACHED => {
-            // SAFETY: the server's live registry.
-            return Some(u64::from(unsafe { (*registry).reap_detached(pid_of(arg)) }));
+            return Some(u64::from(registry.reap_detached(pid_of(arg))));
         }
         OP_UNREGISTER_PID => {
-            // SAFETY: the server's live registry.
-            unsafe { (*registry).unregister(pid_of(arg)) };
+            registry.unregister(pid_of(arg));
         }
         OP_HAS_COMMAND => {
             let id = i32::from(ctx.task().info.server_fd);
             let handler = crate::commands::handler(ctx.state(), id);
-            if let Some(handler) = handler {
+            let found = handler.is_some();
+            if found {
                 ctx.handler = handler;
             }
-            return Some(u64::from(handler.is_some()));
+            return Some(u64::from(found));
         }
         LOG_UNKNOWN_COMMAND => {
             let id = ctx.task().info.server_fd;
@@ -415,12 +411,8 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let pid = match op {
         OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg).cast()),
         OP_SPAWN_USER_WORKER => {
-            // SAFETY: the server's live registry.
-            let pending = unsafe { (*ctx.registry()).pending().as_ptr() };
             // The manager spawns the pending workers by index, below their count.
-            let slot = pending.wrapping_add(index(arg));
-            // SAFETY: as above.
-            let worker = unsafe { *slot };
+            let &worker = ctx.registry().pending().get(index(arg))?;
             spawn(RUN_SPAWN_USER_WORKER, worker)
         }
         OP_WORKER_BY_PID => {
@@ -478,8 +470,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_MANAGER_BARRIER => {
-            // SAFETY: the live server's barrier, initialized at startup.
-            swoole_rs_locks::barrier_wait(unsafe { crate::server_object::barrier(ctx.serv, true) });
+            swoole_rs_locks::barrier_wait(crate::server_object::barrier(ctx.server(), true));
             0
         }
         OP_HAS_USER => u64::from(!ctx.state().text(1).is_empty()),
@@ -514,27 +505,21 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(ctx.stop.worker_id)
         }
         OP_DETACH_STOPPED => {
-            // SAFETY: the server's live registry.
-            unsafe { (*ctx.registry()).detach(ctx.stop.pid) };
+            ctx.registry().detach(ctx.stop.pid);
             0
         }
         OP_COMMAND_REPLY => {
             let task = ctx.task();
-            let message = (task.data.as_ptr().cast(), task.info.len as usize);
+            let message = task
+                .data
+                .get(..task.info.len as usize)
+                .unwrap_or(&task.data);
             let state = ctx.state();
             let sock = crate::commands::reply_socket(state, ctx.server())?;
             let bus = crate::master_ops::server_message_bus(state);
-            // SAFETY: the handler OP_HAS_COMMAND found and the command's message.
-            unsafe {
-                crate::commands::answer(
-                    ctx.handler,
-                    ctx.serv,
-                    message,
-                    (bus, sock),
-                    task.info.fd,
-                    0,
-                )
-            };
+            let handler = ctx.handler.as_ref()?;
+            let fd = task.info.fd;
+            crate::commands::answer(handler, ctx.server(), message, (bus, sock), fd, 0);
             0
         }
         _ => return None,

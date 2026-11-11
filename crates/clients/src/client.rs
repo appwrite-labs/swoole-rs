@@ -416,7 +416,7 @@ impl Handle {
     }
 
     fn event(self, op: c_int, events: c_int) -> c_int {
-        ops::event(self.fields(), op, events)
+        ops::event(self, op, events)
     }
 
     /// `Socket::recv`: one read, through the TLS session when there is one.
@@ -663,9 +663,7 @@ impl Handle {
         // SAFETY: the callers' recv just filled them: the shared buffer from its
         // start, the input buffer after its content (its free tail bounds both).
         unsafe { buffer.set_len(length) };
-        let view = buffer.view();
-        // SAFETY: the buffer's `length` bytes.
-        unsafe { swoole_rs_http_ffi::swr_v1_http_proxy_accept(view.as_ptr().cast(), view.len()) }
+        swoole_rs_http_ffi::proxy_accept(buffer.view())
     }
 
     fn set_timeout(self, timeout: f64) {
@@ -781,9 +779,7 @@ pub extern "C" fn swr_v1_clients_listen(
     this.get().events.set(events);
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `sw_tg_buffer()`, whole: a sync proxy handshake reads into it.
 fn shared_buffer() -> Tail {
@@ -796,16 +792,7 @@ fn shared_buffer() -> Tail {
     }
 }
 
-fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
-}
+use swoole_rs_corebase::set_errno;
 
 fn is_stream(kind: c_int) -> bool {
     matches!(kind, 1 | 3 | 5)
@@ -1360,7 +1347,7 @@ fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
         this.set(HOST_PRESET, true);
     }
     let resolve = !this.flag(ASYNC);
-    if !ops::assign(this.fields(), host, port, resolve) {
+    if !ops::assign(this, host, port, resolve) {
         if !this.flag(DNS_COMPLETED) && log::last_error() == ERROR_BAD_HOST_ADDR {
             this.set(WAIT_DNS, true);
         } else {
@@ -1438,13 +1425,13 @@ fn tcp_connect_sync(
 ) -> c_int {
     this.set_timeout(timeout);
     if timeout > 0.0 {
-        ops::kernel_timeout(this.fields(), timeout);
+        ops::kernel_timeout(this, timeout);
     }
     if inet_addr(this, host, port) < 0 {
         return ERR;
     }
     if nonblock {
-        let rc = ops::connect(this.fields(), CONNECT_ASYNC);
+        let rc = ops::connect(this, CONNECT_ASYNC);
         if rc == SW_READY {
             return OK;
         }
@@ -1453,7 +1440,7 @@ fn tcp_connect_sync(
         }
         return ERR;
     }
-    let ret = ops::connect(this.fields(), CONNECT_SYNC);
+    let ret = ops::connect(this, CONNECT_SYNC);
     if ret < 0 {
         return ret;
     }
@@ -1525,7 +1512,7 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
         return dns_lookup(this);
     }
     let ret = loop {
-        let ret = ops::connect(this.fields(), CONNECT_RAW);
+        let ret = ops::connect(this, CONNECT_RAW);
         let error = errno();
         if ret < 0 && error == libc::EINTR {
             continue;
@@ -1569,7 +1556,7 @@ fn udp_connect(
     let is_async = this.flag(ASYNC);
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
-        ops::kernel_timeout(this.fields(), timeout);
+        ops::kernel_timeout(this, timeout);
     }
     this.get().sock_flags.set(udp_connect);
     if inet_addr(this, host, port) < 0 {
@@ -1610,7 +1597,7 @@ fn udp_connect(
         enable_dtls(this);
     }
     if udp_connect == 1 {
-        if ops::connect(this.fields(), CONNECT_RAW) != 0 {
+        if ops::connect(this, CONNECT_RAW) != 0 {
             this.set(ACTIVE, false);
             this.mark_removed();
             close(this);
@@ -1667,8 +1654,8 @@ fn bind_unix(this: Handle) -> c_int {
 #[cfg(not(test))]
 mod ops {
     use super::{
-        CONNECT_ASYNC, CONNECT_SYNC, ClientRecord, ERR, EVENT_ADD, EVENT_DEL, EVENT_SET, Socket,
-        SocketRecord, address_of,
+        CONNECT_ASYNC, CONNECT_SYNC, EVENT_ADD, EVENT_DEL, EVENT_SET, Handle, SocketRecord,
+        address_of,
     };
     use core::ffi::{c_char, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
@@ -1680,12 +1667,8 @@ mod ops {
 
     /// `socket->set_kernel_timeout(timeout)`, the write timeout only once the
     /// read one is set.
-    pub(super) fn kernel_timeout(record: &ClientRecord, timeout: f64) {
-        // SAFETY: a constructed client's live socket.
-        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
-            return;
-        };
-        socket.edit(|socket| {
+    pub(super) fn kernel_timeout(this: Handle, timeout: f64) {
+        this.socket().edit(|socket| {
             if socket_upstream::socket_set_kernel_read_timeout(socket, timeout) {
                 socket_upstream::socket_set_kernel_write_timeout(socket, timeout);
             }
@@ -1693,34 +1676,22 @@ mod ops {
     }
 
     /// `server_addr.assign(socket_type, host, port, resolve)`; `host` is NUL-terminated.
-    pub(super) fn assign(
-        record: &mut ClientRecord,
-        host: *const c_char,
-        port: c_int,
-        resolve: bool,
-    ) -> bool {
-        // SAFETY: a constructed client's live socket.
-        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
-            return false;
-        };
-        let kind = socket.read(|socket| socket.socket_type);
+    pub(super) fn assign(this: Handle, host: *const c_char, port: c_int, resolve: bool) -> bool {
+        let kind = this.socket_type();
         // SAFETY: the caller's NUL-terminated host.
         let length = unsafe { libc::strlen(host) };
         // SAFETY: as above.
         let Some(address) = (unsafe { address_of(kind, host, length, port, resolve) }) else {
             return false;
         };
-        record.server_addr = address;
+        this.fields().server_addr = address;
         true
     }
 
     /// Connects the socket to `server_addr`, by `mode` (`CONNECT_*`); errno is the call's.
-    pub(super) fn connect(record: &ClientRecord, mode: c_int) -> c_int {
-        let address = &record.server_addr;
-        // SAFETY: a constructed client's live socket.
-        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
-            return ERR;
-        };
+    pub(super) fn connect(this: Handle, mode: c_int) -> c_int {
+        let socket = this.socket();
+        let address = &this.fields().server_addr;
         match mode {
             CONNECT_ASYNC => {
                 socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
@@ -1728,16 +1699,16 @@ mod ops {
             CONNECT_SYNC => socket_upstream::connect_sync(socket, address),
             _ => {
                 let fd = socket.fd();
-                let storage = (&raw const record.server_addr.addr).cast();
+                let storage = (&raw const address.addr).cast();
                 // SAFETY: the address's storage holds `len` bytes of sockaddr.
-                unsafe { libc::connect(fd, storage, record.server_addr.len) }
+                unsafe { libc::connect(fd, storage, address.len) }
             }
         }
     }
 
     /// The reactor's `swoole_event_*` (`EVENT_*`) on the socket.
-    pub(super) fn event(record: &ClientRecord, op: c_int, events: c_int) -> c_int {
-        let socket = record.socket;
+    pub(super) fn event(this: Handle, op: c_int, events: c_int) -> c_int {
+        let socket = this.socket_ptr();
         match op {
             // SAFETY: the live socket on the thread's reactor.
             EVENT_ADD => unsafe { event_api::swoole_event_add(socket, events) },
@@ -1751,14 +1722,10 @@ mod ops {
     }
 
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`.
-    pub(super) fn socket_error(record: &ClientRecord, error: &mut c_int) -> c_int {
+    pub(super) fn socket_error(this: Handle, error: &mut c_int) -> c_int {
         #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
         let mut length = size_of::<c_int>() as libc::socklen_t;
-        // SAFETY: a constructed client's live socket.
-        let Some(socket) = (unsafe { Socket::from_ptr(record.socket) }) else {
-            return ERR;
-        };
-        let fd = socket.fd();
+        let fd = this.socket().fd();
         // SAFETY: `error` holds an int and `length` says so.
         unsafe {
             libc::getsockopt(
@@ -1787,9 +1754,10 @@ unsafe fn address_of(
     port: c_int,
     resolve: bool,
 ) -> Option<SocketAddress> {
-    // SAFETY: an all-zero sockaddr union, length and type, as `Address` starts.
-    let mut address: SocketAddress = unsafe { core::mem::zeroed() };
-    address.kind = kind;
+    let mut address = SocketAddress {
+        kind,
+        ..SocketAddress::default()
+    };
     let resolve = resolve
         .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
     // SAFETY: the local record's union and length, and the caller's host.
@@ -2137,7 +2105,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
         return OK;
     }
     let mut error = 0;
-    let ret = ops::socket_error(this.fields(), &mut error);
+    let ret = ops::socket_error(this, &mut error);
     log::set_last_error(error);
     if ret < 0 {
         let fd = this.socket().fd();

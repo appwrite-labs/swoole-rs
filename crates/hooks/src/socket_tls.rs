@@ -3,9 +3,9 @@
 //! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
-use crate::connect::{TlsOps, ssl_handshake};
+use crate::connect::{Handshaking, ssl_handshake};
 use crate::socket_wait::wait_for;
-use core::ffi::{CStr, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::log;
 use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
@@ -147,11 +147,6 @@ impl Co {
     /// this socket, then the socket is handshaked. In a coroutine.
     #[must_use]
     pub fn ssl_handshake(self) -> bool {
-        let timer = Timer::new(self, READ, self.read_timeout());
-        let mut state = Handshake {
-            socket: self,
-            timer,
-        };
         let owner = self.tls_owner();
         let fields = if owner.is_null() {
             swoole_rs_tls::OwnedTlsFields::default()
@@ -159,22 +154,14 @@ impl Co {
             // SAFETY: the live owner.
             unsafe { owner_fields(owner) }
         };
-        let (mode, create, step) = steps(self);
-        let ops = TlsOps {
-            socket: (&raw mut state).cast(),
-            mode,
+        let mut state = Handshake {
+            socket: self,
+            timer: Timer::new(self, READ, self.read_timeout()),
             handshaked: self.ssl_handshaked(),
             context_ready: !fields.context.is_null(),
             verify_peer: fields.verify_peer != 0,
-            available: tls_available,
-            set_err: tls_set_err,
-            context_create: tls_context_create,
-            create,
-            step,
-            wait: tls_wait,
-            verify: tls_verify,
         };
-        let done = ssl_handshake(&ops);
+        let done = ssl_handshake(&mut state);
         state.timer.stop();
         if done {
             self.set_ssl_handshaked(true);
@@ -183,128 +170,121 @@ impl Co {
     }
 }
 
-/// What `ssl_handshake`'s steps act on: the socket and the handshake's timer.
+/// What `ssl_handshake`'s steps act on: the socket, the handshake's timer and the
+/// socket's TLS state when it began.
 struct Handshake {
     socket: Co,
     timer: Timer,
+    handshaked: bool,
+    context_ready: bool,
+    verify_peer: bool,
 }
 
-/// # Safety
-/// `context` is the live [`Handshake`] of the call.
-unsafe fn handshake<'a>(context: *mut c_void) -> &'a mut Handshake {
-    // SAFETY: as the caller promises.
-    unsafe { &mut *context.cast::<Handshake>() }
-}
-
-/// The handshake's socket.
-///
-/// # Safety
-/// As [`handshake`].
-unsafe fn handshake_socket(context: *mut c_void) -> Co {
-    // SAFETY: as the caller promises.
-    unsafe { handshake(context) }.socket
-}
-
-unsafe extern "C" fn tls_available(context: *mut c_void) -> bool {
-    // SAFETY: the handshake's live socket.
-    available(unsafe { handshake_socket(context) }, RDWR)
-}
-
-unsafe extern "C" fn tls_set_err(context: *mut c_void, error: c_int) {
-    // SAFETY: the handshake's live socket.
-    let socket = unsafe { handshake_socket(context) };
-    if error < 0 {
-        default_err(socket, log::last_error());
-    } else {
-        set_err(socket, error);
-    }
-}
-
-unsafe extern "C" fn tls_context_create(context: *mut c_void) -> bool {
-    // SAFETY: the handshake's live socket, which has a context.
-    unsafe { handshake_socket(context) }.ssl_context_create()
-}
-
-unsafe extern "C" fn tls_create(context: *mut c_void) -> bool {
-    // SAFETY: the handshake's live socket.
-    let socket = unsafe { handshake_socket(context) };
-    socket.create_session(socket.tls_owner())
-}
-
-unsafe extern "C" fn tls_step(context: *mut c_void) -> c_int {
-    // SAFETY: the handshake's live socket.
-    let socket = unsafe { handshake_socket(context) };
-    let server = socket.ssl_is_server();
-    let step = socket.with_network(|network| {
-        if server {
-            socket_ssl_accept(network)
-        } else {
-            socket_ssl_connect(network)
-        }
-    });
-    match step {
-        None => return -1,
-        Some(accepted) if server => return accepted,
-        Some(connected) if connected < 0 => return -1,
-        Some(_) => {}
-    }
-    let state = socket.net(|record| record.tls.state).unwrap_or_default();
-    c_int::try_from(state).unwrap_or(c_int::MAX)
-}
-
-/// A handshake step's callback.
-type Step<T> = unsafe extern "C" fn(*mut c_void) -> T;
-
-/// The handshake's mode with its session and step callbacks; a `UringSocket`'s
-/// run through the ring.
-fn steps(socket: Co) -> (c_int, Step<bool>, Step<c_int>) {
+impl Handshake {
+    /// Whether the socket is a `UringSocket`, whose handshake runs through the ring.
     #[cfg(feature = "iouring")]
-    if crate::uring_socket::of(socket).is_some() {
-        return (2, uring_create, uring_step);
+    fn uring(&self) -> bool {
+        crate::uring_socket::of(self.socket).is_some()
     }
-    (c_int::from(socket.ssl_is_server()), tls_create, tls_step)
-}
 
-/// A `UringSocket`'s session, over the ring's memory BIOs.
-#[cfg(feature = "iouring")]
-unsafe extern "C" fn uring_create(context: *mut c_void) -> bool {
-    // SAFETY: the handshake's live socket.
-    let socket = unsafe { handshake_socket(context) };
-    // SAFETY: the handshake's live socket.
-    let create = || unsafe { tls_create(context) };
-    // SAFETY: as above; `create` makes its session.
-    unsafe { crate::uring_socket::tls_session(socket, create) }
-}
-
-/// A `UringSocket`'s step, through the ring.
-#[cfg(feature = "iouring")]
-unsafe extern "C" fn uring_step(context: *mut c_void) -> c_int {
-    // SAFETY: the handshake's live socket.
-    let socket = unsafe { handshake_socket(context) };
-    // SAFETY: as above, with its session.
-    unsafe { crate::uring_socket::tls_step(socket) }
-}
-
-unsafe extern "C" fn tls_wait(context: *mut c_void, fresh: bool) -> bool {
-    // SAFETY: the handshake of the call.
-    let state = unsafe { handshake(context) };
-    let socket = state.socket;
-    let waited = |timer: &mut Timer| timer.start() && wait_for(socket, READ);
-    if !fresh {
-        return waited(&mut state.timer);
+    /// The socket's session over its own context.
+    fn create_session(&self) -> bool {
+        self.socket.create_session(self.socket.tls_owner())
     }
-    let mut timer = Timer::new(socket, READ, socket.read_timeout());
-    let ready = waited(&mut timer);
-    timer.stop();
-    ready
 }
 
-unsafe extern "C" fn tls_verify(context: *mut c_void) -> bool {
-    // SAFETY: the handshake's live socket.
-    let socket = unsafe { handshake_socket(context) };
-    // SAFETY: the live owner; verified only with a context.
-    let fields = unsafe { owner_fields(socket.tls_owner()) };
-    socket.ssl_verify(fields.allow_self_signed != 0)
+impl Handshaking for Handshake {
+    fn mode(&self) -> c_int {
+        #[cfg(feature = "iouring")]
+        if self.uring() {
+            return 2;
+        }
+        c_int::from(self.socket.ssl_is_server())
+    }
+
+    fn handshaked(&self) -> bool {
+        self.handshaked
+    }
+
+    fn context_ready(&self) -> bool {
+        self.context_ready
+    }
+
+    fn verify_peer(&self) -> bool {
+        self.verify_peer
+    }
+
+    fn available(&mut self) -> bool {
+        available(self.socket, RDWR)
+    }
+
+    fn set_err(&mut self, error: c_int) {
+        if error < 0 {
+            default_err(self.socket, log::last_error());
+        } else {
+            set_err(self.socket, error);
+        }
+    }
+
+    fn context_create(&mut self) -> bool {
+        self.socket.ssl_context_create()
+    }
+
+    /// A `UringSocket`'s session is over the ring's memory BIOs.
+    fn create(&mut self) -> bool {
+        #[cfg(feature = "iouring")]
+        if self.uring() {
+            // SAFETY: the handshake's live socket; `create_session` makes its session.
+            return unsafe {
+                crate::uring_socket::tls_session(self.socket, || self.create_session())
+            };
+        }
+        self.create_session()
+    }
+
+    /// A `UringSocket`'s step goes through the ring.
+    fn step(&mut self) -> c_int {
+        let socket = self.socket;
+        #[cfg(feature = "iouring")]
+        if self.uring() {
+            // SAFETY: the handshake's live socket, with its session.
+            return unsafe { crate::uring_socket::tls_step(socket) };
+        }
+        let server = socket.ssl_is_server();
+        let step = socket.with_network(|network| {
+            if server {
+                socket_ssl_accept(network)
+            } else {
+                socket_ssl_connect(network)
+            }
+        });
+        match step {
+            None => return -1,
+            Some(accepted) if server => return accepted,
+            Some(connected) if connected < 0 => return -1,
+            Some(_) => {}
+        }
+        let state = socket.net(|record| record.tls.state).unwrap_or_default();
+        c_int::try_from(state).unwrap_or(c_int::MAX)
+    }
+
+    fn wait(&mut self, fresh: bool) -> bool {
+        let socket = self.socket;
+        let waited = |timer: &mut Timer| timer.start() && wait_for(socket, READ);
+        if !fresh {
+            return waited(&mut self.timer);
+        }
+        let mut timer = Timer::new(socket, READ, socket.read_timeout());
+        let ready = waited(&mut timer);
+        timer.stop();
+        ready
+    }
+
+    fn verify(&mut self) -> bool {
+        // SAFETY: the live owner; verified only with a context.
+        let fields = unsafe { owner_fields(self.socket.tls_owner()) };
+        self.socket.ssl_verify(fields.allow_self_signed != 0)
+    }
 }
 
 #[cfg(test)]

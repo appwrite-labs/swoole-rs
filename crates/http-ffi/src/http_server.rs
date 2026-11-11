@@ -2,11 +2,9 @@
 //! their upstream (Itanium) symbols when the hybrid links this crate
 //! (`upstream-symbols`).
 use std::ffi::{c_char, c_int};
+use std::mem::MaybeUninit;
 
-use crate::{
-    HttpSpan, swr_v1_http_boundary, swr_v1_http_url_capacity, swr_v1_http_url_decode,
-    swr_v1_http_url_encode,
-};
+use crate::{HttpSpan, swr_v1_http_boundary};
 
 /// `const char *get_status_message(int code)`.
 #[cfg_attr(
@@ -79,11 +77,15 @@ pub unsafe extern "C" fn parse_multipart_boundary(
     unsafe(export_name = "_ZN6swoole11http_server10url_decodeEPcm")
 )]
 pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
-    let mut written = 0;
-    // SAFETY: as the caller guarantees; `written` is a live local.
-    if unsafe { swr_v1_http_url_decode(str.cast(), len, Some(&mut written)) } != 0 {
-        // A null buffer: upstream's loop writes through it.
+    // A null buffer: upstream's loop writes through it.
+    if str.is_null() || len >= isize::MAX as usize {
         std::process::abort();
+    }
+    // SAFETY: non-null, `len + 1 <= isize::MAX`; the caller lends that many writable bytes.
+    let buffer = unsafe { std::slice::from_raw_parts_mut(str.cast::<u8>(), len + 1) };
+    let written = swoole_rs_http::url_decode(buffer.get_mut(..len).unwrap_or_default());
+    if let Some(nul) = buffer.get_mut(written) {
+        *nul = 0;
     }
     written
 }
@@ -100,18 +102,20 @@ pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
 )]
 #[must_use]
 pub unsafe extern "C" fn url_encode(str: *const c_char, len: usize) -> *mut c_char {
-    let (mut capacity, mut written) = (0, 0);
-    // SAFETY: as the caller guarantees; `capacity` is a live local.
-    if unsafe { swr_v1_http_url_capacity(str.cast(), len, Some(&mut capacity)) } != 0 {
+    // SAFETY: as the caller guarantees.
+    let Ok(input) = (unsafe { crate::bytes(str.cast(), len) }) else {
         std::process::abort();
-    }
-    let result = swoole_rs_corebase::sw_malloc(capacity).cast::<u8>();
+    };
+    let Ok(capacity) = swoole_rs_http::url_capacity(input) else {
+        std::process::abort();
+    };
+    let result = swoole_rs_corebase::sw_malloc(capacity).cast::<MaybeUninit<u8>>();
     if result.is_null() {
         std::process::abort();
     }
     // SAFETY: `result` holds `capacity` bytes, disjoint from the input.
-    if unsafe { swr_v1_http_url_encode(str.cast(), len, result, capacity, Some(&mut written)) } != 0
-    {
+    let output = unsafe { std::slice::from_raw_parts_mut(result, capacity) };
+    if swoole_rs_http::url_encode(input, output).is_err() {
         std::process::abort();
     }
     result.cast()

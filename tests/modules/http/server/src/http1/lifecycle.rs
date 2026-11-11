@@ -1575,16 +1575,7 @@ unsafe extern "C" fn process_on_start(_: *mut c_void, serv: *mut c_void) {
     // command tests
     clear_last_error();
     let message = crate::TEST_STR;
-    // SAFETY: the server's state, the server and `message`'s bytes.
-    unsafe {
-        swoole_rs_server::swr_v1_server_command_result(
-            &*serv.state().cast::<swoole_rs_server::ServerState>(),
-            serv.0,
-            9999,
-            message.as_ptr().cast(),
-            message.len(),
-        );
-    }
+    swoole_rs_server::swr_v1_server_command_result(serv.view(), 9999, message.as_bytes());
     check(
         last_error() == SW_ERROR_SERVER_INVALID_COMMAND,
         "ASSERT_ERREQ(SW_ERROR_SERVER_INVALID_COMMAND)",

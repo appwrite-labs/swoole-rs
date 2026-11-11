@@ -141,8 +141,10 @@ pub(crate) unsafe fn swap_in(ctx: *mut Context) {
     let swap = CURRENT.load(Ordering::Acquire).cast_const();
     // SAFETY: this thread holds the baton, so the record is its alone.
     unsafe { (*thread).swap = swap };
-    // SAFETY: a live thread record.
-    let baton = unsafe { &raw const (*thread).baton };
+    let baton = thread
+        .wrapping_byte_add(core::mem::offset_of!(Thread, baton))
+        .cast::<Baton>()
+        .cast_const();
     CURRENT.store(baton.cast_mut(), Ordering::Release);
     // SAFETY: the baton lives as long as its record; the activating thread's is static.
     unsafe { (*baton).post() };

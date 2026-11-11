@@ -918,7 +918,11 @@ pub mod co {
     ) {
         // SAFETY: per the caller.
         let socket = unsafe { handle(socket) };
-        // SAFETY: per the caller.
-        unsafe { swoole_rs_hooks::socket_extra::set_close_hook(socket, hook, arg) };
+        swoole_rs_hooks::socket_extra::set_close_hook(
+            socket,
+            // SAFETY: per the caller, `hook` takes `arg` and the socket until it goes,
+            // which is when this runs.
+            Box::new(move |owner| unsafe { hook(arg, owner) }),
+        );
     }
 }

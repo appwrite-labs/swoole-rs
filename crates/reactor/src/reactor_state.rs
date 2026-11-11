@@ -126,6 +126,28 @@ pub struct ReactorPrepared {
     pub handlers: *mut Handlers,
 }
 
+impl ReactorPrepared {
+    /// The views of the `Reactor` at `reactor`, as its head holds them: a `Reactor`
+    /// is its state, so they are the addresses of the state's parts. Computing
+    /// them reads nothing; using them needs a live reactor.
+    #[must_use]
+    pub fn of(reactor: *const c_void) -> Self {
+        let owner = reactor.cast::<ReactorState>().cast_mut();
+        Self {
+            owner,
+            fields: owner
+                .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
+                .cast(),
+            registry: owner
+                .wrapping_byte_add(std::mem::offset_of!(ReactorState, registry))
+                .cast(),
+            handlers: owner
+                .wrapping_byte_add(std::mem::offset_of!(ReactorState, handlers))
+                .cast(),
+        }
+    }
+}
+
 /// `Reactor::type_` for a requested type (`Reactor::Type`: auto 0, epoll 1, kqueue 2,
 /// poll 3), and the backend that opens for it: auto picks epoll, else kqueue when
 /// `SwooleG.enable_kqueue`, else poll; a type not compiled in opens poll.
