@@ -109,17 +109,16 @@ pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandFn> {
 /// which is then forgotten.
 ///
 /// # Safety
-/// `state` is live, `serv` its server, and `message` holds `length` bytes. The
+/// `serv` is `state`'s server, and `message` holds `length` bytes. The
 /// callback may resume a coroutine: this frame owns nothing that needs a drop then.
 pub unsafe fn swr_v1_server_command_result(
-    state: *const ServerState,
+    state: &ServerState,
     serv: *mut c_void,
     request_id: i64,
     message: *const c_char,
     length: usize,
 ) {
-    // SAFETY: the caller lends a live server.
-    let Some(callback) = commands(unsafe { &*state }).callbacks.remove(&request_id) else {
+    let Some(callback) = commands(state).callbacks.remove(&request_id) else {
         let m = format_args!("Invalid command result[request_id={request_id}]");
         return error(
             SW_LOG_ERROR,
@@ -593,13 +592,7 @@ mod tests {
             vec![2]
         );
         unsafe {
-            swr_v1_server_command_result(
-                &raw const s.state,
-                core::ptr::null_mut(),
-                2,
-                c"pong".as_ptr(),
-                4,
-            );
+            swr_v1_server_command_result(&s.state, core::ptr::null_mut(), 2, c"pong".as_ptr(), 4);
         }
         assert_eq!(out, b"pong");
         assert!(

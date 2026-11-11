@@ -14,17 +14,16 @@ pub unsafe extern "C" fn swr_v1_socks_transition(
     method: u8,
     data: *const u8,
     length: usize,
-    result: *mut SocksTransition,
+    result: Option<&mut SocksTransition>,
 ) -> i32 {
-    if result.is_null() {
+    let Some(result) = result else {
         return -1;
-    }
+    };
     // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
     let Some(response) = (unsafe { crate::input(data, length) }) else {
         return -1;
     };
-    // SAFETY: `result` is non-null (checked above), aligned and writable per the export's contract.
-    unsafe { result.write(socks_transition(state, method, response)) };
+    *result = socks_transition(state, method, response);
     0
 }
 
@@ -80,20 +79,19 @@ pub unsafe extern "C" fn swr_v1_socks_connect(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_socks_negotiate(
     has_user: u8,
-    method: *mut u8,
+    method: Option<&mut u8>,
     output: *mut u8,
     capacity: usize,
 ) -> i64 {
-    if method.is_null() {
+    let Some(method) = method else {
         return -1;
-    }
+    };
     // SAFETY: `output` lends `capacity` exclusive writable bytes, disjoint from `method`.
     let Some(selected) = socks_negotiate(has_user != 0, unsafe { crate::output(output, capacity) })
     else {
         return -1;
     };
-    // SAFETY: `method` is non-null (checked above), aligned and writable per the export's contract.
-    unsafe { method.write(selected) };
+    *method = selected;
     3
 }
 

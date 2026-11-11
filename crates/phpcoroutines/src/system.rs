@@ -6,7 +6,7 @@
 use crate::host;
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_long, c_void},
-    mem, ptr, slice,
+    mem, slice,
 };
 use swoole_rs_buffer::string;
 use swoole_rs_corebase::log::last_error;
@@ -375,8 +375,8 @@ fn exec(call: &Call) {
         return;
     };
     let mut status = 0;
-    // SAFETY: a fresh String, freed below.
-    let buffer = unsafe { string::new_sized_string(1024, ptr::null()) };
+    // A fresh String, freed below.
+    let buffer = string::new_sized_string(1024, None);
     // SAFETY: live until the delete below, and only this frame's.
     let output = unsafe { &mut *buffer };
     // SAFETY: a zend string is NUL-terminated.
@@ -430,11 +430,9 @@ fn wait_for(call: &Call, pid: c_long, timeout: f64) {
     host::current_safe();
     let mut status = 0;
     let pid = c_long::from(if pid < 0 {
-        // SAFETY: waits in the running coroutine.
-        unsafe { system_wait(&raw mut status, timeout) }
+        system_wait(&mut status, timeout)
     } else {
-        // SAFETY: as above.
-        unsafe { system_waitpid(int(pid), &raw mut status, 0, timeout) }
+        system_waitpid(int(pid), &mut status, 0, timeout)
     });
     if pid <= 0 {
         call.set_bool(false);

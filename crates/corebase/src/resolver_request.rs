@@ -365,23 +365,22 @@ pub unsafe extern "C" fn swr_v1_core_resolver_create(
 /// Returns the next printable address. Native code appends its owned output only
 /// after this leaf returns, so vector allocation exceptions cross no Rust frame.
 /// # Safety
-/// owner is live/synchronized; cursor is writable and no result storage mutation
-/// occurs until this enumeration ends.
+/// owner is live/synchronized; no result storage mutation occurs until this
+/// enumeration ends.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_next(
     owner: &ResolverRequest,
-    cursor: *mut usize,
+    cursor: &mut usize,
 ) -> ResolverText {
     // SAFETY: the caller lends stable live address storage.
     let span = unsafe { swr_v1_core_resolver_span(owner) };
-    // SAFETY: cursor is an exclusive writable enumeration index.
-    let mut index = unsafe { *cursor };
+    let mut index = *cursor;
     while index < span.length {
         // SAFETY: index remains within the stable address span.
         let text = unsafe { swr_v1_core_resolver_format(owner, index) };
         index += 1;
-        // SAFETY: publish progress before native code can append/throw.
-        unsafe { *cursor = index };
+        // Publish progress before native code can append/throw.
+        *cursor = index;
         if text.valid {
             return text;
         }

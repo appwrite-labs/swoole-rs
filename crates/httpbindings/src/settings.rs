@@ -72,18 +72,13 @@ fn advance(cursor: &mut SettingsCursor) {
 
 /// Emit one native lookup/effect. Native lookup treats null values as absent,
 /// preserving original short-circuit aliases and fresh conversion/reentry order.
-/// # Safety
-/// Cursor/action are initialized, disjoint writable objects for this call only.
-pub unsafe fn swr_v1_httpbindings_settings(
-    cursor: *mut SettingsCursor,
+#[must_use]
+pub fn swr_v1_httpbindings_settings(
+    cursor: Option<&mut SettingsCursor>,
     compression: u32,
     found: u32,
-    out: *mut Action,
+    out: Option<&mut Action>,
 ) -> i32 {
-    // SAFETY: `cursor` is null or aligned, writable and exclusively lent for this call.
-    let cursor = unsafe { cursor.as_mut() };
-    // SAFETY: `out` is null or aligned, writable and exclusively lent for this call.
-    let out = unsafe { out.as_mut() };
     let (Some(cursor), Some(out)) = (cursor, out) else {
         return -1;
     };
@@ -231,9 +226,12 @@ mod tests {
         loop {
             let mut action = Action::default();
             let compression = u32::from(compression);
-            let status = unsafe {
-                swr_v1_httpbindings_settings(&raw mut cursor, compression, found, &raw mut action)
-            };
+            let status = swr_v1_httpbindings_settings(
+                Some(&mut cursor),
+                compression,
+                found,
+                Some(&mut action),
+            );
             assert_eq!(status, 0);
             match action.kind {
                 1 => {
@@ -371,7 +369,7 @@ mod tests {
         ] {
             let mut action = Action::default();
             assert_eq!(
-                unsafe { swr_v1_httpbindings_settings(&raw mut cursor, 1, 0, &raw mut action) },
+                swr_v1_httpbindings_settings(Some(&mut cursor), 1, 0, Some(&mut action)),
                 -1
             );
             assert_eq!(action.kind, 0);

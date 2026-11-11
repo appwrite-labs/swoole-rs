@@ -67,8 +67,7 @@ pub unsafe fn exec(
     socket.close();
     // SAFETY: the socket `make` made, which nothing uses afterwards.
     unsafe { crate::co_socket::swr_v1_hook_co_socket_free(socket.this()) };
-    // SAFETY: `status` is writable.
-    unsafe { system_waitpid_safe(pid, status, 0) == pid }
+    system_waitpid_safe(pid, Some(status), 0) == pid
 }
 
 /// `std::shared_ptr<T>`'s layout in libc++ and libstdc++: the object, then the
@@ -83,7 +82,7 @@ pub struct SharedPtr<T> {
 /// Itanium ABI passes the `shared_ptr` by address and the caller destroys it.
 ///
 /// # Safety
-/// As [`exec`], with `buffer` naming a live String and `status` writable.
+/// As [`exec`], with `buffer` naming a live String.
 #[cfg_attr(
     all(feature = "upstream-symbols", target_os = "macos"),
     unsafe(
@@ -97,17 +96,13 @@ pub struct SharedPtr<T> {
 pub unsafe extern "C" fn system_exec(
     command: *const c_char,
     errors: bool,
-    buffer: *const SharedPtr<CppString>,
-    status: *mut c_int,
+    buffer: &SharedPtr<CppString>,
+    status: &mut c_int,
 ) -> bool {
     // SAFETY: a NUL-terminated command, as the caller promises.
     let command = unsafe { CStr::from_ptr(command) };
-    // SAFETY: the caller's live shared_ptr.
-    let string = unsafe { (*buffer).object };
     // SAFETY: the shared_ptr names a live String.
-    let string = unsafe { &mut *string };
-    // SAFETY: the caller's writable status.
-    let status = unsafe { &mut *status };
+    let string = unsafe { &mut *buffer.object };
     // SAFETY: in a coroutine, as the caller promises.
     unsafe { exec(command, errors, string, status) }
 }

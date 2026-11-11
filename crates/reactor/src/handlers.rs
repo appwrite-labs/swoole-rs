@@ -88,18 +88,13 @@ impl Handlers {
 
 /// `Reactor::get_handler` (`kind` 0 read, 1 write, 2 error) and, for `error_only`
 /// false with kind 2, `get_error_handler`'s fallbacks.
-///
-/// # Safety
-/// `handlers` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_handlers_get(
-    handlers: *const Handlers,
+pub extern "C" fn swr_v1_reactor_handlers_get(
+    handlers: &Handlers,
     kind: u32,
     fd_type: c_int,
     error_only: bool,
 ) -> Option<Handler> {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { &*handlers };
     let kind = usize::try_from(kind).ok()?;
     if error_only {
         handlers.get(kind, fd_type)
@@ -109,17 +104,12 @@ pub unsafe extern "C" fn swr_v1_reactor_handlers_get(
 }
 
 /// The write (`kind` 1) or error (`kind` 2) default handler.
-///
-/// # Safety
-/// `handlers` is live and exclusively lent for this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_handlers_set_default(
-    handlers: *mut Handlers,
+pub extern "C" fn swr_v1_reactor_handlers_set_default(
+    handlers: &mut Handlers,
     kind: u32,
     handler: Option<Handler>,
 ) {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { &mut *handlers };
     if let Some(slot) = kind
         .checked_sub(1)
         .and_then(|i| handlers.defaults.get_mut(i as usize))
@@ -131,16 +121,11 @@ pub unsafe extern "C" fn swr_v1_reactor_handlers_set_default(
 /// The write (`kind` 1) or error (`kind` 2) default's slot, which lives as long as
 /// `handlers` (upstream's `default_write_handler` / `default_error_handler` members
 /// read it), or null for another `kind`.
-///
-/// # Safety
-/// `handlers` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_handlers_default(
-    handlers: *const Handlers,
+pub extern "C" fn swr_v1_reactor_handlers_default(
+    handlers: &Handlers,
     kind: u32,
 ) -> *const Option<Handler> {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { &*handlers };
     kind.checked_sub(1)
         .and_then(|i| handlers.defaults.get(i as usize))
         .map_or(ptr::null(), ptr::from_ref)
@@ -178,21 +163,21 @@ mod tests {
             assert!(!(*h).isset(5, SW_EVENT_DEAULT));
 
             // Write and error fall back to the defaults; error dispatch then to read.
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 1, 5, true)), 0);
-            swr_v1_reactor_handlers_set_default(h, 1, Some(two));
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 1, 5, true)), 2);
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 5, true)), 0);
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 5, false)), 1);
-            swr_v1_reactor_handlers_set_default(h, 2, Some(three));
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 5, false)), 3);
-            assert_eq!(call(*swr_v1_reactor_handlers_default(h, 2)), 3);
-            assert!(swr_v1_reactor_handlers_default(h, 3).is_null());
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 1, 5, true)), 0);
+            swr_v1_reactor_handlers_set_default(&mut *h, 1, Some(two));
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 1, 5, true)), 2);
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 5, true)), 0);
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 5, false)), 1);
+            swr_v1_reactor_handlers_set_default(&mut *h, 2, Some(three));
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 5, false)), 3);
+            assert_eq!(call(*swr_v1_reactor_handlers_default(&*h, 2)), 3);
+            assert!(swr_v1_reactor_handlers_default(&*h, 3).is_null());
             assert!((*h).set(5, SW_EVENT_WRITE | SW_EVENT_ERROR, Some(one)));
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 1, 5, true)), 1);
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 1, 5, true)), 1);
             // Error-only types: no read handler, the error default still applies.
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 0, 6, true)), 0);
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 6, false)), 3);
-            assert_eq!(call(swr_v1_reactor_handlers_get(h, 0, -1, true)), 0);
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 0, 6, true)), 0);
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 6, false)), 3);
+            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 0, -1, true)), 0);
         }
     }
 }

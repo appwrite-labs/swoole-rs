@@ -102,7 +102,7 @@ pub(crate) unsafe fn swoole_http_client_coro_buffer_free(buffer: *mut c_void) {
         return;
     }
     // SAFETY: a popped `new String`, destroyed once.
-    unsafe { swr_string_drop(buffer.cast()) };
+    swr_string_drop(unsafe { &mut *buffer.cast() });
     // SAFETY: its storage, from `operator new`.
     unsafe { operator_delete(buffer) };
 }
@@ -156,7 +156,7 @@ impl Co {
             swoole_rs_http_ffi::swr_v1_http_proxy_owned_authorization(
                 proxy,
                 encoded.as_mut_ptr(),
-                &raw mut length,
+                Some(&mut length),
             )
         };
         let mut value = b"Basic ".to_vec();

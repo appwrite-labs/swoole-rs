@@ -593,8 +593,7 @@ fn affinity() -> Result<Vec<c_int>, c_int> {
     const CPU_SETSIZE: usize = 1024;
     // SAFETY: a plain bitset, for which zero is the empty set.
     let mut set: CpuSet = unsafe { std::mem::zeroed() };
-    // SAFETY: a writable set.
-    if unsafe { swoole_rs_ossupport::swoole_get_cpu_affinity(&raw mut set) } < 0 {
+    if swoole_rs_ossupport::swoole_get_cpu_affinity(&mut set) < 0 {
         return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
     Ok((0..CPU_SETSIZE)

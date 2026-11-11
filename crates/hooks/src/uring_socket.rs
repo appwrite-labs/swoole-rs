@@ -53,7 +53,7 @@ pub struct IoVector(pub *mut ReactorIov);
 impl IoVector {
     fn current(&self) -> (*const libc::iovec, c_int) {
         // SAFETY: the caller's live vector.
-        let view = unsafe { swr_v1_reactor_iov_view(self.0) };
+        let view = swr_v1_reactor_iov_view(unsafe { &*self.0 });
         (view.iterator, view.remain_count)
     }
 

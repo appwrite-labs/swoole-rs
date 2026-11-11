@@ -140,14 +140,12 @@ upstream! {
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
     ///
     /// # Safety
-    /// `pl` is a live packet length over `buf_size` readable bytes.
+    /// `pl.buf` covers `pl.buf_size` readable bytes.
     pub unsafe extern "C" fn get_package_length(
         _protocol: *const std::ffi::c_void,
         _socket: *mut std::ffi::c_void,
-        pl: *mut PacketLength,
+        pl: &mut PacketLength,
     ) -> isize {
-        // SAFETY: as the caller promises.
-        let pl = unsafe { &mut *pl };
         if pl.buf_size < 2 {
             return 0;
         }
@@ -177,15 +175,13 @@ upstream! {
     /// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`.
     ///
     /// # Safety
-    /// `buffer` is a live String; `data` covers `length` readable bytes.
-    pub unsafe extern "C" fn encode(buffer: *mut CppString, data: *const c_char, length: usize, opcode: u8, flags: u8) -> bool {
+    /// `data` covers `length` readable bytes.
+    pub unsafe extern "C" fn encode(buffer: &mut CppString, data: *const c_char, length: usize, opcode: u8, flags: u8) -> bool {
         if control_invalid(opcode, flags, length) {
             control_warning(c"websocket::encode", opcode, u8::from(flags & FIN != 0), length);
             return false;
         }
         let size = encoded_size(length, flags);
-        // SAFETY: as the caller promises.
-        let buffer = unsafe { &mut *buffer };
         // SAFETY: `data`'s bytes and the `size` bytes just reserved.
         append_frame(buffer, size, |out| unsafe { swr_v1_ws_encode(data.cast(), length, opcode, flags, out, size) })
             && !header_only_mask(flags)
@@ -195,10 +191,8 @@ upstream! {
     /// `bool decode(Frame *frame, char *data, size_t length)`.
     ///
     /// # Safety
-    /// `frame` is writable; `data` covers `length` writable bytes.
-    pub unsafe extern "C" fn decode(frame: *mut Frame, data: *mut c_char, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        let frame = unsafe { &mut *frame };
+    /// `data` covers `length` writable bytes.
+    pub unsafe extern "C" fn decode(frame: &mut Frame, data: *mut c_char, length: usize) -> bool {
         // SAFETY: as the caller promises.
         let result = unsafe { decode_frame(data.cast(), length) };
         let (decoded, ok, filled) = match result {
@@ -232,8 +226,8 @@ upstream! {
     /// `bool pack_close_frame(String *buffer, int code, const char *reason, size_t length, uint8_t flags)`.
     ///
     /// # Safety
-    /// `buffer` is a live String; `reason` covers `length` readable bytes.
-    pub unsafe extern "C" fn pack_close_frame(buffer: *mut CppString, code: c_int, reason: *const c_char, length: usize, flags: u8) -> bool {
+    /// `reason` covers `length` readable bytes.
+    pub unsafe extern "C" fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: *const c_char, length: usize, flags: u8) -> bool {
         let origin = c"websocket::pack_close_frame";
         if length > CLOSE_REASON_MAX_LEN {
             log::warning(origin, format_args!("the max length of close reason is {CLOSE_REASON_MAX_LEN}"));
@@ -244,8 +238,6 @@ upstream! {
             return false;
         }
         let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
-        // SAFETY: as the caller promises.
-        let buffer = unsafe { &mut *buffer };
         // SAFETY: the reason's bytes and the `size` bytes just reserved.
         append_frame(buffer, size, |out| unsafe { swr_v1_ws_encode_close(code, reason.cast(), length, flags, out, size) })
             && !header_only_mask(flags)
@@ -255,10 +247,8 @@ upstream! {
     /// `void print_frame(const Frame *frame)`.
     ///
     /// # Safety
-    /// `frame` is a live Frame whose payload covers `payload_length` bytes.
-    pub unsafe extern "C" fn print_frame(frame: *const Frame) {
-        // SAFETY: as the caller promises.
-        let frame = unsafe { &*frame };
+    /// `frame`'s payload covers `payload_length` bytes.
+    pub unsafe extern "C" fn print_frame(frame: &Frame) {
         let [first, second] = frame.header;
         #[expect(clippy::cast_possible_wrap, reason = "upstream prints a size_t with %ld")]
         let length = frame.payload_length as libc::c_long;
@@ -304,17 +294,9 @@ mod tests {
     fn encode_then_decode_restores_the_frame() {
         let mut buffer = string();
         let text = b"hello world";
-        assert!(unsafe {
-            encode(
-                &raw mut buffer,
-                text.as_ptr().cast(),
-                text.len(),
-                1,
-                FIN | MASK,
-            )
-        });
+        assert!(unsafe { encode(&mut buffer, text.as_ptr().cast(), text.len(), 1, FIN | MASK,) });
         let mut frame: Frame = unsafe { std::mem::zeroed() };
-        assert!(unsafe { decode(&raw mut frame, buffer.str.cast(), buffer.length) });
+        assert!(unsafe { decode(&mut frame, buffer.str.cast(), buffer.length) });
         assert_eq!(frame.header[0], 0x81, "FIN and OPCODE_TEXT");
         assert_eq!(frame.header[1] >> 7, 1, "MASK");
         assert_eq!(frame.header_length, 6);
@@ -332,7 +314,7 @@ mod tests {
         let mut buffer = string();
         assert!(!unsafe {
             encode(
-                &raw mut buffer,
+                &mut buffer,
                 std::ptr::null(),
                 10,
                 2,
@@ -349,15 +331,11 @@ mod tests {
     fn invalid_control_frames_are_refused() {
         let mut buffer = string();
         let payload = [0u8; 126];
-        assert!(!unsafe { encode(&raw mut buffer, payload.as_ptr().cast(), 126, 9, FIN) });
-        assert!(!unsafe {
-            pack_close_frame(&raw mut buffer, 1000, payload.as_ptr().cast(), 126, FIN)
-        });
-        assert!(!unsafe {
-            pack_close_frame(&raw mut buffer, 1000, payload.as_ptr().cast(), 124, FIN)
-        });
+        assert!(!unsafe { encode(&mut buffer, payload.as_ptr().cast(), 126, 9, FIN) });
+        assert!(!unsafe { pack_close_frame(&mut buffer, 1000, payload.as_ptr().cast(), 126, FIN) });
+        assert!(!unsafe { pack_close_frame(&mut buffer, 1000, payload.as_ptr().cast(), 124, FIN) });
         assert_eq!(buffer.length, 0);
-        assert!(unsafe { pack_close_frame(&raw mut buffer, 1000, c"bye".as_ptr(), 3, FIN) });
+        assert!(unsafe { pack_close_frame(&mut buffer, 1000, c"bye".as_ptr(), 3, FIN) });
         assert_eq!(
             unsafe { std::slice::from_raw_parts(buffer.str, buffer.length) },
             b"\x88\x05\x03\xe8bye"
@@ -371,13 +349,13 @@ mod tests {
     fn rejected_frames_fill_what_upstream_fills() {
         let mut frame: Frame = unsafe { std::mem::zeroed() };
         let mut short = *b"\x81\x05he";
-        assert!(!unsafe { decode(&raw mut frame, short.as_mut_ptr().cast(), short.len()) });
+        assert!(!unsafe { decode(&mut frame, short.as_mut_ptr().cast(), short.len()) });
         assert_eq!(
             (frame.header[0], frame.header[1], frame.payload_length),
             (0x81, 5, 0)
         );
         let mut ping = *b"\xc9\x01x";
-        assert!(!unsafe { decode(&raw mut frame, ping.as_mut_ptr().cast(), ping.len()) });
+        assert!(!unsafe { decode(&mut frame, ping.as_mut_ptr().cast(), ping.len()) });
         assert_eq!(
             (frame.header[0], frame.header_length, frame.payload_length),
             (0xc9, 2, 1)
@@ -393,7 +371,7 @@ mod tests {
         let packet = b"hello world\n";
         assert!(unsafe {
             encode(
-                &raw mut buffer,
+                &mut buffer,
                 packet.as_ptr().cast(),
                 packet.len(),
                 1,
@@ -401,7 +379,7 @@ mod tests {
             )
         });
         let mut ws: Frame = unsafe { std::mem::zeroed() };
-        assert!(unsafe { decode(&raw mut ws, buffer.str.cast(), buffer.length) });
+        assert!(unsafe { decode(&mut ws, buffer.str.cast(), buffer.length) });
 
         let log = std::env::temp_dir().join(format!(
             "swoole-websocket-encode-{}.log",
@@ -412,7 +390,7 @@ mod tests {
         assert!(!fp.is_null());
         let ori_fp = swoole_rs_corebase::swoole_get_stdout_stream();
         swoole_rs_corebase::swoole_set_stdout_stream(fp.cast());
-        unsafe { print_frame(&raw const ws) };
+        unsafe { print_frame(&ws) };
         unsafe { libc::fclose(fp) };
         swoole_rs_corebase::swoole_set_stdout_stream(ori_fp);
 
@@ -434,15 +412,15 @@ mod tests {
         let mut frame: Frame = unsafe { std::mem::zeroed() };
         for opcode in [OPCODE_CLOSE, 9, 10] {
             buffer.length = 0;
-            assert!(unsafe { encode(&raw mut buffer, c"".as_ptr(), 0, opcode, FIN | RSV1) });
+            assert!(unsafe { encode(&mut buffer, c"".as_ptr(), 0, opcode, FIN | RSV1) });
             assert!(
-                !unsafe { decode(&raw mut frame, buffer.str.cast(), buffer.length) },
+                !unsafe { decode(&mut frame, buffer.str.cast(), buffer.length) },
                 "{opcode}"
             );
         }
         buffer.length = 0;
-        assert!(unsafe { encode(&raw mut buffer, c"".as_ptr(), 0, 1, FIN | RSV1) });
-        assert!(unsafe { decode(&raw mut frame, buffer.str.cast(), buffer.length) });
+        assert!(unsafe { encode(&mut buffer, c"".as_ptr(), 0, 1, FIN | RSV1) });
+        assert!(unsafe { decode(&mut frame, buffer.str.cast(), buffer.length) });
         buffer.dispose();
     }
 
@@ -455,7 +433,7 @@ mod tests {
             header_len: 0,
         };
         assert_eq!(
-            unsafe { get_package_length(std::ptr::null(), std::ptr::null_mut(), &raw mut pl) },
+            unsafe { get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl) },
             260
         );
         assert_eq!(pl.header_len, 4);

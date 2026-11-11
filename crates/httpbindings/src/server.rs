@@ -36,9 +36,9 @@ pub struct AcceptHost {
     /// `hs->running`.
     pub running: unsafe extern "C" fn(*mut c_void) -> bool,
     /// `sock->accept()` and, for a connection, the `onAccept` coroutine's cid.
-    pub accept: unsafe extern "C" fn(*mut c_void, *mut bool) -> i64,
+    pub accept: unsafe extern "C" fn(*mut c_void, &mut bool) -> i64,
     /// The socket's `errCode`, and its NUL-terminated `errMsg`.
-    pub error: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> i32,
+    pub error: unsafe extern "C" fn(*mut c_void, &mut *const c_char) -> i32,
     /// `System::sleep(SW_ACCEPT_RETRY_TIME)`.
     pub sleep: unsafe extern "C" fn(*mut c_void),
     /// `http_server_coro_set_error`.
@@ -51,19 +51,14 @@ pub struct AcceptHost {
 /// 0 `RETURN_FALSE` after a failed accept, -1 a null argument.
 ///
 /// # Safety
-/// `host` and `errors` are null or valid for the call, and each callback may be
-/// called with `host.data`; `error` leaves a NUL-terminated message.
+/// Each of `host`'s callbacks may be called with `host.data`; `error` leaves a
+/// NUL-terminated message.
 #[must_use]
 pub unsafe fn swr_v1_httpbindings_accept_loop(
-    host: *const AcceptHost,
-    errors: *const AcceptErrors,
+    host: Option<&AcceptHost>,
+    errors: Option<&AcceptErrors>,
 ) -> i32 {
-    // SAFETY: `host` is null or valid for the call.
-    let Some(host) = (unsafe { host.as_ref() }) else {
-        return -1;
-    };
-    // SAFETY: `errors` is null or valid for the call.
-    let Some(errors) = (unsafe { errors.as_ref() }) else {
+    let (Some(host), Some(errors)) = (host, errors) else {
         return -1;
     };
     let data = host.data;
@@ -71,7 +66,7 @@ pub unsafe fn swr_v1_httpbindings_accept_loop(
     while unsafe { (host.running)(data) } {
         let mut connected = false;
         // SAFETY: as above, and a local output.
-        let cid = unsafe { (host.accept)(data, &raw mut connected) };
+        let cid = unsafe { (host.accept)(data, &mut connected) };
         if connected {
             if cid < 0 {
                 // SAFETY: as above.
@@ -81,7 +76,7 @@ pub unsafe fn swr_v1_httpbindings_accept_loop(
         }
         let mut message = core::ptr::null();
         // SAFETY: as above, and a local output.
-        let error = unsafe { (host.error)(data, &raw mut message) };
+        let error = unsafe { (host.error)(data, &mut message) };
         if error == errors.per_process || error == errors.system {
             // SAFETY: as above.
             unsafe { (host.sleep)(data) };
@@ -134,20 +129,18 @@ mod tests {
     unsafe extern "C" fn running(data: *mut c_void) -> bool {
         !script(data).rounds.is_empty()
     }
-    unsafe extern "C" fn accept(data: *mut c_void, connected: *mut bool) -> i64 {
+    unsafe extern "C" fn accept(data: *mut c_void, connected: &mut bool) -> i64 {
         let script = script(data);
         script.trace.push("accept".into());
         let (connection, cid, _) = script.rounds[0];
         if connection {
             script.rounds.remove(0);
         }
-        // SAFETY: the loop's local output.
-        unsafe { *connected = connection };
+        *connected = connection;
         cid
     }
-    unsafe extern "C" fn error(data: *mut c_void, message: *mut *const c_char) -> i32 {
-        // SAFETY: the loop's local output.
-        unsafe { *message = c"boom".as_ptr() };
+    unsafe extern "C" fn error(data: *mut c_void, message: &mut *const c_char) -> i32 {
+        *message = c"boom".as_ptr();
         script(data).rounds.remove(0).2
     }
     unsafe extern "C" fn sleep(data: *mut c_void) {
@@ -179,7 +172,7 @@ mod tests {
             fail,
         };
         // SAFETY: a live host and policy table.
-        let result = unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const ERRORS) };
+        let result = unsafe { swr_v1_httpbindings_accept_loop(Some(&host), Some(&ERRORS)) };
         (result, script.trace)
     }
 
@@ -224,7 +217,7 @@ mod tests {
             "any other error records it, warns and returns false"
         );
         // SAFETY: a null host is refused before any use.
-        let null = unsafe { swr_v1_httpbindings_accept_loop(core::ptr::null(), &raw const ERRORS) };
+        let null = unsafe { swr_v1_httpbindings_accept_loop(None, Some(&ERRORS)) };
         assert_eq!(null, -1, "a null host is refused");
     }
 }

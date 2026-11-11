@@ -38,8 +38,7 @@ unsafe fn parse_ip(family: c_int, host: *const c_char, destination: *mut u8) -> 
     }
     let version = if family == libc::AF_INET { 4 } else { 6 };
     let allow_zeroes = u8::from(cfg!(target_os = "macos"));
-    // SAFETY: `text` is the host's bytes.
-    let ip = unsafe { swr_v1_clients_ip(version, text.as_ptr(), text.len(), allow_zeroes) };
+    let ip = swr_v1_clients_ip(version, text, allow_zeroes);
     if ip.length == 0 {
         return false;
     }
@@ -148,16 +147,10 @@ pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *con
 }
 
 /// `Address::get_addr`: IP text in shared scratch, Unix path in the record, or
-/// the original static fallback for an unknown socket type.
-/// # Safety
-/// `address` is live, with initialized storage for its socket type. Its Unix
-/// path remains valid only while the record does; IP text lives until reused.
+/// the original static fallback for an unknown socket type. The Unix path
+/// remains valid only while the record does; IP text lives until reused.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_host(
-    address: *const SocketAddress,
-) -> *const c_char {
-    // SAFETY: the caller lends a live record.
-    let address = unsafe { &*address };
+pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const c_char {
     if inet4(address.kind) {
         // SAFETY: inet4 selects the initialized IPv4 union member.
         let ip = unsafe { &raw const address.addr.inet_v4.sin_addr };
@@ -177,12 +170,8 @@ pub unsafe extern "C" fn swr_v1_clients_address_host(
 }
 
 /// `Address::get_port`.
-/// # Safety
-/// `address` is a live record with its socket type's union member initialized.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_port(address: *const SocketAddress) -> c_int {
-    // SAFETY: the caller lends a live record.
-    let address = unsafe { &*address };
+pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int {
     let port = if inet4(address.kind) {
         // SAFETY: inet4 selects the initialized IPv4 union member.
         unsafe { address.addr.inet_v4.sin_port }
@@ -196,17 +185,13 @@ pub unsafe extern "C" fn swr_v1_clients_address_port(address: *const SocketAddre
 }
 
 /// `Address::set_port`, including the original int-to-uint16_t wrapping.
-/// # Safety
-/// `address` is a live, writable record of its socket type.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "htons accepts the low 16 bits of upstream's int argument"
 )]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_set_port(address: *mut SocketAddress, port: c_int) {
-    // SAFETY: the caller lends a writable record.
-    let address = unsafe { &mut *address };
+pub extern "C" fn swr_v1_clients_address_set_port(address: &mut SocketAddress, port: c_int) {
     let port = (port as u16).to_be();
     if inet4(address.kind) {
         address.addr.inet_v4.sin_port = port;
@@ -216,12 +201,9 @@ pub unsafe extern "C" fn swr_v1_clients_address_set_port(address: *mut SocketAdd
 }
 
 /// `Address::empty`.
-/// # Safety
-/// `address` is a live record.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_empty(address: *const SocketAddress) -> bool {
-    // SAFETY: the caller lends a live record.
-    unsafe { (*address).kind == 0 }
+pub extern "C" fn swr_v1_clients_address_empty(address: &SocketAddress) -> bool {
+    address.kind == 0
 }
 
 /// `Address::type_str`'s original static spelling and family classification.
@@ -239,27 +221,20 @@ pub extern "C" fn swr_v1_clients_address_type(kind: c_int) -> *const c_char {
 }
 
 /// `Address::is_loopback_addr`, preserving exact IPv4 localhost semantics.
-/// # Safety
-/// `address` is a live record with its socket type's union member initialized.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_loopback(address: *const SocketAddress) -> bool {
-    // SAFETY: the caller lends a live record.
-    let address = unsafe { &*address };
-    let (version, ip) = if inet4(address.kind) {
+pub extern "C" fn swr_v1_clients_address_loopback(address: &SocketAddress) -> bool {
+    let loopback = crate::ip::swr_v1_clients_loopback;
+    if inet4(address.kind) {
         // SAFETY: inet4 selects the initialized IPv4 union member.
-        (4, unsafe {
-            (&raw const address.addr.inet_v4.sin_addr).cast()
-        })
+        let ip = unsafe { address.addr.inet_v4.sin_addr.s_addr };
+        loopback(4, &ip.to_ne_bytes()) != 0
     } else if inet6(address.kind) {
         // SAFETY: inet6 selects the initialized IPv6 union member.
-        (6, unsafe {
-            (&raw const address.addr.inet_v6.sin6_addr).cast()
-        })
+        let ip = unsafe { address.addr.inet_v6.sin6_addr.s6_addr };
+        loopback(6, &ip) != 0
     } else {
-        return false;
-    };
-    // SAFETY: the selected record field holds the family's IP address bytes.
-    unsafe { crate::ip::swr_v1_clients_loopback(version, ip) != 0 }
+        false
+    }
 }
 
 #[cfg(test)]

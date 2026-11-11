@@ -154,7 +154,7 @@ pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -
         remove: native::remove,
     };
     // SAFETY: the reactor's ops, in the current coroutine as the caller promises.
-    let waited = unsafe { swr_v1_hook_wait_event(fd, events, timeout, &raw const ops) };
+    let waited = unsafe { swr_v1_hook_wait_event(fd, events, timeout, &ops) };
     if waited.last_error != 0 {
         swoole_rs_corebase::log::set_last_error(waited.last_error);
     }
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn swr_v1_hook_wait_event(
     fd: i32,
     events: i32,
     timeout: f64,
-    ops: *const EventWaitOps,
+    ops: &EventWaitOps,
 ) -> WaitEvent {
     let events = events & (READ | WRITE);
     if events == 0 {
@@ -282,8 +282,6 @@ pub unsafe extern "C" fn swr_v1_hook_wait_event(
         };
         return failed(error, 0);
     }
-    // SAFETY: the caller's ops, valid for the call.
-    let ops = unsafe { &*ops };
     // SAFETY: native code's ops, callable in the current coroutine.
     let fired = match unsafe { park(fd, events, timeout, ops) } {
         Ok(fired) => fired,
@@ -382,7 +380,7 @@ mod tests {
             park,
             remove,
         };
-        unsafe { swr_v1_hook_wait_event(fd, events, timeout, &raw const ops) }
+        unsafe { swr_v1_hook_wait_event(fd, events, timeout, &ops) }
     }
 
     #[test]
