@@ -17,7 +17,7 @@ upstream-symbols = []
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-reactor = { path = "../reactor" }
-swoole-rs-server = { path = "../server" }
+swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-http = { path = "../http" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-corebase = { path = "../corebase" }
