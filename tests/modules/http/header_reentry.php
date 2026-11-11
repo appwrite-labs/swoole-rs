@@ -1,8 +1,9 @@
 <?php
 // A header or trailer value's __toString replaces the array being sent (#3263);
 // Response denies unset(). The response carries the array as sending began.
+// HTTP/1 and HTTP/2 (tests/modules/http2/test_header_reentry.py) alike.
 $server = new Swoole\Http\Server('127.0.0.1', (int) getenv('TEST_PORT'), SWOOLE_BASE);
-$server->set(['worker_num' => 1, 'log_level' => SWOOLE_LOG_NONE]);
+$server->set(['worker_num' => 1, 'log_level' => SWOOLE_LOG_NONE, 'open_http2_protocol' => true]);
 
 final class Value
 {

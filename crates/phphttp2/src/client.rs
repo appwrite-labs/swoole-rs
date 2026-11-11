@@ -588,7 +588,8 @@ impl Client {
         let property = |name| request.property(name);
         let text = |name| property(name).bytes().filter(|text| !text.is_empty());
         let (method, path) = (text(c"method"), text(c"path"));
-        let (headers, cookies) = (property(c"headers"), property(c"cookies"));
+        // Held: converting a value may replace or unset either property mid-walk.
+        let (headers, cookies) = (property(c"headers").hold(), property(c"cookies").hold());
         // Converting a header value can run PHP code, which may build another request.
         let mut set = self.headers.take();
         set.clear();
@@ -597,7 +598,7 @@ impl Client {
         set.add(b":scheme", &[if self.ssl { b"https" } else { b"http" }]);
         set.slots.push(None);
         let mut host = false;
-        if let Some(headers) = headers.array() {
+        if let Some(headers) = headers.as_deref().and_then(Value::array) {
             for (key, value) in headers.entries() {
                 let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null())
                 else {
@@ -622,7 +623,7 @@ impl Client {
             };
             set.set(AUTHORITY, b":authority", &authority);
         }
-        if let Some(cookies) = cookies.array() {
+        if let Some(cookies) = cookies.as_deref().and_then(Value::array) {
             for (key, value) in cookies.entries() {
                 let Some(key) = key.filter(|_| !value.is_null()) else {
                     continue;
