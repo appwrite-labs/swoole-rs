@@ -8,7 +8,7 @@ use crate::wait_event::{ERROR, READ, WRITE, event_ready};
 use core::ffi::{c_int, c_void};
 use std::sync::OnceLock;
 use swoole_rs_corebase::constants::FdType;
-use swoole_rs_reactor::{Event, Handler, SocketRecord};
+use swoole_rs_reactor::{Event, Handler, Running, SocketRecord};
 
 /// `Reactor::set_handler(fd_type, events, handler)`.
 pub type SetHandler = unsafe extern "C" fn(*mut c_void, c_int, c_int, Handler);
@@ -19,29 +19,22 @@ pub type Wake = unsafe extern "C" fn(*mut c_void);
 static WAKE: OnceLock<Wake> = OnceLock::new();
 
 /// The fired socket's object and fd.
-///
-/// # Safety
-/// `event` is the reactor's `Event` for a live socket.
-unsafe fn fired(event: *mut c_void) -> (*mut c_void, c_int) {
-    // SAFETY: the reactor passes its event, whose socket is live.
-    let event = unsafe { &*event.cast::<Event>() };
-    // SAFETY: as above.
+fn fired(event: &Event) -> (*mut c_void, c_int) {
+    // SAFETY: the reactor's event names a live socket.
     let object = unsafe { (*event.socket.cast::<SocketRecord>()).object };
     (object, event.fd)
 }
 
-unsafe extern "C" fn poll_ready<const KIND: i32>(_: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+    let (task, fd) = fired(event);
     // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its poll task.
-    let (task, fd) = unsafe { fired(event) };
-    // SAFETY: as above.
     unsafe { swr_v1_hook_poll_ready(task, fd, KIND) };
     0
 }
 
-unsafe extern "C" fn waiter_ready<const KIND: i32>(_: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+    let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
-    let (waiter, _) = unsafe { fired(event) };
-    // SAFETY: as above.
     let co = unsafe { event_ready(waiter, KIND) };
     if let Some(wake) = WAKE.get().filter(|_| !co.is_null()) {
         // SAFETY: `co` stays parked until the deferred resume runs.
@@ -93,7 +86,14 @@ pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
     // SAFETY: the caller's reactor; `defer_resume` defers onto this thread's.
     unsafe { swr_v1_hook_init_reactor(reactor, set_handler, defer_resume) };
     // SAFETY: as above.
-    unsafe { set_handler(reactor, FdType::SW_FD_AIO as c_int, READ, aio_ready) };
+    unsafe {
+        set_handler(
+            reactor,
+            FdType::SW_FD_AIO as c_int,
+            READ,
+            crate::async_threads::callback,
+        );
+    };
     #[cfg(feature = "iouring")]
     // SAFETY: as above.
     unsafe {
@@ -103,10 +103,9 @@ pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
 
 /// `Iouring::callback`.
 #[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
-unsafe extern "C" fn iouring_ready(_: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn iouring_ready(_: Running<'_>, event: &mut Event) -> c_int {
+    let (iouring, _) = fired(event);
     // SAFETY: a `SW_FD_IOURING` socket, whose object is its instance.
-    let (iouring, _) = unsafe { fired(event) };
-    // SAFETY: as above.
     unsafe { crate::iouring::ready(iouring) }
 }
 
@@ -127,13 +126,6 @@ unsafe extern "C" fn set_handler(
             Some(handler),
         );
     }
-}
-
-/// `AsyncThreads::callback`.
-#[cfg(feature = "upstream-symbols")]
-unsafe extern "C" fn aio_ready(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: the reactor's live event for the async-thread pipe.
-    unsafe { crate::async_threads::callback(reactor, event.cast()) }
 }
 
 /// `sw_reactor()->defer([co] { co->resume(); })`.
@@ -221,7 +213,7 @@ mod tests {
         for events in [WRITE, READ] {
             let ready = handler(FdType::SW_FD_CO_EVENT, events);
             assert_eq!(
-                unsafe { ready(core::ptr::null_mut(), (&raw mut event).cast()) },
+                unsafe { ready(Running::new(core::ptr::null_mut()), &mut event) },
                 0
             );
         }

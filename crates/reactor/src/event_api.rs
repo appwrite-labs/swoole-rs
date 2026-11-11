@@ -285,12 +285,8 @@ pub trait FdHandler {
     fn handle(fd: c_int) -> c_int;
 }
 
-/// # Safety
-/// The reactor calls it with a live `Event`.
-unsafe extern "C" fn fd_handler<H: FdHandler>(_reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: as above.
-    let fd = unsafe { (*event.cast::<crate::Event>()).fd };
-    H::handle(fd)
+extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
+    H::handle(event.fd)
 }
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.

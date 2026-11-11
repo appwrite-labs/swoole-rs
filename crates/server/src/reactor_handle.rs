@@ -11,7 +11,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_reactor::reactor_upstream::{
     prepared, reactor_change, reactor_interest, reactor_set_handler,
 };
-use swoole_rs_reactor::{Handler, ReactorFields, Socket};
+use swoole_rs_reactor::{Handler, ReactorFields, Running, Socket};
 
 /// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
 const ADD: u32 = 0;
@@ -33,6 +33,10 @@ impl Reactor {
     /// `reactor` is a live `Reactor` while the handle is used, on its own thread.
     pub(crate) unsafe fn of(reactor: *mut c_void) -> Self {
         Self(reactor)
+    }
+    /// The reactor a handler runs under.
+    pub(crate) fn running(reactor: Running<'_>) -> Self {
+        Self(reactor.as_ptr())
     }
     /// The thread's reactor (`sw_reactor()`), which the worker ops run under.
     pub(crate) fn thread() -> Self {

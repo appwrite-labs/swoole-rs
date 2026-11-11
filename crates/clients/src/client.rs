@@ -28,6 +28,7 @@ use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
+use swoole_rs_reactor::{Event, Running};
 use swoole_rs_reactor::{
     Socket, SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
     swr_v1_socket_domain_and_type,
@@ -720,27 +721,25 @@ extern "C" fn on_package(
 }
 
 /// The client of the reactor event's socket, None without a socket.
-fn event_client(event: *mut c_void) -> Option<Handle> {
-    // SAFETY: the reactor's live event.
-    let socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
+fn event_client(event: &Event) -> Option<Handle> {
     // SAFETY: a client socket's live record, whose object is the client.
-    let socket = unsafe { Socket::from_ptr(socket.cast()) }?;
+    let socket = unsafe { Socket::from_ptr(event.socket.cast()) }?;
     Some(Handle(socket.read(|socket| socket.object).cast()))
 }
 
-extern "C" fn on_stream_read(_: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
     event_client(event).map_or(ERR, on_read)
 }
 
-extern "C" fn on_dgram_read(_: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
     event_client(event).map_or(ERR, on_datagram)
 }
 
-extern "C" fn on_writable(reactor: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
     event_client(event).map_or(ERR, |this| on_write(this, reactor, event))
 }
 
-extern "C" fn on_failure(reactor: *mut c_void, event: *mut c_void) -> c_int {
+extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
     event_client(event).map_or(ERR, |this| on_error(this, reactor, event))
 }
 
@@ -2129,7 +2128,7 @@ fn on_datagram(this: Handle) -> c_int {
 
 /// `Client_onWrite`: drain queued output, or finish an async connect, on a live
 /// async stream client; `reactor` and `event` are the handler's.
-fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
+fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if this.flag(ACTIVE) {
         if this.flag(OPEN_SSL) && this.tls_state() == SSL_STATE_WAIT_STREAM {
             if ssl_handshake(this) < 0 {
@@ -2146,7 +2145,7 @@ fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
             return OK;
         }
         // SAFETY: the handler's reactor and event.
-        if unsafe { writable_callback(reactor, event.cast()) } < 0 {
+        if unsafe { writable_callback(reactor.as_ptr(), event) } < 0 {
             return ERR;
         }
         if this.has(ON_BUFFER_EMPTY)
@@ -2210,7 +2209,7 @@ fn write_failed(this: Handle) -> c_int {
 }
 
 /// `Client_onError`, as [`on_write`].
-fn on_error(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
+fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if this.flag(ACTIVE) {
         return close(this);
     }

@@ -429,12 +429,13 @@ extern "C-unwind" fn try_to_exit() {
 }
 
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
-extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: the reactor running this handler.
-    let mut ctx = worker_context(unsafe { Reactor::of(reactor) });
+extern "C" fn on_pipe_receive(
+    reactor: swoole_rs_reactor::Running<'_>,
+    event: &mut swoole_rs_reactor::Event,
+) -> c_int {
+    let mut ctx = worker_context(Reactor::running(reactor));
     ctx.info = ctx.bus().buffer();
-    // SAFETY: the reactor's live event.
-    ctx.socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
+    ctx.socket = event.socket;
     run(&mut ctx, RUN_PIPE_RECEIVE, 0);
     0
 }

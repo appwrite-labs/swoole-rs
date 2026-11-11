@@ -29,11 +29,14 @@ pub unsafe fn trigger_close_event(reactor: *mut c_void, event: *mut c_void) -> c
     // SAFETY: the live reactor's error default slot.
     let slot = unsafe { crate::swr_v1_reactor_handlers_default(handlers, 2) };
     // SAFETY: as above.
-    match unsafe { *slot } {
-        // SAFETY: as the caller promises.
-        Some(handler) => unsafe { handler(reactor, event) },
-        None => -1,
-    }
+    let Some(handler) = (unsafe { *slot }) else {
+        return -1;
+    };
+    // SAFETY: as the caller promises, the live reactor on its thread.
+    let reactor = unsafe { crate::Running::new(reactor) };
+    // SAFETY: as the caller promises, an event lent for the call.
+    let event = unsafe { &mut *event.cast() };
+    handler(reactor, event)
 }
 
 /// A change's status: `-2` (add could not allocate) is upstream's `bad_alloc`.
