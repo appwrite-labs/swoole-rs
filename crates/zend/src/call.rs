@@ -106,12 +106,16 @@ impl Call {
     }
 
     /// `GC_FLAGS(Z_OBJ_P(ZEND_THIS)) & IS_OBJ_DESTRUCTOR_CALLED`: Zend is running
-    /// `$this`'s destructor (`SW_PREVENT_USER_DESTRUCT`), not user code.
+    /// `$this`'s destructor (`SW_PREVENT_USER_DESTRUCT`), not user code. False
+    /// without a `$this`.
     #[must_use]
     #[inline]
     pub fn destructor_called(&self) -> bool {
-        // SAFETY: a method's live `$this`.
-        let header = unsafe { (*self.this()).gc.u };
+        let Some(this) = self.this_object() else {
+            return false;
+        };
+        // SAFETY: the frame's live `$this`.
+        let header = unsafe { (*this).gc.u };
         // SAFETY: a refcounted header always sets `type_info`.
         unsafe { header.type_info & IS_OBJ_DESTRUCTOR_CALLED != 0 }
     }
@@ -138,7 +142,7 @@ impl Call {
 
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
     #[inline]
-    fn this_object(&self) -> Option<*mut zend_object> {
+    pub(crate) fn this_object(&self) -> Option<*mut zend_object> {
         // SAFETY: a live frame.
         let this = unsafe { &raw const (*self.frame).This };
         // SAFETY: `This` is a zval whose type says whether it holds an object.
@@ -523,7 +527,8 @@ impl Call {
 
     /// `zend_update_property(scope, Z_OBJ_P(ZEND_THIS), name, value)`: the
     /// property takes a copy. A dynamic property's deprecation runs the user
-    /// error handler, so this traps its bailout.
+    /// error handler, so this traps its bailout. A static method has no `$this`
+    /// to update.
     /// # Errors
     /// The error handler bailed out.
     pub fn update_property(
@@ -532,13 +537,16 @@ impl Call {
         name: &[u8],
         value: &Value,
     ) -> Result<(), crate::bailout::Bailout> {
+        let Some(this) = self.this_object() else {
+            return Ok(());
+        };
         let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        // SAFETY: a method's live `$this`, a registered class or null and a
+        // SAFETY: the frame's live `$this`, a registered class or null and a
         // live value; Zend copies the name and the value.
         let bailed = unsafe {
             crate::sys::swr_zend_try_facade_update(
                 scope,
-                self.this(),
+                this,
                 name.as_ptr().cast(),
                 name.len(),
                 value.as_ptr(),
@@ -548,22 +556,34 @@ impl Call {
     }
 
     /// `RETURN_ZVAL(zend_read_property(scope, Z_OBJ_P(ZEND_THIS), name, 1, &rv), 1, 0)`:
-    /// a copy of the property, read silently.
+    /// a copy of the property, read silently. The read can run PHP code (a
+    /// subclass's `__get` or property hook), so it runs inside `zend_try` and a
+    /// bailout is deferred, leaving the return slot as it was. A static method
+    /// has no `$this` to read.
     pub fn set_property(&self, scope: Option<&Class>, name: &[u8]) {
+        let Some(this) = self.this_object() else {
+            return;
+        };
         let scope = scope.map_or(ptr::null_mut(), Class::entry);
         let rv = crate::Owned::default();
-        // SAFETY: a method's live `$this`, a registered class or null, and a
-        // slot for a computed value, which outlives the copy below.
-        let property = unsafe {
-            crate::sys::zend_read_property(
+        let mut property = ptr::null_mut();
+        // SAFETY: the frame's live `$this`, a registered class or null, a slot
+        // for a computed value, which outlives the copy below, and a writable local.
+        let bailed = unsafe {
+            crate::sys::swr_zend_try_facade_read(
                 scope,
-                self.this(),
+                this,
                 name.as_ptr().cast(),
                 name.len(),
                 true,
                 rv.as_ptr(),
+                &raw mut property,
             )
         };
+        if let Err(bailout) = crate::bailout::trapped(bailed) {
+            bailout.defer();
+            return;
+        }
         // SAFETY: the property's live value, copied with a reference.
         unsafe { crate::sys::swr_zval_copy(self.value, property) };
     }
