@@ -79,12 +79,8 @@ fn port(info: &SocketAddress) -> i64 {
 
 /// `Socket::get_out_buffer_length()`.
 fn out_buffer_length(socket: &SocketRecord) -> u64 {
-    let buffer = socket.output.out_buffer;
-    if buffer.is_null() {
-        return 0;
-    }
-    // SAFETY: the socket's live output buffer.
-    swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() }).into()
+    let length = swoole_rs_buffer::cpp::swr_cpp_buffer_length;
+    crate::reactor_ops::out_buffer(socket).map_or(0, |buffer| length(buffer).into())
 }
 
 fn socket(s: &SocketRecord) -> Socket {
@@ -320,8 +316,7 @@ impl Facts for Live<'_> {
         let bus = if is_thread {
             self.thread_record().message_bus()
         } else {
-            // SAFETY: the server's live `MessageBus`.
-            unsafe { crate::objects::Bus::of(self.tables.message_bus) }
+            self.serv.state().message_bus()
         };
         let bus_size = bus.rust().memory_size();
         let user_workers = self.serv.user_worker_num();

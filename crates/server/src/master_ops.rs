@@ -506,9 +506,10 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_OUT_EMPTY => {
             // SAFETY: native code passes a live socket.
             let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
-            let buffer = socket.read(|s| s.output.out_buffer);
-            // SAFETY: null or the socket's live buffer (`Buffer::empty`).
-            u64::from(buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast() }))
+            let empty = |s: &SocketRecord| {
+                crate::reactor_ops::out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b))
+            };
+            u64::from(socket.read(empty))
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_ON_CLOSE => {
@@ -529,9 +530,8 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         crate::ops::OP_QUEUE_CLOSE => {
             // SAFETY: a live session socket of this thread's reactor.
             let socket = unsafe { o.sockets().socket(arg as *mut SocketRecord) }?;
-            let out = socket.read(|s| s.output.out_buffer);
-            // SAFETY: its live output buffer.
-            swr_cpp_buffer_typed_close(unsafe { &*out.cast() });
+            socket
+                .read(|s| crate::reactor_ops::out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
             // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
             u64::from(
                 !cfg!(feature = "halfclose")
@@ -1615,9 +1615,13 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     let Some(sock) = o.sock() else {
         return 0;
     };
-    let (out, direct_send) = sock.read(|s| (s.output.out_buffer, s.direct_send != 0));
-    // SAFETY: null or the socket's live buffer (`Buffer::empty`).
-    let out_empty = out.is_null() || swr_cpp_buffer_empty(unsafe { &*out.cast() });
+    let (out_empty, direct_send) = sock.read(|s| {
+        let out = crate::reactor_ops::out_buffer(s);
+        (
+            out.is_none_or(|b| swr_cpp_buffer_empty(b)),
+            s.direct_send != 0,
+        )
+    });
     let bit = |set: bool, bit| if set { bit } else { 0 };
     send_flags(o)
         | send::FOUND
@@ -2109,16 +2113,13 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
 
 /// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
 /// of it.
-///
-/// # Safety
-/// `serv` is a live server and `state` its own.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe fn base_pass(serv: *mut core::ffi::c_void, state: &ServerState, send: &SendData) {
-    let bus = worker_message_bus(state);
+pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &SendData) {
+    let bus = worker_message_bus(serv.state());
     bus.rust().pass(&send.info, send.data);
     let event = bus.buffer();
     // SAFETY: the live server and the bus's buffer, which now holds the event.
-    unsafe { entry::worker_accept_event(serv, event.cast()) };
+    unsafe { entry::worker_accept_event(serv.raw(), event.cast()) };
 }
 
 /// `SendfileTask`'s head: its offset and length, then its name.
@@ -2206,8 +2207,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_BASE_PASS => {
-            // SAFETY: the live server and its state.
-            unsafe { base_pass(serv, o.state, lent()) };
+            base_pass(o.server(), lent());
             0
         }
         OP_FORWARD => forward(o, lent()),
@@ -2480,8 +2480,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_REACTOR_BARRIER | OP_MANAGER_BARRIER => {
-            // SAFETY: the live server's barrier, initialized at startup.
-            swoole_rs_locks::barrier_wait(unsafe { barrier(serv, op == OP_MANAGER_BARRIER) });
+            swoole_rs_locks::barrier_wait(barrier(o.server(), op == OP_MANAGER_BARRIER));
             0
         }
         OP_RELEASE_PIPE_BUFFERS => {
@@ -2618,9 +2617,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 data: c.message.cast(),
             };
             head(&mut task.info);
-            // SAFETY: the live server and one of its workers.
-            let worker = unsafe { crate::view::Server::from_raw(serv) }.worker(process_id);
-            // SAFETY: as above.
+            let worker = o.server().worker(process_id);
+            // SAFETY: one of the live server's workers.
             let worker = unsafe { &*worker };
             let pipe = if c.action == TO_REACTOR_THREAD {
                 worker.pipe_worker

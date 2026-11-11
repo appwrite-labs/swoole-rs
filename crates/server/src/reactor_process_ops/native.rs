@@ -77,8 +77,7 @@ impl Context {
     }
     /// The server's own `MessageBus`.
     pub(super) fn bus(&self) -> Bus {
-        // SAFETY: the live server's bus, which this process alone reads.
-        unsafe { Bus::of(self.tables().message_bus) }
+        self.state().message_bus()
     }
     fn callback(&self, index: u32) {
         if let Some(slot) = self.state().callbacks.slot(index) {

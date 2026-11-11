@@ -235,8 +235,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 pid: std::process::id().cast_signed(),
                 worker_id: u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX),
             };
-            // SAFETY: the context's live server.
-            let pool = unsafe { view::Server::from_raw(serv) }.workers().event_pool;
+            let pool = ctx.server().workers().event_pool;
             let data = (&raw const msg).cast::<u8>();
             // SAFETY: its live event pool and a message of the size passed.
             let sent =

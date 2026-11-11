@@ -283,9 +283,7 @@ const SW_EVENT_WORKER: c_int = 2;
 /// The connection the context selected (`OP_CONN_AT`, `OP_EVENT_CONN_ACTIVE`) and
 /// the event being closed.
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv;
-    // SAFETY: the context's live server.
-    let server = unsafe { view::Server::from_raw(serv) };
+    let server = ctx.server();
     match op {
         OP_CONN_AT => {
             let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);

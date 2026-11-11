@@ -38,6 +38,15 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
+#[cfg(not(test))]
+impl crate::ServerState {
+    /// The server's own `MessageBus`.
+    pub(crate) fn message_bus(&self) -> Bus {
+        // SAFETY: `swr_v1_server_new`'s bus, which lives as long as the server.
+        unsafe { Bus::of(self.tables_ref().message_bus) }
+    }
+}
+
 /// A `MessageBus`: its Rust bus and the allocator of its packets.
 #[derive(Clone, Copy)]
 pub(crate) struct Bus {

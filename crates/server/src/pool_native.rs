@@ -55,7 +55,7 @@ use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
-    swoole_event_write, swr_v1_event_current,
+    swoole_event_write,
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
@@ -410,8 +410,8 @@ extern "C-unwind" fn worker_exit() {
         // SAFETY: the pool's callback over its worker.
         unsafe { on_worker_exit(pool, worker) };
     }
-    // SAFETY: the loop running this end callback.
-    let reactor = unsafe { crate::objects::Reactor::of(swr_v1_event_current()) };
+    // The loop running this end callback.
+    let reactor = crate::objects::Reactor::thread();
     if reactor.if_exit() {
         reactor.fields().running = false;
     }
@@ -584,10 +584,8 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
                 return Some(-1);
             }
-            // SAFETY: the loop just made.
-            unsafe { crate::objects::Reactor::of(swr_v1_event_current()) }
-                .fields()
-                .ptr = pool.cast();
+            // The loop just made.
+            crate::objects::Reactor::thread().fields().ptr = pool.cast();
             0
         }
         OP_WORKER_SHUTDOWN => {

@@ -61,6 +61,12 @@ struct DgramPacket {
     length: u32,
 }
 
+/// The front entry of the context event socket's output buffer, if it has one.
+fn out_front(ctx: &ReactorContext) -> Option<swoole_rs_buffer::TypedFront> {
+    let front = swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front;
+    event_socket(ctx)?.read(|s| crate::reactor_ops::out_buffer(s).map(|b| front(b)))
+}
+
 /// The context's thread.
 fn this<'a>(ctx: &ReactorContext) -> &'a mut ThreadRecord {
     // SAFETY: the ops reading it run with a live reactor thread in the context.
@@ -463,10 +469,7 @@ pub(crate) unsafe fn answer(
         }
 
         OP_RT_FRONT => {
-            let buffer = event_socket(ctx)?.read(|s| s.output.out_buffer);
-            // SAFETY: the socket's live, non-empty output buffer.
-            let front =
-                swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front(unsafe { &*buffer.cast() });
+            let front = out_front(ctx)?;
             ctx.front = front.data.cast();
             ctx.front_length = front.length as usize;
             0

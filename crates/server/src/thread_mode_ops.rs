@@ -240,11 +240,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CREATE_MESSAGE_BUS => {
-            // SAFETY: the started server's shared counters.
-            let counter = unsafe { view::Server::from_raw(serv) }
-                .counters()
-                .pipe_packet_msg_id
-                .as_ptr();
+            let counter = ctx.server().counters().pipe_packet_msg_id.as_ptr();
             let bus = pool_native::new_bus(counter.cast());
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
@@ -407,8 +403,7 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
         OP_GET_WORKER => {
             let id = u16::try_from(arg).ok()?;
-            // SAFETY: the live server.
-            ctx.worker = unsafe { view::Server::from_raw(serv) }.worker(id);
+            ctx.worker = ctx.server().worker(id);
             ctx.worker.addr() as u64
         }
         OP_KILL_WORKER => {

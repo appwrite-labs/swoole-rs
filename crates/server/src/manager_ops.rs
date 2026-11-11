@@ -471,8 +471,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_MANAGER_BARRIER => {
-            // SAFETY: the live server's barrier, initialized at startup.
-            swoole_rs_locks::barrier_wait(unsafe { crate::server_object::barrier(ctx.serv, true) });
+            swoole_rs_locks::barrier_wait(crate::server_object::barrier(ctx.server(), true));
             0
         }
         OP_HAS_USER => u64::from(!ctx.state().text(1).is_empty()),

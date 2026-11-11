@@ -157,8 +157,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
     let barriers = |init: bool| {
         for (manager, count) in [(false, c_int::from(config.reactor_num) + 1), (true, 2)] {
-            // SAFETY: the server's reactor-thread and (shared) manager barriers.
-            let barrier = unsafe { crate::server_object::barrier(serv, manager) };
+            let barrier = crate::server_object::barrier(ctx.server(), manager);
             if init {
                 swoole_rs_locks::barrier_init(barrier, manager, count);
             } else {
