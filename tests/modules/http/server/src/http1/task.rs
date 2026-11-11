@@ -111,7 +111,14 @@ struct TaskPool {
 impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
         // SAFETY: the live task pool and a packed task.
-        unsafe { pool::dispatch(self.pool, task, worker_id, blocking) == SW_OK }
+        unsafe {
+            pool::dispatch(
+                swoole_rs_process::process_pool::PoolRef::new(self.pool),
+                swoole_rs_process::task_file::Packed::from_raw(task.cast()),
+                worker_id,
+                blocking,
+            ) == SW_OK
+        }
     }
 
     fn pipe_clean(&mut self) {
@@ -330,8 +337,15 @@ impl TaskServer for Server {
     }
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
-        // SAFETY: the created server's task pool and a writable EventData.
-        unsafe { pool::dispatch(self.task_pool(), buf.head().cast(), dst_worker_id, false) }
+        // SAFETY: the created server's task pool and a packed EventData.
+        unsafe {
+            pool::dispatch(
+                swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
+                swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
+                dst_worker_id,
+                false,
+            )
+        }
     }
 
     fn get_tasking_num(self) -> c_int {

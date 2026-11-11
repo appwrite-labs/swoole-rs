@@ -135,15 +135,10 @@ pub fn worker_global_max_requests(
 
 /// Retains the exiting worker's local record without relying on C++ copying the
 /// reserved private field bytes. Shared/native resource pointers remain loans.
-///
-/// # Safety
-/// `worker` is a live initialized worker; no previous detached copy is outstanding.
-pub unsafe fn worker_global_detach(worker: *mut WorkerRecord) {
-    // SAFETY: the native transition lends the initialized worker for this value copy.
-    let copy = unsafe { worker.read() };
-    let copy = Box::into_raw(Box::new(copy));
+pub fn worker_global_detach(worker: crate::worker_record::Worker<'_>) {
+    let copy = Box::into_raw(Box::new(worker.get()));
     with_globals(|globals| globals.worker_copy.store(copy, Relaxed));
-    set_current_worker(worker);
+    set_current_worker(worker.raw());
 }
 
 /// Stops the current worker and releases its local detached copy.
@@ -214,7 +209,7 @@ mod tests {
             assert!(!Worker::new(&raw const worker).exceeded_max_request());
             Worker::new(&raw mut worker).add_request_count();
             assert!(Worker::new(&raw const worker).exceeded_max_request());
-            worker_global_detach(&raw mut worker);
+            worker_global_detach(Worker::new(&raw mut worker));
             let copy = (*thread_globals()).worker_copy.load(Relaxed);
             assert_ne!(copy, &raw mut worker);
             assert_eq!(Worker::new(copy).id(), 11);

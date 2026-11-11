@@ -26,7 +26,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use swoole_rs_corebase::sys::set_errno;
 
 use crate::process_pool::PoolNative;
-use crate::worker_record::WorkerRecord;
 
 /// A loop's result: it ended, or PHP bailed out inside a hook.
 pub const DONE: c_int = 0;
@@ -914,31 +913,23 @@ pub unsafe fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop, protocol: 
     if result.is_ok() { DONE } else { BAILED }
 }
 
-/// `ProcessPool::schedule`'s round robin: the first idle worker from the next
-/// round, or the last one tried (and `warning` set) when all are busy.
-///
-/// # Safety
-/// `workers` holds `count` (> 0) live worker records; `round_id` is the pool's
-/// shared counter and `warning` its flag.
-pub unsafe fn pool_schedule(
-    workers: *const WorkerRecord,
-    count: u32,
-    round_id: *mut u32,
-    warning: *mut u8,
-) -> u32 {
-    // SAFETY: the pool's counter, shared with other processes and updated atomically.
-    let round = unsafe { AtomicU32::from_ptr(round_id) };
+/// `ProcessPool::schedule`'s round robin over `count` (> 0) workers: the first
+/// idle one from the next round, or the last one tried and `true` (the pool's
+/// scheduler warning) when all are busy. `round` is the pool's shared counter.
+pub fn pool_schedule(count: u32, round: &AtomicU32, idle: impl Fn(u32) -> bool) -> (u32, bool) {
     let mut target = 0;
     for _ in 0..=count {
         target = round.fetch_add(1, Ordering::SeqCst) % count;
-        // SAFETY: `target` < `count`.
-        if unsafe { Record::new(workers.wrapping_add(target as usize)).status() } == WORKER_IDLE {
-            return target;
+        if idle(target) {
+            return (target, false);
         }
     }
-    // SAFETY: the pool's flag.
-    unsafe { *warning = 1 };
-    target
+    (target, true)
+}
+
+/// Whether `worker` is `SW_WORKER_IDLE`.
+pub(crate) fn idle(worker: Record<'_>) -> bool {
+    worker.status() == WORKER_IDLE
 }
 
 /// `Worker::send_pipe_message`: through the pool's queue (as `mtype` worker id + 1)
@@ -991,56 +982,49 @@ pub unsafe fn swr_v1_process_worker_send(
     call.result
 }
 
-/// `ProcessPool::dispatch`/`dispatch_sync` to a worker's pipe or queue: choose
-/// the worker when `*worker_id` is negative, offset it by `start_id`, and send
-/// the event (`blocking`: wait for the pipe). False after reporting a failed send.
+/// `ProcessPool::dispatch`/`dispatch_sync` to a worker's pipe or queue: offset
+/// the chosen worker `*target` by `start_id`, and send `event` (`blocking`: wait
+/// for the pipe). False after reporting a failed send.
 ///
 /// # Safety
-/// As [`swr_v1_process_worker_send`]; `workers` holds `count` live records,
-/// `worker_id` is writable, `event` holds `size` bytes.
+/// The pool is live; each worker `workers` returns is one of its records, whose
+/// master pipe end is the pool's.
 #[expect(
     clippy::too_many_arguments,
     reason = "the flat list of the former C export; `Pool::dispatch` is the one caller"
 )]
-pub unsafe fn pool_dispatch(
+pub unsafe fn pool_dispatch<'a>(
     native: &dyn PoolNative,
     pool: *mut c_void,
-    workers: *mut WorkerRecord,
-    count: u32,
+    workers: impl Fn(usize) -> Option<Record<'a>>,
     start_id: u16,
-    round_id: *mut u32,
-    warning: *mut u8,
-    schedule_by_sysvmsg: bool,
     queue: bool,
-    worker_id: *mut c_int,
-    event: *const u8,
-    size: u32,
+    target: &mut c_int,
+    event: &[u8],
     blocking: bool,
 ) -> bool {
-    // SAFETY: the caller's out-pointer.
-    let target = unsafe { &mut *worker_id };
-    if *target < 0 {
-        *target = if schedule_by_sysvmsg {
-            0
-        } else {
-            // SAFETY: as the caller guarantees.
-            unsafe { pool_schedule(workers, count, round_id, warning) }.cast_signed()
-        };
-    }
+    let size = u32::try_from(event.len()).unwrap_or(u32::MAX);
     *target += c_int::from(start_id);
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
-    if index >= count as usize {
+    let Some(worker) = workers(index) else {
         let call = PoolCall::new(pool, ptr::null_mut());
         native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
         return false;
-    }
-    // SAFETY: the chosen worker's record.
-    let worker = unsafe { Record::new(workers.wrapping_add(index)) };
+    };
     let (id, pipe) = (worker.id(), worker.pipe_master());
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
-    // SAFETY: as the caller guarantees.
+    // SAFETY: as the caller guarantees; `event` lends its bytes.
     let sent = unsafe {
-        swr_v1_process_worker_send(native, pool, pipe, queue, id, event, size as usize, flags)
+        swr_v1_process_worker_send(
+            native,
+            pool,
+            pipe,
+            queue,
+            id,
+            event.as_ptr(),
+            event.len(),
+            flags,
+        )
     };
     if sent < 0 {
         let call = PoolCall::new(pool, ptr::null_mut());
@@ -1104,40 +1088,41 @@ mod tests {
         assert!(ipc.packet.len() * 8 >= 4 << 20);
     }
 
-    fn records(statuses: &[u8]) -> Vec<WorkerRecord> {
+    fn records(statuses: &[u8]) -> Vec<crate::worker_record::WorkerRecord> {
         statuses
             .iter()
             .map(|&status| {
-                // SAFETY: a record is plain data; zero is a valid value.
-                let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-                // SAFETY: a local record.
-                unsafe { Record::new(&raw mut record).set_status(status) };
+                let mut record = *crate::worker_record::WorkerRecord::boxed();
+                record.set_status(status);
                 record
             })
             .collect()
     }
 
+    fn schedule(
+        workers: &mut [crate::worker_record::WorkerRecord],
+        round: &AtomicU32,
+    ) -> (u32, bool) {
+        let count = u32::try_from(workers.len()).unwrap();
+        let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
+        pool_schedule(count, round, |target| idle(workers[target as usize]))
+    }
+
     #[test]
     fn schedule_picks_the_next_idle_worker() {
-        let workers = records(&[1, 2, 1]);
-        let mut round = 0;
-        let mut warning = 0;
-        // SAFETY: local records and counters.
-        let target =
-            unsafe { pool_schedule(workers.as_ptr(), 3, &raw mut round, &raw mut warning) };
-        assert_eq!((target, round, warning), (1, 2, 0));
+        let mut workers = records(&[1, 2, 1]);
+        let round = AtomicU32::new(0);
+        let (target, warning) = schedule(&mut workers, &round);
+        assert_eq!((target, round.into_inner(), warning), (1, 2, false));
     }
 
     #[test]
     fn schedule_warns_when_every_worker_is_busy() {
-        let workers = records(&[1, 1]);
-        let mut round = 5;
-        let mut warning = 0;
-        // SAFETY: local records and counters.
-        let target =
-            unsafe { pool_schedule(workers.as_ptr(), 2, &raw mut round, &raw mut warning) };
+        let mut workers = records(&[1, 1]);
+        let round = AtomicU32::new(5);
+        let (target, warning) = schedule(&mut workers, &round);
         // Three tries (count + 1): rounds 5, 6, 7; the last is 7 % 2.
-        assert_eq!((target, round, warning), (1, 8, 1));
+        assert_eq!((target, round.into_inner(), warning), (1, 8, true));
     }
 
     /// A scripted native side: what each hook returns, and what was seen.
@@ -1403,23 +1388,19 @@ mod tests {
     #[test]
     fn a_dispatch_to_a_worker_the_pool_lacks_warns_and_fails() {
         with(|s| *s = Script::default());
-        let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
-        let (mut round, mut warning, mut target) = (0, 0, 5);
+        let mut workers = records(&[0, 0]);
+        let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
+        let mut target = 5;
         let event = [0u8; 4];
         let sent = unsafe {
             pool_dispatch(
                 &Scripted,
                 ptr::null_mut(),
-                workers.as_mut_ptr(),
-                2,
+                |index| workers.get(index).copied(),
                 0,
-                &raw mut round,
-                &raw mut warning,
                 false,
-                false,
-                &raw mut target,
-                event.as_ptr(),
-                4,
+                &mut target,
+                &event,
                 false,
             )
         };
