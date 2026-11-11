@@ -619,10 +619,14 @@ impl Client {
         let method = unsafe { props::not_null(object, c"requestMethod") };
         // SAFETY: as above.
         let headers = unsafe { swoole_rs_zend::property(object, c"requestHeaders") }.array();
+        // The body and files with references of their own: a multipart send yields
+        // between its writes, and `setData()` or `addFile()` may replace or add to
+        // them meanwhile (an add separates the shared array).
         // SAFETY: as above.
-        let body = unsafe { props::not_null(object, c"requestBody") };
+        let body = unsafe { props::not_null(object, c"requestBody") }.map(Value::copy);
         // SAFETY: as above.
-        let files = unsafe { swoole_rs_zend::property(object, c"uploadFiles") }.array();
+        let files = unsafe { swoole_rs_zend::property(object, c"uploadFiles") }.copy();
+        let body = body.as_deref();
         // SAFETY: as above.
         let cookies = unsafe { swoole_rs_zend::property(object, c"cookies") }.array();
         // SAFETY: as above.
@@ -740,7 +744,7 @@ impl Client {
             out.extend_from_slice(b"\r\n");
         }
 
-        let files = files.filter(|files| files.count() > 0);
+        let files = files.array().filter(|files| files.count() > 0);
         self.has_upload_files.set(files.is_some());
         if let Some(files) = files {
             return self.send_multipart(out, body, files);
