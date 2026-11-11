@@ -270,9 +270,11 @@ pub unsafe fn swr_v1_memory_channel_init(
     unsafe { record.write(fresh) };
     // SAFETY: as above; written just now.
     let record = unsafe { &mut *record };
-    // SAFETY: `notify` has room for the two descriptors.
-    if flags & NOTIFY != 0 && unsafe { libc::pipe(record.notify.as_mut_ptr()) } != 0 {
-        return 1;
+    if flags & NOTIFY != 0 {
+        let Some(notify) = sys::pipe() else {
+            return 1;
+        };
+        record.notify = notify;
     }
     if flags & LOCK != 0 && init_mutex(record.lock.get_mut()) != 0 {
         record.close_pipe();
