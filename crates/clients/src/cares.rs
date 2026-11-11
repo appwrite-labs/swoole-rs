@@ -116,9 +116,8 @@ unsafe extern "C-unwind" fn run_completion(data: *mut c_void) {
 }
 /// The thread's live reactor fields.
 fn reactor_fields() -> *mut swoole_rs_reactor::ReactorFields {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    // SAFETY: c-ares runs on a thread whose reactor is live.
-    unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields
+    // c-ares runs on a thread whose reactor is live.
+    event_api::current_prepared().map_or(ptr::null_mut(), |prepared| prepared.fields)
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
 extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
@@ -180,10 +179,9 @@ unsafe fn free(socket: *mut SocketRecord) {
         // SAFETY: as above.
         unsafe { dealloc(socket.cast()) };
     } else {
-        // SAFETY: the available reactor is live.
-        let fields = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields;
-        // SAFETY: its live queue.
-        unsafe { swoole_rs_reactor::defer(fields, dealloc, socket.cast(), None) };
+        // SAFETY: the available thread reactor's queue; `dealloc` frees the
+        // detached wrapper once.
+        unsafe { swoole_rs_reactor::swoole_event_defer(dealloc, socket.cast()) };
     }
 }
 unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {

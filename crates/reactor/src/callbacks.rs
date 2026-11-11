@@ -199,12 +199,7 @@ pub(crate) unsafe fn if_exit(owner: *mut ReactorState) -> bool {
 
 /// The thread's reactor state, if it has a reactor.
 fn current() -> Option<&'static mut ReactorState> {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    if reactor.is_null() {
-        return None;
-    }
-    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
-    let owner = unsafe { prepared(reactor) }.owner;
+    let owner = crate::event_api::current_prepared()?.owner;
     // SAFETY: the live state; each caller's borrow ends before any callback runs.
     unsafe { owner.as_mut() }
 }

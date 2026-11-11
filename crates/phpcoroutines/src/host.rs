@@ -111,12 +111,7 @@ fn reactor() -> Option<(
     &'static mut swoole_rs_reactor::ReactorFields,
     *mut swoole_rs_reactor::Registry,
 )> {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    if reactor.is_null() {
-        return None;
-    }
-    // SAFETY: the thread's live loop, which begins with its prepared state.
-    let prepared = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) };
+    let prepared = swoole_rs_reactor::event_api::current_prepared()?;
     // SAFETY: the loop's fields, live until `swoole_event_free`.
     unsafe { prepared.fields.as_mut() }.map(|fields| (fields, prepared.registry))
 }

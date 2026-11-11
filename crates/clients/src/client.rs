@@ -781,9 +781,7 @@ pub extern "C" fn swr_v1_clients_listen(
     this.get().events.set(events);
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `sw_tg_buffer()`, whole: a sync proxy handshake reads into it.
 fn shared_buffer() -> Tail {
@@ -796,16 +794,7 @@ fn shared_buffer() -> Tail {
     }
 }
 
-fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
-}
+use swoole_rs_corebase::set_errno;
 
 fn is_stream(kind: c_int) -> bool {
     matches!(kind, 1 | 3 | 5)
@@ -1774,8 +1763,7 @@ unsafe fn address_of(
     port: c_int,
     resolve: bool,
 ) -> Option<SocketAddress> {
-    // SAFETY: an all-zero sockaddr union, length and type, as `Address` starts.
-    let mut address: SocketAddress = unsafe { core::mem::zeroed() };
+    let mut address: SocketAddress = SocketAddress::zeroed();
     address.kind = kind;
     let resolve = resolve
         .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);

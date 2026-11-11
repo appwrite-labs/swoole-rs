@@ -215,8 +215,9 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
     crate::swr_v1_reactor_registry_get(unsafe { registry.as_ref() }, fd)
 }
 
-/// The thread's `Reactor`'s prepared views, or `None` without one.
-fn current_prepared() -> Option<crate::ReactorPrepared> {
+/// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
+#[must_use]
+pub fn current_prepared() -> Option<crate::ReactorPrepared> {
     let reactor = current();
     // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
     (!reactor.is_null()).then(|| unsafe { prepared(reactor) })
