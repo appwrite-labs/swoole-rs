@@ -341,16 +341,16 @@ pub extern "C" fn swoole_set_trace_flags(flags: c_long) {
     swr_v1_core_set_trace_flags(flags);
 }
 
-/// `::time(nullptr)`: the wall clock's seconds.
+/// `::time(nullptr)`: the wall clock's seconds, from the clock glibc's `time`
+/// reads (`CLOCK_REALTIME_COARSE` on Linux) in one vDSO call. `SystemTime::now`
+/// and `duration_since` cost five times as much, and every HTTP request asks.
 #[must_use]
 pub fn time_now() -> libc::time_t {
-    let seconds = |elapsed: std::time::Duration| {
-        libc::time_t::try_from(elapsed.as_secs()).unwrap_or(libc::time_t::MAX)
-    };
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(elapsed) => seconds(elapsed),
-        Err(before) => -seconds(before.duration()),
-    }
+    #[cfg(target_os = "linux")]
+    const CLOCK: libc::clockid_t = libc::CLOCK_REALTIME_COARSE;
+    #[cfg(not(target_os = "linux"))]
+    const CLOCK: libc::clockid_t = libc::CLOCK_REALTIME;
+    crate::sys::clock_gettime(CLOCK).map_or(0, |now| now.tv_sec)
 }
 
 #[cfg(test)]
@@ -359,8 +359,8 @@ mod tests {
 
     /// Upstream's `time.get_seconds`: the wall clock's seconds against the C library's.
     /// glibc's `time(NULL)` reads `CLOCK_REALTIME_COARSE`, which trails the precise clock
-    /// by up to a tick, so just after a second boundary it reads one less than an earlier
-    /// precise reading. The reference reads `CLOCK_REALTIME`, the clock `time_now` uses.
+    /// by up to a tick, so just after a second boundary it reads one less than a later
+    /// precise reading. `time_now` reads that clock; the reference reads `CLOCK_REALTIME`.
     #[test]
     fn time_get_seconds() {
         let sec1 = time_now();

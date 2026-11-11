@@ -78,13 +78,6 @@ pub(crate) struct ServerShared {
 }
 
 /// The server's shared counters (`serv->gs`), once configured.
-/// `time(NULL)`: seconds since the Unix epoch.
-pub(crate) fn unix_now() -> libc::time_t {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs().cast_signed())
-}
-
 pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
     let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
     // SAFETY: a non-null `gs` is the server's shared counters, which stay mapped.
@@ -183,7 +176,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
                 .is_ok(),
         ),
         OP_LC_START_TIME => {
-            let now = crate::shared::unix_now();
+            let now = swoole_rs_corebase::time_now();
             // SAFETY: only the starting master writes the start time, before forking workers.
             unsafe { (*raw).start_time = now };
             0
