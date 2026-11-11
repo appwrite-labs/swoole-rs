@@ -30,7 +30,7 @@ host `swoole_init` installs sets, so its TESTs are `file.<name>` in
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
-| `file.read_line` | none: `File::read_line` left the build (not in `native/ossupport/swoole_file.h`, no Rust body, no caller) |
+| `file.read_line` | none: `File::read_line` left the build (no declaration, no Rust body, no caller) |
 | `file.read_line_no_crlf` | none, as `file.read_line` |
 | `file.file_put_contents` | `file.file_put_contents`, over `file_api::file_put_contents` |
 | `file.file_get_contents` | `file.file_get_contents`, over `file_api::file_get_contents`; the large file is the test binary, as upstream's is core-tests' |
