@@ -32,7 +32,8 @@ impl<T> Object<T> {
     /// the standard object and its properties, and install `class`'s handlers.
     /// # Safety
     /// `ce` is `class`'s entry or a subclass of it, `class` is registered, and
-    /// all-zero bytes are a valid `T`.
+    /// all-zero bytes are a valid `T` or the caller writes `data` before the
+    /// object is shared.
     #[must_use]
     pub unsafe fn create(class: &Class, ce: *mut zend_class_entry) -> *mut zend_object {
         // SAFETY: Zend's allocator; it zeroes everything before `std`.
@@ -243,18 +244,19 @@ unsafe fn make<T: Custom>(
     Ok(std)
 }
 
-/// `T`'s `create_object` handler, which raises a contained bailout once `T`'s
-/// data has dropped.
+/// `T`'s `create_object` handler. The object is allocated before `T`'s data
+/// exists, so a bailout from Zend's allocator crosses only this frame, which
+/// owns nothing yet, as upstream's handlers do: no `zend_try` per object.
 /// # Safety
 /// Zend calls it with `T`'s class or a subclass of it, which inherits it.
 unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_object {
-    let data = T::new();
-    // SAFETY: per Zend; `register_object` gave `T`'s class `T`'s handlers.
-    let made = unsafe { make(T::class(), ce, data) };
-    made.unwrap_or_else(|bailed| {
-        bailout::raise(Err(bailed));
-        std::ptr::null_mut()
-    })
+    const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
+    // SAFETY: per Zend; `register_object` gave `T`'s class `T`'s handlers, and
+    // the data is written below, before the object is shared.
+    let std = unsafe { Object::<T>::create(T::class(), ce) };
+    // SAFETY: the object's data, allocated and unused.
+    unsafe { Object::<T>::data_ptr(std).write(T::new()) };
+    std
 }
 
 /// `T`'s `free_obj` handler: drop the data, then free the standard object.
