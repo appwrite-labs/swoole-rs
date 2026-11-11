@@ -63,6 +63,19 @@ pub extern "C" fn thread_globals() -> *mut WorkerGlobalRecord {
     GLOBAL.0.get()
 }
 
+/// `SwooleWG.worker`: this thread's current worker, or null.
+#[must_use]
+pub fn current_worker() -> *mut WorkerRecord {
+    // SAFETY: one field of this thread's live record, without a whole-record borrow.
+    unsafe { (*thread_globals()).worker }
+}
+
+/// `SwooleWG.worker = worker`.
+pub fn set_current_worker(worker: *mut WorkerRecord) {
+    // SAFETY: as [`current_worker`], a write.
+    unsafe { (*thread_globals()).worker = worker };
+}
+
 /// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.
 #[must_use]
 pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
@@ -136,8 +149,7 @@ pub unsafe fn worker_global_detach(worker: *mut WorkerRecord) {
     let global = thread_globals();
     // SAFETY: this thread exclusively owns its current worker/copy fields.
     unsafe { (*global).worker_copy = copy };
-    // SAFETY: same thread-local leaf update; the shared worker remains borrowed.
-    unsafe { (*global).worker = worker };
+    set_current_worker(worker);
 }
 
 /// Stops the current worker and releases its local detached copy.

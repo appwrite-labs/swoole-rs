@@ -407,7 +407,7 @@ fn worker_context(reactor: Reactor) -> Context {
 fn context(serv: *mut c_void, reactor: Reactor) -> Context {
     Context {
         serv,
-        worker: crate::worker_methods::current_worker(),
+        worker: swoole_rs_process::worker_globals::current_worker(),
         info: core::ptr::null_mut(),
         reactor: reactor.ptr(),
         conn: core::ptr::null_mut(),
