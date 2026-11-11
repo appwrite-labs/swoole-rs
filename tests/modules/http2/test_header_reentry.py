@@ -26,5 +26,6 @@ def test_responses_keep_the_headers_set_before_sending(engine):
         ['/nested', 200, HEADERS, 'ok'],
         ['/trailer', 200, {'x-t1': 't1', 'x-t2': 't2'}, 'chunk'],
         ['/', 200, [], 'ok'],
-        ['/client', 200, [], 'ok'],
+        ['/echo', 200, [], json.dumps({'header': {'x-q': 'q', 'x-r': 'r', 'x-s': 's'},
+                                       'cookie': {'c1': 'r', 'c2': 'two'}}, separators=(',', ':'))],
     ], php.stdout + php.stderr

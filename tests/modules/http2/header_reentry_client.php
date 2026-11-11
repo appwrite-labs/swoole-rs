@@ -1,7 +1,8 @@
 <?php
 // test_header_reentry.py's client: each path of tests/modules/http/header_reentry.php
-// over HTTP/2, one JSON line per response. The last request's header value replaces
-// the request's own header array while the client sends it.
+// over HTTP/2, one JSON line per response. In the last request (/echo), a header
+// value replaces the request's header array, and a cookie value its cookie array,
+// while the client sends them; the server echoes what it received.
 final class Value
 {
     public function __construct(private Closure $effect) {}
@@ -19,11 +20,19 @@ Co\run(static function (): void {
     if (!$client->connect()) {
         throw new RuntimeException('connect failed');
     }
-    foreach (['/replace-empty', '/replace-new', '/nested', '/trailer', '/', '/client'] as $path) {
+    foreach (['/replace-empty', '/replace-new', '/nested', '/trailer', '/', '/echo'] as $path) {
         $request = new Swoole\Http2\Request();
-        $request->path = $path === '/client' ? '/' : $path;
-        if ($path === '/client') {
-            $request->headers = ['x-r' => new Value(static function () use ($request) { $request->headers = []; })];
+        $request->path = $path;
+        if ($path === '/echo') {
+            $request->headers = [
+                'x-q' => 'q',
+                'x-r' => new Value(static function () use ($request) { $request->headers = []; }),
+                'x-s' => 's',
+            ];
+            $request->cookies = [
+                'c1' => new Value(static function () use ($request) { $request->cookies = []; }),
+                'c2' => 'two',
+            ];
         }
         $client->send($request);
         $response = $client->recv(5);

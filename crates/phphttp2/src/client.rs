@@ -8,7 +8,6 @@ use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
     ffi::CStr,
-    marker::PhantomData,
     ptr,
     rc::Rc,
 };

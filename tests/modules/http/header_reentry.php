@@ -26,6 +26,13 @@ $server->on('request', static function ($request, $response): void {
         '/nested' => static function () use ($response) { $response->header['X-List'] = 'flat'; },
     ];
     $path = $request->server['request_uri'];
+    if ($path === '/echo') {
+        // The request's x- headers and cookies, for the HTTP/2 client's case.
+        $sent = array_filter($request->header, fn($key) => str_starts_with($key, 'x-'), ARRAY_FILTER_USE_KEY);
+        ksort($sent);
+        $response->end(json_encode(['header' => $sent, 'cookie' => $request->cookie ?? []]));
+        return;
+    }
     if ($path === '/trailer') {
         // trailer() turns sending trailers on.
         $response->trailer('x-t0', null);
