@@ -1,7 +1,7 @@
 //! Reading zvals and filling arrays.
 use std::ffi::c_char;
 
-use crate::sys::{add_assoc_null_ex, add_assoc_stringl_ex, zval};
+use crate::sys::zval;
 
 /// A key for Zend's `add_assoc_*_ex`, which reads its first byte even when the length is 0
 /// (`ZEND_HANDLE_NUMERIC_STR`): an empty slice's dangling pointer becomes `""`.
@@ -24,16 +24,14 @@ pub unsafe fn string_of<'a>(value: *const zval) -> Option<&'a [u8]> {
     unsafe { crate::Value::from_ptr(value) }.and_then(crate::Value::bytes)
 }
 
-/// `add_assoc_stringl_ex`, or `add_assoc_null_ex` when `value` is `None`.
+/// `add_assoc_stringl_ex`, or `add_assoc_null_ex` when `value` is `None`,
+/// without separating the array; nothing once a bailout is pending.
 /// # Safety
 /// `array` is a live array zval.
 pub unsafe fn set_key(array: *mut zval, key: &[u8], value: Option<&[u8]>) {
-    match value {
-        // SAFETY: per the caller; Zend copies key and value.
-        Some(v) => unsafe {
-            add_assoc_stringl_ex(array, key_ptr(key), key.len(), v.as_ptr().cast(), v.len());
-        },
-        // SAFETY: per the caller; Zend copies the key.
-        None => unsafe { add_assoc_null_ex(array, key_ptr(key), key.len()) },
+    if !crate::bailout::pending() {
+        let value = value.map_or_else(crate::Owned::null, |v| crate::ZString::new(v).into());
+        // SAFETY: per the caller.
+        unsafe { crate::zval::symtable_update(array, key, value) };
     }
 }
