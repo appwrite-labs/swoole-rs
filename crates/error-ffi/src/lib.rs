@@ -260,6 +260,39 @@ mod tests {
     }
 
     #[test]
+    fn unknown_messages_are_per_thread() {
+        let colon = if cfg!(target_vendor = "apple") {
+            ":"
+        } else {
+            ""
+        };
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for thread in 0..4 {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let code = i32::MAX - thread;
+                    let message = export_error_strerror(code, None);
+                    // Every thread formats its own code before any reads its message back.
+                    barrier.wait();
+                    for _ in 0..1000 {
+                        assert_eq!(
+                            export_error_strerror(code, None),
+                            message,
+                            "one buffer per thread"
+                        );
+                    }
+                    barrier.wait();
+                    let text = unsafe { std::ffi::CStr::from_ptr(message) }
+                        .to_str()
+                        .unwrap();
+                    assert_eq!(text, format!("Unknown error{colon} {code}"));
+                });
+            }
+        });
+    }
+
+    #[test]
     fn allocation_failure_preserves_membership_and_publication() {
         let mut state: *mut IgnoredErrors = std::ptr::null_mut();
         unsafe {
