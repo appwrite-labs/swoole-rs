@@ -138,7 +138,7 @@ namespace network {
 struct Socket : swr_v1_socket {
     // SocketRecord::new: zeroed, with the default timeouts. Records Rust frees come from Rust.
     Socket() : swr_v1_socket{} {
-        *timeouts() = swr_v1_socket_defaults.timeouts;
+        *timeouts() = swr_v1_socket_default_timeouts();
     }
 
     // for reactor

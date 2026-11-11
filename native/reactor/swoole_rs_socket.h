@@ -84,14 +84,9 @@ struct swr_v1_socket {
     }
 };
 
-/* Socket::default_*_timeout and default_buffer_size; every new record copies the timeouts. */
-typedef struct {
-    swr_v1_socket_timeouts timeouts;
-    uint32_t buffer_size;
-} swr_v1_socket_defaults_t;
-
+/* Socket::default_*_timeout, which every new record copies. */
 extern "C" {
-extern swr_v1_socket_defaults_t swr_v1_socket_defaults;
+swr_v1_socket_timeouts swr_v1_socket_default_timeouts(void);
 }
 
 static_assert(sizeof(void *) == 8, "the socket record's offsets are LP64's");
@@ -138,5 +133,5 @@ static_assert(offsetof(swr_v1_socket, connect_timeout) - offsetof(swr_v1_socket,
 static_assert(SW_SOCKET_DEFAULT_DNS_TIMEOUT == 60 && SW_SOCKET_DEFAULT_CONNECT_TIMEOUT == 10 &&
                   SW_SOCKET_DEFAULT_READ_TIMEOUT == 60 && SW_SOCKET_DEFAULT_WRITE_TIMEOUT == 60 &&
                   SW_SOCKET_BUFFER_SIZE == 8388608,
-              "swr_v1_socket_defaults, which Socket::default_* reference (crates/reactor/src/socket_upstream.rs)");
+              "SOCKET_DEFAULTS starts from these (crates/reactor/src/socket_record.rs)");
 #endif

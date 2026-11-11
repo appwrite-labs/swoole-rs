@@ -139,8 +139,7 @@ impl Co {
     /// `resolve` outlives the socket.
     pub(crate) unsafe fn configure_http(self, timeout: f64, resolve: *mut c_void, hook: CloseHook) {
         let timeout = if timeout == 0.0 {
-            // SAFETY: the reactor's defaults, written only by settings.
-            unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.connect }
+            swoole_rs_reactor::SOCKET_DEFAULTS.connect.get()
         } else {
             timeout
         };
@@ -200,8 +199,7 @@ impl Co {
     /// A read `TimeoutController` (0: the default read timeout).
     pub(crate) fn read_timeout(self, timeout: f64) -> co::Timeout {
         let timeout = if timeout == 0.0 {
-            // SAFETY: the reactor's defaults, written only by settings.
-            unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.read }
+            swoole_rs_reactor::SOCKET_DEFAULTS.read.get()
         } else {
             timeout
         };
