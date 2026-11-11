@@ -74,13 +74,9 @@ pub fn abort_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     }
 }
 
-/// `Server::init_event_worker(worker)`.
-///
-/// # Safety
-/// `worker` is the current process's worker.
-pub unsafe fn init_event_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
-    // SAFETY: per the caller.
-    swr_v1_worker_init(unsafe { swoole_rs_process::worker_record::Worker::new(worker) });
+/// `Server::init_event_worker(worker)`, for the current process's worker.
+pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
+    swr_v1_worker_init(worker);
     let config = serv.config();
     swoole_rs_process::methods::worker_set_max_request(
         config.max_request,
