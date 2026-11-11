@@ -77,32 +77,41 @@ fn failed(outcome: i32, status: i32) -> WriteResult {
     }
 }
 
-/// # Safety
-/// `buffer` is a live Rust buffer handle.
-unsafe fn length(buffer: *mut Buffer) -> Result<u32, i32> {
-    let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises.
-    let buffer = unsafe { buffer.as_ref() };
-    match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
-        0 => Ok(if count == 0 { 0 } else { length }),
-        status => Err(status),
-    }
-}
+/// A socket's output queue: its `out_buffer`'s Rust handle, or null. Nothing here
+/// holds a reference to it between calls, so the effects may change it.
+#[derive(Clone, Copy)]
+pub(crate) struct Queue(*mut Buffer);
 
-/// `Buffer::empty`: null or no entries.
-///
-/// # Safety
-/// As for [`length`], or null.
-unsafe fn empty(buffer: *mut Buffer) -> Result<bool, i32> {
-    if buffer.is_null() {
-        return Ok(true);
+impl Queue {
+    /// # Safety
+    /// `buffer` is null or a live Rust buffer handle for as long as the queue is used.
+    pub(crate) const unsafe fn new(buffer: *mut Buffer) -> Self {
+        Self(buffer)
     }
-    let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises.
-    let buffer = unsafe { buffer.as_ref() };
-    match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
-        0 => Ok(count == 0),
-        status => Err(status),
+
+    /// Its bytes and entries; (0, 0) for none.
+    fn stats(self) -> Result<(u32, usize), i32> {
+        let (mut length, mut count) = (0u32, 0usize);
+        // SAFETY: null or a live handle (`new`), borrowed for this call alone.
+        let buffer = unsafe { self.0.as_ref() };
+        if buffer.is_none() {
+            return Ok((0, 0));
+        }
+        match swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) {
+            0 => Ok((length, count)),
+            status => Err(status),
+        }
+    }
+
+    /// `Buffer::empty`: null or no entries.
+    pub(crate) fn empty(self) -> Result<bool, i32> {
+        self.stats().map(|(_, count)| count == 0)
+    }
+
+    /// Bytes held, 0 when empty.
+    fn length(self) -> Result<u32, i32> {
+        self.stats()
+            .map(|(length, count)| if count == 0 { 0 } else { length })
     }
 }
 
@@ -140,15 +149,15 @@ pub unsafe fn swr_v1_reactor_write(
         return failed(1, 0);
     }
     // SAFETY: `buffer` is the socket's handle or null.
-    let queued = match unsafe { empty(buffer) } {
+    let queue = unsafe { Queue::new(buffer) };
+    let queued = match queue.empty() {
         Ok(empty) => !empty,
         Err(status) => return failed(4, status),
     };
     let mut buffer = buffer;
     let mut sent = 0isize;
     if queued {
-        // SAFETY: non-empty, so a live handle.
-        let held = match unsafe { self::length(buffer) } {
+        let held = match queue.length() {
             Ok(held) => held,
             Err(status) => return failed(4, status),
         };
@@ -282,7 +291,7 @@ mod tests {
             )
         };
         let target = if buffer.is_null() { fresh } else { buffer };
-        let held = unsafe { length(target) }.unwrap();
+        let held = unsafe { Queue::new(target) }.length().unwrap();
         unsafe { swr_v1_buffer_release(fresh) };
         (
             result,
