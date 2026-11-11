@@ -3,12 +3,9 @@
 //! Server's records (crates/server's view) and its Rust methods.
 use crate::lifecycle::Props;
 use crate::server::{fatal, no_payload, running, server};
-use std::{
-    ffi::{CStr, CString, c_int, c_void},
-    mem::MaybeUninit,
-};
-use swoole_rs_clients::address::swr_v1_clients_address_assign;
-use swoole_rs_corebase::{DataHead, net_types::AddressStorage, swr_v1_clients_gethostbyname};
+use std::ffi::{CStr, CString, c_int, c_void};
+use swoole_rs_clients::address::assign;
+use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Owned, Value, bailout, message,
@@ -170,32 +167,30 @@ fn listen(call: &Call) {
 /// sent, or -1.
 /// # Safety
 /// `socket` is null or a live socket.
-unsafe fn socket_sendto(socket: *mut c_void, host: &[u8], port: i64, data: &[u8]) -> isize {
+unsafe fn socket_sendto(socket: *mut c_void, host: &CStr, port: i64, data: &[u8]) -> isize {
     if socket.is_null() {
         return -1;
     }
     // SAFETY: per the caller.
     let (fd, kind) = unsafe { view::socket_fd(socket) };
-    let host = swoole_rs_corebase::net_address::c_str(host);
-    let mut addr = MaybeUninit::<AddressStorage>::zeroed();
-    let mut length: libc::socklen_t = 0;
+    let SocketAddress {
+        addr: mut address,
+        len: mut length,
+        ..
+    } = SocketAddress::default();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Socket::sendto's (int) port, as upstream"
     )]
     let port = port as c_int;
-    // SAFETY: a writable address and the host's bytes.
-    let error = unsafe {
-        swr_v1_clients_address_assign(
-            addr.as_mut_ptr().cast(),
-            &raw mut length,
-            kind,
-            host.as_ptr().cast(),
-            host.len(),
-            port,
-            Some(swr_v1_clients_gethostbyname),
-        )
-    };
+    let error = assign(
+        &mut address,
+        &mut length,
+        kind,
+        host.to_bytes_with_nul(),
+        port,
+        true,
+    );
     if error != 0 {
         swoole_rs_corebase::log::set_last_error(error);
         return -1;
@@ -207,7 +202,7 @@ unsafe fn socket_sendto(socket: *mut c_void, host: &[u8], port: i64, data: &[u8]
             data.as_ptr().cast(),
             data.len(),
             0,
-            addr.as_ptr().cast(),
+            (&raw const address).cast(),
             length,
         )
     }
@@ -230,16 +225,16 @@ fn send(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    if let Some(path) = zfd.bytes() {
+    if let Some(path) = zfd.str() {
         let config = serv.config();
-        if path.first() == Some(&b'/') && config.have_dgram_sock {
+        if path.bytes().first() == Some(&b'/') && config.have_dgram_sock {
             let socket = if server_socket == -1 {
                 config.dgram_socket
             } else {
                 serv.server_socket(server_socket)
             };
             // SAFETY: null or a live socket, and the path's bytes.
-            let sent = unsafe { socket_sendto(socket, path, 0, payload) } > 0;
+            let sent = unsafe { socket_sendto(socket, path.c_str(), 0, payload) } > 0;
             return call.set_bool(sent);
         }
     }
@@ -255,7 +250,7 @@ fn sendto(call: &Call) {
     let Some(serv) = running(call) else { return };
     let parsed = call.arity(3, 4).and_then(|()| {
         Ok((
-            call.string(1, b"")?,
+            call.zstr(1)?,
             call.long(2, 0)?,
             call.string(3, b"")?,
             call.long(4, -1)?,
@@ -264,6 +259,7 @@ fn sendto(call: &Call) {
     let Ok((address, port, data, server_socket)) = parsed else {
         return call.set_bool(false);
     };
+    let (host, address) = address.map_or((c"", &[][..]), |a| (a.c_str(), a.bytes()));
     if data.is_empty() {
         no_payload();
         return call.set_bool(false);
@@ -294,7 +290,7 @@ fn sendto(call: &Call) {
         serv.server_socket(server_socket)
     };
     // SAFETY: null or a live socket, the address and the payload.
-    call.set_bool(unsafe { socket_sendto(socket, address, port, data) } >= 0);
+    call.set_bool(unsafe { socket_sendto(socket, host, port, data) } >= 0);
 }
 
 fn sendfile(call: &Call) {

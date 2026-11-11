@@ -1517,12 +1517,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_HTTP_DEFAULTS => {
             // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
-            let strings = |kind, op| {
-                // SAFETY: the live state; these operations lend no bytes.
-                unsafe {
-                    crate::swr_v1_server_static_config(o.state, kind, op, core::ptr::null(), 0)
-                }
-            };
+            let strings = |kind, op| crate::static_config::config(o.state, kind, op, &[]);
             if o.config().enable_static_handler && strings(0, 1) == 0 {
                 strings(0, 3);
                 strings(0, 2);
@@ -1867,7 +1862,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH,
         OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
     };
-    use swoole_rs_clients::address::{Resolve, swr_v1_clients_address_assign};
+    use swoole_rs_clients::address::assign;
     use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
     use swoole_rs_ossupport::swoole_daemon;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
@@ -1912,22 +1907,15 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.socket_type = port.r#type;
             conn.object = ls;
             conn.info.kind = port.r#type;
-            let host = port.host_bytes();
             let info = &mut conn.info;
-            let resolve: Resolve = swoole_rs_corebase::swr_v1_clients_gethostbyname;
-            // SAFETY: the connection's address storage and the port's host, which
-            // its slot keeps NUL-terminated.
-            let error = unsafe {
-                swr_v1_clients_address_assign(
-                    (&raw mut info.addr).cast(),
-                    &raw mut info.len,
-                    port.r#type,
-                    host.as_ptr().cast(),
-                    host.len(),
-                    port.port,
-                    Some(resolve),
-                )
-            };
+            let error = assign(
+                &mut info.addr,
+                &mut info.len,
+                port.r#type,
+                port.host.bytes_with_nul(),
+                port.port,
+                true,
+            );
             if error != 0 {
                 log::set_last_error(error);
             }
@@ -2510,15 +2498,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             port.r#type = o.ctx.socket_type;
             port.port = o.ctx.number;
             let host = o.host();
-            // SAFETY: the new port's own slot.
-            let set = unsafe {
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    &raw const *port.host,
-                    host.as_ptr(),
-                    host.count_bytes(),
-                )
-            };
-            if set < 0 {
+            if port.host.set(host.to_bytes()) < 0 {
                 // `throw std::bad_alloc()`, which nothing catches.
                 std::process::abort();
             }
@@ -2789,7 +2769,7 @@ mod tests {
                 answer(core::ptr::null_mut(), &*state, OP_SEND_TIMEOUT, 0),
                 None
             );
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2829,7 +2809,7 @@ mod tests {
                 answer(&raw mut ctx, &*state, OP_IP_KEY, 0),
                 Some(0x0a00_0001)
             );
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2858,7 +2838,7 @@ mod tests {
             answer(&raw mut ctx, &*state, OP_WARNING_RESET, 7 << 1);
             assert!(!(*config).scheduler_warning);
             assert_eq!(answer(&raw mut ctx, &*state, OP_WARNING_TIME, 0), Some(7));
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2874,7 +2854,7 @@ mod tests {
         unsafe {
             assert_eq!(answer(&raw mut ctx, &*state, OP_HOST_SIZE, 0), Some(8));
             answer(&raw mut ctx, &*state, OP_SC_ADVANCE, 3);
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
         assert_eq!(ctx.length, 5);
         assert_eq!(ctx.data, data[3..].as_ptr().cast());
@@ -2900,7 +2880,7 @@ mod tests {
                 Some(3)
             );
             assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2914,7 +2894,7 @@ mod tests {
         // SAFETY: the context's buffer and name are live above.
         let name = unsafe { answer(&raw mut ctx, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
         assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
         assert_eq!(&buffer[16..23], b"/tmp/a\0");
     }
@@ -2953,7 +2933,7 @@ mod tests {
             (*gs).connection_nums.free();
             tables.session_list.free();
             config.gs.free();
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 
@@ -2995,7 +2975,7 @@ mod tests {
             assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);
             swoole_rs_buffer::cpp::delete_buffer(buffer);
             crate::port_config::swr_v1_port_config_free(config);
-            crate::swr_v1_server_state_free(state);
+            crate::state::free_state(state);
         }
     }
 }

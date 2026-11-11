@@ -517,7 +517,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     // SAFETY: PHP's directory, which lives for the request.
     let directory = unsafe { swr_zend_temporary_directory() };
     // SAFETY: a NUL-terminated path, which the setter copies.
-    unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(directory) };
+    swoole_rs_corebase::set_task_tmpdir(unsafe { CStr::from_ptr(directory) });
     php_swoole_register_shutdown_function(c"swoole_internal_call_user_shutdown_begin");
     // SAFETY: this request's compiler globals.
     if globals.enable_library.get() && unsafe { swr_zend_compiling_preload() } == 0 {

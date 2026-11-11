@@ -133,7 +133,7 @@ impl PortInfo {
 // `Swoole\Process` (crates/phpprocess) and its object's `Worker`, an `E_ERROR` for an
 // unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
 use swoole_rs_error::swoole_get_last_error_msg;
-use swoole_rs_phpprocess::swr_v1_phpprocess_worker;
+use swoole_rs_phpprocess::checked_worker;
 use swoole_rs_server::{admin_register, swr_v1_server_delete, swr_v1_server_new};
 
 /// `instanceof_function(ce, parent)`.
@@ -172,7 +172,7 @@ fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
 
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
 /// worker, -1 `add_worker` failed, else the id.
-fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
+fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> i64 {
     /// `SW_USER_WORKER`.
     const USER_WORKER: c_int = 5;
     if fact(serv, fact::WORKER_THREAD) {
@@ -193,13 +193,12 @@ fn add_worker(serv: view::Server<'_>, process: *mut zval) -> i64 {
     }
     let mut added = -3;
     let add = || {
-        // SAFETY: a live process object.
-        let worker = unsafe { swr_v1_phpprocess_worker(process, true) }.cast::<WorkerRecord>();
+        let worker = checked_worker(process).cast::<WorkerRecord>();
         // SAFETY: a live server that has not started, and the process's worker.
         let id = unsafe { swoole_rs_server::worker_methods::add_worker(serv, worker) };
         added = if id >= 0 {
             // SAFETY: the process's live worker.
-            unsafe { &mut *worker }.set_user_data(process.cast());
+            unsafe { &mut *worker }.set_user_data(user_data.cast());
             id.into()
         } else {
             -1
@@ -807,7 +806,7 @@ fn add_process(call: &Call) {
     let zcopy = copy.as_ptr();
     // The box keeps the copy where the worker's user data points.
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
-    match add_worker(serv, zcopy) {
+    match add_worker(serv, process, zcopy) {
         -3 => bailout::defer(Err(bailout::Bailout)),
         -2 => {
             set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);

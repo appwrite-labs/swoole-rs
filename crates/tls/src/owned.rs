@@ -351,13 +351,7 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
         let value = from.bytes();
         // SAFETY: the destination slot is exclusive (a distinct owner) and the source's
         // bytes stay unchanged while they are copied.
-        let status = unsafe {
-            swoole_rs_corebase::swr_v1_core_string_set(
-                Arc::as_ptr(to),
-                value.as_ptr().cast(),
-                value.len(),
-            )
-        };
+        let status = unsafe { to.set_shared(value) };
         if status != 0 {
             return OwnedTlsCopy {
                 status,
@@ -595,14 +589,8 @@ pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8])
         Text::EcdhCurve => &state.strings[1],
         Text::DhParam => &state.strings[3],
     };
-    // SAFETY: a stable slot of the exclusive owner; its cache catches exceptions.
-    let status = unsafe {
-        swoole_rs_corebase::swr_v1_core_string_set(
-            Arc::as_ptr(slot),
-            value.as_ptr().cast(),
-            value.len(),
-        )
-    };
+    // SAFETY: a stable slot of the exclusive owner, which `value` is not.
+    let status = unsafe { slot.set_shared(value) };
     if status != 0 {
         std::process::abort();
     }

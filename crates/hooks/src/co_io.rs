@@ -1164,18 +1164,15 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
     set_errno(error);
     (NATIVE.set_last_error)(error);
     // The metadata's first slot owns the error string.
-    let Some(slot) = socket.with_extra(|extra| &raw const extra.strings[0]) else {
+    let Some((status, view)) = socket.with_extra(|extra| {
+        let slot = &mut extra.strings[0];
+        (slot.set(message), slot.view())
+    }) else {
         return -1;
     };
-    // SAFETY: the slot and the message's bytes; the native cache contains every
-    // exception below Rust.
-    let status = unsafe {
-        swoole_rs_corebase::swr_v1_core_string_set(slot, message.as_ptr().cast(), message.len())
-    };
     if status == 0 {
-        // SAFETY: the live slot, whose assignment left stable, terminated bytes.
-        let view = unsafe { &*slot }.view();
-        // SAFETY: the record's own error string, as above.
+        // SAFETY: the record's own error string, whose assignment left stable,
+        // terminated bytes.
         unsafe { socket.set_err_msg(view.data) };
     }
     status

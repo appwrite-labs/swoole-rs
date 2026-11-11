@@ -10,7 +10,7 @@ use std::{
     ptr,
     sync::OnceLock,
 };
-use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
+use swoole_rs_clients::address::{address_string, swr_v1_clients_address_port};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
@@ -609,8 +609,6 @@ struct ExitStatus {
 
 type Ctx = *mut c_void;
 
-use swoole_rs_phpprocess::swr_v1_phpprocess_start;
-
 fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> *mut c_void {
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
@@ -809,21 +807,17 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
     } = unsafe { dgram.read_unaligned() };
     let info = &request.info;
     let addr = &socket_addr.addr;
-    let text = |family, ip: *const c_void| {
-        // SAFETY: the address of `family` in the packet's sender.
-        unsafe { swr_v1_clients_address_string(family, ip) }
-    };
     let (address, port) = match socket_type {
         UDP => {
             // SAFETY: a UDP packet's sender is IPv4.
             let sin = unsafe { addr.inet_v4 };
-            let address = text(libc::AF_INET, (&raw const sin.sin_addr).cast());
+            let address = address_string(libc::AF_INET, &sin.sin_addr.s_addr.to_ne_bytes());
             (address, i64::from(u16::from_be(sin.sin_port)))
         }
         UDP6 => {
             // SAFETY: a UDP6 packet's sender is IPv6.
             let sin6 = unsafe { addr.inet_v6 };
-            let address = text(libc::AF_INET6, (&raw const sin6.sin6_addr).cast());
+            let address = address_string(libc::AF_INET6, &sin6.sin6_addr.s6_addr);
             (address, i64::from(u16::from_be(sin6.sin6_port)))
         }
         // SAFETY: a unix datagram's sender is a path, in this frame's copy.
@@ -969,8 +963,9 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
         worker.user_data().cast::<zval>()
     };
     // SAFETY: the process object, which the worker or the Server object holds.
-    let props = unsafe { Value::from_ptr(process) }
-        .and_then(|process| process.props(Some(swoole_rs_phpprocess::process_class())));
+    let process = unsafe { Value::from_ptr(process) };
+    let props =
+        process.and_then(|process| process.props(Some(swoole_rs_phpprocess::process_class())));
     if let Some(props) = props {
         props.long(c"id", id);
     }
@@ -978,9 +973,11 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     let props = Props::server(server_object);
     props.long(c"master_pid", i64::from(gs.master_pid));
     props.long(c"manager_pid", i64::from(gs.manager_pid));
-    // SAFETY: the worker and its process object; this frame owns nothing that
-    // needs a drop, as the process exits through a bailout.
-    unsafe { swr_v1_phpprocess_start(worker.raw().cast(), process) };
+    if let Some(process) = process {
+        // SAFETY: the worker and its process object; this frame owns nothing that
+        // needs a drop, as the process exits through a bailout.
+        unsafe { swoole_rs_phpprocess::start_worker(worker.raw().cast(), process) };
+    }
 }
 
 /// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot

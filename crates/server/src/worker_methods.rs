@@ -272,6 +272,6 @@ mod tests {
         unsafe { (*serv.state().tables()).session_list = swoole_rs_memory::members::Shm::NULL };
         unsafe { serv.config_mut() }.workers.free();
         unsafe { serv.config_mut() }.gs.free();
-        unsafe { crate::swr_v1_server_state_free(state) };
+        unsafe { crate::state::free_state(state) };
     }
 }
