@@ -82,8 +82,9 @@ pub struct PoolRecord {
     pub(crate) message_bus: *mut c_void,
     pub(crate) reload_task: *mut ReloadTask,
     pub ptr: *mut c_void,
-    /// The `max_wait_time` timer `wait` arms to kill the workers left, which
-    /// `wait` drops once it has reaped the first and `destroy` drops too.
+    /// The `max_wait_time` timer `wait` arms to SIGKILL the workers still
+    /// running. It stays armed after `wait` returns, which reaps only the first,
+    /// and goes with the pool: `destroy`, or dropping the record, deletes it.
     pub kill_timer: Option<ArmedTimer>,
 }
 
@@ -1230,7 +1231,6 @@ impl<H: PoolHost> Pool<H> {
                 self.op(LOG_WAITPID_FAILED, u64::from(pid.cast_unsigned()));
             }
         }
-        self.set_kill_timer(None);
         self.set_started(false);
         Ok(SW_OK)
     }
@@ -1681,11 +1681,11 @@ mod tests {
             let workers = self.workers.as_mut_ptr().expose_provenance().cast_signed() as i64;
             script.answers.entry(OP_ALLOC_WORKERS).or_insert(workers);
             self.record.worker_num = u32::try_from(self.workers.len()).unwrap();
-            script.record = Some(std::ptr::NonNull::from(&mut *self.record));
-            Pool {
-                h: script,
-                p: &raw mut *self.record,
-            }
+            // The script and the pool share one raw pointer, so neither
+            // invalidates the other.
+            let p = &raw mut *self.record;
+            script.record = std::ptr::NonNull::new(p);
+            Pool { h: script, p }
         }
     }
 
@@ -1702,13 +1702,33 @@ mod tests {
     const KILL_TIMER_ID: std::ffi::c_long = 41;
 
     #[test]
-    fn the_kill_timer_is_deleted_once_wait_returns() {
-        let mut fixture = Fixture::new(0);
+    #[cfg_attr(miri, ignore = "Miri has no process spawning or kill")]
+    fn the_kill_timer_stays_armed_for_workers_still_stopping_until_the_pool_goes() {
+        // Two workers: `wait` SIGTERMs both and reaps only the first (the script's
+        // `OP_WAITPID`), so the second may still be stopping when it returns.
+        let mut children: Vec<_> = (0..2)
+            .map(|_| {
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let mut fixture = Fixture::new(2);
+        for (worker, child) in fixture.workers.iter_mut().zip(&children) {
+            worker.set_pid(c_int::try_from(child.id()).unwrap());
+        }
         let mut pool = fixture.pool(Script::default());
         record(&mut pool).max_wait_time = 3;
         assert!(matches!(pool.wait(), Ok(SW_OK)));
+        for child in &mut children {
+            child.wait().unwrap();
+        }
         assert!(ops(&pool).contains(&OP_KILL_TIMER));
-        assert!(record(&mut pool).kill_timer.is_none());
+        assert!(record(&mut pool).kill_timer.is_some());
+        assert_eq!(crate::armed_timer::tests::cancelled(), []);
+        drop(pool);
+        drop(fixture);
         assert_eq!(crate::armed_timer::tests::cancelled(), [KILL_TIMER_ID]);
     }
 
