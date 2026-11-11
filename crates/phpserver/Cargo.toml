@@ -10,7 +10,7 @@ description = "PHP Swoole\\Server family classes over the zend crates"
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "swoole-rs-phpswoole?/php"]
 # Swoole\\Server, Server\\Port and their data classes.
-server = ["dep:swoole-rs-ports", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-tls", "dep:swoole-rs-locks", "dep:swoole-rs-server", "dep:swoole-rs-process", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-ossupport", "dep:libc", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "dep:swoole-rs-utilities", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-error", "swoole-rs-server/upstream-symbols"]
+server = ["dep:swoole-rs-ports", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-tls", "dep:swoole-rs-locks", "dep:swoole-rs-server", "dep:swoole-rs-process", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-ossupport", "dep:libc", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "dep:swoole-rs-utilities", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-error", "dep:swoole-rs-buffer", "swoole-rs-server/upstream-symbols"]
 
 [dependencies]
 swoole-rs-ports = { path = "../ports", optional = true }
@@ -33,6 +33,7 @@ swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
+swoole-rs-buffer = { path = "../buffer", optional = true }
 
 [lints]
 workspace = true
