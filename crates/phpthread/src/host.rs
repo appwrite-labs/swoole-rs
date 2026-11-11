@@ -10,9 +10,10 @@ use swoole_rs_error::ErrorCode::{
     SW_ERROR_PHP_FATAL_ERROR, SW_ERROR_PHP_RUNTIME_NOTICE, SW_ERROR_WRONG_OPERATION,
 };
 use swoole_rs_zend::{
-    E_ERROR, Value,
+    E_ERROR, Owned, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_instanceof, zend_class_entry, zend_string, zval},
+    string::bytes,
+    sys::{swr_zend_instanceof, swr_zend_string_release, zend_class_entry},
 };
 
 /// `swoole_exception_ce`.
@@ -20,76 +21,64 @@ pub(crate) fn exception() -> *mut zend_class_entry {
     swoole_rs_phpswoole::exception_class()
 }
 
-/// `php_swoole_serialize`: a persistent string or null; a bailout is deferred.
-/// # Safety
-/// In a request, with a live zval.
-pub(crate) unsafe fn serialize(value: *mut zval) -> *mut zend_string {
-    // SAFETY: per the caller.
-    let Some(value) = (unsafe { swoole_rs_zend::Value::from_ptr(value) }) else {
-        return std::ptr::null_mut();
-    };
+/// `php_swoole_serialize`: the serialized bytes, or `None`; a bailout is
+/// deferred.
+pub(crate) fn serialize(value: &Value) -> Option<Box<[u8]>> {
     let (serialized, bailed) = swoole_rs_phpswoole::serialize(value);
     bailout::defer(bailed);
-    serialized
+    if serialized.is_null() {
+        return None;
+    }
+    // SAFETY: a live persistent string C++ made.
+    let data = unsafe { bytes(serialized) }.into();
+    // SAFETY: ours to release.
+    unsafe { swr_zend_string_release(serialized) };
+    Some(data)
 }
 
-/// `php_swoole_unserialize` into `out`; a bailout is deferred.
-/// # Safety
-/// In a request; `out` is writable.
-pub(crate) unsafe fn unserialize(data: &[u8], out: *mut zval) {
-    // SAFETY: per the caller.
-    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(data, out) };
+/// `php_swoole_unserialize`; a bailout is deferred.
+pub(crate) fn unserialize(data: &[u8]) -> Owned {
+    let out = Owned::default();
+    // SAFETY: a slot this owns, on the thread running the request.
+    let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(data, out.as_ptr()) };
     bailout::defer(bailed);
+    out
 }
 
-/// `sw_zval_is_co_socket`.
-pub(crate) fn is_co_socket(object: &Value) -> bool {
-    let socket = swoole_rs_phpclients::socket_class();
-    let Some(ce) = object.class() else {
-        return false;
-    };
+/// `php_swoole_thread_co_socket_cast`: a duplicate of a coroutine socket's
+/// descriptor and its type, or -1; `None` when `object` is no coroutine socket
+/// (`sw_zval_is_co_socket`).
+pub(crate) fn co_socket_cast(object: &Value) -> Option<(c_int, c_int)> {
+    let class = swoole_rs_phpclients::socket_class();
+    let ce = object.class()?;
     // SAFETY: a live object's class and a registered one.
-    !socket.is_null() && unsafe { swr_zend_instanceof(ce, socket) }
-}
-
-/// `php_swoole_thread_co_socket_cast`: a duplicate of the coroutine socket's
-/// descriptor and its type, or -1.
-/// # Safety
-/// `object` is a live Coroutine\Socket zval.
-pub(crate) unsafe fn co_socket_cast(object: *mut zval) -> (c_int, c_int) {
-    // SAFETY: per the caller.
-    let socket = unsafe { swoole_rs_phpclients::get_socket(object) };
+    if class.is_null() || !unsafe { swr_zend_instanceof(ce, class) } {
+        return None;
+    }
+    // SAFETY: a live Coroutine\Socket zval.
+    let socket = unsafe { swoole_rs_phpclients::get_socket(object.as_ptr()) };
     if socket.is_null() {
-        return (-1, 0);
+        return Some((-1, 0));
     }
     // SAFETY: a live socket.
     let record = unsafe { swoole_rs_phpruntime::co::record(socket) };
     if record.sock_fd < 0 {
-        return (-1, 0);
+        return Some((-1, 0));
     }
-    // SAFETY: the socket's own descriptor.
-    let fd = unsafe { libc::dup(record.sock_fd) };
+    let fd = swoole_rs_corebase::sys::dup(record.sock_fd);
     if fd < 0 {
-        return (-1, 0);
+        return Some((-1, 0));
     }
-    (fd, record.kind)
+    Some((fd, record.kind))
 }
 
-/// A coroutine socket of type `kind` over `fd`, which it takes; false on failure.
-/// # Safety
-/// In a request; `out` is writable.
-pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) -> bool {
-    // SAFETY: per the caller.
+/// A coroutine socket of type `kind` over `fd`, which it takes; `None` on
+/// failure.
+pub(crate) fn co_socket_create(fd: c_int, kind: c_int) -> Option<Owned> {
+    // SAFETY: a descriptor the new socket takes, in a request.
     let object = unsafe { swoole_rs_phpclients::create_from_fd(fd, kind) };
-    if object.is_null() {
-        return false;
-    }
-    crate::item::set(
-        out,
-        swoole_rs_zend::sys::IS_OBJECT_EX,
-        swoole_rs_zend::sys::zend_value { obj: object },
-    );
-    true
+    // SAFETY: the new object, whose one reference this takes.
+    (!object.is_null()).then(|| unsafe { Owned::object(object) })
 }
 
 /// A duplicate of an ext/sockets Socket's descriptor: -1 after throwing
@@ -99,12 +88,11 @@ pub(crate) fn php_socket_cast(object: &Value) -> c_int {
     swoole_rs_phpswoole::socket_cast(object)
 }
 
-/// An ext/sockets Socket over `fd`, which it takes; false on failure.
-/// # Safety
-/// In a request; `out` is writable.
-pub(crate) unsafe fn php_socket_create(out: *mut zval, fd: c_int) -> bool {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_phpswoole::socket_create(out, fd) }
+/// An ext/sockets Socket over `fd`, which it takes; `None` on failure.
+pub(crate) fn php_socket_create(fd: c_int) -> Option<Owned> {
+    let out = Owned::default();
+    // SAFETY: a slot this owns, in a request.
+    unsafe { swoole_rs_phpswoole::socket_create(out.as_ptr(), fd) }.then_some(out)
 }
 
 /// `php_swoole_error(level, "%s", message)`: reported when
@@ -125,17 +113,23 @@ pub(crate) fn sys_error(level: c_int, message: &CStr) -> Result<(), Bailout> {
     if !swoole_rs_phpswoole::display_errors() && level != E_ERROR {
         return Ok(());
     }
-    // SAFETY: no preconditions.
-    let text = unsafe { libc::strerror(errno) };
-    // SAFETY: libc's NUL-terminated message.
-    let text = unsafe { CStr::from_ptr(text) };
     let full = std::ffi::CString::new(format!(
         "{}, Error: {}[{errno}]",
         message.to_string_lossy(),
-        text.to_string_lossy()
+        strerror(errno)
     ))
     .unwrap_or_default();
     swoole_rs_zend::report(level, &full)
+}
+
+/// `strerror(errno)`.
+pub(crate) fn strerror(errno: c_int) -> String {
+    // SAFETY: no preconditions.
+    let text = unsafe { libc::strerror(errno) };
+    // SAFETY: strerror returns a static or thread-local NUL-terminated message.
+    unsafe { CStr::from_ptr(text) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// What the outermost Rust frame must raise once everything it holds is
