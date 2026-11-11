@@ -392,10 +392,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_EVENT_FD => sign(o.ctx.server_fd),
         OP_CONN_RESET => {
             let fd = o.edit_sock(|s| s.fd);
-            let conn = o
-                .tables()
-                .connections()
-                .wrapping_add(usize::try_from(fd).unwrap_or(0));
+            let conn = o.tables().connection_slot(fd)?;
             o.ctx.conn = conn.cast();
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1402,10 +1399,8 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(protocol.package_max_length)
         }
         OP_ST_PIPE_BIND => {
-            let fd = isize::try_from(arg).unwrap_or(isize::MAX);
-            let conn = o.tables().connections().wrapping_offset(fd);
-            // SAFETY: the pipe's fd indexes the live connection list, as in master.cc.
-            unsafe { (*conn).object = o.ctx.object };
+            let fd = c_int::try_from(arg).ok()?;
+            o.tables().connection_at(fd)?.object = o.ctx.object;
             0
         }
         OP_ABORT => {
@@ -1913,9 +1908,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let (ls, port) = (listen.raw(), listen.config());
             let socket = o.server().port_socket_at(index)?;
             let fd = socket.fd();
-            let at = isize::try_from(fd).unwrap_or(isize::MAX);
-            // SAFETY: the listening socket's fd indexes the live connection list.
-            let conn = unsafe { &mut *o.tables().connections().wrapping_offset(at) };
+            let conn = o.tables().connection_at(fd)?;
             conn.fd = fd;
             conn.socket = port.socket.cast();
             conn.socket_type = port.r#type;
