@@ -74,7 +74,7 @@ impl FileRecord {
 
     /// `File::read_all` from offset zero.
     #[must_use]
-    pub fn read_all(&self, buf: &mut [u8]) -> FileIo {
+    pub fn read_all(&self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> FileIo {
         read_all(self.fd, buf)
     }
 }

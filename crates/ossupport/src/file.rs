@@ -3,7 +3,7 @@
 //! function returns right after the failing call with its errno intact.
 use libc::{c_char, c_int, off_t};
 use std::ffi::CStr;
-use swoole_rs_corebase::sys::{self, errno};
+use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
 /// an error native must warn about (errno is still the failing call's).
@@ -95,7 +95,7 @@ pub fn write_all(fd: c_int, append: bool, data: &[u8]) -> FileIo {
 
 /// `File::read_all`: `pread` at the progress until the buffer is full, EOF or error.
 #[must_use]
-pub fn read_all(fd: c_int, buf: &mut [u8]) -> FileIo {
+pub fn read_all(fd: c_int, buf: &mut [impl ReadSlot]) -> FileIo {
     transfer(buf.len(), |done| {
         sys::pread(fd, buf.get_mut(done..).unwrap_or_default(), to_off(done))
     })

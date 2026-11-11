@@ -43,7 +43,7 @@ pub unsafe extern "C" fn swoole_random_string(buf: *mut c_char, len: usize) {
 
 /// `swoole_random_bytes`: fills `buf` from the system CSPRNG, retrying
 /// interrupted calls; returns how many bytes it filled.
-pub fn random_bytes(buf: &mut [u8]) -> usize {
+pub fn random_bytes(buf: &mut [impl crate::sys::ReadSlot]) -> usize {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mut done = 0;
@@ -80,7 +80,7 @@ mod tests {
         let mut buf = [0_u8; 64];
         assert_eq!(random_bytes(&mut buf), 64, "all requested bytes");
         assert!(buf.iter().any(|&b| b != 0), "not left zeroed");
-        assert_eq!(random_bytes(&mut []), 0, "empty request");
+        assert_eq!(random_bytes(&mut [0_u8; 0]), 0, "empty request");
     }
 
     /// Upstream's `characters` table, spelled out independently of `CHARACTERS`.

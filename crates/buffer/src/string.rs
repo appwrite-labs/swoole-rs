@@ -233,7 +233,7 @@ impl CppString {
         self.alloc(source.size, source.allocator);
         // The new allocation holds `source.size >= source.length` bytes.
         if let Some(to) = self.spare().get_mut(..source.length) {
-            to.copy_from_slice(source.view());
+            to.write_copy_of_slice(source.view());
             self.length = source.length;
         }
         self.offset = source.offset;
@@ -322,7 +322,7 @@ impl CppString {
             self.extend(self.length.wrapping_add(1));
         }
         if let Some(end) = self.spare().first_mut() {
-            *end = 0;
+            end.write(0);
         }
     }
 
@@ -393,15 +393,16 @@ impl CppString {
         }
     }
 
-    /// The allocated bytes after the content, for a read to fill before `grow`.
-    pub fn spare(&mut self) -> &mut [u8] {
+    /// The allocated bytes after the content, for a read to fill before `grow`. They are
+    /// uninitialized, so safe code can only write them.
+    pub fn spare(&mut self) -> &mut [MaybeUninit<u8>] {
         if self.str.is_null() {
             return &mut [];
         }
         // SAFETY: `str` holds `size >= length` bytes, borrowed with `self`.
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.str.wrapping_add(self.length),
+                self.str.wrapping_add(self.length).cast(),
                 self.size - self.length,
             )
         }
@@ -427,7 +428,9 @@ impl CppString {
             // SAFETY: `data` holds one byte.
             let byte = unsafe { *data };
             if let Some(to) = self.spare().get_mut(..count) {
-                to.fill(byte);
+                for slot in to {
+                    slot.write(byte);
+                }
                 self.length += count;
             }
         } else {
@@ -447,22 +450,29 @@ impl CppString {
         if new_size > self.size {
             self.reserve(page_aligned(new_size.wrapping_mul(2)));
         }
-        let Some(raw) = self.spare().get_mut(..length) else {
+        let Some(spare) = self.spare().get_mut(..length) else {
             return false;
         };
-        let mut n = swoole_rs_corebase::random_bytes(raw);
-        if n != length {
+        if !base64 {
+            if swoole_rs_corebase::random_bytes(spare) != length {
+                return false;
+            }
+            self.length = self.length.wrapping_add(length);
+            return true;
+        }
+        // Upstream draws the raw bytes into the free space and encodes them over it; they
+        // are scratch, so they go in a buffer of their own.
+        let mut raw = vec![0u8; length];
+        if swoole_rs_corebase::random_bytes(raw.as_mut_slice()) != length {
             return false;
         }
-        if base64 {
-            let mut out = vec![0u8; encoded];
-            n = swoole_rs_base64::encode(raw, &mut out);
-            // The buffer's free space holds the encoding.
-            let Some(at) = self.spare().get_mut(..n) else {
-                return false;
-            };
-            at.copy_from_slice(out.get(..n).unwrap_or_default());
-        }
+        let mut out = vec![0u8; encoded];
+        let n = swoole_rs_base64::encode(&raw, &mut out);
+        // The buffer's free space holds the encoding.
+        let Some(at) = self.spare().get_mut(..n) else {
+            return false;
+        };
+        at.write_copy_of_slice(out.get(..n).unwrap_or_default());
         self.length = self.length.wrapping_add(n);
         true
     }
@@ -574,9 +584,9 @@ upstream! {
         // SAFETY: as the caller promises.
         let data = unsafe { bytes(data, length) };
         // The allocation holds `length + 1` bytes.
-        if let Some((end, to)) = string.spare().get_mut(..=length).and_then(<[u8]>::split_last_mut) {
-            to.copy_from_slice(data);
-            *end = 0;
+        if let Some((end, to)) = string.spare().get_mut(..=length).and_then(<[MaybeUninit<u8>]>::split_last_mut) {
+            to.write_copy_of_slice(data);
+            end.write(0);
             string.length = length;
         }
         string

@@ -114,7 +114,14 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
     content.alloc(size + 1, None);
     let buf = content.spare().get_mut(..size).unwrap_or_default();
     let io = record.read_all(buf);
-    warn_io(c"File::read_all", "pread", fd, buf.as_ptr(), size, io);
+    warn_io(
+        c"File::read_all",
+        "pread",
+        fd,
+        buf.as_ptr().cast(),
+        size,
+        io,
+    );
     // SAFETY: the read filled the buffer's first `io.done <= size` bytes.
     unsafe { content.set_len(io.done) };
     content.set_null_terminated();

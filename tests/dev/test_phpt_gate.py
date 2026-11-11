@@ -59,8 +59,10 @@ class PhptGate(unittest.TestCase):
             self.assertIsNone(racy({'path': path}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_server/close_max_fd.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_server/getClientInfo_in_callback_of_close_2.phpt'}, {'capabilities': []}))
+        self.assertIsNotNone(racy({'path': 'tests/swoole_server/dispatch_mode_9.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_coroutine_lock/lock.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_http_server/sendfile_client_reset.phpt'}, {'capabilities': []}))
+        self.assertIsNotNone(racy({'path': 'tests/swoole_timer/bug_4794_4.phpt'}, {'capabilities': []}))
         self.assertIsNotNone(racy({'path': 'tests/swoole_http_server_coro/open_frame.phpt'}, {'capabilities': []}))
         for path in ('tests/swoole_server/enable_reuse_port.phpt', 'tests/swoole_server/dispatch_mode_8.phpt',
                      'tests/swoole_runtime/file_lock/lock_ex.phpt'):

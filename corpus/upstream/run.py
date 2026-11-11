@@ -101,6 +101,10 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_http2_client_coro/connect_twice.phpt':
         "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
         'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986)',
+        'tests/swoole_server/dispatch_mode_9.phpt':
+        "it asserts the standard deviation of per-worker request counts is below 5, which the "
+        "scheduler's interleaving decides: in 258 merge-tier runs on 11-11 the first run missed "
+        'the bound on upstream 36 times (14%) and on cargo 6 times (2%) (#3003)',
         'tests/swoole_curl/close_before_resume.phpt':
         "the expected Swoole\\Error is fatal_error(), which exits 255 without PHP's shutdown "
         "functions, so ProcessManager never kills its SWOOLE_PROCESS server; the orphaned server "
@@ -242,7 +246,12 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "both coroutines' flock() calls go to the AIO pool, and when co 2's LOCK_SH lands before "
         "co 1's LOCK_EX, co 1 blocks until co 2 unlocks, which co 2 does only after its 2 s "
         "release->pop() has timed out (first runs in 258 merge-tier runs: upstream 11, cargo "
-        '16; Docker upstream 1/38, #3000)'}
+        '16; Docker upstream 1/38, #3000)',
+        'tests/swoole_timer/bug_4794_4.phpt':
+        'each side wakes or signals the other process and then prints, so the other one can print '
+        'first: the expected 1 before 2, 5 before 6 and 8 before 7 rest on a 25 ms usleep; upstream '
+        'printed 2 first in alpine (#1420), cargo 6 before 5 and 7 before 8 in two alpine queue runs, '
+        'and the PHPT gate saw one first-run failure on each engine in 258 runs (#3001)'}
 # Racy only with --enable-thread-context, where each coroutine runs on its own thread.
 THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
                        "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
