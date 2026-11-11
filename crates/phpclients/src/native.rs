@@ -7,6 +7,7 @@ use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
     ptr,
+    rc::Rc,
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
@@ -19,8 +20,9 @@ use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
 use swoole_rs_reactor::Socket as Net;
 use swoole_rs_zend::{
-    Owned, ZString,
+    Owned, Value, ZString,
     bailout::{self, Bailout},
+    host::callable::Callable,
     string::{self, ZBuf},
     sys::zval,
 };
@@ -664,6 +666,31 @@ pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
     // SAFETY: a callable `callable` made, freed once and held by no slot.
     unsafe { swoole_rs_phpruntime::callable_free(callable) };
     bailout::outcome(())
+}
+
+/// `sw_callable_create(value)`: none after a warning. The last owner's drop
+/// frees it, deferring a destructor's bailout.
+/// # Errors
+/// The warning's handler bailed out; the bailout stays pending.
+pub(crate) fn owned_callable(value: &Value) -> Result<Option<Rc<Callable>>, Bailout> {
+    Callable::new(value)
+}
+
+/// `callable->call(argv, retval)` inside `zend_try`, or as the event loop's
+/// callbacks are (`sw_zend_call_function_ex2`) with `from_loop`: whether the
+/// call succeeded.
+/// # Errors
+/// The callable bailed out.
+pub(crate) fn call(
+    callable: &Callable,
+    argv: &mut [zval],
+    retval: *mut zval,
+    from_loop: bool,
+) -> Result<bool, Bailout> {
+    let callable = ptr::from_ref(callable).cast_mut().cast();
+    // SAFETY: a callable the caller holds through the call, its live arguments,
+    // and a return slot that is null or writable.
+    unsafe { swoole_rs_phpruntime::callable_call(callable, argv, retval, from_loop) }
 }
 
 /// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether
