@@ -30,17 +30,6 @@ pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
     threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
 }
 
-/// [`thread`]'s record.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-#[expect(
-    clippy::mut_from_ref,
-    reason = "the server's reactor-thread records, written as master.cc did"
-)]
-pub(crate) fn thread_record(state: &crate::ServerState, id: usize) -> &mut ThreadRecord {
-    // SAFETY: callers pass the id of one of the server's live reactor threads.
-    unsafe { &mut *thread(state, id).cast::<ThreadRecord>() }
-}
-
 /// Runs `op` over `ctx`.
 ///
 /// # Safety
@@ -310,7 +299,9 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         return -1;
     }
     if mode == crate::MODE_PROCESS {
-        thread_record(state, usize::from(c.reactor_id)).dispatch_count += 1;
+        let thread = thread(state, usize::from(c.reactor_id)).cast::<ThreadRecord>();
+        // SAFETY: the connection's live reactor thread.
+        unsafe { (*thread).dispatch_count += 1 };
     }
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.dispatch_count.fetch_add(1, SeqCst);

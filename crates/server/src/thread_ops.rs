@@ -327,7 +327,10 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_THREAD_NOTIFY => {
-            let notify = entry::thread_record(state, usize::try_from(arg).ok()?).notify_pipe;
+            let joining = thread(state, usize::try_from(arg).ok()?).cast::<ThreadRecord>();
+            // SAFETY: one of the server's live threads; only its field is read, as the
+            // thread itself may hold its record meanwhile.
+            let notify = unsafe { (*joining).notify_pipe };
             if !notify.is_null() {
                 send_event(notify.cast(), 0, EVENT_SHUTDOWN);
             }
