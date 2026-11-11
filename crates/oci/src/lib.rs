@@ -22,7 +22,7 @@ pub mod minit;
 use std::{
     ffi::{c_int, c_uchar, c_void},
     ptr,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 
 /// `sword`.
@@ -87,9 +87,10 @@ unsafe extern "C" {
 #[unsafe(no_mangle)]
 pub static SWOOLE_PDO_OCI_INIT_MODE: Ub4 = 0x1 | 0x2;
 
-/// The environment every `pdo_oci` connection shares, as the driver reads it.
+/// The environment every `pdo_oci` connection shares, as the driver reads it
+/// (an `OCIEnv *`: `AtomicPtr` has a pointer's layout).
 #[unsafe(no_mangle)]
-pub static mut swoole_pdo_oci_Env: Handle = ptr::null_mut();
+pub static swoole_pdo_oci_Env: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 static BLOCKING: AtomicBool = AtomicBool::new(true);
 
@@ -228,14 +229,13 @@ pub unsafe extern "C" fn swoole_oci_ping(svc: Handle, err: Handle, mode: Ub4) ->
 /// Called at RINIT, on the request thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_oracle_rinit() {
-    let env = &raw mut swoole_pdo_oci_Env;
-    // SAFETY: RINIT is the only writer, on the request thread.
-    if unsafe { env.read() }.is_null() {
+    if swoole_pdo_oci_Env.load(Ordering::Relaxed).is_null() {
         let null = ptr::null();
-        // SAFETY: OCI fills `env`; no custom allocators or user memory.
+        // SAFETY: OCI fills the environment, which RINIT alone writes, on the
+        // request thread; no custom allocators or user memory.
         unsafe {
             OCIEnvCreate(
-                env,
+                swoole_pdo_oci_Env.as_ptr(),
                 SWOOLE_PDO_OCI_INIT_MODE,
                 null,
                 null,

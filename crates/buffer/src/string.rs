@@ -440,9 +440,10 @@ impl CppString {
             self.length >= unsigned(self.offset),
             "String::pop's offset is inside"
         );
-        let value = self.str;
         let offset = unsigned(self.offset).min(self.length);
-        let length = self.length - offset;
+        // The bytes the String keeps.
+        let tail = self.view().get(offset..).unwrap_or_default();
+        let length = tail.len();
         let size = aligned(if length == 0 {
             init_size
         } else {
@@ -455,17 +456,19 @@ impl CppString {
         if new_value.is_null() {
             return ptr::null_mut();
         }
-        self.allocator = Some(with);
-        self.str = new_value;
-        self.size = size;
-        self.length = length;
-        if length > 0 {
-            let from = value.wrapping_add(offset);
-            // SAFETY: the old buffer holds `length` bytes from `offset`; the new one `size >= length`.
-            unsafe { ptr::copy_nonoverlapping(from, new_value, length) };
+        // The new buffer, that allocator's `size >= length` bytes, empty until the copy.
+        let mut kept = Self {
+            length: 0,
+            size,
+            offset: 0,
+            str: new_value,
+            allocator: Some(with),
+        };
+        if let Some(to) = kept.spare().get_mut(..length) {
+            to.write_copy_of_slice(tail);
+            kept.length = length;
         }
-        self.offset = 0;
-        value
+        std::mem::replace(self, kept).str
     }
 
     pub fn reduce(&mut self, offset: i64) {

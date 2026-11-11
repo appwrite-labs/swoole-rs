@@ -290,22 +290,18 @@ pub unsafe extern "C" fn datahead_dump(h: &DataHead, buffer: *mut c_char, size: 
     written.min(size - 1)
 }
 
-// libc declares getentropy for glibc but not musl, which has had it since 1.1.20.
-#[cfg(target_env = "musl")]
-unsafe extern "C" {
-    fn getentropy(buffer: *mut libc::c_void, length: libc::size_t) -> libc::c_int;
-}
-#[cfg(not(target_env = "musl"))]
-use libc::getentropy;
-
 thread_local! {
     static GENERATOR: Cell<Option<[u64; 4]>> = const { Cell::new(None) };
 }
 
 fn seed() -> [u64; 4] {
     let mut state = [0u64; 4];
-    // SAFETY: `state` is 32 writable bytes, within getentropy(3)'s 256.
-    if unsafe { getentropy(state.as_mut_ptr().cast(), size_of_val(&state)) } != 0 {
+    let mut entropy = [0u8; 32];
+    if crate::random_bytes(&mut entropy) == entropy.len() {
+        for (word, bytes) in state.iter_mut().zip(entropy.as_chunks::<8>().0) {
+            *word = u64::from_ne_bytes(*bytes);
+        }
+    } else {
         state[0] = microtime().to_bits();
     }
     if state == [0; 4] {

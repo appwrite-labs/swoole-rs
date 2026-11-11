@@ -5,7 +5,7 @@ use std::ffi::{c_int, c_long};
 use swoole_rs_reactor::Socket;
 // SAFETY: OpenSSL's declarations; openssl-sys does not bind these entry points.
 unsafe extern "C" {
-    fn SSL_CTX_set_info_callback(
+    pub(crate) fn SSL_CTX_set_info_callback(
         ctx: *mut SSL_CTX,
         callback: Option<unsafe extern "C" fn(*const SSL, c_int, c_int)>,
     );
@@ -17,16 +17,10 @@ unsafe extern "C" {
     ) -> c_long;
 }
 /// # Safety
-/// ctx is live; each SSL's connection `ex_data` is a live, synchronized `SocketRecord`.
-pub(crate) unsafe fn install(ctx: *mut SSL_CTX) {
-    // SAFETY: a live context; callback observes its registered canonical socket.
-    unsafe { SSL_CTX_set_info_callback(ctx, Some(info)) };
-}
-/// # Safety
 /// `ssl` is OpenSSL's live SSL for the call, whose connection `ex_data` (which
 /// `Socket::ssl_create` registers before handshake callbacks) is null or its live
 /// socket record, dispatched by its owning event loop.
-unsafe extern "C" fn info(ssl: *const SSL, where_: c_int, _result: c_int) {
+pub(crate) unsafe extern "C" fn info(ssl: *const SSL, where_: c_int, _result: c_int) {
     let renegotiating = where_ & 0x10 != 0;
     let handshake_done = where_ & 0x2001 == 0x2001;
     if !renegotiating && !handshake_done {

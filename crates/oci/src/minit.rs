@@ -2,7 +2,7 @@
 //! `php_swoole_oracle_minit`): PDO's `OCI_ATTR_*` constants unless `pdo_oci`
 //! declared them, and the driver.
 use crate::{Handle, swoole_pdo_oci_Env};
-use std::ffi::c_int;
+use std::{ffi::c_int, sync::atomic::Ordering};
 use swoole_rs_zend::sys::{swr_zend_pdo_declare_long, swr_zend_pdo_declared};
 
 /// `pdo_driver_t`, opaque.
@@ -58,8 +58,7 @@ pub unsafe extern "C" fn php_swoole_oracle_minit(_module: c_int) {
 pub unsafe extern "C" fn php_swoole_oracle_mshutdown() {
     // SAFETY: the driver is static.
     unsafe { php_pdo_unregister_driver(&raw const swoole_pdo_oci_driver) };
-    // SAFETY: MSHUTDOWN, after every request.
-    let env = unsafe { (&raw const swoole_pdo_oci_Env).read() };
+    let env = swoole_pdo_oci_Env.load(Ordering::Relaxed);
     if env.is_null() {
         // SAFETY: OCI rejects a null handle without touching memory.
         unsafe { OCIHandleFree(env, OCI_HTYPE_ENV) };

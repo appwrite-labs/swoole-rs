@@ -20,7 +20,6 @@ use swoole_rs_utilities::{
 };
 use swoole_rs_zend::{
     Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
-    throw_exception,
 };
 
 /// `swHttp2SettingId`.
@@ -193,14 +192,10 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
             swr_v1_core_set_print_backtrace_on_error(on);
             return;
         }
-        // SAFETY: a handler's exception, of a class MINIT registered.
-        unsafe {
-            throw_exception(
-                crate::ERROR.entry(),
-                c"The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
-                OPERATION_NOT_SUPPORT,
-            );
-        }
+        crate::ERROR.throw(
+            c"The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
+            OPERATION_NOT_SUPPORT,
+        );
     });
     // [DNS]
     text_option(options, c"dns_server", |server| {

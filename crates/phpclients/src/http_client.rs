@@ -7,7 +7,7 @@
 use crate::{
     http_native::{self as native, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
-    native::{Co, swoole_rs_php_error, unconstructed},
+    native::{Co, UNCONSTRUCTED, swoole_rs_php_error},
     socket::Sock,
 };
 use libc::{c_int, c_void};
@@ -223,10 +223,7 @@ fn c_bytes(bytes: &[u8]) -> CString {
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.
 fn warn(fatal: bool, message: &CStr) {
     #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    // SAFETY: C++'s reporter, from a handler.
-    bailout::defer(unsafe {
-        bailout::report_flag(swoole_rs_php_error, E_WARNING as c_int, fatal, message)
-    });
+    swoole_rs_php_error(E_WARNING as c_int, fatal, message);
 }
 
 /// `php_swoole_sys_error(E_WARNING, "%s", message)`.
@@ -318,8 +315,7 @@ impl Conn {
 impl Client {
     /// Writes on the client object, which owns this client.
     fn props(&self) -> Props<'_> {
-        // SAFETY: the object outlives its client; the class declares every name written.
-        unsafe { Props::new(ce(), self.object) }
+        self.conn.props()
     }
 
     /// The property `name`, which the client class declares.
@@ -1432,16 +1428,10 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
         };
         let chunk = decoded.as_deref().unwrap_or(data);
         client.in_callback.set(true);
-        // SAFETY: the client's object and the chunk's bytes, which live until
-        // the call returns; the callable is held.
-        let result = unsafe {
-            native::swoole_http_client_coro_call(
-                &callable,
-                client.object,
-                chunk.as_ptr().cast(),
-                chunk.len(),
-            )
-        };
+        // SAFETY: the client's object, which lives until the call returns; the
+        // callable is held.
+        let result =
+            unsafe { native::swoole_http_client_coro_call(&callable, client.object, chunk) };
         // Cleared after the call, keeping the buffer.
         match decoded {
             Some(mut decoded) => {
@@ -1625,7 +1615,7 @@ fn client(call: &Call) -> &Client {
     let client = call.custom::<Data>().and_then(|data| data.client.get());
     client.unwrap_or_else(|| {
         // SAFETY: a fatal error; it does not return.
-        unsafe { unconstructed() };
+        unsafe { swoole_rs_corebase::fatal_error(UNCONSTRUCTED.0, UNCONSTRUCTED.1) };
         unreachable!("a fatal error does not return")
     })
 }

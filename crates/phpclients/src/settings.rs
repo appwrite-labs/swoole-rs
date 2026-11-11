@@ -11,7 +11,7 @@ use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
     Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval,
-    sys::{self, zend_ini_parse_quantity, zval, zval_ptr_dtor},
+    sys::{self, zend_ini_parse_quantity, zval_ptr_dtor},
 };
 
 /// `SW_DATA_EOF_MAXLEN`.
@@ -70,18 +70,11 @@ fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
 }
 
 /// The options array of one `set()`/`connect()`.
-struct Options<'a>(Option<&'a Array>);
+struct Options<'a>(&'a Array);
 
 impl Options<'_> {
-    /// # Safety
-    /// `settings` is null or a live zval for the call.
-    unsafe fn new(settings: *const zval) -> Self {
-        // SAFETY: per the caller.
-        Self(unsafe { Zval::from_ptr(settings) }.and_then(Zval::array))
-    }
-
     fn get(&self, key: &str) -> Option<&Zval> {
-        self.0?.get(key.as_bytes())
+        self.0.get(key.as_bytes())
     }
 
     fn truthy(&self, key: &str) -> Option<bool> {
@@ -187,9 +180,8 @@ fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
 
 /// `php_swoole_client_check_setting(cli, settings)`: false on an invalid
 /// option, None after a bailout.
-pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
-    // SAFETY: the caller's live settings.
-    let options = unsafe { Options::new(settings) };
+pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
+    let options = Options(settings);
     if let Some(on) = options.truthy("open_eof_check") {
         edit(cli, |record| record.open_eof_check = on);
     }
@@ -377,12 +369,11 @@ fn proxy(
 
 /// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `owner`,
 /// a client's live `SSLContext` (crates/tls).
-pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: *const zval) {
+pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: &Array) {
     let owner = owner.as_ptr().cast_const();
     // SAFETY: the live client's context, which nothing else writes during the call.
     let value = |value| unsafe { tls::set_value(owner, value) };
-    // SAFETY: the caller's live settings.
-    let options = unsafe { Options::new(settings) };
+    let options = Options(settings);
     // SAFETY: as above.
     let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
     let text = |key: &str, which| {

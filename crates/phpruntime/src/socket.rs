@@ -520,7 +520,7 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
     pub use super::Io;
-    use libc::{c_char, c_int, c_void, iovec};
+    use libc::{c_int, c_void, iovec};
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
@@ -586,14 +586,6 @@ pub mod co {
                 .map_or(0.0, |now| now.as_secs_f64());
             self.0.timed_out(kind, now)
         }
-    }
-
-    /// One table transfer of `length` bytes at `buf`.
-    /// # Safety
-    /// `buf` holds `length` bytes, writable to receive.
-    pub unsafe fn io(socket: Co, op: Io, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        unsafe { super::io(socket, op, buf, length) }
     }
 
     /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over

@@ -63,7 +63,7 @@ pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
-use std::{cmp::Ordering, ptr, slice};
+use std::{cmp::Ordering, ptr};
 
 unsafe extern "C" {
     fn strtoul(input: *const c_char, end: *mut *mut c_char, base: c_int) -> c_ulong;
@@ -241,18 +241,11 @@ unsafe extern "C" {
 pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     assert!(base > 1 && base < 37, "swoole_dec2hex: base out of range");
     let mut buffer = [0_u8; c_ulong::BITS as usize + 1];
-    // SAFETY: `buffer` is a live local of the capacity `radix` requires; `base` is checked.
-    let first = unsafe {
-        radix(
-            value,
-            base.cast_unsigned(),
-            buffer.as_mut_ptr(),
-            buffer.len(),
-        )
-    };
-    let digits = buffer.as_ptr().wrapping_add(first).cast();
-    // SAFETY: `digits` starts the NUL-terminated digits `radix` just wrote into `buffer`.
-    unsafe { strndup(digits, buffer.len() - first - 1) }
+    // The capacity `radix` requires, and `base` is checked, so it returns an offset inside.
+    let first = radix(value, base.cast_unsigned(), &mut buffer);
+    let digits = buffer.get(first..).unwrap_or(&[0]);
+    // SAFETY: the NUL-terminated digits `radix` just wrote into `buffer`, and their count.
+    unsafe { strndup(digits.as_ptr().cast(), digits.len() - 1) }
 }
 
 /// format.c's printf family under its public names, which swoole.h's inline logging
@@ -340,10 +333,14 @@ pub extern "C-unwind" fn swoole_get_systemd_listen_fds() -> c_int {
 pub unsafe extern "C" fn swoole_itoa(output: *mut c_char, value: c_long) -> c_int {
     let mut buffer = itoa::Buffer::new();
     let bytes = buffer.format(value).as_bytes();
-    // SAFETY: the caller sizes `output` for these digits plus NUL, disjoint from `buffer`.
-    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) };
-    // SAFETY: the NUL lands at offset `bytes.len()`, inside that same extent.
-    unsafe { output.wrapping_add(bytes.len()).write(0) };
+    // The digits (a sign and at most 19 of them for 64 bits) with the NUL after them.
+    let mut terminated = [0_u8; 24];
+    let length = bytes.len().min(terminated.len() - 1);
+    for (to, from) in terminated.iter_mut().zip(bytes) {
+        *to = *from;
+    }
+    // SAFETY: the caller sizes `output` for these digits plus NUL, disjoint from the local.
+    unsafe { ptr::copy_nonoverlapping(terminated.as_ptr(), output.cast(), length + 1) };
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -353,20 +350,19 @@ pub unsafe extern "C" fn swoole_itoa(output: *mut c_char, value: c_long) -> c_in
     length
 }
 
-/// Format backwards into native scratch storage; return the first digit offset.
-/// `SIZE_MAX` rejects invalid radix, null output or insufficient maximum capacity.
-/// # Safety
-/// Nonnull output is writable for capacity bytes, with no overlapping live borrow.
-pub unsafe fn radix(mut value: c_ulong, radix: u32, output: *mut u8, capacity: usize) -> usize {
+/// Format backwards into `output`, NUL-terminated at its end; return the first digit's
+/// offset. `SIZE_MAX` rejects an invalid radix or fewer than `c_ulong::BITS + 1` bytes.
+pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    if !(2..=36).contains(&radix) || output.is_null() || capacity < c_ulong::BITS as usize + 1 {
+    if !(2..=36).contains(&radix) || output.len() < c_ulong::BITS as usize + 1 {
         return usize::MAX;
     }
-    let put = |index: usize, byte: u8| {
-        // SAFETY: `index < capacity`; `output` is non-null and lends `capacity` writable bytes.
-        unsafe { output.wrapping_add(index).write(byte) }
+    let mut index = output.len() - 1;
+    let mut put = |index: usize, byte: u8| {
+        if let Some(slot) = output.get_mut(index) {
+            *slot = byte;
+        }
     };
-    let mut index = capacity - 1;
     put(index, 0);
     loop {
         // At least `c_ulong::BITS` digit slots precede the NUL, enough for radix 2.
@@ -483,67 +479,58 @@ pub struct MkdirState {
     pub next: usize,
 }
 
-/// Prepare/cut the next native mkdir prefix. 0=done, 1=prefix, 2=too long,
-/// 3=invalid state/storage. Native access/mkdir/logging execute after return.
-/// # Safety
-/// Input is readable for `input_length` bytes. Output is writable for capacity
-/// bytes, disjoint from input. State starts zeroed, then
-/// stays unmodified between calls; output stays unchanged by native IO. Stop on
-/// any result other than1. All pointers remain valid during each call only.
-pub unsafe fn swr_v1_corebase_mkdir_next(
-    input: *const u8,
-    input_length: usize,
-    output: *mut u8,
-    capacity: usize,
-    state: Option<&mut MkdirState>,
+/// Prepare/cut the next mkdir prefix in `output`. 0=done, 1=prefix, 2=too long,
+/// 3=invalid state/storage. The caller's access/mkdir/logging run after each return.
+/// `state` starts zeroed, then stays unmodified between calls, as does `output`; stop
+/// on any result other than 1.
+pub fn swr_v1_corebase_mkdir_next(
+    input: &[u8],
+    output: &mut [u8],
+    state: &mut MkdirState,
 ) -> c_int {
-    let Some(state) = state else {
-        return 3;
-    };
-    if output.is_null() || capacity == 0 || capacity > isize::MAX as usize {
+    let capacity = output.len();
+    if capacity == 0 {
         return 3;
     }
-    let put = |index: usize, byte: u8| {
-        // SAFETY: every caller keeps `index < capacity`; `output` lends `capacity` writable
-        // bytes disjoint from the input.
-        unsafe { output.wrapping_add(index).write(byte) }
+    let put = |output: &mut [u8], index: usize, byte: u8| {
+        if let Some(slot) = output.get_mut(index) {
+            *slot = byte;
+        }
     };
     if state.next == 0 {
-        if input_length >= capacity {
+        if input.len() >= capacity {
             return 2;
         }
-        if input.is_null() || input_length == 0 {
+        if input.is_empty() {
             return 3;
         }
-        // SAFETY: non-null input lends `input_length < capacity <= isize::MAX` readable bytes.
-        let input = unsafe { slice::from_raw_parts(input, input_length) };
         let prefix = input
             .iter()
             .position(|&byte| byte == 0)
-            .unwrap_or(input_length);
+            .unwrap_or(input.len());
         let append = input.last() != Some(&b'/');
         let length = prefix + usize::from(append);
         if length >= capacity {
             return 2;
         }
-        // SAFETY: `prefix <= length < capacity` writable output bytes, disjoint from input.
-        unsafe { ptr::copy_nonoverlapping(input.as_ptr(), output, prefix) };
-        if append {
-            put(prefix, b'/');
+        for (index, &byte) in input.iter().take(prefix).enumerate() {
+            put(output, index, byte);
         }
-        put(length, 0);
+        if append {
+            put(output, prefix, b'/');
+        }
+        put(output, length, 0);
         state.length = length;
         state.next = 1;
     } else {
         if state.length >= capacity || state.next > state.length {
             return 3;
         }
-        put(state.next - 1, b'/');
+        put(output, state.next - 1, b'/');
     }
     for index in state.next..state.length {
-        // SAFETY: `index < state.length < capacity`, written earlier by this iterator.
-        if unsafe { output.wrapping_add(index).read() } == b'/' {
-            put(index, 0);
+        if output.get(index) == Some(&b'/') {
+            put(output, index, 0);
             state.next = index + 1;
             return 1;
         }
@@ -554,27 +541,20 @@ pub unsafe fn swr_v1_corebase_mkdir_next(
 /// Create every path prefix directly, retaining the public warning facade.
 /// 0 success,1 syscall failure (the failing terminated prefix is in scratch),
 /// 2 path bound exceeded. No allocation or native callback occurs here.
-/// # Safety
-/// input lends length bytes; scratch lends capacity writable bytes and is disjoint.
-pub unsafe fn swr_v1_corebase_mkdir_complete(
-    input: *const u8,
-    length: usize,
-    scratch: *mut u8,
-    capacity: usize,
-) -> i32 {
+pub fn swr_v1_corebase_mkdir_complete(input: &[u8], scratch: &mut [u8]) -> i32 {
     let mut state = MkdirState::default();
     loop {
-        // SAFETY: caller lends stable input and exclusive scratch through prefix iteration.
-        let step = unsafe {
-            swr_v1_corebase_mkdir_next(input, length, scratch, capacity, Some(&mut state))
-        };
+        let step = swr_v1_corebase_mkdir_next(input, scratch, &mut state);
         if step != 1 {
             return step;
         }
-        // SAFETY: the prefix cursor just terminated a readable path inside scratch.
-        if unsafe { libc::access(scratch.cast(), libc::R_OK) } != 0
-            // SAFETY: the same terminated prefix remains unchanged through mkdir.
-            && unsafe { libc::mkdir(scratch.cast(), 0o755) } == -1
+        // The prefix the cursor just terminated inside scratch.
+        let Ok(prefix) = CStr::from_bytes_until_nul(scratch) else {
+            return 3;
+        };
+        if sys::access(prefix, libc::R_OK) != 0
+            // SAFETY: a NUL-terminated path.
+            && unsafe { libc::mkdir(prefix.as_ptr(), 0o755) } == -1
         {
             return 1;
         }
@@ -588,24 +568,16 @@ mod tests {
     #[test]
     fn mkdir_prefixes_preserve_slashes_and_original_nul_order() {
         fn prefixes(input: &[u8]) -> Vec<Vec<u8>> {
-            let mut storage = [std::mem::MaybeUninit::<u8>::uninit(); 64];
+            let mut storage = [0xa5_u8; 64];
             let mut state = MkdirState::default();
             let mut prefixes = Vec::new();
             loop {
-                let step = unsafe {
-                    swr_v1_corebase_mkdir_next(
-                        input.as_ptr(),
-                        input.len(),
-                        storage.as_mut_ptr().cast(),
-                        storage.len(),
-                        Some(&mut state),
-                    )
-                };
+                let step = swr_v1_corebase_mkdir_next(input, &mut storage, &mut state);
                 if step == 0 {
                     return prefixes;
                 }
                 assert_eq!(step, 1);
-                let prefix = unsafe { std::ffi::CStr::from_ptr(storage.as_ptr().cast()) };
+                let prefix = std::ffi::CStr::from_bytes_until_nul(&storage).unwrap();
                 prefixes.push(prefix.to_bytes().to_vec());
             }
         }
@@ -624,8 +596,7 @@ mod tests {
         let max = libc::PATH_MAX as usize;
         let (mut dir, mut scratch) = (vec![0u8; max + 1], vec![0u8; max]);
         unsafe { crate::random::swoole_random_string(dir.as_mut_ptr().cast(), max) };
-        let status =
-            unsafe { swr_v1_corebase_mkdir_complete(dir.as_ptr(), max, scratch.as_mut_ptr(), max) };
+        let status = swr_v1_corebase_mkdir_complete(&dir[..max], &mut scratch);
         assert_ne!(status, 0);
     }
 
@@ -701,7 +672,7 @@ mod tests {
     #[test]
     fn borrowed_binary_path_and_output_bounds() {
         let mut output = [0xa5; 2];
-        assert_eq!(unsafe { radix(0, 10, output.as_mut_ptr(), 2) }, usize::MAX);
+        assert_eq!(radix(0, 10, &mut output), usize::MAX);
         assert_eq!(output, [0xa5; 2]);
         let mut decimal = [0xa5u8; 4];
         assert_eq!(unsafe { swoole_itoa(decimal.as_mut_ptr().cast(), -1) }, 2);

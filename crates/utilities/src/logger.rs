@@ -4,7 +4,7 @@
 //! backtraces go through `LoggerHost` (`swr_logger_host`, in crates/process). Both run after
 //! the lock is released, so a diagnostic can log through this logger again. The log
 //! macros a Rust log runs (`swr_v1_utils_log`) are here too.
-use crate::{log_bytes, log_level, log_line, log_micros, log_rotation};
+use crate::{log_level, log_line, log_micros, log_rotation};
 use libc::{FILE, c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
@@ -435,8 +435,23 @@ pub unsafe extern "C" fn swr_v1_logger_put(
         reason = "upstream's static_cast<int>(length)"
     )]
     let precision = length as i32;
-    // SAFETY: per the contract.
-    logger.put(level, unsafe { log_bytes(content.cast(), precision) });
+    // printf precision is a signed int: negative means read through the terminator.
+    let data = content.cast::<u8>();
+    let content = match usize::try_from(precision) {
+        Ok(0) => &[],
+        // SAFETY: negative precision requires a NUL-terminated input.
+        Err(_) => unsafe { CStr::from_ptr(content) }.to_bytes(),
+        Ok(limit) => {
+            let mut length = 0;
+            // SAFETY: the input is readable through its first NUL or `precision` bytes.
+            while length < limit && unsafe { data.wrapping_add(length).read() } != 0 {
+                length += 1;
+            }
+            // SAFETY: the loop read exactly these `length` bytes.
+            unsafe { std::slice::from_raw_parts(data, length) }
+        }
+    };
+    logger.put(level, content);
 }
 
 /// `Logger::get_level`.

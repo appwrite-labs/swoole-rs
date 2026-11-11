@@ -6,7 +6,6 @@ use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
     ffi::CStr,
-    marker::PhantomData,
     ptr,
     rc::Rc,
 };
@@ -26,10 +25,7 @@ use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
-    sys::{
-        ZEND_ACC_PUBLIC, swr_zend_instanceof, zend_class_entry, zend_object,
-        zend_wrong_parameter_class_error,
-    },
+    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_wrong_parameter_class_error},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -228,9 +224,8 @@ fn ce() -> *mut zend_class_entry {
 
 /// `php_swoole_socket_set` when `settings` is an array.
 fn apply(socket: Co, settings: &Value) {
-    if settings.array().is_some() {
-        // SAFETY: a live socket and array; 0 applies every setting.
-        unsafe { swoole_rs_phpclients::socket_settings(socket.this(), settings.as_ptr(), 0) };
+    if let Some(settings) = settings.array() {
+        swoole_rs_phpclients::socket_set(socket, settings);
     }
 }
 
@@ -345,8 +340,7 @@ impl Client {
 
     /// Writes under the client class.
     fn props(&self) -> Props<'_> {
-        // SAFETY: the client object outlives its client.
-        unsafe { Props::new(ce(), self.object) }
+        self.conn.props()
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
@@ -368,14 +362,8 @@ impl Client {
 
     /// `io_error`: the socket's errCode and errMsg.
     fn io_error(&self, socket: Co) {
-        let (code, message) = (socket.err_code(), socket.err_msg());
-        let message = if message.is_null() {
-            &b""[..]
-        } else {
-            // SAFETY: the socket's NUL-terminated errMsg.
-            unsafe { CStr::from_ptr(message) }.to_bytes()
-        };
-        self.update_error(code, message);
+        let (code, message) = swoole_rs_phpclients::Co::from(socket).error();
+        self.update_error(code, message.to_bytes());
     }
 
     fn is_available(&self) -> bool {
@@ -408,13 +396,13 @@ impl Client {
             }
             return false;
         }
-        // SAFETY: the new socket object, whose socket lives as long as it.
-        let socket = unsafe { swoole_rs_phpclients::socket_of(object) };
-        // SAFETY: as above; the conn's reference to the object keeps it live
-        // until the close hook clears this handle.
-        let socket = unsafe { Co::of(socket) };
         // SAFETY: the conn takes the new object's reference.
-        *self.conn.zsocket.borrow_mut() = unsafe { Owned::object(object) };
+        let zsocket = unsafe { Owned::object(object) };
+        // SAFETY: the new socket object's socket, which lives as long as it; the
+        // conn's reference to the object keeps it live until the close hook clears
+        // this handle.
+        let socket = unsafe { Co::of(swoole_rs_phpclients::get_socket(&zsocket)) };
+        *self.conn.zsocket.borrow_mut() = zsocket;
         self.conn.socket.set(Some(socket));
         let conn = Rc::clone(&self.conn);
         set_close_hook(socket, Box::new(move |_| socket_closed(&conn)));
@@ -642,11 +630,10 @@ impl Client {
 
     /// `send_request`: the new stream's id, or 0.
     fn send_request(&self, request: Request<'_>) -> u32 {
-        // SAFETY: a live request object of the registered class.
-        let props = unsafe { Props::new(REQUEST.entry(), request.0) };
+        let props = request.1.props(Some(&REQUEST));
         // SAFETY: nothing else borrows `headers`, and no PHP code runs, until
         // the type is added.
-        let headers = unsafe { props.array(c"headers") };
+        let headers = props.and_then(|props| unsafe { props.array(c"headers") });
         let property = |name| request.property(name);
         let data = property(c"data");
         let pipeline = property(c"pipeline").truthy();
@@ -1302,7 +1289,7 @@ fn close(call: &Call) {
 
 /// A `Swoole\Http2\Request` argument, live for the call.
 #[derive(Clone, Copy)]
-struct Request<'a>(*mut zend_object, PhantomData<&'a Call>);
+struct Request<'a>(*mut zend_object, &'a Value);
 
 impl<'a> Request<'a> {
     fn property(self, name: &CStr) -> &'a Value {
@@ -1315,11 +1302,8 @@ impl<'a> Request<'a> {
 fn request_arg(call: &Call) -> Option<Request<'_>> {
     let arg = call.value(1)?;
     let ce = REQUEST.entry();
-    if let (Some(object), Some(class)) = (arg.object(), arg.class())
-        // SAFETY: two registered classes.
-        && (class == ce || unsafe { swr_zend_instanceof(class, ce) })
-    {
-        return Some(Request(object, PhantomData));
+    if let Some(object) = arg.object().filter(|_| arg.instance_of(&REQUEST)) {
+        return Some(Request(object, arg));
     }
     // SAFETY: from a handler, as Zend's macro reports it; the name is the
     // class's NUL-terminated name.

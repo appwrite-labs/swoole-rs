@@ -531,7 +531,7 @@ impl Call {
 
     /// Add to the array in the return slot, after `set_array` (nothing unless
     /// the slot holds an array).
-    fn add(&self, add: impl FnOnce(&mut crate::ArrayMut)) {
+    pub(crate) fn add(&self, add: impl FnOnce(&mut crate::ArrayMut)) {
         // SAFETY: the return slot is live for the handler, and nothing else
         // borrows it; `Owned` is a transparent zval, and is not dropped here.
         let slot = unsafe { &mut *self.value.cast::<crate::Owned>() };

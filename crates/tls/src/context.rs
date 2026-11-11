@@ -773,12 +773,12 @@ pub(crate) unsafe fn create_context(
     password: Option<PasswordBinding>,
 ) -> *mut SSL_CTX {
     let method = if config.protocols & DTLS != 0 {
-        DTLS_method
+        // SAFETY: a static method table.
+        unsafe { DTLS_method() }
     } else {
-        TLS_method
+        // SAFETY: a static method table.
+        unsafe { TLS_method() }
     };
-    // SAFETY: either returns its static method table and has no preconditions.
-    let method = unsafe { method() };
     if config.protocols == 0 {
         config.protocols = ALL;
     }

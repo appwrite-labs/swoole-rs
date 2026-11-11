@@ -212,7 +212,12 @@ impl Drop for Stream {
 /// zlib's message for a status (`zError`).
 #[must_use]
 pub fn error(status: c_int) -> &'static CStr {
-    // SAFETY: zError has no preconditions.
+    // zlib's statuses run from Z_VERSION_ERROR (-6) to Z_NEED_DICT (2); it has no
+    // message for any other number.
+    if !(-6..=2).contains(&status) {
+        return c"";
+    }
+    // SAFETY: one of zlib's own statuses, each of which has a message.
     let message = unsafe { zError(status) };
     // SAFETY: zError returns a static, NUL-terminated string for any status.
     unsafe { CStr::from_ptr(message) }

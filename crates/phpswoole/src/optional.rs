@@ -115,9 +115,7 @@ pub fn socket_cast(value: &Value) -> c_int {
                 .unwrap_or_default();
             (-1, c"failed to dup socket fd", errno)
         };
-        let exception = crate::EXCEPTION.entry();
-        // SAFETY: a request, with a registered class.
-        unsafe { swoole_rs_zend::throw_exception(exception, message, i64::from(code)) };
+        crate::EXCEPTION.throw(message, i64::from(code));
         fd
     }
     #[cfg(not(feature = "sockets"))]

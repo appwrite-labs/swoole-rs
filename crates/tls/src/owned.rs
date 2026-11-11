@@ -200,12 +200,9 @@ pub unsafe fn owner_fields(owner: *const OwnedTlsContext) -> OwnedTlsFields {
 pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreStringView {
     owner.strings[TLS_HOST_NAME].view()
 }
-/// # Safety
-/// Neither the owner's strings nor its scalar slots change during the operation.
-unsafe fn configuration(owner: &OwnedTlsContext) -> TlsConfig {
+/// The owner's strings, as views, and the scalar `fields` copied from it.
+fn configuration(owner: &OwnedTlsContext, fields: OwnedTlsFields) -> TlsConfig {
     let strings = owner.strings.each_ref().map(|slot| slot.view());
-    // SAFETY: field observation is externally synchronized.
-    let fields = unsafe { &*owner.fields.get() };
     TlsConfig {
         ciphers: strings[0].into(),
         ecdh_curve: strings[1].into(),
@@ -245,8 +242,9 @@ unsafe extern "C" fn slot_password(
 pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.
     let state = unsafe { &*owner };
-    // SAFETY: snapshot raw views without retaining a record reference across OpenSSL/log callbacks.
-    let mut config = unsafe { configuration(state) };
+    // SAFETY: the exclusive caller serializes field writes; a copy, so no borrow of the
+    // fields is kept across OpenSSL/log callbacks.
+    let mut config = configuration(state, unsafe { *state.fields.get() });
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
     let retained_password = if config.passphrase.length == 0 {
         None
@@ -260,8 +258,9 @@ pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: local configuration, stable string slots and a live password binding.
     let ctx = unsafe { create_context(&mut config, Some(password)) };
     if !ctx.is_null() {
-        // SAFETY: each session registers its canonical network socket before callbacks run.
-        unsafe { crate::info::install(ctx) };
+        // SAFETY: the new context; each of its sessions registers its canonical network
+        // socket (`info`'s contract) before callbacks run.
+        unsafe { crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info)) };
     }
     // SAFETY: the callbacks have returned, and the caller's exclusive owner lends its
     // fields for these two writes.

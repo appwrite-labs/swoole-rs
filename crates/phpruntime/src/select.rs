@@ -8,7 +8,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     sys::{
         swr_zend_runtime_select_args, swr_zend_stream_from_zval, swr_zend_try_hash_clean,
-        zend_argument_value_error, zend_long, zend_ulong, zval,
+        zend_long, zend_ulong, zval,
     },
 };
 
@@ -159,13 +159,7 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
         return Ok(());
     }
     if seconds_null && !micros_null && micros != 0 {
-        // SAFETY: a handler's context; the message has no conversions.
-        unsafe {
-            zend_argument_value_error(
-                5,
-                c"must be null when argument #4 ($seconds) is null".as_ptr(),
-            );
-        }
+        call.argument_value_error(5, c"must be null when argument #4 ($seconds) is null");
         return Ok(());
     }
     let mut timeout = -1.0;

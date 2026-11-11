@@ -47,35 +47,74 @@ fn leaf(code: impl Into<c_int>) -> Result<(), Bailout> {
     }
 }
 
-/// Zend's `FREE_OP`, with its original no-GC destructor variant and branch.
-/// # Safety
-/// `data`'s operand is still owned: nothing freed it yet.
-unsafe fn free_operand(data: Op) -> Result<(), Bailout> {
-    if u32::from(data.op1_type) & (z::IS_TMP_VAR | z::IS_VAR) != 0
-        && let Some(value) = data.op1()
-    {
-        // SAFETY: per the caller, the operand's owned temporary slot; its
-        // destructor is trapped below Rust.
-        leaf(unsafe { z::swr_zend_try_stdext_nogc_dtor(value.as_ptr()) })?;
-    }
-    Ok(())
+/// An assignment's `OP_DATA` instruction with the value it read, whose operand
+/// this still owns: [`Data::free`] (or `abandon`, or `publish`) consumes it to
+/// release the operand, once, and nothing reads the value after that.
+struct Data<'a> {
+    op: Op<'a>,
+    value: &'a Value,
 }
 
-/// The original failed dimension/assignment path frees the value before NULL publication.
-/// # Safety
-/// As [`free_operand`].
-unsafe fn abandon(op: Op, data: Op) -> Result<(), Bailout> {
-    // SAFETY: per the caller.
-    unsafe { free_operand(data) }?;
-    if let Some(slot) = op.result() {
-        // SAFETY: like ZVAL_NULL, overwrite only the result's type information.
-        unsafe {
-            (*slot.as_ptr()).u1 = z::_zval_struct__bindgen_ty_1 {
-                type_info: z::IS_NULL,
-            }
-        };
+impl<'a> Data<'a> {
+    /// `op`'s `OP_DATA` and its value (`get_op_data_zval_ptr_r`), or None for
+    /// an unused operand.
+    /// # Safety
+    /// `op` is an `ASSIGN_DIM` or `ASSIGN_DIM_OP`, which `OP_DATA` follows, and
+    /// nothing else frees that operand.
+    unsafe fn of(op: Op<'a>) -> Result<Option<Self>, Bailout> {
+        // SAFETY: per the caller.
+        let op = unsafe { op.data() };
+        Ok(operand(op)?.map(|value| Self { op, value }))
     }
-    Ok(())
+
+    /// The operand's value, until it is freed.
+    fn value(&self) -> &Value {
+        self.value
+    }
+
+    /// The operand's type (`IS_CONST`, `IS_TMP_VAR`, `IS_VAR`, `IS_CV`).
+    fn kind(&self) -> u8 {
+        self.op.op1_type
+    }
+
+    /// Zend's `FREE_OP`, with its original no-GC destructor variant and branch.
+    fn free(self) -> Result<(), Bailout> {
+        if u32::from(self.op.op1_type) & (z::IS_TMP_VAR | z::IS_VAR) != 0
+            && let Some(value) = self.op.op1()
+        {
+            // SAFETY: the operand's temporary slot, which this owned and gives
+            // up here; its destructor is trapped below Rust.
+            leaf(unsafe { z::swr_zend_try_stdext_nogc_dtor(value.as_ptr()) })?;
+        }
+        Ok(())
+    }
+
+    /// The original failed dimension/assignment path frees the value before
+    /// NULL publication.
+    fn abandon(self, op: Op) -> Result<(), Bailout> {
+        self.free()?;
+        if let Some(slot) = op.result() {
+            // SAFETY: like ZVAL_NULL, overwrite only the result's type information.
+            unsafe {
+                (*slot.as_ptr()).u1 = z::_zval_struct__bindgen_ty_1 {
+                    type_info: z::IS_NULL,
+                }
+            };
+        }
+        Ok(())
+    }
+
+    /// Publish `element` as `op`'s result, then free the operand.
+    /// # Safety
+    /// `element` is a live zval.
+    unsafe fn publish(self, op: Op, element: *const zval) -> Result<(), Bailout> {
+        if let Some(result) = op.result() {
+            // SAFETY: per the caller; a retained copy of the actual
+            // post-operation element.
+            unsafe { z::swr_zval_copy(result.as_ptr(), element) };
+        }
+        self.free()
+    }
 }
 
 /// `get_op_data_zval_ptr_r`: Rust selects the actual operand; only an undefined
@@ -132,15 +171,15 @@ fn strict(frame: Frame) -> bool {
 }
 
 /// # Safety
-/// `container` holds `source`; `data`'s operand is still owned.
+/// `container` holds `source`.
 unsafe fn assign(
     op: Op,
-    data: Op,
+    data: Data,
     container: &Value,
     source: Typed,
     key: &Value,
-    value: &Value,
 ) -> Result<(), Bailout> {
+    let value = data.value();
     // SAFETY: per the caller.
     let ht = unsafe { separate(container, source) };
     let mut slot = ptr::null_mut();
@@ -150,8 +189,8 @@ unsafe fn assign(
         if slot.is_null() {
             // SAFETY: preserve Zend's exact occupied-next-index error, below a native trap.
             leaf(unsafe { z::swr_zend_try_stdext_cannot_add() })?;
-            // SAFETY: this assignment failed before publishing its result.
-            return unsafe { abandon(op, data) };
+            // This assignment failed before publishing its result.
+            return data.abandon(op);
         }
     } else {
         let mut variable = ptr::null_mut();
@@ -166,47 +205,41 @@ unsafe fn assign(
             )
         })?;
         if variable.is_null() {
-            // SAFETY: the native dimension lookup failed before assignment.
-            return unsafe { abandon(op, data) };
+            // The native dimension lookup failed before assignment.
+            return data.abandon(op);
         }
         let strict = strict(op.frame);
         // SAFETY: Zend performs its original assignment/refcount effect below a trap.
         leaf(unsafe {
-            swr_phpstdext_assign(
-                variable,
-                value.as_ptr(),
-                data.op1_type,
-                strict,
-                &raw mut slot,
-            )
+            swr_phpstdext_assign(variable, value.as_ptr(), data.kind(), strict, &raw mut slot)
         })?;
         if slot.is_null() {
-            // SAFETY: the native assignment failed before result publication.
-            return unsafe { abandon(op, data) };
+            // The native assignment failed before result publication.
+            return data.abandon(op);
         }
     }
     if let Some(result) = op.result() {
         // SAFETY: Zend's copy retains the inserted/assigned payload for the result.
         unsafe { z::swr_zval_copy(result.as_ptr(), slot) };
     }
-    if u32::from(data.op1_type) == z::IS_VAR {
+    if u32::from(data.kind()) == z::IS_VAR {
         // SAFETY: retain the variable value before the original FREE_OP decrements it.
         unsafe { z::swr_zval_try_addref(value.as_ptr()) };
     }
-    // SAFETY: this is the assignment's original OP_DATA temporary/variable.
-    unsafe { free_operand(data) }
+    // The assignment's original OP_DATA temporary/variable.
+    data.free()
 }
 
 /// # Safety
 /// As [`assign`].
 unsafe fn assign_op(
     op: Op,
-    data: Op,
+    data: Data,
     container: &Value,
     source: Typed,
     key: &Value,
-    value: &Value,
 ) -> Result<(), Bailout> {
+    let value = data.value();
     // SAFETY: per the caller.
     let ht = unsafe { separate(container, source) };
     let mut slot = ptr::null_mut();
@@ -217,14 +250,14 @@ unsafe fn assign_op(
             op.frame.as_ptr(),
             ht,
             key.as_ptr(),
-            u32::from(data.op1_type) == z::IS_CONST,
+            u32::from(data.kind()) == z::IS_CONST,
             &raw mut slot,
         )
     })?;
     // SAFETY: null, or the live writable array-element slot the lookup returned.
     let Some(element) = (unsafe { Value::from_ptr(slot) }) else {
-        // SAFETY: dimension lookup failed before the operation's result exists.
-        return unsafe { abandon(op, data) };
+        // Dimension lookup failed before the operation's result exists.
+        return data.abandon(op);
     };
     let target = element.referent();
     if element.kind() == z::IS_REFERENCE {
@@ -239,32 +272,20 @@ unsafe fn assign_op(
             leaf(unsafe {
                 swr_phpstdext_typed_ref(op.frame.as_ptr(), reference, value.as_ptr(), op.at)
             })?;
-            // SAFETY: per the caller.
-            return unsafe { publish(op, data, target) };
+            // SAFETY: the reference's live value slot.
+            return unsafe { data.publish(op, target) };
         }
     }
     // SAFETY: the container holds its own typed copy now.
     let typed = unsafe { Typed::from_table(ht) };
     if !typed::operation(typed, op.extended_value == z::ZEND_CONCAT) {
-        // SAFETY: a rejected operation follows the original temporary/result cleanup path.
-        return unsafe { abandon(op, data) };
+        // A rejected operation follows the original temporary/result cleanup path.
+        return data.abandon(op);
     }
     // SAFETY: Zend applies the exact current opcode to the live element and value.
     leaf(unsafe { swr_phpstdext_binary(target, value.as_ptr(), op.at) })?;
-    // SAFETY: per the caller.
-    unsafe { publish(op, data, target) }
-}
-
-/// Publish `element` as `op`'s result, then free `data`'s operand.
-/// # Safety
-/// As [`free_operand`].
-unsafe fn publish(op: Op, data: Op, element: *const zval) -> Result<(), Bailout> {
-    if let Some(result) = op.result() {
-        // SAFETY: publish a retained copy of the actual post-operation element.
-        unsafe { z::swr_zval_copy(result.as_ptr(), element) };
-    }
-    // SAFETY: per the caller; released after result publication.
-    unsafe { free_operand(data) }
+    // SAFETY: the element's live slot, or its reference's.
+    unsafe { data.publish(op, target) }
 }
 
 /// # Safety
@@ -280,22 +301,22 @@ unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
     let Some(key) = op.op2().or_else(uninitialized) else {
         return Ok(DISPATCH);
     };
-    // SAFETY: per the caller, an assignment, which OP_DATA follows.
-    let data = unsafe { op.data() };
-    let Some(value) = operand(data)? else {
+    // SAFETY: per the caller, an assignment, which OP_DATA follows; only
+    // `data` frees its operand.
+    let Some(data) = (unsafe { Data::of(op) })? else {
         return Ok(DISPATCH);
     };
-    if !typed::check(typed, KeyType::of(key), value) {
-        // SAFETY: rejection frees OP_DATA and intentionally does not advance the opline.
-        unsafe { free_operand(data) }?;
+    if !typed::check(typed, KeyType::of(key), data.value()) {
+        // Rejection frees OP_DATA and intentionally does not advance the opline.
+        data.free()?;
         return Ok(CONTINUE);
     }
     if operation {
         // SAFETY: the typed operands and original instruction remain live throughout this operation.
-        unsafe { assign_op(op, data, array, typed, key, value) }?;
+        unsafe { assign_op(op, data, array, typed, key) }?;
     } else {
         // SAFETY: the typed operands and original instruction remain live throughout this assignment.
-        unsafe { assign(op, data, array, typed, key, value) }?;
+        unsafe { assign(op, data, array, typed, key) }?;
     }
     // Reload the current frame opline after reentry, as EX(opline) += 2 did.
     frame.jump(frame.opline().wrapping_add(2));

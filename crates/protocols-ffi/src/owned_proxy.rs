@@ -85,15 +85,13 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                     return result;
                 }
                 if swoole_rs_reactor::type_is(fields.socket_type, swoole_rs_reactor::CLASS_INET4) {
-                    // SAFETY: the preceding address operation initialized the IPv4 union arm.
-                    inet4 = unsafe { address.inet_v4.sin_addr.s_addr }.to_ne_bytes();
+                    inet4 = address.v4().sin_addr.s_addr.to_ne_bytes();
                     (1, &inet4)
                 } else if swoole_rs_reactor::type_is(
                     fields.socket_type,
                     swoole_rs_reactor::CLASS_INET6,
                 ) {
-                    // SAFETY: the preceding address operation initialized the IPv6 union arm.
-                    inet6 = unsafe { address.inet_v6.sin6_addr.s6_addr };
+                    inet6 = address.v6().sin6_addr.s6_addr;
                     (4, &inet6)
                 } else {
                     result.diagnostic = 2;
