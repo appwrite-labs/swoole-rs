@@ -64,7 +64,8 @@ jobs:
     outputs:
       services: ${{ steps.list.outputs.services }}
     steps:
-      - id: list
+      - name: List e2e services
+        id: list
         run: |
           curl -fsSL "https://raw.githubusercontent.com/appwrite/appwrite/${APPWRITE_COMMIT}/.github/ci/e2e.json" \
             | jq -c '[.services[] | del(.paths)]' | sed 's/^/services=/' >> "$GITHUB_OUTPUT"
@@ -155,7 +156,8 @@ jobs:
             --exclude-group queueRetry --exclude-group usageOutage \
             --log-junit "tests/e2e/Services/$SERVICE/junit.xml" || true
           test -s "tests/e2e/Services/$SERVICE/junit.xml"
-      - if: failure()
+      - name: Print stack logs
+        if: failure()
         run: docker compose logs --timestamps --tail 2000
       - uses: actions/upload-artifact@v4
         if: always()
@@ -193,7 +195,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: sudo apt-get install -y -q apache2-utils
+      - name: Install ab
+        run: sudo apt-get install -y -q apache2-utils
       - name: Pull images
         working-directory: appwrite
         run: |
@@ -214,7 +217,8 @@ jobs:
               docker compose down -v --remove-orphans
             done
           done
-      - shell: bash  # pipefail, so failed or non-2xx requests fail the job through tee
+      - name: Report benchmarks
+        shell: bash  # pipefail, so failed or non-2xx requests fail the job through tee
         run: python3 swoole-rs/tools/appwrite_bench.py report bench | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -232,5 +236,6 @@ jobs:
         with:
           pattern: junit-*
           path: junit
-      - shell: bash  # pipefail, so the comparison fails the job through tee
+      - name: Compare JUnit results
+        shell: bash  # pipefail, so the comparison fails the job through tee
         run: python3 tools/appwrite_e2e.py junit | tee -a "$GITHUB_STEP_SUMMARY"
