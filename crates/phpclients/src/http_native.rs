@@ -119,8 +119,7 @@ impl Co {
     /// After the settings: no proxy handshake for plain HTTP proxying.
     pub(crate) fn skip_proxy_handshake(self) {
         if let Some(proxy) = self.plain_proxy() {
-            // SAFETY: the socket's proxy fields, not otherwise borrowed.
-            unsafe { (*proxy.fields.get()).dont_handshake = 1 };
+            proxy.update(|fields| fields.dont_handshake = 1);
         }
     }
 
@@ -133,26 +132,11 @@ impl Co {
     /// password.
     pub(crate) fn proxy_authorization(self) -> Option<Vec<u8>> {
         let proxy = self.plain_proxy()?;
-        // SAFETY: the proxy's password slot, unchanged meanwhile.
-        if unsafe { proxy.string(2) }.length == 0 {
+        if proxy.string(2).is_empty() {
             return None;
         }
-        let mut encoded = [0u8; 512];
-        let mut length = 0;
-        // SAFETY: the live proxy, 512 writable bytes and a length slot.
-        let result = unsafe {
-            swoole_rs_http_ffi::swr_v1_http_proxy_owned_authorization(
-                proxy,
-                encoded.as_mut_ptr(),
-                Some(&mut length),
-            )
-        };
         let mut value = b"Basic ".to_vec();
-        if result >= 0 {
-            // `std::string(encode_buf)`: up to the first NUL.
-            let encoded = encoded.get(..length).unwrap_or(&encoded);
-            value.extend_from_slice(encoded.split(|&byte| byte == 0).next().unwrap_or_default());
-        }
+        value.extend(swoole_rs_http_ffi::authorization(proxy));
         Some(value)
     }
 

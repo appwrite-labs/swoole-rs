@@ -13,11 +13,11 @@ use core::ptr::{self as ptr, null_mut};
 
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{
-    CoreStringView, NameResolverContext, ProxyFields, ProxyState, StringSlot, log,
-    swr_v1_core_string_set, swr_v1_core_string_view,
+    CoreStringView, NameResolverContext, ProxyState, StringSlot, log, swr_v1_core_string_set,
+    swr_v1_core_string_view,
 };
-use swoole_rs_http_ffi::{proxy_accept, swr_v1_http_proxy_connect};
-use swoole_rs_protocols_ffi::{Socks5Proxy, handshake_step, pack_negotiate_request};
+use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
+use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::owner_tls_host_name;
 use swoole_rs_tls::upstream::socket_free;
@@ -305,20 +305,13 @@ impl Live<'_> {
         unsafe { bytes(view) }
     }
 
-    /// The SOCKS5 proxy's scalar fields, and its packet's first `length` bytes.
-    fn socks5_fields(&self) -> *mut ProxyFields {
-        self.socks5.map_or(null_mut(), |proxy| proxy.fields.get())
-    }
-
+    /// The SOCKS5 packet's first `length` bytes.
     fn socks5_packet(&self, length: isize) -> Vec<u8> {
         let length = usize::try_from(length).unwrap_or(0).min(512);
-        let Some(proxy) = self.socks5 else {
-            return Vec::new();
-        };
-        // SAFETY: the live SOCKS5 owner's packet buffer.
-        let packet = unsafe { proxy.buffer() };
-        // SAFETY: at most its 512 bytes.
-        unsafe { core::slice::from_raw_parts(packet, length) }.to_vec()
+        self.socks5
+            .and_then(ProxyState::packet)
+            .map(|packet| packet.get(..length).unwrap_or_default().to_vec())
+            .unwrap_or_default()
     }
 }
 
@@ -344,9 +337,8 @@ impl Connecting for Live<'_> {
     }
 
     fn http_handshake(&self) -> bool {
-        // SAFETY: the live HTTP owner's scalar fields, copied.
         self.http
-            .is_some_and(|http| unsafe { *http.fields.get() }.dont_handshake == 0)
+            .is_some_and(|http| http.fields().dont_handshake == 0)
     }
 
     fn ssl(&self) -> bool {
@@ -384,17 +376,11 @@ impl Connecting for Live<'_> {
         if which == HOST_PROXY
             && let Some(proxy) = self.socks5.or(self.http)
         {
-            // SAFETY: the live owner, lent exclusively for the call. A failed copy
-            // (allocation) leaves the previous target.
-            unsafe { proxy.set_string(3, &host) };
-            // SAFETY: as above.
-            let fields = unsafe { &mut *proxy.fields.get() };
-            fields.target_port = port;
-            port = fields.port;
-            // SAFETY: the owner's host.
-            let view = unsafe { proxy.string(0) };
-            // SAFETY: its bytes, copied at once.
-            host = unsafe { bytes(view) };
+            // A failed copy (allocation) leaves the previous target.
+            proxy.set_string(3, &host);
+            proxy.update(|fields| fields.target_port = port);
+            port = proxy.fields().port;
+            host = proxy.string(0).to_vec();
         }
         if which == HOST_TLS {
             self.set_slot(SSL_HOST_NAME, &host);
@@ -489,8 +475,7 @@ impl Connecting for Live<'_> {
             return Vec::new();
         };
         let length = pack_negotiate_request(&Socks5Proxy::new(owner));
-        // SAFETY: its scalar fields.
-        unsafe { (*self.socks5_fields()).state = SOCKS5_HANDSHAKE };
+        owner.update(|fields| fields.state = SOCKS5_HANDSHAKE);
         self.socks5_packet(length)
     }
 
@@ -498,13 +483,11 @@ impl Connecting for Live<'_> {
         let Some(owner) = self.socks5 else {
             return -1;
         };
-        // SAFETY: the reply's bytes.
-        let n = unsafe { handshake_step(&Socks5Proxy::new(owner), reply.as_ptr(), reply.len()) };
+        let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply);
         if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != n) {
             return -1;
         }
-        // SAFETY: the owner's scalar fields.
-        c_int::from(unsafe { (*self.socks5_fields()).state } == SOCKS5_READY)
+        c_int::from(owner.fields().state == SOCKS5_READY)
     }
 
     fn http_request(&mut self) -> Vec<u8> {
@@ -520,16 +503,13 @@ impl Connecting for Live<'_> {
             name = unsafe { bytes(view) };
         }
         if name.is_empty() {
-            // SAFETY: the live HTTP owner's target host.
-            let view = unsafe { http.string(3) };
-            // SAFETY: its bytes, copied at once.
-            name = unsafe { bytes(view) };
+            name = http.string(3).to_vec();
         }
         self.socket.with_buffer(true, |write| {
             let (at, size) = (write.as_mut_ptr(), write.size());
-            // SAFETY: the live owner, the name above and the write buffer's capacity.
-            let written =
-                unsafe { swr_v1_http_proxy_connect(http, name.as_ptr(), name.len(), at, size) };
+            // SAFETY: the write buffer's `size` bytes, which nothing else borrows.
+            let output = unsafe { core::slice::from_raw_parts_mut(at, size) };
+            let written = proxy_connect(http, &name, output);
             // SAFETY: the `written <= size` bytes just packed.
             unsafe { write.set_len(written) };
             write.view().to_vec()
@@ -600,42 +580,14 @@ impl Co {
     /// No connect of the socket is running.
     pub fn set_proxy(self, http: bool, host: &[u8], port: c_int, user: &[u8], password: &[u8]) {
         let proxy = if http {
-            let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
-            // SAFETY: the new owner and the texts.
-            unsafe {
-                swoole_rs_http_ffi::swr_v1_http_proxy_configure(
-                    owner,
-                    host.as_ptr().cast(),
-                    host.len(),
-                    port,
-                    user.as_ptr().cast(),
-                    user.len(),
-                    password.as_ptr().cast(),
-                    password.len(),
-                );
-            }
-            owner
+            Box::into_raw(swoole_rs_http_ffi::http_proxy(host, port, user, password))
         } else {
             match swoole_rs_protocols_ffi::admit(user.len(), password.len()) {
                 0 => null_mut(),
                 config => {
-                    let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;
-                    let texts = [host, user, password].map(|text| CoreStringView {
-                        data: text.as_ptr().cast(),
-                        length: text.len(),
-                    });
-                    // SAFETY: the new owner, which has no native cache to refuse a
-                    // value, and the texts.
-                    unsafe {
-                        swoole_rs_corebase::swr_v1_core_proxy_configure(
-                            owner,
-                            texts.as_ptr(),
-                            port,
-                            config == 2,
-                            self.kind(),
-                        )
-                    };
-                    owner
+                    let owner = ProxyState::new(true);
+                    owner.configure([host, user, password], port, config == 2, self.kind());
+                    Box::into_raw(owner)
                 }
             }
         };

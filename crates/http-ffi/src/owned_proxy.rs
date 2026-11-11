@@ -1,102 +1,34 @@
 //! `HttpProxy`'s create, pack and handshake over corebase's proxy owner, which the
 //! clients and hooks call, over crates/http's CONNECT formatting.
-use swoole_rs_corebase::{
-    CoreStringView, ProxyState, log, set_errno, swoole_version, swr_v1_core_proxy_configure,
-};
+use swoole_rs_corebase::{ProxyState, VERSION, log, set_errno};
 use swoole_rs_http::{HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack};
 
-use std::ffi::c_char;
-
 const HANDSHAKE_FAILED: i32 = 7103;
-
-/// The bytes of the owner's string slot `index`.
-///
-/// # Safety
-/// No one changes the slot while the bytes are borrowed.
-unsafe fn slot(owner: &ProxyState, index: usize) -> &[u8] {
-    // SAFETY: the slot is stable, as the caller guarantees.
-    let view = unsafe { owner.string(index) };
-    // SAFETY: a slot's view names `length` initialized bytes.
-    unsafe { crate::bytes(view.data.cast(), view.length) }.unwrap_or_default()
-}
-
-/// `HttpProxy::get_auth_str()`'s Base64 credentials into 512 bytes at `output`,
-/// NUL-terminated: 1 when they were cut to fit (errno EOVERFLOW), else 0.
-/// # Safety
-/// owner's string slots are stable; output lends 512 bytes disjoint from the rest.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_proxy_owned_authorization(
-    owner: &ProxyState,
-    output: *mut u8,
-    written: Option<&mut usize>,
-) -> i32 {
-    let Some(written) = written else {
-        return crate::INVALID;
-    };
-    if output.is_null() {
-        return crate::INVALID;
-    }
-    // SAFETY: the username is stable through the bounded codec.
-    let user = unsafe { slot(owner, 1) };
-    // SAFETY: the password is stable through the bounded codec.
-    let password = unsafe { slot(owner, 2) };
-    let mut encoded = [0u8; 512];
-    let (status, length) = proxy_authorization(user, password, &mut encoded);
-    // SAFETY: `length + 1 <= 512` bytes into the caller's 512, disjoint from `encoded`.
-    unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), output, length + 1) };
-    *written = length;
-    status
-}
 
 /// `HttpProxy::create`'s assignments on a fresh owner: the host and port, then the
 /// credentials when both are set. Only an allocation can fail, and that aborts as
 /// Rust's allocation failures do.
-/// # Safety
-/// owner is a live owner nothing else uses; the views lend their bytes for the call.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "HttpProxy::create's owner, port and three strings as pointer and length"
-)]
-pub unsafe fn swr_v1_http_proxy_configure(
-    owner: *mut ProxyState,
-    host: *const c_char,
-    host_length: usize,
-    port: i32,
-    user: *const c_char,
-    user_length: usize,
-    password: *const c_char,
-    password_length: usize,
-) {
-    let authenticated = user_length != 0 && password_length != 0;
-    let view = |data, length| CoreStringView { data, length };
-    let texts = [
-        view(host, host_length),
-        view(user, user_length),
-        view(password, password_length),
-    ];
-    // SAFETY: the caller's live owner and three borrowed views.
-    let result =
-        unsafe { swr_v1_core_proxy_configure(owner, texts.as_ptr(), port, authenticated, -1) };
+#[must_use]
+pub fn http_proxy(host: &[u8], port: i32, user: &[u8], password: &[u8]) -> Box<ProxyState> {
+    let proxy = ProxyState::new(false);
+    let authenticated = !user.is_empty() && !password.is_empty();
+    let result = proxy.configure([host, user, password], port, authenticated, -1);
     if result.status != 0 {
         std::process::abort();
     }
+    proxy
 }
 
-/// `HttpProxy::get_auth_str()`: the Base64 credentials, empty on failure, errno
-/// EOVERFLOW when they were cut to fit.
-fn authorization(owner: &ProxyState) -> Vec<u8> {
-    let (mut output, mut written) = ([0u8; 512], 0);
-    // SAFETY: the live owner, 512 writable bytes and the length slot.
-    let status = unsafe {
-        swr_v1_http_proxy_owned_authorization(owner, output.as_mut_ptr(), Some(&mut written))
-    };
-    if status < 0 {
-        return Vec::new();
-    }
+/// `HttpProxy::get_auth_str()`: the Base64 credentials, errno EOVERFLOW when they
+/// were cut to fit.
+#[must_use]
+pub fn authorization(owner: &ProxyState) -> Vec<u8> {
+    let mut encoded = [0u8; 512];
+    let (status, length) = proxy_authorization(&owner.string(1), &owner.string(2), &mut encoded);
     if status == 1 {
         set_errno(libc::EOVERFLOW);
     }
-    let encoded = output.get(..written).unwrap_or_default();
+    let encoded = encoded.get(..length).unwrap_or_default();
     encoded
         .split(|&b| b == 0)
         .next()
@@ -104,57 +36,41 @@ fn authorization(owner: &ProxyState) -> Vec<u8> {
         .to_vec()
 }
 
-/// `HttpProxy::pack`: the CONNECT request for `host` into `output[..capacity]`, with
-/// the authorization when the proxy has a password. Returns the bytes written (the
-/// whole length for a zero capacity).
-/// # Safety
-/// owner's slots are stable; host lends its bytes; output is `capacity` writable bytes
-/// disjoint from both.
-pub unsafe fn swr_v1_http_proxy_connect(
-    state: &ProxyState,
-    host: *const u8,
-    host_length: usize,
-    output: *mut u8,
-    capacity: usize,
-) -> usize {
-    // SAFETY: the live owner's password slot.
-    let authenticated = !unsafe { slot(state, 2) }.is_empty();
+/// `HttpProxy::pack`: the CONNECT request for `host` into `output`, NUL-terminated
+/// and cut to fit, with the authorization when the proxy has a password. Returns
+/// the bytes written (the whole length for an empty output).
+pub fn proxy_connect(state: &ProxyState, host: &[u8], output: &mut [u8]) -> usize {
+    let authenticated = !state.string(2).is_empty();
     let auth = if authenticated {
         authorization(state)
     } else {
         Vec::new()
     };
-    // SAFETY: the pinned version, a static string.
-    let version = unsafe { std::ffi::CStr::from_ptr(swoole_version()) }.to_bytes();
-    // SAFETY: leaf scalar snapshot before formatting.
-    let fields = unsafe { *state.fields.get() };
-    // SAFETY: the caller lends `host_length` bytes at `host`.
-    let Ok(host) = (unsafe { crate::bytes(host, host_length) }) else {
-        return 0;
-    };
     let request = HttpProxyRequest {
-        // SAFETY: the target bytes remain stable throughout formatting.
-        target: unsafe { slot(state, 3) },
+        target: &state.string(3),
         host,
-        version,
+        version: VERSION.to_bytes(),
         authorization: &auth,
-        port: fields.target_port,
+        port: state.fields().target_port,
         authenticated,
     };
     let Ok(text) = proxy_pack(&request) else {
         return 0;
     };
-    if capacity == 0 {
+    if output.is_empty() {
         return text.len();
     }
-    if output.is_null() || capacity > i32::MAX as usize {
+    if output.len() > i32::MAX as usize {
         return 0;
     }
-    let length = text.len().min(capacity - 1);
-    // SAFETY: `length < capacity` writable bytes, disjoint from `text`.
-    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), output, length) };
-    // SAFETY: `length < capacity`, inside the writable output.
-    unsafe { output.wrapping_add(length).write(0) };
+    let length = text.len().min(output.len() - 1);
+    let (Some(to), Some(from)) = (output.get_mut(..length), text.get(..length)) else {
+        return 0;
+    };
+    to.copy_from_slice(from);
+    if let Some(end) = output.get_mut(length) {
+        *end = 0;
+    }
     length
 }
 
@@ -175,93 +91,50 @@ pub fn proxy_accept(input: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_corebase::{
-        PreparedProxy, swr_v1_core_proxy_free, swr_v1_core_proxy_new, swr_v1_core_string_set,
-        swr_v1_core_string_view,
-    };
     use swoole_rs_oracle::http_proxy as oracle;
 
     fn errno() -> i32 {
         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
     }
-    fn views<'a>(texts: [&'a [u8]; 3]) -> [CoreStringView; 3] {
-        texts.map(|text: &'a [u8]| CoreStringView {
-            data: text.as_ptr().cast(),
-            length: text.len(),
-        })
-    }
 
-    /// An `HttpProxy`: its Rust owner and the views the C++ class reads.
-    struct Proxy(PreparedProxy);
+    /// An `HttpProxy`: its Rust owner.
+    struct Proxy(Box<ProxyState>);
     impl Proxy {
-        fn new() -> Self {
-            Self(swr_v1_core_proxy_new(false))
-        }
         /// As the gates built theirs: every field assigned, whatever is empty.
         fn with(user: &[u8], password: &[u8], target: &[u8], target_port: i32) -> Self {
-            let proxy = Self::new();
+            let proxy = Self(ProxyState::new(false));
             for (index, value) in [(1, user), (2, password), (3, target)] {
                 assert_eq!(proxy.set(index, value), 0, "field {index}");
             }
-            unsafe { (*proxy.0.fields).target_port = target_port };
+            proxy.0.update(|fields| fields.target_port = target_port);
             proxy
         }
         /// `HttpProxy::create`.
         fn create(host: &[u8], port: i32, user: &[u8], password: &[u8]) -> Self {
-            let proxy = Self::new();
-            let [host, user, password] = views([host, user, password]);
-            unsafe {
-                swr_v1_http_proxy_configure(
-                    proxy.0.owner,
-                    host.data,
-                    host.length,
-                    port,
-                    user.data,
-                    user.length,
-                    password.data,
-                    password.length,
-                );
-            };
-            proxy
+            Self(http_proxy(host, port, user, password))
         }
         fn set(&self, index: usize, value: &[u8]) -> i32 {
-            unsafe {
-                swr_v1_core_string_set(self.0.strings[index], value.as_ptr().cast(), value.len())
-            }
+            self.0.set_string(index, value)
         }
         fn get(&self, index: usize) -> Vec<u8> {
-            let view = unsafe { swr_v1_core_string_view(self.0.strings[index]) };
-            unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
+            self.0.string(index).to_vec()
         }
         fn fields(&self) -> [Vec<u8>; 3] {
             [0, 1, 2].map(|index| self.get(index))
         }
         fn port(&self) -> i32 {
-            unsafe { (*self.0.fields).port }
+            self.0.fields().port
         }
         /// `get_auth_str`, and errno after it from EINTR.
         fn auth(&self) -> (Vec<u8>, i32) {
             set_errno(libc::EINTR);
-            (authorization(unsafe { &*self.0.owner }), errno())
+            (authorization(&self.0), errno())
         }
         /// `pack` into `output[..capacity]`, and errno after it from EINTR.
         fn pack(&self, host: &[u8], output: &mut [u8], capacity: usize) -> (usize, i32) {
             set_errno(libc::EINTR);
-            let written = unsafe {
-                swr_v1_http_proxy_connect(
-                    &*self.0.owner,
-                    host.as_ptr(),
-                    host.len(),
-                    output.as_mut_ptr(),
-                    capacity,
-                )
-            };
+            let written = proxy_connect(&self.0, host, &mut output[..capacity]);
             (written, errno())
-        }
-    }
-    impl Drop for Proxy {
-        fn drop(&mut self) {
-            unsafe { swr_v1_core_proxy_free(self.0.owner) };
         }
     }
 

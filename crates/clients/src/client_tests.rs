@@ -298,7 +298,7 @@ extern "C" fn socks5_handshake_step(
 ) -> isize {
     log(format!("socks5 {length}"));
     // SAFETY: the client's live SOCKS5 owner.
-    unsafe { (*(*(*proxy).cast::<ProxyState>()).fields.get()).state = 4 };
+    unsafe { &*(*proxy).cast::<ProxyState>() }.update(|fields| fields.state = 4);
     0
 }
 
@@ -536,11 +536,8 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
     assert!(flag(client, ACTIVE));
     assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_READY);
     let proxy = Handle(client).proxy(Proxy::Socks5).unwrap();
-    // SAFETY: the client's live proxy.
-    unsafe {
-        assert_eq!(CStr::from_ptr(proxy.string(3).data), c"example.test");
-        assert_eq!((*proxy.fields.get()).target_port, 80);
-    }
+    assert_eq!(&*proxy.string(3), b"example.test");
+    assert_eq!(proxy.fields().target_port, 80);
     assert_eq!(
         Handle(client).get().server_host.borrow().to_bytes(),
         b"proxy.test"
