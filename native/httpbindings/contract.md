@@ -1,7 +1,8 @@
 # PHP HTTP binding policy
 
 Feature bit 2097152 (`httpbindings`).
-crates/httpbindings is policy: each call returns a decision and retains no
+crates/httpbindings is policy over borrowed slices, with no `unsafe`
+(`forbid(unsafe_code)`): each call returns a decision and retains no
 context, buffer, Zend value or pointer. crates/phphttp (the PHP HTTP classes,
 whose context it allocates in `src/state.rs`) performs every effect (Zend
 mutation, allocation, encoding, date/time, warnings, callbacks, IO, codecs)
@@ -16,16 +17,13 @@ a failed session lookup, as upstream. Known-key indices 0..7 = host, user-agent,
 content-length, authorization, connection, accept-encoding; 8 = unknown (merge).
 Pinned llhttp method numbers 0/3/4/28 are compile-asserted at the caller.
 
-Token-list helper (also used by the clients HTTP client; signature unchanged):
+Token-list helper (`token_list_fast`, then `token_list_contains`):
 
-- Mode 0 is the native bounded fast comparison using caller-supplied
-  `sizeof(pointer)-1`, not the value's `strlen`; on 64-bit, `websock` matches
-  `websocket` through this path.
-- Only a scan request triggers the native global scratch copy/terminator before
-  mode 1. Rust then keeps `strtok_r` comma mutations, NUL termination, trim
-  writes, early-match suffix state, aliased value pointers and libc case/space
-  semantics. Value must be readable through its NUL (scan) or the compared prefix
-  (fast path).
+- The fast path is the native bounded comparison using `sizeof(pointer)-1`, not
+  the value's `strlen`; on 64-bit, `websock` matches `websocket` through it.
+- Only when it is undecided does crates/phphttp check the value fits the native
+  scratch buffer, then scan: comma-separated tokens before the first NUL, each
+  trimmed of libc `isspace` and compared with libc case semantics.
 
 Quote trimming keeps the original shrinking bound: three opening quotes then `a`
 trim to one quote then `a`. Response header-key case formatting keeps the

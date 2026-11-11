@@ -7,14 +7,7 @@
         reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
     )
 )]
-#![deny(unsafe_op_in_unsafe_fn)]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 mod file;
 mod payload;
 mod request;
@@ -28,17 +21,10 @@ pub use response::*;
 pub use server::*;
 pub use settings::*;
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct Text {
-    pub data: *const u8,
-    pub length: usize,
-}
-
-#[repr(C)]
+/// One step of [`swr_v1_httpbindings_settings`].
 #[derive(Default)]
 pub struct Action {
     pub kind: u32,
-    pub text: Text,
-    pub value: i64,
+    /// The settings key to look up, for a lookup.
+    pub text: &'static [u8],
 }
