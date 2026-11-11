@@ -110,7 +110,7 @@ pub struct Co(Socket);
 impl Co {
     /// # Safety
     /// `socket` is a live coroutine socket that outlives every use of the handle.
-    pub(crate) const unsafe fn new(socket: Socket) -> Self {
+    pub const unsafe fn new(socket: Socket) -> Self {
         Self(socket)
     }
 
@@ -222,7 +222,8 @@ impl Co {
 
     /// `accept(timeout)`: the new connection, owned by the caller, or null. It
     /// copies the listener's length callable, so closing it leaves the listener's.
-    pub(crate) fn accept(self, timeout: f64) -> Socket {
+    #[must_use]
+    pub fn accept(self, timeout: f64) -> Socket {
         // SAFETY: a live socket.
         let conn = unsafe { co::accept(self.0, timeout) };
         let callable = self.record().protocol.private_data_1;

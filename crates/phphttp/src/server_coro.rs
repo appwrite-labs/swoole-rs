@@ -759,8 +759,10 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     /// Accept a connection and serve it with `onAccept` in a new coroutine: its
     /// id, or 0.
     fn accept(&mut self) -> Option<i64> {
-        // SAFETY: the live listener, in `start`'s coroutine.
-        let conn = unsafe { co::accept(self.socket, 0.0) };
+        // SAFETY: the live listener, in `start`'s coroutine. Its accept gives the
+        // connection its own copy of the listener's length callable, which the
+        // connection's object frees.
+        let conn = unsafe { swoole_rs_phpclients::Co::new(self.socket) }.accept(0.0);
         if conn.is_null() {
             return None;
         }
