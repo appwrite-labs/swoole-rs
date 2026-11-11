@@ -147,15 +147,6 @@ typedef struct {
 void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(void));
 bool swr_v1_reactor_set_exit(swr_v1_reactor_state *, int id, bool (*condition)(size_t *event_num));
 bool swr_v1_reactor_isset_exit(const swr_v1_reactor_state *, int id);
-/* Logs message as from origin: code 0 is swoole_sys_warning (errno is the kernel's), else
- * swoole_error_log(SW_LOG_WARNING, code, ...); then the backtrace on error. */
-typedef void (*swr_v1_reactor_change_log)(const char *origin, int code, const char *message);
-/* Reactor::add (op 0), set (1) or del (2) on the state's backend, checks and registry included:
- * 0, -1 after logging the failure, or -2 when add cannot allocate. */
-int swr_v1_reactor_change(swr_v1_reactor_state *, void *socket, uint32_t op, int events, swr_v1_reactor_change_log log);
-/* Reactor's interest helpers over swr_v1_reactor_change: add_event (kind 0) and del_event (1) of
- * event, add_read_event (2), add_write_event (3), remove_read_event (4), remove_write_event (5). */
-int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind, int event, swr_v1_reactor_change_log log);
 #ifdef __cplusplus
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&
