@@ -278,7 +278,7 @@ fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
     object.props().long(c"sock", i64::from(conn.fd()));
     // `SW_SOCK_SSL`.
     if kind & (1 << 9) != 0 {
-        bailed(conn.cli.run(Op::EnableSsl))?;
+        let _context = conn.cli.handle().enable_ssl();
     }
     Some(Rc::new(conn))
 }

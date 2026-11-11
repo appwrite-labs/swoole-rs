@@ -640,11 +640,14 @@ fn undefined_behavior() {
 
     let status = spawn_exec_and_wait(|| {
         let handle_count = AtomicI32::new(0);
-        let event = new_event(
-            (&raw const handle_count).cast_mut().cast(),
-            Some(count_handle),
-            Some(ignore),
-        );
+        // SAFETY: the handler counts into `handle_count`, which outlives the process.
+        let event = unsafe {
+            new_event(
+                (&raw const handle_count).cast_mut().cast(),
+                Some(count_handle),
+                Some(ignore),
+            )
+        };
 
         // SAFETY: a fresh event loop on this thread.
         unsafe { swoole_event_init(0) };

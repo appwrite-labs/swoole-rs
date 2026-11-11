@@ -24,12 +24,13 @@ unsafe extern "C" {
 
 /// `AsyncEvent ev = {}`.
 fn empty() -> AsyncEvent {
-    AsyncEvent::request(std::ptr::null_mut(), None, None, std::ptr::null_mut())
+    AsyncEvent::empty()
 }
 
 /// `swoole::coroutine::async(handler, event, timeout)`.
 fn co_async(handler: Handler, event: &mut AsyncEvent, timeout: f64) -> bool {
-    swr_v1_hook_async(event, handler, timeout, &COROUTINE_ASYNC)
+    // SAFETY: these tests' handlers only sleep and set retval; none reads the object.
+    unsafe { swr_v1_hook_async(event, handler, timeout, &COROUTINE_ASYNC) }
 }
 
 /// `swoole::coroutine::async(fn)`.

@@ -22,12 +22,15 @@ const SW_ERROR_AIO_BAD_REQUEST: c_int = 4001;
 const STDIN_FILENO: c_int = 0;
 
 /// `AsyncEvent event = {}`, with these members set.
-pub(super) fn new_event(
+///
+/// # Safety
+/// As [`AsyncEvent::request`]: `handler` and `callback` are sound over `object`.
+pub(super) unsafe fn new_event(
     object: *mut c_void,
     handler: Option<Handler>,
     callback: Option<Callback>,
 ) -> AsyncEvent {
-    AsyncEvent::request(object, handler, callback, std::ptr::null_mut())
+    unsafe { AsyncEvent::request(object, handler, callback, std::ptr::null_mut()) }
 }
 
 unsafe extern "C" {
@@ -153,7 +156,7 @@ extern "C" fn count_callback(_: &AsyncEvent) {
 
 pub(super) extern "C" fn count_handle(event: &mut AsyncEvent) {
     // SAFETY: the event's object is the case's live counter.
-    unsafe { (*event.object.cast::<AtomicI32>()).fetch_add(1, Ordering::SeqCst) };
+    unsafe { (*event.object().cast::<AtomicI32>()).fetch_add(1, Ordering::SeqCst) };
 }
 
 extern "C" fn sleep_and_count_handle(event: &mut AsyncEvent) {
@@ -183,18 +186,21 @@ fn async_dispatch_() {
     let count = 1000;
     CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let handle_count = AtomicI32::new(0);
-    let event = new_event(
-        (&raw const handle_count).cast_mut().cast(),
-        Some(count_handle),
-        Some(count_callback),
-    );
+    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
+    let event = unsafe {
+        new_event(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(count_handle),
+            Some(count_callback),
+        )
+    };
 
     event_init();
 
     for _ in 0..count {
         let ret = dispatch(&event);
         // SAFETY: the pool's live copy.
-        assert_eq!(unsafe { (*ret).object }, event.object);
+        assert_eq!(unsafe { (*ret).object() }, event.object());
     }
 
     event_wait();
@@ -211,11 +217,14 @@ fn schedule() {
 
     event_init();
 
-    let event = new_event(
-        (&raw const handle_count).cast_mut().cast(),
-        Some(sleep_and_count_handle),
-        Some(count_callback),
-    );
+    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
+    let event = unsafe {
+        new_event(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(sleep_and_count_handle),
+            Some(count_callback),
+        )
+    };
 
     // SwooleG's settings, before the pool exists.
     swoole_rs_corebase::swr_v1_core_set_aio_core_worker_num(4);
@@ -233,7 +242,7 @@ fn schedule() {
             i += 1;
             let ret = dispatch(event);
             // SAFETY: the pool's live copy.
-            assert_eq!(unsafe { (*ret).object }, event.object);
+            assert_eq!(unsafe { (*ret).object() }, event.object());
             count.set(count.get() - 1);
             let (worker_num, queue_size, task_num) = stats();
             if count.get() == 0 {
@@ -276,21 +285,25 @@ extern "C" fn bad_request_callback(event: &AsyncEvent) {
 fn misc() {
     CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let handle_count = AtomicI32::new(0);
-    let event = new_event(
-        (&raw const handle_count).cast_mut().cast(),
-        Some(count_handle),
-        Some(count_callback),
-    );
+    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
+    let event = unsafe {
+        new_event(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(count_handle),
+            Some(count_callback),
+        )
+    };
 
     event_init();
 
     let ret = dispatch(&event);
     // SAFETY: the pool's live copy.
-    assert_eq!(unsafe { (*ret).object }, event.object);
+    assert_eq!(unsafe { (*ret).object() }, event.object());
 
     // sw_async_threads()->notify_one() has no exported counterpart (tests README).
 
-    let event2 = new_event(std::ptr::null_mut(), None, Some(bad_request_callback));
+    // SAFETY: the callback reads only the event's retval and error.
+    let event2 = unsafe { new_event(std::ptr::null_mut(), None, Some(bad_request_callback)) };
     let rv = dispatch(&event2);
     assert!(!rv.is_null());
 

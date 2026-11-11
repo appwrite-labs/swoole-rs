@@ -14,7 +14,7 @@ const AIO_TIMEOUT: c_int = 1779;
 const RESOLVE_TIMEOUT: c_int = 1780;
 /// `AsyncEvent{}`.
 const fn empty() -> AsyncEvent {
-    AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut())
+    AsyncEvent::empty()
 }
 
 /// The fake state, reset per scenario as the gate's `CASES` macro reset it.
@@ -123,7 +123,7 @@ extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
     let copy = worker();
     // SAFETY: plain copy into the thread's worker slot, as `worker = *event` does.
     unsafe {
-        *copy = AsyncEvent::request(
+        *copy = AsyncEvent::new(
             event.object,
             event.handler,
             event.callback,
@@ -220,7 +220,7 @@ fn async_event(
     timeout: f64,
 ) -> bool {
     CALLER_REQUEST.set(request.cloned());
-    let result = swr_v1_hook_async(event, handler, timeout, &OPS);
+    let result = hook_async(event, handler, timeout, &OPS);
     drop(CALLER_REQUEST.take());
     result
 }

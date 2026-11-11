@@ -643,9 +643,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         LOG_MANAGER_EXIT => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let status = arg as c_int;
-            let signal = swoole_rs_process::signal::swoole_signal_to_str(libc::WTERMSIG(status));
-            // SAFETY: the static text `swoole_signal_to_str` just wrote.
-            let signal = unsafe { text(signal) };
+            let signal = swoole_rs_process::signal::signal_name(libc::WTERMSIG(status));
+            let signal = signal.as_cstr().to_string_lossy();
             let exit = libc::WEXITSTATUS(status);
             let m =
                 format_args!("Fatal Error: manager process exit. status={exit}, signal=[{signal}]");

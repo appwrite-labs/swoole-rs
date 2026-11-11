@@ -130,7 +130,7 @@ extern "C" fn release_callback(event: &AsyncEvent) {
 
 /// Asks the main thread to join idle worker `key`.
 extern "C" fn retire(key: usize) {
-    let notice = AsyncEvent::request(
+    let notice = AsyncEvent::new(
         ptr::without_provenance_mut(key),
         None,
         Some(release_callback),

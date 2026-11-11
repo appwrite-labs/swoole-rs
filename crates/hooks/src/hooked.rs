@@ -809,4 +809,18 @@ pub(crate) mod tests {
             libc::close(pipe[1]);
         }
     }
+
+    #[test]
+    fn polls_of_null_fds_fail_with_efault() {
+        with(Mode::Pool, || unsafe {
+            for result in [
+                swoole_coroutine_poll(core::ptr::null_mut(), 1, 10),
+                swoole_coroutine_poll_fake(core::ptr::null_mut(), 1, 10),
+            ] {
+                assert_eq!((result, sys::errno()), (-1, libc::EFAULT));
+            }
+            // No fds to read: libc's poll of none.
+            assert_eq!(swoole_coroutine_poll(core::ptr::null_mut(), 0, 0), 0);
+        });
+    }
 }

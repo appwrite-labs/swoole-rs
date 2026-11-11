@@ -573,10 +573,10 @@ impl Sock {
     fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
         let count = c_int::try_from(iov.len()).unwrap();
         // SAFETY: `iov`'s live vectors, an iovec's layout.
-        let vector = unsafe { IoVector::new(iov.as_ptr().cast(), count) }.unwrap();
+        let mut vector = unsafe { IoVector::new(iov.as_ptr().cast(), count) }.unwrap();
         let write = matches!(op, WRITEV | WRITEV_ALL);
         self.co()
-            .vector(&vector, write, matches!(op, READV_ALL | WRITEV_ALL))
+            .vector(&mut vector, write, matches!(op, READV_ALL | WRITEV_ALL))
     }
 }
 

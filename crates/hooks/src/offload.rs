@@ -26,15 +26,37 @@ pub struct AsyncEvent {
     pub retval: isize,
     pub pipe_socket: *mut c_void,
     pub timestamp: f64,
-    pub object: *mut c_void,
-    pub handler: Option<Handler>,
-    pub callback: Option<Callback>,
+    /// What the handler and completion read; paired with them at construction.
+    pub(crate) object: *mut c_void,
+    pub(crate) handler: Option<Handler>,
+    pub(crate) callback: Option<Callback>,
 }
 
 impl AsyncEvent {
-    /// `AsyncEvent event = {}` with these members set: no request.
+    /// `AsyncEvent event = {}`: no request, handler or completion.
     #[must_use]
-    pub const fn request(
+    pub const fn empty() -> Self {
+        Self::new(core::ptr::null_mut(), None, None, core::ptr::null_mut())
+    }
+
+    /// `AsyncEvent event = {}` with these members set: no request.
+    ///
+    /// # Safety
+    /// `handler` and `callback` are sound over `object`: whatever they read through
+    /// it stays valid, as they expect it, until the completion has run.
+    #[must_use]
+    pub const unsafe fn request(
+        object: *mut c_void,
+        handler: Option<Handler>,
+        callback: Option<Callback>,
+        pipe_socket: *mut c_void,
+    ) -> Self {
+        Self::new(object, handler, callback, pipe_socket)
+    }
+
+    /// [`Self::request`] for this crate, whose callers pair each handler and
+    /// completion with the object they read.
+    pub(crate) const fn new(
         object: *mut c_void,
         handler: Option<Handler>,
         callback: Option<Callback>,
@@ -52,6 +74,12 @@ impl AsyncEvent {
             handler,
             callback,
         }
+    }
+
+    /// The object the handler and completion read.
+    #[must_use]
+    pub const fn object(&self) -> *mut c_void {
+        self.object
     }
 }
 
@@ -129,7 +157,21 @@ extern "C" fn completed(event: &AsyncEvent) {
 /// fatal outside one): runs `handler` on the pool and waits up to `timeout`. True with
 /// the pool's result in `event`; false if refused, or on timeout or cancellation
 /// (`event` canceled, -1, and the last error as errno).
-pub fn swr_v1_hook_async(
+///
+/// # Safety
+/// `handler` doesn't read `event`'s object, which is the waiting task while it runs.
+pub unsafe fn swr_v1_hook_async(
+    event: &mut AsyncEvent,
+    handler: Handler,
+    timeout: f64,
+    ops: &AsyncOps,
+) -> bool {
+    hook_async(event, handler, timeout, ops)
+}
+
+/// [`swr_v1_hook_async`] for this crate, whose handlers read the event's request,
+/// never its object.
+pub(crate) fn hook_async(
     event: &mut AsyncEvent,
     handler: Handler,
     timeout: f64,
@@ -181,7 +223,7 @@ pub fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> 
         ops,
         job: Some(job),
     };
-    let event = AsyncEvent::request(
+    let event = AsyncEvent::new(
         (&raw mut task).cast(),
         Some(run_job),
         Some(completed),
@@ -261,8 +303,7 @@ mod tests {
     }
 
     fn empty() -> AsyncEvent {
-        let mut event =
-            AsyncEvent::request(core::ptr::null_mut(), None, None, core::ptr::null_mut());
+        let mut event = AsyncEvent::empty();
         event.retval = 1;
         event
     }
@@ -291,7 +332,7 @@ mod tests {
     fn handler_result_or_timeout_reaches_the_event() {
         RESUMED.set(0);
         let mut event = empty();
-        assert!(swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
+        assert!(hook_async(&mut event, handler, 1.0, &OPS));
         assert_eq!(
             (
                 event.retval,
@@ -305,7 +346,7 @@ mod tests {
 
         TIME_OUT.set(true);
         let mut event = empty();
-        assert!(!swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
+        assert!(!hook_async(&mut event, handler, 1.0, &OPS));
         TIME_OUT.set(false);
         assert_eq!(
             (

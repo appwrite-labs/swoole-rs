@@ -635,7 +635,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
         connection.keep = true;
     }
     if kind & SOCK_SSL != 0 {
-        bailed(connection.cli.run(Op::EnableSsl))?;
+        let _context = connection.cli.handle().enable_ssl();
     }
     Some(Rc::new(connection))
 }
@@ -1303,7 +1303,8 @@ fn close(call: &Call) {
     call.set_bool(true);
 }
 
-/// `php_swoole_client_enable_ssl_encryption`.
+/// `php_swoole_client_enable_ssl_encryption`: a TLS context, then the client's
+/// `ssl_*` settings written into it before any handshake.
 pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
     if !matches!(conn.socket_type(), SOCK_TCP | SOCK_TCP6) {
         warn(ErrorKind::Fatal, "cannot use enableSSL");
@@ -1313,10 +1314,13 @@ pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
         warn(ErrorKind::Fatal, "SSL has been enabled");
         return false;
     }
+    let Some(owner) = conn.cli.handle().enable_ssl() else {
+        return false;
+    };
     if let Some(zset) = settings(Obj::this(call)) {
-        crate::settings::apply_ssl(conn.cli, zset);
+        crate::settings::apply_ssl(owner, zset);
     }
-    bailed(conn.cli.run(Op::EnableSsl)).is_some_and(|result| result == 0)
+    true
 }
 
 /// `enableSSL(?callable $onSslReady = null): bool`.
