@@ -358,7 +358,10 @@ fn send_message(call: &Call) {
         return call.set_bool(false);
     }
     let mut buf = crate::task::EventData::new();
-    if crate::task::pack(call.value(1), &mut buf) < 0 {
+    if call
+        .value(1)
+        .is_none_or(|data| crate::task::pack(data, &mut buf) < 0)
+    {
         return call.set_bool(false);
     }
     #[expect(

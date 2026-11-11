@@ -6,7 +6,7 @@
 use crate::{
     CONTINUE, DISPATCH,
     aliases::{self, Receiver},
-    deref, ex_var, rt_constant,
+    ex_var, rt_constant,
 };
 use std::{
     ffi::{CStr, c_int},
@@ -23,7 +23,6 @@ use swoole_rs_zend::{
         swr_zend_push_nested_call, swr_zend_try_call_known, swr_zend_zval_release,
         zend_execute_data, zend_function, zend_throw_error, zend_zval_type_name, zval,
     },
-    type_of,
     value::str_of,
 };
 
@@ -74,9 +73,8 @@ pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_d
         _ => ex_var(frame, unsafe { op.op1.var }),
     };
     // SAFETY: the operand's live zval.
-    let target = unsafe { deref(object) };
-    // SAFETY: as above.
-    let receiver = match unsafe { type_of(target) } {
+    let target = unsafe { swoole_rs_zend::Value::from_ptr(object) };
+    let receiver = match target.map_or(0, |target| target.dereferenced().kind()) {
         IS_ARRAY => Receiver::Array,
         IS_STRING => Receiver::String,
         IS_RESOURCE => Receiver::Stream,

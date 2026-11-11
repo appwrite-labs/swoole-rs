@@ -416,9 +416,7 @@ impl Source for Zend<'_> {
             let message = c"ssl_sni_certs requires an array mapping host names to cert paths";
             return Err(self.fatal(E_WARNING, message));
         };
-        // The entries first, as the array, which nothing modifies while set() runs, holds them.
-        let entries: Vec<_> = certs.entries().collect();
-        for (key, value) in entries {
+        for (key, value) in certs.entries() {
             let Some(name) = key else {
                 let message = c"ssl_sni_certs array requires string host name keys";
                 return Err(self.fatal(E_WARNING, message));

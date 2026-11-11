@@ -17,7 +17,9 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, Socket, SocketRecord, reactor_upstream, what_event_want};
+use swoole_rs_reactor::{
+    Event, Socket, SocketFields, SocketRecord, reactor_upstream, what_event_want,
+};
 use swoole_rs_timer::swoole_timer_del;
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
@@ -204,7 +206,7 @@ impl Objects<'_> {
         unsafe { Socket::from_ptr(self.ctx.sock) }
     }
     /// `read` over the context's socket, or the default without one.
-    fn read_sock<R: Default>(&self, read: impl FnOnce(&SocketRecord) -> R) -> R {
+    fn read_sock<R: Default>(&self, read: impl FnOnce(&SocketFields) -> R) -> R {
         self.sock().map(|sock| sock.read(read)).unwrap_or_default()
     }
     fn event_socket(&self) -> Option<Socket<'_>> {

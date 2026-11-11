@@ -740,7 +740,7 @@ mod tests {
                     swr_v1_tls_owner_socket_context(prepared.owner, socket, true, true),
                     0
                 );
-                assert_eq!((*socket).output.ssl_send, 1);
+                assert_eq!((*socket).fields.output.ssl_send, 1);
                 assert_eq!((*prepared.fields).http_v2, 1);
                 let result = swr_v1_tls_owner_socket_session(
                     prepared.owner,
@@ -749,7 +749,7 @@ mod tests {
                     None,
                 );
                 assert_eq!(result.status, 0);
-                let ssl = (*socket).ssl.cast::<openssl_sys::SSL>();
+                let ssl = (*socket).fields.ssl.cast::<openssl_sys::SSL>();
                 assert_eq!(
                     openssl_sys::SSL_get_ex_data(ssl, crate::swr_v1_tls_connection_index()),
                     socket.cast()

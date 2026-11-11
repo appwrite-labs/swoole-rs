@@ -23,7 +23,7 @@ use swoole_rs_framing::recv::{
     RECV_DONE,
 };
 use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
-use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_reset_on_close};
+use swoole_rs_reactor::{Socket, SocketFields, SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_websocket_ffi::frame_api::PacketLength;
 
@@ -120,7 +120,7 @@ impl Packages for Callbacks {
 /// A [`Recv`] whose packages `K` measures and hands on.
 struct With<'a, K>(Recv<'a>, PhantomData<K>);
 
-fn socket_flags(socket: &SocketRecord) -> u32 {
+fn socket_flags(socket: &SocketFields) -> u32 {
     (if socket.removed != 0 { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait != 0 { FLAG_WAIT } else { 0 })
         | (if socket.ssl.is_null() { 0 } else { FLAG_TLS })
@@ -129,7 +129,7 @@ fn socket_flags(socket: &SocketRecord) -> u32 {
 
 /// A session socket out of the reactor whose connection no one is closing: `pause`
 /// took it out to stop reading.
-fn paused(socket: &SocketRecord) -> bool {
+fn paused(socket: &SocketFields) -> bool {
     if socket.removed == 0 || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
         return false;
     }
@@ -295,7 +295,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
     match op {
         OP_RECV => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            match s.edit(|s| s.catch_error(errno)) {
+            match s.catch_error(errno) {
                 ERROR => {
                     if length_mode {
                         log::sys_warning_errno(

@@ -208,10 +208,6 @@ method_table! {
     ];
 }
 
-/// `swoole_process_ce`, which crates/phpevents and the Server read.
-#[unsafe(no_mangle)]
-pub static mut swoole_process_ce: *mut zend_class_entry = ptr::null_mut();
-
 /// `php_swoole_process_minit`: register `Swoole\Process`, its constants and
 /// properties, and (when pcntl is absent) the signal constants.
 /// # Safety
@@ -244,8 +240,6 @@ pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
     }
     minit.long_constant(c"SWOOLE_MSGQUEUE_ORIENT", MSGQUEUE_ORIENT);
     minit.long_constant(c"SWOOLE_MSGQUEUE_BALANCE", MSGQUEUE_BALANCE);
-    // SAFETY: MINIT, before any reader.
-    unsafe { swoole_process_ce = entry() };
 }
 
 /// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.

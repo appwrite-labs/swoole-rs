@@ -11,8 +11,8 @@ use std::{
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
-    Array, Call, E_ERROR, E_WARNING, Key, Value, bailout, message, report,
-    sys::{swr_zend_callable_warning, swr_zend_try_facade_update, zval},
+    Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
+    sys::{swr_zend_callable_warning, swr_zend_try_facade_update},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -206,14 +206,14 @@ pub(crate) fn checked() -> Step {
     }
 }
 
-impl Settings<'_> {
+impl<'a> Settings<'a> {
     /// The server being configured.
     pub(crate) fn server(&self) -> view::Server<'_> {
         self.serv
     }
 
     /// `php_swoole_array_get_value(vht, key, ztmp)`: present and not null.
-    pub(crate) fn get(&self, key: &CStr) -> Option<&Value> {
+    pub(crate) fn get(&self, key: &CStr) -> Option<&'a Value> {
         self.vht?.get(key.to_bytes())
     }
 
@@ -329,18 +329,18 @@ fn set(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    let Ok(vht) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(vht) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
     let s = Settings {
         serv,
-        vht: Some(vht),
+        vht: vht.array(),
     };
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     let this = ServerObject::this(call);
     if let Ok(true) = options(&s, this) {
-        match finish(this, call.zval(1)) {
+        match finish(this, vht) {
             Ok(()) => call.set_bool(true),
             Err(bailed) => bailed.defer(),
         }
@@ -351,7 +351,7 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: ServerObject, settings: *mut zval) -> Result<(), bailout::Bailout> {
+fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> {
     let port = this.port_at(0);
     // SAFETY: the live Port object, its class and the settings argument.
     unsafe {
@@ -360,10 +360,11 @@ fn finish(this: ServerObject, settings: *mut zval) -> Result<(), bailout::Bailou
             crate::PORT.entry(),
             b"set",
             ptr::null_mut(),
-            &[settings],
+            &[settings.as_ptr()],
         )
     }?;
-    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings).map(|_| ())
+    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings.as_ptr())
+        .map(|_| ())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.
@@ -790,17 +791,13 @@ fn rewrite_rules(s: &Settings) -> Step {
         fatal(E_ERROR, c"The `url_rewrite_rules` must be array");
         return Err(Stop);
     };
-    let mut entries = array.entries();
-    while let Some((key, value)) = entries.next_keyed() {
+    for (key, value) in array.entries() {
         let Some(replacement) = value.dereferenced().bytes() else {
             fatal(E_ERROR, c"The `replacement` must be string");
             return Err(Stop);
         };
         // An integer key has no pattern; upstream reads a null string there.
-        let pattern: &[u8] = match key {
-            Key::Name(name) => name,
-            Key::Index(_) => b"",
-        };
+        let pattern = key.unwrap_or_default();
         s.server().add_rewrite_rule(pattern, replacement);
     }
     Ok(())

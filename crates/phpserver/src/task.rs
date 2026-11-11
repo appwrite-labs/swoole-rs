@@ -373,8 +373,7 @@ pub(crate) fn finish_task(
 
 /// `php_swoole_server_task_pack`: the task id, or -1; a trapped bailout waits
 /// for the handler's end.
-pub(crate) fn pack(data: Option<&Value>, buf: &mut EventData) -> i64 {
-    let Some(data) = data else { return -1 };
+pub(crate) fn pack(data: &Value, buf: &mut EventData) -> i64 {
     encode(data, buf).unwrap_or_else(|bailout| {
         bailout.defer();
         -1
@@ -443,17 +442,16 @@ fn task(call: &Call) {
     let (Ok(()), Ok(dst)) = (call.arity(1, 3), call.long(2, -1)) else {
         return call.set_bool(false);
     };
-    let callback = (call.num_args() >= 3).then(|| call.value(3)).flatten();
     let facts = facts(serv);
-    if !check(&facts, dst) {
+    let Some(data) = call.value(1).filter(|_| check(&facts, dst)) else {
         return call.set_bool(false);
-    }
+    };
     let mut buf = EventData::new();
-    let id = pack(call.value(1), &mut buf);
+    let id = pack(data, &mut buf);
     if id < 0 {
         return call.set_bool(false);
     }
-    let callback = callback.filter(|zfn| zfn.truthy());
+    let callback = call.value(3).filter(|zfn| zfn.truthy());
     if !facts.worker {
         flag(&mut buf, NOREPLY);
     } else if let Some(callback) = callback {
@@ -492,11 +490,11 @@ fn taskwait(call: &Call) {
     ) else {
         return call.set_bool(false);
     };
-    if !check(&facts, dst) {
+    let Some(data) = call.value(1).filter(|_| check(&facts, dst)) else {
         return call.set_bool(false);
-    }
+    };
     let mut buf = EventData::new();
-    let id = pack(call.value(1), &mut buf);
+    let id = pack(data, &mut buf);
     if id < 0 {
         return call.set_bool(false);
     }
@@ -625,7 +623,7 @@ fn task_co(call: &Call, fill_false: bool) {
     for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
         let index = list.len() as u64;
         let mut buf = EventData::new();
-        let mut id = pack(Some(ztask), &mut buf);
+        let mut id = pack(ztask, &mut buf);
         let mut dispatched = false;
         if id < 0 {
             fatal(E_WARNING, c"failed to pack task");
@@ -679,8 +677,11 @@ fn pack_method(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
+    let Some(data) = call.value(1) else {
+        return call.set_bool(false);
+    };
     let mut buf = EventData::new();
-    if pack(call.value(1), &mut buf) < 0 {
+    if pack(data, &mut buf) < 0 {
         return call.set_bool(false);
     }
     flag(&mut buf, NONBLOCK | NOREPLY);

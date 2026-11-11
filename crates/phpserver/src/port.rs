@@ -16,14 +16,14 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Array, Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
+    Call, Class, E_WARNING, Minit, Object, Owned, Value, ZString, bailout, message,
     sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
         zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
         zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
         zend_update_property, zval,
     },
-    type_of, unset_property_deny,
+    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -352,10 +352,10 @@ fn get_callback(call: &Call) {
                 rv.as_mut_ptr(),
             )
         };
-        // SAFETY: Zend returned a live zval.
-        if unsafe { type_of(value) } != IS_NULL {
-            // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
-            return unsafe { swr_zval_copy(call.return_value(), value) };
+        // SAFETY: Zend returned a live zval, which the object or `rv` holds.
+        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+            // `RETURN_ZVAL(property, 1, 0)`.
+            return call.set_owned(value.copy());
         }
     }
     call.set_null();
@@ -392,45 +392,44 @@ pub(crate) fn merge_setting(
 /// enabled, then the merge into `$this->setting`, which the property keeps.
 fn finish(
     call: &Call,
-    settings: *mut zval,
+    settings: &Value,
     property: &mut PortProperty,
 ) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
         // `zval params[1] = {*zset}`: a copy without a reference.
         // SAFETY: the live settings argument.
-        let mut params = [unsafe { settings.read() }];
+        let mut params = [unsafe { settings.as_ptr().read() }];
         // SAFETY: as above.
         unsafe {
             swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
         }?;
     }
-    property.zsetting = merge_setting(PORT.entry(), call.this(), settings)?;
+    property.zsetting = merge_setting(PORT.entry(), call.this(), settings.as_ptr())?;
     Ok(())
 }
 
 fn set(call: &Call) {
-    let Ok(vht) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let settings = call.zval(1);
     let data = data(call);
     if data.port.is_null() || data.property.serv.is_null() {
         invalid(call);
     }
     // SAFETY: the port's bound server, live while the port is.
     let serv = unsafe { view::Server::from_raw(data.property.serv) };
-    if apply_settings(data.port, serv, vht).is_err() {
+    if apply_settings(data.port, serv, settings).is_err() {
         return call.set_bool(false);
     }
     bailout::raise(finish(call, settings, &mut data.property));
 }
 
 /// The `ListenPort` and TLS options of `set()`.
-fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Array) -> Result<(), Stop> {
+fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Result<(), Stop> {
     let source = port_settings::Zend {
         settings: Settings {
             serv,
-            vht: Some(vht),
+            vht: vht.array(),
         },
         port,
     };

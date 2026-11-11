@@ -203,7 +203,7 @@ unsafe fn connect(
     }
     socket.with_state(|state| state.flags.connected = true);
     // `get_name`'s failure is ignored.
-    socket.net(swoole_rs_reactor::SocketRecord::get_name);
+    socket.net(swoole_rs_reactor::SocketFields::get_name);
     set_err(socket, 0);
     true
 }
@@ -253,7 +253,7 @@ mod tests {
         if !connected || how == libc::SHUT_RD && flags.read || how == libc::SHUT_WR && flags.write {
             error = libc::ENOTCONN;
         } else {
-            if !unsafe { (*s.socket()).ssl.is_null() } {
+            if !unsafe { (*s.socket()).fields.ssl.is_null() } {
                 (NATIVE.ssl_shutdown)(s);
             }
             if unsafe { (sys.shutdown)(s.sock_fd(), how) } < 0 {
@@ -306,7 +306,7 @@ mod tests {
             crate::socket_extra::run_close_hook(s);
             true
         } else {
-            unsafe { (*s.socket()).output.close_wait = 1 };
+            unsafe { (*s.socket()).fields.output.close_wait = 1 };
             upstream_cancel(s, WRITE);
             upstream_cancel(s, READ);
             set_err(s, CLOSE_WAIT_ERROR);
@@ -331,7 +331,7 @@ mod tests {
                 set_err(s, errno());
                 return false;
             }
-            let timeout = unsafe { (*s.socket()).timeouts.connect };
+            let timeout = unsafe { (*s.socket()).fields.timeouts.connect };
             let mut timer = Timer::new(s, WRITE, timeout);
             if !timer.start() || !wait_for(s, WRITE) {
                 if s.is_closed() {
