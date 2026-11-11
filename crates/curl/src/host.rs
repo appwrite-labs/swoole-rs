@@ -129,8 +129,11 @@ pub(crate) fn timer_available() -> bool {
 }
 
 /// The multi's timer fired.
-extern "C-unwind" fn on_timer(multi: *mut c_void) {
-    // SAFETY: the multi deletes its timer before it is freed.
+///
+/// # Safety
+/// `multi` is the live `Multi` that armed the timer.
+unsafe extern "C-unwind" fn on_timer(multi: *mut c_void) {
+    // SAFETY: per the caller; the multi deletes its timer before it is freed.
     let multi = unsafe { &*multi.cast::<Multi>() };
     multi.timer.set(std::ptr::null_mut());
     multi.callback(None);

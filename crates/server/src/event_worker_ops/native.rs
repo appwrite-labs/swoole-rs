@@ -241,7 +241,8 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PROTECT_SESSIONS => {
             let sessions = ctx.tables().session_list.cast();
-            let _ = swoole_rs_memory::members::sw_shm_protect(sessions, libc::PROT_READ);
+            // SAFETY: the session list, a live `sw_shm_malloc` payload.
+            let _ = unsafe { swoole_rs_memory::members::sw_shm_protect(sessions, libc::PROT_READ) };
             0
         }
         OP_BUS_EMPTY => u64::from(ctx.bus().is_empty()),
