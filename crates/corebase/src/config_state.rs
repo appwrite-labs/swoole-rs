@@ -288,6 +288,8 @@ mod tests {
         // A reader's handle outlives any number of replacements on other threads.
         let other = CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
         let held = task_tmpfile();
+        // Readers may run before either setter, so start from one of the two.
+        assert!(unsafe { swr_v1_core_set_task_tmpdir(dir.as_ptr()) });
         let templates = [template(&dir), template(&other)];
         std::thread::scope(|scope| {
             for dir in [&dir, &other] {
