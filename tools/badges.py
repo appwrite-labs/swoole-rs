@@ -47,6 +47,14 @@ def endpoint(label, message, color='blue'):
     return {'schemaVersion': 1, 'label': label, 'message': message, 'color': color}
 
 
+def merge(run):
+    """merge.json from SHA:CONCLUSION of the newest finished merge-tier run."""
+    commit, _, conclusion = run.partition(':')
+    passed = conclusion == 'success'
+    return endpoint('merge tier', f"{'passing' if passed else 'failing'} @ {commit[:7]}",
+                    'brightgreen' if passed else 'red')
+
+
 def unsafe_table(unsafe, unforbidden, commit):
     """unsafe.md: each crate's count, most first, and whether it forbids unsafe_code."""
     rows = ''.join(f"| `{crate}` | {n:,} | {'✅' if not unforbidden.get(crate) else ''} |\n"
@@ -116,10 +124,7 @@ def main():
                            f'{len(unforbidden) - sum(unforbidden.values())}/{len(unforbidden)} crates safe'),
     }
     if args.merge:
-        commit, _, conclusion = args.merge.partition(':')
-        passed = conclusion == 'success'
-        badges['merge'] = endpoint('merge tier', f"{'passing' if passed else 'failing'} @ {commit[:7]}",
-                                   'brightgreen' if passed else 'red')
+        badges['merge'] = merge(args.merge)
     if args.phpt:
         rows = [row for path in args.phpt for row in json.loads(path.read_text())]
         passing, tests = phpt_passing(rows, not_applicable)
