@@ -31,6 +31,7 @@ on:
       - 'crates/websocket/**'
       - 'fuzz/**'
       - '.clusterfuzzlite/**'
+      - '.github/workflows/cflite_pr.yml'
       - 'Cargo.lock'
 permissions: read-all
 concurrency:
@@ -41,13 +42,16 @@ jobs:
   # corpus the nightly batch run keeps. A crash fails the job and is uploaded.
   fuzz:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
-    timeout-minutes: 15
+    # Each target's corpus lookup pages through every Actions artifact of the repository,
+    # about 35 s each at 46k artifacts, so 30 targets take about 18 minutes (#3081).
+    timeout-minutes: 30
     steps:
+      # No github-token: with one, build_fuzzers spends 6 minutes paging the artifacts for a
+      # coverage report nothing produces, then keeps every target anyway (#3081).
       - id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
         with:
           language: rust
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           sanitizer: address
       - id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
