@@ -66,7 +66,9 @@ fn file_type(mut ctx: Ctx, file: *mut zend_string) {
     };
     // SAFETY: nothing else borrows `header`, and no PHP code runs, until the
     // type is added.
-    let header = unsafe { props.array(c"header") };
+    let Some(header) = (unsafe { props.array(c"header") }) else {
+        return;
+    };
     let key = b"Content-Type";
     if header
         .array()
