@@ -16,7 +16,7 @@ use std::{
     mem::size_of,
     ptr,
 };
-use swoole_rs_corebase::net_types::Protocol;
+use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
@@ -52,20 +52,12 @@ const FLAG_HTTP2: c_int = 2;
 const SSL_HOST_NAME: c_int = 0;
 const SSL_GREASE: c_int = 1;
 
-/// `PacketLength`.
-#[repr(C)]
-pub(crate) struct PacketLength {
-    pub(crate) buf: *const u8,
-    pub(crate) buf_size: u32,
-    header_len: u32,
-}
-
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
 /// plus its 8-byte header, or -1 past 65535.
 unsafe extern "C" fn fastcgi_length(
     _protocol: *const Protocol,
     _socket: *mut c_void,
-    pl: &PacketLength,
+    pl: &mut PacketLength,
 ) -> isize {
     const HEADER: u32 = 8;
     if pl.buf_size < HEADER {
@@ -243,7 +235,7 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
             p.package_length_size = 8;
             p.package_length_offset = 0;
             p.package_body_offset = 0;
-            p.get_package_length = fastcgi_length as *mut c_void;
+            p.get_package_length = Some(fastcgi_length);
         });
     }
     if let Some(v) = s.get(b"open_mqtt_protocol") {

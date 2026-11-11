@@ -74,11 +74,13 @@ pub mod exports {
     use std::sync::atomic::Ordering;
 
     use swoole_rs_buffer::string::{CppString, delete_string, new_string};
-    use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
+    use swoole_rs_corebase::DataHead;
+    use swoole_rs_corebase::log;
+    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::{ConnectionRecord, view};
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame};
-    use swoole_rs_websocket_ffi::frame_api::{PacketLength, decode_frame};
+    use swoole_rs_websocket_ffi::frame_api::decode_frame;
     use swoole_rs_websocket_ffi::swr_v1_ws_encode;
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
@@ -96,9 +98,9 @@ pub mod exports {
     /// # Safety
     /// `pl.buf` holds `pl.buf_size` readable bytes.
     pub unsafe extern "C" fn http2_length(
-        _proto: *const c_void,
-        _socket: *mut SocketRecord,
-        pl: &PacketLength,
+        _proto: *const Protocol,
+        _socket: *mut c_void,
+        pl: &mut PacketLength,
     ) -> isize {
         // SAFETY: as the caller promises.
         let buffered = unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) };
@@ -155,13 +157,14 @@ pub mod exports {
     /// # Safety
     /// Upstream's: the port's protocol (its `private_data_2` the server), a
     /// connection socket and its whole frame.
-    pub unsafe extern "C" fn websocket_dispatch_frame(
-        proto: *const c_void,
-        socket: *mut SocketRecord,
+    pub unsafe extern "C-unwind" fn websocket_dispatch_frame(
+        proto: *const Protocol,
+        socket: *mut c_void,
         rdata: *const c_void,
     ) -> c_int {
+        let socket = socket.cast::<SocketRecord>();
         // SAFETY: as the caller guarantees.
-        let serv = unsafe { (*proto.cast::<Protocol>()).private_data_2 };
+        let serv = unsafe { (*proto).private_data_2 };
         // SAFETY: as the caller guarantees.
         let rdata = unsafe { &*rdata.cast::<RecvData>() };
         let (data, length) = (rdata.data, rdata.info.len as usize);
@@ -217,7 +220,7 @@ pub mod exports {
         };
         let dispatch_task = |dispatch: &RecvData| {
             // SAFETY: upstream's arguments, with this frame's payload or whole message.
-            unsafe { dispatch_task(proto.cast(), socket, (&raw const *dispatch).cast()) }
+            unsafe { dispatch_task(proto, socket.cast(), (&raw const *dispatch).cast()) }
         };
         match decision.action {
             Action::Reject => return -1,
@@ -318,8 +321,8 @@ pub mod exports {
             // SAFETY: the port's protocol, a connection socket and its whole frame.
             unsafe {
                 websocket_dispatch_frame(
-                    r.protocol.cast(),
-                    r.socket.as_ptr(),
+                    r.protocol,
+                    r.socket.as_ptr().cast(),
                     (&raw const frame).cast(),
                 )
             }
@@ -353,7 +356,7 @@ pub mod exports {
             return -1;
         }
         // SAFETY: upstream's arguments, forwarded.
-        unsafe { dispatch_task(proto.cast(), socket, rdata.cast()) }
+        unsafe { dispatch_task(proto.cast(), socket.cast(), rdata) }
     }
 
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
@@ -361,16 +364,16 @@ pub mod exports {
     /// # Safety
     /// Upstream's: the port's protocol, a connection socket and its packet length.
     pub unsafe extern "C" fn get_package_length(
-        proto: *const c_void,
-        socket: *mut SocketRecord,
+        proto: *const Protocol,
+        socket: *mut c_void,
         pl: &mut PacketLength,
     ) -> isize {
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket) };
+        let conn = unsafe { connection(socket.cast()) };
         match route(conn, || Some(true), || Some(false), None) {
             // SAFETY: upstream's arguments, forwarded.
             Some(true) => unsafe {
-                swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket.cast(), pl)
+                swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket, pl)
             },
             // SAFETY: as above.
             Some(false) => unsafe { http2_length(proto, socket, pl) },
@@ -382,28 +385,28 @@ pub mod exports {
     ///
     /// # Safety
     /// `socket` is a connection socket.
-    pub unsafe extern "C" fn get_package_length_size(socket: *mut SocketRecord) -> u8 {
+    pub unsafe extern "C" fn get_package_length_size(socket: *mut c_void) -> u8 {
         // SAFETY: as the caller guarantees.
-        length_size(unsafe { connection(socket) })
+        length_size(unsafe { connection(socket.cast()) })
     }
 
     /// `int dispatch_frame(const Protocol *, Socket *, const RecvData *)`.
     ///
     /// # Safety
     /// Upstream's: the port's protocol, a connection socket and its data.
-    pub unsafe extern "C" fn dispatch_frame(
-        proto: *const c_void,
-        socket: *mut SocketRecord,
+    pub unsafe extern "C-unwind" fn dispatch_frame(
+        proto: *const Protocol,
+        socket: *mut c_void,
         rdata: *const c_void,
     ) -> c_int {
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket) };
+        let conn = unsafe { connection(socket.cast()) };
         route(
             conn,
             // SAFETY: upstream's arguments, forwarded.
             || unsafe { websocket_dispatch_frame(proto, socket, rdata) },
             // SAFETY: as above.
-            || unsafe { dispatch_task(proto.cast(), socket, rdata.cast()) },
+            || unsafe { dispatch_task(proto, socket, rdata) },
             -1,
         )
     }

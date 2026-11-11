@@ -214,7 +214,7 @@ impl Co {
             protocol.package_length_size = WEBSOCKET_HEADER_LEN;
             protocol.package_length_offset = 0;
             protocol.package_body_offset = 0;
-            protocol.get_package_length = get_package_length as *mut c_void;
+            protocol.get_package_length = Some(get_package_length);
         });
     }
 

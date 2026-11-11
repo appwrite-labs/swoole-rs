@@ -165,11 +165,7 @@ fn default_protocol() -> Protocol {
         package_length_offset: 0,
         package_body_offset: 4,
         package_max_length: SW_INPUT_BUFFER_SIZE,
-        private_data_1: core::ptr::null_mut(),
-        private_data_2: core::ptr::null_mut(),
-        on_package: core::ptr::null_mut(),
-        get_package_length: core::ptr::null_mut(),
-        get_package_length_size: core::ptr::null_mut(),
+        ..Protocol::EMPTY
     }
 }
 

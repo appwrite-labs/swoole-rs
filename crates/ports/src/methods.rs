@@ -9,7 +9,9 @@ use swoole_rs_clients::address::{
     swr_v1_clients_address_assign, swr_v1_clients_address_port, swr_v1_clients_address_type,
 };
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
-use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::net_types::{
+    GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
+};
 use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
 use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
@@ -324,42 +326,48 @@ pub fn clear_protocol(config: &mut PortConfig) {
     config.open_redis_protocol = false;
 }
 
-/// The C++ functions a port's protocol points at.
-#[derive(Clone, Copy)]
-enum Callback {
-    DispatchTask,
-    HttpDispatchFrame,
-    WebsocketDispatchFrame,
-    DefaultLength,
-    HttpLength,
-    HttpLengthSize,
-    Http2Length,
-    WebsocketLength,
+/// The functions a port's protocol points at.
+struct Callbacks {
+    dispatch_task: OnPackage,
+    http_dispatch_frame: OnPackage,
+    websocket_dispatch_frame: OnPackage,
+    default_length: GetPackageLength,
+    http_length: GetPackageLength,
+    http_length_size: GetPackageLengthSize,
+    http2_length: GetPackageLength,
+    websocket_length: GetPackageLength,
 }
 
-/// The address of `callback`.
 #[cfg(not(test))]
-fn callback(callback: Callback) -> *mut c_void {
+const CALLBACKS: Callbacks = {
     use crate::http_routes::exports as http;
-    match callback {
-        Callback::DispatchTask => http::dispatch_task as *mut c_void,
-        Callback::HttpDispatchFrame => http::dispatch_frame as *mut c_void,
-        Callback::WebsocketDispatchFrame => http::websocket_dispatch_frame as *mut c_void,
-        Callback::DefaultLength => crate::framing_recv::default_length_func as *mut c_void,
-        Callback::HttpLength => http::get_package_length as *mut c_void,
-        Callback::HttpLengthSize => http::get_package_length_size as *mut c_void,
-        Callback::Http2Length => http::http2_length as *mut c_void,
-        Callback::WebsocketLength => {
-            swoole_rs_websocket_ffi::frame_api::get_package_length as *mut c_void
-        }
+    Callbacks {
+        dispatch_task: http::dispatch_task,
+        http_dispatch_frame: http::dispatch_frame,
+        websocket_dispatch_frame: http::websocket_dispatch_frame,
+        default_length: crate::framing_recv::default_length_func,
+        http_length: http::get_package_length,
+        http_length_size: http::get_package_length_size,
+        http2_length: http::http2_length,
+        websocket_length: swoole_rs_websocket_ffi::frame_api::get_package_length,
     }
-}
+};
 
-/// Tests link no C++: each callback is a distinct non-null address.
+/// Tests link no C++: each callback is a distinct stub.
 #[cfg(test)]
-fn callback(callback: Callback) -> *mut c_void {
-    ptr::without_provenance_mut(0x1000 + callback as usize)
-}
+const CALLBACKS: Callbacks = {
+    use tests::{length, package};
+    Callbacks {
+        dispatch_task: package::<0>,
+        http_dispatch_frame: package::<1>,
+        websocket_dispatch_frame: package::<2>,
+        default_length: length::<0>,
+        http_length: length::<1>,
+        http_length_size: tests::length_size,
+        http2_length: length::<2>,
+        websocket_length: length::<3>,
+    }
+};
 
 /// A readable callback's address.
 fn reader(
@@ -376,43 +384,44 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         return;
     }
     let protocol = &mut config.protocol;
+    let c = &CALLBACKS;
     config.on_read = if config.open_eof_check {
         if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
             #[expect(clippy::cast_possible_truncation, reason = "SW_DATA_EOF_MAXLEN is 8")]
             let max = SW_DATA_EOF_MAXLEN as u8;
             protocol.package_eof_len = max;
         }
-        protocol.on_package = callback(Callback::DispatchTask);
+        protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_eof)
     } else if config.open_length_check {
         if protocol.package_length_type != 0 {
-            protocol.get_package_length = callback(Callback::DefaultLength);
+            protocol.get_package_length = Some(c.default_length);
         }
-        protocol.on_package = callback(Callback::DispatchTask);
+        protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_length)
     } else if config.open_http_protocol {
         if config.open_http2_protocol && config.open_websocket_protocol {
-            protocol.get_package_length = callback(Callback::HttpLength);
-            protocol.get_package_length_size = callback(Callback::HttpLengthSize);
-            protocol.on_package = callback(Callback::HttpDispatchFrame);
+            protocol.get_package_length = Some(c.http_length);
+            protocol.get_package_length_size = Some(c.http_length_size);
+            protocol.on_package = Some(c.http_dispatch_frame);
         } else if config.open_http2_protocol {
             protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
-            protocol.get_package_length = callback(Callback::Http2Length);
-            protocol.on_package = callback(Callback::DispatchTask);
+            protocol.get_package_length = Some(c.http2_length);
+            protocol.on_package = Some(c.dispatch_task);
         } else if config.open_websocket_protocol {
             protocol.package_length_size = WEBSOCKET_FRAME_HEADER_SIZE;
-            protocol.get_package_length = callback(Callback::WebsocketLength);
-            protocol.on_package = callback(Callback::WebsocketDispatchFrame);
+            protocol.get_package_length = Some(c.websocket_length);
+            protocol.on_package = Some(c.websocket_dispatch_frame);
         }
         protocol.package_length_offset = 0;
         protocol.package_body_offset = 0;
         reader(readable_callback_http)
     } else if config.open_mqtt_protocol {
         swoole_rs_protocols_ffi::set_protocol(protocol);
-        protocol.on_package = callback(Callback::DispatchTask);
+        protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_length)
     } else if config.open_redis_protocol {
-        protocol.on_package = callback(Callback::DispatchTask);
+        protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_redis)
     } else {
         reader(readable_callback_raw)
@@ -470,7 +479,7 @@ pub fn set_length_protocol(
 pub fn set_stream_protocol(config: &mut PortConfig) {
     config.open_length_check = true;
     let protocol = &mut config.protocol;
-    protocol.get_package_length = callback(Callback::DefaultLength);
+    protocol.get_package_length = Some(CALLBACKS.default_length);
     protocol.package_length_type = b'N';
     protocol.package_length_size = 4;
     protocol.package_body_offset = 4;
@@ -521,6 +530,31 @@ readable_callbacks! {
 mod tests {
     use super::*;
     use crate::lifecycle::{close, context_create, ssl_context_init, ssl_init};
+    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+
+    /// Stub callbacks, each body distinct so that no two share an address.
+    pub(super) unsafe extern "C-unwind" fn package<const N: u8>(
+        _: *const Protocol,
+        _: *mut c_void,
+        _: *const c_void,
+    ) -> c_int {
+        N.into()
+    }
+    pub(super) unsafe extern "C" fn length<const N: u8>(
+        _: *const Protocol,
+        _: *mut c_void,
+        _: &mut PacketLength,
+    ) -> isize {
+        N.into()
+    }
+    pub(super) unsafe extern "C" fn length_size(_: *mut c_void) -> u8 {
+        0
+    }
+
+    /// A length function's address, 0 for none.
+    fn address(f: Option<GetPackageLength>) -> usize {
+        f.map_or(0, |f| f as usize)
+    }
 
     #[test]
     fn context_init_sets_upstreams_defaults_and_close_releases_it() {
@@ -925,8 +959,8 @@ mod tests {
         let edges = [0u32, 1, 255, 65535, 65536, 65537, 0x8000_0000, 0xffff_ffff];
         let mut port = Fresh::new();
         let config = port.config();
-        let sentinel = ptr::without_provenance_mut::<c_void>(17);
-        config.protocol.get_package_length = sentinel;
+        let sentinel = length::<17> as GetPackageLength as usize;
+        config.protocol.get_package_length = Some(length::<17>);
         for kind in 0..=255u8 {
             for offset in edges {
                 for body in edges {
@@ -943,7 +977,11 @@ mod tests {
                         "u16 offset"
                     );
                     assert_eq!(u32::from(p.package_body_offset), body & 0xffff, "u16 body");
-                    assert_eq!(p.get_package_length, sentinel, "length function untouched");
+                    assert_eq!(
+                        address(p.get_package_length),
+                        sentinel,
+                        "length function untouched"
+                    );
                 }
             }
         }
@@ -959,7 +997,7 @@ mod tests {
         let mut port = Fresh::new();
         let config = port.config();
         for iteration in 0..256u32 {
-            config.protocol.get_package_length = ptr::without_provenance_mut(17);
+            config.protocol.get_package_length = Some(length::<17>);
             let kind = c_char::from_ne_bytes([iteration as u8]);
             set_length_protocol(config, iteration * 257, kind, u32::MAX - iteration);
             let eof = vec![iteration as u8; (iteration % 17) as usize];
@@ -976,8 +1014,8 @@ mod tests {
                 "both checks on"
             );
             assert_eq!(
-                p.get_package_length,
-                callback(Callback::DefaultLength),
+                address(p.get_package_length),
+                address(Some(CALLBACKS.default_length)),
                 "default length"
             );
             assert_eq!(p.package_length_type, b'N', "network u32");
@@ -994,10 +1032,6 @@ mod tests {
 
     #[test]
     fn init_protocol_takes_upstreams_branches() {
-        use Callback::{
-            DefaultLength, DispatchTask as Task, Http2Length, HttpDispatchFrame, HttpLength,
-            HttpLengthSize, WebsocketDispatchFrame, WebsocketLength,
-        };
         const EOF: u8 = 1;
         const LENGTH: u8 = 2;
         const HTTP: u8 = 4;
@@ -1006,26 +1040,29 @@ mod tests {
         const MQTT: u8 = 32;
         const REDIS: u8 = 64;
         const UNTYPED: u8 = 128;
-        let mqtt = swoole_rs_protocols_ffi::get_package_length as *mut c_void;
-        let address = |c: Option<Callback>| c.map_or(ptr::null_mut(), callback);
+        let c = &CALLBACKS;
+        let task = Some(c.dispatch_task);
+        let package = |f: Option<OnPackage>| f.map_or(0, |f| f as usize);
+        let size = |f: Option<GetPackageLengthSize>| f.map_or(0, |f| f as usize);
+        let mqtt: GetPackageLength = swoole_rs_protocols_ffi::get_package_length;
         // Settings; reader; package, length and length-size callbacks; length size, offsets.
         #[rustfmt::skip]
         let branches = [
-            (EOF, reader(readable_callback_eof), Some(Task), None, None, (4, 0, 4)),
-            (EOF | LENGTH, reader(readable_callback_eof), Some(Task), None, None, (4, 0, 4)),
-            (LENGTH, reader(readable_callback_length), Some(Task), Some(DefaultLength), None, (4, 0, 4)),
-            (LENGTH | UNTYPED, reader(readable_callback_length), Some(Task), None, None, (4, 0, 4)),
+            (EOF, reader(readable_callback_eof), task, None, None, (4, 0, 4)),
+            (EOF | LENGTH, reader(readable_callback_eof), task, None, None, (4, 0, 4)),
+            (LENGTH, reader(readable_callback_length), task, Some(c.default_length), None, (4, 0, 4)),
+            (LENGTH | UNTYPED, reader(readable_callback_length), task, None, None, (4, 0, 4)),
             (HTTP, reader(readable_callback_http), None, None, None, (4, 0, 0)),
-            (HTTP | HTTP2, reader(readable_callback_http), Some(Task), Some(Http2Length), None, (9, 0, 0)),
-            (HTTP | WS, reader(readable_callback_http), Some(WebsocketDispatchFrame), Some(WebsocketLength), None,
-             (14, 0, 0)),
-            (HTTP | HTTP2 | WS, reader(readable_callback_http), Some(HttpDispatchFrame), Some(HttpLength),
-             Some(HttpLengthSize), (4, 0, 0)),
-            (MQTT, reader(readable_callback_length), Some(Task), None, None, (4, 1, 0)),
-            (REDIS, reader(readable_callback_redis), Some(Task), None, None, (4, 0, 4)),
+            (HTTP | HTTP2, reader(readable_callback_http), task, Some(c.http2_length), None, (9, 0, 0)),
+            (HTTP | WS, reader(readable_callback_http), Some(c.websocket_dispatch_frame), Some(c.websocket_length),
+             None, (14, 0, 0)),
+            (HTTP | HTTP2 | WS, reader(readable_callback_http), Some(c.http_dispatch_frame), Some(c.http_length),
+             Some(c.http_length_size), (4, 0, 0)),
+            (MQTT, reader(readable_callback_length), task, Some(mqtt), None, (4, 1, 0)),
+            (REDIS, reader(readable_callback_redis), task, None, None, (4, 0, 4)),
             (0, reader(readable_callback_raw), None, None, None, (4, 0, 4)),
         ];
-        for (flags, on_read, package, length, length_size, framing) in branches {
+        for (flags, on_read, on_package, length, length_size, framing) in branches {
             let mut port = Fresh::new();
             let config = port.config();
             config.open_eof_check = flags & EOF != 0;
@@ -1040,13 +1077,20 @@ mod tests {
             }
             init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
             let p = &config.protocol;
-            let length = if flags == MQTT { mqtt } else { address(length) };
             assert_eq!(config.on_read, on_read, "{flags}: reader");
-            assert_eq!(p.on_package, address(package), "{flags}: package callback");
-            assert_eq!(p.get_package_length, length, "{flags}: length function");
             assert_eq!(
-                p.get_package_length_size,
-                address(length_size),
+                package(p.on_package),
+                package(on_package),
+                "{flags}: package callback"
+            );
+            assert_eq!(
+                address(p.get_package_length),
+                address(length),
+                "{flags}: length function"
+            );
+            assert_eq!(
+                size(p.get_package_length_size),
+                size(length_size),
                 "{flags}: size function"
             );
             let actual = (
