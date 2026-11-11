@@ -5,7 +5,7 @@
 # first failure timed out (unless upstream timed out too), up to nine times when upstream
 # failed one or until cargo passes one (gate.py --print-pending).
 # An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
-# A test cargo both passed and failed then gets more upstream re-runs (up to 24 in all),
+# A test cargo both passed and failed then gets more upstream re-runs (up to 48 in all),
 # so a test racy on both engines isn't counted as a cargo regression; so does one whose
 # re-runs both engines failed (up to 9).
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
@@ -31,7 +31,7 @@ for engine in upstream $(cd "$engines" && ls -- *.so | sed 's/\.so$//' | grep -v
       --output "$recheck/$engine-$attempt.json" || [ $? -eq 1 ]
   done
 done
-for attempt in $(seq 7 54); do
+for attempt in $(seq 7 102); do
   cases=$(pending upstream-extended)
   [ -n "$cases" ] || break
   # shellcheck disable=SC2086 # one --case per word

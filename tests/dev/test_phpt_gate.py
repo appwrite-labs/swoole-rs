@@ -230,11 +230,11 @@ class PhptGate(unittest.TestCase):
         self.assertEqual(pending(tests, rechecked, 'upstream'), [])
         self.assertEqual(pending(tests, rechecked, 'upstream-extended'), ['mixed'])
         self.assertEqual(recheck(['mixed'], rechecked), (['mixed'], [], [], []))
-        # An upstream failure among them makes it flaky on both; 24 clean passes keep the regression (#1285).
+        # An upstream failure among them makes it flaky on both; 48 clean passes keep the regression (#1285).
         racy = rechecked + [row('mixed', 'upstream', 'passed'), row('mixed', 'upstream', 'failed')]
         self.assertEqual(pending(['mixed'], racy, 'upstream-extended'), [])
         self.assertEqual(recheck(['mixed'], racy), ([], ['mixed'], [], []))
-        solid = rechecked + [row('mixed', 'upstream', 'passed')] * 20
+        solid = rechecked + [row('mixed', 'upstream', 'passed')] * 44
         self.assertEqual(pending(['mixed'], solid, 'upstream-extended'), ['mixed'])
         solid.append(row('mixed', 'upstream', 'passed'))
         self.assertEqual(pending(['mixed'], solid, 'upstream-extended'), [])
