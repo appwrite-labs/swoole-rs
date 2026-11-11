@@ -16,7 +16,7 @@ use swoole_rs_process::workers::ops::{
     OP_TASK_PIPE_NONBLOCK, OP_TIMER_DETACHED, OP_TIMER_REINIT, RUN_REACTOR_PROCESS_CLOSE,
     RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_PIPE_READ, RUN_REACTOR_PROCESS_TIMEOUT,
 };
-use swoole_rs_reactor::Event;
+use swoole_rs_reactor::{Event, Running};
 
 use super::Context;
 use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
@@ -235,9 +235,13 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 fd: conn.fd,
                 reactor_id: i16::from(conn.reactor_id),
                 fd_type: FD_SESSION,
-                socket: conn.socket,
+                socket: conn.socket.cast(),
             };
-            on_close(ctx.reactor_handle().ptr(), (&raw mut event).cast());
+            run(
+                ctx.reactor_handle(),
+                &raw mut event,
+                RUN_REACTOR_PROCESS_CLOSE,
+            );
             0
         }
         _ => return None,
@@ -287,15 +291,13 @@ extern "C" fn worker_not_found(pool: *mut PoolRecord, status: *const ExitStatus)
 }
 
 /// Runs `operation` over a context of `reactor`'s server and `event`.
-fn run(reactor: *mut c_void, event: *mut c_void, operation: u32) -> c_int {
-    // SAFETY: the reactor running this callback.
-    let reactor = unsafe { Reactor::of(reactor) };
+fn run(reactor: Reactor, event: *mut Event, operation: u32) -> c_int {
     let mut ctx = Context {
         // A reactor process's reactor holds its server.
         serv: reactor.fields().ptr,
         worker: core::ptr::null_mut(),
         reactor: reactor.ptr(),
-        event: event.cast(),
+        event,
         conn: core::ptr::null_mut(),
         now: 0.0,
     };
@@ -338,16 +340,22 @@ pub(crate) unsafe fn enter(
 }
 
 /// `ReactorProcess_onPipeRead`.
-extern "C" fn on_pipe_read(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    run(reactor, event, RUN_REACTOR_PROCESS_PIPE_READ)
+extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+    run(
+        Reactor::running(reactor),
+        event,
+        RUN_REACTOR_PROCESS_PIPE_READ,
+    )
 }
 
 /// `ReactorProcess_onClose`: the reactor's default error handler.
-extern "C" fn on_close(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    run(reactor, event, RUN_REACTOR_PROCESS_CLOSE)
+extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
+    run(Reactor::running(reactor), event, RUN_REACTOR_PROCESS_CLOSE)
 }
 
 /// `ReactorProcess_onTimeout`: the heartbeat check.
 extern "C-unwind" fn on_timeout(reactor: *mut c_void) {
+    // SAFETY: the reactor that armed the timer, which outlives it, on its thread.
+    let reactor = unsafe { Reactor::of(reactor) };
     run(reactor, core::ptr::null_mut(), RUN_REACTOR_PROCESS_TIMEOUT);
 }

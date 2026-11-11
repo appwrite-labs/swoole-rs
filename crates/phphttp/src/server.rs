@@ -129,8 +129,7 @@ php_local! {
 
 /// An `IS_UNDEF` zval.
 pub(crate) fn new_zval() -> zval {
-    // SAFETY: all zeroes is `IS_UNDEF`.
-    unsafe { std::mem::zeroed() }
+    swoole_rs_zend::UNDEF
 }
 
 fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> ZString {

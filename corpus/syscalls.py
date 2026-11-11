@@ -144,12 +144,15 @@ class Traced(Engine):
         return ['strace', '-f', '-ff', '-q', '-s', '0', '--seccomp-bpf', '-e', 'trace=' + ','.join('?' + name for name in SYSCALLS),
                 '-o', str(self.trace), '--', *super().command(*args)]
 
+    def pid(self, proc):
+        """strace's one child, so a signal reaches PHP: strace blocks fatal ones under -o."""
+        return int(Path(f'/proc/{proc.pid}/task/{proc.pid}/children').read_text())
+
 
 # A driver project starts PHP itself, so its runner is called here with the traced engine:
 # PHP is traced, the Python driver isn't. run_lifecycle records a failed case and runs on, so
 # both engines trace every case: without --fix-halfclose they share the half-close truncation.
-# 12-hyperf-skeleton stops with SIGTERM to the PHP it started, which strace would receive.
-RUNNERS = {'11-buffer-lifecycle': 'run_lifecycle'}
+RUNNERS = {'11-buffer-lifecycle': 'run_lifecycle', '12-hyperf-skeleton': 'run'}
 
 
 def run(engine, project, run_project):

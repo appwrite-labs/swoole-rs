@@ -18,7 +18,7 @@ use swoole_rs_corebase::{
 use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del, swr_v1_event_current};
 use swoole_rs_reactor::reactor_upstream::prepared;
-use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push};
+use swoole_rs_reactor::{Event, Running, SocketRecord, swr_v1_reactor_deferred_push};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket_new};
 use swoole_rs_tls::upstream::socket_write_sync;
 
@@ -32,12 +32,6 @@ const SYSTEM_CALL_FAIL: c_int = 502;
 const WRONG_OPERATION: c_int = 509;
 const AIO_BAD_REQUEST: c_int = 4001;
 const AIO_CANCELED: c_int = 4002;
-
-/// `swoole::Event`'s leading descriptor.
-#[repr(C)]
-pub struct Event {
-    fd: c_int,
-}
 
 /// `swoole::AsyncThreads`, opaque to native code: the events in flight, the
 /// completion pipe (the master end writes, the worker end reads) and the pool.
@@ -322,12 +316,8 @@ fn complete(token: usize) {
 
 /// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event
 /// waiting on the pipe.
-///
-/// # Safety
-/// `event` is the reactor's live event for the pipe's read end.
-pub unsafe extern "C" fn callback(_reactor: *mut c_void, event: *mut Event) -> c_int {
-    // SAFETY: as the caller promises.
-    if pool_complete(unsafe { (*event).fd }, complete) < 0 {
+pub extern "C" fn callback(_: Running<'_>, event: &mut Event) -> c_int {
+    if pool_complete(event.fd, complete) < 0 {
         log::sys_warning(
             c"AsyncThreads::callback",
             format_args!("read() aio events failed"),

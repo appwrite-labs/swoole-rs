@@ -24,8 +24,8 @@ use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, ReactorIov, Socket, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
-    type_is,
+    CLASS_DGRAM, Event, ReactorIov, Running, Socket, SocketAddress, SocketRecord,
+    swr_v1_reactor_iov_view, type_is,
 };
 use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
@@ -62,14 +62,9 @@ unsafe fn iov_owner(vector: *mut c_void) -> crate::uring_socket::IoVector {
 }
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
-///
-/// # Safety
-/// `event` is the reactor's live event for a live coroutine socket.
-unsafe fn event_socket<'a>(event: *const c_void) -> Option<(Co, Socket<'a>)> {
-    // SAFETY: as the caller promises.
-    let source = unsafe { (*event.cast::<Event>()).socket }.cast::<SocketRecord>();
-    // SAFETY: the event's live network::Socket.
-    let source = unsafe { Socket::from_ptr(source) }?;
+fn event_socket<'a>(event: &Event) -> Option<(Co, Socket<'a>)> {
+    // SAFETY: the reactor's event names a live network::Socket.
+    let source = unsafe { Socket::from_ptr(event.socket.cast::<SocketRecord>()) }?;
     let object = source.read(|record| record.object);
     // SAFETY: a coroutine socket's network::Socket's object is that socket.
     Some((unsafe { Co::of(object) }, source))
@@ -77,12 +72,8 @@ unsafe fn event_socket<'a>(event: *const c_void) -> Option<(Co, Socket<'a>)> {
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
 /// coroutine to wake, a TLS wait's other direction, or none while a barrier waits.
-///
-/// # Safety
-/// `event` is the reactor's live event for a coroutine socket.
-unsafe fn on_ready(event: *const c_void, kind: u32) -> c_int {
-    // SAFETY: as the caller promises.
-    let Some((socket, source)) = (unsafe { event_socket(event) }) else {
+fn on_ready(event: &Event, kind: u32) -> c_int {
+    let Some((socket, source)) = event_socket(event) else {
         return 0;
     };
     set_err(socket, 0);
@@ -97,37 +88,19 @@ unsafe fn on_ready(event: *const c_void, kind: u32) -> c_int {
 
 /// `Socket::readable_event_callback(reactor, event)`, registered for
 /// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
-///
-/// # Safety
-/// As [`on_ready`].
-pub unsafe extern "C" fn readable_event_callback(
-    _reactor: *mut c_void,
-    event: *mut c_void,
-) -> c_int {
-    // SAFETY: forwarded.
-    unsafe { on_ready(event, READ) }
+pub extern "C" fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+    on_ready(event, READ)
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
-///
-/// # Safety
-/// As [`on_ready`].
-pub unsafe extern "C" fn writable_event_callback(
-    _reactor: *mut c_void,
-    event: *mut c_void,
-) -> c_int {
-    // SAFETY: forwarded.
-    unsafe { on_ready(event, WRITE) }
+pub extern "C" fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+    on_ready(event, WRITE)
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
-/// reader unless the writer closed the socket.
-///
-/// # Safety
-/// As [`on_ready`].
-pub unsafe extern "C" fn error_event_callback(_reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: as the caller promises; the network::Socket outlives the wake-ups.
-    if let Some((socket, source)) = unsafe { event_socket(event) } {
+/// reader unless the writer closed the socket; the `network::Socket` outlives the wake-ups.
+pub extern "C" fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+    if let Some((socket, source)) = event_socket(event) {
         error_event(socket, source);
     }
     0
@@ -1005,14 +978,14 @@ mod tests {
         object.bind(READ, &raw mut co);
         let mut event = object.event();
         assert_eq!(
-            unsafe { readable_event_callback(core::ptr::null_mut(), (&raw mut event).cast()) },
+            readable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
             0
         );
         assert_eq!(object.0.record.err_code, 0);
         assert_eq!(take(), ["last-error:0", "resume:3"]);
         // Nobody writes: a writable event wakes no one.
         assert_eq!(
-            unsafe { writable_event_callback(core::ptr::null_mut(), (&raw mut event).cast()) },
+            writable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
             0
         );
         assert_eq!(take(), ["last-error:0"]);
@@ -1027,7 +1000,7 @@ mod tests {
         object.bind(WRITE, &raw mut writer);
         object.0.record.socket_mut().removed = 0;
         let mut event = object.event();
-        unsafe { error_event_callback(core::ptr::null_mut(), (&raw mut event).cast()) };
+        error_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event);
         assert_eq!(
             take(),
             ["last-error:0", "resume:2", "last-error:0", "resume:1"]

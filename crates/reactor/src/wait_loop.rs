@@ -446,8 +446,12 @@ fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
     let Some(handler) = (unsafe { &*ops.handlers }).dispatch(kind, fd_type) else {
         return -1;
     };
-    // SAFETY: a native `ReactorHandler`, given its reactor and the prepared event.
-    unsafe { handler(ops.ops.reactor, ops.event.cast()) }
+    // SAFETY: the live reactor running this wait, on its thread.
+    let reactor = unsafe { handlers::Running::new(ops.ops.reactor) };
+    // SAFETY: `ops.event` is this wait's own event, lent to the handler alone; a nested
+    // wait prepares its own.
+    let event = unsafe { &mut *ops.event };
+    handler(reactor, event)
 }
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
@@ -531,11 +535,13 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn read(_: *mut c_void, event: *mut c_void) -> c_int {
+    extern "C" fn read(_: crate::Running<'_>, event: &mut Event) -> c_int {
         effect("read");
         let mut byte = 0u8;
-        let fd = unsafe { (*event.cast::<Event>()).fd };
-        assert_eq!(unsafe { libc::read(fd, (&raw mut byte).cast(), 1) }, 1);
+        assert_eq!(
+            unsafe { libc::read(event.fd, (&raw mut byte).cast(), 1) },
+            1
+        );
         0
     }
 

@@ -550,10 +550,9 @@ fn set_option(
 fn meta_data(stream: *mut php_stream, socket: &Socket, data: *mut zval) {
     let ssl = socket.ssl();
     if !ssl.is_null() {
-        // SAFETY: an undefined zval, initialised as an array.
-        let mut crypto: zval = unsafe { std::mem::zeroed() };
+        let mut crypto = swoole_rs_zend::UNDEF;
         let array = &raw mut crypto;
-        // SAFETY: as above.
+        // SAFETY: an undefined zval, initialised as an array.
         unsafe { swr_zend_array_init(array) };
         // SAFETY: a live connection.
         let protocol: &CStr = match unsafe { openssl_sys::SSL_version(ssl) } {
@@ -1051,9 +1050,8 @@ fn ssl_set_options(socket: &Socket, context: *mut php_stream_context) -> Result<
     }
     // SAFETY: an array zval.
     let ssl = unsafe { table(ssl) };
+    let mut aliases = swoole_rs_zend::UNDEF;
     // SAFETY: an undefined zval, initialised as an array.
-    let mut aliases: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
     unsafe { swr_zend_array_init(&raw mut aliases) };
     for (name, alias) in SSL_ALIASES {
         if let Some(value) = find(ssl, name) {

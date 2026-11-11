@@ -174,8 +174,7 @@ unsafe extern "C-unwind" fn free<H: Holder>(data: *mut c_void) {
 
 /// `ZVAL_LONG`.
 fn long(value: i64) -> zval {
-    // SAFETY: all-zero bytes are a valid zval (IS_UNDEF).
-    let mut zv: zval = unsafe { std::mem::zeroed() };
+    let mut zv = crate::UNDEF;
     zv.value = zend_value { lval: value };
     zv.u1.type_info = IS_LONG;
     zv

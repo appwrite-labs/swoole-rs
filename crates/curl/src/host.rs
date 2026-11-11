@@ -24,11 +24,12 @@ const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
 /// socket whose object is a [`crate::Socket`].
-unsafe extern "C" fn on_event<const BITMASK: c_int>(_: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: the reactor passes a live event on one of this crate's sockets.
-    let socket = unsafe { &*event.cast::<swoole_rs_reactor::Event>() }.socket;
-    // SAFETY: as above.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+extern "C" fn on_event<const BITMASK: c_int>(
+    _: swoole_rs_reactor::Running<'_>,
+    event: &mut swoole_rs_reactor::Event,
+) -> c_int {
+    // SAFETY: the reactor's event names a live socket of the cURL fd type.
+    let Some(socket) = (unsafe { Socket::from_ptr(event.socket.cast()) }) else {
         return -1;
     };
     let object = socket.read(|socket| socket.object);

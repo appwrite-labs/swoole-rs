@@ -131,8 +131,15 @@ impl Info {
 /// Zend's MINFO, with the module's live entry.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_minfo(module: *mut zend_module_entry) {
-    // SAFETY: a plain C record of pointers, integers and bytes, for which zero is valid.
-    let mut info: Info = unsafe { std::mem::zeroed() };
+    let null = std::ptr::null();
+    let mut info = Info {
+        built: null,
+        openssl: null,
+        curl: null,
+        cares: null,
+        zlib: null,
+        zstd: null,
+    };
     // SAFETY: host.c fills it with static strings.
     unsafe { swr_phpswoole_versions(&raw mut info) };
     bailout::raise(info.output(module.cast()));
