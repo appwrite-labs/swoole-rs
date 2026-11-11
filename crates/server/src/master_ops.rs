@@ -1642,10 +1642,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use swoole_rs_reactor::signal_upstream::{swoole_signal_clear, swoole_signal_set};
     use swoole_rs_reactor::swoole_event_free;
     // `SwooleTG.timer`.
-    let timer = || {
-        // SAFETY: the address of this thread's slot.
-        unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
-    };
+    let timer = swoole_rs_corebase::thread_timer;
     Some(match op {
         OP_LC_CLEAR_ERROR => {
             log::set_last_error(0);

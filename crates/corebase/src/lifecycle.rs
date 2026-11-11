@@ -69,6 +69,12 @@ pub fn swr_v1_core_timer_slot() -> *mut *mut c_void {
     unsafe { &raw mut (*swr_v1_core_thread_global()).timer }
 }
 
+/// `SwooleTG.timer`: this thread's timer, or null.
+#[must_use]
+pub fn thread_timer() -> *mut c_void {
+    read(|thread| thread.timer)
+}
+
 fn read<T: Copy>(field: impl FnOnce(&ThreadGlobal) -> T) -> T {
     // SAFETY: this thread's live record; the borrow ends before any native call.
     field(unsafe { &*swr_v1_core_thread_global() })
@@ -207,7 +213,8 @@ pub extern "C" fn swoole_is_main_thread() -> bool {
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
     if let Some(host) = native::host() {
-        (host.signal_clear)();
+        // SAFETY: shutdown runs on the thread that owns the signal handlers.
+        unsafe { (host.signal_clear)() };
         swoole_thread_clean(true);
         (host.logger)(native::LOGGER_CLOSE);
         (host.logger)(native::LOGGER_DELETE);
@@ -275,7 +282,8 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     } else {
         (host.logger)(native::LOGGER_CLOSE);
     }
-    (host.signal_clear)();
+    // SAFETY: the forked child's only thread, which owns the signal handlers.
+    unsafe { (host.signal_clear)() };
     crate::signal_mask::restore_after_fork(&previous, true);
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
         // SAFETY: the after-fork hooks take no argument.
@@ -362,6 +370,11 @@ mod tests {
 
     /// The child takes a while to drop the parent's handlers, as on a busy machine,
     /// and the reset unblocks SIGUSR1, as signalfd's does.
+    extern "C" fn signal_clear() {
+        signal(libc::SIGTERM, libc::SIG_DFL);
+        change(libc::SIG_UNBLOCK, libc::SIGUSR1);
+    }
+
     fn host() {
         native::set_native_host(native::NativeHost {
             init: || {},
@@ -373,10 +386,7 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
             },
-            signal_clear: || {
-                signal(libc::SIGTERM, libc::SIG_DFL);
-                change(libc::SIG_UNBLOCK, libc::SIGUSR1);
-            },
+            signal_clear,
             timer_free: || {},
             event_available: || false,
             event_free: || {},
