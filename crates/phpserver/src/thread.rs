@@ -13,7 +13,7 @@ use swoole_rs_phpthread::Arguments;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
-    Value,
+    Props, Value,
     bailout::{self, Bailout},
     kind,
     string::bytes,
@@ -22,7 +22,7 @@ use swoole_rs_zend::{
         swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_array_dup,
         zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval, zval_ptr_dtor,
     },
-    value::{table, update_string},
+    value::table,
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -128,7 +128,8 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
             // SAFETY: the request's NUL-terminated script.
             let path = unsafe { CStr::from_ptr(path) };
             // SAFETY: the object and its class.
-            unsafe { update_string(object.class(), object.raw(), c"bootstrap", path) };
+            unsafe { Props::new(object.class(), object.raw()) }
+                .bytes(c"bootstrap", path.to_bytes());
         }
     }
     let script = string_of(slot);
