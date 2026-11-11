@@ -5,7 +5,6 @@
 //! lends the `io_uring` engine and the hooked sockets' constructors in [`Host`].
 //! The exports keep upstream's names: `swoole_coroutine_api.h` declares them.
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 use libc::{
     DIR, FILE, addrinfo, c_char, c_int, c_uint, c_void, dirent, hostent, mode_t, off_t, size_t,
@@ -107,7 +106,7 @@ pub struct Host {
     pub uring_socket: bool,
 }
 
-static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
+static HOST: OnceLock<&'static Host> = OnceLock::new();
 
 /// [`NATIVE`] once native installs the [`Host`]: [`offload`] reads it here, so a crate
 /// that links hooks without the runtime (the PDO drivers' tests) never links it.
@@ -136,13 +135,12 @@ pub fn swr_v1_hook_install() {
 }
 
 fn set_host(host: &'static Host) {
-    HOST.store(std::ptr::from_ref(host).cast_mut(), Ordering::Release);
+    HOST.get_or_init(|| host);
     RUNTIME.get_or_init(|| &NATIVE);
 }
 
 pub(crate) fn host() -> Option<&'static Host> {
-    // SAFETY: `set_host` stores only a static table.
-    unsafe { HOST.load(Ordering::Acquire).as_ref() }
+    HOST.get().copied()
 }
 
 /// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
