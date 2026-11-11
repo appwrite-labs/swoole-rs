@@ -139,7 +139,7 @@ fn with_tls<R>(socket: Socket<'_>, step: impl FnOnce(&mut SocketTls, Ssl) -> R) 
 
 /// `STACK_OF(X509) *Socket::ssl_get_peer_cert_chain() const`.
 #[must_use]
-pub fn socket_ssl_get_peer_cert_chain(socket: &SocketRecord) -> *mut stack_st_X509 {
+pub fn socket_ssl_get_peer_cert_chain(socket: &SocketFields) -> *mut stack_st_X509 {
     let Some(ssl) = Ssl::of(socket) else {
         return std::ptr::null_mut();
     };
@@ -149,7 +149,7 @@ pub fn socket_ssl_get_peer_cert_chain(socket: &SocketRecord) -> *mut stack_st_X5
 
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
 #[must_use]
-pub fn socket_ssl_verify(socket: &SocketRecord, allow_self_signed: bool) -> bool {
+pub fn socket_ssl_verify(socket: &SocketFields, allow_self_signed: bool) -> bool {
     let Some(ssl) = Ssl::of(socket) else {
         return false;
     };
@@ -727,7 +727,7 @@ pub unsafe fn socket_writev_sync(
 
 /// `X509 *Socket::ssl_get_peer_certificate() const`.
 #[must_use]
-pub fn ssl_get_peer_certificate(socket: &SocketRecord) -> Option<Cert> {
+pub fn ssl_get_peer_certificate(socket: &SocketFields) -> Option<Cert> {
     let ssl = Ssl::of(socket)?;
     // SAFETY: the record's live SSL; the reference it returns is ours.
     NonNull::new(unsafe { peer_certificate(ssl.as_ptr()) }).map(Cert)
@@ -735,7 +735,7 @@ pub fn ssl_get_peer_certificate(socket: &SocketRecord) -> Option<Cert> {
 
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
 #[must_use]
-pub fn socket_ssl_check_host(socket: &SocketRecord, name: &CStr) -> bool {
+pub fn socket_ssl_check_host(socket: &SocketFields, name: &CStr) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };

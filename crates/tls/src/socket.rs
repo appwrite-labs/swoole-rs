@@ -15,7 +15,7 @@ use openssl_sys::{
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_ulong, c_void};
 use std::ptr::NonNull;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::SocketFields;
 
 // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds neither.
 unsafe extern "C" {
@@ -74,7 +74,7 @@ impl Ssl {
 
     /// The record's SSL, or None without one.
     #[must_use]
-    pub fn of(record: &SocketRecord) -> Option<Self> {
+    pub fn of(record: &SocketFields) -> Option<Self> {
         // SAFETY: a record's SSL is live while it is set (above).
         unsafe { Self::new(record.ssl.cast()) }
     }
