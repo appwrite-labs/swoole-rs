@@ -7,7 +7,7 @@ use crate::socket_members;
 use crate::wait_event::{ERROR, READ, WRITE, event_ready};
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::FdType;
-use swoole_rs_reactor::{Event, Handler, Running, SocketRecord};
+use swoole_rs_reactor::{Event, Handler, Running};
 
 #[cfg(not(test))]
 use defer_resume as wake;
@@ -16,8 +16,9 @@ use tests::wake;
 
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
-    // SAFETY: the reactor's event names a live socket.
-    let object = unsafe { (*event.socket_ptr().cast::<SocketRecord>()).fields.object };
+    let object = event.socket().map_or(core::ptr::null_mut(), |socket| {
+        socket.read(|record| record.object)
+    });
     (object, event.fd())
 }
 
@@ -120,16 +121,12 @@ pub(crate) unsafe fn defer(
     data: *mut c_void,
     dispose: Option<swoole_rs_reactor::DeferDispose>,
 ) {
-    let reactor = swoole_rs_corebase::thread_reactor().cast::<swoole_rs_reactor::ReactorPrepared>();
-    // SAFETY: the thread's loop is live; it begins with its prepared state.
-    let fields = unsafe { (*reactor).fields };
-    // SAFETY: as above.
-    let queue = unsafe { &raw mut (*fields).defer_tasks };
-    // SAFETY: the loop's live deferred queue; the caller vouches for `call(data)`.
-    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, call, data, dispose) } != 0 {
-        // Upstream throws std::bad_alloc, which no frame here could catch.
+    // Upstream dereferences the thread's null reactor; abort instead.
+    let Some(reactor) = swoole_rs_reactor::event_api::current_prepared() else {
         std::process::abort();
-    }
+    };
+    // SAFETY: the thread's live loop's fields; the caller vouches for `call(data)`.
+    unsafe { swoole_rs_reactor::defer(reactor.fields, call, data, dispose) };
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 use core::ffi::c_int;
 use swoole_rs_process::worker_record::Worker;
 
-use swoole_rs_corebase::{log, worker_registry};
+use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::server_workers::{
     swr_v1_process_server_worker_by_pid, swr_v1_process_server_workers_start,
@@ -29,13 +29,7 @@ pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecor
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
 pub(crate) fn workers_start(serv: view::Server<'_>) {
     let workers = serv.workers();
-    let registry = serv.config().worker_registry;
-    // SAFETY: the server's live registry, configured only by the master.
-    let pending = unsafe {
-        (*registry.cast::<worker_registry::WorkerRegistry>())
-            .pending()
-            .as_ptr()
-    };
+    let pending = serv.registry().pending().as_ptr();
     // SAFETY: the server's live arrays and its pending user workers.
     unsafe { swr_v1_process_server_workers_start(&workers, serv.raw(), pending.cast()) };
 }
@@ -56,13 +50,8 @@ pub unsafe fn add_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) -> c
         );
         return -1;
     }
-    // SAFETY: the server's live registry, configured only by the master.
-    let index = unsafe {
-        (*config
-            .worker_registry
-            .cast::<worker_registry::WorkerRegistry>())
-        .pending_add(worker.cast())
-    };
+    // SAFETY: the server's live registry, configured only by the master before it starts.
+    let index = unsafe { serv.registry_mut() }.pending_add(worker.cast());
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     // SAFETY: the caller's live worker.
@@ -197,14 +186,7 @@ pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
         log::sys_warning(c"Server::create_user_workers", m);
         return false;
     }
-    // SAFETY: the server's live registry, configured only by the master.
-    let pending = unsafe {
-        (*config
-            .worker_registry
-            .cast::<worker_registry::WorkerRegistry>())
-        .pending()
-        .as_ptr()
-    };
+    let pending = serv.registry().pending().as_ptr();
     for index in 0..count {
         // SAFETY: `count` live worker pointers.
         let worker = unsafe { pending.wrapping_add(index).read() }.cast::<WorkerRecord>();

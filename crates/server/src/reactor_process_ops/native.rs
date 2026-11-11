@@ -5,8 +5,8 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::ExitStatus;
-use swoole_rs_process::process_pool::PoolRecord;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ADD_HEARTBEAT_TIMER, OP_ADD_PIPES, OP_BUS_POP, OP_BUS_READ, OP_CLOSE_NOTIFY,
@@ -54,7 +54,7 @@ impl Context {
         self.server().workers()
     }
     /// `serv->ports`.
-    pub(super) fn ports(&self) -> &[*mut c_void] {
+    pub(super) fn ports(&self) -> &[view::Port<'_>] {
         self.server().ports()
     }
     pub(super) fn callback_slot(&self, index: u32) -> Option<&crate::callbacks::CallbackSlot> {
@@ -89,12 +89,6 @@ impl Context {
         // SAFETY: the context's live event.
         unsafe { (*self.event).socket_ptr() }.cast()
     }
-}
-
-/// One of the server's ports.
-pub(super) fn port_config<'a>(port: *mut c_void) -> &'a crate::port_config::PortConfig {
-    // SAFETY: the context hands out only its live server's ports.
-    unsafe { view::port(port) }
 }
 
 /// This thread's timer, or null.
@@ -168,8 +162,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_ADD => {
-            let index = usize::try_from(arg).ok()?;
-            let port = ctx.state().tables_ref().port_config(index)?;
+            let port = ctx.ports().get(usize::try_from(arg).ok()?)?.config();
             let gs = port.counters()?;
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the worker's slot of them.
@@ -262,8 +255,8 @@ fn create_pool(ctx: &Context) -> u64 {
     record.ptr = ctx.serv;
     record.max_wait_time = config.max_wait_time;
     record.use_msgqueue = 0;
-    record.main_loop = entry::reactor_process_main_loop as *const c_void;
-    record.on_worker_not_found = worker_not_found as *const c_void;
+    record.main_loop = Some(main_loop);
+    record.on_worker_not_found = Some(worker_not_found);
     let count = config.worker_num as usize;
     // SAFETY: the pool's and the server's worker arrays, `count` records each.
     unsafe { core::ptr::copy_nonoverlapping(record.workers, workers.event_workers, count) };
@@ -276,11 +269,17 @@ fn create_pool(ctx: &Context) -> u64 {
     0
 }
 
+/// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
+extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
+    // SAFETY: the live pool and one of its live workers.
+    unsafe { entry::reactor_process_main_loop(pool.raw().cast(), worker.raw().cast()) }
+}
+
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
-extern "C" fn worker_not_found(pool: &PoolRecord, status: &ExitStatus) -> c_int {
+extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
     // SAFETY: the pool's server and the worker's exit status.
-    unsafe { entry::restart_worker_process(pool.ptr, core::ptr::from_ref(status).cast()) }
+    unsafe { entry::restart_worker_process(pool.ptr(), core::ptr::from_ref(status).cast()) }
 }
 
 /// Runs `operation` over a context of `reactor`'s server and `event`.

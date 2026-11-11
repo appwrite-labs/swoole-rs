@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
 //! The reactor's deferred queues (`Reactor::defer_tasks`, `Reactor::destroy_callbacks`):
-//! FIFO `(call, data)` pairs, with a `dispose` that releases a task's data when the
-//! queue is freed unrun.
+//! FIFO native `(call, data)` pairs, with a `dispose` that releases a task's data when
+//! the queue is freed unrun, and Rust values ([`crate::event_api::Deferred`]).
+use crate::event_api::Deferred;
 use crate::reactor_state::{ReactorFields, ReactorState};
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -12,11 +13,66 @@ use std::ptr;
 pub type DeferCall = unsafe extern "C-unwind" fn(*mut c_void);
 pub type DeferDispose = unsafe extern "C-unwind" fn(*mut c_void);
 
-#[derive(Clone, Copy)]
-struct Task {
-    call: DeferCall,
-    data: *mut c_void,
-    dispose: Option<DeferDispose>,
+enum Task {
+    Native {
+        call: DeferCall,
+        data: *mut c_void,
+        dispose: Option<DeferDispose>,
+    },
+    Value(Box<dyn Erased>),
+}
+
+/// A [`Deferred`] value of any type.
+trait Erased {
+    fn run(self: Box<Self>);
+    fn dispose(self: Box<Self>);
+}
+
+/// The value out of its box, which is freed before the caller goes on: `run` may
+/// bail out of the loop and never return.
+#[expect(
+    clippy::boxed_local,
+    reason = "takes the box to free it on return, before `run` starts"
+)]
+fn unbox<T>(value: Box<T>) -> T {
+    *value
+}
+
+impl<T: Deferred> Erased for T {
+    fn run(self: Box<Self>) {
+        T::run(unbox(self));
+    }
+
+    fn dispose(self: Box<Self>) {
+        T::dispose(unbox(self));
+    }
+}
+
+impl Task {
+    /// Runs it; the queue no longer holds it.
+    fn run(self) {
+        match self {
+            // SAFETY: the task's own contract, from whoever queued it.
+            Self::Native { call, data, .. } => unsafe { call(data) },
+            Self::Value(value) => value.run(),
+        }
+    }
+
+    /// Releases it unrun.
+    fn dispose(self) {
+        match self {
+            Self::Native {
+                data,
+                dispose: Some(dispose),
+                ..
+            } => {
+                // SAFETY: the task never ran, so its data is still the queue's.
+                unsafe { dispose(data) };
+            }
+            Self::Native { .. } => {}
+            Self::Value(value) => value.dispose(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -37,24 +93,40 @@ pub unsafe extern "C" fn swr_v1_reactor_deferred_push(
     dispose: Option<DeferDispose>,
 ) -> i32 {
     // SAFETY: as the caller promises.
-    let slot = unsafe { &mut *slot };
+    push(
+        unsafe { &mut *slot },
+        Task::Native {
+            call,
+            data,
+            dispose,
+        },
+    )
+}
+
+/// Appends `task` to the queue in `slot`, creating it on first use: 0, or -2 when it
+/// cannot allocate (nothing is queued). `slot` is a reactor's `defer_tasks` or
+/// `destroy_callbacks`, which hold null or a queue from this module.
+fn push(slot: &mut *mut ReactorDeferred, task: Task) -> i32 {
     if slot.is_null() {
         let Some(owner) = crate::owner::try_owner(ReactorDeferred::default) else {
             return -2;
         };
         *slot = Box::into_raw(owner);
     }
-    // SAFETY: a live queue from this module.
+    // SAFETY: a live queue from this module, as above.
     let tasks = unsafe { &mut (**slot).tasks };
     if tasks.try_reserve(1).is_err() {
         return -2;
     }
-    tasks.push_back(Task {
-        call,
-        data,
-        dispose,
-    });
+    tasks.push_back(task);
     0
+}
+
+/// Appends `value` to the reactor's `defer_tasks`.
+pub(crate) fn defer_value(fields: &mut ReactorFields, value: impl Deferred) {
+    if push(&mut fields.defer_tasks, Task::Value(Box::new(value))) != 0 {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
+    }
 }
 
 /// Runs the queue's tasks in order, each popped before it is called, until it is empty;
@@ -71,8 +143,7 @@ pub(crate) unsafe fn deferred_run(owner: *mut ReactorDeferred) {
         let Some(task) = (unsafe { (*owner).tasks.pop_front() }) else {
             return;
         };
-        // SAFETY: the task's own contract.
-        unsafe { (task.call)(task.data) };
+        task.run();
     }
 }
 
@@ -87,12 +158,7 @@ pub(crate) unsafe fn deferred_free(slot: &mut *mut ReactorDeferred) {
     }
     // SAFETY: the queue was this module's; the slot no longer names it.
     let owner = unsafe { Box::from_raw(owner) };
-    for task in &owner.tasks {
-        if let Some(dispose) = task.dispose {
-            // SAFETY: the task never ran, so its data is still the queue's.
-            unsafe { dispose(task.data) };
-        }
-    }
+    owner.tasks.into_iter().for_each(Task::dispose);
 }
 
 /// `Reactor::defer(fn, data)` on the reactor whose fields these are; `dispose(data)`
@@ -294,6 +360,37 @@ mod tests {
             assert_eq!(take(), [1099]);
             assert!(queue.is_null());
             deferred_free(&mut queue);
+        }
+    }
+
+    /// A Rust value, traced as 100 + its number when run and 2000 + it when disposed.
+    struct Value(usize);
+
+    impl Deferred for Value {
+        fn run(self) {
+            TRACE.with_borrow_mut(|trace| trace.push(100 + self.0));
+        }
+
+        fn dispose(self) {
+            TRACE.with_borrow_mut(|trace| trace.push(2000 + self.0));
+        }
+    }
+
+    /// Rust values share the native tasks' FIFO, and one never run is disposed of
+    /// with the reactor.
+    #[test]
+    fn values_run_in_order_with_native_tasks_and_are_disposed_unrun() {
+        let state = crate::reactor_state::tests::state(3, 1);
+        let fields = state.fields;
+        unsafe {
+            defer(fields, record, token(1), None);
+            defer_value(&mut *fields, Value(2));
+            defer(fields, record, token(3), None);
+            run_defer(state.owner);
+            assert_eq!(take(), [1, 102, 3]);
+            defer_value(&mut *fields, Value(4));
+            crate::reactor_state::tests::free(state.owner);
+            assert_eq!(take(), [2004]);
         }
     }
 }

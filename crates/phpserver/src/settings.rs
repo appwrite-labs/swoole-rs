@@ -571,30 +571,21 @@ fn workers(s: &Settings) -> Step {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-type CpuSet = libc::cpu_set_t;
-#[cfg(target_os = "freebsd")]
-type CpuSet = libc::cpuset_t;
-
 /// The CPUs `swoole_get_cpu_affinity` allows this process, or its errno.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn affinity() -> Result<Vec<c_int>, c_int> {
-    /// `CPU_SETSIZE`.
-    const CPU_SETSIZE: usize = 1024;
-    // SAFETY: a plain bitset, for which zero is the empty set.
-    let mut set: CpuSet = unsafe { std::mem::zeroed() };
-    if swoole_rs_ossupport::swoole_get_cpu_affinity(&mut set) < 0 {
+    let mut set = swoole_rs_ossupport::CpuSet::empty();
+    if set.get_process(swoole_rs_corebase::sys::getpid()) < 0 {
         return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
-    Ok((0..CPU_SETSIZE)
-        // SAFETY: `cpu` is below `CPU_SETSIZE`, inside the set.
-        .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+    Ok(set
+        .cpus()
         .filter_map(|cpu| c_int::try_from(cpu).ok())
         .collect())
 }
 
 /// No `HAVE_CPU_AFFINITY`: `set()` never asks.
-#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 #[expect(
     clippy::unnecessary_wraps,
     reason = "the signature the affinity targets share"

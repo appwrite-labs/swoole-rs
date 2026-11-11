@@ -167,16 +167,31 @@ impl Co {
     /// The `network::Socket` (`get_socket()`), while the socket is open.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
         // SAFETY: null or an open socket's live record, read fresh on every use.
-        unsafe { Net::from_ptr(self.record().socket) }
+        unsafe { Net::from_ptr(self.0.socket()) }
+    }
+
+    /// The socket's buffers are zend strings from now on.
+    pub(crate) fn use_zend_strings(self) {
+        // SAFETY: the static zend string allocator.
+        unsafe {
+            self.0
+                .set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator());
+        }
     }
 
     /// `socket_coro_init`'s socket half: zero copy and the zend string
     /// allocator; its fd, domain, type and protocol.
     pub(crate) fn adopt(self) -> [i64; 4] {
-        let r = self.record();
-        r.zero_copy = true;
-        r.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-        [r.sock_fd, r.sock_domain, r.sock_type, r.sock_protocol].map(i64::from)
+        self.0.set_zero_copy(true);
+        self.use_zend_strings();
+        let s = self.0;
+        [
+            s.sock_fd(),
+            s.sock_domain(),
+            s.sock_type(),
+            s.sock_protocol(),
+        ]
+        .map(i64::from)
     }
 
     pub(crate) fn fd(self) -> c_int {

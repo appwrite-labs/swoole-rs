@@ -67,15 +67,16 @@ impl Callable {
         self.0.cast()
     }
 
-    /// The kept callable's cache and bound arguments, for a call.
+    /// The kept callable's cache, bound arguments and callable zval, for a call.
     #[must_use]
-    pub fn parts(&self) -> (*mut zend_fcall_info_cache, u32, *mut zval) {
+    pub fn parts(&self) -> (*mut zend_fcall_info_cache, u32, *mut zval, *mut zval) {
         // SAFETY: a parsed callable; the borrow ends here, before PHP runs.
         let callable = unsafe { &mut *self.0 };
         (
             &raw mut callable.fcc,
             callable.fci.param_count,
             callable.fci.params,
+            &raw mut callable.fci.function_name,
         )
     }
 

@@ -338,13 +338,13 @@ fn http2_begin(socket: Co) {
         )
     };
     socket.set_open_length_check(true);
-    socket.with(|record| {
-        record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
-        record.protocol.package_length_offset = 0;
-        record.protocol.package_body_offset = 0;
-        record.protocol.get_package_length =
-            swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
-    });
+    let mut protocol = socket.protocol();
+    protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
+    protocol.package_length_offset = 0;
+    protocol.package_body_offset = 0;
+    protocol.get_package_length =
+        swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
+    socket.set_protocol(protocol);
 }
 
 /// `recv_wait`: the socket waits for a request.
@@ -428,10 +428,9 @@ fn server_of(call: &Call) -> *mut HttpServer {
     unsafe { *Holder::data(call.this()) }
 }
 
-/// Writes on a server method's `$this`, under the class.
-fn props(call: &Call) -> Props<'_> {
-    // SAFETY: the methods are non-static, so `$this` is a live server object.
-    unsafe { Props::new(SERVER.entry(), call.this()) }
+/// Writes on a server method's `$this`, under the class; None in a static call.
+fn props(call: &Call) -> Option<Props<'_>> {
+    call.props(Some(&SERVER))
 }
 
 /// `http_server_coro_set_error`: the socket's error into `errCode`/`errMsg`.
@@ -463,8 +462,9 @@ fn construct(call: &Call) {
             call.throw_constructed_twice();
             return None;
         }
-        props(call).bytes(c"host", host);
-        props(call).bool(c"ssl", ssl);
+        let props = props(call)?;
+        props.bytes(c"host", host);
+        props.bool(c"ssl", ssl);
         if host.is_empty() {
             exception(call, EINVAL, "host is empty");
             return None;
@@ -485,7 +485,7 @@ fn construct(call: &Call) {
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
         if !socket.bind(host, port as c_int) {
-            let code = set_error(props(call), socket);
+            let code = set_error(props, socket);
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
             let port = port as i32;
             exception(
@@ -511,14 +511,14 @@ fn construct(call: &Call) {
             let _enabled = socket.enable_ssl();
         }
         if !socket.listen(0) {
-            let code = set_error(props(call), socket);
+            let code = set_error(props, socket);
             exception(call, code, "listen() failed");
             return None;
         }
         let fd = socket.sock_fd();
         let (_, bound) = address(socket);
-        props(call).long(c"fd", zend_long::from(fd));
-        props(call).long(c"port", zend_long::from(bound));
+        props.long(c"fd", zend_long::from(fd));
+        props.long(c"port", zend_long::from(bound));
         Some(())
     };
     if run().is_none() {
@@ -607,15 +607,18 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
+    let Some(props) = props(call) else {
+        return Ok(None);
+    };
     // SAFETY: a live object; the shim converts `settings` to an array.
     let settings =
         unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
     // SAFETY: a live socket and the settings array.
     if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings) } {
-        props(call).long(c"errCode", EINVAL);
+        props.long(c"errCode", EINVAL);
         #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
         let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
-        props(call).bytes(c"errMsg", message.to_bytes());
+        props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
         return Ok(Some(false));
     }
@@ -659,7 +662,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         canceled: libc::ECANCELED,
     };
     let mut start = Start {
-        props: props(call),
+        props,
         server,
         socket,
         accept: &mut accept,
@@ -948,8 +951,7 @@ impl Connection<'_> {
     }
 
     fn package_max_length(&self) -> usize {
-        self.socket
-            .with(|record| record.protocol.package_max_length as usize)
+        self.socket.protocol().package_max_length as usize
     }
 }
 
@@ -970,9 +972,8 @@ fn on_accept(call: &Call) {
     // SAFETY: the object's live socket, which the server's array keeps.
     let socket = unsafe { Co::of(socket) };
     // The request allocator first.
-    socket.with(|record| {
-        record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
-    });
+    // SAFETY: the static zend string allocator.
+    unsafe { socket.set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator()) };
     let buffer = socket.buffer(false);
     let handshake = !socket.tls_owner().is_null() && !socket.ssl_handshake();
     if handshake {
@@ -1034,9 +1035,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
             let length = buffer.len();
-            let free = std::ptr::from_mut(buffer.spare()) as *mut [u8];
-            // SAFETY: the buffer's free space, which the receive only writes.
-            let received = conn.socket.recv(unsafe { &mut *free });
+            let received = conn.socket.recv(buffer.spare());
             if received <= 0 {
                 break;
             }

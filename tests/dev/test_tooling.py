@@ -306,6 +306,18 @@ class Cleanup(unittest.TestCase):
              patch.object(harness, 'stop_process_group', side_effect=PermissionError('denied')):
             self.assertEqual(harness.run_isolated(['diagnostic']).returncode, 125)
 
+    def test_timeout_survives_a_zombie_only_group(self):
+        # macOS killpg answers EPERM once only zombies are left; the deadline is what failed.
+        from tools import harness
+        from unittest.mock import Mock
+        process = Mock()
+        process.communicate.side_effect = subprocess.TimeoutExpired(['runner'], 50)
+        process.poll.return_value = -15
+        with patch.object(harness.subprocess, 'Popen', return_value=process), \
+             patch.object(harness, 'stop_process_group', side_effect=PermissionError('denied')), \
+             self.assertRaises(subprocess.TimeoutExpired):
+            harness.run_isolated(['runner'])
+
 
 class Lanes(unittest.TestCase):
     def test_help_names_the_docker_wrapper(self):

@@ -155,10 +155,10 @@ fn report(call: &Call, code: c_int, message: &CStr) {
     report_object(props(call), code, message);
 }
 
-/// Property writes on `$this`, a client method's object, under the client class.
-fn props(call: &Call) -> Props<'_> {
-    // SAFETY: `$this` is live for the call; the class declares every name written.
-    unsafe { Props::new(CLIENT.entry(), call.this()) }
+/// Property writes on `$this`, a client method's object, under the client
+/// class; None in a static call.
+fn props(call: &Call) -> Option<Props<'_>> {
+    call.props(Some(&CLIENT))
 }
 
 impl Data {
@@ -171,9 +171,11 @@ impl Data {
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
-fn report_object(props: Props, code: c_int, message: &CStr) {
+fn report_object(props: Option<Props>, code: c_int, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(code);
-    let props = props.own();
+    let Some(props) = props.map(Props::own) else {
+        return;
+    };
     props.long(c"errCode", i64::from(code));
     props.bytes(c"errMsg", message.to_bytes());
 }
@@ -237,7 +239,7 @@ fn create_socket(data: &Data, kind: i64) -> Option<Co> {
         Ok(Some(created)) => created,
         Ok(None) => {
             let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            report_object(data.props(), code, error_message(code));
+            report_object(Some(data.props()), code, error_message(code));
             return None;
         }
         Err(bailout) => {
@@ -258,10 +260,14 @@ fn create_socket(data: &Data, kind: i64) -> Option<Co> {
         Box::new(move |_| socket_closed(unsafe { &*client })),
     );
     let record = socket.record();
-    record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
+    socket.use_zend_strings();
     record.zero_copy = true;
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
-        report_object(data.props(), libc::EISCONN, error_message(libc::EISCONN));
+        report_object(
+            Some(data.props()),
+            libc::EISCONN,
+            error_message(libc::EISCONN),
+        );
         socket_closed(data);
         return None;
     }
@@ -325,7 +331,9 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     }
     swoole_rs_phpruntime::check_reactor();
-    props(call).long(c"type", kind);
+    if let Some(props) = props(call) {
+        props.long(c"type", kind);
+    }
     call.set_bool(true);
 }
 
@@ -380,7 +388,9 @@ fn connect(call: &Call) {
         return call.set_bool(false);
     }
     socket.set_timeout(timeout, native::TIMEOUT_RDWR);
-    props(call).bool(c"connected", true);
+    if let Some(props) = props(call) {
+        props.bool(c"connected", true);
+    }
     call.set_bool(true);
 }
 
@@ -484,9 +494,10 @@ fn sendfile(call: &Call) {
     };
     let kind = i64::from(socket.kind());
     if !matches!(kind, SOCK_TCP | SOCK_TCP6 | SOCK_UNIX_STREAM) {
-        let props = props(call);
-        props.long(c"errCode", libc::EINVAL.into());
-        props.bytes(c"errMsg", b"dgram socket cannot use sendfile");
+        if let Some(props) = props(call) {
+            props.long(c"errCode", libc::EINVAL.into());
+            props.bytes(c"errMsg", b"dgram socket cannot use sendfile");
+        }
         return call.set_bool(false);
     }
     if socket.sendfile(file, offset, length) {
@@ -600,7 +611,9 @@ fn close(call: &Call) {
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
-    props(call).own().bool(c"connected", false);
+    if let Some(props) = props(call) {
+        props.own().bool(c"connected", false);
+    }
     if !socket.close() {
         report_socket(call, socket);
         return call.set_bool(false);

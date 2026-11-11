@@ -1,10 +1,8 @@
 //! Shared HTTP/SOCKS proxy values and packet storage. Native objects only lend
 //! references to these stable slots.
-use crate::{CoreStringView, StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
-use std::{
-    cell::{Cell, RefCell, RefMut},
-    ptr,
-};
+use crate::{CoreStringView, StringSlot};
+use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::ptr;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -29,12 +27,12 @@ const _: () = {
         "native proxy port offset changed"
     );
 };
-/// A proxy's values, which one thread (it is `!Sync`) reads and sets through
-/// `&self`. The native head's views write the same cells between Rust calls.
+/// An HTTP or SOCKS5 proxy's values: its scalars, four strings (0 host, 1 username,
+/// 2 password, 3 target host) and, for SOCKS5, its packet. Native views reach the
+/// parts through [`PreparedProxy`]; Rust borrows them through the methods.
 pub struct ProxyState {
-    pub fields: Cell<ProxyFields>,
-    strings: [StringSlot; 4],
-    /// A SOCKS5 proxy's packet; none for an HTTP proxy.
+    fields: Cell<ProxyFields>,
+    strings: RefCell<[StringSlot; 4]>,
     packet: Option<Box<RefCell<[u8; 512]>>>,
 }
 #[repr(C)]
@@ -46,16 +44,20 @@ pub struct PreparedProxy {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
-    let state = Box::leak(Box::new(ProxyState {
-        fields: Cell::default(),
-        strings: std::array::from_fn(|_| StringSlot::default()),
-        packet: socks.then(|| Box::new(RefCell::new([0; 512]))),
-    }));
+    let state = Box::leak(ProxyState::new(socks));
     PreparedProxy {
-        buffer: state.buffer(),
+        buffer: state
+            .packet
+            .as_ref()
+            .map_or(ptr::null_mut(), |packet| RefCell::as_ptr(packet).cast()),
         fields: state.fields.as_ptr(),
-        strings: state.strings.each_ref().map(ptr::from_ref),
-        // Last: a `&mut` reborrow, or moving a box, would end the views.
+        strings: std::array::from_fn(|index| {
+            RefCell::as_ptr(&state.strings)
+                .cast::<StringSlot>()
+                .wrapping_add(index)
+                .cast_const()
+        }),
+        // Last, and with no call: a `&mut` reborrow would end the views.
         owner: &raw mut *state,
     }
 }
@@ -68,218 +70,214 @@ pub unsafe extern "C" fn swr_v1_core_proxy_free(owner: *mut ProxyState) {
         unsafe { drop(Box::from_raw(owner)) };
     }
 }
-impl ProxyState {
-    /// A copy of the string at `index` (0 host, 1 username, 2 password, 3 target
-    /// host), or empty past the four slots.
-    #[must_use]
-    pub fn string(&self, index: usize) -> Vec<u8> {
-        self.strings.get(index).map_or_else(Vec::new, |slot| {
-            // SAFETY: no reference into a slot outlives a call on this `!Sync` owner.
-            let view = unsafe { swr_v1_core_string_view(slot) };
-            // SAFETY: the view names `length` initialized bytes, copied at once.
-            unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
-        })
-    }
-    /// Sets the string at `index`: `swr_v1_core_string_set`'s status, or -2 past
-    /// the four slots.
-    pub fn set_string(&self, index: usize, value: &[u8]) -> i32 {
-        self.strings.get(index).map_or(-2, |slot| {
-            // SAFETY: no reference into a slot outlives a call on this `!Sync` owner.
-            unsafe { swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len()) }
-        })
-    }
-    /// A SOCKS5 proxy's packet, lent while the guard lives.
-    #[must_use]
-    pub fn packet(&self) -> Option<RefMut<'_, [u8; 512]>> {
-        self.packet.as_ref().map(|packet| packet.borrow_mut())
-    }
-    /// The packet's address, for the native views and sends; null for an HTTP proxy.
-    #[must_use]
-    pub fn buffer(&self) -> *mut u8 {
-        self.packet
-            .as_ref()
-            .map_or(ptr::null_mut(), |packet| packet.as_ptr().cast())
-    }
-}
 #[repr(C)]
 pub struct ProxyCopyResult {
     pub status: i32,
     pub index: u32,
 }
-/// Native copy-assignment order, including its guarded allocation boundaries.
+const COPIED: ProxyCopyResult = ProxyCopyResult {
+    status: 0,
+    index: 0,
+};
+impl ProxyState {
+    /// An empty proxy; a SOCKS5 one (`socks`) has a packet.
+    #[must_use]
+    pub fn new(socks: bool) -> Box<Self> {
+        Box::new(Self {
+            fields: Cell::new(ProxyFields::default()),
+            strings: RefCell::new(std::array::from_fn(|_| StringSlot::default())),
+            packet: socks.then(|| Box::new(RefCell::new([0; 512]))),
+        })
+    }
+    /// A copy of the scalars.
+    pub fn fields(&self) -> ProxyFields {
+        self.fields.get()
+    }
+    /// Changes the scalars.
+    pub fn update(&self, change: impl FnOnce(&mut ProxyFields)) {
+        let mut fields = self.fields.get();
+        change(&mut fields);
+        self.fields.set(fields);
+    }
+    /// The scalars, for a native view.
+    pub fn fields_ptr(&self) -> *mut ProxyFields {
+        self.fields.as_ptr()
+    }
+    /// The string at `index` (NUL-terminated past its end), or empty past the four.
+    ///
+    /// # Panics
+    /// While a string is being set.
+    pub fn string(&self, index: usize) -> Ref<'_, [u8]> {
+        Ref::map(self.strings.borrow(), |strings| {
+            strings.get(index).map_or(&[][..], StringSlot::bytes)
+        })
+    }
+    /// Sets the string at `index`: 0, or -2 when the allocation fails or past the
+    /// four.
+    ///
+    /// # Panics
+    /// While a string is borrowed.
+    pub fn set_string(&self, index: usize, value: &[u8]) -> i32 {
+        self.strings
+            .borrow_mut()
+            .get_mut(index)
+            .map_or(-2, |slot| slot.set(value))
+    }
+    /// The SOCKS5 packet, none for an HTTP proxy.
+    ///
+    /// # Panics
+    /// While the packet is borrowed.
+    pub fn packet(&self) -> Option<RefMut<'_, [u8; 512]>> {
+        self.packet.as_deref().map(RefCell::borrow_mut)
+    }
+    /// Native copy-assignment order, including its guarded allocation boundaries;
+    /// both have the same kind.
+    pub fn assign(&self, source: &Self) -> ProxyCopyResult {
+        if ptr::eq(self, source) {
+            return COPIED;
+        }
+        let fields = source.fields();
+        let socks = source.packet.is_some();
+        for index in 0..4 {
+            if (socks && index == 1) || (!socks && index == 0) {
+                // The trailing members are assigned after the strings.
+                self.update(|current| {
+                    *current = ProxyFields {
+                        target_port: current.target_port,
+                        socket_type: current.socket_type,
+                        ..fields
+                    };
+                });
+            }
+            let status = self.set_string(index, &source.string(index));
+            if status != 0 {
+                return ProxyCopyResult {
+                    status,
+                    index: u32::try_from(index).unwrap_or(0),
+                };
+            }
+        }
+        self.update(|current| current.target_port = fields.target_port);
+        if socks {
+            self.update(|current| current.socket_type = fields.socket_type);
+            if let (Some(mut to), Some(from)) = (self.packet(), source.packet()) {
+                *to = *from;
+            }
+        }
+        COPIED
+    }
+    /// Configures a fresh proxy after its protocol's credential check: the host,
+    /// then the port (and for SOCKS5 the tunnel and socket type), then the
+    /// credentials when `authenticated`.
+    pub fn configure(
+        &self,
+        texts: [&[u8]; 3],
+        port: i32,
+        authenticated: bool,
+        socket_type: i32,
+    ) -> ProxyCopyResult {
+        for (index, value) in texts.into_iter().enumerate() {
+            if index != 0 && !authenticated {
+                break;
+            }
+            let status = self.set_string(index, value);
+            if status != 0 {
+                return ProxyCopyResult {
+                    status,
+                    index: u32::try_from(index).unwrap_or(0),
+                };
+            }
+            if index == 0 {
+                let socks = self.packet.is_some();
+                self.update(|fields| {
+                    fields.port = port;
+                    if socks {
+                        fields.dns_tunnel = 1;
+                        fields.socket_type = socket_type;
+                    }
+                });
+            }
+        }
+        COPIED
+    }
+}
+/// [`ProxyState::assign`] for native code.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_proxy_assign(
     destination: &ProxyState,
     source: &ProxyState,
 ) -> ProxyCopyResult {
-    if ptr::eq(destination, source) {
-        return ProxyCopyResult {
-            status: 0,
-            index: 0,
-        };
-    }
-    let fields = source.fields.get();
-    let socks = source.packet.is_some();
-    let slots = source.strings.iter().zip(&destination.strings);
-    for (index, (from, to)) in slots.enumerate() {
-        if (socks && index == 1) || (!socks && index == 0) {
-            // The scalar members declared before this string.
-            destination.fields.update(|previous| ProxyFields {
-                target_port: previous.target_port,
-                socket_type: previous.socket_type,
-                ..fields
-            });
-        }
-        // SAFETY: the source's slot, unchanged through the assignment.
-        let value = unsafe { swr_v1_core_string_view(from) };
-        // SAFETY: a distinct owner's slot, and the source view readable.
-        let status = unsafe { swr_v1_core_string_set(to, value.data, value.length) };
-        if status != 0 {
-            return ProxyCopyResult {
-                status,
-                index: u32::try_from(index).unwrap_or(0),
-            };
-        }
-    }
-    // The trailing scalar members, then the packet.
-    destination.fields.update(|previous| ProxyFields {
-        target_port: fields.target_port,
-        socket_type: if socks {
-            fields.socket_type
-        } else {
-            previous.socket_type
-        },
-        ..previous
-    });
-    if let (Some(from), Some(mut to)) = (source.packet(), destination.packet()) {
-        *to = *from;
-    }
-    ProxyCopyResult {
-        status: 0,
-        index: 0,
-    }
+    destination.assign(source)
 }
 
-/// Configure a fresh proxy after its protocol-specific credential validation.
+/// [`ProxyState::configure`] for native code.
 /// # Safety
-/// owner is live; texts lends host/user/password terminated byte spans.
+/// texts lends host/user/password terminated byte spans.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_proxy_configure(
-    owner: *mut ProxyState,
+    owner: &ProxyState,
     texts: *const CoreStringView,
     port: i32,
     authenticated: bool,
     socket_type: i32,
 ) -> ProxyCopyResult {
-    // SAFETY: the fresh owner stays live through configuration.
-    let owner = unsafe { &*owner };
     // SAFETY: three initialized input descriptors remain stable through assignment.
-    let texts = unsafe { std::slice::from_raw_parts(texts, 3) };
-    let socks = owner.packet.is_some();
-    for (index, (value, slot)) in texts.iter().zip(&owner.strings).enumerate() {
-        if index != 0 && !authenticated {
-            break;
-        }
-        // SAFETY: the owner's slot and a readable input span.
-        let status = unsafe { swr_v1_core_string_set(slot, value.data, value.length) };
-        if status != 0 {
-            return ProxyCopyResult {
-                status,
-                index: u32::try_from(index).unwrap_or(0),
-            };
-        }
-        if index == 0 {
-            // After the host and before the credentials.
-            owner.fields.update(|mut fields| {
-                fields.port = port;
-                if socks {
-                    fields.dns_tunnel = 1;
-                    fields.socket_type = socket_type;
-                }
-                fields
-            });
-        }
-    }
-    ProxyCopyResult {
-        status: 0,
-        index: 0,
-    }
+    let views = unsafe { &*texts.cast::<[CoreStringView; 3]>() };
+    let texts = views.map(|view| {
+        // SAFETY: each view lends `length` readable bytes for the call.
+        unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }
+    });
+    owner.configure(texts, port, authenticated, socket_type)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::swr_v1_core_string_set;
-    use std::ffi::CStr;
     #[test]
     fn proxy_copies_keep_scalar_packet_and_string_values_independent() {
-        unsafe {
-            for socks in [false, true] {
-                let source = swr_v1_core_proxy_new(socks);
-                let destination = swr_v1_core_proxy_new(socks);
-                let inputs = [
-                    CoreStringView {
-                        data: c"proxy".as_ptr(),
-                        length: 5,
-                    },
-                    CoreStringView {
-                        data: c"user".as_ptr(),
-                        length: 4,
-                    },
-                    CoreStringView {
-                        data: c"pass".as_ptr(),
-                        length: 4,
-                    },
-                ];
-                assert_eq!(
-                    swr_v1_core_proxy_configure(
-                        source.owner,
-                        inputs.as_ptr(),
-                        1234,
-                        true,
-                        if socks { 1 } else { -1 }
-                    )
-                    .status,
-                    0
-                );
-                (*source.fields).target_port = 4321;
-                assert_eq!(
-                    swr_v1_core_string_set(source.strings[3], c"target".as_ptr(), 6),
-                    0
-                );
-                if socks {
-                    std::ptr::write_bytes(source.buffer, 0x5a, 512);
-                }
-                assert_eq!(
-                    swr_v1_core_proxy_assign(&*destination.owner, &*source.owner).status,
-                    0
-                );
-                assert_eq!((*destination.fields).port, 1234);
-                assert_eq!((*destination.fields).target_port, 4321);
-                for index in 0..4 {
-                    assert_eq!(
-                        CStr::from_ptr(swr_v1_core_string_view(source.strings[index]).data),
-                        CStr::from_ptr(swr_v1_core_string_view(destination.strings[index]).data)
-                    );
-                }
-                assert_eq!((*source.owner).set_string(0, b"changed"), 0);
-                assert_eq!((*destination.owner).string(0), b"proxy");
-                assert_eq!((*source.owner).string(0), b"changed");
-                if socks {
-                    assert_eq!(
-                        std::slice::from_raw_parts(destination.buffer, 512),
-                        &[0x5a; 512]
-                    );
-                    *source.buffer = 0;
-                    assert_eq!(*destination.buffer, 0x5a);
-                    assert_eq!(
-                        (*destination.owner).packet().map(|packet| packet[0]),
-                        Some(0x5a)
-                    );
-                }
-                swr_v1_core_proxy_free(source.owner);
-                swr_v1_core_proxy_free(destination.owner);
+        for socks in [false, true] {
+            let source = ProxyState::new(socks);
+            let destination = ProxyState::new(socks);
+            let texts: [&[u8]; 3] = [b"proxy", b"user", b"pass"];
+            let kind = if socks { 1 } else { -1 };
+            assert_eq!(source.configure(texts, 1234, true, kind).status, 0);
+            source.update(|fields| fields.target_port = 4321);
+            assert_eq!(source.set_string(3, b"target"), 0);
+            if let Some(mut packet) = source.packet() {
+                packet.fill(0x5a);
+            }
+            assert_eq!(destination.assign(&source).status, 0);
+            assert_eq!(destination.fields().port, 1234);
+            assert_eq!(destination.fields().target_port, 4321);
+            for index in 0..4 {
+                assert_eq!(*source.string(index), *destination.string(index));
+            }
+            assert_eq!(source.set_string(0, b"changed"), 0);
+            assert_eq!(&*destination.string(0), b"proxy");
+            if socks {
+                assert_eq!(*destination.packet().unwrap(), [0x5a; 512]);
+                source.packet().unwrap()[0] = 0;
+                assert_eq!(destination.packet().unwrap()[0], 0x5a);
             }
         }
+    }
+
+    #[test]
+    fn native_views_see_rust_writes() {
+        let prepared = swr_v1_core_proxy_new(true);
+        let owner = unsafe { &*prepared.owner };
+        let texts = [c"host", c"", c""].map(|text| CoreStringView {
+            data: text.as_ptr(),
+            length: text.count_bytes(),
+        });
+        let configured =
+            unsafe { swr_v1_core_proxy_configure(owner, texts.as_ptr(), 80, false, 1) };
+        assert_eq!(configured.status, 0);
+        assert_eq!(unsafe { (*prepared.fields).port }, 80);
+        let host = unsafe { crate::swr_v1_core_string_view(prepared.strings[0]) };
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(host.data) }, c"host");
+        owner.packet().unwrap()[7] = 9;
+        assert_eq!(unsafe { *prepared.buffer.add(7) }, 9);
+        unsafe { swr_v1_core_proxy_free(prepared.owner) };
     }
 }

@@ -19,7 +19,7 @@ use std::{
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, OwnedArray,
     bailout::{self, Bailout},
-    init_object, set_object,
+    set_object,
     sys::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
@@ -155,7 +155,7 @@ fn yield_(call: &Call) {
     let co = host::current_safe();
     set_yielded(host::cid(co), true);
     // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
-    unsafe { host::yield_cancelable(co, cancel_yield, ptr::null_mut()) };
+    unsafe { host::yield_cancelable(co, cancel_yield) };
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -164,7 +164,7 @@ fn yield_(call: &Call) {
     call.set_bool(true);
 }
 
-extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
+fn cancel_yield(co: *mut c_void) -> bool {
     set_yielded(host::cid(co), false);
     host::resume(co);
     true
@@ -502,9 +502,13 @@ fn get_context(call: &Call) {
         return;
     }
     let object = if object.is_null() {
-        // SAFETY: the return slot, with Swoole's registered context class.
-        let object = unsafe { init_object(call.return_value(), classes::context_class()) };
+        let created = classes::CONTEXT.create_object();
+        let Some(object) = created.object() else {
+            call.set_null();
+            return;
+        };
         // The context takes the object's first reference.
+        let _kept = created.into_zval();
         ctx.set_context(object);
         object
     } else {

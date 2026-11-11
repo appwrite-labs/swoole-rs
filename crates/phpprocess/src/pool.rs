@@ -11,8 +11,8 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_corebase::DataHead;
 use swoole_rs_phpstubs::process_pool;
+use swoole_rs_process::process_pool::{PoolRef, RecvData};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::{
     methods,
@@ -50,13 +50,6 @@ const WORKER_BUSY: u8 = 1;
 const WORKER_IDLE: u8 = 2;
 /// `SW_EVENT_DATA_OBJ_PTR`.
 const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
-
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *mut u8,
-}
 
 type Pool = *mut PoolRecord;
 
@@ -123,10 +116,11 @@ fn worker_busy(busy: bool) {
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
-fn message_data(pool: Pool, message: *mut c_void) -> Owned {
-    // SAFETY: the pool's received message.
-    let message = unsafe { &*message.cast::<RecvData>() };
-    let (length, data) = (message.info.len as usize, message.data);
+fn message_data(pool: Pool, message: &RecvData) -> Owned {
+    let (length, data) = (
+        message.info.len as usize,
+        message.data.cast_mut().cast::<u8>(),
+    );
     let string = if length == 0 {
         ZString::new(b"")
     } else if message.info.flags & EVENT_DATA_OBJ_PTR != 0 {
@@ -268,7 +262,7 @@ pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
     let pool = CURRENT.load(Ordering::Acquire);
     (!pool.is_null()).then(|| {
         let pool = record(pool);
-        !master && (pool.is_async || pool.main_loop.is_null())
+        !master && (pool.is_async || pool.main_loop.is_none())
     })
 }
 
@@ -350,7 +344,8 @@ fn owner(pool: Pool) -> Option<(&'static Value, &'static mut PoolObject)> {
     Some((object, unsafe { data(object.object()?) }))
 }
 
-unsafe extern "C" fn on_worker_start(pool: Pool, worker: *mut c_void) {
+extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
+    let (pool, worker) = (pool.raw(), worker.raw().cast::<c_void>());
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -401,7 +396,8 @@ fn worker_signals(term: bool) {
     }
 }
 
-unsafe extern "C" fn on_message(pool: Pool, message: *mut c_void) {
+extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
+    let pool = pool.raw();
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -440,17 +436,18 @@ fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
     }
 }
 
-unsafe extern "C" fn on_worker_stop(pool: Pool, worker: *mut c_void) {
-    worker_stopped(pool, worker, false);
+extern "C-unwind" fn on_worker_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
+    worker_stopped(pool.raw(), worker.raw().cast(), false);
     swoole_rs_zend::bailout::finish();
 }
 
-unsafe extern "C" fn on_worker_exit(pool: Pool, worker: *mut c_void) {
-    worker_stopped(pool, worker, true);
+extern "C-unwind" fn on_worker_exit(pool: PoolRef<'_>, worker: Worker<'_>) {
+    worker_stopped(pool.raw(), worker.raw().cast(), true);
     swoole_rs_zend::bailout::finish();
 }
 
-unsafe extern "C" fn on_start(pool: Pool) {
+extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
+    let pool = pool.raw();
     if let Some((object, this)) = owner(pool) {
         update_long(object, c"master_pid", getpid());
         update_bool(object, c"running", true);
@@ -463,7 +460,8 @@ unsafe extern "C" fn on_start(pool: Pool) {
     swoole_rs_zend::bailout::finish();
 }
 
-unsafe extern "C" fn on_shutdown(pool: Pool) {
+extern "C-unwind" fn on_shutdown(pool: PoolRef<'_>) {
+    let pool = pool.raw();
     if let Some((object, this)) = owner(pool) {
         update_bool(object, c"running", false);
         update_bool(object, c"workerRunning", false);
@@ -831,16 +829,16 @@ fn start(call: &Call) {
     CURRENT.store(pool, Ordering::Release);
     let record = record(pool);
     if this.on_message.is_none() {
-        record.main_loop = ptr::null();
+        record.main_loop = None;
     } else {
-        record.on_message = on_message as *const c_void;
+        record.on_message = Some(on_message);
     }
-    record.on_start = on_start as *const c_void;
-    record.on_shutdown = on_shutdown as *const c_void;
-    record.on_worker_start = on_worker_start as *const c_void;
-    record.on_worker_stop = on_worker_stop as *const c_void;
+    record.on_start = Some(on_start);
+    record.on_shutdown = Some(on_shutdown);
+    record.on_worker_start = Some(on_worker_start);
+    record.on_worker_stop = Some(on_worker_stop);
     if this.enable_coroutine && this.on_worker_exit.is_some() {
-        record.on_worker_exit = on_worker_exit as *const c_void;
+        record.on_worker_exit = Some(on_worker_exit);
     }
     // SAFETY: a created pool; runs the master loop until the pool stops.
     if unsafe { methods::start(pool) } < 0 {

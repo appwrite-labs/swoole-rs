@@ -14,8 +14,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::event_api::{
     swoole_event_is_available, swoole_event_is_running, swr_v1_event_current,
 };
-use swoole_rs_reactor::reactor_upstream::{prepared, reactor_change};
-use swoole_rs_reactor::{Socket, SocketRecord, UringOps, swr_v1_reactor_deferred_push};
+use swoole_rs_reactor::reactor_upstream::reactor_change;
+use swoole_rs_reactor::{Socket, SocketRecord, UringOps};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
 const EVENT_READ: c_int = 1 << 9;
@@ -69,11 +69,8 @@ fn instance() -> *mut Uring {
 /// # Safety
 /// As `swoole_rs_coroutine::yield_with_cancel`: `co` is the running coroutine.
 unsafe fn suspend(co: *mut c_void, event: *mut c_void) {
-    extern "C-unwind" fn cancel(_co: *mut c_void, event: *mut c_void) -> bool {
-        uring::cancel(&HOST, event)
-    }
     // SAFETY: the current coroutine, suspended in `event`'s operation.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, event) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event)) };
 }
 
 fn submit_failed() {
@@ -162,14 +159,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
     // SAFETY: the new instance, not yet shared.
     unsafe { (*iouring).socket = socket };
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
-    // SAFETY: the thread's live reactor.
-    let fields = unsafe { prepared(reactor) }.fields;
-    // SAFETY: its live fields.
-    let queue = unsafe { &raw mut (*fields).destroy_callbacks };
-    // SAFETY: the reactor's live destroy queue; the call keeps no data.
-    if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) } != 0 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
-    }
+    swoole_rs_reactor::event_api::on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit);
     // SAFETY: the record and its live reactor.
     if unsafe { reactor_change(reactor, socket, 0, EVENT_READ) } < 0 {
@@ -197,7 +187,7 @@ extern "C-unwind" fn submit() {
 }
 
 /// The reactor's destroy callback: `delete SwooleTG.iouring`.
-unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
+extern "C-unwind" fn destroyed(_data: *mut c_void) {
     let iouring = INSTANCE.replace(ptr::null_mut());
     if iouring.is_null() {
         return;
