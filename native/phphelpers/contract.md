@@ -3,11 +3,6 @@
 The C left over from upstream's `php_swoole.cc` after crates/phpswoole took the
 module host. Each item stays C for a reason Rust can't remove:
 
-- **`get_module()`** (hybrid only, under `COMPILE_DL_SWOOLE`). PHP's `dlopen`
-  looks this symbol up in `swoole.so`. The hybrid links the Rust engine as a
-  static archive, and the linker keeps only the archive members something
-  references, so an exported Rust `get_module` would be dropped. A directly linked
-  object keeps it. The Cargo-built engine exports it from crates/ext instead.
 - **`swr_phpswoole_versions()`**. MINFO's version rows are header macros
   (`OPENSSL_VERSION_TEXT`, `ZLIB_VERSION`, `ZSTD_VERSION_STRING`, `__DATE__`) or
   calls into libraries only C links (curl, c-ares). The macros exist only

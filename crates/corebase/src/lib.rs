@@ -33,7 +33,7 @@ unsafe extern "C" {
     safe static swr_cpp_switches: u64;
 }
 
-/// Whether configure built C++ with `switch` (its `#if` in [`switches::SWITCHES`]).
+/// Whether the build compiled C++ with `switch` (its `#if` in [`switches::SWITCHES`]).
 #[must_use]
 pub fn built_with(switch: Switch) -> bool {
     swr_cpp_switches & (1 << switch as u8) != 0
