@@ -1034,9 +1034,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             set_recv_wait(conn.socket, true);
             let buffer = conn.buffer();
             let length = buffer.len();
-            let free = std::ptr::from_mut(buffer.spare()) as *mut [u8];
-            // SAFETY: the buffer's free space, which the receive only writes.
-            let received = conn.socket.recv(unsafe { &mut *free });
+            let received = conn.socket.recv(buffer.spare());
             if received <= 0 {
                 break;
             }
