@@ -403,7 +403,9 @@ pub(crate) fn answer(
             )
         }
         OP_RT_ADD_WORKER_PIPE | OP_WORKER_PIPE_UNREAD => {
-            let worker = worker(server, arg)?;
+            let Some(worker) = worker(server, arg) else {
+                return Some(sign(-1));
+            };
             let thread = ctx.thread_record()?;
             let sock = pipe_socket(thread, worker.pipe_master);
             if op == OP_WORKER_PIPE_UNREAD {

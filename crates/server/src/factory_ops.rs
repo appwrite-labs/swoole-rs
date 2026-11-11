@@ -94,11 +94,10 @@ impl Context<'_> {
     fn task_pool(&self) -> *mut PoolRecord {
         self.server().task_pool()
     }
-    /// Worker `id` of the server, which every caller passes with a worker id it has.
-    fn worker_at(&self, id: u16) -> &mut WorkerRecord {
-        let worker = self.server().worker(id);
-        // SAFETY: one of its workers.
-        unsafe { &mut *worker }
+    /// Worker `id` of the server, or `None` past the last.
+    fn worker_at(&self, id: u16) -> Option<&mut WorkerRecord> {
+        // SAFETY: null past the last, else one of the server's live workers.
+        unsafe { self.server().worker(id).as_mut() }
     }
     /// The data sent, for the ops that run with it.
     fn send(&self) -> &mut SendData {
@@ -217,9 +216,18 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             crate::pool_native::free_message_box(ctx.workers().event_pool);
             0
         }
-        OP_CREATE_WORKER_PIPE => u64::from(state.push_worker_pipe(ctx.worker_at(worker_id(arg)))),
+        OP_CREATE_WORKER_PIPE => u64::from(
+            ctx.worker_at(worker_id(arg))
+                .is_some_and(|worker| state.push_worker_pipe(worker)),
+        ),
         OP_CREATE_PIPE_BUFFERS => signed(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_WRITE_TO_WORKER => {
+            // The worker the factory scheduled, and its pipe, if the server has them.
+            let pipe = ctx.worker_at(worker_id(arg));
+            let Some(pipe) = pipe.and_then(|worker| crate::objects::socket(worker.pipe_master))
+            else {
+                return Some(0);
+            };
             // This reactor thread's bus, and its copy of the worker's pipe.
             let thread = tables
                 .reactor_threads
@@ -227,9 +235,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
             let bus = unsafe { &*thread }.message_bus();
-            // The worker the factory scheduled.
-            let pipe = ctx.worker_at(worker_id(arg)).pipe_master;
-            let socket = bus.pipe_socket(crate::objects::socket(pipe)?);
+            let socket = bus.pipe_socket(pipe);
             let (mut info, data) = send();
             // SAFETY: the live pipe, and the data sent.
             u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, data.cast()) })
@@ -242,8 +248,11 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // `serv->get_reactor_pipe_socket(info.fd, info.reactor_id)`.
             let pipes = i64::from(tables.reactor_pipe_num);
             let id = i64::from(info.reactor_id) + (info.fd % pipes) * i64::from(config.reactor_num);
-            // The worker serving that reactor's pipe.
-            let pipe = ctx.worker_at(worker_id(id.cast_unsigned())).pipe_worker;
+            // The worker serving that reactor's pipe, if the server has it.
+            let Some(worker) = ctx.worker_at(worker_id(id.cast_unsigned())) else {
+                return Some(0);
+            };
+            let pipe = worker.pipe_worker;
             let bus = crate::master_ops::server_message_bus(state);
             // SAFETY: the live pipe, and the data sent.
             u64::from(unsafe { bus.rust().send(pipe.cast(), &mut info, data.cast()) })
@@ -375,7 +384,9 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 reactor_id: i16::from(conn.reactor_id),
                 ..DataHead::default()
             };
-            let target = ctx.worker_at(worker_id(arg));
+            let Some(target) = ctx.worker_at(worker_id(arg)) else {
+                return Some(signed(-1));
+            };
             let data = (&raw const ev).cast::<u8>();
             // SAFETY: a worker of the live server and a head of the size passed.
             let sent = unsafe {
@@ -463,10 +474,11 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             crate::event_worker_ops::call_worker_error_callback(ctx.serv, worker, status);
         }
         OP_COUNT_DISPATCH => {
-            let count = &raw mut ctx.worker_at(worker_id(arg)).dispatch_count;
-            // SAFETY: a worker's counter, shared and updated only atomically.
-            let count = unsafe { AtomicI64::from_ptr(count) };
-            count.fetch_add(1, Ordering::SeqCst);
+            if let Some(worker) = ctx.worker_at(worker_id(arg)) {
+                // SAFETY: a worker's counter, shared and updated only atomically.
+                let count = unsafe { AtomicI64::from_ptr(&raw mut worker.dispatch_count) };
+                count.fetch_add(1, Ordering::SeqCst);
+            }
         }
         _ => return None,
     }
