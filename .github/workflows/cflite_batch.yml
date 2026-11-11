@@ -8,8 +8,12 @@ permissions: read-all
 jobs:
   # Nightly: an hour across every fuzz/ target, growing ClusterFuzzLite's stored
   # corpus. The second schedule prunes that corpus. Crashes fail the job.
+  # The corpus is pushed to the cflite branch: kept as Actions artifacts, each target's lookup
+  # paged through every artifact of the repository, spending CI's hourly API limit (#3257).
   fuzz:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    permissions:
+      contents: write
     steps:
       - id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
@@ -19,7 +23,8 @@ jobs:
       - id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          storage-repo: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          storage-repo-branch: cflite
           fuzz-seconds: ${{ github.event.schedule == '0 6 * * *' && 600 || 3600 }}
           mode: ${{ github.event.schedule == '0 6 * * *' && 'prune' || 'batch' }}
           sanitizer: address

@@ -46,12 +46,12 @@ jobs:
   # corpus the nightly batch run keeps. A crash fails the job and is uploaded.
   fuzz:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
-    # Each target's corpus lookup pages through every Actions artifact of the repository,
-    # about 35 s each at 46k artifacts, so 30 targets take about 18 minutes (#3081).
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
-      # No github-token: with one, build_fuzzers spends 6 minutes paging the artifacts for a
-      # coverage report nothing produces, then keeps every target anyway (#3081).
+      # No github-token in either step: with one, ClusterFuzzLite finds a coverage report and
+      # each target's corpus by paging through every Actions artifact of the repository, 552
+      # API calls a target at 55k artifacts, which spent the hourly limit every CI job shares
+      # (#3081, #3257). The corpus comes over git from the cflite branch (cflite_batch.yml).
       - id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
         with:
@@ -60,7 +60,8 @@ jobs:
       - id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          storage-repo: ${{ github.server_url }}/${{ github.repository }}.git
+          storage-repo-branch: cflite
           fuzz-seconds: 120
           mode: code-change
           sanitizer: address
