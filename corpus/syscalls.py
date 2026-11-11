@@ -7,8 +7,9 @@ each. Every traced call becomes a signature: its name, the arguments that carry 
 (levels, options, flags, events; never fds, addresses, ports, lengths or buffers) and its
 result (ok or the errno). A difference is a signature every run of one engine made and no
 run of the other did; one that only some runs make is timing, and is listed, not gated. So is a
-read that found nothing (EAGAIN): it says when the peer's next bytes arrived. Counts are listed,
-so a read one engine makes per request still shows.
+read that found nothing or a send that found the buffer full (EAGAIN): it says when the peer's
+next bytes arrived, or how fast it drained. Counts are listed, so a call one engine makes per
+request still shows.
 Each difference needs an entry in syscalls.json, with a reason, or the run fails.
 Linux only: strace is.
 """
@@ -41,8 +42,9 @@ KEEP = {
 NAME_ONLY = ('accept', 'close', 'read', 'write', 'readv', 'writev', 'sendfile', 'splice', 'dup', 'dup2',
              'epoll_wait', 'epoll_pwait', 'poll', 'ppoll', 'select', 'pselect6', 'fork', 'vfork')
 SYSCALLS = sorted({*KEEP, *NAME_ONLY, 'clone', 'clone3'})
-# A non-blocking read that finds nothing; the socket's flags, which decide that it can, are gated.
-EMPTY_READ = re.compile(r'(?:read|readv|recvfrom|recvmsg|recvmmsg)\(.*\) = EAGAIN')
+# A non-blocking read that finds nothing, or send that finds the buffer full; the socket's flags,
+# which decide that it can, are gated.
+WOULD_BLOCK = re.compile(r'(?:read|readv|recvfrom|recvmsg|recvmmsg|write|writev|sendto|sendmsg|sendmmsg|sendfile)\(.*\) = EAGAIN')
 
 CALL = re.compile(r'(?P<name>\w+)\((?P<args>.*)(?:\)\s+= (?P<result>.*)| <unfinished \.\.\.>\)?)$')
 NOISE = [(re.compile(r'0x[0-9a-f]+'), 'ADDR'), (re.compile(r'htons\(\d+\)'), 'htons(PORT)'),
@@ -117,11 +119,11 @@ def signatures(directory):
 
 def differences(runs):
     """{engine: signatures each of its runs made and no other engine's run did}, and the
-    signatures some runs of an engine made and others didn't, or empty reads (timing, not gated)."""
+    signatures some runs of an engine made and others didn't, or calls that would have blocked (timing, not gated)."""
     union = {name: set().union(*map(set, counts)) for name, counts in runs.items()}
     always = {name: set.intersection(*map(set, counts)) for name, counts in runs.items()}
     only = {name: sorted(found for found in always[name] - set().union(*(union[other] for other in runs if other != name))
-                         if not EMPTY_READ.fullmatch(found)) for name in runs}
+                         if not WOULD_BLOCK.fullmatch(found)) for name in runs}
     seen = set().union(*union.values())
     unstable = sorted(seen - set().union(*only.values()) - set.intersection(*always.values()))
     return only, unstable
