@@ -13,7 +13,6 @@
       "depends_on": [],
       "owned_paths": [
         "crates/ffi/",
-        "crates/server/",
         "crates/zend-sys/",
         "crates/zend/",
         "crates/phpstubs/",
@@ -793,6 +792,7 @@
       "owned_paths": [
         "crates/ports/",
         "crates/phpserver/",
+        "crates/server/",
         "native/ports/",
         "tests/modules/ports/"
       ],
