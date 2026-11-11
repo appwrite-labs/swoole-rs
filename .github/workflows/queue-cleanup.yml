@@ -10,7 +10,8 @@ permissions:
 jobs:
   cancel:
     if: github.event.ref_type == 'branch' && startsWith(github.event.ref, 'gh-readonly-queue/main/')
-    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    # GitHub-hosted: it starts in seconds, where a gcrunner VM takes 40 to 55 while the runs it would cancel hold 30 more.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - env:
