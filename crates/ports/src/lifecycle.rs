@@ -330,8 +330,8 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
         unsafe { swr_v1_tls_dtls_free(session) };
         return ptr::null_mut();
     }
-    // SAFETY: the port's live context.
-    let shared = swr_v1_tls_owner_clone(unsafe { &*context });
+    // SAFETY: the port's live ownership handle on its context.
+    let shared = unsafe { swr_v1_tls_owner_clone(context) };
     state(config).dtls.insert(sock.fd(), (session, shared));
     session
 }

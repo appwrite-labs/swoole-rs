@@ -8,7 +8,6 @@ use openssl_sys::{SSL_CTX, SSL_CTX_free};
 use std::{
     cell::UnsafeCell,
     ffi::{CStr, c_char, c_int, c_void},
-    ptr,
     sync::Arc,
 };
 use swoole_rs_corebase::StringSlot;
@@ -96,8 +95,13 @@ pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
         context_password: UnsafeCell::new(None),
         warn,
     });
-    // SAFETY: the reference just made, which the caller now holds.
-    prepared(unsafe { &*Arc::into_raw(owner) })
+    let view = prepared(&owner);
+    OwnedTlsPrepared {
+        // The Arc's own pointer, which `swr_v1_tls_owner_free` can turn back into the
+        // Arc: one taken from a reference covers only the context, not its counts.
+        owner: Arc::into_raw(owner),
+        ..view
+    }
 }
 /// `owner`'s scalar fields and string slots, valid while a reference is held.
 #[unsafe(no_mangle)]
@@ -105,11 +109,16 @@ pub extern "C" fn swr_v1_tls_owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrep
     prepared(owner)
 }
 /// Another ownership handle on `owner`, for `swr_v1_tls_owner_free` to release once.
+///
+/// # Safety
+/// owner is a live ownership handle from new/clone (the Arc's pointer, not one taken
+/// from a reference, which would not reach the Arc's counts).
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_owner_clone(owner: &OwnedTlsContext) -> *const OwnedTlsContext {
-    let owner = ptr::from_ref(owner);
-    // SAFETY: every owner lives in the Arc `swr_v1_tls_owner_new` made, and the
-    // borrowed one is live throughout this increment.
+pub unsafe extern "C" fn swr_v1_tls_owner_clone(
+    owner: *const OwnedTlsContext,
+) -> *const OwnedTlsContext {
+    // SAFETY: as the caller promises: an Arc `swr_v1_tls_owner_new` made, live
+    // throughout this increment.
     unsafe { Arc::increment_strong_count(owner) };
     owner
 }
@@ -626,6 +635,7 @@ pub unsafe fn verify_without_ca(owner: *const OwnedTlsContext) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr;
     fn warning(_function: &CStr, _message: &str) {
         panic!("unexpected TLS warning");
     }
@@ -854,7 +864,7 @@ mod tests {
                     assert_eq!(bytes, expected);
                 }
             }
-            let retained = swr_v1_tls_owner_clone(&*owner);
+            let retained = swr_v1_tls_owner_clone(owner);
             swr_v1_tls_owner_free(owner);
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
