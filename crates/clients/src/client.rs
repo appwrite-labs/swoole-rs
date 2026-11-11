@@ -364,7 +364,9 @@ impl Handle {
     }
 
     /// The client's public record: live with the client, and borrowed only
-    /// between effects, as the state is.
+    /// between effects, as the state is. Each call reborrows the whole record, so
+    /// it ends the borrow an earlier call (or `socket`/`socket_ptr`) returned:
+    /// call those first and keep only the last borrow.
     fn fields(self) -> &'static mut ClientRecord {
         // SAFETY: the live client's record, which SDK callers reach only between
         // its operations.
@@ -437,12 +439,14 @@ impl Handle {
 
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
     fn sendto(self, data: *const c_char, length: usize) -> isize {
+        // The descriptor first: `socket()` borrows the record again.
+        let fd = self.socket().fd();
         let address = &self.fields().server_addr;
         // SAFETY: the socket's descriptor, `length` readable bytes at `data` and
         // the address's storage and length.
         unsafe {
             libc::sendto(
-                self.socket().fd(),
+                fd,
                 data.cast(),
                 length,
                 0,
@@ -480,11 +484,11 @@ impl Handle {
 
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
     fn recvfrom_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
+        // The socket first: `socket_ptr()` borrows the record again.
+        let socket = self.socket_ptr();
         let address = &raw mut self.fields().remote_addr;
         // SAFETY: the live socket, `length` writable bytes at `data` and the address.
-        unsafe {
-            socket_recvfrom_sync_address(self.socket_ptr(), data.cast(), length, flags, address)
-        }
+        unsafe { socket_recvfrom_sync_address(socket, data.cast(), length, flags, address) }
     }
 
     /// The TLS context's view; TLS is on.
