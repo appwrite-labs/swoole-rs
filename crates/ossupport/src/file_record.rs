@@ -1,7 +1,6 @@
-//! File descriptor, flags and path ownership: upstream's `File`, which
-//! `native/ossupport/swoole_file.h` keeps only for the logger originals.
+//! File descriptor, flags and path ownership: upstream's `File`.
 use crate::file::{FileIo, file_close, file_open, read_all, write_all};
-use libc::{c_char, c_int};
+use libc::c_int;
 use std::ffi::CStr;
 use swoole_rs_corebase::sys;
 
@@ -99,27 +98,6 @@ fn path_copy(bytes: &[u8]) -> Option<Vec<u8>> {
     path.try_reserve_exact(bytes.len()).ok()?;
     path.extend_from_slice(bytes);
     Some(path)
-}
-/// `File(path, flags, mode)`: a record owning the opened descriptor, -1 on failure.
-/// Release it once with `swr_v1_os_file_record_free`.
-/// # Safety
-/// `path` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_open(
-    path: *const c_char,
-    flags: c_int,
-    mode: c_int,
-) -> *mut FileRecord {
-    let mut file = FileRecord::empty();
-    // SAFETY: a NUL-terminated path, as the caller promises.
-    file.open(unsafe { CStr::from_ptr(path) }, flags, mode);
-    Box::into_raw(Box::new(file))
-}
-/// Destroy the record (null or open's allocation, released once) and close a
-/// still-owned nonnegative descriptor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_file_record_free(owner: Option<Box<FileRecord>>) {
-    drop(owner);
 }
 /// Current descriptor; ready is fd != -1, and release writes -1.
 #[unsafe(no_mangle)]

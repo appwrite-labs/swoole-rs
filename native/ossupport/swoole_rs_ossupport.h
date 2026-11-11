@@ -26,13 +26,7 @@ bool swr_v1_os_async_file_stat(const swr_v1_os_async_file *, struct stat *, int 
 off_t swr_v1_os_async_file_offset(const swr_v1_os_async_file *, off_t, int, off_t (*effect)(int, off_t, int));
 /* Rust-owned File state. */
 typedef struct swr_v1_os_file_record swr_v1_os_file_record;
-swr_v1_os_file_record *swr_v1_os_file_record_open(const char *path, int flags, int mode);
-void swr_v1_os_file_record_free(swr_v1_os_file_record *owner);
 int swr_v1_os_file_record_fd(swr_v1_os_file_record *owner, bool release);
-/* file_get_contents and File::read_content; `content` is a
- * swoole::String (default-constructed, or File's fresh one). */
-bool swr_v1_os_file_get_contents(const char *path, void *content);
-void swr_v1_os_file_read_content(const swr_v1_os_file_record *owner, void *content);
 /* swoole::MsgQueue (QueueRecord in Rust), a SysV message queue with upstream's
  * warnings; Rust owns and frees it. A message is
  * a QueueNode: its long type, then the payload. */

@@ -48,12 +48,10 @@ so the native `swoole_sys_warning` sees its errno.
   repeats), `arc4random_buf` elsewhere.
 
 - `file_api.rs` is the rest of upstream's `src/os/file.cc`:
-  `swoole_tmpfile` under its upstream symbol, `file_get_contents`,
-  `file_put_contents` (Rust's only caller is the server) and `File::read_content`.
-  `native/ossupport/swoole_file.h` keeps only the File members the utilities
-  logger originals call (open, `read_content`, the destructor) and the AsyncFile
-  members the ossupport gate calls. Logs name the function
-  as upstream's `__SW_FUNC__` does.
+  `swoole_tmpfile` under its upstream symbol, `file_get_contents` and
+  `file_put_contents` (Rust's only callers are the server and process).
+  `native/ossupport/swoole_file.h` keeps only the AsyncFile members the
+  ossupport gate calls. Logs name the function as upstream's `__SW_FUNC__` does.
 
 ## SysV message queue
 

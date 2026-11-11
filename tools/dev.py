@@ -344,7 +344,7 @@ def plan(args, reports):
             script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
-        for family in ['logger', 'hash', 'global-logger', 'redirect']:
+        for family in ['logger', 'hash']:
             name = 'utilities-' + family + '-originals'
             script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
                    *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive,

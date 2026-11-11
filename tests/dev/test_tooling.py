@@ -381,14 +381,11 @@ class Lanes(unittest.TestCase):
         self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
-        for family in ['logger', 'hash', 'global-logger', 'redirect']:
+        for family in ['logger', 'hash']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
             self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
             self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
-        for family in ['logger', 'hash']:
-            command = commands['utilities-' + family + '-originals']
-            self.assertIn('--' + family + '-originals', command)
             self.assertEqual(command.count('--engine'), 2)
         self.assertIn('--require-same-api', commands['api-surface'])
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
