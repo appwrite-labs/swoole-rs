@@ -633,17 +633,12 @@ pub(crate) fn coro_hook(stop: bool, task: *mut c_void) {
 
 /// `swoole::time<std::chrono::microseconds>(true)`: the steady clock.
 pub(crate) fn now_us() -> c_long {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
-    now.tv_sec * 1_000_000 + now.tv_nsec / 1000
+    swoole_rs_corebase::sys::clock_gettime(clock)
+        .map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
 }
 
 /// `Timer::get_absolute_msec()`.

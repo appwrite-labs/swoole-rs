@@ -80,17 +80,12 @@ fn build() -> u32 {
 
 /// `std::chrono::steady_clock`, in microseconds (`time<seconds_type>(true)`).
 fn steady_usec() -> c_long {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
-    now.tv_sec * 1_000_000 + now.tv_nsec / 1000
+    swoole_rs_corebase::sys::clock_gettime(clock)
+        .map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
 }
 
 extern "C" fn clock() -> c_long {
