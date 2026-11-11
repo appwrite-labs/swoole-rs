@@ -25,7 +25,7 @@ jobs:
           sanitizer: address
           minimize-crashes: true
       - if: failure() && steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cflite-crashes
           path: ./out/artifacts
@@ -37,7 +37,8 @@ jobs:
     permissions:
       issues: write
     steps:
-      - env:
+      - name: File batch failure
+        env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

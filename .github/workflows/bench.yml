@@ -20,40 +20,46 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: wrk nghttp2-client
-      - run: |
+      - name: Install perf
+        run: |
           sudo apt-get install -yq "linux-tools-$(uname -r)"
           sudo sysctl kernel.perf_event_paranoid=-1
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
-      - run: cargo fetch --locked
-      - run: python3 tools/build_ext.py --profile release-lto
-      - run: >
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py --profile release-lto
+      - name: Wall-clock benchmarks
+        run: >
           python3 benchmarks/wall.py --max-ratio 1.25
           --workload plaintext --workload json --workload http2 --workload websocket
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/wall/wall.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - if: always()
+      - name: Memory benchmarks
+        if: always()
         run: >
           python3 benchmarks/memory.py --requests 2000
           --workload plaintext --workload http2 --workload websocket --workload task
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/memory/memory.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: wall
           path: target/wall/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: memory

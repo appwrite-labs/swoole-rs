@@ -100,8 +100,7 @@ pub(super) fn port_config<'a>(port: *mut c_void) -> &'a crate::port_config::Port
 
 /// This thread's timer, or null.
 fn timer() -> *mut c_void {
-    // SAFETY: this thread's timer slot.
-    unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
+    swoole_rs_corebase::thread_timer()
 }
 
 /// The ops on native objects.
@@ -282,12 +281,11 @@ fn create_pool(ctx: &Context) -> u64 {
     0
 }
 
-/// `pool->onWorkerNotFound`: restart the event worker that exited.
-extern "C" fn worker_not_found(pool: *mut PoolRecord, status: *const ExitStatus) -> c_int {
-    // SAFETY: the live pool.
-    let serv = unsafe { (*pool).ptr };
-    // SAFETY: its server and the worker's exit status.
-    unsafe { entry::restart_worker_process(serv, status.cast()) }
+/// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
+/// itself and the exit status for the call.
+extern "C" fn worker_not_found(pool: &PoolRecord, status: &ExitStatus) -> c_int {
+    // SAFETY: the pool's server and the worker's exit status.
+    unsafe { entry::restart_worker_process(pool.ptr, core::ptr::from_ref(status).cast()) }
 }
 
 /// Runs `operation` over a context of `reactor`'s server and `event`.
@@ -354,8 +352,11 @@ extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `ReactorProcess_onTimeout`: the heartbeat check.
-extern "C-unwind" fn on_timeout(reactor: *mut c_void) {
-    // SAFETY: the reactor that armed the timer, which outlives it, on its thread.
+///
+/// # Safety
+/// `reactor` is the live reactor that armed the timer, on its thread.
+unsafe extern "C-unwind" fn on_timeout(reactor: *mut c_void) {
+    // SAFETY: per the caller.
     let reactor = unsafe { Reactor::of(reactor) };
     run(reactor, core::ptr::null_mut(), RUN_REACTOR_PROCESS_TIMEOUT);
 }

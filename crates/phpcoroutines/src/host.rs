@@ -29,13 +29,11 @@ pub(crate) struct Stats {
 /// A `swoole::Coroutine`, which starts with its `swoole_rs_coroutine::Coroutine`.
 pub(crate) type Co = *mut c_void;
 
-unsafe extern "C" {
-    // crates/hooks/src/async_threads.rs.
-    fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    // crates/hooks.
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn system_sleep(seconds: f64) -> c_int;
+use swoole_rs_hooks::sleep::system_sleep;
 
+// Declared, since crates/phpevents (its `php_swoole_reactor_init` and
+// `swr_v1_phpevents_wait`) depends on this crate, and PHP's `php_write`.
+unsafe extern "C" {
     // crates/phpevents, crates/phpclients and PHP.
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
@@ -307,14 +305,11 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     #[cfg(feature = "iouring")]
     iouring_stats(stats);
-    // SAFETY: plain out-parameters.
-    unsafe {
-        swr_v1_async_threads_stats(
-            &mut stats.aio_task_num,
-            &mut stats.aio_worker_num,
-            &mut stats.aio_queue_size,
-        );
-    };
+    swoole_rs_hooks::async_threads::swr_v1_async_threads_stats(
+        &mut stats.aio_task_num,
+        &mut stats.aio_worker_num,
+        &mut stats.aio_queue_size,
+    );
     // crates/reactor counts this thread's listeners.
     stats.signal_listener_num =
         i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());

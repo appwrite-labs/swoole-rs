@@ -359,7 +359,9 @@ class Ci(unittest.TestCase):
                          {'id': 7, 'head_sha': old}]
             shards = [[f'phpt / phpt ({index}, upstream)', 'success'] for index in range(1, 7)]
             jobs = {'11': shards, '10': shards[:5] + [['phpt / phpt (6, upstream)', '']], '9': shards[1:],
-                    '8': shards + [['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']], '7': shards}
+                    # Shard jobs named by phpt.yml since #2676.
+                    '8': [[f'phpt / upstream {index}', 'success'] for index in range(1, 7)]
+                    + [['phpt / cargo 1', 'failure'], ['phpt / gate', 'failure']], '7': shards}
             php = {'8': '8.3.6'}
             state = {'runs': {}, 'flags': (), 'cwd': repo, 'artifacts': artifacts, 'jobs': jobs, 'php': php,
                      'report': 'upstream-1.json'}

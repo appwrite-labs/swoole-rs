@@ -148,8 +148,7 @@ fn registry<'a>() -> Option<&'a Registry> {
 
 /// `SwooleTG.timer->count()`, or 0 without a timer.
 fn timer_count() -> u64 {
-    // SAFETY: this thread's timer slot.
-    let timer = unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() };
+    let timer = swoole_rs_corebase::thread_timer();
     if timer.is_null() {
         return 0;
     }

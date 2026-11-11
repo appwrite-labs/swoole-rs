@@ -650,9 +650,8 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_TIMER_INIT => {
             if swoole_timer_is_available() {
-                // SAFETY: this thread's timer slot, holding its live timer.
-                let timer = unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() };
-                // SAFETY: as above.
+                let timer = swoole_rs_corebase::thread_timer();
+                // SAFETY: a timer is available, so the slot holds this thread's live timer.
                 owner_reinit(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }, true);
             } else {
                 // This thread has no timer.

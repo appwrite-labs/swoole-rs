@@ -31,7 +31,8 @@ use crate::worker_record::WorkerRecord;
 fn native() -> *const PoolNative {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     {
-        // SAFETY: crates/server's, in the same archive.
+        // SAFETY: crates/server's, in the same archive; declared, since crates/server
+        // depends on this crate.
         unsafe extern "C" {
             fn swr_v1_process_pool_native() -> *const PoolNative;
         }
@@ -329,7 +330,8 @@ pub type MakeServerSocket<T> = unsafe extern "C-unwind" fn(
 ) -> *mut T;
 
 #[cfg(feature = "upstream-symbols")]
-// SAFETY: crates/tls defines it under its upstream symbol.
+// SAFETY: crates/tls defines it under its upstream symbol; declared, since
+// crates/tls (through crates/reactor) depends on this crate.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
     fn make_server_socket(
@@ -453,7 +455,8 @@ pub unsafe extern "C" fn send_message(
     length: usize,
 ) -> bool {
     use swoole_rs_corebase::DataHead;
-    // SAFETY: crates/bus' write and crates/tls's.
+    // SAFETY: crates/bus' write and crates/tls's; declared, since both depend on
+    // this crate.
     unsafe extern "C" {
         fn swr_v1_bus_write(
             bus: *mut c_void,

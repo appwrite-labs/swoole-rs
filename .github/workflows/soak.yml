@@ -35,30 +35,37 @@ jobs:
         ports: ['6379:6379']
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: php-mysql
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
-      - run: cargo fetch --locked
-      - run: python3 tools/build_ext.py --profile release-lto
-      - run: |
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py --profile release-lto
+      - name: Set soak options
+        run: |
           echo "args=--php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql --redis 127.0.0.1 --mysql 127.0.0.1" >> "$GITHUB_ENV"
           echo "minutes=${{ github.event_name == 'pull_request' && '5' || inputs.minutes || '60' }}" >> "$GITHUB_ENV"
-      - run: python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --leak --duration 120 --output target/soak/leak.json
+      - name: Leak check
+        run: python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --leak --duration 120 --output target/soak/leak.json
       # The control's own verdict doesn't matter; only its growth does.
-      - run: >
+      - name: Soak upstream
+        run: >
           python3 tests/soak/soak.py $args --engine upstream=target/upstream/src/modules/swoole.so
           --duration $((minutes * 60)) --output target/soak/upstream.json || test -f target/soak/upstream.json
-      - run: >
+      - name: Soak cargo against upstream
+        run: >
           python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --control target/soak/upstream.json
           --duration $((minutes * 60)) --output target/soak/cargo.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: soak

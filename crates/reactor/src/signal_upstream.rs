@@ -41,7 +41,8 @@ unsafe extern "C" {
     fn swoole_event_del(socket: *mut SocketRecord) -> c_int;
 }
 
-// SAFETY: crates/tls's `Socket::free`, the same archive.
+// SAFETY: crates/tls's `Socket::free`, the same archive; declared, since crates/tls
+// depends on this crate.
 #[cfg(target_os = "linux")]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]

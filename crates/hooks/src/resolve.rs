@@ -159,24 +159,25 @@ pub unsafe fn name_resolver_lookup(
 
 /// `swoole_name_resolver_lookup_call`.
 #[repr(C)]
-pub struct LookupCall {
-    name: *const c_char,
-    length: usize,
-    context: *mut NameResolverContext,
-    out: *mut c_void,
-    assign: Put,
+pub struct LookupCall<'a> {
+    pub name: *const c_char,
+    pub length: usize,
+    pub context: &'a mut NameResolverContext,
+    pub out: *mut c_void,
+    pub assign: Put,
 }
 
 /// `swoole_name_resolver_lookup` over a [`LookupCall`]: a `bailout::trap` body.
 ///
 /// # Safety
-/// The call's fields are live, as [`name_resolver_lookup`] requires.
+/// `call` is a live [`LookupCall`] whose fields are live, as [`name_resolver_lookup`]
+/// requires.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: &LookupCall) {
+pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: *mut c_void) {
     // SAFETY: as the caller promises.
-    let context = unsafe { &mut *call.context };
+    let call = unsafe { &mut *call.cast::<LookupCall<'_>>() };
     // SAFETY: as the caller promises.
-    unsafe { name_resolver_lookup(call.name, call.length, context, call.out, call.assign) };
+    unsafe { name_resolver_lookup(call.name, call.length, call.context, call.out, call.assign) };
 }
 
 /// A coroutine socket's lookup: the context's type and timeout set first, the

@@ -41,17 +41,21 @@ jobs:
     env:
       TOOLCHAIN: nightly-2026-10-24
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rustup
-      - run: rustup toolchain install $TOOLCHAIN --profile minimal --component miri,rust-src
-      - run: cargo +$TOOLCHAIN miri setup
-      - run: >
+      - name: Install Miri toolchain
+        run: rustup toolchain install $TOOLCHAIN --profile minimal --component miri,rust-src
+      - name: Set up Miri
+        run: cargo +$TOOLCHAIN miri setup
+      - name: Miri leaf crates
+        run: >
           cargo +$TOOLCHAIN miri test --locked --lib
           -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-framing
           -p swoole-rs-http2 -p swoole-rs-httpbindings
       # The runtime crates' tests open files and read the clock (isolation off), and
       # assert on whole reads and writes that Miri would otherwise shorten at random.
-      - run: >
+      - name: Miri core crates
+        run: >
           cargo +$TOOLCHAIN miri test --locked --lib
           -p swoole-rs-buffer -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
           -p swoole-rs-locks -p swoole-rs-memory -p swoole-rs-ossupport -p swoole-rs-process

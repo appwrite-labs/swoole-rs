@@ -19,6 +19,7 @@
 )]
 
 mod asynchronous;
+pub use asynchronous::zif_swoole_async_dns_lookup_coro;
 mod constants;
 mod entry;
 mod functions;
@@ -205,6 +206,7 @@ pub fn check_reactor() {
     }
 }
 
+// crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
 unsafe extern "C" {
     /// crates/phpevents' loop setup, on this thread.
     safe fn php_swoole_reactor_init() -> c_int;

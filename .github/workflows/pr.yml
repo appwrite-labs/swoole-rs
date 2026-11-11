@@ -15,33 +15,42 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # PHP headers and libclang: zend-sys binds them under the `php` feature,
       # which --all-features turns on (every module crate, as in crates/ext).
       - uses: ./.github/actions/install
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --workspace --all-features
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Test workspace
+        run: cargo test --locked --workspace --all-features
       - uses: taiki-e/install-action@v2
         with:
           tool: cbindgen@0.29.4,cargo-deny@0.18.9,cargo-machete@0.9.1
-      - run: tools/headers.sh --check
+      - name: Check licence headers
+        run: tools/headers.sh --check
       # Dependencies: advisories, licences, bans (no async runtime) and sources (deny.toml); unused ones.
-      - run: cargo deny check
-      - run: cargo machete
+      - name: Check dependencies
+        run: cargo deny check
+      - name: Find unused dependencies
+        run: cargo machete
 
   tooling:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 10
     steps:
       # Two commits: the PR's merge commit and, as HEAD^1, main, which tools/budget.py compares against.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      - run: python3 tools/check_migration.py
+      - name: Check migration ledger
+        run: python3 tools/check_migration.py
       # No crate's unsafe or slow-layout count may rise above main's.
-      - run: python3 tools/budget.py --base HEAD^1
-      - run: tests/dev/run.sh
+      - name: Check unsafe budget
+        run: python3 tools/budget.py --base HEAD^1
+      - name: Test tooling
+        run: tests/dev/run.sh
 
   # Whether this PR touches what the extension build compiles or installs with.
   # On a GitHub-hosted runner, like `required`: every PHPT and variant job waits for this one, and
@@ -62,7 +71,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # The PHPT families of the modules this PR touches (every family for shared build
@@ -71,12 +80,13 @@ jobs:
       # (tools/ci.py BASELINES).
       # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
       # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ github.run_id }}
           restore-keys: phpt-baseline-
-      - id: phpt
+      - name: Pick PHPT families
+        id: phpt
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -98,7 +108,8 @@ jobs:
           else
             echo 'engines=["upstream", "cargo"]' >> "$GITHUB_OUTPUT"
           fi
-      - id: paths
+      - name: Pick lanes
+        id: paths
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           echo "$changed"
@@ -137,7 +148,7 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/install
@@ -146,19 +157,24 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
+      - name: Clear cached builds
+        run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - id: upstream
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: steps.upstream.outputs.cache-hit != 'true'
+      - name: Build upstream
+        if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
       # crates/phpstubs is current, and says what the pin's gen_stub.php headers say.
-      - run: python3 tools/arginfo.py --check
-      - run: cargo fetch --locked
+      - name: Check arginfo stubs
+        run: python3 tools/arginfo.py --check
+      - name: Fetch crates
+        run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
-      - run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
       # Every swr_v* this build's config.h declares (SW_USE_CURL's, SW_HAVE_SSH2LIB's) is exported.
       - name: ABI export gate
         timeout-minutes: 5
@@ -166,18 +182,21 @@ jobs:
           python3 tests/modules/integration/test_bridge.py --startup-only --php-extension curl --php-extension sockets
           --extension target/ext/swoole.so --reference target/upstream/src/modules/swoole.so
       # Compare SDK alias defaults independently of remote SSH service availability.
-      - run: |
+      - name: Check ssh2 aliases
+        run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
           python3 tests/modules/hooks/ssh2_aliases.py --source target/upstream/src --archive target/release/libswoole_rs_ffi.a --output target/reports/ssh2-aliases.json
       # Exercise SNI's deferred port resolution on the production extension before merging.
-      - run: >
+      - name: Run SNI originals
+        run: >
           python3 corpus/upstream/run.py
           --manifest tests/modules/ports/sni-originals.json
           --php-extension curl --php-extension sockets --require-all --isolate-cases
           --engine cargo=target/ext/swoole.so
           --output target/reports/ports-sni-originals.json
       # 12-hyperf needs composer; it runs in the merge tier.
-      - run: >
+      - name: Run corpus apps
+        run: >
           python3 corpus/run.py
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl
           --project 01-hello --project 02-router --project 03-notes --project 04-job-service
@@ -188,11 +207,12 @@ jobs:
           --output target/reports/corpus.json
       # Upstream truncates queued responses after a client half-close; --fix-halfclose repairs it.
       # The native cURL hook links ext/curl, so it loads first.
-      - run: >
+      - name: Run half-close app
+        run: >
           python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine cargo=target/ext/swoole.so
           --output target/reports/corpus-halfclose.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: pr-reports
@@ -244,10 +264,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - id: touched
+      - name: List touched modules
+        id: touched
         run: python3 -c "from tools.dev import changed_modules; print('modules=' + ' '.join(changed_modules('origin/${{ github.base_ref }}')))" >> "$GITHUB_OUTPUT"
       - if: steps.touched.outputs.modules != ''
         uses: ./.github/actions/install
@@ -256,23 +277,27 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - if: steps.touched.outputs.modules != ''
+      - name: Clear cached builds
+        if: steps.touched.outputs.modules != ''
         run: rm -rf target/upstream target/thirdparty target/native-core
       - if: steps.touched.outputs.modules != ''
         id: upstream
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - if: steps.touched.outputs.modules != '' && steps.upstream.outputs.cache-hit != 'true'
+      - name: Build upstream
+        if: steps.touched.outputs.modules != '' && steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - if: steps.touched.outputs.modules != ''
+      - name: Fetch crates
+        if: steps.touched.outputs.modules != ''
         run: cargo fetch --locked
-      - if: steps.touched.outputs.modules != ''
+      - name: Run module gates
+        if: steps.touched.outputs.modules != ''
         run: >
           python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --skip-phase phpt
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && steps.touched.outputs.modules != ''
         with:
           name: gates-reports
@@ -289,14 +314,15 @@ jobs:
       php: ${{ steps.build.outputs.php }}
       shards: ${{ steps.shards.outputs.shards }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: build
         uses: ./.github/actions/phpt-build
         with:
           engines: ${{ join(fromJSON(needs.changes.outputs.engines), ' ') }}
       # Each shard pays about 2 minutes of setup: one per 150 of the families' tests, up to 6.
       # inventory.py reads the pin's tests from target/upstream, cloning it when upstream wasn't built.
-      - id: shards
+      - name: Size PHPT shards
+        id: shards
         env:
           FAMILIES: ${{ needs.changes.outputs.families != 'all' && needs.changes.outputs.families || '' }}
         run: |
@@ -327,6 +353,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - env:
+      - name: Check required jobs
+        env:
           NEEDS: ${{ toJSON(needs) }}
         run: jq -e 'map_values(.result) | debug | all(. == "success" or . == "skipped")' <<< "$NEEDS"

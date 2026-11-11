@@ -281,13 +281,6 @@ struct Peer {
     server_port: c_int,
 }
 
-unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
-    fn get_read_buffer(socket: Socket) -> *mut Buffer;
-    /// `System::sleep(sec)` (crates/hooks).
-    fn swoole_coroutine_sleep(sec: c_int);
-}
-
 /// A live socket's record: the listener, or a connection the loop serves.
 fn record<'a>(socket: Socket) -> &'a mut co::CoSocket {
     // SAFETY: the server's sockets outlive their use here.
@@ -841,8 +834,8 @@ unsafe extern "C" fn start_error(data: *mut c_void, message: &mut *const c_char)
 }
 
 unsafe extern "C" fn start_sleep(_: *mut c_void) {
-    // SAFETY: a coroutine runs `start`.
-    unsafe { swoole_coroutine_sleep(ACCEPT_RETRY_TIME) };
+    // A coroutine runs `start`.
+    swoole_rs_hooks::stdio::swoole_coroutine_sleep(ACCEPT_RETRY_TIME);
 }
 
 unsafe extern "C" fn start_set_error(data: *mut c_void) {
@@ -1033,7 +1026,8 @@ fn on_accept(call: &Call) {
     // The request allocator first.
     record(socket).buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
     // SAFETY: a live socket.
-    let buffer = unsafe { get_read_buffer(socket) };
+    let buffer =
+        unsafe { swoole_rs_hooks::socket_members::get_read_buffer(socket.cast()) }.cast::<Buffer>();
     // SAFETY: as above.
     let handshake = unsafe { co::ssl_enabled(socket) } && {
         // SAFETY: as above.

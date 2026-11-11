@@ -36,6 +36,7 @@ defaults:
 
 jobs:
   phpt:
+    name: ${{ matrix.engine }} ${{ matrix.index }}
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     strategy:
@@ -44,9 +45,10 @@ jobs:
         index: ${{ fromJSON(inputs.shards) }}
         engine: ${{ fromJSON(inputs.engines) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The services the run's families reach (corpus/upstream/services.py); no family is every one.
-      - id: services
+      - name: List services
+        id: services
         env:
           FAMILIES: ${{ inputs.families }}
         run: echo "names=$(python3 corpus/upstream/services.py $FAMILIES)" >> "$GITHUB_OUTPUT"
@@ -54,7 +56,8 @@ jobs:
         with:
           php: ${{ inputs.php }}
           services: ${{ steps.services.outputs.names }}
-      - id: manifest
+      - name: Plan shard
+        id: manifest
         env:
           FAMILIES: ${{ inputs.families }}
           SHARDS: ${{ inputs.shards }}
@@ -64,17 +67,19 @@ jobs:
           python3 corpus/upstream/inventory.py --shard "${{ matrix.index }}/$(jq length <<< "$SHARDS")" "${modules[@]}" --output target/phpt/manifest.json
           echo "tests=$(jq '.tests | length' target/phpt/manifest.json)" >> "$GITHUB_OUTPUT"
       # php -n loads nothing; load every extension the distribution enables, in its order.
-      - id: extensions
+      - name: List extensions
+        id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       # Exit 1 means some tests failed, which the gate judges; anything else (a runner
       # crash) fails the shard. A few families can leave a shard without tests.
-      - if: steps.manifest.outputs.tests != '0'
+      - name: Run PHPTs
+        if: steps.manifest.outputs.tests != '0'
         run: >
           python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 --external-network
           ${{ steps.extensions.outputs.args }}
           --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
           --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && steps.manifest.outputs.tests != '0'
         with:
           name: phpt-${{ matrix.engine }}-${{ matrix.index }}
@@ -89,8 +94,8 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: phpt-*-*
           merge-multiple: true
@@ -101,29 +106,31 @@ jobs:
       # (#2496). Saving is best effort: on a miss the gate downloads the artifacts as before.
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: phpt-engines
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        name: Stage baseline cache
         continue-on-error: true
         run: |
           mkdir baseline-cache && cp shards/upstream-*.json phpt-engines/upstream.so baseline-cache/
           echo '{"run": "${{ github.run_id }}", "sha": "${{ github.sha }}"}' > baseline-cache/meta.json
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ github.run_id }}
       - if: inputs.baseline != ''
         id: baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ inputs.baseline }}
       # The baseline's upstream reports, cut to the families run here; the artifacts only on a miss.
-      - if: inputs.baseline != ''
+      - name: Load baseline reports
+        if: inputs.baseline != ''
         env:
           GH_TOKEN: ${{ github.token }}
           FAMILIES: ${{ inputs.families }}
@@ -145,19 +152,21 @@ jobs:
       # saves it on that baseline's key, so PR gates stop missing until the baseline changes.
       - if: github.ref == 'refs/heads/main' && inputs.baseline != '' && steps.baseline.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ inputs.baseline }}
       # Tests that pass on upstream but not on the Cargo build get 3 re-runs per engine, unless
       # more than 20 are flagged: that is a broad breakage, not flakiness.
-      - id: flagged
+      - name: Flag regressions
+        id: flagged
         run: |
           python3 corpus/upstream/gate.py shards/*.json --print-regressions > flagged.txt
           count=$(grep -c . flagged.txt || true)
           echo "rerun=$([ "$count" -gt 0 ] && [ "$count" -le 20 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       # Flagged tests are re-run here (#174), with the services their families reach.
-      - if: steps.flagged.outputs.rerun == 'true'
+      - name: List rerun services
+        if: steps.flagged.outputs.rerun == 'true'
         id: services
         run: echo "names=$(python3 corpus/upstream/services.py $(cut -d/ -f2 flagged.txt | sort -u))" >> "$GITHUB_OUTPUT"
       - if: steps.flagged.outputs.rerun == 'true'
@@ -165,7 +174,8 @@ jobs:
         with:
           php: ${{ inputs.php }}
           services: ${{ steps.services.outputs.names }}
-      - if: steps.flagged.outputs.rerun == 'true' && inputs.baseline != ''
+      - name: Load baseline upstream.so
+        if: steps.flagged.outputs.rerun == 'true' && inputs.baseline != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -174,13 +184,15 @@ jobs:
             cp baseline-engines/upstream.so baseline-cache/upstream.so
           fi
           cp baseline-cache/upstream.so target/phpt/upstream.so
-      - if: steps.flagged.outputs.rerun == 'true'
+      - name: Rerun regressions
+        if: steps.flagged.outputs.rerun == 'true'
         run: |
           python3 corpus/upstream/inventory.py --output target/phpt/all.json
           extensions=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
           corpus/upstream/recheck.sh shards target/phpt recheck \
             --manifest target/phpt/all.json --timeout 30 --external-network $extensions
-      - run: |
+      - name: Gate against upstream
+        run: |
           set -- shards/*.json
           if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt.json | tee -a "$GITHUB_STEP_SUMMARY"
@@ -188,7 +200,8 @@ jobs:
       # without a trace in the run), leaves no report; a shard with no tests leaves none either.
       # A gate over some of the shards measured part of the corpus, so its phpt.json is
       # dropped before the upload: the PHPT badge would read it as the whole.
-      - if: always() && needs.phpt.result != 'success'
+      - name: Check every shard reported
+        if: always() && needs.phpt.result != 'success'
         env:
           ENGINES: ${{ inputs.engines }}
           SHARDS: ${{ inputs.shards }}
@@ -199,7 +212,7 @@ jobs:
           rm -f phpt.json
           echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
           exit 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt

@@ -18,6 +18,7 @@ defaults:
 
 jobs:
   build:
+    name: Build PHP ${{ matrix.php }}
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     strategy:
@@ -27,7 +28,7 @@ jobs:
     env:
       PHP_SERIES: ${{ matrix.php }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
       # Main's release build: the dependencies; zend-sys and the crates above it rebuild
       # against this PHP (PHP_CONFIG). Build trees must start clean.
@@ -35,19 +36,23 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/upstream target/thirdparty
+      - name: Clear cached builds
+        run: rm -rf target/ext target/upstream target/thirdparty
       # Restored only: the pinned reference is rebuilt for this PHP below, never saved.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: target/php
           key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
-      - run: .devcontainer/php.sh target/php
-      - run: cargo fetch --locked
-      - run: |
+      - name: Build PHP
+        run: .devcontainer/php.sh target/php
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build engines
+        run: |
           php="--php-config $PWD/target/php/bin/php-config --php-sockets"
           python3 tools/build_upstream.py $php --phpize $PWD/target/php/bin/phpize | tee upstream.log
           python3 tools/build_ext.py $php
@@ -55,13 +60,14 @@ jobs:
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do target/php/bin/php -n -d extension=$PWD/target/phpt/$engine.so -r 'echo PHP_VERSION, " ", swoole_version(), "\n";'; done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engines-${{ matrix.php }}
           path: target/phpt/
 
   # A version whose build failed fails its shards too; the others still run.
   phpt:
+    name: PHPT PHP ${{ matrix.php }} ${{ matrix.shard }}/4
     needs: build
     if: ${{ !cancelled() }}
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
@@ -72,28 +78,29 @@ jobs:
         php: ['8.2', '8.4', '8.5']
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
       # The pinned tests; this PHP's own build of them lives in the engines artifact.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/php
           key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: engines-${{ matrix.php }}
           path: target/phpt
       # Exit 1 means some tests failed, which the gate judges. Re-runs as phpt-gate does,
       # unless more than 20 are flagged: that is a broad breakage, not flakiness.
-      - run: |
+      - name: Run and gate PHPTs
+        run: |
           python3 corpus/upstream/inventory.py --shard ${{ matrix.shard }}/4 --output target/phpt/manifest.json
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php/bin/php"
           mkdir -p target/phpt/results
@@ -108,7 +115,7 @@ jobs:
           set -- target/phpt/results/*.json
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-${{ matrix.php }}-${{ matrix.shard }}.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-${{ matrix.php }}-${{ matrix.shard }}

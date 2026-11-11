@@ -32,8 +32,6 @@ unsafe extern "C" {
     /// `String::pop` (crates/buffer).
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(string: *mut c_void, init_size: usize) -> *mut u8;
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn system_sleep(seconds: f64) -> c_int;
 }
 
 /// `swoole::RecvData`.
@@ -199,7 +197,7 @@ fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
         && server_methods::has_kernel_nobufs_error(serv, session_id)
     {
         // SAFETY: in a coroutine.
-        unsafe { system_sleep(0.01) };
+        _ = unsafe { swoole_rs_hooks::sleep::system_sleep(0.01) };
     }
 }
 
