@@ -541,18 +541,13 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         OP_NEW_MESSAGE_BUS => new_message_bus(pool),
         OP_SNDBUF => {
             let mut size: c_int = 0;
-            let mut length = size_of::<c_int>() as libc::socklen_t;
             let fd = fd(worker_of(worker).pipe_master);
-            // SAFETY: an int option into a local.
-            let failed = unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_SNDBUF,
-                    (&raw mut size).cast(),
-                    &raw mut length,
-                )
-            };
+            let failed = swoole_rs_corebase::sys::getsockopt_int(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                &mut size,
+            );
             if failed != 0 { -1 } else { i64::from(size) }
         }
         OP_BUS_BUFFER => bus_buffer(pool, arg),

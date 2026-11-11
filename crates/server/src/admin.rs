@@ -219,17 +219,8 @@ fn other_socket_listed<F: Facts>(f: &mut F, index: u64, fd: c_int) -> bool {
     }
     for option in [SO_DOMAIN, libc::SO_TYPE] {
         let mut value: c_int = 0;
-        let mut len = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(0);
-        // SAFETY: `value` has `len` writable bytes.
-        let read = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                option,
-                (&raw mut value).cast(),
-                &raw mut len,
-            )
-        };
+        let read =
+            swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, option, &mut value);
         if read < 0 {
             return false;
         }

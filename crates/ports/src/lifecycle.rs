@@ -339,17 +339,7 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
 /// `getsockopt(fd, SOL_SOCKET, option)`: the value, or `None` (errno set).
 fn get_option(fd: c_int, option: c_int) -> Option<c_int> {
     let mut value: c_int = 0;
-    let mut size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or_default();
-    // SAFETY: a live c_int of `size` bytes.
-    let got = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            option,
-            (&raw mut value).cast(),
-            &raw mut size,
-        )
-    };
+    let got = swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, option, &mut value);
     (got == 0).then_some(value)
 }
 
