@@ -16,6 +16,7 @@ use crate::vector::IoVector;
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use openssl_sys as ssl;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::SocketRecord;
 
@@ -58,11 +59,10 @@ impl TlsSocket for Co {
     /// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the
     /// peer and set as the socket's error.
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong) {
-        let mut text = [0 as c_char; 512];
+        let mut text = [0_u8; 512];
         // SAFETY: at most the buffer's length, NUL-terminated.
-        unsafe { ERR_error_string_n(code, text.as_mut_ptr(), text.len()) };
-        // SAFETY: NUL-terminated by ERR_error_string_n.
-        let text = unsafe { CStr::from_ptr(text.as_ptr()) };
+        unsafe { ERR_error_string_n(code, text.as_mut_ptr().cast(), text.len()) };
+        let text = CStr::from_bytes_until_nul(&text).unwrap_or_default();
         let function = function.to_string_lossy();
         let message = text.to_string_lossy();
         self.net(|network| {
@@ -103,7 +103,8 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
     })
 }
 
-/// The scalar operations of [`UringSocketOps::io`].
+/// The scalar operations: [`read`], [`recv`], [`send`] and those of
+/// [`UringSocketOps::io`].
 pub const READ: c_int = 0;
 pub const WRITE: c_int = 1;
 pub const RECV: c_int = 2;
@@ -144,10 +145,21 @@ impl UringSocketOps {
         result
     }
 
-    /// One scalar operation: `op` is 0 read, 1 write, 2 recv, 3 send (TLS when the
-    /// socket has it), 4 recvmsg and 5 sendmsg (`extra` the msghdr, with `flags`),
-    /// 6 recvfrom (`extra`/`extra_length` the address), 7 sendto (to that address,
-    /// without a second availability check).
+    /// `request` for `event`: the availability check (unless `checked` before),
+    /// the current coroutine bound to `event`, then the result check.
+    fn transfer(&self, event: u32, checked: bool, request: impl FnOnce() -> isize) -> isize {
+        if !checked && !self.available(event) {
+            return -1;
+        }
+        let result = self.bound(event, request);
+        self.check(result);
+        result
+    }
+
+    /// One scalar operation over raw buffers: `op` is [`RECVMSG`] or [`SENDMSG`]
+    /// (`extra` the msghdr, with `flags`), [`RECVFROM`] (`buf`/`n` the buffer,
+    /// `extra`/`extra_length` the address) or [`SENDTO`] (to that address, without a
+    /// second availability check).
     ///
     /// # Safety
     /// The buffers are valid as for the system call.
@@ -160,49 +172,16 @@ impl UringSocketOps {
         extra_length: *mut libc::socklen_t,
         flags: c_int,
     ) -> isize {
-        let read = matches!(op, READ | RECV | RECVMSG | RECVFROM);
-        let event = if read { EVENT_READ } else { EVENT_WRITE };
-        // sendto checked availability before resolving the host.
-        if op != SENDTO && !self.available(event) {
-            return -1;
-        }
-        // SAFETY: the caller's buffers, valid as for the system call.
-        let result = self.bound(event, || unsafe {
-            self.request(op, buf, n, extra, extra_length, flags)
-        });
-        self.check(result);
-        result
-    }
-
-    /// The request itself.
-    ///
-    /// # Safety
-    /// As [`UringSocketOps::io`].
-    unsafe fn request(
-        &self,
-        op: c_int,
-        buf: *mut c_void,
-        n: usize,
-        extra: *mut c_void,
-        extra_length: *mut libc::socklen_t,
-        flags: c_int,
-    ) -> isize {
         let (host, tls) = (self.host(), self.tls);
         let (fd, rt, wt) = (tls.fd, tls.read_timeout, tls.write_timeout);
-        match op {
-            // SAFETY: the caller's buffer (each arm alike).
-            READ => unsafe { uring::read(host, fd, buf, n, rt) },
-            // SAFETY: as above.
-            WRITE => unsafe { uring::write(host, fd, buf, n, wt) },
-            // SAFETY: as above.
-            RECV if self.ssl() => tls.recv(unsafe { slots_mut(buf, n) }),
-            // SAFETY: as above.
-            RECV => unsafe { uring::recv(host, fd, buf, n, 0, rt) },
-            // SAFETY: as above.
-            SEND if self.ssl() => tls.send(unsafe { bytes(buf, n) }),
-            // SAFETY: as above.
-            SEND => unsafe { uring::send(host, fd, buf, n, 0, wt) },
-            // SAFETY: as above.
+        let event = if matches!(op, RECVMSG | RECVFROM) {
+            EVENT_READ
+        } else {
+            EVENT_WRITE
+        };
+        // sendto checked availability before resolving the host.
+        self.transfer(event, op == SENDTO, || match op {
+            // SAFETY: the caller's msghdr.
             RECVMSG => unsafe { uring::recvmsg(host, fd, extra.cast(), flags, rt) },
             // SAFETY: as above.
             SENDMSG => unsafe { uring::sendmsg(host, fd, extra.cast(), flags, wt) },
@@ -212,9 +191,9 @@ impl UringSocketOps {
                 // SAFETY: the caller's buffer and address.
                 unsafe { uring::sendto(host, fd, buf, n, 0, extra.cast(), length, wt) }
             }
-            // SAFETY: as above.
+            // SAFETY: the caller's buffer and address.
             _ => unsafe { uring::recvfrom(host, fd, buf, n, extra.cast(), extra_length, rt) },
-        }
+        })
     }
 
     /// `ssl_readv`/`ssl_writev`: TLS transfers over each iovec while they move data.
@@ -243,11 +222,8 @@ impl UringSocketOps {
     /// `readv`/`writev`.
     fn vector(&self, vector: &IoVector, write: bool) -> isize {
         let event = if write { EVENT_WRITE } else { EVENT_READ };
-        if !self.available(event) {
-            return -1;
-        }
         let (host, fd) = (self.host(), self.tls.fd);
-        let result = self.bound(event, || {
+        self.transfer(event, false, || {
             loop {
                 let result = if self.ssl() {
                     self.tls_vector(vector, write)
@@ -266,34 +242,45 @@ impl UringSocketOps {
                     break result;
                 }
             }
-        });
-        self.check(result);
-        result
+        })
     }
 }
 
 /// `read` into `buf`, which may be uninitialized: the ring writes it.
 pub(crate) fn read(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
-    into(ops, READ, buf)
+    let (host, tls) = (ops.host(), ops.tls);
+    let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
+    // SAFETY: `buf` is `n` writable bytes.
+    ops.transfer(EVENT_READ, false, || unsafe {
+        uring::read(host, tls.fd, at, n, tls.read_timeout)
+    })
 }
 
 /// `recv` into `buf`, which may be uninitialized: the ring or `SSL_read` writes it.
 pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
-    into(ops, RECV, buf)
+    let (host, tls) = (ops.host(), ops.tls);
+    ops.transfer(EVENT_READ, false, || {
+        if ops.ssl() {
+            return tls.recv(buf);
+        }
+        let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
+        // SAFETY: `buf` is `n` writable bytes.
+        unsafe { uring::recv(host, tls.fd, at, n, 0, tls.read_timeout) }
+    })
 }
 
-/// `op` ([`READ`] or [`RECV`]) into `buf`.
-fn into(ops: &UringSocketOps, op: c_int, buf: &mut [impl ReadSlot]) -> isize {
-    let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
-    // SAFETY: `buf` is `n` writable bytes.
-    unsafe { ops.io(op, at, n, core::ptr::null_mut(), core::ptr::null_mut(), 0) }
-}
-
-/// `write` (`op` [`WRITE`]) or `send` ([`SEND`]) from `buf`.
+/// `write` (`op` [`WRITE`]) or `send` ([`SEND`], through TLS when the socket has
+/// it) from `buf`.
 pub(crate) fn send(ops: &UringSocketOps, op: c_int, buf: &[u8]) -> isize {
-    let (at, n) = (buf.as_ptr().cast_mut().cast(), buf.len());
-    // SAFETY: `buf` is `n` readable bytes, which a write only reads.
-    unsafe { ops.io(op, at, n, core::ptr::null_mut(), core::ptr::null_mut(), 0) }
+    let (host, tls) = (ops.host(), ops.tls);
+    let (at, n, wt) = (buf.as_ptr().cast(), buf.len(), tls.write_timeout);
+    ops.transfer(EVENT_WRITE, false, || match op {
+        // SAFETY: `buf` is `n` readable bytes.
+        WRITE => unsafe { uring::write(host, tls.fd, at, n, wt) },
+        _ if ops.ssl() => tls.send(buf),
+        // SAFETY: as above.
+        _ => unsafe { uring::send(host, tls.fd, at, n, 0, wt) },
+    })
 }
 
 /// `recv_all` into `buf`: recv until it is full, it failed, or the peer closed.
@@ -359,20 +346,16 @@ pub(crate) fn swr_v1_hook_uring_vector(
     transfer_result(result, total)
 }
 
-/// `accept`'s request: the ring's accept into `addr`/`length` (close-on-exec,
+/// `accept`'s request: the ring's accept into `address` (close-on-exec,
 /// non-blocking) under the read timeout, reading bound to the current coroutine.
 /// A failure sets the socket's error from errno.
-///
-/// # Safety
-/// `addr`/`length` are valid as for accept(2).
-pub(crate) unsafe fn swr_v1_hook_uring_accept(
-    ops: &UringSocketOps,
-    addr: *mut libc::sockaddr,
-    length: *mut libc::socklen_t,
-) -> c_int {
+pub(crate) fn swr_v1_hook_uring_accept(ops: &UringSocketOps, address: &mut SocketAddress) -> c_int {
     let (host, tls) = (ops.host(), ops.tls);
     let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
-    // SAFETY: the caller's address buffer.
+    let room = libc::socklen_t::try_from(size_of_val(&address.addr)).unwrap_or(0);
+    address.len = address.len.min(room);
+    let (addr, length) = ((&raw mut address.addr).cast(), &raw mut address.len);
+    // SAFETY: the address's storage, of at least its length, and that length.
     let fd = ops.bound(EVENT_READ, || unsafe {
         uring::accept(host, tls.fd, addr, length, flags, tls.read_timeout)
     });
@@ -449,14 +432,7 @@ pub(crate) fn swr_v1_hook_uring_poll(
 /// set. `socket` is available, in a coroutine, and `ops` is its view.
 pub(crate) fn accept(socket: Co, ops: &UringSocketOps) -> Option<Co> {
     let mut conn = SocketRecord::new();
-    // SAFETY: the new record's address.
-    let fd = unsafe {
-        swr_v1_hook_uring_accept(
-            ops,
-            (&raw mut conn.info.addr).cast(),
-            &raw mut conn.info.len,
-        )
-    };
+    let fd = swr_v1_hook_uring_accept(ops, &mut conn.info);
     if fd < 0 {
         return None;
     }
@@ -479,8 +455,6 @@ pub(crate) fn sendfile(ops: &UringSocketOps, file: c_int, offset: libc::off_t, e
     let mut offset = offset;
     let sent = ops.bound(EVENT_WRITE, || {
         if !ops.ssl() {
-            // MSG_SPLICE_PAGES is kernel-internal: the build's headers lack it, so
-            // upstream splices through a pipe.
             return uring::sendfile(
                 ops.host(),
                 ops.tls.fd,
@@ -488,7 +462,6 @@ pub(crate) fn sendfile(ops: &UringSocketOps, file: c_int, offset: libc::off_t, e
                 Some(&mut offset),
                 end,
                 ops.tls.write_timeout,
-                0,
             );
         }
         let (total, warn) = ops.tls.sendfile(file, &mut offset, end, |error| {
@@ -687,16 +660,14 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let server = ops(listener.as_raw_fd(), socket.co());
-            // SAFETY: zeroed storage is a valid sockaddr_storage.
-            let mut addr: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
-            let mut length = libc::socklen_t::try_from(core::mem::size_of_val(&addr)).unwrap();
-            // SAFETY: a local table and address buffer.
-            let fd = unsafe {
-                swr_v1_hook_uring_accept(&server, (&raw mut addr).cast(), &raw mut length)
+            let mut address = SocketAddress {
+                len: libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>()).unwrap(),
+                ..SocketAddress::default()
             };
+            let fd = swr_v1_hook_uring_accept(&server, &mut address);
             assert!(fd >= 0);
             assert_eq!(
-                addr.ss_family,
+                unsafe { address.addr.ss.sa_family },
                 libc::sa_family_t::try_from(libc::AF_INET).unwrap()
             );
             // SAFETY: the accepted descriptor.
