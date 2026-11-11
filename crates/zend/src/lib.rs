@@ -24,6 +24,7 @@ mod error;
 mod frame;
 mod function;
 mod helpers;
+pub mod local;
 mod minit;
 mod object;
 pub mod registration;
@@ -41,6 +42,7 @@ pub use function::create_object_deny;
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, each_value, long_zval, module_loaded, property, time, update_property,
 };
+pub use local::Php;
 pub use minit::{Minit, Parent};
 pub use object::{Custom, CustomClass, Object, Props, init_object, new_object, set_object};
 pub use swoole_rs_zend_sys as sys;
