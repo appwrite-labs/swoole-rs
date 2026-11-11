@@ -5,8 +5,8 @@
 //! `Coroutine\Http\Client`'s WebSocket state.
 use crate::server::new_zval;
 use crate::{
-    context,
-    host::{self, CO_SOCKET, Context},
+    context::{self, Ctx},
+    host::{self, CO_SOCKET},
     send,
 };
 use std::{
@@ -1013,9 +1013,9 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
 }
 
 /// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.
-pub(crate) fn handshake_open(context: *mut c_void) -> Result<(), bailout::Bailout> {
-    let server = context::server(send::state(context));
-    let fd = host::fd(context);
+pub(crate) fn handshake_open(mut context: Ctx) -> Result<(), bailout::Bailout> {
+    let server = context::server(context.state());
+    let fd = context.fd();
     if handshake(context)? {
         on_open(server, context)
     } else {
@@ -1030,7 +1030,7 @@ pub(crate) fn upgrading(server: view::Server<'_>, fd: zend_long) {
 }
 
 /// Set a response header as `Context::set_header(..., false)`.
-fn set_header(context: *mut Context, key: &[u8], value: &[u8]) -> Result<(), bailout::Bailout> {
+fn set_header(context: Ctx, key: &[u8], value: &[u8]) -> Result<(), bailout::Bailout> {
     crate::response::set_header_bytes(context, key, value);
     if bailout::pending() {
         Err(bailout::Bailout)
@@ -1039,8 +1039,8 @@ fn set_header(context: *mut Context, key: &[u8], value: &[u8]) -> Result<(), bai
     }
 }
 
-fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
-    let header = send::state(context).request.zheader.get();
+fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
+    let header = context.state().request.zheader.get();
     let key = header
         .and_then(Value::array)
         .and_then(|header| header.find(b"sec-websocket-key"));
@@ -1050,7 +1050,7 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
     }
     let key = key.filter(|key| key.bytes().len() == SEC_KEY_LENGTH);
     let Some(key) = key else {
-        send::state(context).response.status = 400;
+        context.state().response.status = 400;
         send::end(context, ptr::null_mut())?;
         return Ok(false);
     };
@@ -1060,9 +1060,9 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
     set_header(context, b"Connection", b"Upgrade")?;
     set_header(context, b"Sec-WebSocket-Accept", &accept)?;
     set_header(context, b"Sec-WebSocket-Version", b"13")?;
-    let fd = host::fd(context);
-    if host::flags(context) & CO_SOCKET == 0 {
-        let server = context::server(send::state(context));
+    let fd = context.fd();
+    if context.flags() & CO_SOCKET == 0 {
+        let server = context::server(context.state());
         let Some(conn) = connection(server, fd, false) else {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
@@ -1072,7 +1072,7 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
         if !protocol.is_empty() {
             set_header(context, b"Sec-WebSocket-Protocol", protocol)?;
         }
-        let state = send::state(context);
+        let state = context.state();
         let mut args = [
             server_zval(),
             state.request.zobject.value,
@@ -1087,9 +1087,9 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
         )?;
     } else {
         // SAFETY: a coroutine-socket context's live socket.
-        unsafe { swoole_rs_phpclients::websocket_protocol(send::state(context).private_data) };
+        unsafe { swoole_rs_phpclients::websocket_protocol(context.state().private_data) };
     }
-    let state = send::state(context);
+    let state = context.state();
     state.response.status = 101;
     state.upgrade = 1;
     send::end(context, ptr::null_mut())
@@ -1106,18 +1106,18 @@ fn closed(func: &CStr, fd: zend_long) {
 }
 
 /// `swoole_websocket_onOpen`.
-fn on_open(server: view::Server<'_>, context: *mut Context) -> Result<(), bailout::Bailout> {
-    let fd = host::fd(context);
+fn on_open(server: view::Server<'_>, mut context: Ctx) -> Result<(), bailout::Bailout> {
+    let fd = context.fd();
     let Some(conn) = connection(server, fd, false) else {
         closed(c"swoole_websocket_onOpen", fd);
         return Ok(());
     };
-    let mut args = [server_zval(), send::state(context).request.zobject.value];
+    let mut args = [server_zval(), context.state().request.zobject.value];
     dispatch(server, conn.server_fd, ON_OPEN, &mut args, fd)
 }
 
 /// `swoole_websocket_onRequest`, the default `onRequest`: 400 and close.
-pub(crate) fn request(context: *mut c_void) {
+pub(crate) fn request(mut context: Ctx) {
     const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\
         Connection: close\r\n\
         Content-Type: text/html; charset=UTF-8\r\n\
@@ -1126,13 +1126,13 @@ pub(crate) fn request(context: *mut c_void) {
         Server: swoole-http-server\r\n\r\n\
         <html><body><h2>HTTP 400 Bad Request</h2><hr><i>Powered by Swoole</i></body></html>";
     context::send(context, BAD_REQUEST);
-    send::state(context).end = 1;
+    context.state().end = 1;
     context::close(context);
 }
 
 /// The coroutine `Response::push`: a frame over the context's socket.
 pub(crate) fn response_push(
-    context: *mut Context,
+    mut context: Ctx,
     data: &Value,
     opcode: i64,
     flags: Option<&Value>,
@@ -1140,14 +1140,14 @@ pub(crate) fn response_push(
     let flags = flags.map_or(i64::from(FLAG_FIN), Value::long);
     let mut frame = FrameObject::new(Some(data), opcode, flags, 0);
     frame.flags &= !FLAG_MASK;
-    if send::state(context).websocket_compression != 0 {
+    if context.state().websocket_compression != 0 {
         frame.flags |= FLAG_COMPRESS;
     }
     send_frame(context, &frame).unwrap_or(false)
 }
 
 /// `http_response_send_frame`: `None` when the frame cannot be packed.
-fn send_frame(context: *mut Context, frame: &FrameObject) -> Option<bool> {
+fn send_frame(context: Ctx, frame: &FrameObject) -> Option<bool> {
     let Some(packed) = pack(frame) else {
         host::set_last_error(WEBSOCKET_PACK_FAILED);
         return None;
@@ -1157,11 +1157,7 @@ fn send_frame(context: *mut Context, frame: &FrameObject) -> Option<bool> {
 }
 
 /// The coroutine `Response::disconnect`: a close frame, then close.
-pub(crate) fn response_disconnect(
-    context: *mut Context,
-    code: i64,
-    reason: *mut zend_string,
-) -> bool {
+pub(crate) fn response_disconnect(context: Ctx, code: i64, reason: *mut zend_string) -> bool {
     let mut data = zval_of(if reason.is_null() {
         empty_string()
     } else {
@@ -1184,11 +1180,11 @@ pub(crate) fn response_disconnect(
 /// The handshake response's `permessage-deflate` answer, when built with zlib
 /// and offered: the request asked for it, so the response says so and the
 /// connection compresses.
-pub(crate) fn accept(context: *mut Context) {
+pub(crate) fn accept(mut context: Ctx) {
     if !ZLIB.load(Relaxed) {
         return;
     }
-    let state = send::state(context);
+    let state = context.state();
     let offered = if context::co_socket(state) {
         state.websocket_settings & SETTING_COMPRESSION != 0
     } else {
@@ -1213,7 +1209,7 @@ pub(crate) fn accept(context: *mut Context) {
             );
         }
     }
-    let state = send::state(context);
+    let state = context.state();
     state.websocket_compression = u8::from(accepted);
     if !crate::context::co_socket(state)
         && let Some(conn) = crate::context::server(state).verified(state.fd)
@@ -1224,8 +1220,8 @@ pub(crate) fn accept(context: *mut Context) {
 
 /// After a server handshake response: the connection is a WebSocket on 101,
 /// otherwise the handshake failed and the connection closes.
-pub(crate) fn handshaked(context: *mut Context) {
-    let state = send::state(context);
+pub(crate) fn handshaked(mut context: Ctx) {
+    let state = context.state();
     let (server, fd) = (crate::context::server(state), state.fd);
     let Some(conn) = connection(server, fd, true) else {
         return;
@@ -1233,7 +1229,7 @@ pub(crate) fn handshaked(context: *mut Context) {
     if i64::from(conn.status) != STATUS_HANDSHAKE {
         return;
     }
-    let state = send::state(context);
+    let state = context.state();
     let status = if state.response.status == 101 {
         STATUS_ACTIVE
     } else {
@@ -1243,7 +1239,7 @@ pub(crate) fn handshaked(context: *mut Context) {
     set_status(server, fd, status);
 }
 
-pub(crate) fn upgrade(context: *mut Context) -> Result<bool, bailout::Bailout> {
+pub(crate) fn upgrade(context: Ctx) -> Result<bool, bailout::Bailout> {
     handshake(context)
 }
 
