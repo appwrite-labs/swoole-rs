@@ -17,20 +17,20 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         # Gates compare against accepted patch states at older commits.
         with:
           fetch-depth: 0
       - uses: ./.github/actions/install
         with:
           packages: clang libclang-rt-dev llvm
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - name: Build upstream
         run: test -f target/upstream/src/run-tests.php || python3 tools/build_upstream.py
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: target/asan/php
           key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}-${{ github.workspace }}
@@ -40,7 +40,7 @@ jobs:
         run: python3 corpus/thirdparty/hyperf.py --prepare
       - name: Run ASan lanes
         run: python3 tools/asan.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: asan

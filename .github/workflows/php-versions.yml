@@ -28,7 +28,7 @@ jobs:
     env:
       PHP_SERIES: ${{ matrix.php }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
       # Main's release build: the dependencies; zend-sys and the crates above it rebuild
       # against this PHP (PHP_CONFIG). Build trees must start clean.
@@ -39,11 +39,11 @@ jobs:
       - name: Clear cached builds
         run: rm -rf target/ext target/upstream target/thirdparty
       # Restored only: the pinned reference is rebuilt for this PHP below, never saved.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: target/php
           key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
@@ -60,7 +60,7 @@ jobs:
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do target/php/bin/php -n -d extension=$PWD/target/phpt/$engine.so -r 'echo PHP_VERSION, " ", swoole_version(), "\n";'; done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engines-${{ matrix.php }}
           path: target/phpt/
@@ -78,22 +78,22 @@ jobs:
         php: ['8.2', '8.4', '8.5']
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
       # The pinned tests; this PHP's own build of them lives in the engines artifact.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/php
           key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: engines-${{ matrix.php }}
           path: target/phpt
@@ -115,7 +115,7 @@ jobs:
           set -- target/phpt/results/*.json
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-${{ matrix.php }}-${{ matrix.shard }}.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-${{ matrix.php }}-${{ matrix.shard }}

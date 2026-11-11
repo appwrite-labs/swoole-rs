@@ -36,7 +36,7 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         # Gates compare against accepted patch states at older commits (git show <sha>:...).
         with:
           fetch-depth: 0
@@ -54,28 +54,28 @@ jobs:
       # Caches are saved as soon as they are built, so a failing gate later does not discard
       # them; PR branches can only restore caches saved on main.
       - id: upstream
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
       - if: steps.upstream.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: target/upstream
           key: ${{ steps.upstream.outputs.cache-primary-key }}
       # dev.py's reference-build is the --php-sockets profile: cached whole, it prints
       # `Cached upstream` instead of compiling. build_upstream.py rebuilds it when PHP changes.
       - id: sockets
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/upstream-builds/php-sockets
           key: upstream-php-sockets-${{ runner.os }}-${{ steps.install.outputs.php }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: steps.sockets.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py --php-sockets
       - if: steps.sockets.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: target/upstream-builds/php-sockets
           key: ${{ steps.sockets.outputs.cache-primary-key }}
@@ -87,12 +87,12 @@ jobs:
       - if: always()
         run: python3 tools/merge_summary.py >> "$GITHUB_STEP_SUMMARY"
       # Small on purpose: tools/ci.py downloads it to list failed, new and fixed phases.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phases-${{ matrix.shard }}
           path: target/reports/dev/*/loop.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: validation-reports-${{ matrix.shard }}
@@ -120,7 +120,7 @@ jobs:
       php: ${{ steps.build.outputs.php }}
       baseline: ${{ steps.baseline.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: build
         uses: ./.github/actions/phpt-build
         with:
@@ -128,7 +128,7 @@ jobs:
       # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
       # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
       - if: github.event_name == 'push' || github.event_name == 'merge_group'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ github.run_id }}
@@ -181,11 +181,11 @@ jobs:
         ports: ['6379:6379']
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           packages: valgrind php-mysql
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -210,7 +210,7 @@ jobs:
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --profiles target/callgrind/profiles --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: callgrind
@@ -224,9 +224,9 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -254,7 +254,7 @@ jobs:
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
           --phase cargo-build --phase stdext-reference-build --phase phphelpers-runtime
       # tools/ci.py reads phases* artifacts for new and fixed phases.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phases-stdext
@@ -263,7 +263,7 @@ jobs:
           path: |
             target/reports/dev/*/*.json
             target/reports/dev/*/*.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-stdext
@@ -290,9 +290,9 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -301,7 +301,7 @@ jobs:
       - run: cargo fetch --locked
       - run: python3 tools/dev.py integrate --fix-halfclose --php-extension sockets --phase 'halfclose-*' --with-prerequisites
       # tools/ci.py reads phases* artifacts for new and fixed phases.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phases-halfclose
@@ -327,21 +327,21 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           # The engines link unixODBC, libfbclient and the Instant Client.
           packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
           php: ${{ needs.phpt-build.outputs.php }}
       - uses: ./.github/actions/instantclient
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: target/phpt
@@ -365,7 +365,7 @@ jobs:
           set -- target/phpt/root/*.json
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-root.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-root
@@ -382,21 +382,21 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           # The engines link unixODBC, libfbclient and the Instant Client.
           packages: php-mysql php-pgsql php-redis php-mongodb unixodbc libfbclient2 libaio1t64
           php: ${{ needs.phpt-build.outputs.php }}
       - uses: ./.github/actions/instantclient
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: target/phpt
@@ -421,7 +421,7 @@ jobs:
           python3 corpus/library/run.py --engine upstream=target/phpt/upstream.so
           --engine cargo=target/phpt/cargo.so
           | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: library
@@ -435,14 +435,14 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install
         with:
           # The engines link unixODBC, libfbclient and the Instant Client.
           packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
           php: ${{ needs.phpt-build.outputs.php }}
       - uses: ./.github/actions/instantclient
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: phpt-engines
           path: target/phpt
@@ -453,7 +453,7 @@ jobs:
           python3 tests/modules/websocket/autobahn.py --timeout 1200 ${{ steps.extensions.outputs.args }}
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --output target/reports/autobahn.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: autobahn
@@ -476,7 +476,7 @@ jobs:
       RUSTFLAGS: -C target-feature=-crt-static
     steps:
       - run: apk add --no-cache git && git config --global --add safe.directory '*'
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: .devcontainer/install-alpine.sh && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: python3 tools/build_upstream.py --php-sockets
       - run: cargo fetch --locked
@@ -524,12 +524,12 @@ jobs:
           set -- target/php85/results/*.json
           if ls target/php85/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/php85/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output target/reports/phpt-alpine.json >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: alpine-reports
           path: target/reports/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-alpine
