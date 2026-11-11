@@ -340,8 +340,10 @@ fn iouring_stats(stats: &mut Stats) {
 /// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
     /// The coroutine's body, which copies its arguments before its first switch.
-    extern "C" fn sleeper(args: *mut c_void) {
-        // SAFETY: the creator's arguments, live until this coroutine first yields.
+    /// # Safety
+    /// `args` is the creator's `(count, sleep)`, live until this coroutine first yields.
+    unsafe extern "C" fn sleeper(args: *mut c_void) {
+        // SAFETY: per the caller.
         let (count, sleep) = unsafe { *args.cast::<(c_long, f64)>() };
         for _ in 0..count {
             #[expect(

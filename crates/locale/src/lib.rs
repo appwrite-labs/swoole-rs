@@ -41,8 +41,9 @@ pub fn gmtime(time: i64) -> Option<Tm> {
 /// `time(NULL)`: now.
 #[must_use]
 pub fn now() -> i64 {
-    // SAFETY: a null out pointer asks only for the result.
-    unsafe { libc::time(std::ptr::null_mut()) }
+    std::time::UNIX_EPOCH
+        .elapsed()
+        .map_or(0, |since| since.as_secs().cast_signed())
 }
 /// `strftime(output, format, tm)`: the bytes written, 0 when they do not fit.
 pub fn strftime(output: &mut [u8], format: &CStr, tm: &Tm) -> usize {
