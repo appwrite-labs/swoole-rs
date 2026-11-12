@@ -98,15 +98,7 @@ pub fn set_dns_server(server: &[u8]) {
     let mut port = DNS_PORT;
     if plan.has_port != 0 {
         let digits = server.get(plan.port_offset..).unwrap_or_default();
-        let mut text = crate::c_str(digits).to_vec();
-        text.push(0);
-        // SAFETY: NUL-terminated.
-        let parsed = unsafe { libc::strtol(text.as_ptr().cast(), std::ptr::null_mut(), 10) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "sw_atoi narrows strtol's long to int"
-        )]
-        let parsed = parsed as c_int;
+        let parsed = swoole_rs_corebase::atoi(digits);
         if swr_v1_clients_port(parsed, 1) != 0 {
             port = parsed;
         }

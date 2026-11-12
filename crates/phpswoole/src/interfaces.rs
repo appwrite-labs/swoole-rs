@@ -86,11 +86,9 @@ fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
 #[cfg(target_os = "linux")]
 fn local_mac(call: &Call) {
     use std::mem::{size_of, size_of_val};
-    use swoole_rs_corebase::sys::zeroed;
-    // The requests as `ioctl` takes them (an int on musl).
+    use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, zeroed};
+    // The request as `ioctl` takes it (an int on musl).
     const SIOCGIFCONF: libc::Ioctl = 0x8912;
-    const SIOCGIFFLAGS: libc::Ioctl = 0x8913;
-    const SIOCGIFHWADDR: libc::Ioctl = 0x8927;
     // Upstream's 4096-byte buffer, as whole requests.
     const REQUESTS: usize = 4096 / size_of::<libc::ifreq>();
 
@@ -125,8 +123,7 @@ fn local_mac(call: &Call) {
         for (slot, byte) in name.take(libc::IFNAMSIZ - 1) {
             *slot = *byte;
         }
-        // SAFETY: a socket and a named request.
-        if unsafe { libc::ioctl(sock, SIOCGIFFLAGS, &raw mut request) } < 0 {
+        if interface_ioctl(sock, InterfaceRequest::Flags, &mut request) < 0 {
             continue;
         }
         // SAFETY: SIOCGIFFLAGS filled the flags.
@@ -134,8 +131,7 @@ fn local_mac(call: &Call) {
         if flags & libc::IFF_LOOPBACK != 0 {
             continue;
         }
-        // SAFETY: a socket and a named request.
-        if unsafe { libc::ioctl(sock, SIOCGIFHWADDR, &raw mut request) } == 0 {
+        if interface_ioctl(sock, InterfaceRequest::HardwareAddress, &mut request) == 0 {
             // SAFETY: SIOCGIFHWADDR filled the hardware address.
             let data = unsafe { request.ifr_ifru.ifru_hwaddr.sa_data };
             let bytes = data.map(|byte| byte.to_ne_bytes()[0]);
