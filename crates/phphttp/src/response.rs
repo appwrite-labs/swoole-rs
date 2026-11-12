@@ -685,9 +685,12 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 );
             }
         } else if object.instance_of(swoole_rs_phpclients::socket()) {
-            socket = Some(object);
-            fd = swoole_rs_phpclients::get_socket(object)
-                .map_or(-1, |socket| zend_long::from(socket.handle().sock_fd()));
+            // A socket object whose constructor never ran holds no socket, so
+            // there is nothing to respond on: false, as without a target.
+            if let Some(co) = swoole_rs_phpclients::get_socket(object) {
+                socket = Some(object);
+                fd = zend_long::from(co.handle().sock_fd());
+            }
         } else {
             return refuse(
                 call,
