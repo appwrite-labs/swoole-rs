@@ -49,7 +49,7 @@ impl WriteEffects for Write<'_> {
         let socket = self.socket;
         if !payload.data.is_null() {
             // SAFETY: `socket->send(buf, n, 0)` over the payload's bytes.
-            return unsafe { socket_send(socket.as_ptr(), payload.data.cast(), payload.length, 0) };
+            return unsafe { socket_send(socket, payload.data.cast(), payload.length, 0) };
         }
         let fd = socket.fd();
         let count = c_int::try_from(payload.count).unwrap_or(c_int::MAX);
@@ -113,21 +113,17 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
 ///
 /// # Safety
-/// `reactor` is a live `Reactor`, `socket` a live record and `data` holds `length` bytes.
+/// `reactor` is a live `Reactor` and `data` holds `length` bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm")
 )]
 pub unsafe extern "C-unwind" fn reactor_write(
     reactor: *mut c_void,
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     data: *const c_void,
     length: usize,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
     let payload = WritePayload {
         data: data.cast(),
         iov: std::ptr::null(),
@@ -142,21 +138,17 @@ pub unsafe extern "C-unwind" fn reactor_write(
 /// not over TLS.
 ///
 /// # Safety
-/// `reactor` is a live `Reactor`, `socket` a live record and `iov` holds `count` entries.
+/// `reactor` is a live `Reactor` and `iov` holds `count` entries.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")
 )]
 pub unsafe extern "C-unwind" fn reactor_writev(
     reactor: *mut c_void,
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     iov: *const libc::iovec,
     count: usize,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         log::error_log(
             log::LOG_WARNING,
@@ -261,21 +253,17 @@ pub unsafe extern "C-unwind" fn reactor_writable_callback(
 /// `void Reactor::drain_write_buffer(Socket *socket)`.
 ///
 /// # Safety
-/// `reactor` is a live `Reactor` and `socket` a live record.
+/// `reactor` is a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE")
 )]
 pub unsafe extern "C-unwind" fn reactor_drain_write_buffer(
     reactor: *mut c_void,
-    socket: *mut SocketRecord,
+    record: Socket<'_>,
 ) {
-    // SAFETY: as the caller promises.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
-        return;
-    };
-    // SAFETY: `record` proved the socket live, and the event lives for this call.
-    let mut event = unsafe { Event::new(record.fd(), 0, 0, socket.cast()) };
+    // SAFETY: a live socket, and the event lives for this call.
+    let mut event = unsafe { Event::new(record.fd(), 0, 0, record.as_ptr().cast()) };
     let flush = Flush {
         reactor,
         socket: record,

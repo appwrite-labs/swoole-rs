@@ -19,9 +19,9 @@ use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_reactor::event_api::{
     on_destroy, swoole_event_add, swoole_event_del, swr_v1_event_current,
 };
-use swoole_rs_reactor::{Event, Running, SocketRecord};
+use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
-use swoole_rs_tls::upstream::socket_write_sync;
+use swoole_rs_tls::upstream::write_sync;
 
 /// `SW_FD_AIO`, `SW_EVENT_READ` and `Reactor::EXIT_CONDITION_AIO_TASK`.
 const FD_AIO: c_int = 5;
@@ -76,10 +76,10 @@ fn free(event: &AsyncEvent) {
 /// # Safety
 /// `event` is a heap event nothing else uses, and `socket` its live pipe socket.
 unsafe fn send_event(event: *mut AsyncEvent, socket: *mut c_void) {
-    let token = event.expose_provenance();
-    let socket = socket.cast::<SocketRecord>();
-    // SAFETY: `token` is readable for its size; the socket is live.
-    let sent = unsafe { socket_write_sync(socket, (&raw const token).cast(), size_of::<usize>()) };
+    let token = event.expose_provenance().to_ne_bytes();
+    // SAFETY: as the caller promises, the event's live pipe socket.
+    let socket = unsafe { Socket::from_ptr(socket.cast()) };
+    let sent = socket.map_or(-1, |socket| write_sync(socket, &token));
     if sent <= 0 {
         log::sys_warning(
             c"ThreadPool::main_func",

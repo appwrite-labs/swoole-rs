@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
-# Reports outside upstream's run that main's run has (27 in run 43183187340). Lower it with each fix.
+# Reports outside upstream's run that main's run has (27 in run 43150929011). Lower it with each fix.
 LIMIT = 27
 
 
@@ -68,7 +68,8 @@ def main():
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     subprocess.run(['rustup', 'component', 'add', 'rust-src'], cwd=ROOT, check=True)
-    rust = {'RUSTC_BOOTSTRAP': '1', 'RUSTFLAGS': '-Zsanitizer=thread -Zexternal-clangrt=yes -Cforce-frame-pointers=yes'}
+    # cfg(tsan) gives each coroutine a TSan fiber of its own (crates/coroutine/src/context.rs).
+    rust = {'RUSTC_BOOTSTRAP': '1', 'RUSTFLAGS': '-Zsanitizer=thread -Zexternal-clangrt=yes -Cforce-frame-pointers=yes --cfg tsan'}
     # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
     build = {**compilers, **rust, 'CARGO_BUILD_TARGET': host, 'CARGO_UNSTABLE_BUILD_STD': 'std,panic_abort'}
     config = ['--php-config', str(php / 'bin/php-config'), '--configure=--enable-swoole-thread']

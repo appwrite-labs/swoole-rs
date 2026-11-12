@@ -637,13 +637,27 @@ struct Pool<H> {
     p: *mut PoolRecord,
 }
 
+impl<H> Pool<H> {
+    /// The live pool this runs over.
+    fn record(&self) -> &PoolRecord {
+        // SAFETY: `p` is the live pool this runs over.
+        unsafe { &*self.p }
+    }
+
+    /// The live pool this runs over, to write.
+    fn record_mut(&mut self) -> &mut PoolRecord {
+        // SAFETY: `p` is the live pool this runs over, and `&mut self` keeps every
+        // other borrow of it through this operation out while the result lives.
+        unsafe { &mut *self.p }
+    }
+}
+
 macro_rules! getters {
     ($($field:ident: $ty:ty),* $(,)?) => {
         impl<H> Pool<H> {
             $(
                 fn $field(&self) -> $ty {
-                    // SAFETY: `p` is the live pool for this operation; read in place.
-                    unsafe { (*self.p).$field }
+                    self.record().$field
                 }
             )*
         }
@@ -655,8 +669,7 @@ macro_rules! setters {
         impl<H> Pool<H> {
             $(
                 fn $set(&mut self, value: $ty) {
-                    // SAFETY: `p` is the live pool for this operation; written in place.
-                    unsafe { (*self.p).$field = value };
+                    self.record_mut().$field = value;
                 }
             )*
         }
@@ -759,12 +772,6 @@ impl<H: PoolHost> Pool<H> {
         let worker = self.record().worker(index as usize);
         assert!(worker.is_some(), "worker {index} out of range");
         worker.unwrap_or_else(|| unreachable!())
-    }
-
-    /// The live pool this runs over.
-    fn record(&self) -> &PoolRecord {
-        // SAFETY: `p` is the live pool this runs over.
-        unsafe { &*self.p }
     }
 
     /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
@@ -1739,8 +1746,7 @@ mod tests {
     }
 
     fn record(pool: &mut Pool<Script>) -> &mut PoolRecord {
-        // SAFETY: the fixture's record.
-        unsafe { &mut *pool.p }
+        pool.record_mut()
     }
 
     fn ops(pool: &Pool<Script>) -> Vec<u32> {

@@ -156,7 +156,7 @@ impl Connection for Read<'_> {
         let (at, size) = (if whole { 0 } else { b.len() }, b.size());
         let start = b.as_mut_ptr().wrapping_add(at);
         // SAFETY: the live socket and `size - at` writable bytes at `start`.
-        let received = unsafe { socket_recv(self.socket.as_ptr(), start.cast(), size - at, 0) };
+        let received = unsafe { socket_recv(self.socket, start.cast(), size - at, 0) };
         received as i64
     }
 

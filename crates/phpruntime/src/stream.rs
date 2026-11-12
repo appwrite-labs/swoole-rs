@@ -869,7 +869,7 @@ fn enable_crypto(
         if !ssl_set_options(socket, context)? || !socket.ssl_handshake() {
             return Ok(-1);
         }
-    } else if !activate && socket.ssl_available() && !socket.ssl().is_null() {
+    } else if !activate && socket.ssl_available() && socket.has_ssl() {
         socket.ssl_close();
         return Ok(-1);
     }
