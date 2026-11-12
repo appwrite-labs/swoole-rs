@@ -17,7 +17,7 @@ use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
     message,
-    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy, zend_class_entry, zend_object, zval},
+    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy, zend_object, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
