@@ -879,11 +879,10 @@ fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvDat
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
         let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn);
-        crate::session::session_new(
+        crate::session::session_own(
             session_id,
             default_ctx,
             max_body_size,
-            false,
             Box::new(|ctx, _| swoole_rs_phphttp::http2_request(ctx)),
         );
         SessionState::find(session_id)
@@ -1001,7 +1000,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
                 stream
                     .remote_window_size
                     .set(credit(stream.remote_window_size.get(), value));
-                if !session.is_coro {
+                if !session.is_coro() {
                     stream.wake();
                 }
             }
