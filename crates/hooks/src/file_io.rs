@@ -3,7 +3,7 @@
 //! lambda over a `File` did. Each warning is logged on the pool thread with the
 //! failing call's errno.
 use crate::stdio::{Offload, on_pool};
-use libc::{c_char, c_int};
+use libc::c_int;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
@@ -183,30 +183,6 @@ pub fn write_file(file: &CStr, data: &[u8], lock: bool, flags: c_int) -> isize {
         sys_warning,
         Some(crate::offload::async_job),
     )
-}
-
-/// `ssize_t System::write_file(const char *file, const char *buf, size_t length, bool
-/// lock, int flags)`, whose signature is plain C; the hooks-system-rust cases call it.
-///
-/// # Safety
-/// `file` is a C string and `buf` holds `length` bytes; in a coroutine.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6System10write_fileEPKcS3_mbi")
-)]
-#[must_use]
-pub unsafe extern "C" fn system_write_file(
-    file: *const c_char,
-    buf: *const u8,
-    length: usize,
-    lock: bool,
-    flags: c_int,
-) -> isize {
-    // SAFETY: the caller's C string.
-    let file = unsafe { CStr::from_ptr(file) };
-    // SAFETY: the caller's `length` bytes.
-    let data = unsafe { std::slice::from_raw_parts(buf, length) };
-    write_file(file, data, lock, flags)
 }
 
 fn read_with(file: &CStr, lock: bool, warn: Warn, offload: Option<Offload>) -> Option<Vec<u8>> {

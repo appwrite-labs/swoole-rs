@@ -165,14 +165,10 @@ use swoole_rs_tls::upstream::socket_writev_sync as writev_sync;
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
 ///
 /// # Safety
-/// `socket` is a live record and `iov` denotes `count` readable iovecs.
+/// `iov` denotes `count` readable iovecs.
 #[cfg(not(feature = "upstream-symbols"))]
-unsafe fn writev_sync(socket: *mut SocketRecord, iov: *const libc::iovec, count: usize) -> isize {
+unsafe fn writev_sync(socket: Socket<'_>, iov: *const libc::iovec, count: usize) -> isize {
     let count = c_int::try_from(count).unwrap_or(c_int::MAX);
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
     let fd = socket.fd();
     // SAFETY: as the caller promises.
     unsafe { libc::writev(fd, iov, count) }
@@ -709,6 +705,8 @@ impl Bus {
         data: *const u8,
     ) -> bool {
         use swoole_rs_reactor::event_api;
+        // SAFETY: the caller's live record.
+        let record = unsafe { Socket::from_ptr(socket) };
         // `write` passes iovecs over `head` and the caller's bytes.
         let send = |iov: &[libc::iovec]| {
             if event_api::swoole_event_is_available() {
@@ -716,17 +714,15 @@ impl Bus {
                 // `write`'s iovecs, over `head` and inside the caller's `data`.
                 unsafe { event_api::swoole_event_writev(socket.cast(), iov.as_ptr(), iov.len()) }
             } else {
-                // SAFETY: as above.
-                unsafe { writev_sync(socket, iov.as_ptr(), iov.len()) }
+                record.map_or(-1, |record| {
+                    // SAFETY: as above.
+                    unsafe { writev_sync(record, iov.as_ptr(), iov.len()) }
+                })
             }
         };
         let reduce = || {
             let error = errno();
-            // SAFETY: the caller's live record.
-            let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-                return false;
-            };
-            socket.catch_pipe_error(error) == REDUCE_SIZE
+            record.is_some_and(|socket| socket.catch_pipe_error(error) == REDUCE_SIZE)
         };
         if let Some(counter) = self.next_id {
             head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
