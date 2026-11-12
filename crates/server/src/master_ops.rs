@@ -146,10 +146,6 @@ struct Objects<'a> {
     state: &'a ServerState,
 }
 
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written under the server's own synchronization as master.cc did"
-)]
 impl<'a> Objects<'a> {
     /// The context's live server.
     fn server(&self) -> crate::view::Server<'a> {
@@ -219,15 +215,17 @@ impl<'a> Objects<'a> {
     fn port_socket(&self) -> Option<Socket<'_>> {
         self.port().listening_socket()
     }
-    fn port(&self) -> &mut PortConfig {
-        // SAFETY: the ops reading it run with a live port in the context.
-        unsafe { crate::port_config::of(self.ctx.port) }
+    fn port(&self) -> &PortConfig {
+        // SAFETY: the ops reading it run with a live port in the context, which no
+        // op writes while it reads.
+        unsafe { &*self.ctx.port.cast::<PortConfig>() }
     }
-    /// The settings of `serv->ports[index]`, if there is one.
-    fn port_at(&self, index: u64) -> Option<&mut PortConfig> {
-        let port = self.tables().ports().get(usize::try_from(index).ok()?)?;
-        // SAFETY: one of the server's live ports.
-        Some(unsafe { port.config_mut() })
+    /// `serv->ports[index]`, if there is one.
+    fn port_at(&self, index: u64) -> Option<crate::view::Port<'_>> {
+        self.tables()
+            .ports()
+            .get(usize::try_from(index).ok()?)
+            .copied()
     }
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
@@ -548,7 +546,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     // SAFETY: as `config`, for the counters `swr_v1_server_new` mapped; and before
     // the server forks or after its workers are reaped, no process shares them.
     let counters = || unsafe { &mut *gs() };
-    let port_gs = |index| Some(o.port_at(index)?.gs.cast::<PortCounters>());
+    let port_gs = |index| Some(o.port_at(index)?.config().gs.cast::<PortCounters>());
     // SAFETY: as `counters`, for a port's slot in `port_gs_list`: null, or mapped.
     let port_counters = |index| unsafe { port_gs(index)?.as_mut() };
     let mode = || u64::from(o.config().mode_);
@@ -625,7 +623,8 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 return Some(0);
             }
             for index in 0..count {
-                o.port_at(index as u64)?.gs = list.wrapping_add(index).cast();
+                o.port_at(index as u64)?
+                    .set_gs(list.wrapping_add(index).cast());
             }
             1
         }
@@ -1470,11 +1469,11 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_PORT_MAX_LENGTH | OP_PORT_MIN_LENGTH => {
-            let protocol = &mut o.port_at(arg)?.protocol;
+            let port = o.port_at(arg)?;
             if op == OP_PORT_MIN_LENGTH {
-                protocol.package_max_length = BUFFER_MIN_SIZE;
+                port.set_package_max_length(BUFFER_MIN_SIZE);
             }
-            u64::from(protocol.package_max_length)
+            u64::from(port.config().protocol.package_max_length)
         }
         OP_ST_PIPE_BIND => {
             let fd = c_int::try_from(arg).ok()?;
@@ -2466,19 +2465,20 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_NEW => {
-            let ls = port_new(serv);
-            o.ctx.port = ls;
-            let port = o.port();
+            let mut port = port_new(serv);
             port.r#type = o.ctx.socket_type;
             port.port = o.ctx.number;
-            let host = o.host();
-            if port.host.set(host.to_bytes()) < 0 {
+            if port.host.set(o.host().to_bytes()) < 0 {
                 // `throw std::bad_alloc()`, which nothing catches.
                 std::process::abort();
             }
             if arg != 0 {
                 port.r#type = o.ctx.socket_type & !SOCK_SSL;
                 port.ssl = 1;
+            }
+            let ls = Box::into_raw(port).cast();
+            o.ctx.port = ls;
+            if arg != 0 {
                 (methods().ssl_context_init)(ls);
             }
             0
@@ -2494,7 +2494,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             1
         }
         OP_PORT_IMPORT => {
-            let ls = port_new(serv);
+            let ls = Box::into_raw(port_new(serv)).cast();
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let fd = arg as c_int;
             if !(methods().import)(ls, fd) {

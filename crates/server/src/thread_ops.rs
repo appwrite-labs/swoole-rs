@@ -450,14 +450,15 @@ pub(crate) fn answer(
             unsafe { methods::send_to_connection(server, &send) };
             0
         }
-        OP_ON_FINISH | OP_ON_PIPE_MESSAGE => {
-            let slot = if op == OP_ON_FINISH {
-                CB_FINISH
-            } else {
-                CB_PIPE_MESSAGE
-            };
-            let slot = state.callbacks.slot(slot)?;
-            // SAFETY: the slot's `(Server *, EventData *)` callback over the message.
+        OP_ON_FINISH => {
+            let slot = state.callbacks.slot(CB_FINISH)?;
+            // SAFETY: the slot's `int (Server *, EventData *)` callback; its result is discarded.
+            let _ = unsafe { slot.receive(serv, resp.cast_mut().cast()) };
+            0
+        }
+        OP_ON_PIPE_MESSAGE => {
+            let slot = state.callbacks.slot(CB_PIPE_MESSAGE)?;
+            // SAFETY: the slot's `void (Server *, EventData *)` callback over the message.
             unsafe { slot.call(serv, resp.cast_mut().cast()) };
             0
         }

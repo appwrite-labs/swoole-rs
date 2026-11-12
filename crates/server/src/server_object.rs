@@ -154,12 +154,13 @@ impl SharedServer {
     }
 }
 
-/// `new ListenPort(serv)`: a port of `serv` with the default settings.
-pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
+/// `new ListenPort(serv)`: a port of `serv` with the default settings, whose box
+/// becomes the `ListenPort *`.
+pub(crate) fn port_new(serv: *mut c_void) -> Box<PortConfig> {
     let buffer_size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
     let mut config = PortConfig::boxed(c_int::try_from(buffer_size).unwrap_or(c_int::MAX));
     config.protocol.private_data_2 = serv;
-    Box::into_raw(config).cast()
+    config
 }
 
 /// `delete port`: its TLS state, its settings, and the record of a socket

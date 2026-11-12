@@ -20,6 +20,21 @@ pub struct RecvData {
     pub(crate) data: *const c_void,
 }
 
+impl RecvData {
+    /// The event's head.
+    #[must_use]
+    pub fn info(&self) -> &DataHead {
+        &self.info
+    }
+
+    /// Where the event's payload starts: `info.len` bytes, or what the head's
+    /// flags say it is.
+    #[must_use]
+    pub fn data(&self) -> *const c_void {
+        self.data
+    }
+}
+
 /// `serv->get_thread(id)`.
 pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
     let threads = state.tables_ref().reactor_threads;

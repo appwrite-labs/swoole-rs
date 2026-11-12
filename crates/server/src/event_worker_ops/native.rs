@@ -109,6 +109,15 @@ impl Context<'_> {
             unsafe { slot.call(self.serv.raw(), data) };
         }
     }
+
+    fn worker_error(&self) {
+        if let Some(slot) = self.state().callbacks.slot(CB_WORKER_ERROR) {
+            // SAFETY: `onWorkerError` takes the server, the worker and its exit status.
+            unsafe {
+                slot.worker_error(self.serv.raw(), self.worker.cast(), self.status.cast_mut());
+            };
+        }
+    }
 }
 
 /// The status of a byte count, as C++'s `ssize_t` in a `uint64_t`.
@@ -198,7 +207,10 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_FINISH => {
-            ctx.callback(CB_FINISH, ctx.bus().buffer().cast());
+            if let Some(slot) = ctx.state().callbacks.slot(CB_FINISH) {
+                // SAFETY: `onFinish` is `int (Server *, EventData *)`; its result is discarded.
+                let _ = unsafe { slot.receive(ctx.serv.raw(), ctx.bus().buffer().cast()) };
+            }
             0
         }
         OP_ON_PIPE_MESSAGE => {
@@ -206,10 +218,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_WORKER_ERROR => {
-            if let Some(slot) = ctx.state().callbacks.slot(CB_WORKER_ERROR) {
-                // SAFETY: `onWorkerError` takes the server, the worker and its exit status.
-                unsafe { slot.dispatch(ctx.serv.raw(), ctx.worker.cast(), ctx.status.cast_mut()) };
-            }
+            ctx.worker_error();
             0
         }
         OP_COMMAND_REQUEST => {
