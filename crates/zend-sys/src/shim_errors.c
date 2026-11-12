@@ -70,6 +70,12 @@ int swr_zend_try_get_string(zval *value, zend_string **out) {
     SWR_TRAP(*out = zval_get_string(value));
 }
 
+int swr_zend_try_read_property(zend_class_entry *scope, zend_object *object, const char *name,
+                               size_t length, zval *rv, zval **out) {
+    *out = NULL;
+    SWR_TRAP(*out = zend_read_property(scope, object, name, length, 1, rv));
+}
+
 int swr_zend_try_ptr_dtor(zval *value) {
     SWR_TRAP(zval_ptr_dtor(value));
 }

@@ -21,8 +21,7 @@ use swoole_rs_zend::{
     string::ZBuf,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zend_object_addref,
-        swr_zend_object_release, zend_class_entry, zend_get_executed_filename, zend_object,
-        zend_read_property, zend_string,
+        swr_zend_object_release, zend_get_executed_filename, zend_object, zend_string,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -76,10 +75,6 @@ impl Drop for Process {
             unsafe { swr_zend_object_release(socket) };
         }
     }
-}
-
-pub(crate) fn entry() -> *mut zend_class_entry {
-    PROCESS.entry()
 }
 
 /// `Swoole\Process`.
@@ -293,15 +288,17 @@ pub unsafe fn start_worker(worker: *mut c_void, this: &Value) -> c_int {
 
 /// [`start_worker`] on `$this`.
 fn start_child(worker: *mut c_void, this: &Value) -> c_int {
-    let Some(std) = this.object() else {
+    if this.object().is_none() {
         return -1;
+    }
+    // The declared private property.
+    let callable = match this.read_property(Some(&PROCESS), c"callback") {
+        Ok(callback) => callback.as_deref().and_then(Callable::create),
+        Err(bailout) => {
+            bailout.defer();
+            None
+        }
     };
-    let mut slot = swoole_rs_zend::long_zval(0);
-    // SAFETY: a Process object; the declared private property's slot comes back.
-    let callback =
-        unsafe { zend_read_property(entry(), std, c"callback".as_ptr(), 8, true, &raw mut slot) };
-    // SAFETY: a live property, or `slot`, which outlives it.
-    let callable = unsafe { Value::from_ptr(callback) }.and_then(Callable::create);
     let Some(callable) = callable else {
         swoole_rs_zend::bailout::finish();
         return -1;
