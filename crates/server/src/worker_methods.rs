@@ -88,7 +88,7 @@ pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 
 /// `Server::create_worker(worker)`: the worker's process-shared mutex, from the
 /// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
-pub fn create_worker(serv: view::Server<'_>, worker: &mut WorkerRecord) {
+pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     let size = u32::try_from(size_of::<SharedMutex>()).unwrap_or(u32::MAX);
     let lock = swoole_rs_memory::members::pool::alloc(size);
     // SAFETY: null, or `size` fresh bytes, aligned by the pool, which the global pool
@@ -100,17 +100,19 @@ pub fn create_worker(serv: view::Server<'_>, worker: &mut WorkerRecord) {
     if lock.init() != 0 {
         std::process::abort();
     }
-    worker.lock = Some(lock);
-    if !worker.pipe_object.is_null() {
+    worker.set_lock(Some(lock));
+    let pipe = worker.pipe_object();
+    if !pipe.is_null() {
         // SAFETY: the live server, and the live pipe of its worker.
-        unsafe { crate::server_methods::store_pipe_fd(serv.raw(), worker.pipe_object) };
+        unsafe { crate::server_methods::store_pipe_fd(serv.raw(), pipe) };
     }
 }
 
 /// `Server::destroy_worker(worker)`: frees the lock [`create_worker`] gave it.
-pub fn destroy_worker(worker: &mut WorkerRecord) {
+pub fn destroy_worker(worker: Worker<'_>) {
     // The global pool's `free` is a no-op: the storage stays.
-    if let Some(lock) = worker.lock.take() {
+    if let Some(lock) = worker.lock() {
+        worker.set_lock(None);
         lock.destroy();
     }
 }
@@ -123,8 +125,7 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
     for id in 0..count {
         // `get_worker(uint16_t)`, as the C++ loop called it.
         let id = u16::try_from(id & 0xffff).unwrap_or_default();
-        // SAFETY: null past the last, else one of the server's live event workers.
-        if let Some(worker) = unsafe { serv.worker(id).as_mut() } {
+        if let Some(worker) = serv.worker_record(id) {
             create_worker(serv, worker);
         }
     }
@@ -147,17 +148,14 @@ pub fn create_user_workers(serv: view::Server<'_>, config: &mut crate::ServerCon
         return false;
     }
     for (index, &worker) in pending.iter().enumerate() {
-        let worker = worker.cast::<WorkerRecord>();
-        // SAFETY: a live worker `add_worker` added, which outlives the server.
-        let record = unsafe { worker.read() };
-        // SAFETY: its slot in the fresh shared array of `count` records.
-        unsafe { copies.wrapping_add(index).write(record) };
-        // SAFETY: as above; nothing else borrows it during the call.
-        let Some(worker) = (unsafe { worker.as_mut() }) else {
+        // SAFETY: null or a live worker `add_worker` added, which outlives the server.
+        let Some(worker) = (unsafe { Worker::from_raw(worker.cast()) }) else {
             continue;
         };
+        // SAFETY: its slot in the fresh shared array of `count` records.
+        unsafe { copies.wrapping_add(index).write(worker.get()) };
         create_worker(serv, worker);
-        Worker::from(worker).set_kind(SW_USER_WORKER);
+        worker.set_kind(SW_USER_WORKER);
     }
     true
 }
