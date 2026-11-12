@@ -1276,10 +1276,14 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes from its head, which
             // nothing else reads or writes meanwhile.
             let field = unsafe { core::slice::from_raw_parts_mut(name.cast::<u8>(), room) };
-            // The name, cut to leave room for its NUL, then the NUL.
-            let source = o.data_bytes().iter().take(room - 1).chain([&0]);
-            for (slot, &byte) in field.iter_mut().zip(source) {
-                *slot = byte;
+            // The name, cut to leave room for its NUL, then the NUL. One copy: a loop
+            // over the bytes costs the static handler about 800 instructions a file.
+            let source = o.data_bytes();
+            let (name_bytes, _) = source.split_at(source.len().min(room - 1));
+            let (target, rest) = field.split_at_mut(name_bytes.len());
+            target.copy_from_slice(name_bytes);
+            if let Some(nul) = rest.first_mut() {
+                *nul = 0;
             }
             name.expose_provenance() as u64
         }
