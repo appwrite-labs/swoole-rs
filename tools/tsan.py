@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
-# Reports outside upstream's run that main's run has (31 in run 43092061417). Lower it with each fix.
-LIMIT = 31
+# Reports outside upstream's run that main's run has (30 in run 43126897119). Lower it with each fix.
+LIMIT = 30
 
 
 def sanitized(reports, name):
