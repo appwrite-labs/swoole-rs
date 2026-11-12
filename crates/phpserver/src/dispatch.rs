@@ -40,9 +40,7 @@ use swoole_rs_zend::{
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 
-use crate::instance::{
-    php_swoole_get_recv_data, php_swoole_server_get_callback, php_swoole_server_zval_ptr,
-};
+use crate::instance::{php_swoole_get_recv_data, php_swoole_server_get_callback};
 use swoole_rs_server::{server_methods, view};
 
 /// What the dispatch reads of the Server, per event.
@@ -241,10 +239,7 @@ fn prepare_worker(server: view::Server<'_>) {
 /// that takes no reference.
 #[must_use]
 pub fn zserv() -> zval {
-    let zserv = php_swoole_server_zval_ptr();
-    // SAFETY: the server's live object zval; copied without a reference, as
-    // upstream's `args[0] = *zserv`.
-    unsafe { *zserv }
+    ServerObject::running().zval()
 }
 
 pub(crate) fn dtor(value: &mut zval) {
@@ -1206,15 +1201,6 @@ pub(crate) unsafe extern "C" fn length_func(
     dtor(&mut data);
     bailout::finish();
     result
-}
-
-/// `*php_swoole_server_zval_ptr(serv) = *zserv`: no reference is taken.
-pub(crate) fn set_server_zval(zserv: *mut zval) {
-    let slot = php_swoole_server_zval_ptr();
-    // SAFETY: the live object zval.
-    let value = unsafe { *zserv };
-    // SAFETY: the server's instance slot.
-    unsafe { *slot = value };
 }
 
 /// The "`<class>->on<event> handler error`" warning of a failed call.
