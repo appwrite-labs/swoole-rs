@@ -33,8 +33,7 @@ impl CpuSet {
 
     /// `sched_getaffinity(pid)` into this set: 0, or -1 with `errno` set.
     pub fn get_process(&mut self, pid: libc::pid_t) -> c_int {
-        // SAFETY: a writable set of the size passed.
-        unsafe { libc::sched_getaffinity(pid, Self::BYTES, &raw mut self.0) }
+        get_process(pid, &mut self.0)
     }
 
     /// `sched_setaffinity(pid)`: 0, or -1 with `errno` set.
@@ -63,6 +62,12 @@ impl CpuSet {
     pub fn cpus(&self) -> impl Iterator<Item = usize> + '_ {
         (0..Self::SIZE).filter(|&cpu| self.contains(cpu))
     }
+}
+
+/// `sched_getaffinity(pid)` into `set`: 0, or -1 with `errno` set.
+pub(crate) fn get_process(pid: libc::pid_t, set: &mut libc::cpu_set_t) -> c_int {
+    // SAFETY: a writable set of the size passed.
+    unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), set) }
 }
 
 #[cfg(test)]

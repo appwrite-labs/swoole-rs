@@ -80,24 +80,17 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
     c_int::from(c.socket.read(|s| s.removed) != 0)
 }
 
-/// `int redis::recv_packet(Protocol *, Connection *, String *)`.
+/// `int redis::recv_packet(Protocol *, Connection *, String *)` over the connection's
+/// protocol, record and `socket`.
 ///
 /// # Safety
-/// `protocol`, `conn` and its socket, and `buffer` are live; `conn->object` is
-/// null or this receive's request.
+/// `buffer` is live; `conn->object` is null or this receive's request.
 pub(crate) unsafe fn recv_packet(
-    protocol: *const Protocol,
-    conn: *mut c_void,
+    protocol: &Protocol,
+    conn: &mut ConnectionRecord,
+    socket: Socket<'_>,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: as the caller promises; nothing writes the protocol during a receive.
-    let protocol = unsafe { &*protocol };
-    // SAFETY: as the caller promises.
-    let conn = unsafe { &mut *conn.cast::<ConnectionRecord>() };
-    // SAFETY: the connection's live socket, as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(conn.socket.cast()) }) else {
-        return -1;
-    };
     let mut context = Connection {
         protocol,
         socket,
@@ -150,6 +143,7 @@ mod tests {
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
         conn.fd = pairs[1];
         conn.socket = (&raw mut socket).cast();
+        let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;
@@ -157,7 +151,7 @@ mod tests {
         let buffer_size = buffer.size();
 
         assert_eq!(
-            unsafe { recv_packet(&raw const protocol, (&raw mut conn).cast(), &raw mut buffer) },
+            unsafe { recv_packet(&protocol, &mut conn, handle, &raw mut buffer) },
             SW_ERR
         );
         assert_eq!(buffer.len(), 1);

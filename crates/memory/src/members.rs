@@ -635,8 +635,8 @@ fn table_warning(message: &[u8]) {
 /// `swoole_hash_php` of the bytes a row compares: a made table's hash.
 fn php_hash(key: &[u8], compared: usize) -> u64 {
     let key = key.get(..compared).unwrap_or(key);
-    // SAFETY: `key` holds its length.
-    unsafe { swoole_rs_utilities::misc::swoole_hash_php(key.as_ptr().cast(), key.len()) }
+    // `char`'s signedness, which the hash promotes, as `swoole_hash_php` passes it.
+    swoole_rs_utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
 }
 
 /// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
@@ -699,25 +699,28 @@ impl SharedTable {
     /// [`swr_table_make`], keys hashed with `hash`.
     #[must_use]
     pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
-        let mut table = NonNull::new(swr_table_make(rows, conflict))?;
-        // SAFETY: a made table nothing else references yet.
-        unsafe { table.as_mut() }.set_hash(hash);
-        Some(Self {
-            table,
+        let mut made = Self {
+            table: NonNull::new(swr_table_make(rows, conflict))?,
             destroyed: std::cell::Cell::new(false),
-        })
+        };
+        made.table_mut().set_hash(hash);
+        Some(made)
+    }
+
+    fn table_mut(&mut self) -> &mut Table {
+        // SAFETY: a made table, live until this drops, and `&mut self` excludes every
+        // borrow of it.
+        unsafe { self.table.as_mut() }
     }
 
     /// `Table::add_column`.
     pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
-        // SAFETY: a live table, and `&mut self` excludes every borrow of it.
-        unsafe { self.table.as_mut() }.add_column(name, kind, size)
+        self.table_mut().add_column(name, kind, size)
     }
 
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
-        // SAFETY: a made table, which `&mut self` borrows alone.
-        swr_table_create(unsafe { self.table.as_mut() })
+        swr_table_create(self.table_mut())
     }
 
     /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.

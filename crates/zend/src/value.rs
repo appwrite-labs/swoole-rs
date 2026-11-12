@@ -40,18 +40,6 @@ pub unsafe fn obj_of(object: *const zval) -> *mut zend_object {
     unsafe { object.cast::<*mut zend_object>().read() }
 }
 
-/// `zend_array_count(Z_ARRVAL_P(array))`.
-/// # Safety
-/// `array` is a live array zval.
-#[must_use]
-#[inline]
-pub unsafe fn count(array: *const zval) -> u32 {
-    // SAFETY: per the caller.
-    unsafe { crate::Value::from_ptr(array) }
-        .and_then(crate::Value::array)
-        .map_or(0, crate::Array::count)
-}
-
 /// The two stores of Zend's `ZVAL_*` setters: the value and its type info,
 /// leaving `u2` (a bucket's chain, a frame's argument count) untouched.
 /// # Safety

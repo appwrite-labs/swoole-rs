@@ -199,17 +199,14 @@ impl HttpServer {
     }
 
     /// `create_context`: the settings, the socket and the parser.
-    fn context(&self, socket: Co, zconn: *mut zval) -> Ctx {
+    fn context(&self, socket: Co, zconn: &Value) -> Ctx {
         let mut context = context::context_new(i64::from(socket.sock_fd()));
         crate::parse::init_request_parser(context);
-        // SAFETY: the live connection object.
-        if let Some(zconn) = unsafe { Value::from_ptr(zconn) } {
-            if let Some(response) = context.state().response.zobject.props() {
-                response.value(c"socket", zconn);
-            }
-            // SAFETY: a coroutine socket object.
-            unsafe { context::bind(context.state(), zconn) };
+        if let Some(response) = context.state().response.zobject.props() {
+            response.value(c"socket", zconn);
         }
+        // SAFETY: a coroutine socket object.
+        unsafe { context::bind(context.state(), zconn) };
         let state = context.state();
         state
             .compression_types
@@ -314,11 +311,10 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 fn request_data(mut context: Ctx, buffer: &mut Buffer, length: usize) {
     let data = buffer.pop(BUFFER_SIZE_BIG);
     let string = string::from_val(data);
-    // SAFETY: the zend string allocator's string, holding `length` bytes
-    // and room for the NUL.
-    unsafe { string::truncate(string, length) };
-    // SAFETY: the string's one reference moves into `zdata`.
-    context.state().request.zdata = Owned::string(unsafe { ZString::from_raw(string) });
+    // SAFETY: the zend string allocator's unshared string, holding `length`
+    // bytes and room for the NUL; its one reference moves into `zdata`.
+    let string = unsafe { string::ZBuf::from_raw(string, length) };
+    context.state().request.zdata = Owned::string(string.into_zstring());
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
@@ -861,7 +857,8 @@ struct Connection<'a> {
     this: &'a Value,
     server: &'a HttpServer,
     socket: Co,
-    zconn: *mut zval,
+    /// The connection object, held for the loop.
+    zconn: &'a Value,
     buffer: *mut Buffer,
 }
 
@@ -892,18 +889,22 @@ enum Step {
 }
 
 fn on_accept(call: &Call) {
-    let Ok(zconn) = call.arity(1, 1).and_then(|()| call.object(1)) else {
+    if call.arity(1, 1).and_then(|()| call.object(1)).is_err() {
         call.set_null();
         return;
-    };
+    }
     let (Some(this), Some(server)) = (call.this_value(), server_of(call)) else {
         call.set_null();
         return;
     };
-    let conn = call.value(1).map(Value::dereferenced);
-    let socket = conn.as_deref().map_or(ptr::null_mut(), get_socket);
+    // The connection object, held for the loop.
+    let Some(held) = call.value(1).map(Value::dereferenced) else {
+        call.set_null();
+        return;
+    };
+    let zconn: &Value = &held;
     // SAFETY: the object's live socket, which the server's array keeps.
-    let socket = unsafe { Co::of(socket) };
+    let socket = unsafe { Co::of(get_socket(zconn)) };
     // The request allocator first.
     // SAFETY: the static zend string allocator.
     unsafe { socket.set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator()) };
@@ -914,10 +915,11 @@ fn on_accept(call: &Call) {
         return;
     }
     let cid = swoole_rs_phpcoroutines::get_cid();
-    // SAFETY: the server's live array takes a reference to the connection.
-    unsafe { z::swr_zval_try_addref(zconn) };
-    // SAFETY: as above.
-    unsafe { z::zend_hash_index_add(server.clients(), cid.cast_unsigned(), zconn) };
+    // A reference for the server's array, which stays taken when the array
+    // already holds the key, as upstream's.
+    let mut kept = zconn.copy().into_zval();
+    // SAFETY: the server's live array, which copies the connection's zval in.
+    unsafe { z::zend_hash_index_add(server.clients(), cid.cast_unsigned(), &raw mut kept) };
     let (remote_addr, remote_port) = address(socket);
     // The network socket's address becomes the local one.
     let _named = socket.getsockname();
@@ -1083,9 +1085,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         current = None;
         released?;
         let running = conn.server.running.get();
-        // SAFETY: a live connection object.
-        let zconn = unsafe { Value::from_ptr(conn.zconn) };
-        if !running || !keep_alive || zconn.is_none_or(is_socket_closed) {
+        if !running || !keep_alive || is_socket_closed(conn.zconn) {
             break;
         }
         header_completed = false;

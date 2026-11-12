@@ -157,8 +157,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     unsafe { swoole_exception_ce = EXCEPTION.entry() };
     // SAFETY: as above.
     unsafe { swoole_error_ce = ERROR.entry() };
-    // SAFETY: MINIT, after Zend registered the module's functions.
-    if let Err(error) = unsafe { table::register_aliases(flags) } {
+    if let Err(error) = table::register_aliases(&minit, flags) {
         error.defer();
     } else {
         module::startup(module_number);

@@ -60,6 +60,19 @@ pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
     unsafe { view::Server::from_raw(reactor.fields().ptr) }
 }
 
+/// A context over the server reactor at `reactor` and its server.
+///
+/// # Safety
+/// `reactor` is a live server `Reactor`, used on its own thread, whose `ptr` is the
+/// live `Server` for `'a`.
+#[inline]
+pub(crate) unsafe fn reactor_context<'a>(reactor: *mut c_void) -> ReactorContext<'a> {
+    // SAFETY: per the caller.
+    let reactor = unsafe { Reactor::of(reactor) };
+    // SAFETY: per the caller.
+    ReactorContext::new(unsafe { server(reactor) }, Some(reactor))
+}
+
 /// A context over the reactor, `reactor->ptr` (a reactor thread's server) and the event.
 fn context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorContext<'a> {
     let reactor = Reactor::running(reactor);
@@ -129,9 +142,7 @@ pub unsafe extern "C-unwind" fn close_connection(
     socket: *mut SocketRecord,
 ) -> c_int {
     // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
-    // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
+    let mut ctx = unsafe { reactor_context(reactor) };
     // SAFETY: per the caller.
     ctx.sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
     run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
@@ -142,10 +153,8 @@ pub unsafe extern "C-unwind" fn close_connection(
 /// # Safety
 /// `thread` is the live `ReactorThread` that `reactor` belongs to.
 pub unsafe fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
-    // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
-    // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
+    // SAFETY: per the caller: the thread's reactor holds its live server.
+    let mut ctx = unsafe { reactor_context(reactor) };
     ctx.thread = thread;
     run(RUN_THREAD_SHUTDOWN, 0, &mut ctx);
 }

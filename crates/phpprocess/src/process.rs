@@ -16,8 +16,8 @@ use std::{
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Props, Value, bailout, handlers,
-    message, set_object,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Value, bailout, handlers, message,
+    set_object,
     string::ZBuf,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zend_object_addref,
@@ -696,9 +696,9 @@ fn start(call: &Call) {
             call.set_bool(false);
         }
         std::cmp::Ordering::Greater => {
-            let server = host::server_class();
-            // SAFETY: `$this`; upstream names Server as the scope of the public property.
-            unsafe { Props::new(server, call.this()) }.long(c"pid", i64::from(pid));
+            // Upstream names Server as the scope; the property is public, so
+            // the scope does not change which slot is written.
+            call.update_property_long(Some(&PROCESS), c"pid", i64::from(pid));
             call.set_long(i64::from(pid));
         }
         std::cmp::Ordering::Equal => {

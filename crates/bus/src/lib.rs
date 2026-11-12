@@ -20,6 +20,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -202,22 +203,26 @@ impl Bus {
         }
     }
 
+    /// The set buffer's header, shared with the reads and writes that go through the
+    /// buffer's pointer; `None` while no buffer is set.
+    fn head_cell(&self) -> Option<&Cell<BusHead>> {
+        // SAFETY: `set_buffer`'s contract: null, or a buffer that starts with the
+        // header `set_buffer` wrote, live until `set_buffer` (`&mut self`) replaces it.
+        unsafe { self.buffer.cast::<Cell<BusHead>>().as_ref() }
+    }
+
     /// The current message's head; an empty one while no buffer is set.
     fn head(&self) -> BusHead {
-        if self.buffer.is_null() {
-            return BusHead::default();
-        }
-        // SAFETY: `set_buffer`'s contract: a set buffer starts with a header, live
-        // until it is replaced.
-        unsafe { self.buffer.read() }
+        self.head_cell().map_or_else(BusHead::default, Cell::get)
     }
 
     fn set_flags(&self, flags: u8) {
-        if self.buffer.is_null() {
-            return;
+        if let Some(head) = self.head_cell() {
+            head.set(BusHead {
+                flags,
+                ..head.get()
+            });
         }
-        // SAFETY: as `head`.
-        unsafe { (*self.buffer).flags = flags };
     }
 
     fn data(&self) -> *mut u8 {
@@ -258,9 +263,9 @@ impl Bus {
     /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
     /// while no buffer is set.
     pub fn pass(&self, info: &BusHead, data: *const c_char) {
-        if self.buffer.is_null() {
+        let Some(current) = self.head_cell() else {
             return;
-        }
+        };
         let mut head = *info;
         if info.len > 0 {
             head.flags = PTR;
@@ -272,8 +277,7 @@ impl Bus {
             // SAFETY: the buffer holds at least a header and a pointer pair.
             unsafe { self.data().cast::<BusPacket>().write_unaligned(packet) };
         }
-        // SAFETY: as `head`.
-        unsafe { self.buffer.write(head) };
+        current.set(head);
     }
 
     /// `MessageBus::move_packet`: the current packet's block, now the caller's.
@@ -708,11 +712,11 @@ impl Bus {
         // `write` passes iovecs over `head` and the caller's bytes.
         let send = |iov: &[libc::iovec]| {
             if event_api::swoole_event_is_available() {
-                // SAFETY: the caller's live record and the write's iovecs, on the
-                // thread's live loop.
+                // SAFETY: the caller's live record, on the thread's live loop, and
+                // `write`'s iovecs, over `head` and inside the caller's `data`.
                 unsafe { event_api::swoole_event_writev(socket.cast(), iov.as_ptr(), iov.len()) }
             } else {
-                // SAFETY: the caller's live record and the write's iovecs.
+                // SAFETY: as above.
                 unsafe { writev_sync(socket, iov.as_ptr(), iov.len()) }
             }
         };

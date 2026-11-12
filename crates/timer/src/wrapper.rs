@@ -18,8 +18,7 @@ fn slot() -> *mut *mut Timer {
 }
 
 pub(crate) fn timer() -> *mut Timer {
-    // SAFETY: this thread's live slot.
-    unsafe { *slot() }
+    swoole_rs_corebase::thread_timer().cast()
 }
 
 /// Publishes `timer` (or null) as this thread's.

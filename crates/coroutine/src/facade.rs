@@ -9,7 +9,7 @@
 //! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
 use crate::context::{Context, Native};
 use crate::coroutine::{self, Co, Sched, run};
-use crate::scheduler::{bailed_out, current, resume, with_scheduler, yield_with_cancel};
+use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel};
 use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{
     Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, Routine, STACK_MARK, STACK_PROTECT, Scheduler,
@@ -244,9 +244,9 @@ pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     } else {
         ptr::null_mut()
     };
-    let resume_canceled = |co| {
-        // SAFETY: the canceled coroutine waits below.
-        unsafe { resume(co) };
+    // The canceled coroutine is `running`, which waits below while its canceler is set.
+    let resume_canceled = move |_| {
+        coroutine::resume(Sched::this(), running);
         true
     };
     // SAFETY: as the caller promises.

@@ -28,11 +28,30 @@ const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
 
-/// `signal_fci_caches`: the callable per signal (null: none).
-static CALLABLES: [AtomicPtr<c_void>; SLOTS] = [const { AtomicPtr::new(ptr::null_mut()) }; SLOTS];
+/// A signal's callable: null, or what [`Callable::into_raw`] gave up to
+/// [`Slot::replace`], the only writer.
+struct Slot(AtomicPtr<c_void>);
+
+impl Slot {
+    /// Whether a callable is set.
+    fn is_set(&self) -> bool {
+        !self.0.load(Ordering::Acquire).is_null()
+    }
+
+    /// Store `callable` (`None`: empty the slot), and take what was there.
+    fn replace(&self, callable: Option<Callable>) -> Option<Callable> {
+        let new = callable.map_or(ptr::null_mut(), Callable::into_raw);
+        // SAFETY: null or a callable `replace` stored, which the swap took out
+        // of the slot, so it is taken back once.
+        unsafe { Callable::from_raw(self.0.swap(new, Ordering::AcqRel)) }
+    }
+}
+
+/// `signal_fci_caches`: the callable per signal.
+static CALLABLES: [Slot; SLOTS] = [const { Slot(AtomicPtr::new(ptr::null_mut())) }; SLOTS];
 
 /// The slot of `signo`, or `None` outside `0..SW_SIGNO_MAX`.
-fn slot(signo: i64) -> Option<&'static AtomicPtr<c_void>> {
+fn slot(signo: i64) -> Option<&'static Slot> {
     CALLABLES.get(usize::try_from(signo).ok()?)
 }
 
@@ -43,7 +62,7 @@ extern "C" fn on_signal(signo: c_int) {
     };
     // SAFETY: null or the live callable `signal()` stored, which the slot
     // keeps; borrowed here, not taken.
-    let Some(callable) = (unsafe { Callable::from_raw(slot.load(Ordering::Acquire)) }) else {
+    let Some(callable) = (unsafe { Callable::from_raw(slot.0.load(Ordering::Acquire)) }) else {
         return;
     };
     let callable = std::mem::ManuallyDrop::new(callable);
@@ -96,10 +115,9 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let old = slot.load(Ordering::Acquire);
     let (callable, handler) = match callback {
         None => {
-            if old.is_null() {
+            if !slot.is_set() {
                 notice(
                     E_WARNING,
                     &message!("unable to find the callback of signal [{signo}]"),
@@ -110,9 +128,7 @@ pub(crate) fn signal(call: &Call) {
             // Reset the handler, then free the callable once the loop is past
             // any dispatch using it.
             host::signal_set(number, Handler::NONE, false);
-            slot.store(ptr::null_mut(), Ordering::Release);
-            // SAFETY: the callable this slot owned.
-            if let Some(old) = unsafe { Callable::from_raw(old) } {
+            if let Some(old) = slot.replace(None) {
                 host::callable_defer_free(old);
             }
             listeners(-1);
@@ -132,10 +148,9 @@ pub(crate) fn signal(call: &Call) {
     if !sync {
         host::signal_listen();
     }
-    // SAFETY: null or the previous callable, which the slot lets go of first:
-    // a destructor that bails out leaves it empty.
-    if let Some(old) = unsafe { Callable::from_raw(old) } {
-        slot.store(ptr::null_mut(), Ordering::Release);
+    // The slot lets go of the previous callable first: a destructor that bails
+    // out leaves it empty.
+    if let Some(old) = slot.replace(None) {
         if sync {
             drop(old);
         } else {
@@ -154,12 +169,7 @@ pub(crate) fn signal(call: &Call) {
     }
     // In a sync process the old callable's destructor ran, and may have called
     // signal() for this number: this call's callable replaces the one that stored.
-    let nested = slot.swap(
-        callable.map_or(ptr::null_mut(), Callable::into_raw),
-        Ordering::AcqRel,
-    );
-    // SAFETY: null or the nested call's callable, which no slot holds now.
-    if let Some(nested) = unsafe { Callable::from_raw(nested) } {
+    if let Some(nested) = slot.replace(callable) {
         drop(nested);
         listeners(-1);
     }
@@ -175,7 +185,7 @@ pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         return false;
     };
-    !slot.load(Ordering::Acquire).is_null()
+    slot.is_set()
 }
 
 /// `php_swoole_process_signal_clean`: free every signal callable and forget the
@@ -190,8 +200,7 @@ pub extern "C" fn php_swoole_process_signal_clean() {
 /// leaves a destructor's bailout pending.
 fn signal_clean() {
     for slot in &CALLABLES {
-        // SAFETY: null or a callable `signal()` stored, which no slot holds now.
-        drop(unsafe { Callable::from_raw(slot.swap(ptr::null_mut(), Ordering::AcqRel)) });
+        drop(slot.replace(None));
     }
     swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
 }

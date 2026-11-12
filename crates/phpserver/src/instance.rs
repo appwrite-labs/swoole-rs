@@ -3,8 +3,9 @@
 //! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
+use crate::lifecycle::ServerObject;
 use crate::port::PortProperty;
-use crate::server::{ServerData, THREAD};
+use crate::server::THREAD;
 use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::UnsafeCell,
@@ -21,7 +22,7 @@ use swoole_rs_corebase::{
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{event_worker_ops, server_methods, view};
 use swoole_rs_zend::{
-    Object, Value, bailout, string,
+    Value, bailout, string,
     sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
     value::{empty_string, set_str},
 };
@@ -54,12 +55,7 @@ pub fn php_swoole_server_zval_ptr() -> *mut zval {
 /// (also for any other value).
 #[must_use]
 pub fn php_swoole_server_get_ptr(value: &Value) -> *mut c_void {
-    let Some(object) = value.object_of(&crate::server::SERVER) else {
-        return ptr::null_mut();
-    };
-    // SAFETY: an object with the Server class's handlers, which only
-    // `lifecycle::create` makes, as an `Object<ServerData>`; the value holds it.
-    unsafe { (*Object::<ServerData>::data_ptr(object)).serv }
+    ServerObject::of(value).map_or(ptr::null_mut(), ServerObject::serv)
 }
 
 /// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.

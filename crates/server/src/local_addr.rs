@@ -65,15 +65,17 @@ unsafe extern "C" {
 /// `inet_ntop`, as `network::Address::get_addr` formats.
 fn ntop(v6: bool, bytes: &[u8]) -> CString {
     let family = if v6 { libc::AF_INET6 } else { libc::AF_INET };
-    let mut out = [0 as c_char; 64];
+    let mut out = [0_u8; 64];
     let len = libc::socklen_t::try_from(out.len()).unwrap_or(0);
     // SAFETY: `bytes` holds an address of `family` and `out` has `len` bytes.
-    let text = unsafe { inet_ntop(family, bytes.as_ptr().cast(), out.as_mut_ptr(), len) };
+    let text = unsafe { inet_ntop(family, bytes.as_ptr().cast(), out.as_mut_ptr().cast(), len) };
     if text.is_null() {
         return CString::default();
     }
-    // SAFETY: `inet_ntop` wrote a terminated string into `out`.
-    unsafe { CStr::from_ptr(out.as_ptr()) }.to_owned()
+    // `inet_ntop` wrote a terminated string into `out`.
+    CStr::from_bytes_until_nul(&out)
+        .map(CStr::to_owned)
+        .unwrap_or_default()
 }
 
 /// Reads the interfaces that are up. `None` when `getifaddrs` fails, with `errno` set.

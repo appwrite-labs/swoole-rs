@@ -320,6 +320,12 @@ impl ServerObject {
         Self(Value::of(&mut zserv).object().unwrap_or(ptr::null_mut()))
     }
 
+    /// The Server object `value` holds, if it is one: only [`create`] makes
+    /// objects with the Server class's handlers. The value keeps it live.
+    pub(crate) fn of(value: &Value) -> Option<Self> {
+        value.object_of(&SERVER).map(Self)
+    }
+
     pub(crate) fn raw(self) -> *mut zend_object {
         self.0
     }

@@ -20,9 +20,8 @@ use std::{
     ptr,
 };
 use swoole_rs_zend::{
+    ZStr,
     bailout::{self, Bailout},
-    string::bytes,
-    sys::zend_string,
 };
 
 /// `SW_HTTP_MAX_APPEND_DATA`: a larger body is sent on its own, uncopied.
@@ -40,7 +39,7 @@ pub(crate) use context::{close, send};
 pub(crate) fn http2(
     ctx: Ctx,
     op: c_int,
-    data: *mut zend_string,
+    data: Option<&ZStr>,
     offset: i64,
     length: usize,
 ) -> Result<bool, Bailout> {
@@ -59,7 +58,7 @@ pub(crate) fn http2(
 }
 
 /// The file's `Content-Type` header, unless the response has one.
-fn file_type(mut ctx: Ctx, file: *mut zend_string) {
+fn file_type(mut ctx: Ctx, file: &ZStr) {
     let response = ctx.state().response.zobject.get();
     let Some(props) = response.and_then(|response| response.props(Some(&RESPONSE))) else {
         return;
@@ -76,9 +75,7 @@ fn file_type(mut ctx: Ctx, file: *mut zend_string) {
     {
         return;
     }
-    // SAFETY: a live file name.
-    let path = unsafe { bytes(file) };
-    let mime = swoole_rs_phpswoole::mime_type(path);
+    let mime = swoole_rs_phpswoole::mime_type(file.bytes());
     header.insert_bytes(key, Some(&mime));
 }
 
@@ -88,16 +85,12 @@ fn send_header(ctx: Ctx, length: usize) -> Result<bool, Bailout> {
 }
 
 /// The bytes of an optional string argument.
-fn of<'a>(data: *mut zend_string) -> &'a [u8] {
-    if data.is_null() {
-        return &[];
-    }
-    // SAFETY: a live string argument.
-    unsafe { bytes(data) }
+fn of(data: Option<&ZStr>) -> &[u8] {
+    data.map_or(&[], ZStr::bytes)
 }
 
 /// `Context::write`: a chunk of a chunked body, the header first.
-pub(crate) fn write(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout> {
+pub(crate) fn write(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     if ctx.flags() & HTTP2 != 0 {
         return http2(ctx, HTTP2_WRITE, data, 0, 0);
     }
@@ -139,7 +132,7 @@ fn send_trailer(mut ctx: Ctx) -> Result<bool, Bailout> {
 }
 
 /// `Context::end`: the rest of the response, then close unless kept alive.
-pub(crate) fn end(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout> {
+pub(crate) fn end(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     let flags = ctx.flags();
     if flags & HTTP2 != 0 {
         return http2(ctx, HTTP2_END, data, 0, 0);
@@ -175,12 +168,12 @@ pub(crate) fn end(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout>
 }
 
 /// The header and a whole body: one send, or two for a large body.
-fn body(mut ctx: Ctx, data: *mut zend_string) -> Result<bool, Bailout> {
+fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     if ctx.state().upgrade != 0 {
         crate::websocket::accept(ctx);
     }
     let raw = of(data);
-    let (pointer, length) = if data.is_null() {
+    let (pointer, length) = if data.is_none() {
         (ptr::null(), 0)
     } else {
         (raw.as_ptr().cast::<c_char>(), raw.len())
@@ -229,12 +222,12 @@ fn sent_body<'a>(state: &State, raw: &'a [u8]) -> &'a [u8] {
 /// `offset`.
 pub(crate) fn send_file(
     mut ctx: Ctx,
-    file: *mut zend_string,
+    file: &ZStr,
     offset: i64,
     length: usize,
 ) -> Result<bool, Bailout> {
     if ctx.flags() & HTTP2 != 0 {
-        return http2(ctx, HTTP2_SEND_FILE, file, offset, length);
+        return http2(ctx, HTTP2_SEND_FILE, Some(file), offset, length);
     }
     file_type(ctx, file);
     if ctx.state().send_header == 0 {

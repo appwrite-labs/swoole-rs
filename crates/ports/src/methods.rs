@@ -16,16 +16,8 @@ use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
-/// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
-/// C++, which `socket_free` reaches under `upstream-symbols`.
 #[cfg(test)]
-pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
-    // SAFETY: the caller's live record.
-    let fd = unsafe { (*socket).fields.fd };
-    swoole_rs_corebase::sys::close(fd);
-    // SAFETY: Rust allocated the record and nothing uses it after.
-    unsafe { SocketRecord::free(socket) };
-}
+pub(crate) use tests::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 pub(crate) const FD_STREAM_SERVER: c_int = 1;
@@ -259,18 +251,20 @@ pub(crate) fn close_socket(port: *mut c_void) {
     // SAFETY: a live port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
     let socket = config.socket.cast::<SocketRecord>();
-    // SAFETY: the port's live socket, which nothing else uses.
-    let Some(fd) = (unsafe { Socket::from_ptr(socket) }).map(Socket::fd) else {
+    if socket.is_null() {
         return;
-    };
+    }
+    // SAFETY: `delete socket`: the port's live socket, which Rust boxed
+    // (`SocketRecord::into_raw`) and nothing else uses, taken back to drop.
+    let socket = unsafe { Box::from_raw(socket) };
+    let fd = socket.fd;
     if swoole_rs_corebase::sys::close(fd) < 0 {
         log::sys_warning(
             c"ListenPort::close_socket",
             format_args!("close({fd}) failed"),
         );
     }
-    // SAFETY: `delete socket`: Rust allocated the record and nothing uses it after.
-    unsafe { SocketRecord::free(socket) };
+    drop(socket);
     config.socket = ptr::null_mut();
 }
 
@@ -481,11 +475,8 @@ pub(crate) fn destroy_http_request(conn: *mut ConnectionRecord) {
 #[cfg(not(test))]
 use crate::read_native::on_read;
 
-/// Tests link no C++: the readable kind stands in for the read.
 #[cfg(test)]
-unsafe fn on_read(_: *mut c_void, _: *mut c_void, _: *mut c_void, kind: u32) -> c_int {
-    c_int::try_from(kind).unwrap_or_default()
-}
+use tests::on_read;
 
 /// Each static `readable_callback_*`: its Rust name and readable kind.
 macro_rules! readable_callbacks {
@@ -514,6 +505,26 @@ mod tests {
     use super::*;
     use crate::lifecycle::{close, context_create, ssl_context_init, ssl_init};
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+
+    /// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
+    /// C++, which `socket_free` reaches under `upstream-symbols`.
+    pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
+        // SAFETY: the caller's live record.
+        let fd = unsafe { (*socket).fields.fd };
+        swoole_rs_corebase::sys::close(fd);
+        // SAFETY: Rust allocated the record and nothing uses it after.
+        unsafe { SocketRecord::free(socket) };
+    }
+
+    /// Tests link no C++: the readable kind stands in for the read.
+    pub(super) unsafe fn on_read(
+        _: *mut c_void,
+        _: *mut c_void,
+        _: *mut c_void,
+        kind: u32,
+    ) -> c_int {
+        c_int::try_from(kind).unwrap_or_default()
+    }
 
     /// Stub callbacks, each body distinct so that no two share an address.
     pub(super) unsafe extern "C-unwind" fn package<const N: u8>(

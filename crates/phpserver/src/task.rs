@@ -30,14 +30,10 @@ use swoole_rs_process::{
 use swoole_rs_server::{task_worker_ops::finish, view};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, E_WARNING, Owned, Value,
+    Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value,
     bailout::Bailout,
     long_zval, message, report,
-    string::bytes,
-    sys::{
-        swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize, swr_zval_stringl, zval,
-        zval_ptr_dtor,
-    },
+    sys::{swr_zend_unserialize, swr_zval_stringl, zval, zval_ptr_dtor},
 };
 
 /// `SW_TASK_*` flags.
@@ -281,20 +277,9 @@ fn encoded<R>(data: &Value, each: impl FnOnce(&[u8], bool) -> R) -> Result<Optio
     if let Some(text) = data.bytes() {
         return Ok(Some(each(text, false)));
     }
-    let mut bailed = false;
-    // SAFETY: a live value and a writable flag; the string is ours.
-    let serialized = unsafe { swr_zend_serialize(data.as_ptr(), &raw mut bailed) };
-    if bailed {
-        return Err(Bailout);
-    }
-    if serialized.is_null() {
-        return Ok(None);
-    }
-    // SAFETY: the string serialize made.
-    let result = each(unsafe { bytes(serialized) }, true);
-    // SAFETY: as above, released once.
-    unsafe { swr_zend_string_release(serialized) };
-    Ok(Some(result))
+    Ok(data
+        .serialize()?
+        .map(|serialized| each(serialized.bytes(), true)))
 }
 
 /// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
@@ -551,17 +536,18 @@ fn task_wait_multi(call: &Call) {
         return call.set_bool(false);
     }
     let tasks = call.value(1).and_then(Value::array);
-    call.set_array();
     let n_task = tasks.map_or(0, Array::count);
     if n_task >= MAX_CONCURRENT_TASK {
+        // As upstream, whose `array_init(return_value)` precedes this return.
+        call.set_array();
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }
-    // SAFETY: the array this call made, which only `multi` touches until it goes.
-    let out = unsafe { ArrayMut::from_ptr(call.return_value()) };
+    // The results, which become the return value only once every wait is over.
+    let mut out = OwnedArray::default();
     let mut multi = Multi {
         tasks,
-        out,
+        out: &mut out,
         count: u16::try_from(n_task).unwrap_or_default(),
     };
     let done = task_state(serv, true)
@@ -570,9 +556,11 @@ fn task_wait_multi(call: &Call) {
             Bailout.defer();
             false
         });
-    if !done {
-        // SAFETY: the array this call made.
-        unsafe { zval_ptr_dtor(call.return_value()) };
+    if done {
+        call.set_owned(out.into_owned());
+    } else {
+        // `zval_ptr_dtor(return_value)`, then `RETURN_FALSE`.
+        drop(out);
         call.set_bool(false);
     }
 }

@@ -45,12 +45,6 @@ pub(crate) fn exception() -> *mut zend_class_entry {
     swoole_rs_phpswoole::exception_class()
 }
 
-/// `swoole_server_ce`, registered after Process.
-pub(crate) fn server_class() -> *mut zend_class_entry {
-    swoole_rs_phpswoole::families()
-        .map_or(std::ptr::null_mut(), |families| (families.server_class)())
-}
-
 /// Who may construct a Process: 0, or 1 in a started server's master, 2 once
 /// async-io threads exist.
 pub(crate) fn construct_guard() -> c_int {

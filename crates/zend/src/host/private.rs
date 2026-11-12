@@ -52,29 +52,6 @@ unsafe fn read(
     result
 }
 
-unsafe fn array_property(
-    scope: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: *const c_char,
-    length: usize,
-) -> *mut zval {
-    let mut value = crate::UNDEF;
-    // SAFETY: construct a request array in an initialized writable slot.
-    unsafe { sys::swr_zend_array_init(&raw mut value) };
-    // SAFETY: update_property can execute PHP, which the C shim traps.
-    bailed(unsafe { sys::swr_zend_try_facade_update(scope, object, name, length, &raw mut value) });
-    if bailout::pending() {
-        return ptr::null_mut();
-    }
-    // SAFETY: release the temporary after the object has taken its reference.
-    unsafe { destroy(&raw mut value) };
-    if bailout::pending() {
-        return ptr::null_mut();
-    }
-    // SAFETY: the object owns this declared property; its result is not the local rv.
-    unsafe { read(scope, object, name, length, true, &raw mut value) }
-}
-
 /// `sw_zend_read_and_convert_property_array(scope, object, name, length, 0)`:
 /// the object's property, made an array first when it is not one.
 /// # Errors
@@ -95,8 +72,24 @@ pub unsafe fn array_property_of(
     if !bailout::pending() && unsafe { type_of(property) } != sys::IS_ARRAY {
         // SAFETY: Zend's distinguished uninitialized-value address is process/thread global.
         if property == unsafe { sys::swr_zend_uninitialized_zval() } {
-            // SAFETY: construct and publish the missing array property.
-            property = unsafe { array_property(scope, object, name, length) };
+            // Construct and publish the missing array property; null once a
+            // bailout is pending.
+            property = ptr::null_mut();
+            let mut value = crate::UNDEF;
+            // SAFETY: construct a request array in an initialized writable slot.
+            unsafe { sys::swr_zend_array_init(&raw mut value) };
+            // SAFETY: update_property can execute PHP, which the C shim traps.
+            bailed(unsafe {
+                sys::swr_zend_try_facade_update(scope, object, name, length, &raw mut value)
+            });
+            if !bailout::pending() {
+                // SAFETY: release the temporary after the object has taken its reference.
+                unsafe { destroy(&raw mut value) };
+            }
+            if !bailout::pending() {
+                // SAFETY: the object owns this declared property; its result is not the local rv.
+                property = unsafe { read(scope, object, name, length, true, &raw mut value) };
+            }
         } else {
             // SAFETY: replace the existing value in the object's property slot.
             unsafe { destroy(property) };
@@ -145,9 +138,17 @@ pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
     bailout::finish();
 }
 
+/// `EG(exception)`: the exception pending on this thread, which runs PHP;
+/// null for none. A read of the executor's slot: nothing is retained.
+#[must_use]
+pub fn exception() -> *mut zend_object {
+    // SAFETY: the executor's globals, on the thread running PHP; one pointer is read.
+    unsafe { sys::swr_zend_facade_exception() }
+}
+
 unsafe fn fatal_exception() {
-    // SAFETY: observe the executor exception only after the preceding call returned.
-    let exception = unsafe { sys::swr_zend_facade_exception() };
+    // Observed only after the preceding call returned.
+    let exception = exception();
     if !exception.is_null() {
         // SAFETY: Zend's fatal exception reporter runs inside the C trap.
         bailout::defer(unsafe {

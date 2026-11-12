@@ -28,6 +28,7 @@ use std::{
     mem::{align_of, offset_of, size_of},
     sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
+use swoole_rs_corebase::sys;
 
 pub mod coroutine;
 
@@ -93,25 +94,13 @@ fn rwlock(storage: *mut c_void) -> (*mut pthread_rwlock_t, *mut pthread_rwlockat
         s.wrapping_byte_add(offset_of!(RwLock, attr)).cast(),
     )
 }
-// The thread's errno slot.
-fn errno() -> *mut c_int {
-    #[cfg(target_os = "linux")]
-    // SAFETY: always callable; returns this thread's errno location.
-    let error = unsafe { __errno_location() };
-    #[cfg(target_os = "macos")]
-    // SAFETY: always callable; returns this thread's errno location.
-    let error = unsafe { __error() };
-    error
-}
 // Failed lock initialization owns an initialized attribute, but not a live lock.
 fn init_result(result: c_int, destroy_attr: impl FnOnce()) -> c_int {
     if result != 0 {
-        let error = errno();
-        // SAFETY: `errno()` is this thread's live errno slot.
-        let saved = unsafe { *error };
+        // The failed init's errno, which destroying the attribute must not replace.
+        let saved = sys::errno();
         destroy_attr();
-        // SAFETY: as above.
-        unsafe { *error = saved };
+        sys::set_errno(saved);
     }
     result
 }
@@ -185,8 +174,7 @@ fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> i32 {
         if attempt() == 0 {
             return 0;
         }
-        // SAFETY: usleep has no memory preconditions.
-        unsafe { usleep(sleep.wrapping_mul(1000).cast_unsigned()) };
+        sys::usleep(sleep.wrapping_mul(1000).cast_unsigned());
         sleep = sleep.wrapping_mul(2);
         if timeout > 0 && timeout.wrapping_sub(sleep) < 0 {
             sleep = timeout;
@@ -199,12 +187,11 @@ fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> i32 {
 }
 #[cfg(target_os = "linux")]
 fn deadline(millis: i32) -> timespec {
-    let mut now = timespec {
+    // Zero if the clock can't be read, as the unchecked call left it.
+    let mut now = sys::clock_gettime(CLOCK_REALTIME).unwrap_or(timespec {
         tv_sec: 0,
         tv_nsec: 0,
-    };
-    // SAFETY: `now` is a live, writable timespec.
-    unsafe { clock_gettime(CLOCK_REALTIME, &raw mut now) };
+    });
     now.tv_sec += (millis / 1000) as time_t;
     now.tv_nsec += c_long::from(millis % 1000) * 1_000_000;
     now.tv_sec += (now.tv_nsec / 1_000_000_000) as time_t;
@@ -608,8 +595,7 @@ pub extern "C" fn barrier_wait(barrier: &Barrier) {
     {
         barrier.arrived.fetch_add(1, Ordering::SeqCst);
         while barrier.arrived.load(Ordering::Relaxed) != barrier.count.load(Ordering::Relaxed) {
-            // SAFETY: usleep has no memory preconditions.
-            unsafe { usleep(10_000) };
+            sys::usleep(10_000);
             std::sync::atomic::fence(Ordering::SeqCst);
         }
     }

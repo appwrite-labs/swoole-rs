@@ -78,6 +78,14 @@ impl Drop for PortData {
 }
 
 impl PortData {
+    /// The bound `ListenPort`: none before `new_object` binds it and after `release`.
+    fn port(&self) -> Option<swoole_rs_server::view::Port<'_>> {
+        // SAFETY: null, or the live port `new_object` bound, one of its server's,
+        // which stays until `release` clears the link (the Server object derefs
+        // its Port objects before its server goes).
+        unsafe { swoole_rs_server::view::Port::from_raw(self.port.get()) }
+    }
+
     /// `php_swoole_server_port_deref`: drop the callables and the port's link,
     /// all of them even when a destructor leaves a bailout pending.
     fn release(&self) {
@@ -150,10 +158,7 @@ pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned,
 pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_server::view::Port<'a> {
     // SAFETY: a live object, per the contract.
     let data = unsafe { custom_of::<PortData>(object) };
-    let port = data.map_or(ptr::null_mut(), |data| data.port.get());
-    // SAFETY: null, or the object's live port.
-    let port = unsafe { swoole_rs_server::view::Port::from_raw(port) };
-    port.unwrap_or_else(|| {
+    data.and_then(PortData::port).unwrap_or_else(|| {
         crate::server::invalid(object);
         // The `E_ERROR` above bailed out.
         std::process::abort()
@@ -325,9 +330,7 @@ fn get_callback(call: &Call) {
 }
 
 fn get_socket(call: &Call) {
-    // SAFETY: null, or the object's live port.
-    let Some(port) = (unsafe { swoole_rs_server::view::Port::from_raw(data(call).port.get()) })
-    else {
+    let Some(port) = data(call).port() else {
         return invalid(call);
     };
     socket(port, call);
