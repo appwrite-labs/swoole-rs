@@ -10,6 +10,7 @@ use crate::{
     send,
 };
 use std::{
+    borrow::Cow,
     cell::Cell,
     ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
@@ -29,9 +30,9 @@ use swoole_rs_zend::{
     Array, Call, Class, Minit, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
     string::{self},
     sys::{
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_ws_property_not_null, zend_class_entry,
-        zend_long, zend_object, zend_value, zval, zval_ptr_dtor,
+        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_class_entry, zend_long, zend_object, zend_value,
+        zval, zval_ptr_dtor,
     },
 };
 
@@ -350,7 +351,7 @@ pub struct FrameObject<'a> {
     opcode: u8,
     flags: u8,
     code: u16,
-    data: Option<&'a Value>,
+    data: Option<Cow<'a, Value>>,
 }
 
 /// Truncate to a byte, as upstream's `uint8_t` fields do.
@@ -370,7 +371,7 @@ impl<'a> FrameObject<'a> {
                 opcode: byte(opcode),
                 flags: byte(flags & FLAGS_ALL),
                 code,
-                data,
+                data: data.map(Cow::Borrowed),
             };
         };
         // The Frame class declares both properties read here.
@@ -378,11 +379,12 @@ impl<'a> FrameObject<'a> {
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == OPCODE_CLOSE {
-            code = not_null(frame, c"code").map_or(CLOSE_NORMAL, Value::long);
+            code = not_null(frame, c"code").map_or(CLOSE_NORMAL, |code| code.long());
             not_null(frame, c"reason")
         } else {
             not_null(frame, c"data")
-        };
+        }
+        .map(Cow::Owned);
         let mut flags = byte(long(c"flags") & FLAGS_ALL);
         if let Some(finish) = not_null(frame, c"finish") {
             if finish.truthy() {
@@ -403,48 +405,20 @@ impl<'a> FrameObject<'a> {
     }
 }
 
-thread_local! {
-    /// The `rv` a subclass's `__get` returns into, one per property a frame
-    /// reads (upstream's is a dead stack slot by the time it is used).
-    static RV: [std::cell::UnsafeCell<zval>; 4] = const {
-        [const { std::cell::UnsafeCell::new(swoole_rs_zend::UNDEF) }; 4]
-    };
-}
-
 /// `sw_zend_read_property_not_null_ex(swoole_websocket_frame_ce, ..., 1)` of
-/// a Frame object: the property, or the read's `rv`, which stays until the
-/// next read of that name.
-fn not_null<'a>(frame: &'a Value, name: &CStr) -> Option<&'a Value> {
+/// a Frame object: a copy of the property, or what a subclass's `__get`
+/// returned, unless it is null or undefined.
+fn not_null(frame: &Value, name: &CStr) -> Option<Owned> {
     if bailout::pending() {
         return None;
     }
-    let object = frame.object()?;
-    let rv = RV.with(|rv| {
-        match name.to_bytes() {
-            b"code" => &rv[0],
-            b"reason" => &rv[1],
-            b"data" => &rv[2],
-            _ => &rv[3],
+    match frame.read_property(Some(&FRAME), name) {
+        Ok(value) => value.filter(|value| value.kind() > IS_NULL),
+        Err(bailout) => {
+            bailout.defer();
+            None
         }
-        .get()
-    });
-    let mut bailed = 0;
-    // SAFETY: a live object of the class; the shim traps a bailout in __get.
-    let found = unsafe {
-        swr_zend_ws_property_not_null(
-            FRAME.entry(),
-            object,
-            name.as_ptr(),
-            name.count_bytes(),
-            rv,
-            &raw mut bailed,
-        )
-    };
-    if bailed != 0 {
-        bailout::Bailout.defer();
     }
-    // SAFETY: null, or the live property (which `frame` holds) or `rv`.
-    unsafe { Value::from_ptr(found) }
 }
 
 /// `"%s(): message"` from `swoole_warning` in `func`.
@@ -458,7 +432,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         host::fatal("the maximum value of opcode is 10");
         return None;
     }
-    let data = frame.data.filter(|data| !data.is_null());
+    let data = frame.data.as_deref().filter(|data| !data.is_null());
     let data = data.map(Value::string);
     let data = data.as_deref().map_or(&[][..], ZStr::bytes);
     if bailout::pending() {
