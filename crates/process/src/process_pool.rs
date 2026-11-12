@@ -279,6 +279,15 @@ impl<'a> PoolRef<'a> {
         unsafe { &*self.raw }
     }
 
+    /// The pool's message queue's message and byte counts (`msgctl(IPC_STAT)`),
+    /// or `None` for a pool without one or a failed stat.
+    #[must_use]
+    pub fn queue_stat(self) -> Option<(usize, usize)> {
+        let queue = self.queue().cast::<swoole_rs_ossupport::QueueRecord>();
+        // SAFETY: null, or the pool's boxed queue, which `destroy` frees with the pool.
+        unsafe { queue.as_ref() }?.stat()
+    }
+
     /// The pool's worker at `index`, or `None` past `worker_num`.
     #[must_use]
     pub fn worker(self, index: usize) -> Option<Worker<'a>> {
