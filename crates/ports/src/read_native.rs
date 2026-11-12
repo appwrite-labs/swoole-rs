@@ -254,6 +254,7 @@ impl Connection for Read<'_> {
     /// `Server::dispatch_task` or `http_server::dispatch_request` (503 while the server
     /// is at `max_concurrency`, else `Server::dispatch_task`) of `length` bytes from the
     /// buffer's start.
+    #[inline]
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
         let data = RecvData {
             info: DataHead {

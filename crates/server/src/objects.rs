@@ -115,6 +115,7 @@ impl Bus {
         unsafe { *self.buffer() }
     }
     /// The whole packet the bus holds.
+    #[inline]
     pub(crate) fn packet(self) -> BusPacket {
         self.rust().packet()
     }
