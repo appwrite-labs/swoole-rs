@@ -1,4 +1,5 @@
 """tools/ci.py against a fake gh: run states, failure annotations and phases, following replaced runs."""
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -98,7 +99,10 @@ elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
 elif args[0] == 'api':
     print('c' * 40)
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
-    print(json.dumps([{'headSha': 'h' * 40, **row} for row in data.get('history', [])]))
+    # History rows are completed runs unless they say otherwise.
+    status = args[args.index('--status') + 1] if '--status' in args else None
+    print(json.dumps([{'headSha': 'h' * 40, **row} for row in data.get('history', [])
+                      if status is None or row.get('status', 'completed') == status]))
 elif args[:2] == ['run', 'download'] and '-n' in args:
     report = Path(args[args.index('-D') + 1]) / data['report']
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -295,7 +299,7 @@ class Ci(unittest.TestCase):
                          (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
         # The PRs in one GraphQL query, and main's merge-tier runs for a stalled one.
         self.assertEqual([call.split(' -F')[0].split(' --')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
-                         ['api -i graphql', 'run list'])
+                         ['api -i graphql', 'run list', 'run list', 'run list'])
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[])
         self.assertEqual((code, result), (2, []))
 
@@ -314,13 +318,21 @@ class Ci(unittest.TestCase):
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(8, ['left the merge queue: failed status checks', 'u8']),
                               (12, ['left the merge queue: no reason given'])]))
-        # A merge-tier run on main held open by a job no runner took (#3553) comes first, with no PR stuck too.
-        history = [{'databaseId': 5, 'status': 'queued', 'createdAt': '2026-10-01T00:00:00Z', 'url': 'u5'},
-                   {'databaseId': 4, 'status': 'in_progress', 'createdAt': '2999-01-01T00:00:00Z', 'url': 'u4'}]
-        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[], history=history,
-                                  jobs={'5': [['rust', 'success'], ['phpt / cargo 2', None]]})
+        # A merge-tier run on main held open by a job no runner took (#3553) comes first, with no PR stuck
+        # too: 5 holds main's group, since 6 waits behind it, while 3 is a run GitHub abandoned long before.
+        ago = lambda hours: (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        history = [{'databaseId': 6, 'status': 'pending', 'createdAt': ago(1), 'url': 'u6'},
+                   {'databaseId': 5, 'status': 'queued', 'createdAt': ago(5), 'url': 'u5'},
+                   {'databaseId': 3, 'status': 'in_progress', 'createdAt': ago(24 * 7), 'url': 'u3'}]
+        jobs = {'5': [['rust', 'success'], ['phpt / cargo 2', None]], '3': [['phpt-gate', None]]}
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[], history=history, jobs=jobs)
         self.assertEqual((code, result['pulls'], result['stalled_main']['run'], result['stalled_main']['waiting']),
                          (0, [], 5, ['phpt / cargo 2']))
+        # With no run waiting behind it, an abandoned run blocks nothing; nor does an abandoned pair a week
+        # old (GitHub fails a job queued a day, so a stall that old is no stall).
+        for rows in (history[2:], [dict(history[0], createdAt=ago(24 * 7 - 1)), history[2]]):
+            code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[], history=rows, jobs=jobs)
+            self.assertEqual((code, result), (2, []))
 
     def test_phpt_baseline_answers_from_the_saved_cache_without_the_api(self):
         with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as cache:

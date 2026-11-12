@@ -37,7 +37,7 @@ Exit codes: 0 passed, 1 failed, 2 no run, still running or timed out, 3 cancelle
 Needs only `gh` (authenticated) and Python.
 """
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import re
@@ -533,22 +533,33 @@ STALL_MINUTES = 45
 
 def stalled_main():
     """A merge-tier run on main that a job waiting for a runner keeps unfinished (#3553). It holds
-    main's concurrency group, so each later push to main queues a run the next push replaces, and
-    no merge-tier run on main completes. A job's timeout-minutes only counts once a runner takes it."""
-    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--event', 'push',
-                         '--limit', '20', '--json', 'databaseId,status,createdAt,url'))
-    for run in runs:
-        if run.get('status') not in ('queued', 'in_progress'):
-            continue
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00')))
-        minutes = int(age.total_seconds() // 60)
-        if minutes < STALL_MINUTES:
-            continue
-        jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--json', 'jobs'))['jobs']
-        waiting = [job['name'] for job in jobs if job['status'] in ('queued', 'waiting', 'pending')]
-        if waiting:
-            return {'run': run['databaseId'], 'url': run['url'], 'minutes': minutes, 'waiting': waiting}
-    return None
+    main's concurrency group, so each later push to main queues a `pending` run the next push
+    replaces, and no merge-tier run on main completes. A job's timeout-minutes only counts once a
+    runner takes it. Only the newest unfinished run older than a pending one holds the group: GitHub
+    leaves an abandoned run unfinished too, and it blocks nothing."""
+    # By status: the pushes behind a stalled run each leave a cancelled one, which would bury it in
+    # a plain window of the newest runs (34 in five hours on 2026-11-12).
+    runs = {status: json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--event', 'push',
+                                  '--status', status, '--limit', '5', '--json', 'databaseId,status,createdAt,url'))
+            for status in ('pending', 'queued', 'in_progress')}
+    # GitHub fails a job that has waited a day for a runner, so an unfinished run older than that is
+    # one it abandoned, in a concurrency group no run uses any more.
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    runs = {status: [run for run in rows if run['createdAt'] > recent] for status, rows in runs.items()}
+    if not runs['pending']:
+        return None
+    waiting = min(run['createdAt'] for run in runs['pending'])
+    holders = [run for run in runs['queued'] + runs['in_progress'] if run['createdAt'] < waiting]
+    if not holders:
+        return None
+    run = max(holders, key=lambda run: run['createdAt'])
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00'))
+    minutes = int(age.total_seconds() // 60)
+    if minutes < STALL_MINUTES:
+        return None
+    jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--json', 'jobs'))['jobs']
+    queued = [job['name'] for job in jobs if job['status'] in ('queued', 'waiting', 'pending')]
+    return {'run': run['databaseId'], 'url': run['url'], 'minutes': minutes, 'waiting': queued} if queued else None
 
 
 def main(argv=None):
