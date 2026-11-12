@@ -168,8 +168,8 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
         return false;
     }
     let name = [br"\Swoole\Server\Helper::", name.to_bytes()].concat();
-    // SAFETY: initialised arguments.
-    unsafe { swoole_rs_zend::host::named_call(&name, args) }.is_err()
+    let args: Vec<&Value> = args.iter_mut().map(Value::of).collect();
+    swoole_rs_zend::host::named_call(&name, &args).is_err()
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
