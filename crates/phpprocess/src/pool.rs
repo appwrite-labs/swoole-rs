@@ -84,8 +84,8 @@ fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: boo
         drop(unsafe { Box::from_raw(pool) });
         return None;
     }
-    // SAFETY: a live zval, copied without a reference as upstream's `sw_zval_dup`.
-    record(pool).ptr = Box::into_raw(Box::new(unsafe { object.as_ptr().read() })).cast();
+    // Copied without a reference, as upstream's `sw_zval_dup`.
+    record(pool).ptr = Box::into_raw(Box::new(object.copy_value())).cast();
     record(pool).is_async = async_;
     Some(pool)
 }

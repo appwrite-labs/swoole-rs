@@ -55,9 +55,9 @@ pub(crate) fn server_zval() -> zval {
 pub(crate) fn set_server_object(object: ServerObject<'_>) {
     let mark = INSTANCE.get().1 + 1;
     object.set_mark(mark);
-    // SAFETY: a live zval. The copy takes no reference: `forget` drops it as
-    // the object's data is dropped, before Zend frees the object.
-    let copy = unsafe { object.value().as_ptr().read() };
+    // The copy takes no reference: `forget` drops it as the object's data is
+    // dropped, before Zend frees the object.
+    let copy = object.value().copy_value();
     INSTANCE.set((copy, mark));
 }
 

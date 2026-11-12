@@ -29,10 +29,7 @@ use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
     bailout::{self, Bailout},
     long_zval, message, report,
-    sys::{
-        swr_zend_callable_warning, swr_zend_stack_restore, swr_zend_stack_unlimit,
-        zend_fcall_info_cache, zval, zval_ptr_dtor,
-    },
+    sys::{swr_zend_callable_warning, zend_fcall_info_cache, zval, zval_ptr_dtor},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -1047,27 +1044,23 @@ fn call_unlimited(
     args: &mut [zval],
     retval: *mut zval,
 ) -> Result<bool, Bailout> {
-    let mut saved = [ptr::null_mut(); 2];
-    // SAFETY: two writable slots.
-    unsafe { swr_zend_stack_unlimit(saved.as_mut_ptr()) };
     #[expect(clippy::cast_possible_truncation, reason = "at most four arguments")]
     let argc = args.len() as u32;
-    // SAFETY: a resolved cache, initialised arguments and a return slot.
-    let called = unsafe {
-        function_call(
-            cache,
-            argc,
-            args.as_mut_ptr(),
-            retval,
-            false,
-            create_coroutine,
-            swr_zend_callable_warning,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    };
-    // SAFETY: what `swr_zend_stack_unlimit` saved.
-    unsafe { swr_zend_stack_restore(saved.as_ptr()) };
-    called
+    swoole_rs_zend::with_unlimited_stack(|| {
+        // SAFETY: a resolved cache, initialised arguments and a return slot.
+        unsafe {
+            function_call(
+                cache,
+                argc,
+                args.as_mut_ptr(),
+                retval,
+                false,
+                create_coroutine,
+                swr_zend_callable_warning,
+                swoole_rs_zend::host::NO_THEN,
+            )
+        }
+    })
 }
 
 /// `php_swoole_server_dispatch_func`: `dispatch_func($server, $fd, $type[, $data])`'s
