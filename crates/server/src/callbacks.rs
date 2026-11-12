@@ -191,8 +191,10 @@ impl CallbackSlot {
         }
     }
 
-    /// `serv->onReceive(serv, data)`, for a slot of an `int (Server *, RecvData *)`
-    /// signature; -1 when the slot is empty.
+    /// `serv->onReceive(serv, data)` or `onFinish(serv, data)`, for a slot of an
+    /// `int (Server *, EventData *)` signature; -1 when the slot is empty. A
+    /// caller that discards the result (onFinish) still calls through the
+    /// matching int type, unlike [`CallbackSlot::call`].
     ///
     /// # Safety
     /// The slot holds that signature, and `serv` and `data` are what it takes.
