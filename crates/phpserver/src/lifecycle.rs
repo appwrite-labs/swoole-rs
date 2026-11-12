@@ -309,6 +309,9 @@ pub(crate) struct ServerData {
     serv: OnceCell<SharedServer>,
     property: RefCell<Property>,
     init_arguments: RefCell<Owned>,
+    /// What `instance::set_server_object` marked the object with when it became
+    /// its thread's running one; 0 for an object that never was.
+    mark: Cell<u64>,
 }
 
 impl Custom for ServerData {
@@ -322,6 +325,7 @@ impl Custom for ServerData {
             serv: OnceCell::new(),
             property: RefCell::default(),
             init_arguments: RefCell::new(Owned::null()),
+            mark: Cell::new(0),
         }
     }
 }
@@ -401,6 +405,15 @@ impl<'a> ServerObject<'a> {
     /// A share in the bound `Server`, for an object that names it.
     pub(crate) fn share(self) -> Option<SharedServer> {
         self.data.serv.get().cloned()
+    }
+
+    /// The running object's mark (`instance::set_server_object`); 0 without one.
+    pub(crate) fn mark(self) -> u64 {
+        self.data.mark.get()
+    }
+
+    pub(crate) fn set_mark(self, mark: u64) {
+        self.data.mark.set(mark);
     }
 
     /// `__construct` binds the object to its server, once.
@@ -712,7 +725,7 @@ pub(crate) fn add_port(object: ServerObject<'_>, port: view::Port<'_>) -> Owned 
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, share: &SharedServer) {
     let object = ServerObject::this(call);
-    crate::instance::set_server_object(object.value());
+    crate::instance::set_server_object(object);
     object.set_serv(share.clone());
     let serv = share.view();
     for &port in serv.ports() {

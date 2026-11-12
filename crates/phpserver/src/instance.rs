@@ -8,7 +8,7 @@ use crate::lifecycle::{ServerData, ServerObject};
 use crate::port::PortProperty;
 use std::os::unix::ffi::OsStrExt;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::{CStr, CString, c_int, c_long},
     ptr,
     rc::Rc,
@@ -31,19 +31,31 @@ thread_local! {
     /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
     /// server's object, named without a reference as upstream's zval was. Only the
     /// thread that runs PHP reads it. None until bound.
-    static INSTANCE: RefCell<Option<Weak<ServerData>>> = const { RefCell::new(None) };
+    /// It goes with the mark [`set_server_object`] gave the object: Zend hands a
+    /// freed object's handle to the next object made, which has no such mark.
+    static INSTANCE: RefCell<Option<(Weak<ServerData>, u64)>> = const { RefCell::new(None) };
+    /// The last mark given.
+    static MARKS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// `php_swoole_server_zval_ptr()`: the running server's object, with a reference
 /// of its own; none before one is bound and once it is being freed.
 #[must_use]
 pub(crate) fn server_object() -> Option<Owned> {
-    INSTANCE.with_borrow(|instance| instance.as_ref()?.get())
+    let (object, mark) = INSTANCE.with_borrow(|instance| {
+        let (object, mark) = instance.as_ref()?;
+        Some((object.get()?, *mark))
+    })?;
+    // The handle may be another Server object's by now.
+    (ServerObject::of(&object)?.mark() == mark).then_some(object)
 }
 
 /// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
-pub(crate) fn set_server_object(object: &Value) {
-    INSTANCE.set(Weak::of(object));
+pub(crate) fn set_server_object(object: ServerObject<'_>) {
+    let mark = MARKS.get() + 1;
+    MARKS.set(mark);
+    object.set_mark(mark);
+    INSTANCE.set(Weak::of(object.value()).map(|object| (object, mark)));
 }
 
 /// `php_swoole_server_get_ptr`: the `Server` of a Server object, which `value`
