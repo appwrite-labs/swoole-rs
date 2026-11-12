@@ -211,8 +211,8 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_DESTROY_BARRIERS => barriers(false),
         OP_NEW_PROCESS_FACTORY => crate::factory::new(serv, None).expose_provenance() as u64,
         OP_DESTROY_MESSAGE_BOX => {
-            // A shared mapping crates/server's new_message_box made.
-            crate::pool_native::free_message_box(ctx.server().event_pool_ref());
+            // The event pool's box, which the pool forgets as it frees it.
+            swoole_rs_process::methods::free_message_box(ctx.server().event_pool_ref());
             0
         }
         OP_CREATE_WORKER_PIPE => u64::from(

@@ -187,9 +187,13 @@ pub fn wait_count() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::Cell;
+
+    /// Held by each test that spawns children: a wait for any child would reap
+    /// another test's.
+    pub(crate) static CHILDREN: Mutex<()> = Mutex::new(());
 
     thread_local! {
         static YIELDED: Cell<bool> = const { Cell::new(false) };
@@ -234,6 +238,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn plain_and_coroutine_waits() {
+        let _children = CHILDREN.lock().unwrap_or_else(PoisonError::into_inner);
         let plain = Coroutines {
             current: no_coroutine,
             signal_init: nothing,
