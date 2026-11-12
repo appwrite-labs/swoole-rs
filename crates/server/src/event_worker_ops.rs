@@ -48,7 +48,7 @@ struct Context<'a> {
     serv: view::Server<'a>,
     worker: *mut WorkerRecord,
     info: *mut DataHead,
-    reactor: *mut c_void,
+    reactor: crate::reactor_handle::Reactor,
     conn: *mut ConnectionRecord,
     status: *const c_void,
     socket: *mut c_void,
