@@ -195,10 +195,6 @@ struct Objects<'a, 'c> {
     state: &'a ServerState,
 }
 
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written on the reactor thread that owns them as master.cc did"
-)]
 impl<'c> Objects<'_, 'c> {
     /// The context's live server.
     fn server(&self) -> view::Server<'c> {
@@ -218,6 +214,13 @@ impl<'c> Objects<'_, 'c> {
     }
     fn sock(&self) -> Option<Socket<'c>> {
         self.ctx.sock
+    }
+    /// The connection of the context's socket, which the ops reading it run over a
+    /// session socket for.
+    fn sock_conn(&self) -> Option<Connection<'c>> {
+        let conn = self.sock()?.read(|s| s.object.cast::<ConnectionRecord>());
+        // SAFETY: a session socket's object is null or its live connection.
+        unsafe { Connection::from_ptr(conn) }
     }
     /// `read` over the context's socket, or the default without one.
     fn read_sock<R: Default>(&self, read: impl FnOnce(&SocketFields) -> R) -> R {
@@ -240,11 +243,9 @@ impl<'c> Objects<'_, 'c> {
     fn handle(&self) -> Option<Reactor> {
         self.ctx.reactor
     }
+    /// The fields of the context's live reactor, which only this thread touches.
     fn reactor(&self) -> Option<&mut swoole_rs_reactor::ReactorFields> {
-        // The context's live reactor, which begins with its prepared state.
-        let fields = swoole_rs_reactor::ReactorPrepared::of(self.handle()?.ptr()).fields;
-        // SAFETY: as above; only this thread touches its reactor.
-        unsafe { fields.as_mut() }
+        self.ctx.reactor.as_ref().map(Reactor::fields)
     }
     fn port(&self) -> Option<&'c PortConfig> {
         self.ctx.port.map(view::Port::config)
@@ -254,9 +255,8 @@ impl<'c> Objects<'_, 'c> {
         let context = self.port()?.ssl_context.as_deref()?;
         Some(swr_v1_tls_owner_view(context))
     }
-    fn ssl_fields(&self) -> Option<&OwnedTlsFields> {
-        // SAFETY: the owner's fields live as long as the port's reference.
-        unsafe { self.ssl()?.fields.as_ref() }
+    fn ssl_fields(&self) -> Option<&'c OwnedTlsFields> {
+        self.port()?.ssl_fields()
     }
     /// `get_connection(fd)` (kind 0) or a verified session's (kind 2, 3).
     fn connection(&self, key: c_long, kind: u32) -> *mut ConnectionRecord {
@@ -520,9 +520,7 @@ pub(crate) fn answer(
             0
         }
         OP_SSL_READY => {
-            let conn = o.sock()?.read(|s| s.object.cast::<ConnectionRecord>());
-            // SAFETY: a session socket's object is null or its live connection.
-            unsafe { conn.as_mut() }?.ssl_ready = 1;
+            o.sock_conn()?.set_ssl_ready(1);
             0
         }
         OP_CLIENT_CERT => {
@@ -903,11 +901,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_NOTIFY_CONNECT | OP_WR_NOTIFY_CLOSE | OP_WR_BUFFER_EMPTY => {
             let (conn, event) = match op {
-                OP_NOTIFY_CONNECT => {
-                    let conn = o.sock()?.read(|s| s.object).cast::<ConnectionRecord>();
-                    // SAFETY: a session socket's object is null or its live connection.
-                    (unsafe { Connection::from_ptr(conn) }?, EVENT_CONNECT)
-                }
+                OP_NOTIFY_CONNECT => (o.sock_conn()?, EVENT_CONNECT),
                 OP_WR_NOTIFY_CLOSE => (o.conn()?, EVENT_CLOSE),
                 _ => {
                     let conn = o.conn()?;

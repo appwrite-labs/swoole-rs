@@ -394,15 +394,9 @@ impl<'a> Packed<'a> {
             buffer.extend(pkg.length);
         }
         let str = buffer.as_mut_ptr();
-        let target: &mut [u8] = if pkg.length == 0 {
-            &mut []
-        } else {
-            // Zeroed first: past the String's content, its allocation is uninitialized.
-            // SAFETY: a live String of `size` (at least `pkg.length > 0`) bytes at `str`.
-            unsafe { str.write_bytes(0, pkg.length) };
-            // SAFETY: as above, now initialized.
-            unsafe { std::slice::from_raw_parts_mut(str, pkg.length) }
-        };
+        // Zeroed first: past the String's content, its allocation is uninitialized. It
+        // holds `pkg.length` bytes by now.
+        let target = buffer.zeroed(pkg.length).unwrap_or_default();
         let read = read_file(pkg.path(), target, flags & PEEK != 0);
         if read.status != 0 {
             if read.error != 0 {

@@ -111,6 +111,14 @@ fn call_socket(c: &PoolCall) -> Option<Socket<'_>> {
     unsafe { Socket::from_ptr(c.socket().cast()) }
 }
 
+/// `socket->send_sync(data, length)` of the call's bytes on its socket, or -1 without one.
+fn send_sync(c: &PoolCall) -> isize {
+    let (data, length) = (c.data(), c.length());
+    // SAFETY: the call's live socket (its connection, or its worker's pipe) and bytes.
+    let send = |socket| unsafe { socket_send_sync(socket, data, length, 0) };
+    call_socket(c).map_or(-1, send)
+}
+
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
@@ -747,12 +755,7 @@ impl PoolNative for Native {
     }
 
     fn send(&self, c: &mut PoolCall) {
-        io(c, |c| {
-            let (data, length) = (c.data(), c.length());
-            // SAFETY: the call's connection and bytes.
-            let send = |socket| unsafe { socket_send_sync(socket, data, length, 0) };
-            call_socket(c).map_or(-1, send)
-        });
+        io(c, send_sync);
     }
 
     fn close(&self, c: &PoolCall) {
@@ -835,10 +838,7 @@ impl PoolNative for Native {
                 // SAFETY: the worker's pipe, in this thread's loop.
                 unsafe { swoole_event_write(c.socket().cast(), c.data(), c.length()) }
             } else {
-                let (data, length) = (c.data(), c.length());
-                // SAFETY: the worker's pipe and the call's bytes.
-                let send = |pipe| unsafe { socket_send_sync(pipe, data, length, 0) };
-                call_socket(c).map_or(-1, send)
+                send_sync(c)
             }
         });
     }

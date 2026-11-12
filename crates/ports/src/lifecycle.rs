@@ -20,7 +20,7 @@ use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
     DtlsSession, OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext,
-    has_files, set_text, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init, swr_v1_tls_dtls_new,
+    has_files, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init, swr_v1_tls_dtls_new,
     swr_v1_tls_owner_view, swr_v1_tls_port_index,
 };
 use swoole_rs_utilities::sni_wildcard_matches;
@@ -188,18 +188,17 @@ pub unsafe fn ssl_init(port: *const c_void) -> bool {
 pub(crate) fn ssl_context_init(port: *mut c_void) -> bool {
     // SAFETY: a live port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
-    let context = config.ssl_context.insert(TlsContext::new()).clone();
+    let context = TlsContext::with_texts(&[
+        (Text::Ciphers, SW_SSL_CIPHER_LIST.as_bytes()),
+        (Text::EcdhCurve, SW_SSL_ECDH_CURVE.as_bytes()),
+    ]);
+    let context = config.ssl_context.insert(context).clone();
     edit(&context, |fields| {
         fields.prefer_server_ciphers = 1;
         fields.session_tickets = 0;
         fields.stapling = 1;
         fields.stapling_verify = 1;
     });
-    let owner = context.as_ptr();
-    // SAFETY: the port's live context, which only this thread writes.
-    unsafe { set_text(owner, Text::Ciphers, SW_SSL_CIPHER_LIST.as_bytes()) };
-    // SAFETY: as above.
-    unsafe { set_text(owner, Text::EcdhCurve, SW_SSL_ECDH_CURVE.as_bytes()) };
     // crates/tls requires OpenSSL 3, which has DTLS.
     if matches!(config.r#type, 2 | 4 | 6) {
         let dtls = SslVersion::SW_SSL_DTLS as u32;
@@ -258,9 +257,8 @@ unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_v
     else {
         return TLSEXT_NOACK;
     };
-    let ctx = edit(context, |fields| fields.context_ptr());
-    // SAFETY: that context's live SSL_CTX.
-    unsafe { ssl.set_context(ctx) };
+    // That context's live SSL_CTX; switching to it calls nothing back.
+    edit(context, |fields| ssl.set_context(fields.context.as_deref()));
     TLSEXT_OK
 }
 

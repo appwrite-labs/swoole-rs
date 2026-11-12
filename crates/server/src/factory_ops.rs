@@ -81,9 +81,6 @@ impl<'a> Context<'a> {
     fn tables(&self) -> &'a crate::ServerTables {
         self.state().tables_ref()
     }
-    fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
-        self.server().workers()
-    }
     /// Worker `id` of the server, or `None` past the last.
     fn worker_at(&self, id: u16) -> Option<Worker<'a>> {
         self.server().worker_record(id)
@@ -446,12 +443,10 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             swoole_rs_process::worker_globals::set_current_worker(worker);
         }
         OP_POOL_MAIN_LOOP => {
-            let pool = ctx.workers().event_pool;
-            // SAFETY: its live event pool.
-            let pool = unsafe { &mut *pool };
-            if let Some(main_loop) = pool.main_loop {
+            let pool = ctx.server().event_pool_ref();
+            if let Some(main_loop) = pool.main_loop() {
                 // SAFETY: the pool that holds the loop, and the context's worker of it.
-                let _code = unsafe { main_loop(pool.into(), ctx.worker()) };
+                let _code = unsafe { main_loop(pool, ctx.worker()) };
             }
         }
         OP_START_EVENT_WORKER => {

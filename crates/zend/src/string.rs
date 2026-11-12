@@ -59,12 +59,9 @@ pub fn alloc(length: usize) -> *mut zend_string {
 /// `zend_string_init(bytes, len, 0)`: a new string holding a copy of `bytes`.
 #[must_use]
 pub fn copy(bytes: &[u8]) -> *mut zend_string {
-    let string = alloc(bytes.len());
-    // SAFETY: a fresh allocation of `bytes.len()` bytes and a NUL.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), val(string), bytes.len()) };
-    // SAFETY: as above.
-    unsafe { truncate(string, bytes.len()) };
-    string
+    let mut buffer = ZBuf::with_capacity(bytes.len());
+    buffer.extend_from_slice(bytes);
+    buffer.into_zstring().into_raw()
 }
 
 /// `ZSTR_LEN(string) = length; ZSTR_VAL(string)[length] = '\0'`.

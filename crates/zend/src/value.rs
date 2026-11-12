@@ -20,16 +20,6 @@ pub unsafe fn table(array: *const zval) -> *mut HashTable {
     unsafe { array.cast::<*mut HashTable>().read() }
 }
 
-/// `Z_STR_P`.
-/// # Safety
-/// `string` is a live string zval.
-#[must_use]
-#[inline]
-pub unsafe fn str_of(string: *const zval) -> *mut zend_string {
-    // SAFETY: per the caller, a string zval holds `str`, at offset 0.
-    unsafe { string.cast::<*mut zend_string>().read() }
-}
-
 /// `Z_OBJ_P`.
 /// # Safety
 /// `object` is a live object zval.

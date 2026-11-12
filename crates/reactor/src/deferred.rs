@@ -219,18 +219,21 @@ fn push_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) 
 /// runs, the reactor's `running_defer` holds it: a task that bails out of the loop jumps
 /// over this frame, and the reactor's drop frees the queue instead.
 pub(crate) fn run_defer(reactor: Running<'_>) {
-    let owner = reactor.state();
-    // SAFETY: the handle's live state; the borrow ends before a task runs.
-    let state = unsafe { &mut *owner };
-    let queue = std::mem::replace(&mut state.fields.defer_tasks, ptr::null_mut());
+    // The borrow ends before a task runs.
+    let queue = reactor.with(|state| {
+        let queue = std::mem::replace(&mut state.fields.defer_tasks, ptr::null_mut());
+        if !queue.is_null() {
+            state.running_defer.push(queue);
+        }
+        queue
+    });
     if queue.is_null() {
         return;
     }
-    state.running_defer.push(queue);
     // SAFETY: the detached queue is ours; a task may defer onto the reactor.
     unsafe { deferred_run(queue) };
-    // SAFETY: the handle's live state; every task ran, and a nested pass popped its own.
-    unsafe { (*owner).running_defer.pop() };
+    // Every task ran, and a nested pass popped its own.
+    reactor.with(|state| state.running_defer.pop());
     let mut queue = queue;
     // SAFETY: as above; the reactor no longer names it.
     unsafe { deferred_free(&mut queue) };

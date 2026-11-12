@@ -178,8 +178,8 @@ impl Host for Native<'_, '_> {
             if let Some(value) = unsafe { config::native_fact(state, op, arg) } {
                 return Ok(value);
             }
-            // SAFETY: the same call lends synchronized shared records, without holding callbacks.
-            if let Some(value) = unsafe { shared::native_fact(state, op, arg) } {
+            // The shared counters, without holding callbacks.
+            if let Some(value) = shared::native_fact(state, op, arg) {
                 return Ok(value);
             }
             // A slot is read or cleared, never called.
@@ -248,15 +248,14 @@ pub(crate) fn run_reactor_with<'s, 'c>(
 /// whose records `master_ops` answers. No effect here calls back into C++.
 ///
 /// # Safety
-/// `ctx` is a live context whose `serv` is null or a live `Server`.
+/// `ctx.serv` is null or a live `Server`, and the other fields are what the operation reads.
 #[cfg_attr(test, expect(dead_code, reason = "server_methods' tests run a fake"))]
 pub(crate) unsafe fn run_method(
     operation: u32,
     arg: u64,
-    ctx: *mut server_methods::NativeContext<'_>,
+    ctx: &mut server_methods::NativeContext<'_>,
 ) -> i64 {
-    // SAFETY: per the caller.
-    let serv = unsafe { (*ctx).serv };
+    let serv = ctx.serv;
     // SAFETY: null or a live server, per the caller.
     let server = (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) });
     let state = server.map(view::Server::state);

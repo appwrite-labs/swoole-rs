@@ -101,6 +101,11 @@ impl Bus {
     pub(crate) fn allocator(self) -> *const CoreAllocator {
         self.allocator
     }
+    /// The allocator's functions.
+    fn allocator_ref(&self) -> &CoreAllocator {
+        // SAFETY: `of`'s and `from_parts`' contract: the bus's allocator, which outlives it.
+        unsafe { &*self.allocator }
+    }
     /// The bus's buffer, which starts with the head of its message.
     pub(crate) fn buffer(self) -> *mut DataHead {
         self.rust().buffer()
@@ -156,8 +161,7 @@ impl Bus {
     pub(crate) fn alloc_buffer(self, size: usize) -> bool {
         let bus = self.rust();
         bus.set_buffer_size(size);
-        // SAFETY: the bus's allocator outlives it.
-        let malloc = unsafe { (*self.allocator).malloc };
+        let malloc = self.allocator_ref().malloc;
         // SAFETY: the allocator's malloc.
         let buffer = malloc.map_or(core::ptr::null_mut(), |malloc| unsafe {
             malloc(bus.buffer_size())
@@ -169,8 +173,7 @@ impl Bus {
     /// `MessageBus::free_buffer()`.
     pub(crate) fn free_buffer(self) {
         let buffer = self.buffer();
-        // SAFETY: the bus's allocator outlives it.
-        if let Some(free) = unsafe { (*self.allocator).free } {
+        if let Some(free) = self.allocator_ref().free {
             // SAFETY: the bus's buffer, from this allocator, unused afterwards.
             unsafe { free(buffer.cast()) };
         }

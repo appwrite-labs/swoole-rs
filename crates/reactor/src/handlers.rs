@@ -71,13 +71,35 @@ impl Running<'_> {
         unsafe { &*registry }
     }
 
+    /// The reactor's state, borrowed for `f` alone. `f` reaches no reactor (no handle's
+    /// method, no `event_api` call, no handler, callback or task): a nested borrow
+    /// would be a second `&mut` to the same state, which debug builds refuse.
+    #[cfg(unix)]
+    #[inline]
+    #[track_caller]
+    pub(crate) fn with<R>(self, f: impl FnOnce(&mut crate::ReactorState) -> R) -> R {
+        #[cfg(debug_assertions)]
+        assert!(!BORROWED.replace(true), "a reactor's state borrowed twice");
+        // SAFETY: the handle's live state, which no reference holds across a call that
+        // takes the handle (its contract); this borrow ends with `f`, which takes none.
+        let result = f(unsafe { &mut *self.state() });
+        #[cfg(debug_assertions)]
+        BORROWED.set(false);
+        result
+    }
+
     /// Whether the reactor has deferred tasks waiting (`defer_tasks`).
     #[cfg(unix)]
     #[inline]
     pub(crate) fn has_deferred(self) -> bool {
-        // SAFETY: the handle's live state; a single field read.
-        !unsafe { (*self.state()).fields.defer_tasks }.is_null()
+        self.with(|state| !state.fields.defer_tasks.is_null())
     }
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Whether a [`Running::with`] borrow is live on this thread.
+    static BORROWED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// `SW_MAX_FDTYPE`.

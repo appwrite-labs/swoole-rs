@@ -8,14 +8,28 @@ use libc::{c_char, c_int, c_long};
 use std::ffi::CStr;
 use swoole_rs_corebase::log;
 
+// libc's own declarations, each a call over plain values that reads and writes no
+// caller memory: the caller's ids and session are the kernel's to check.
+unsafe extern "C" {
+    safe fn geteuid() -> libc::uid_t;
+    #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+    safe fn setsid() -> libc::pid_t;
+    /// Leaves the process at once, running no exit handler and no destructor.
+    #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+    safe fn _exit(status: c_int) -> !;
+    safe fn setgid(gid: libc::gid_t) -> c_int;
+    safe fn setuid(uid: libc::uid_t) -> c_int;
+    #[link_name = "pthread_self"]
+    safe fn libc_pthread_self() -> libc::pthread_t;
+}
+
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z19swoole_is_root_userv")
 )]
 pub extern "C" fn swr_v1_os_is_root_user() -> bool {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() == 0 }
+    geteuid() == 0
 }
 
 /// `swoole_daemon`'s Darwin steps before the fork: `chdir("/")` unless `nochdir`,
@@ -68,11 +82,10 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
         return -1;
     }
     if pid > 0 {
-        // SAFETY: the parent leaves without running exit handlers, as upstream.
-        unsafe { libc::_exit(0) };
+        // The parent leaves without running exit handlers, as upstream.
+        _exit(0);
     }
-    // SAFETY: setsid has no memory preconditions.
-    if unsafe { libc::setsid() } < 0 {
+    if setsid() < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("setsid() failed"));
         return -1;
     }
@@ -124,12 +137,10 @@ fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
             warn(2);
         }
     }
-    // SAFETY: setgid has no memory preconditions.
-    if gid.is_some_and(|gid| unsafe { libc::setgid(gid) } < 0) {
+    if gid.is_some_and(|gid| setgid(gid) < 0) {
         warn(3);
     }
-    // SAFETY: setuid has no memory preconditions.
-    if uid.is_some_and(|uid| unsafe { libc::setuid(uid) } < 0) {
+    if uid.is_some_and(|uid| setuid(uid) < 0) {
         warn(4);
     }
     if !root.is_empty() {
@@ -276,8 +287,7 @@ pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
 /// `pthread_self()`: the calling thread.
 #[must_use]
 pub fn pthread_self() -> libc::pthread_t {
-    // SAFETY: pthread_self has no preconditions.
-    unsafe { libc::pthread_self() }
+    libc_pthread_self()
 }
 
 /// `swoole_thread_set_name(name)` for the calling thread; false after a pthread error,

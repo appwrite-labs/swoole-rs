@@ -8,7 +8,7 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_server::{ServerConfig, server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
@@ -123,22 +123,15 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
     }
 }
 
-/// `serv-><field> = v` for the Server field `id`, converted as C++ assigns it.
-///
-/// # Safety
-/// `serv` has not started.
+/// `serv-><field> = v` for the configuration field `id`, converted as C++ assigns it.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "C++'s implicit conversions of the int64_t setting to each field's type"
 )]
-unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
+fn apply(c: &mut ServerConfig, id: u32, v: i64) {
     use field as f;
-    // SAFETY: the server has not started, per the caller; nothing else holds its config.
-    let c = unsafe { serv.config_mut() };
     let on = v != 0;
-    // `0` is unlimited for both concurrency limits.
-    let limit = if v as u32 == 0 { u32::MAX } else { v as u32 };
     match id {
         f::DAEMONIZE => c.daemonize = on,
         f::REACTOR_NUM => c.reactor_num = v as u16,
@@ -146,11 +139,7 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::WORKER_NUM => c.worker_num = v as u32,
         f::MAX_WAIT_TIME => c.max_wait_time = v as u32,
         f::MAX_QUEUED_BYTES => c.max_queued_bytes = v as u32,
-        f::MAX_CONCURRENCY => serv
-            .counters()
-            .max_concurrency
-            .store(limit, core::sync::atomic::Ordering::Relaxed),
-        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency = limit,
+        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency = limit(v),
         f::ENABLE_COROUTINE => c.enable_coroutine = on,
         f::DISPATCH_MODE => c.dispatch_mode = v as u8,
         f::SEND_YIELD => c.send_yield = on,
@@ -165,13 +154,6 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::TASK_IPC_MODE => c.task_ipc_mode = v as u8,
         f::TASK_MAX_REQUEST => c.task_max_request = v as u32,
         f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
-        f::MAX_CONNECTION => server_methods::set_max_connection(serv, v as u32),
-        f::START_SESSION_ID => {
-            let round = v.min(i64::from(u32::MAX));
-            serv.counters()
-                .session_round
-                .store(round, core::sync::atomic::Ordering::Relaxed);
-        }
         f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval = v as u16,
         f::MAX_REQUEST => c.max_request = v as u32,
         f::MAX_REQUEST_GRACE => c.max_request_grace = v as u32,
@@ -192,6 +174,16 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::MESSAGE_QUEUE_KEY => c.message_queue_key = v as u64,
         _ => unreachable!("not a Server field: {id}"),
     }
+}
+
+/// A concurrency limit, for which `0` is unlimited.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "C++'s implicit conversion of the int64_t setting to uint32_t"
+)]
+fn limit(v: i64) -> u32 {
+    if v as u32 == 0 { u32::MAX } else { v as u32 }
 }
 
 /// The settings array and the Server being configured.
@@ -232,9 +224,32 @@ impl<'a> Settings<'a> {
         fact(self.serv, id)
     }
 
+    /// The server's configuration, borrowed for `f`, which runs no PHP code
+    /// and reaches the configuration no other way.
+    pub(crate) fn configure<R>(&self, f: impl FnOnce(&mut ServerConfig) -> R) -> R {
+        // SAFETY: a live server being configured on this thread, not started
+        // (set() checked), so no other thread reads its config; the borrow ends
+        // with `f`, and no other reference to the config is live meanwhile.
+        f(unsafe { self.serv.config_mut() })
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "C++'s implicit conversion of the int64_t setting to uint32_t"
+    )]
     fn set(&self, id: u32, value: i64) {
-        // SAFETY: a live server, not started (set() checked).
-        unsafe { apply(self.serv, id, value) };
+        use core::sync::atomic::Ordering::Relaxed;
+        let counters = self.serv.counters();
+        match id {
+            field::MAX_CONCURRENCY => counters.max_concurrency.store(limit(value), Relaxed),
+            field::MAX_CONNECTION => server_methods::set_max_connection(self.serv, value as u32),
+            field::START_SESSION_ID => {
+                let round = value.min(i64::from(u32::MAX));
+                counters.session_round.store(round, Relaxed);
+            }
+            _ => self.configure(|c| apply(c, id, value)),
+        }
     }
 
     pub(crate) fn long(value: &Value) -> Result<i64, Stop> {
@@ -421,8 +436,7 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     if let Some(value) = s.get(c"send_timeout") {
         let v = value.double();
         checked()?;
-        // SAFETY: the live server being configured; nothing else holds its config.
-        unsafe { s.server().config_mut() }.send_timeout = v;
+        s.configure(|c| c.send_timeout = v);
     }
     s.clamped(c"dispatch_mode", f::DISPATCH_MODE, 0, i64::from(u8::MAX))?;
     match s.get(c"send_yield") {
@@ -617,8 +631,7 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
         fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
         return Err(Stop);
     }
-    // SAFETY: the live server being configured; nothing else holds its config.
-    unsafe { s.server().config_mut() }.cpu_affinity_available = cpus;
+    s.configure(|c| c.cpu_affinity_available = cpus);
     Ok(true)
 }
 

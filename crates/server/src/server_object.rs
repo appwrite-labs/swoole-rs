@@ -82,10 +82,10 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
         unsafe { port_delete(port.raw()) };
     }
     let object_ptr = serv.raw();
+    // The server's state, which its object owns until the last step below.
+    let state = serv.state();
     // SAFETY: the object `swr_v1_server_new` boxed, freed once.
     let object = unsafe { Box::from_raw(object_ptr.cast::<ServerObject>()) };
-    // SAFETY: the server's state, which this object owns.
-    let state = unsafe { &*object.state };
     state.close_pipes();
     // SAFETY: the state's configuration, which nothing else uses now.
     let config = unsafe { &mut *object.config };

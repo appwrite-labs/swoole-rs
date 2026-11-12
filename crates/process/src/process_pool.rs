@@ -249,10 +249,8 @@ impl<'a> PoolRef<'a> {
     /// none of its records.
     #[must_use]
     pub fn worker_of(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
-        // SAFETY: `new`'s contract: a live pool for `'a`, whose records live as long
-        // (`set_workers`); the borrow only reads `workers` and `worker_num`.
-        let record: &'a PoolRecord = unsafe { &*self.raw };
-        record.own(raw)
+        // The pool's records live as long as it does (`set_workers`).
+        self.record().own(raw)
     }
 
     /// The pool at `raw`.
@@ -1385,19 +1383,20 @@ impl<H: PoolHost> Pool<'_, H> {
             if !self.running() {
                 continue;
             }
-            // SAFETY: the type byte of the EventData just popped.
-            let kind = unsafe { message.wrapping_add(EVENT_TYPE).read() };
-            if kind != WORKER_MESSAGE_STOP && self.on_worker_message().is_some() {
+            // SAFETY: the EventData just popped: its head, then data that holds at
+            // least a WorkerStopMessage's pid.
+            let event =
+                unsafe { std::slice::from_raw_parts(message, EVENT_DATA + size_of::<c_int>()) };
+            let kind = event.get(EVENT_TYPE).copied();
+            if kind != Some(WORKER_MESSAGE_STOP) && self.on_worker_message().is_some() {
                 self.op(OP_ON_WORKER_MESSAGE, 0);
                 continue;
             }
-            // SAFETY: the WorkerStopMessage's pid at the start of its data.
-            let pid = unsafe {
-                message
-                    .wrapping_add(EVENT_DATA)
-                    .cast::<c_int>()
-                    .read_unaligned()
+            // The WorkerStopMessage's pid, at the start of its data.
+            let Some(&pid) = event.get(EVENT_DATA..).and_then(<[u8]>::first_chunk) else {
+                continue;
             };
+            let pid = c_int::from_ne_bytes(pid);
             let worker = self.worker_by_pid(pid);
             if worker.is_null() {
                 continue;

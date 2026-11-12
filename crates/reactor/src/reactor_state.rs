@@ -429,16 +429,14 @@ pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
     const SW_REACTOR_MAXEVENTS: c_int = 4096;
     const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
     let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
-    // SAFETY: the new reactor, borrowed for these writes alone.
-    let fields = unsafe { &mut (*reactor.cast::<ReactorState>()).fields };
-    if !fields.ready {
-        // SAFETY: the reactor just made, which nothing else holds.
+    // SAFETY: the new reactor, on this thread, which no reference holds.
+    let handle = unsafe { crate::Running::new(reactor) };
+    if !handle.with(|state| state.fields.ready) {
+        // SAFETY: the reactor just made, which nothing else holds or uses again.
         unsafe { swr_v1_reactor_delete(reactor) };
         return -1;
     }
-    fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0;
-    // SAFETY: the new reactor, on this thread, which no reference holds now.
-    let handle = unsafe { crate::Running::new(reactor) };
+    handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
     system_init_reactor(handle);
     swr_v1_clients_init_reactor(handle);
     swoole_rs_corebase::set_thread_reactor(reactor);

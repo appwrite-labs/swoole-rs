@@ -5,7 +5,7 @@ use crate::{
     bailout::Bailout,
     function::{arg_info, deny},
     sys::{
-        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_facade_compiler_functions,
+        CONST_PERSISTENT, HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_facade_compiler_functions,
         swr_zend_http_intern, zend_ce_arrayaccess, zend_ce_countable, zend_ce_error,
         zend_ce_exception, zend_ce_iterator, zend_ce_stringable, zend_class_entry,
         zend_class_implements, zend_declare_class_constant_long, zend_declare_property_bool,
@@ -18,6 +18,7 @@ use crate::{
 use std::{
     ffi::{CStr, c_int},
     marker::PhantomData,
+    mem::offset_of,
     ptr,
 };
 
@@ -129,10 +130,18 @@ impl Minit {
         name: &CStr,
         methods: &'static [zend_function_entry],
     ) {
-        let class = plain(class);
-        let methods = terminated(methods);
-        // SAFETY: MINIT, with a plain class and a static, terminated table.
-        unsafe { class.register_child(name, methods, ptr::null_mut(), deny) };
+        plain(class);
+        terminated(methods);
+        self.register_plain(class, name, methods, None, deny);
+    }
+
+    /// The compiler's function table (`CG(function_table)`), where MINIT
+    /// registers global functions.
+    #[must_use]
+    pub fn compiler_functions(&self) -> *mut HashTable {
+        // SAFETY: MINIT, on the thread whose compiler globals Zend initialized
+        // before module startup; the pointer is only read.
+        unsafe { swr_zend_facade_compiler_functions() }
     }
 
     /// `SW_FUNCTION_ALIAS` of each `(method, alias)` of `class`, registered with
@@ -149,24 +158,22 @@ impl Minit {
     ) -> Result<(), Bailout> {
         let entry = registered(class);
         terminated(methods);
-        // SAFETY: a registered class lives for the process. Project the raw table
-        // pointer without holding a mutable Rust reference across registration.
-        let source = unsafe { &raw mut (*entry).function_table };
-        // SAFETY: Zend initializes the compiler's table before module startup.
-        let target = unsafe { swr_zend_facade_compiler_functions() };
+        // The class's own table, projected without a Rust reference to the entry.
+        let source = entry
+            .wrapping_byte_add(offset_of!(zend_class_entry, function_table))
+            .cast::<HashTable>();
+        let target = self.compiler_functions();
         for (method, alias) in aliases {
-            // SAFETY: MINIT; the names live through the call and the arginfo,
-            // from the static table, for the process.
+            // SAFETY: MINIT; a registered class, which lives for the process, has
+            // its table of internal methods, the compiler's is live, and the
+            // arginfo comes from the method's row of the static table.
             unsafe {
                 crate::registration::function_alias(
                     source,
-                    method.as_ptr(),
-                    method.count_bytes(),
+                    method,
                     target,
-                    alias.as_ptr(),
-                    alias.count_bytes(),
+                    alias,
                     arg_info(methods, method),
-                    None,
                 )
             }?;
         }
@@ -186,9 +193,7 @@ impl Minit {
         methods: &'static [zend_function_entry],
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        let class = plain(class);
-        // SAFETY: MINIT, with a plain class and a static, terminated table or none.
-        unsafe { class.register_child(name, table(methods), ptr::null_mut(), configure) };
+        self.register_plain(class, name, methods, None, configure);
     }
 
     /// [`Self::register`], extending `parent`.
@@ -202,10 +207,28 @@ impl Minit {
         parent: Parent,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        let class = plain(class);
-        // SAFETY: MINIT, with a plain class, a static, terminated table or none,
-        // and a registered parent.
-        unsafe { class.register_child(name, table(methods), parent.0, configure) };
+        self.register_plain(class, name, methods, Some(parent), configure);
+    }
+
+    /// [`Class::register_child`] of a class that is no
+    /// [`CustomClass`](crate::CustomClass)'s, with `methods` (none when empty).
+    #[expect(
+        clippy::unused_self,
+        reason = "the token is what proves this runs at MINIT"
+    )]
+    fn register_plain(
+        &self,
+        class: &Class,
+        name: &CStr,
+        methods: &'static [zend_function_entry],
+        parent: Option<Parent>,
+        configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
+    ) {
+        let (class, methods) = (plain(class), table(methods));
+        let parent = parent.map_or(ptr::null_mut(), |parent| parent.0);
+        // SAFETY: MINIT (the token), with a plain class, a static, terminated
+        // table or none, and a registered parent or none.
+        unsafe { class.register_child(name, methods, parent, configure) };
     }
 
     /// Swoole's `SW_CLASS_ALIAS`: `name` (no leading backslash) names `class` too.

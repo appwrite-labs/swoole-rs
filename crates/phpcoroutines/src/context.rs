@@ -197,6 +197,23 @@ impl Ctx {
         self.with_vm(|vm| vm.execute_data)
     }
 
+    /// Run `f` with that frame as Zend's current one, as its backtraces and
+    /// exception locations read it, then restore the running frame; `f` just
+    /// runs for the running context, whose saved frame is stale. `f` neither
+    /// switches coroutines nor bails out.
+    pub(crate) fn in_frame<R>(self, f: impl FnOnce() -> R) -> R {
+        if self == current() {
+            return f();
+        }
+        // SAFETY: a live context that is not running was switched out, and its
+        // saved frame stays live until it resumes, which `f` does not let it.
+        let running = unsafe { swr_zend_coroutine_set_frame(self.execute_data()) };
+        let result = f();
+        // SAFETY: the running coroutine's own frame, read above.
+        unsafe { swr_zend_coroutine_set_frame(running) };
+        result
+    }
+
     /// Its VM stack chain.
     pub(crate) fn vm_stack(self) -> swoole_rs_zend::sys::zend_vm_stack {
         self.with_vm(|vm| vm.vm_stack)

@@ -10,6 +10,69 @@ use libc::{c_int, off_t, pid_t};
 use std::ffi::CStr;
 use std::mem::MaybeUninit;
 
+/// libc's calls that take only plain values, a live reference of the exact type they
+/// read or write, or a NUL-terminated string, and keep none of them: they have no
+/// memory preconditions, so they are declared `safe`.
+mod c {
+    use libc::{c_char, c_int, c_long, c_uint, pid_t, useconds_t};
+    use std::ffi::CStr;
+    use std::marker::PhantomData;
+    use std::ptr::NonNull;
+
+    /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
+    /// `const char *` it is.
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    pub(crate) struct Text<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
+
+    impl<'a> From<&'a CStr> for Text<'a> {
+        fn from(text: &'a CStr) -> Self {
+            Self(NonNull::from(text).cast(), PhantomData)
+        }
+    }
+
+    // SAFETY: POSIX's prototypes, the same on every Unix this builds for. Each reads
+    // its integers, reads a `Text` up to its NUL, or writes the one object its
+    // reference names.
+    unsafe extern "C" {
+        pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+        pub(crate) safe fn shutdown(fd: c_int, how: c_int) -> c_int;
+        pub(crate) safe fn socketpair(
+            domain: c_int,
+            kind: c_int,
+            protocol: c_int,
+            fds: &mut [c_int; 2],
+        ) -> c_int;
+        pub(crate) safe fn pipe(fds: &mut [c_int; 2]) -> c_int;
+        pub(crate) safe fn dup(fd: c_int) -> c_int;
+        pub(crate) safe fn dup2(from: c_int, to: c_int) -> c_int;
+        pub(crate) safe fn flock(fd: c_int, operation: c_int) -> c_int;
+        pub(crate) safe fn sleep(seconds: c_uint) -> c_uint;
+        pub(crate) safe fn usleep(microseconds: useconds_t) -> c_int;
+        pub(crate) safe fn unlink(path: Text<'_>) -> c_int;
+        pub(crate) safe fn access(path: Text<'_>, mode: c_int) -> c_int;
+        pub(crate) safe fn chdir(path: Text<'_>) -> c_int;
+        pub(crate) safe fn if_nametoindex(name: Text<'_>) -> c_uint;
+        pub(crate) safe fn sysconf(name: c_int) -> c_long;
+        pub(crate) safe fn kill(pid: pid_t, signo: c_int) -> c_int;
+        pub(crate) safe fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int)
+        -> pid_t;
+        pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
+        pub(crate) safe fn srandom(seed: c_uint);
+        /// This thread's errno slot, live for the thread.
+        #[cfg_attr(
+            any(target_os = "linux", target_os = "android"),
+            link_name = "__errno_location"
+        )]
+        #[cfg_attr(
+            not(any(target_os = "linux", target_os = "android")),
+            link_name = "__error"
+        )]
+        pub(crate) safe fn errno_location() -> *mut c_int;
+    }
+}
+pub(crate) use c::{srandom, uname};
+
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
 pub trait ReadSlot: sealed::Sealed {}
@@ -131,14 +194,8 @@ pub fn errno() -> c_int {
 
 /// Sets this thread's errno.
 pub fn set_errno(value: c_int) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    use libc::__errno_location as errno_location;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    use libc::__error as errno_location;
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { errno_location() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
+    // SAFETY: this thread's errno slot, live for the thread.
+    unsafe { c::errno_location().write(value) };
 }
 
 /// `strerror(3)`: libc's message for `code`, as std's `strerror_r` reads it.
@@ -186,14 +243,12 @@ pub fn close(fd: c_int) -> c_int {
 /// `socket(2)`.
 #[must_use]
 pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
-    // SAFETY: socket(2) has no memory preconditions.
-    unsafe { libc::socket(domain, kind, protocol) }
+    c::socket(domain, kind, protocol)
 }
 
 /// `shutdown(2)`.
 pub fn shutdown(fd: c_int, how: c_int) -> c_int {
-    // SAFETY: shutdown(2) has no memory preconditions.
-    unsafe { libc::shutdown(fd, how) }
+    c::shutdown(fd, how)
 }
 
 /// `getsockopt(2)` of an int option into `value`, which keeps what it held when
@@ -234,8 +289,7 @@ pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> c
 #[must_use]
 pub fn socketpair(domain: c_int, kind: c_int, protocol: c_int) -> Option<[c_int; 2]> {
     let mut fds = [0; 2];
-    // SAFETY: `fds` has room for two descriptors.
-    (unsafe { libc::socketpair(domain, kind, protocol, fds.as_mut_ptr()) } == 0).then_some(fds)
+    (c::socketpair(domain, kind, protocol, &mut fds) == 0).then_some(fds)
 }
 
 /// `recv(2)` into `buf`.
@@ -253,14 +307,12 @@ pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> isize {
 /// `dup(2)`.
 #[must_use]
 pub fn dup(fd: c_int) -> c_int {
-    // SAFETY: dup(2) has no memory preconditions.
-    unsafe { libc::dup(fd) }
+    c::dup(fd)
 }
 
 /// `dup2(2)`.
 pub fn dup2(from: c_int, to: c_int) -> c_int {
-    // SAFETY: dup2(2) has no memory preconditions.
-    unsafe { libc::dup2(from, to) }
+    c::dup2(from, to)
 }
 
 /// `fcntl(2)` with an integer argument (`F_GETFL`, `F_SETFL`, `F_GETFD`,
@@ -272,8 +324,7 @@ pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 
 /// `flock(2)`.
 pub fn flock(fd: c_int, operation: c_int) -> c_int {
-    // SAFETY: flock(2) has no memory preconditions.
-    unsafe { libc::flock(fd, operation) }
+    c::flock(fd, operation)
 }
 
 /// `poll(2)` of `fds`.
@@ -287,8 +338,7 @@ pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> c_int {
 #[must_use]
 pub fn pipe() -> Option<[c_int; 2]> {
     let mut fds = [0; 2];
-    // SAFETY: `fds` has room for two descriptors.
-    (unsafe { libc::pipe(fds.as_mut_ptr()) } == 0).then_some(fds)
+    (c::pipe(&mut fds) == 0).then_some(fds)
 }
 
 /// `fstat(2)`: the descriptor's status, or `None` with errno set.
@@ -301,14 +351,12 @@ pub fn fstat(fd: c_int) -> Option<libc::stat> {
 
 /// `sleep(3)`: the seconds left when a signal cut it short.
 pub fn sleep(seconds: libc::c_uint) -> libc::c_uint {
-    // SAFETY: sleep(3) has no memory preconditions.
-    unsafe { libc::sleep(seconds) }
+    c::sleep(seconds)
 }
 
 /// `usleep(3)`.
 pub fn usleep(microseconds: libc::useconds_t) -> c_int {
-    // SAFETY: usleep(3) has no memory preconditions.
-    unsafe { libc::usleep(microseconds) }
+    c::usleep(microseconds)
 }
 
 /// `nanosleep(2)` for `request`, the time left going to `remaining`.
@@ -325,8 +373,7 @@ pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
 
 /// `unlink(2)`.
 pub fn unlink(path: &CStr) -> c_int {
-    // SAFETY: `path` is NUL-terminated.
-    unsafe { libc::unlink(path.as_ptr()) }
+    c::unlink(path.into())
 }
 
 /// `bytes` to C's `stdout`, which native code's own `printf` shares, so the two
@@ -351,8 +398,7 @@ pub fn kevent_change(kq: c_int, change: &libc::kevent) -> c_int {
 /// `if_nametoindex(3)`: the interface's index, 0 with errno set when there is none.
 #[must_use]
 pub fn if_nametoindex(name: &CStr) -> libc::c_uint {
-    // SAFETY: `name` is NUL-terminated.
-    unsafe { libc::if_nametoindex(name.as_ptr()) }
+    c::if_nametoindex(name.into())
 }
 
 /// An `ioctl(2)` request on a socket that reads and writes one `ifreq`, and no
@@ -477,15 +523,13 @@ impl<'a> Interface<'a> {
 /// `access(2)`.
 #[must_use]
 pub fn access(path: &CStr, mode: c_int) -> c_int {
-    // SAFETY: `path` is NUL-terminated.
-    unsafe { libc::access(path.as_ptr(), mode) }
+    c::access(path.into(), mode)
 }
 
 /// `chdir(2)`.
 #[must_use]
 pub fn chdir(path: &CStr) -> c_int {
-    // SAFETY: `path` is NUL-terminated.
-    unsafe { libc::chdir(path.as_ptr()) }
+    c::chdir(path.into())
 }
 
 /// `stat(2)`: the path's status, or `None` with errno set.
@@ -499,14 +543,13 @@ pub fn stat(path: &CStr) -> Option<libc::stat> {
 /// `sysconf(3)`.
 #[must_use]
 pub fn sysconf(name: c_int) -> libc::c_long {
-    // SAFETY: sysconf(3) has no memory preconditions.
-    unsafe { libc::sysconf(name) }
+    c::sysconf(name)
 }
 
 /// `kill(2)`.
 pub fn kill(pid: pid_t, signo: c_int) -> c_int {
-    // SAFETY: kill(2) has no memory preconditions; the signal is the caller's intent.
-    unsafe { libc::kill(pid, signo) }
+    // The signal is the caller's intent.
+    c::kill(pid, signo)
 }
 
 /// `setitimer(2)`, discarding the previous timer.
@@ -531,9 +574,7 @@ pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
 
 /// `waitpid(2)`, storing the status in `status` when given.
 pub fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int) -> pid_t {
-    let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
-    // SAFETY: `status` is null or one writable int.
-    unsafe { libc::waitpid(pid, status, options) }
+    c::waitpid(pid, status, options)
 }
 
 /// `getpid(2)`.

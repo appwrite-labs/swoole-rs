@@ -86,8 +86,15 @@ unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
 
 /// Runs `op` with `arg` over a context that lends `serv` and nothing else.
 fn run_on(serv: view::Server<'_>, op: u32, arg: u64) -> i64 {
+    run_over(serv, op, arg).0
+}
+
+/// [`run_on`], and the context afterwards, for what `op` left in it.
+fn run_over<'a>(serv: view::Server<'_>, op: u32, arg: u64) -> (i64, NativeContext<'a>) {
+    let mut ctx = NativeContext::new(serv.raw());
     // SAFETY: a live server, and no other object for the operation to read.
-    unsafe { run(op, arg, &mut NativeContext::new(serv.raw())) }
+    let result = unsafe { run(op, arg, &mut ctx) };
+    (result, ctx)
 }
 
 /// Each method that is one operation over the server alone: its Rust name, return type
@@ -595,9 +602,8 @@ pub fn sendfile(
 /// `Server::create_base_factory()`: the new `BaseFactory`, or null.
 #[must_use]
 pub fn create_base_factory(serv: view::Server<'_>) -> *mut c_void {
-    let mut ctx = NativeContext::new(serv.raw());
-    // SAFETY: a live server, and no other object for the operation to read.
-    if unsafe { run(RUN_BASE_CREATE, 0, &mut ctx) } != 0 {
+    let (created, ctx) = run_over(serv, RUN_BASE_CREATE, 0);
+    if created != 0 {
         ctx.object
     } else {
         ptr::null_mut()
@@ -772,9 +778,7 @@ mod tests {
     /// The name the last sendfile lent, read as the task's `swoole_strlcpy` reads it.
     static SENDFILE_NAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-    pub(super) unsafe fn fake(op: u32, arg: u64, ctx: *mut NativeContext<'_>) -> i64 {
-        // SAFETY: the methods pass their own live context.
-        let ctx = unsafe { &mut *ctx };
+    pub(super) unsafe fn fake(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
         SEEN.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((

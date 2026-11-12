@@ -50,18 +50,7 @@ struct Data<'a> {
     value: Cow<'a, Value>,
 }
 
-impl<'a> Data<'a> {
-    /// `op`'s `OP_DATA` and its value (`get_op_data_zval_ptr_r`), or None for
-    /// an unused operand.
-    /// # Safety
-    /// `op` is an `ASSIGN_DIM` or `ASSIGN_DIM_OP`, which `OP_DATA` follows, and
-    /// nothing else frees that operand.
-    unsafe fn of(op: Op<'a>) -> Result<Option<Self>, Bailout> {
-        // SAFETY: per the caller, the `OP_DATA` instruction follows `op`.
-        let op = unsafe { Op::at(op.frame, op.at.wrapping_add(1)) };
-        Ok(operand(op)?.map(|value| Self { op, value }))
-    }
-
+impl Data<'_> {
     /// The operand's value, until it is freed.
     fn value(&self) -> &Value {
         &self.value
@@ -138,21 +127,14 @@ fn strict(frame: Frame) -> bool {
     flags & z::ZEND_ACC_STRICT_TYPES != 0
 }
 
-/// # Safety
-/// `container` holds `source`.
-unsafe fn assign(
-    op: Op,
-    data: Data,
-    container: &Value,
-    source: Typed,
-    key: &Value,
-) -> Result<(), Bailout> {
+/// `ASSIGN_DIM` into `own`, the typed table the container holds unshared.
+fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
     let value = data.value();
-    // SAFETY: per the caller.
-    let ht = unsafe { typed::separate(container, source) };
+    let ht = own.table();
     let mut slot = ptr::null_mut();
     if key.kind() == z::IS_NULL {
-        // SAFETY: the table takes the original operand reference on successful insertion.
+        // SAFETY: a live table, which takes the original operand reference on
+        // successful insertion.
         slot = unsafe { z::zend_hash_next_index_insert(ht, value.as_ptr()) };
         if slot.is_null() {
             // SAFETY: preserve Zend's exact occupied-next-index error, below a native trap.
@@ -198,18 +180,10 @@ unsafe fn assign(
     data.free()
 }
 
-/// # Safety
-/// As [`assign`].
-unsafe fn assign_op(
-    op: Op,
-    data: Data,
-    container: &Value,
-    source: Typed,
-    key: &Value,
-) -> Result<(), Bailout> {
+/// `ASSIGN_DIM_OP` on `own`, as [`assign`].
+fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
     let value = data.value();
-    // SAFETY: per the caller.
-    let ht = unsafe { typed::separate(container, source) };
+    let ht = own.table();
     let mut slot = ptr::null_mut();
     // Upstream selects W_CONST from the value's OP_DATA type here, unlike ASSIGN_DIM.
     // SAFETY: retain that exact distinction when invoking the native VM primitive.
@@ -244,9 +218,7 @@ unsafe fn assign_op(
             return unsafe { data.publish(op, target) };
         }
     }
-    // SAFETY: the container holds its own typed copy now.
-    let typed = unsafe { Typed::from_table(ht) };
-    if !typed::operation(typed, op.extended_value == z::ZEND_CONCAT) {
+    if !typed::operation(own, op.extended_value == z::ZEND_CONCAT) {
         // A rejected operation follows the original temporary/result cleanup path.
         return data.abandon(op);
     }
@@ -272,22 +244,24 @@ unsafe fn dispatch(frame: *mut zend_execute_data, operation: bool) -> Result<c_i
     // An append's key is null (`&EG(uninitialized_zval)`).
     let null = Owned::null();
     let key = op.op2().unwrap_or(&null);
-    // SAFETY: per the caller, an assignment, which OP_DATA follows; only
-    // `data` frees its operand.
-    let Some(data) = (unsafe { Data::of(op) })? else {
+    // SAFETY: per the caller, an assignment, which its `OP_DATA` instruction follows.
+    let data = unsafe { Op::at(frame, op.at.wrapping_add(1)) };
+    // `get_op_data_zval_ptr_r`: None for an unused operand. Only `data` frees it.
+    let Some(value) = operand(data)? else {
         return Ok(DISPATCH);
     };
+    let data = Data { op: data, value };
     if !typed::check(typed, KeyType::of(key), data.value()) {
         // Rejection frees OP_DATA and intentionally does not advance the opline.
         data.free()?;
         return Ok(CONTINUE);
     }
+    // SAFETY: `array` holds `typed`, read from it above and not used after this.
+    let own = unsafe { typed::separate(array, typed) };
     if operation {
-        // SAFETY: the typed operands and original instruction remain live throughout this operation.
-        unsafe { assign_op(op, data, array, typed, key) }?;
+        assign_op(op, data, own, key)?;
     } else {
-        // SAFETY: the typed operands and original instruction remain live throughout this assignment.
-        unsafe { assign(op, data, array, typed, key) }?;
+        assign(op, data, own, key)?;
     }
     // Reload the current frame opline after reentry, as EX(opline) += 2 did.
     frame.jump(frame.opline().wrapping_add(2));
