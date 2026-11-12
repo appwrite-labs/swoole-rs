@@ -321,7 +321,13 @@ unsafe fn pool_listen_host(
 
 unsafe fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::listen_unix(&*pool.cast(), std::ffi::CStr::from_ptr(file), backlog) }
+    unsafe {
+        pm::listen_unix(
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            std::ffi::CStr::from_ptr(file),
+            backlog,
+        )
+    }
 }
 
 unsafe fn pool_set_protocol(pool: *mut Pool, protocol: c_int) {

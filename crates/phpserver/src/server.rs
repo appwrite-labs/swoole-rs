@@ -1154,23 +1154,13 @@ fn delegate(call: &Call, method: &[u8]) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let object = crate::lifecycle::ServerObject::running().raw();
-    let retval = swoole_rs_zend::Owned::default();
-    // SAFETY: the server's live object, its class, a writable result and the argument.
-    let called = unsafe {
-        swoole_rs_zend::bailout::call_method(
-            object,
-            SERVER.entry(),
-            method,
-            retval.as_ptr(),
-            &[call.zval(1)],
-        )
+    let mut object = crate::lifecycle::ServerObject::running().zval();
+    let args: Vec<&Value> = call.value(1).into_iter().collect();
+    let retval = match Value::of(&mut object).call_method(Some(&SERVER), method, &args) {
+        Ok(retval) => retval,
+        // Nothing here to release: the bailout jumps over this frame.
+        Err(bailout) => return swoole_rs_zend::bailout::raise(Err(bailout)),
     };
-    if let Err(bailout) = called {
-        // Released first: the bailout jumps over this frame.
-        drop(retval);
-        return swoole_rs_zend::bailout::raise(Err(bailout));
-    }
     if method == b"exists" {
         // RETVAL_BOOL(Z_BVAL_P(&retval)): only `true` is true.
         call.set_bool(retval.kind() == swoole_rs_zend::sys::IS_TRUE);

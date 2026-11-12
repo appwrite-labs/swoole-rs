@@ -288,6 +288,10 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The facts and effects on the server, its tables and its ports.
 fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
+    // `running` is shared state, read and set before any `&mut ServerConfig` exists.
+    if op == OP_RUNNING {
+        return Some(u64::from(ctx.state().running()));
+    }
     let serv = ctx.serv;
     let config = ctx.config();
     let port = || ctx.server().port_at(usize::try_from(arg).ok()?);
@@ -310,7 +314,6 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
-        OP_RUNNING => u64::from(config.running),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
@@ -371,16 +374,13 @@ fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     // are copied out first: the pool's own code, every task worker thread and PHP code
     // a hook runs (`$server->stats()`) reach the record while one runs.
     let pool_hook = |op| {
-        let pool = ctx.workers().task_pool;
-        // The borrow ends with the copy.
-        let record = crate::shared::ServerShared::of(ctx.server()).task_pool();
+        let pool = ctx.server().task_pool_ref();
         let (start, main_loop, stop) = (
-            record.on_worker_start,
-            record.main_loop,
-            record.on_worker_stop,
+            pool.on_worker_start(),
+            pool.main_loop(),
+            pool.on_worker_stop(),
         );
         let worker = ctx.worker();
-        let pool = pool_native::pool_ref(pool);
         match (op, start, main_loop, stop) {
             (OP_ON_WORKER_START, Some(hook), ..) | (OP_ON_WORKER_STOP, .., Some(hook)) => {
                 // SAFETY: the pool that holds the hook, and the worker it lends.

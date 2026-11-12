@@ -230,6 +230,27 @@ impl Timer {
         }
     }
 
+    /// A selection at `now` that finds nothing due, in one step: [`Self::begin`], an
+    /// `EMPTY` [`Self::select_next`] and [`Self::end`], with `end`'s delay. `None`, and
+    /// nothing changed, when a node is due or `begin` would refuse.
+    pub fn select_idle(&mut self, now: i64) -> Option<i64> {
+        let head = self.heap.first();
+        let due = head.is_some_and(|head| head.deadline <= now && head.birth_round != self.round);
+        if due
+            || self.closing
+            || self.selecting
+            || self.active_id != 0
+            || now < self.last_time.max(0)
+        {
+            return None;
+        }
+        let delay = head.map_or(-1, |head| (head.deadline - now).max(1));
+        self.round = self.round.checked_add(1)?;
+        self.last_time = now;
+        self.captured = now;
+        Some(delay)
+    }
+
     /// Begins a selection at `now`.
     pub fn begin(&mut self, now: i64) -> i32 {
         if now < 0 {
@@ -599,6 +620,39 @@ mod tests {
         assert_eq!(q.next(OK).id, old.id);
         q.complete(old.id, RELEASE);
         q.end();
+    }
+
+    #[test]
+    fn an_idle_selection_is_begin_an_empty_next_and_end() {
+        // Each case on two equal queues: the three steps on one, the one step on the other.
+        for (now, due) in [(0, false), (3, false), (10, true)] {
+            let (steps, idle) = (Owned::new(), Owned::new());
+            for q in [&steps, &idle] {
+                q.add(0, 10, false, 1);
+                q.prime();
+            }
+            let before = idle.stats();
+            let delay = idle.q().select_idle(now);
+            assert_eq!(delay.is_none(), due);
+            if let Some(delay) = delay {
+                assert_eq!(steps.begin(now), OK);
+                steps.next(EMPTY);
+                assert_eq!(steps.end(), delay);
+                assert_eq!(idle.stats(), steps.stats());
+                // Both refuse a time before the selection's.
+                assert_eq!(idle.q().select_idle(now - 1), None);
+            } else {
+                assert_eq!(idle.stats(), before, "a refusal changes nothing");
+            }
+        }
+        // The first turn's birth round blocks a due head, as `select_next` does.
+        let q = Owned::new();
+        q.add(0, 1, false, 1);
+        assert_eq!(q.q().select_idle(5), Some(1));
+        assert_eq!(q.q().select_idle(5), None);
+        // An open selection or an active node leaves the queue to the full path.
+        assert_eq!(q.begin(5), OK);
+        assert_eq!(q.q().select_idle(5), None);
     }
 
     #[test]

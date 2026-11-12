@@ -351,17 +351,8 @@ fn set(call: &Call) {
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
 fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> {
-    let port = this.port_at(0);
-    // SAFETY: the live Port object, its class and the settings argument.
-    unsafe {
-        bailout::call_method(
-            port,
-            crate::PORT.entry(),
-            b"set",
-            ptr::null_mut(),
-            &[settings.as_ptr()],
-        )
-    }?;
+    let mut port = this.port(0);
+    drop(Value::of(&mut port).call_method(Some(&crate::PORT), b"set", &[settings])?);
     crate::lifecycle::Props::server(this).merge(c"setting", settings);
     bailout::outcome(())
 }

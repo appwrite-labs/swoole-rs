@@ -33,8 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
-# Reports outside upstream's run that main's run has (27 in run 43150929011). Lower it with each fix.
-LIMIT = 27
+# Reports outside upstream's run that main's run has. Lower it with each fix. 18 locally once the
+# master pid and running flag stopped racing (#3343), plus 5 for the runs' swing in reports that only
+# hold TSan's "can't find longjmp buf" (1 on main's local run, 6 on the next).
+LIMIT = 23  # #3399's fix on main may take one more; the next run's count lowers it
 
 
 def sanitized(reports, name):
@@ -68,8 +70,7 @@ def main():
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     subprocess.run(['rustup', 'component', 'add', 'rust-src'], cwd=ROOT, check=True)
-    # cfg(tsan) gives each coroutine a TSan fiber of its own (crates/coroutine/src/context.rs).
-    rust = {'RUSTC_BOOTSTRAP': '1', 'RUSTFLAGS': '-Zsanitizer=thread -Zexternal-clangrt=yes -Cforce-frame-pointers=yes --cfg tsan'}
+    rust = {'RUSTC_BOOTSTRAP': '1', 'RUSTFLAGS': '-Zsanitizer=thread -Zexternal-clangrt=yes -Cforce-frame-pointers=yes'}
     # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
     build = {**compilers, **rust, 'CARGO_BUILD_TARGET': host, 'CARGO_UNSTABLE_BUILD_STD': 'std,panic_abort'}
     config = ['--php-config', str(php / 'bin/php-config'), '--configure=--enable-swoole-thread']

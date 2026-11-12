@@ -18,6 +18,12 @@ impl Callable {
         NonNull::new(callable).map(Self)
     }
 
+    /// A handle that names no callable, for tests that never call or drop it.
+    #[cfg(test)]
+    pub(crate) fn dangling() -> Self {
+        Self(NonNull::dangling())
+    }
+
     /// The handle `crate::dispatch::invoke` and C++ call.
     pub(crate) fn as_raw(&self) -> *mut c_void {
         self.0.as_ptr()

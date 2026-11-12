@@ -428,12 +428,28 @@ pub fn suspend_for(timeout: f64) -> bool {
     !co.is_null() && yield_ex(co, timeout)
 }
 
-/// [`suspend`], with the running coroutine published in `slot` while it
-/// waits.
-pub fn park(slot: &std::cell::Cell<Option<Coroutine>>) {
-    slot.set(Coroutine::current());
-    suspend();
-    slot.set(None);
+/// One wait that someone else ends: [`Waiter::wait`] suspends the running
+/// coroutine, published here while it waits, and [`Waiter::wake`] resumes it.
+#[derive(Default)]
+pub struct Waiter(std::cell::Cell<Option<Coroutine>>);
+
+impl Waiter {
+    /// [`suspend`] until [`Waiter::wake`], or whatever else ends the wait.
+    pub fn wait(&self) {
+        self.0.set(Coroutine::current());
+        suspend();
+        self.0.set(None);
+    }
+
+    /// Resume the coroutine in [`Waiter::wait`]; nothing when none waits. As
+    /// [`resume`], the caller's frames must own nothing that needs a drop.
+    pub fn wake(&self) {
+        if let Some(coroutine) = self.0.get() {
+            // SAFETY: published only while it is suspended in `wait`, which
+            // clears it as soon as anything resumes it.
+            unsafe { coroutine.wake(false) };
+        }
+    }
 }
 
 /// Running in a coroutine (`swoole_coroutine_is_in`).

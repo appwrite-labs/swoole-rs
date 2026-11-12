@@ -262,6 +262,12 @@ impl Co {
         self.with_err_message(|message| message.map(CStr::to_owned))
     }
 
+    /// `errMsg = message`, a static message.
+    pub fn set_static_err_msg(self, message: &'static CStr) {
+        // SAFETY: a NUL-terminated message that lives for the process.
+        unsafe { self.set_err_msg(message.as_ptr()) };
+    }
+
     /// `f` over a copy of `errMsg` (`None` when null), taken before `f` runs, so `f`
     /// may reach the socket again. A message that fits is copied to the stack: the
     /// clients read it after every send and receive.

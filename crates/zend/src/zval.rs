@@ -17,11 +17,12 @@ use crate::{
         swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
         swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
         swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_read_property,
-        swr_zend_try_symtable_update, swr_zend_zval_value_name, swr_zval_is_true,
-        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_double_to_str,
-        zend_hash_add_new, zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert,
-        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
-        zend_string, zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
+        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
+        zval, zval_ptr_dtor,
     },
     value,
 };
@@ -229,6 +230,48 @@ impl Value {
         }
         // SAFETY: null, or a property slot of the object, which the borrow keeps alive.
         Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
+    }
+
+    /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
+    /// object this holds, inside `zend_try` (at most two arguments, which Zend
+    /// copies into the call): `scope`'s method (`None`: the object's class's).
+    /// Undefined, and nothing is called, for no object or one that isn't a
+    /// `scope`. A result the call left when it bailed out is leaked, as
+    /// upstream leaves it.
+    /// # Errors
+    /// The method bailed out, or a bailout is pending.
+    /// # Panics
+    /// More than two arguments: `zend_call_method` takes at most two.
+    pub fn call_method(
+        &self,
+        scope: Option<&crate::Class>,
+        method: &[u8],
+        args: &[&Self],
+    ) -> Result<Owned, bailout::Bailout> {
+        assert!(
+            args.len() <= 2,
+            "zend_call_method takes at most two arguments"
+        );
+        let result = Owned::default();
+        let Some(object) = self.object() else {
+            return Ok(result);
+        };
+        if scope.is_some_and(|scope| !self.instance_of(scope)) {
+            return Ok(result);
+        }
+        let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
+        let args: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
+        // SAFETY: the zval holds the object while borrowed, `scope` is null or
+        // a class it is an instance of, the result a slot this owns, and the
+        // arguments live values.
+        let called = unsafe { bailout::call_method(object, scope, method, result.as_ptr(), &args) };
+        match called {
+            Ok(()) => Ok(result),
+            Err(bailout) => {
+                std::mem::forget(result);
+                Err(bailout)
+            }
+        }
     }
 
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
@@ -762,6 +805,17 @@ impl ZString {
     pub fn url_encode(bytes: &[u8]) -> Self {
         // SAFETY: Zend reads the bytes and returns a new string.
         Self(unsafe { php_url_encode(bytes.as_ptr().cast(), bytes.len()) })
+    }
+
+    /// `php_url_decode` of a copy of `bytes`: them as `urldecode()` decodes them.
+    #[must_use]
+    pub fn url_decode(bytes: &[u8]) -> Self {
+        let string = crate::string::copy(bytes);
+        // SAFETY: a fresh string of `bytes.len()` bytes and a NUL, decoded in place.
+        let length = unsafe { swr_zend_url_decode(crate::string::val(string).cast(), bytes.len()) };
+        // SAFETY: the string is new and unshared, and decoding only shortens it.
+        unsafe { crate::string::truncate(string, length) };
+        Self(string)
     }
 
     /// `zend_double_to_str`: `value` as PHP prints a float.
