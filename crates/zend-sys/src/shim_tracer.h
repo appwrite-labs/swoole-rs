@@ -33,11 +33,8 @@ int swr_zend_try_write(const char *text, size_t length);
 /* number_format(number) with "." and ",": a request string. */
 zend_string *swr_zend_number_format(zend_long number);
 
-/* php_json_encode(value, 0): a request string, or NULL on failure. */
-zend_string *swr_zend_json_encode(zval *value);
-
-/* The same inside zend_try (a JsonSerializable runs PHP): 1 if it bailed out;
- * *out is the string, or NULL on failure or bailout. */
+/* php_json_encode(value, 0) inside zend_try (a JsonSerializable runs PHP): 1
+ * if it bailed out; *out is a request string, or NULL on failure or bailout. */
 int swr_zend_try_json_encode(zval *value, zend_string **out);
 
 /* json_decode(text, true) into `out` (depth 0, as Server::command passes), or false. */

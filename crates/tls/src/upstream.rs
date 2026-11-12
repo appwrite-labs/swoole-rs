@@ -107,12 +107,18 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
     (host, c_int::from(u16::from_be(port)))
 }
 
-/// `step` over a copy of the record's TLS group and its SSL (None without one), then
-/// the group stored back: OpenSSL's info callback reads the record meanwhile.
-fn with_tls<R>(socket: Socket<'_>, step: impl FnOnce(&mut SocketTls, Ssl) -> R) -> Option<R> {
-    let (before, ssl) = socket.read(|record| (record.tls, Ssl::of_fields(record)));
+/// `step` over a copy of the record's TLS group, its SSL (None without one) and what
+/// `pick` reads in the same borrow, then the group stored back: OpenSSL's info
+/// callback reads the record meanwhile.
+fn with_tls<P, R>(
+    socket: Socket<'_>,
+    pick: impl FnOnce(&SocketFields) -> P,
+    step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
+) -> Option<R> {
+    let (before, ssl, picked) =
+        socket.read(|record| (record.tls, Ssl::of_fields(record), pick(record)));
     let mut tls = before;
-    let result = step(&mut tls, ssl?);
+    let result = step(&mut tls, ssl?, picked);
     // Most transfers leave the group as it was, and then the record needs no edit.
     if tls != before {
         socket.edit(|record| record.tls = tls);
@@ -233,7 +239,10 @@ extern "C" fn native_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> 
     socket_ssl_verify(socket, allow_self_signed)
 }
 
-/// `void Socket::ssl_catch_error() const`.
+/// `void Socket::ssl_catch_error() const`, out of line so that `ssl_io`, on every
+/// TLS read and write, stays small enough to inline.
+#[cold]
+#[inline(never)]
 fn ssl_catch_error(socket: Socket<'_>) {
     let ((host, port), fd) = socket.read(|record| (peer(&record.info), record.fd));
     let reason = swr_v1_socket_ssl_peek_reason();
@@ -246,6 +255,7 @@ fn ssl_catch_error(socket: Socket<'_>) {
 }
 
 /// `ssl_io`: the protocol error's log, then errno; -1 without an SSL.
+#[inline(always)]
 fn ssl_io(socket: Socket<'_>, result: Option<SslIoResult>) -> isize {
     let Some(result) = result else {
         return -1;
@@ -275,7 +285,11 @@ unsafe extern "C" fn tls_recv(socket: *mut c_void, buffer: *mut c_void, length: 
     };
     // SAFETY: the caller lends `length` writable bytes.
     let buffer = unsafe { slots(buffer, length) };
-    let result = with_tls(socket, |tls, ssl| swr_v1_socket_ssl_recv(tls, ssl, buffer));
+    let result = with_tls(
+        socket,
+        |_| (),
+        |tls, ssl, ()| swr_v1_socket_ssl_recv(tls, ssl, buffer),
+    );
     ssl_io(socket, result)
 }
 
@@ -294,17 +308,22 @@ unsafe extern "C" fn tls_send(socket: *mut c_void, buffer: *mut c_void, length: 
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return -1;
     };
-    let length = socket.read(|record| {
-        let chunk = record.chunk_size as usize;
-        if record.dtls != 0 && chunk != 0 && length > chunk {
-            chunk
-        } else {
-            length
-        }
-    });
-    // SAFETY: the caller lends at least `length` readable bytes.
-    let data = unsafe { bytes(buffer, length) };
-    let result = with_tls(socket, |tls, ssl| swr_v1_socket_ssl_send(tls, ssl, data));
+    let result = with_tls(
+        socket,
+        |record| {
+            let chunk = record.chunk_size as usize;
+            if record.dtls != 0 && chunk != 0 && length > chunk {
+                chunk
+            } else {
+                length
+            }
+        },
+        |tls, ssl, length| {
+            // SAFETY: the caller's buffer, of which `length` is at most its size.
+            let data = unsafe { bytes(buffer, length) };
+            swr_v1_socket_ssl_send(tls, ssl, data)
+        },
+    );
     ssl_io(socket, result)
 }
 
@@ -391,8 +410,7 @@ fn error_reason_text() -> (c_int, String) {
 /// `ReturnCode Socket::ssl_accept()`: `SW_ERROR` without an SSL.
 #[must_use]
 pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
-    let dtls = socket.read(|record| record.dtls != 0);
-    let Some(result) = with_tls(socket, |tls, ssl| swr_v1_socket_ssl_accept(tls, ssl, dtls)) else {
+    let Some(result) = with_tls(socket, |record| record.dtls != 0, swr_v1_socket_ssl_accept) else {
         return ERROR;
     };
     handshake(result);
@@ -420,7 +438,11 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
 /// `int Socket::ssl_connect()`: `SW_ERR` without an SSL.
 #[must_use]
 pub fn socket_ssl_connect(socket: Socket<'_>) -> c_int {
-    let Some(result) = with_tls(socket, swr_v1_socket_ssl_connect) else {
+    let Some(result) = with_tls(
+        socket,
+        |_| (),
+        |tls, ssl, ()| swr_v1_socket_ssl_connect(tls, ssl),
+    ) else {
         return -1;
     };
     handshake(result);
@@ -1307,11 +1329,14 @@ pub unsafe extern "C-unwind" fn socket_send_async(
 )]
 pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
     let repaired = HALFCLOSE_REPAIRS;
-    let (quiet, mut closed) =
-        socket.read(|record| (record.ssl_quiet_shutdown != 0, record.ssl_closed));
-    let Some(result) = with_tls(socket, |tls, ssl| {
-        swr_v1_socket_ssl_shutdown(tls, ssl, &mut closed, quiet, repaired)
-    }) else {
+    let Some((result, closed)) = with_tls(
+        socket,
+        |record| (record.ssl_quiet_shutdown != 0, record.ssl_closed),
+        |tls, ssl, (quiet, mut closed)| {
+            let result = swr_v1_socket_ssl_shutdown(tls, ssl, &mut closed, quiet, repaired);
+            (result, closed)
+        },
+    ) else {
         return false;
     };
     socket.edit(|record| record.ssl_closed = closed);
