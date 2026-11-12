@@ -733,7 +733,7 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         props.value(c"data", &mut data);
         props.double(c"dispatch_time", info.time);
         props.long(c"flags", info.flags);
-        crate::server::task_bind(Value::of(&mut args[1]), server.raw(), &task.head());
+        crate::server::task_bind(Value::of(&mut args[1]), &task.head());
         2
     } else {
         args[1] = long_zval(info.id);

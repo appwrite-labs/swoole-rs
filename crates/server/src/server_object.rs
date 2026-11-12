@@ -5,6 +5,7 @@
 //! (tests/modules/http/server/src/http1.rs) make and delete theirs here too.
 use core::ffi::{c_int, c_void};
 use core::ptr;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::port_config::PortConfig;
 use crate::shared::ServerShared;
@@ -75,19 +76,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
 pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
     let serv = unsafe { view::Server::from_raw(serv) };
-    let counters = serv.counters();
-    let master = std::process::id().cast_signed()
-        == counters
-            .master_pid
-            .load(core::sync::atomic::Ordering::Relaxed);
-    if master
-        && counters
-            .shutdown
-            .load(core::sync::atomic::Ordering::Relaxed)
-            == 0
-    {
-        crate::server_methods::destroy(serv);
-    }
+    crate::server_methods::destroy_running(serv);
     for port in serv.ports() {
         // SAFETY: a live port, deleted once.
         unsafe { port_delete(port.raw()) };
@@ -108,6 +97,60 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     drop(unsafe { Box::from_raw(object.state) });
     if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
         swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
+    }
+}
+
+/// A server [`SharedServer::new`] made, which deletes it with its last share.
+struct Owner(*mut c_void);
+
+// SAFETY: a `Server *` names records that synchronize themselves (atomics and
+// shared memory), as the reactor and worker threads that read it rely on.
+unsafe impl Send for Owner {}
+// SAFETY: as above.
+unsafe impl Sync for Owner {}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        // SAFETY: `swr_v1_server_new`'s server, which no share names any more.
+        unsafe { swr_v1_server_delete(self.0) };
+    }
+}
+
+/// The server the last [`SharedServer::new`] made.
+static LATEST: Mutex<Weak<Owner>> = Mutex::new(Weak::new());
+
+/// A share in a server: the server lives while any share does, so a holder
+/// reads it through [`SharedServer::view`] without a raw pointer. The objects
+/// that name a server each hold one. The last share may drop where the server's
+/// shutdown callbacks can't run any more: a holder that must run them first calls
+/// [`destroy_running`](crate::server_methods::destroy_running).
+#[derive(Clone)]
+pub struct SharedServer(Arc<Owner>);
+
+impl SharedServer {
+    /// `new Server(mode)` ([`swr_v1_server_new`]), deleted
+    /// ([`swr_v1_server_delete`]) when its last share drops.
+    #[must_use]
+    pub fn new(mode: c_int) -> Self {
+        let owner = Arc::new(Owner(swr_v1_server_new(mode)));
+        *LATEST.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&owner);
+        Self(owner)
+    }
+
+    /// `sw_server()` as a share: the process's server (`SwooleG.server`), while it
+    /// is one a share still names.
+    #[must_use]
+    pub fn current() -> Option<Self> {
+        let latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
+        let owner = latest.upgrade()?;
+        (owner.0 == swoole_rs_corebase::swr_v1_core_server()).then_some(Self(owner))
+    }
+
+    /// The server, for as long as this share is borrowed.
+    #[must_use]
+    pub fn view(&self) -> view::Server<'_> {
+        // SAFETY: the owner's live server, deleted only once every share is gone.
+        unsafe { view::Server::from_raw(self.0.0) }
     }
 }
 

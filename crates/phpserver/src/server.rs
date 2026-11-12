@@ -1,7 +1,7 @@
 //! `Swoole\Server`'s classes, its connection and worker methods, and
 //! `Swoole\Connection\Iterator`; lifecycle.rs owns the Server objects.
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicU64, Ordering},
@@ -12,7 +12,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_server::{ConnectionRecord, server_methods, view};
+use swoole_rs_server::{ConnectionRecord, SharedServer, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
     sys::{
@@ -108,14 +108,22 @@ pub(crate) static DATA: [Class; 5] = [
 static ITERATOR: CustomClass<Iterator> = CustomClass::new();
 
 /// `ServerObject` before its `zend_object`: `Server *serv; void *property;
-/// zval init_arguments;`, where `property` is lifecycle.rs's `Property`: none in the
-/// zeroed object until `create` boxes it, and none again once `free` takes it.
+/// zval init_arguments;`, where `serv` is the object's share in its server, none
+/// until `__construct` binds one, and `property` is lifecycle.rs's `Property`: none
+/// in the zeroed object until `create` boxes it, and none again once `free` takes it.
 #[repr(C)]
 pub(crate) struct ServerData {
-    pub(crate) serv: *mut c_void,
+    pub(crate) serv: Option<SharedServer>,
     pub(crate) property: Option<Box<crate::lifecycle::Property>>,
     pub(crate) init_arguments: zval,
 }
+
+/// A zeroed `serv` is no share: an `Option` the size of the share's one pointer
+/// keeps `None` in that pointer's only invalid value, null.
+const _: () = assert!(
+    size_of::<Option<SharedServer>>() == size_of::<usize>(),
+    "a zeroed ServerData must hold no share"
+);
 
 /// `SW_THREAD`, as MINIT was told.
 pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
@@ -161,23 +169,23 @@ pub(crate) fn port_property(
 pub(crate) struct Iterator {
     current_fd: Cell<c_int>,
     session_id: Cell<i64>,
-    serv: Cell<*mut c_void>,
+    /// The iterator's share in the server it walks; none for one PHP made itself.
+    serv: OnceCell<SharedServer>,
+    /// Which of the server's ports, by address; null for all of them.
     port: Cell<*mut c_void>,
     index: Cell<c_int>,
 }
 
 impl Iterator {
-    /// The server the iterator walks.
-    fn server(&self) -> view::Server<'_> {
-        // SAFETY: `new_iterator` stored `$this`'s live server, which outlives the iterator.
-        unsafe { view::Server::from_raw(self.serv.get()) }
-    }
-
     /// The port whose connections the iterator walks; none for all of them.
     fn port(&self) -> Option<view::Port<'_>> {
-        // SAFETY: null, or one of the live server's ports, which outlive the iterator.
-        unsafe { view::Port::from_raw(self.port.get()) }
+        port_of(self.serv.get()?.view(), self.port.get())
     }
+}
+
+/// `server`'s port at `port`, an address kept only to name it; none for null.
+pub(crate) fn port_of(server: view::Server<'_>, port: *mut c_void) -> Option<view::Port<'_>> {
+    server.ports().iter().copied().find(|own| own.raw() == port)
 }
 
 impl Custom for Iterator {
@@ -190,7 +198,7 @@ impl Custom for Iterator {
         Self {
             current_fd: Cell::new(0),
             session_id: Cell::new(0),
-            serv: Cell::new(ptr::null_mut()),
+            serv: OnceCell::new(),
             port: Cell::new(ptr::null_mut()),
             index: Cell::new(0),
         }
@@ -199,7 +207,8 @@ impl Custom for Iterator {
 
 /// Upstream's `ServerTaskObject`: the server and the task's head.
 pub(crate) struct TaskData {
-    serv: Cell<*mut c_void>,
+    /// The task's share in its server, once `task_bind` gave it one.
+    serv: OnceCell<SharedServer>,
     info: Cell<DataHead>,
 }
 
@@ -211,7 +220,7 @@ impl Custom for TaskData {
     /// A task bound to no server.
     fn new() -> Self {
         Self {
-            serv: Cell::new(ptr::null_mut()),
+            serv: OnceCell::new(),
             info: Cell::new(DataHead::default()),
         }
     }
@@ -231,21 +240,27 @@ pub(crate) fn task_info(call: &Call) -> DataHead {
     task(call).info.get()
 }
 
-/// Bind a new `Server\Task` to the server and the head of the task it carries.
-pub(crate) fn task_bind(task: &Value, serv: *mut c_void, info: &DataHead) {
+/// Bind a new `Server\Task` to the running server and the head of the task it carries.
+pub(crate) fn task_bind(task: &Value, info: &DataHead) {
     if let Some(task) = task.custom::<TaskData>() {
-        task.serv.set(serv);
+        if let Some(serv) = crate::lifecycle::ServerObject::running().share() {
+            // A new task has no server yet.
+            task.serv.get_or_init(|| serv);
+        }
         task.info.set(*info);
     }
 }
 
 /// A `Server\Task`'s server; an `E_ERROR`, which does not return, when it has none.
-pub(crate) fn task_server(call: &Call) -> *mut c_void {
-    let serv = task(call).serv.get();
-    if serv.is_null() {
-        invalid(this_class(call));
-    }
-    serv
+pub(crate) fn task_server(call: &Call) -> view::Server<'_> {
+    task(call).serv.get().map_or_else(
+        || {
+            invalid(this_class(call));
+            // The `E_ERROR` bailed out of this frame.
+            std::process::abort()
+        },
+        SharedServer::view,
+    )
 }
 
 fn deny(handlers: &mut zend_object_handlers) {
@@ -588,22 +603,20 @@ pub(crate) fn fatal(level: i32, message: &CStr) {
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
 pub(crate) fn server(call: &Call) -> view::Server<'_> {
-    let serv = crate::lifecycle::ServerObject::this(call).serv();
-    if serv.is_null() {
+    crate::lifecycle::ServerObject::this_server(call).unwrap_or_else(|| {
         invalid(this_class(call));
         // The `E_ERROR` bailed out of this frame.
-        std::process::abort();
-    }
-    // SAFETY: `$this`'s live server, which it owns for longer than the call.
-    unsafe { view::Server::from_raw(serv) }
+        std::process::abort()
+    })
 }
 
 /// A new `Connection\Iterator` over `serv` and `port` (null: every port).
-pub(crate) fn new_iterator(serv: *mut c_void, port: *mut c_void) -> swoole_rs_zend::Owned {
-    let iterator = Iterator::new();
-    iterator.serv.set(serv);
-    iterator.port.set(port);
-    swoole_rs_zend::new_object(iterator)
+pub(crate) fn new_iterator(serv: SharedServer, port: *mut c_void) -> swoole_rs_zend::Owned {
+    swoole_rs_zend::new_object(Iterator {
+        serv: OnceCell::from(serv),
+        port: Cell::new(port),
+        ..Iterator::new()
+    })
 }
 
 /// `server(call)`, or `None` with a warning and `false` returned when the
@@ -1084,15 +1097,14 @@ fn stop(call: &Call) {
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
-fn iterator(call: &Call) -> &Iterator {
-    match call.custom::<Iterator>() {
-        Some(iterator) if !iterator.serv.get().is_null() => iterator,
+fn iterator(call: &Call) -> (&Iterator, view::Server<'_>) {
+    let bound = call.custom::<Iterator>();
+    let bound = bound.and_then(|iterator| Some((iterator, iterator.serv.get()?.view())));
+    bound.unwrap_or_else(|| {
         // An `E_ERROR`, which does not return; the frames own nothing.
-        _ => {
-            invalid(this_class(call));
-            std::process::abort()
-        }
-    }
+        invalid(this_class(call));
+        std::process::abort()
+    })
 }
 
 fn iterator_construct(call: &Call) {
@@ -1100,19 +1112,17 @@ fn iterator_construct(call: &Call) {
 }
 
 fn rewind(call: &Call) {
-    let iterator = iterator(call);
+    let (iterator, server) = iterator(call);
     iterator.index.set(0);
-    iterator
-        .current_fd
-        .set(iterator.server().counters().min_fd());
+    iterator.current_fd.set(server.counters().min_fd());
 }
 
 fn valid(call: &Call) {
-    let iterator = iterator(call);
-    let max_fd = iterator.server().counters().max_fd();
+    let (iterator, server) = iterator(call);
+    let max_fd = server.counters().max_fd();
     let port = iterator.port();
     for fd in iterator.current_fd.get()..=max_fd {
-        let Some(conn) = iterator.server().iterated(fd) else {
+        let Some(conn) = server.iterated(fd) else {
             continue;
         };
         let (session_id, server_fd) = (conn.session_id, conn.server_fd);
@@ -1134,23 +1144,23 @@ fn valid(call: &Call) {
 }
 
 fn current(call: &Call) {
-    call.set_long(iterator(call).session_id.get());
+    call.set_long(iterator(call).0.session_id.get());
 }
 
 fn next(call: &Call) {
-    let fd = &iterator(call).current_fd;
+    let fd = &iterator(call).0.current_fd;
     fd.set(fd.get() + 1);
 }
 
 fn key(call: &Call) {
-    call.set_long(i64::from(iterator(call).index.get()));
+    call.set_long(i64::from(iterator(call).0.index.get()));
 }
 
 fn count(call: &Call) {
-    let iterator = iterator(call);
+    let (iterator, server) = iterator(call);
     let num = match iterator.port() {
-        None => iterator.server().connection_num(),
-        Some(port) => iterator.server().port_connection_num(port),
+        None => server.connection_num(),
+        Some(port) => server.port_connection_num(port),
     };
     call.set_long(i64::try_from(num).unwrap_or(i64::MAX));
 }

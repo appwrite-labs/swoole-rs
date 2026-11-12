@@ -360,8 +360,7 @@ fn finish(call: &Call) {
 
 fn task_finish(call: &Call) {
     // `$this` is a Task; an `E_ERROR` when it has no server.
-    // SAFETY: `$this`'s server is the live server here.
-    let serv = unsafe { view::Server::from_raw(crate::server::task_server(call)) };
+    let serv = crate::server::task_server(call);
     if !serv.is_started() {
         fatal(E_WARNING, c"server is not running");
         return call.set_bool(false);

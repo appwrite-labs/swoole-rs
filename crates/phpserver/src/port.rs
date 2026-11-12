@@ -6,14 +6,14 @@ use crate::{
     settings::{Settings, Stop},
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     ffi::{c_int, c_void},
     ptr,
     sync::atomic::Ordering,
 };
 use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
-use swoole_rs_server::{port_config, view};
+use swoole_rs_server::{SharedServer, port_config, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
     message,
@@ -30,7 +30,10 @@ const CALLBACKS: usize = 12;
 /// property is only ever borrowed shared.
 pub struct PortProperty {
     callbacks: [RefCell<Option<Callable>>; CALLBACKS],
-    serv: Cell<*mut c_void>,
+    /// The port's share in its server, once `new_object` bound it.
+    serv: OnceCell<SharedServer>,
+    /// Whether the port names its server: from `new_object` until `release`.
+    bound: Cell<bool>,
 }
 
 impl PortProperty {
@@ -43,6 +46,8 @@ impl PortProperty {
 
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
 pub struct PortData {
+    /// Which of the server's ports, by address; null before `new_object` and
+    /// after `release`.
     port: Cell<*mut c_void>,
     property: PortProperty,
 }
@@ -58,7 +63,8 @@ impl Custom for PortData {
             port: Cell::new(ptr::null_mut()),
             property: PortProperty {
                 callbacks: Default::default(),
-                serv: Cell::new(ptr::null_mut()),
+                serv: OnceCell::new(),
+                bound: Cell::new(false),
             },
         }
     }
@@ -76,23 +82,31 @@ impl Drop for PortData {
 }
 
 impl PortData {
-    /// The bound `ListenPort`: none before `new_object` binds it and after `release`.
-    fn port(&self) -> Option<swoole_rs_server::view::Port<'_>> {
-        // SAFETY: null, or the live port `new_object` bound, one of its server's,
-        // which stays until `release` clears the link (the Server object derefs
-        // its Port objects before its server goes).
-        unsafe { swoole_rs_server::view::Port::from_raw(self.port.get()) }
+    /// The bound server: none before `new_object` binds it and after `release`.
+    fn server(&self) -> Option<view::Server<'_>> {
+        let serv = self
+            .property
+            .serv
+            .get()
+            .filter(|_| self.property.bound.get());
+        serv.map(SharedServer::view)
+    }
+
+    /// The bound `ListenPort`, one of its server's: none before `new_object`
+    /// binds it and after `release`.
+    fn port(&self) -> Option<view::Port<'_>> {
+        crate::server::port_of(self.property.serv.get()?.view(), self.port.get())
     }
 
     /// `php_swoole_server_port_deref`: drop the callables and the port's link,
     /// all of them even when a destructor leaves a bailout pending.
     fn release(&self) {
-        if !self.property.serv.get().is_null() {
+        if self.property.bound.get() {
             for slot in &self.property.callbacks {
                 // Out of its slot first: a destructor this runs may reach the slot again.
                 drop(slot.take());
             }
-            self.property.serv.set(ptr::null_mut());
+            self.property.bound.set(false);
         }
         let port = self.port.get();
         if !port.is_null() {
@@ -130,18 +144,18 @@ pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     call.set_owned(socket);
 }
 
-/// A new Port object bound to `port` and its server `serv`.
-/// # Safety
-/// `serv` is a live server and `port` one of its ports.
-pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> (Owned, *mut zend_object) {
+/// A new Port object bound to `port`, one of the ports of its server `serv`.
+pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> (Owned, *mut zend_object) {
     let zport = PORT.create_object();
     let (Some(object), Some(data)) = (zport.object(), zport.custom::<PortData>()) else {
         return (zport, ptr::null_mut());
     };
-    data.port.set(port);
-    data.property.serv.set(serv);
-    // SAFETY: per the caller.
-    let config = unsafe { port_config::of(port) };
+    data.port.set(port.raw());
+    // A new object has no server yet.
+    data.property.serv.get_or_init(|| serv);
+    data.property.bound.set(true);
+    // SAFETY: a live port, whose property link only this thread touches.
+    let config = unsafe { port.config_mut() };
     // The object's property lives as long as the port's link, which only reads it.
     let property = ptr::from_ref(&data.property).cast_mut().cast();
     crate::server::port_property(config.object_id, &mut config.ptr, property, true);
@@ -247,12 +261,11 @@ fn invalid(call: &Call) {
 
 /// The port's bound server; an `E_ERROR`, which does not return, when unbound.
 fn bound_server(call: &Call) -> view::Server<'_> {
-    let serv = data(call).property.serv.get();
-    if serv.is_null() {
+    data(call).server().unwrap_or_else(|| {
         invalid(call);
-    }
-    // SAFETY: the port's bound server, live while the port is.
-    unsafe { view::Server::from_raw(serv) }
+        // The `E_ERROR` above bailed out.
+        std::process::abort()
+    })
 }
 
 fn construct(call: &Call) {
