@@ -104,6 +104,12 @@ impl TimerNode {
         self.kind == TYPE_PHP
     }
 
+    /// The timer's id, which its timer never reuses.
+    #[must_use]
+    pub fn id(&self) -> c_long {
+        self.id
+    }
+
     pub(crate) fn info(&self) -> Info {
         Info {
             exec_msec: self.exec_msec,

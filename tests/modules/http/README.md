@@ -302,7 +302,8 @@ from `header_reentry.php`. In each one, a header or trailer value's `__toString`
 replaces or writes into `$response->header` (or `->trailer`, or a nested
 header array) while the response is being built. Each response must carry the
 headers as they were when sending began, and the server must answer the next
-request (#3263).
+request (#3263). The fixture also speaks h2c for the HTTP/2 module's
+`test_header_reentry.py`.
 
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,

@@ -1,12 +1,13 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
+use crate::server::entries;
 use crate::session::IdMap;
 use libc::{c_char, c_int};
+use request::{Field, Held, Request};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
     ffi::CStr,
-    marker::PhantomData,
     ptr,
     rc::Rc,
 };
@@ -585,10 +586,15 @@ impl Client {
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block.
     fn build_header(&self, request: Request<'_>) -> Vec<u8> {
-        let property = |name| request.property(name);
-        let text = |name| property(name).bytes().filter(|text| !text.is_empty());
-        let (method, path) = (text(c"method"), text(c"path"));
-        let (headers, cookies) = (property(c"headers"), property(c"cookies"));
+        let text = |field| {
+            request
+                .property(field)
+                .bytes()
+                .filter(|text| !text.is_empty())
+        };
+        let (method, path) = (text(Field::Method), text(Field::Path));
+        let headers = request.array(Held::Headers);
+        let cookies = request.array(Held::Cookies);
         // Converting a header value can run PHP code, which may build another request.
         let mut set = self.headers.take();
         set.clear();
@@ -597,19 +603,16 @@ impl Client {
         set.add(b":scheme", &[if self.ssl { b"https" } else { b"http" }]);
         set.slots.push(None);
         let mut host = false;
-        if let Some(headers) = headers.array() {
-            for (key, value) in headers.entries() {
-                let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null())
-                else {
-                    continue;
-                };
-                let value = value.string();
-                if header_kind(CLIENT_HEADERS, key) == HEADER_HOST {
-                    set.set(AUTHORITY, b":authority", value.bytes());
-                    host = true;
-                } else {
-                    set.add(key, &[value.bytes()]);
-                }
+        for (key, value) in entries(headers.as_ref()) {
+            let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null()) else {
+                continue;
+            };
+            let value = value.string();
+            if header_kind(CLIENT_HEADERS, key) == HEADER_HOST {
+                set.set(AUTHORITY, b":authority", value.bytes());
+                host = true;
+            } else {
+                set.add(key, &[value.bytes()]);
             }
         }
         if !host {
@@ -622,23 +625,21 @@ impl Client {
             };
             set.set(AUTHORITY, b":authority", &authority);
         }
-        if let Some(cookies) = cookies.array() {
-            for (key, value) in cookies.entries() {
-                let Some(key) = key.filter(|_| !value.is_null()) else {
-                    continue;
-                };
-                let value = value.string();
-                // SAFETY: the value's bytes; Zend returns a new string.
-                let encoded = unsafe {
-                    swoole_rs_zend::sys::php_url_encode(
-                        value.bytes().as_ptr().cast(),
-                        value.bytes().len(),
-                    )
-                };
-                // SAFETY: the reference php_url_encode returned.
-                let encoded = unsafe { ZString::from_raw(encoded) };
-                set.add(b"cookie", &[key, b"=", encoded.bytes()]);
-            }
+        for (key, value) in entries(cookies.as_ref()) {
+            let Some(key) = key.filter(|_| !value.is_null()) else {
+                continue;
+            };
+            let value = value.string();
+            // SAFETY: the value's bytes; Zend returns a new string.
+            let encoded = unsafe {
+                swoole_rs_zend::sys::php_url_encode(
+                    value.bytes().as_ptr().cast(),
+                    value.bytes().len(),
+                )
+            };
+            // SAFETY: the reference php_url_encode returned.
+            let encoded = unsafe { ZString::from_raw(encoded) };
+            set.add(b"cookie", &[key, b"=", encoded.bytes()]);
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
         if let Some((_, encoder)) = self.hpack.borrow_mut().as_mut() {
@@ -655,10 +656,9 @@ impl Client {
         // SAFETY: nothing else borrows `headers`, and no PHP code runs, until
         // the type is added.
         let headers = unsafe { props.array(c"headers") };
-        let property = |name| request.property(name);
-        let data = property(c"data");
-        let pipeline = property(c"pipeline").truthy();
-        let use_pipeline_read = property(c"usePipelineRead").truthy();
+        let data = request.property(Field::Data);
+        let pipeline = request.property(Field::Pipeline).truthy();
+        let use_pipeline_read = request.property(Field::UsePipelineRead).truthy();
         let empty = match data.bytes() {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
@@ -1311,14 +1311,63 @@ fn close(call: &Call) {
     call.set_bool(result);
 }
 
-/// A `Swoole\Http2\Request` argument, live for the call.
-#[derive(Clone, Copy)]
-struct Request<'a>(*mut zend_object, PhantomData<&'a Call>);
+/// `Swoole\Http2\Request` arguments. Outside this module a request's
+/// `headers` and `cookies` are readable only held ([`Request::array`]).
+mod request {
+    use std::{ffi::CStr, marker::PhantomData};
+    use swoole_rs_zend::{Call, HeldArray, Value, sys::zend_object};
 
-impl<'a> Request<'a> {
-    fn property(self, name: &CStr) -> &'a Value {
-        // SAFETY: a live request object, which declares every name read.
-        unsafe { swoole_rs_zend::property(self.0, name) }
+    /// A `Swoole\Http2\Request` argument, live for the call.
+    #[derive(Clone, Copy)]
+    pub(super) struct Request<'a>(pub(super) *mut zend_object, PhantomData<&'a Call>);
+
+    /// The request properties read in place: none is a header array.
+    #[derive(Clone, Copy)]
+    pub(super) enum Field {
+        Method,
+        Path,
+        Data,
+        Pipeline,
+        UsePipelineRead,
+    }
+
+    /// The request's header arrays, which [`Request::array`] reads only held.
+    #[derive(Clone, Copy)]
+    pub(super) enum Held {
+        Headers,
+        Cookies,
+    }
+
+    impl<'a> Request<'a> {
+        pub(super) fn new(object: *mut zend_object) -> Self {
+            Self(object, PhantomData)
+        }
+
+        fn slot(self, name: &CStr) -> &'a Value {
+            // SAFETY: a live request object, which declares every name read.
+            unsafe { swoole_rs_zend::property(self.0, name) }
+        }
+
+        pub(super) fn property(self, field: Field) -> &'a Value {
+            self.slot(match field {
+                Field::Method => c"method",
+                Field::Path => c"path",
+                Field::Data => c"data",
+                Field::Pipeline => c"pipeline",
+                Field::UsePipelineRead => c"usePipelineRead",
+            })
+        }
+
+        /// `headers` or `cookies` with a reference of its own: converting a
+        /// value may replace or unset the property while
+        /// [`crate::server::entries`] walks it.
+        pub(super) fn array(self, which: Held) -> Option<HeldArray> {
+            self.slot(match which {
+                Held::Headers => c"headers",
+                Held::Cookies => c"cookies",
+            })
+            .hold()
+        }
     }
 }
 
@@ -1330,7 +1379,7 @@ fn request_arg(call: &Call) -> Option<Request<'_>> {
         // SAFETY: two registered classes.
         && (class == ce || unsafe { swr_zend_instanceof(class, ce) })
     {
-        return Some(Request(object, PhantomData));
+        return Some(Request::new(object));
     }
     // SAFETY: from a handler, as Zend's macro reports it; the name is the
     // class's NUL-terminated name.

@@ -29,6 +29,7 @@ use swoole_rs_memory::members::{Shm, pool as mem_pool, sw_shm_free};
 use swoole_rs_memory::{
     swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_init,
 };
+use swoole_rs_process::armed_timer::ArmedTimer;
 use swoole_rs_process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, pop_message, push_stop, reload_warn,
     swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type, worker_report_error,
@@ -44,8 +45,8 @@ use swoole_rs_process::process_pool::{
     OP_FREE_PIPES, OP_FREE_WORKERS, OP_HAVE_MSGQUEUE, OP_KILL_TIMER, OP_MAIN_LOOP,
     OP_NEW_MESSAGE_BOX, OP_NEW_MESSAGE_BUS, OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD,
     OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND, OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP,
-    OP_RELOAD_TIMER, OP_REMOVE_PIPE, OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_DEL, OP_TIMER_FREE,
-    OP_TIMER_INIT, OP_TIMER_SELECT, OP_UNLIMIT_PIPES, OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT,
+    OP_RELOAD_TIMER, OP_REMOVE_PIPE, OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_FREE, OP_TIMER_INIT,
+    OP_TIMER_SELECT, OP_UNLIMIT_PIPES, OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT,
     OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, PoolRef, RAISE, RUN_MAIN, RecvData, pool_run_op,
 };
 use swoole_rs_process::reload_task::ReloadTask;
@@ -57,9 +58,8 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
-    owner_reinit, swoole_timer_create, swoole_timer_del, swoole_timer_free,
-    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
-    swr_v1_timer_add_plain,
+    TimerNode, owner_reinit, swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec,
+    swoole_timer_is_available, swoole_timer_select, swr_v1_timer_add_plain,
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
@@ -375,11 +375,23 @@ unsafe extern "C-unwind" fn reload_timeout(task: *mut c_void) {
     // SAFETY: the pool's live reload task.
     let task = unsafe { &mut *task.cast::<ReloadTask>() };
     task.kill_all(libc::SIGKILL, reload_warn);
-    task.set_timer(ptr::null_mut());
 }
 
 unsafe extern "C-unwind" fn kill_timeout(pool: *mut c_void) {
     kill_all_workers(pool_ref(pool.cast()), libc::SIGKILL);
+}
+
+/// The pool's `max_wait_time`, in the milliseconds a timer takes.
+fn max_wait_ms(pool: Pool) -> c_long {
+    c_long::from(record(pool).max_wait_time) * 1000
+}
+
+/// The one-shot timer `swr_v1_timer_add_plain` just added, owned: dropping it
+/// deletes the timer unless it has fired.
+fn armed(node: *mut c_void) -> Option<ArmedTimer> {
+    // SAFETY: null, or the node the thread's timer just added and still holds.
+    let node = unsafe { node.cast::<TimerNode>().as_ref() }?;
+    Some(ArmedTimer::new(node.id(), swoole_rs_timer::timer_cancel))
 }
 
 thread_local! {
@@ -483,12 +495,6 @@ fn loop_ops(op: u32, arg: u64) -> Option<i64> {
             if swoole_timer_is_available() {
                 swoole_timer_free();
             }
-            0
-        }
-        OP_TIMER_DEL => {
-            let node = ptr::with_exposed_provenance_mut(usize::try_from(arg).unwrap_or(0));
-            // SAFETY: a node of the thread's timer the pool added, deleted once.
-            unsafe { swoole_timer_del(node) };
             0
         }
         OP_EVENT_WAIT => i64::from(swoole_rs_reactor::event_api::swoole_event_wait()),
@@ -641,16 +647,12 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_RELOAD_TIMER => {
             let task = record(pool).reload_task();
-            // SAFETY: `reload_timeout` takes the pool's reload task, which
-            // deletes the timer before it goes.
-            let timer = unsafe {
-                swr_v1_timer_add_plain(
-                    c_long::from(record(pool).max_wait_time) * 1000,
-                    false,
-                    reload_timeout,
-                    task.cast(),
-                )
+            // SAFETY: `reload_timeout` takes the pool's reload task, which owns the
+            // timer (`set_timer`), so dropping the task deletes it.
+            let node = unsafe {
+                swr_v1_timer_add_plain(max_wait_ms(pool), false, reload_timeout, task.cast())
             };
+            let timer = armed(node);
             // SAFETY: the pool's live reload task.
             unsafe { &mut *task }.set_timer(timer);
         }
@@ -706,15 +708,12 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             }
         }
         OP_KILL_TIMER => {
-            // SAFETY: `kill_timeout` takes the pool, which outlives its timers.
-            unsafe {
-                swr_v1_timer_add_plain(
-                    c_long::from(record(pool).max_wait_time) * 1000,
-                    false,
-                    kill_timeout,
-                    pool.cast(),
-                )
+            // SAFETY: `kill_timeout` takes the pool, which owns the timer in
+            // `kill_timer`, so `wait`, `destroy` or freeing the pool deletes it.
+            let node = unsafe {
+                swr_v1_timer_add_plain(max_wait_ms(pool), false, kill_timeout, pool.cast())
             };
+            record(pool).kill_timer = armed(node);
         }
         _ => {}
     }

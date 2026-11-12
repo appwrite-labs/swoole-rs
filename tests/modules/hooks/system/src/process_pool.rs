@@ -206,6 +206,8 @@ struct Pool {
     message_bus: *mut c_void,
     reload_task: *mut c_void,
     ptr: *mut c_void,
+    /// `kill_timer`, an `Option<ArmedTimer>`: its id and delete function.
+    kill_timer: [usize; 2],
 }
 
 /// `swoole::Worker`'s fields (crates/process's WorkerRecord).

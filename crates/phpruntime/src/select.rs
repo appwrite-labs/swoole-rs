@@ -5,10 +5,10 @@ use crate::socket::{Report, convert_to_fd, coroutine_check, poll, report};
 use std::{collections::HashMap, ptr};
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
-    bailout::{self, Bailout},
+    bailout::Bailout,
     sys::{
-        swr_zend_runtime_select_args, swr_zend_stream_from_zval, swr_zend_try_hash_clean,
-        zend_argument_value_error, zend_long, zend_ulong, zval,
+        swr_zend_runtime_select_args, swr_zend_stream_from_zval, zend_argument_value_error,
+        zend_long, zend_ulong, zval,
     },
 };
 
@@ -103,24 +103,14 @@ fn emulate_read(array: &mut ArrayMut) -> usize {
         }
     }
     if !ready.is_empty() {
-        clean(array);
+        if let Some(array) = array.separate() {
+            array.clear();
+        }
         for entry in &ready {
             entry.add_to(array);
         }
     }
     ready.len()
-}
-
-/// `zend_hash_clean`, in place: parsing separated the array, so only a
-/// reference taken since, the trace of an exception an element threw, shares
-/// it, and that sees it emptied too. A destructor's bailout is deferred.
-fn clean(array: &ArrayMut) {
-    if let Some(table) = array.array() {
-        // SAFETY: a live table that is not immutable (separated by parsing).
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_hash_clean(table.as_ptr())
-        }));
-    }
 }
 
 /// `stream_select(?array &$read, ?array &$write, ?array &$except, ?int
@@ -207,8 +197,8 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
     let ready = arrays.get(0).map_or(0, emulate_read);
     // `$read` holds only its ready streams then; the others are emptied.
     for which in usize::from(ready > 0)..EVENTS.len() {
-        if let Some(array) = arrays.get(which) {
-            clean(array);
+        if let Some(array) = arrays.get(which).and_then(ArrayMut::separate) {
+            array.clear();
         }
     }
     if ready > 0 {
