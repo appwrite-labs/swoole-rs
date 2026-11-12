@@ -45,9 +45,8 @@ use crate::ops::{
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
     OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
     OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR,
-    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY,
-    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING,
-    OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
+    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_STATE, OP_STREAM_PORT,
+    OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
     OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
@@ -153,7 +152,7 @@ fn sign(value: impl Into<i64>) -> u64 {
 
 /// The context's objects, each null when the op doesn't use it.
 struct Objects<'a> {
-    ctx: &'a mut NativeContext,
+    ctx: &'a mut NativeContext<'a>,
     /// The context's server, which the ops reading it run with.
     server: Option<crate::view::Server<'a>>,
     state: &'a ServerState,
@@ -211,10 +210,7 @@ impl<'a> Objects<'a> {
     /// `OP_ACCEPT`: the accepting event's listening socket accepts into the context's
     /// socket, and its port becomes the context's; whether it did.
     fn accept(&mut self) -> bool {
-        // SAFETY: the accepting event.
-        let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
-        // SAFETY: its live listening socket.
-        let listener = unsafe { Socket::from_ptr(listener.cast()) };
+        let listener = self.ctx.event.and_then(swoole_rs_reactor::Event::socket);
         // The listener's object is its port.
         let (port, socket) = listener.map_or((core::ptr::null_mut(), core::ptr::null_mut()), |l| {
             l.edit(|l| (l.object, l.accept()))
@@ -255,22 +251,17 @@ impl<'a> Objects<'a> {
         // SAFETY: the ops reading it run on the context's live reactor, on its thread.
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
     }
-    fn worker(&self) -> &mut WorkerRecord {
-        // SAFETY: the ops reading it run with a live worker as the context's object.
-        unsafe { &mut *self.ctx.object.cast::<WorkerRecord>() }
-    }
     /// The live `SendData` the send path lends.
     fn send(&self) -> &SendData {
         // SAFETY: the ops reading it run with a live send in the context.
         unsafe { &*self.ctx.send.cast::<SendData>() }
     }
-    /// The NUL-terminated host `add_port` lends.
+    /// The host `add_port` lends, or an empty one.
     fn host(&self) -> &CStr {
-        // SAFETY: the ops reading it run with a live host in the context.
-        unsafe { CStr::from_ptr(self.ctx.host) }
+        self.ctx.host.unwrap_or_default()
     }
     /// The bytes of the NUL-terminated string the ops reading it pass as data.
-    fn data_bytes(&self) -> &[u8] {
+    fn data_bytes(&self) -> &'a [u8] {
         // SAFETY: the ops reading it pass a NUL-terminated string.
         unsafe { CStr::from_ptr(self.ctx.data.cast()) }.to_bytes()
     }
@@ -283,10 +274,22 @@ impl<'a> Objects<'a> {
         // SAFETY: the ops reading it pass a NUL-terminated string.
         unsafe { text(self.ctx.data.cast()) }
     }
-    /// `SendfileTask::filename` in the context's buffer.
+    /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
     fn filename(&self) -> std::borrow::Cow<'_, str> {
-        // SAFETY: the buffer is a `SendfileTask`, whose name follows its 16-byte head.
-        unsafe { text(self.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE)) }
+        let name = self
+            .ctx
+            .buffer
+            .as_ref()
+            .map(|buffer| &buffer.0[SENDFILE_TASK_SIZE..]);
+        name.and_then(|name| CStr::from_bytes_until_nul(name).ok())
+            .map_or("".into(), CStr::to_string_lossy)
+    }
+    /// `Server::sendfile`'s task buffer, which the ops using it run with.
+    fn buffer(&mut self) -> &mut [u8; IPC_BUFFER_SIZE] {
+        match self.ctx.buffer.as_deref_mut() {
+            Some(buffer) => &mut buffer.0,
+            None => std::process::abort(),
+        }
     }
 }
 
@@ -301,7 +304,7 @@ impl<'a> Objects<'a> {
 /// stage below.
 #[inline(always)]
 pub(crate) unsafe fn answer<'a>(
-    ctx: *mut NativeContext,
+    ctx: *mut NativeContext<'a>,
     server: Option<crate::view::Server<'a>>,
     state: &'a ServerState,
     op: u32,
@@ -1350,41 +1353,19 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 u64::from(worker.concurrency)
             }
         }
-        OP_ST_W_CONCURRENCY => u64::from(o.worker().concurrency),
-        OP_ST_W_CONCURRENCY_CAS => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t) arg")]
-            let expected = arg as u32;
-            // SAFETY: the worker's aligned `sw_atomic_t`, shared with other processes.
-            let cell =
-                unsafe { core::sync::atomic::AtomicU32::from_ptr(&raw mut o.worker().concurrency) };
-            // `sw_atomic_value_cmp_set`: the value before, swapped or not.
-            let before = cell.compare_exchange(expected, 0, SeqCst, SeqCst);
-            u64::from(before.unwrap_or_else(|value| value))
-        }
-        OP_ST_W_RESET_COUNTS => {
-            let worker = o.worker();
-            worker.request_count = 0;
-            worker.response_count = 0;
-            worker.dispatch_count = 0;
-            0
-        }
         OP_SENDFILE_NAME => {
             // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
-            let name = o.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE);
-            let room = IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE;
-            // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes from its head, which
-            // nothing else reads or writes meanwhile.
-            let field = unsafe { core::slice::from_raw_parts_mut(name.cast::<u8>(), room) };
+            let source = o.data_bytes();
+            let (_, field) = o.buffer().split_at_mut(SENDFILE_TASK_SIZE);
             // The name, cut to leave room for its NUL, then the NUL. One copy: a loop
             // over the bytes costs the static handler about 800 instructions a file.
-            let source = o.data_bytes();
-            let (name_bytes, _) = source.split_at(source.len().min(room - 1));
+            let (name_bytes, _) = source.split_at(source.len().min(field.len() - 1));
             let (target, rest) = field.split_at_mut(name_bytes.len());
             target.copy_from_slice(name_bytes);
             if let Some(nul) = rest.first_mut() {
                 *nul = 0;
             }
-            name.expose_provenance() as u64
+            field.as_ptr().expose_provenance() as u64
         }
         // Lifecycle effects over process-wide state Rust owns: hooks, the
         // worker globals, the master reactor and the server's shared allocations.
@@ -2249,9 +2230,13 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
         }
         OP_SENDFILE_FINISH => {
-            let task = o.ctx.buffer.cast::<SendfileTask>();
-            // SAFETY: `Server::sendfile`'s buffer, which starts with its task.
-            unsafe { (*task).offset = o.ctx.offset };
+            // `SendfileTask::offset`, the head of `Server::sendfile`'s buffer.
+            let offset: libc::off_t = o.ctx.offset;
+            let buffer = o.buffer();
+            if let Some(head) = buffer.first_chunk_mut() {
+                *head = offset.to_ne_bytes();
+            }
+            let data = buffer.as_ptr().cast();
             let head = u32::try_from(size_of::<SendfileTask>()).unwrap_or(0);
             let mut send = SendData {
                 info: DataHead {
@@ -2260,7 +2245,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     len: head + o.ctx.length + 1,
                     ..DataHead::default()
                 },
-                data: o.ctx.buffer,
+                data,
             };
             u64::from(factory_finish(o, &mut send))
         }
@@ -2701,7 +2686,7 @@ fn sigrtmin() -> u64 {
 mod tests {
     use super::*;
 
-    fn context() -> NativeContext {
+    fn context<'a>() -> NativeContext<'a> {
         NativeContext::new(core::ptr::null_mut())
     }
 
@@ -2805,7 +2790,7 @@ mod tests {
     fn host_size_counts_the_nul_and_advance_moves_the_data() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        ctx.host = c"0.0.0.0".as_ptr();
+        ctx.host = Some(c"0.0.0.0");
         let data = [0u8; 8];
         ctx.data = data.as_ptr().cast();
         ctx.length = 8;
@@ -2823,43 +2808,20 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_swap_returns_the_value_before_like_sw_atomic_value_cmp_set() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // SAFETY: every WorkerRecord field is a pointer or integer; zero is valid.
-        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        worker.concurrency = 3;
-        ctx.object = (&raw mut worker).cast();
-        // SAFETY: the context's worker is live above.
-        unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
-                Some(3)
-            );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
-                Some(3)
-            );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
-            crate::state::free_state(state);
-        }
-    }
-
-    #[test]
     fn sendfile_name_is_copied_after_the_task_head() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
         // A whole task buffer: the op may write the name anywhere after its head.
-        let mut buffer = vec![0xffu8; IPC_BUFFER_SIZE];
-        ctx.buffer = buffer.as_mut_ptr().cast();
+        let mut buffer = crate::server_methods::SendfileBuffer([0xff; IPC_BUFFER_SIZE]);
+        let at = buffer.0.as_ptr().wrapping_add(16).addr() as u64;
+        ctx.buffer = Some(&mut buffer);
         ctx.data = c"/tmp/a".as_ptr().cast();
         // SAFETY: the context's buffer and name are live above.
         let name = unsafe { answer(&raw mut ctx, None, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
         unsafe { crate::state::free_state(state) };
-        assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
-        assert_eq!(&buffer[16..23], b"/tmp/a\0");
+        assert_eq!(name, Some(at));
+        assert_eq!(&buffer.0[16..23], b"/tmp/a\0");
     }
 
     #[test]

@@ -2,39 +2,70 @@
 //! connection the socket record owns), [`Bio`] (a live BIO an SSL owns) and
 //! [`OwnedBio`] (one this side owns until an SSL takes it), [`CertRef`] and [`Cert`]
 //! (a borrowed and an owned certificate), and this thread's error queue. Callers go
-//! through their methods. `Ssl` and `Bio` are `Copy` and don't borrow their owner, so
-//! what frees an SSL or replaces its BIOs is unsafe: the constructors from raw
-//! pointers, `Ssl::set_fd` and `Ssl::set_bio`, and `upstream::socket_ssl_close`.
+//! through their methods. `Ssl<'a>` and `Bio<'a>` borrow their owner for `'a`, so a
+//! handle can't outlive the record or SSL it came from, and the calls that need only a
+//! live handle are declared `safe`. What frees an SSL or replaces its BIOs within
+//! `'a` is unsafe: the constructors from raw pointers, `Ssl::set_fd`, `Ssl::set_bio`
+//! and `upstream::socket_ssl_close`.
 use openssl_sys::{
-    BIO, BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, BIO_write, ERR_clear_error,
-    ERR_get_error, ERR_reason_error_string, OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value,
-    PEM_write_bio_X509, SSL, SSL_CIPHER_get_bits, SSL_CIPHER_get_name, SSL_CIPHER_get_version,
-    SSL_CTRL_MODE, SSL_CTX, SSL_accept, SSL_connect, SSL_ctrl, SSL_do_handshake,
-    SSL_get_current_cipher, SSL_get_error, SSL_get_ex_data, SSL_get_rbio, SSL_get_servername,
-    SSL_get_shutdown, SSL_get_verify_result, SSL_get_wbio, SSL_peek, SSL_read, SSL_set_SSL_CTX,
-    SSL_set_accept_state, SSL_set_bio, SSL_set_connect_state, SSL_set_ex_data, SSL_set_shutdown,
-    SSL_shutdown, SSL_version, SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host,
-    X509_free, stack_st_X509,
+    BIO, BIO_METHOD, BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK,
+    OPENSSL_sk_num, OPENSSL_sk_value, PEM_write_bio_X509, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTX,
+    SSL_ctrl, SSL_peek, SSL_read, SSL_set_SSL_CTX, SSL_set_bio, SSL_write,
+    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, X509_free, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{Socket, SocketFields};
 
-// SAFETY: libssl's and libcrypto's own declarations; openssl-sys binds none of them.
+// SAFETY: libssl's and libcrypto's own declarations, with each pointer typed as the
+// handle it is: `Ssl` and `Bio` are live for their lifetime, `CipherRef` is an entry
+// of OpenSSL's static cipher table, and `Cert` takes the reference OpenSSL returns.
+// The `safe` ones take only such handles and plain values, read or change only the
+// object behind the handle or this thread's error queue, and return raw pointers the
+// caller dereferences in its own unsafe block.
 unsafe extern "C" {
-    fn ERR_peek_error() -> c_ulong;
+    safe fn ERR_clear_error();
+    safe fn ERR_peek_error() -> c_ulong;
+    safe fn ERR_get_error() -> c_ulong;
+    safe fn ERR_reason_error_string(error: c_ulong) -> *const c_char;
     fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
-    fn SSL_in_init(ssl: *const SSL) -> c_int;
-    fn SSL_set_quiet_shutdown(ssl: *mut SSL, mode: c_int);
-    fn SSL_get_peer_cert_chain(ssl: *const SSL) -> *mut stack_st_X509;
+    safe fn BIO_s_mem() -> *const BIO_METHOD;
+    safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
+    safe fn SSL_accept(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_connect(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_do_handshake(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_shutdown(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_in_init(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_set_quiet_shutdown(ssl: Ssl<'_>, mode: c_int);
+    safe fn SSL_get_shutdown(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_set_shutdown(ssl: Ssl<'_>, mode: c_int);
+    safe fn SSL_get_verify_result(ssl: Ssl<'_>) -> c_long;
+    safe fn SSL_version(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_set_accept_state(ssl: Ssl<'_>);
+    safe fn SSL_set_connect_state(ssl: Ssl<'_>);
+    safe fn SSL_get_peer_cert_chain(ssl: Ssl<'_>) -> *mut stack_st_X509;
+    safe fn SSL_get_rbio<'a>(ssl: Ssl<'a>) -> Option<Bio<'a>>;
+    safe fn SSL_get_wbio<'a>(ssl: Ssl<'a>) -> Option<Bio<'a>>;
+    safe fn SSL_get_ex_data(ssl: Ssl<'_>, index: c_int) -> *mut c_void;
+    /// OpenSSL keeps `data` as opaque ex data: the indices this side makes register
+    /// no callbacks that would read it.
+    safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
+    safe fn SSL_get_servername(ssl: Ssl<'_>, kind: c_int) -> *const c_char;
+    /// Null before the handshake, else an entry of OpenSSL's static cipher table.
+    safe fn SSL_get_current_cipher(ssl: Ssl<'_>) -> Option<CipherRef>;
+    /// Null names the `(NONE)` cipher, whose bits are 0.
+    safe fn SSL_CIPHER_get_bits(cipher: Option<CipherRef>, algorithm: Option<&mut c_int>) -> c_int;
+    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> *const c_char;
+    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> *const c_char;
     fn DTLSv1_listen(ssl: *mut SSL, peer: *mut c_void) -> c_int;
     fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
-    /// OpenSSL 3 (build.rs).
+    /// OpenSSL 3 (build.rs): a reference the caller then owns.
     #[cfg_attr(ossl300, link_name = "SSL_get1_peer_certificate")]
     #[cfg_attr(not(ossl300), link_name = "SSL_get_peer_certificate")]
-    fn peer_certificate(ssl: *const SSL) -> *mut X509;
+    safe fn peer_certificate(ssl: Ssl<'_>) -> Option<Cert>;
     fn BIO_int_ctrl(bio: *mut BIO, command: c_int, large: c_long, integer: c_int) -> c_long;
 }
 
@@ -49,30 +80,26 @@ fn int(length: usize) -> c_int {
 
 /// Clears this thread's OpenSSL error queue.
 pub fn clear_errors() {
-    // SAFETY: this thread's queue; no preconditions.
-    unsafe { ERR_clear_error() };
+    ERR_clear_error();
 }
 
 /// This thread's oldest queued OpenSSL error, left queued.
 #[must_use]
 pub fn peek_error() -> c_ulong {
-    // SAFETY: this thread's queue; no preconditions.
-    unsafe { ERR_peek_error() }
+    ERR_peek_error()
 }
 
 /// This thread's oldest queued OpenSSL error, popped.
 #[must_use]
 pub fn pop_error() -> c_ulong {
-    // SAFETY: this thread's queue; no preconditions.
-    unsafe { ERR_get_error() }
+    ERR_get_error()
 }
 
 /// OpenSSL's reason string for `error`, None for an unknown code.
 #[must_use]
 pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
-    // SAFETY: OpenSSL's static string table, null for an unknown code.
-    let reason = unsafe { ERR_reason_error_string(error) };
-    // SAFETY: a static NUL-terminated string when not null.
+    let reason = ERR_reason_error_string(error);
+    // SAFETY: OpenSSL's static NUL-terminated string when not null.
     (!reason.is_null()).then(|| unsafe { CStr::from_ptr(reason) })
 }
 
@@ -86,11 +113,17 @@ pub fn error_string(error: c_ulong) -> String {
         .map_or_else(|_| String::new(), |text| text.to_string_lossy().into())
 }
 
-/// A live SSL on this thread. A socket record's is live while it is set:
-/// `Socket::ssl_create` sets it, and the unsafe `ssl_close` frees it and clears it,
-/// its caller promising that no handle to the SSL or its BIOs is used afterwards.
+/// A live SSL on this thread for `'a`. A socket record's is live while it is set:
+/// `Socket::ssl_create` sets it, and the unsafe `socket_ssl_close` frees it and clears
+/// it, its caller promising that no handle to the SSL or its BIOs is used afterwards.
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ssl(NonNull<SSL>);
+pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
+
+/// An entry of OpenSSL's static cipher table.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct CipherRef(NonNull<SSL_CIPHER>);
 
 /// A connection's cipher: OpenSSL names it `(NONE)` with 0 bits before the handshake
 /// picks one.
@@ -101,28 +134,23 @@ pub struct Cipher {
     pub version: &'static CStr,
 }
 
-impl Ssl {
+impl<'a> Ssl<'a> {
     /// # Safety
-    /// `ssl` is null or a live SSL, not freed while the handle is used.
+    /// `ssl` is null or a live SSL that nothing frees for `'a`.
     #[must_use]
     pub unsafe fn new(ssl: *mut SSL) -> Option<Self> {
-        NonNull::new(ssl).map(Self)
+        NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
     }
 
-    /// The SSL of `socket`'s record, or None without one.
+    /// The SSL of `socket`'s record, or None without one, for as long as the record.
     #[must_use]
-    pub fn of(socket: Socket<'_>) -> Option<Self> {
-        socket.read(Self::of_fields)
-    }
-
-    /// The SSL of a record's fields, or None without one.
-    #[must_use]
-    pub fn of_fields(fields: &SocketFields) -> Option<Self> {
+    pub fn of(socket: Socket<'a>) -> Option<Self> {
+        let ssl = socket.read(SocketFields::ssl);
         // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
         // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
-        // contract) set it, and the unsafe `ssl_close` takes it before freeing it, its
-        // caller promising that no handle to it is used afterwards.
-        unsafe { Self::new(fields.ssl().cast()) }
+        // contract) set it, and only the unsafe `socket_ssl_close` frees it, its caller
+        // promising that no handle to it is used afterwards.
+        unsafe { Self::new(ssl.cast()) }
     }
 
     #[must_use]
@@ -133,8 +161,7 @@ impl Ssl {
     /// `SSL_get_error` for its last I/O result.
     #[must_use]
     pub fn error(self, result: c_int) -> c_int {
-        // SAFETY: a live SSL, and its last I/O result.
-        unsafe { SSL_get_error(self.as_ptr(), result) }
+        SSL_get_error(self, result)
     }
 
     /// `SSL_read` into `buffer`, which may be uninitialized: OpenSSL only writes it.
@@ -163,76 +190,65 @@ impl Ssl {
     /// One `SSL_accept` step.
     #[must_use]
     pub fn accept(self) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_accept(self.as_ptr()) }
+        SSL_accept(self)
     }
 
     /// One `SSL_connect` step.
     #[must_use]
     pub fn connect(self) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_connect(self.as_ptr()) }
+        SSL_connect(self)
     }
 
     /// One `SSL_do_handshake` step.
     #[must_use]
     pub fn do_handshake(self) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_do_handshake(self.as_ptr()) }
+        SSL_do_handshake(self)
     }
 
     /// `SSL_shutdown`.
     #[must_use]
     pub fn shutdown(self) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_shutdown(self.as_ptr()) }
+        SSL_shutdown(self)
     }
 
     /// `SSL_in_init`: whether the handshake is still running.
     #[must_use]
     pub fn in_init(self) -> bool {
-        // SAFETY: a live SSL.
-        unsafe { SSL_in_init(self.as_ptr()) != 0 }
+        SSL_in_init(self) != 0
     }
 
     /// `SSL_set_quiet_shutdown(ssl, 1)`.
     pub fn set_quiet_shutdown(self) {
-        // SAFETY: a live SSL.
-        unsafe { SSL_set_quiet_shutdown(self.as_ptr(), 1) };
+        SSL_set_quiet_shutdown(self, 1);
     }
 
     /// `SSL_get_shutdown`.
     #[must_use]
     pub fn shutdown_mode(self) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_get_shutdown(self.as_ptr()) }
+        SSL_get_shutdown(self)
     }
 
     /// `SSL_set_shutdown`.
     pub fn set_shutdown_mode(self, mode: c_int) {
-        // SAFETY: a live SSL.
-        unsafe { SSL_set_shutdown(self.as_ptr(), mode) };
+        SSL_set_shutdown(self, mode);
     }
 
     /// `SSL_get_verify_result`.
     #[must_use]
     pub fn verify_result(self) -> c_long {
-        // SAFETY: a live SSL.
-        unsafe { SSL_get_verify_result(self.as_ptr()) }
+        SSL_get_verify_result(self)
     }
 
-    /// The peer's certificate, a reference this side then owns.
+    /// The peer's certificate (`get1`), a reference this side then owns.
     #[must_use]
     pub fn peer_certificate(self) -> Option<Cert> {
-        // SAFETY: a live SSL; the reference it returns is ours.
-        NonNull::new(unsafe { peer_certificate(self.as_ptr()) }).map(Cert)
+        peer_certificate(self)
     }
 
-    /// `SSL_get_peer_cert_chain`: the SSL's own chain, null without one.
+    /// `SSL_get_peer_cert_chain` (`get0`): the SSL's own chain, null without one.
     #[must_use]
     pub fn peer_cert_chain(self) -> *mut stack_st_X509 {
-        // SAFETY: a live SSL.
-        unsafe { SSL_get_peer_cert_chain(self.as_ptr()) }
+        SSL_get_peer_cert_chain(self)
     }
 
     /// `f` over each certificate of the peer's chain, in order.
@@ -247,7 +263,7 @@ impl Ssl {
             // SAFETY: an index within the live chain, whose entries are certificates.
             let cert = unsafe { OPENSSL_sk_value(chain, index) };
             if let Some(cert) = NonNull::new(cert.cast()) {
-                f(CertRef(cert, std::marker::PhantomData));
+                f(CertRef(cert, PhantomData));
             }
         }
     }
@@ -255,23 +271,16 @@ impl Ssl {
     /// `SSL_version`: `TLS1_3_VERSION` and the like.
     #[must_use]
     pub fn version(self) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_version(self.as_ptr()) }
+        SSL_version(self)
     }
 
     /// The current cipher's bits, name and version.
     #[must_use]
     pub fn cipher(self) -> Cipher {
-        // SAFETY: a live SSL; null before the handshake, which the getters below take.
-        let cipher = unsafe { SSL_get_current_cipher(self.as_ptr()) };
-        // SAFETY: null or an entry of OpenSSL's static cipher table.
-        let bits = unsafe { SSL_CIPHER_get_bits(cipher, std::ptr::null_mut()) };
-        // SAFETY: as above.
-        let name = unsafe { SSL_CIPHER_get_name(cipher) };
-        // SAFETY: as above.
-        let version = unsafe { SSL_CIPHER_get_version(cipher) };
+        let cipher = SSL_get_current_cipher(self);
+        let (name, version) = (SSL_CIPHER_get_name(cipher), SSL_CIPHER_get_version(cipher));
         Cipher {
-            bits,
+            bits: SSL_CIPHER_get_bits(cipher, None),
             // SAFETY: the table's name or the `(NONE)` literal: static and NUL-terminated.
             name: unsafe { CStr::from_ptr(name) },
             // SAFETY: a static NUL-terminated literal.
@@ -298,14 +307,12 @@ impl Ssl {
 
     /// `SSL_set_accept_state`.
     pub fn set_accept_state(self) {
-        // SAFETY: a live SSL.
-        unsafe { SSL_set_accept_state(self.as_ptr()) };
+        SSL_set_accept_state(self);
     }
 
     /// `SSL_set_connect_state`.
     pub fn set_connect_state(self) {
-        // SAFETY: a live SSL.
-        unsafe { SSL_set_connect_state(self.as_ptr()) };
+        SSL_set_connect_state(self);
     }
 
     /// `SSL_set_bio`: the SSL takes both BIOs (one reference when they are the same
@@ -313,52 +320,44 @@ impl Ssl {
     ///
     /// # Safety
     /// No handle to the SSL's current BIOs is used afterwards: it frees them.
-    pub unsafe fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio, Bio) {
-        let read = read.into_bio();
-        let write = write.map_or(read, OwnedBio::into_bio);
+    pub unsafe fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio<'a>, Bio<'a>) {
+        let read = read.into_raw();
+        let write = write.map_or(read, OwnedBio::into_raw);
         // SAFETY: a live SSL takes the references this side owned, and frees the BIOs
         // it replaces, which the caller promises have no handle in use.
         unsafe { SSL_set_bio(self.as_ptr(), read.as_ptr(), write.as_ptr()) };
-        (read, write)
+        (Bio(read, PhantomData), Bio(write, PhantomData))
     }
 
-    /// `SSL_get_rbio`, None without one.
+    /// `SSL_get_rbio` (`get0`), None without one: live until the SSL is freed or the
+    /// unsafe `set_bio`/`set_fd` replace it.
     #[must_use]
-    pub fn read_bio(self) -> Option<Bio> {
-        // SAFETY: a live SSL; the BIO it owns lives as long.
-        NonNull::new(unsafe { SSL_get_rbio(self.as_ptr()) }).map(Bio)
+    pub fn read_bio(self) -> Option<Bio<'a>> {
+        SSL_get_rbio(self)
     }
 
-    /// `SSL_get_wbio`, None without one.
+    /// `SSL_get_wbio` (`get0`), None without one, live as `read_bio`'s is.
     #[must_use]
-    pub fn write_bio(self) -> Option<Bio> {
-        // SAFETY: a live SSL; the BIO it owns lives as long.
-        NonNull::new(unsafe { SSL_get_wbio(self.as_ptr()) }).map(Bio)
+    pub fn write_bio(self) -> Option<Bio<'a>> {
+        SSL_get_wbio(self)
     }
 
     /// `SSL_get_ex_data` at `index`.
     #[must_use]
     pub fn ex_data(self, index: c_int) -> *mut c_void {
-        // SAFETY: a live SSL; the slot is opaque to OpenSSL.
-        unsafe { SSL_get_ex_data(self.as_ptr(), index) }
+        SSL_get_ex_data(self, index)
     }
 
     /// `SSL_set_ex_data` at `index`: false when OpenSSL fails.
     #[must_use]
-    #[expect(
-        clippy::not_unsafe_ptr_arg_deref,
-        reason = "OpenSSL keeps `data` as opaque ex data and never dereferences it"
-    )]
     pub fn set_ex_data(self, index: c_int, data: *mut c_void) -> bool {
-        // SAFETY: a live SSL keeps `data` as opaque ex data.
-        unsafe { SSL_set_ex_data(self.as_ptr(), index, data) != 0 }
+        SSL_set_ex_data(self, index, data) != 0
     }
 
     /// The SNI host name the client sent, None without one.
     #[must_use]
     pub fn servername(self) -> Option<Vec<u8>> {
-        // SAFETY: a live SSL.
-        let name = unsafe { SSL_get_servername(self.as_ptr(), TLSEXT_NAMETYPE_host_name) };
+        let name = SSL_get_servername(self, TLSEXT_NAMETYPE_host_name);
         // SAFETY: a NUL-terminated name the SSL holds, copied before it changes.
         (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_bytes().to_vec())
     }
@@ -389,17 +388,18 @@ impl Ssl {
     }
 }
 
-/// A live BIO an SSL owns, borrowed until the SSL frees it: when the SSL is freed or
-/// the BIO replaced, which only unsafe calls do.
+/// A live BIO for `'a`, borrowed from the SSL or [`OwnedBio`] that owns it: an SSL's
+/// lives until the SSL is freed or the BIO replaced, which only unsafe calls do.
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Bio(NonNull<BIO>);
+pub struct Bio<'a>(NonNull<BIO>, PhantomData<&'a BIO>);
 
-impl Bio {
+impl Bio<'_> {
     /// # Safety
-    /// `bio` is null or a live BIO, not freed while the handle is used.
+    /// `bio` is null or a live BIO that nothing frees for the handle's lifetime.
     #[must_use]
     pub unsafe fn new(bio: *mut BIO) -> Option<Self> {
-        NonNull::new(bio).map(Self)
+        NonNull::new(bio).map(|bio| Self(bio, PhantomData))
     }
 
     #[must_use]
@@ -438,26 +438,25 @@ impl Bio {
 }
 
 /// A BIO this side owns, freed when dropped unless an SSL takes it.
+#[repr(transparent)]
 #[derive(Debug)]
-pub struct OwnedBio(Bio);
+pub struct OwnedBio(NonNull<BIO>);
 
 impl OwnedBio {
     /// A new memory BIO, None when OpenSSL fails.
     #[must_use]
     pub fn memory() -> Option<Self> {
-        // SAFETY: OpenSSL's static memory BIO method.
-        let method = unsafe { BIO_s_mem() };
-        // SAFETY: a fresh BIO of that method, null on failure.
-        NonNull::new(unsafe { BIO_new(method) }).map(|bio| Self(Bio(bio)))
+        // SAFETY: a fresh BIO of OpenSSL's static memory method, null on failure.
+        NonNull::new(unsafe { BIO_new(BIO_s_mem()) }).map(Self)
     }
 
-    /// The BIO, which this side frees on drop; the handle stays inside this module.
-    fn bio(&self) -> Bio {
-        self.0
+    /// The BIO, borrowed while this side owns it.
+    fn bio(&self) -> Bio<'_> {
+        Bio(self.0, PhantomData)
     }
 
-    /// The handle, whose reference the caller hands on.
-    fn into_bio(self) -> Bio {
+    /// The BIO, whose reference the caller hands on.
+    fn into_raw(self) -> NonNull<BIO> {
         std::mem::ManuallyDrop::new(self).0
     }
 }
@@ -471,14 +470,14 @@ impl Drop for OwnedBio {
 
 /// A live certificate, borrowed for `'a`.
 #[derive(Clone, Copy, Debug)]
-pub struct CertRef<'a>(NonNull<X509>, std::marker::PhantomData<&'a X509>);
+pub struct CertRef<'a>(NonNull<X509>, PhantomData<&'a X509>);
 
 impl CertRef<'_> {
     /// # Safety
     /// `cert` is null or a live certificate, not freed while the handle is used.
     #[must_use]
     pub unsafe fn new(cert: *mut X509) -> Option<Self> {
-        NonNull::new(cert).map(|cert| Self(cert, std::marker::PhantomData))
+        NonNull::new(cert).map(|cert| Self(cert, PhantomData))
     }
 
     #[must_use]
@@ -514,6 +513,7 @@ impl CertRef<'_> {
 }
 
 /// A live certificate reference this side owns, released when dropped.
+#[repr(transparent)]
 #[derive(Debug)]
 pub struct Cert(pub(crate) NonNull<X509>);
 
@@ -535,7 +535,7 @@ impl Cert {
     /// The certificate, borrowed while this reference is held.
     #[must_use]
     pub fn get(&self) -> CertRef<'_> {
-        CertRef(self.0, std::marker::PhantomData)
+        CertRef(self.0, PhantomData)
     }
 }
 

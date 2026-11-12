@@ -6,11 +6,9 @@ use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
     LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
-    OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
+    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
     OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
-    OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
+    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
@@ -566,21 +564,6 @@ fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// `Server::reset_worker_counter`: the worker's concurrency leaves the server's (never
-/// below 0) and its counters restart.
-fn reset_worker_counter<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let value = h.get(OP_ST_W_CONCURRENCY)?;
-    if value > 0 && h.op(OP_ST_W_CONCURRENCY_CAS, value)? == value {
-        h.op(OP_ST_GS_CONCURRENCY_SUB, value)?;
-        let now = u32::try_from(h.get(OP_ST_GS_CONCURRENCY)? & 0xffff_ffff).unwrap_or(0);
-        if now.cast_signed() < 0 {
-            h.get(OP_ST_GS_CONCURRENCY_ZERO)?;
-        }
-    }
-    h.get(OP_ST_W_RESET_COUNTS)?;
-    Ok(())
-}
-
 /// `Server::abort_connection`: counted, then closed through the reactor when it is
 /// a connection, else freed.
 fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
@@ -630,7 +613,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
-        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_STORE_PIPE_FD,
+        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_ADD_COMMAND => {
@@ -662,10 +645,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         }
         RUN_ST_INIT_PIPE_SOCKETS => {
             init_pipe_sockets(h)?;
-            0
-        }
-        RUN_ST_RESET_COUNTER => {
-            reset_worker_counter(h)?;
             0
         }
         RUN_ST_ABORT => {
@@ -754,28 +733,6 @@ mod tests {
         let mut s = Script::default().queue(OP_FIELD, &[2, 2, 2]);
         init_pipe_sockets(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1]);
-    }
-
-    #[test]
-    fn worker_counter_reset_clamps_the_server_concurrency() {
-        let mut s = Script::with(&[
-            (OP_ST_W_CONCURRENCY, 3),
-            (OP_ST_W_CONCURRENCY_CAS, 3),
-            (OP_ST_GS_CONCURRENCY, u64::from(u32::MAX)),
-        ]);
-        reset_worker_counter(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_GS_CONCURRENCY_SUB), vec![3]);
-        assert_eq!(s.called(OP_ST_GS_CONCURRENCY_ZERO), 1);
-        assert_eq!(s.called(OP_ST_W_RESET_COUNTS), 1);
-
-        let mut raced = Script::with(&[(OP_ST_W_CONCURRENCY, 3), (OP_ST_W_CONCURRENCY_CAS, 2)]);
-        reset_worker_counter(&mut raced).unwrap();
-        assert_eq!(raced.called(OP_ST_GS_CONCURRENCY_SUB), 0);
-        assert_eq!(raced.called(OP_ST_W_RESET_COUNTS), 1);
-
-        let mut idle = Script::default();
-        reset_worker_counter(&mut idle).unwrap();
-        assert_eq!(idle.called(OP_ST_W_CONCURRENCY_CAS), 0);
     }
 
     #[test]

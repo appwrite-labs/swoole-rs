@@ -451,7 +451,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     // SAFETY: exclusive leaf snapshot of the owner configuration.
     let fields = unsafe { *owner_ref.fields.get() };
     let index = crate::swr_v1_tls_connection_index();
-    let (status, error, ssl) = record.edit(|record| {
+    let (status, error) = record.edit(|record| {
         let mut error = 0;
         // SAFETY: the owner's live context; OpenSSL calls nothing back while making the SSL.
         let status = unsafe {
@@ -464,8 +464,9 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
                 &mut error,
             )
         };
-        (status, error, crate::Ssl::of_fields(record))
+        (status, error)
     });
+    let ssl = crate::Ssl::of(record);
     if status != 0 {
         return OwnedTlsSessionResult { status, error };
     }
