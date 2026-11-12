@@ -1003,9 +1003,6 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             ] {
                 reactor.set_handler(fd_type, event, handler);
             }
-            for port in o.tables().ports() {
-                (crate::port_config::methods().init_protocol)(port.raw());
-            }
             0
         }
         OP_BASE_PASS => {
