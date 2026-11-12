@@ -38,7 +38,7 @@ use crate::ops::{
 };
 use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
 use crate::reactor_entry::{self as entry, run, thread};
-use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign, thread_buffer};
+use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign, with_thread_buffer};
 use crate::records::ConnectionRecord;
 use crate::{ServerState, factory, server_methods as methods, view};
 
@@ -158,7 +158,7 @@ pub(crate) fn answer(
             let kind = conn.socket_type;
             ctx.sock = socket(conn.socket.cast());
             ctx.conn = conn;
-            ctx.pkt = thread_buffer().as_mut_ptr().cast();
+            ctx.pkt = with_thread_buffer(swoole_rs_buffer::string::CppString::as_mut_ptr).cast();
             ctx.task = SendData {
                 info: DataHead {
                     server_fd: u16::try_from(fd).unwrap_or(u16::MAX),
@@ -175,7 +175,7 @@ pub(crate) fn answer(
             0
         }
         OP_RECVFROM => {
-            let room = thread_buffer().size() - size_of::<DgramPacket>();
+            let room = with_thread_buffer(|buffer| buffer.size()) - size_of::<DgramPacket>();
             let fd = ctx.sock?.fd();
             let pkt = packet(ctx)?;
             let data = (&raw mut *pkt).wrapping_add(1).cast();
@@ -516,8 +516,7 @@ pub(crate) fn answer(
         }
         OP_DGRAM_BUFFER => {
             // support 64K packet
-            let buffer = thread_buffer();
-            buffer.extend(buffer.size().wrapping_mul(2));
+            with_thread_buffer(|buffer| buffer.extend(buffer.size().wrapping_mul(2)));
             0
         }
         OP_RD_PORT_READ => {
